@@ -3647,17 +3647,32 @@ timeout_secs = 3600
 default = false
 
 [[check]]
-name = "nested-session"
-# The build scripts' pinned assets. The engine the Browser renders with comes from the
-# chromium-engine check, so no CEF archive is fetched here.
+name = "nested-session-fonts"
+# The product fonts the session's text is set in, materialized from the tree's pinned catalog and
+# the release store's artifacts. Its own fetch, so the session's build reaches no network of its
+# own: a check's failure under an egress it declares is never served to a later ask, and a build
+# that fetches nothing has no such failure.
 egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "python3 tools/font-catalog.py prepare crates/ui/ui-core/assets/fonts /target/nested-session-fonts --scope product"
+outputs = ["/target/nested-session-fonts/**"]
+requires = ["arch=any"]
+timeout_secs = 1800
+default = false
+
+[[check]]
+name = "nested-session"
+# No network of its own: the engine, the fonts and the pinned test assets are their checks'
+# (`chromium-engine`, `nested-session-fonts` and `font-seed`, `test-assets`). A job that reached no
+# network can fail only for its own reasons, so its failure is served to a later ask instead of
+# being kept outbound: a tree that fails the build is not asked again for another 20 minutes.
 run = "bash dist/dev/nested-session-build.sh /target/nested-session"
-needs = ["image-env-runtime-dev-tree-x86_64", "chromium-engine"]
+needs = ["image-env-runtime-dev-tree-x86_64", "chromium-engine", "nested-session-fonts", "font-seed", "test-assets"]
 # The build's own default app set, and Calendar: a user story walks a person connecting their
 # calendar in it (stories/shell/calendar-invite.py), and a session installs only the apps its
-# build carries. TILO_CHROMIUM_ENGINE is the chromium-engine check's output: the session's
-# engine runtime, which this build stages instead of building.
-env = { TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/dev-trees", TILO_CHROMIUM_ENGINE = "/target/chromium-engine" }
+# build carries. The paths are those checks' outputs: the engine runtime and product fonts this
+# build stages, the pinned font artifacts and test assets its build scripts read instead of
+# fetching.
+env = { TILO_ENV_RUNTIME_TREES = "/target/publish/env-runtime/dev-trees", TILO_CHROMIUM_ENGINE = "/target/chromium-engine", TILO_NESTED_FONTS = "/target/nested-session-fonts", TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_TEST_ASSET_CACHE = "/target/test-assets" }
 requires = ["arch=x86_64"]
 outputs = ["/target/nested-session/**"]
 timeout_secs = 5400

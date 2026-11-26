@@ -348,8 +348,15 @@ rm -rf "$out"
 mkdir -p "$out/bin" "$out/thin-app"
 # The product fonts, materialized here, where the build may reach the release store: a session
 # started from this build (an app walk's, in a VM that reaches nothing) sets its text in these
-# and never fetches a font of its own, whichever pinned version the tree names.
-python3 tools/font-catalog.py prepare crates/ui/ui-core/assets/fonts "$out/fonts" --scope product
+# and never fetches a font of its own, whichever pinned version the tree names. On t the
+# `nested-session-fonts` check fetches and materializes them once (`TILO_NESTED_FONTS`), so this
+# build reaches no network of its own; a developer's run, which no check answers, fetches here.
+if [[ -n ${TILO_NESTED_FONTS:-} ]]; then
+    [[ -d $TILO_NESTED_FONTS ]] || { echo "no fonts in $TILO_NESTED_FONTS" >&2; exit 1; }
+    cp -rp "$TILO_NESTED_FONTS" "$out/fonts"
+else
+    python3 tools/font-catalog.py prepare crates/ui/ui-core/assets/fonts "$out/fonts" --scope product
+fi
 for name in "${host_bins[@]}"; do cp -p "$target/$host_profile/$name" "$out/bin/"; done
 # The session's surfaces, which it starts from beside its own executable under
 # the names the OS image installs them as.
