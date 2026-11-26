@@ -74,6 +74,9 @@ impl ResourceStore {
             listings.entry(doc).or_default().push(change);
         }
         let mut docs: BTreeMap<DocId, Told> = BTreeMap::new();
+        // Who made each document's change: one person, or no one the views may count on when
+        // the writes it gathers are of more than one.
+        let mut made: BTreeMap<DocId, Option<Actor>> = BTreeMap::new();
         for heard in heard {
             for (doc, fields) in heard.touched {
                 let held = docs.entry(doc.clone()).or_default();
@@ -81,7 +84,15 @@ impl ResourceStore {
                 if let Some(collections) = heard.collections.get(&doc) {
                     held.1.extend(collections.iter().cloned());
                 }
-                held.2.clone_from(&heard.by);
+                let by = made.entry(doc).or_insert_with(|| heard.by.clone());
+                if *by != heard.by {
+                    *by = None;
+                }
+            }
+        }
+        for (doc, by) in made {
+            if let Some(held) = docs.get_mut(&doc) {
+                held.2 = by;
             }
         }
         for (doc, (fields, collections, by)) in docs {

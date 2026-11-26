@@ -1463,6 +1463,12 @@ struct Typed {
     visited: u64,
     /// How many times it read every document in full while the keys were typed.
     swept: u64,
+    /// How many views it ran again while the keys were typed.
+    rendered: usize,
+    /// How many times it asked the store while the keys were typed.
+    asked: usize,
+    /// The longest a key took, from its edit sent to the window drawn again.
+    slowest: std::time::Duration,
 }
 
 /// How many records the instance's publication has looked at so far.
@@ -1608,16 +1614,22 @@ fn typing(notes: &Bundle, held: usize, field: &str, typed: &str) -> Typed {
     let (mut built, mut relabeled) = (0, 0);
     let mut seen: u64 = 0;
     let mut sweeps: u64 = 0;
+    let (mut rendered, mut asked) = (0, 0);
+    let mut slowest = std::time::Duration::ZERO;
     let mut shown = String::new();
     for (seq, key) in typed.chars().enumerate() {
         let at = u32::try_from(shown.len()).unwrap();
         shown.push(key);
         let edit = key_edit(rich, Level::Root, &target, &input, seq, at, &shown, key);
         let (before, before_sweeps) = (visited(&host), swept(&host));
+        let started = std::time::Instant::now();
         let ((), phases) = tilo_resource::profiling::observe(|| {
             window.send(&[edit]);
             settle(&mut host, &mut window);
         });
+        slowest = slowest.max(started.elapsed());
+        rendered = calls(&phases, "tl.view.render").saturating_add(rendered);
+        asked = calls(&phases, "store.command").saturating_add(asked);
         seen = seen.saturating_add(visited(&host).saturating_sub(before));
         sweeps = sweeps.saturating_add(swept(&host).saturating_sub(before_sweeps));
         built = calls(&phases, "tl.host.publish").saturating_add(built);
@@ -1656,6 +1668,9 @@ fn typing(notes: &Bundle, held: usize, field: &str, typed: &str) -> Typed {
         found,
         visited: seen,
         swept: sweeps,
+        rendered,
+        asked,
+        slowest,
     }
 }
 
@@ -1667,6 +1682,7 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
     // title: each key of the body publishes that label alone, with one note or with two
     // hundred, never the whole notebook's surface.
     let mut held_by = Vec::new();
+    let mut asked = Vec::new();
     for held in [1, 200] {
         let body = typing(&notes, held, "Write something", "draft");
         assert_eq!(
@@ -1675,6 +1691,8 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
             "typing a body published the surface (whole, labels) with {held} notes"
         );
         held_by.push((held, body.visited));
+        keys_cost_what_they_show(&body, 5, held);
+        asked.push(body.asked);
         assert_eq!(
             body.swept, 0,
             "typing a body read every document in full {} times with {held} notes",
@@ -1693,12 +1711,18 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
         "five keys looked at {} documents with one note, {} with 200",
         held_by[0].1, held_by[1].1
     );
+    assert_eq!(
+        asked[0], asked[1],
+        "five keys asked the store {} times with one note, {} with 200",
+        asked[0], asked[1]
+    );
     // A note's title is its label: each key publishes that label alone, the same work with one
     // note as with two hundred, and never the whole surface.
     let mut held_by = Vec::new();
     for held in [1, 200] {
         let title = typing(&notes, held, "Untitled", "abc");
         held_by.push((held, title.visited));
+        keys_cost_what_they_show(&title, 3, held);
         assert_eq!(
             title.swept, 0,
             "typing a title read every document in full {} times with {held} notes",
@@ -1744,6 +1768,23 @@ fn typing_a_note_builds_the_surface_only_for_what_it_shows_whatever_the_notebook
         held_by[0].1, held_by[1].1,
         "three keys looked at {} documents with one note, {} with 200",
         held_by[0].1, held_by[1].1
+    );
+}
+
+/// What `keys` keys typed into a note of a notebook of `held` notes cost: each runs again the one
+/// view that shows what it changed, never the notebook's own, and none comes near the time a
+/// person would notice, even in a debug build on a busy machine. A key that ran the notebook's
+/// view again, or read the notebook whole, costs a multiple of this.
+fn keys_cost_what_they_show(typed: &Typed, keys: usize, held: usize) {
+    assert!(
+        typed.rendered <= keys,
+        "{keys} keys ran {} views again with {held} notes",
+        typed.rendered
+    );
+    assert!(
+        typed.slowest < std::time::Duration::from_millis(250),
+        "a key took {:?} with {held} notes",
+        typed.slowest
     );
 }
 

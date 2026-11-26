@@ -762,6 +762,12 @@ impl Live {
             reach
                 .hit
                 .extend(self.index.readers(&change.doc, crate::marks::DOC_VERSIONS));
+            if !mine {
+                reach.hit.extend(
+                    self.index
+                        .readers(&change.doc, crate::marks::DOC_VERSIONS_BY_OTHERS),
+                );
+            }
         }
         if change.fields.is_empty() {
             if let Some(set) = self.index.docs.get(&change.doc) {

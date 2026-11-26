@@ -87,6 +87,12 @@ struct Changed {
 /// document's resources changes.
 pub const DOC_VERSIONS: &str = "$versions";
 
+/// The pseudo-field a window's mark reads its document's versions through while it shows
+/// nothing unseen: only someone else's change reaches it. The person's own change is never
+/// unseen, so it leaves such a mark as it was, and typing in a window re-runs nothing for its
+/// mark.
+pub const DOC_VERSIONS_BY_OTHERS: &str = "$versions-by-others";
+
 impl Core {
     /// Mark `node` for `viewer` where it shows something they have not seen.
     ///
@@ -507,20 +513,26 @@ impl Core {
         let Some(at) = ResourceRef::parse_id(window, String::new()) else {
             return Ok(());
         };
-        acc.reads.push((at.doc.clone(), DOC_VERSIONS.to_owned()));
         // The newest version of a page of the document's resources: a window of a workspace of
         // any size reads no more of it than the page, and says when it holds more.
         let (within, more) = match self.store.borrow().newest_page(&at.doc, WINDOW_PAGE) {
             Ok(page) => page,
             // A window named for no document (one a host opened by a name of its own) shows
             // no resource anyone changed.
-            Err(crate::store::StoreError::NotFound(_)) => return Ok(()),
+            Err(crate::store::StoreError::NotFound(_)) => {
+                acc.reads.push((at.doc.clone(), DOC_VERSIONS.to_owned()));
+                return Ok(());
+            }
             Err(error) => return Err(error.into()),
         };
         let changed = self.changed_since(&at, viewer, window, within, acc);
         if changed.is_empty() {
+            acc.reads
+                .push((at.doc.clone(), DOC_VERSIONS_BY_OTHERS.to_owned()));
             return Ok(());
         }
+        // What it shows the person's own change may take back: any change reaches it.
+        acc.reads.push((at.doc.clone(), DOC_VERSIONS.to_owned()));
         // Everything unseen, oldest first, for who made it and what the newest change did: the
         // page comes newest first and a record's steps in the log's order, so reading the
         // records the other way round is oldest first, and the one the log holds last is what
