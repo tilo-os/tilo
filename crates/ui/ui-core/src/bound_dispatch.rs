@@ -4349,15 +4349,20 @@ struct OpenScope {
     closing: Rc<Cell<bool>>,
     lifetime_id: uuid::Uuid,
     actor: MemberId,
+    device_id: String,
+    local_person: MemberId,
 }
 
 #[cfg(feature = "model")]
 impl OpenScope {
-    /// Whether `binding` opens the scope this one is, entering as `actor`.
+    /// Whether `binding` opens the scope this one is, entering as `actor`: its local identity
+    /// (device and person) is what its callbacks run as, so another one opens its own scope.
     fn same(&self, binding: &CallbackBinding, actor: &MemberId) -> bool {
         self.lifetime_id == binding.lifetime_id
             && Rc::ptr_eq(&self.closing, &binding.closing)
             && self.actor == *actor
+            && self.device_id == binding.device_id
+            && self.local_person == binding.local_person
     }
 }
 
@@ -4864,6 +4869,8 @@ impl CallbackBinding {
                 closing: Rc::clone(&self.closing),
                 lifetime_id: self.lifetime_id,
                 actor: actor.clone(),
+                device_id: self.device_id.clone(),
+                local_person: self.local_person.clone(),
             });
             open.len() - 1
         });
