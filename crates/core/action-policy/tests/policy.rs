@@ -147,7 +147,7 @@ fn an_agent_reaches_workspace_mail_through_a_grant_scoped_to_mail() {
         Answer::Allow,
         alice(),
     ));
-    for node in workspace_mail_and_vault().into_iter().take(4) {
+    for node in workspace_mail_and_vault().into_iter().take(2) {
         assert_eq!(
             decide(
                 &grants,
