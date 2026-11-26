@@ -345,17 +345,6 @@ impl WorkspaceAgents {
         }
         let name = clean_name(&name)?;
         let acts_for = author(cx)?;
-        let id = match id.as_deref().map(str::trim) {
-            None | Some("") => cx.id().to_string(),
-            Some(id) => {
-                let id = given_id(id)?;
-                if self.agents.find(&Id::from_raw(id.clone())).is_some() {
-                    return Err(Refusal::new(format!("there is already an agent {id:?}")));
-                }
-                id
-            }
-        };
-        let model = chosen_model(model)?;
         let mcp_client = match mcp_client.as_deref().map(str::trim) {
             None | Some("") => None,
             Some(client) => {
@@ -363,6 +352,27 @@ impl WorkspaceAgents {
                 Some(client.to_owned())
             }
         };
+        let id = match id.as_deref().map(str::trim) {
+            None | Some("") => cx.id().to_string(),
+            Some(id) => {
+                let id = given_id(id)?;
+                if let Some(kept) = self.agents.find(&Id::from_raw(id.clone())) {
+                    // The MCP client of a person that connects again is the agent it was: a
+                    // device that has not read the list since asks for it again under its id,
+                    // and finds it there.
+                    if mcp_client.is_some()
+                        && kept.is_active()
+                        && kept.acts_for == acts_for
+                        && kept.mcp_client == mcp_client
+                    {
+                        return Ok(());
+                    }
+                    return Err(Refusal::new(format!("there is already an agent {id:?}")));
+                }
+                id
+            }
+        };
+        let model = chosen_model(model)?;
         self.agents.push(Agent {
             id: Atom(id),
             name,

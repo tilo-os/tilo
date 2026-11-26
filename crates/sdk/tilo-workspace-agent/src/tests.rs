@@ -251,6 +251,42 @@ fn a_given_id_is_kept_and_told_apart() {
     assert!(refused.to_string().contains("already"), "{refused}");
 }
 
+/// The agent of an MCP client, under the id its device chose for it.
+fn connect(client: &str, id: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
+    WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+        avatar: None,
+        name: NonBlank::parse(client).expect("a name"),
+        id: Some(id.to_owned()),
+        model: None,
+        mcp_client: Some(client.to_owned()),
+    })
+}
+
+/// A person's MCP client that connects again, from a device that has not read the list since it
+/// connected last, is the agent it was; another person's client, or another client under that id,
+/// is still refused.
+#[test]
+fn an_mcp_client_connecting_again_is_the_agent_it_was() {
+    let mut record = as_person(ADA);
+    record
+        .apply(connect("cargo headless check", "cargo-headless-check"))
+        .unwrap();
+    record
+        .apply(connect("cargo headless check", "cargo-headless-check"))
+        .unwrap();
+    assert_eq!(only(&record.state().unwrap()).name, "cargo headless check");
+
+    let refused = record
+        .apply(connect("another client", "cargo-headless-check"))
+        .unwrap_err();
+    assert!(refused.to_string().contains("already"), "{refused}");
+    let mut theirs = record.fork().as_author(GRACE);
+    let refused = theirs
+        .apply(connect("cargo headless check", "cargo-headless-check"))
+        .unwrap_err();
+    assert!(refused.to_string().contains("already"), "{refused}");
+}
+
 #[test]
 fn changing_an_agent_that_is_gone_is_refused() {
     let mut record = as_person(ADA);
