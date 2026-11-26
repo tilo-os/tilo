@@ -61,10 +61,6 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "the member's client holds this device's own owner beside the shell: every workspace the person joined is a replica it opens, commits and enrolls into, and the governance its channels read is that owner's"
 
   [[rule.allow]]
-  package = "tilo-network-actor"
-  why = "the transport holds each enrolled workspace's link from this device's owner to its host, runs it and admits what it brings into the owner; it keeps no workspace state of its own"
-
-  [[rule.allow]]
   package = "tilo-runtime"
   why = "the shared runtime runs the engine for the apps attached to a member"
 

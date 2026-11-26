@@ -489,6 +489,7 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "HandedTo" = "enum external"
 "HandedTo::Api" = "#3 unit"
 "HandedTo::Collaboration" = "#0 unit"
+"HandedTo::DeviceVpn" = "#4 unit"
 "HandedTo::Identity" = "#1 unit"
 "HandedTo::Live" = "#2 unit"
 "Handle" = "tuple(u64)"

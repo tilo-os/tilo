@@ -92,42 +92,31 @@ client_side = [
     "tilo-collab-types",            # a document's signed envelopes, and resource paths
     "tilo-neighbour-wire",
     "tilo-runtime-portal",
-    "tilo-runtime-interface",
     "rustls-native-certs",     # the system trust store, forked under crates/system
     "tilo-action-policy",      # the policy an answer to a message is held to
     "tilo-actions",
     "tilo-advisory-lock",
     "tilo-app-id",             # the id an app is known by
     "tilo-automerge",          # the CRDT the workspace's documents are
-    "tilo-automerge-isolate",  # untrusted Automerge input decoded in a limited worker process
     "tilo-canonical-json",     # canonical compact JSON encoding for digests and signatures
     "tilo-clock",
     "tilo-content",
     "tilo-content-types",
-    "tilo-delivery-protocol",  # where a workspace's host is reached
-    "tilo-device-identity",    # where a device keeps its key and certificates
     "tilo-face",
     "tilo-failure",            # a failure dropped on purpose, with its reason
     "tilo-files",
     "tilo-formats",            # dates and clocks as the person set them
     "tilo-identity-client",
-    "tilo-local-identity",     # who sits at this device
     "tilo-lock",
-    "tilo-net",
     "tilo-paths",
     "tilo-platform-caps",
-    "tilo-reference",          # the links an invitation is written as
-    "tilo-server-client",       # device certification and the device-signer boundary
-    "tilo-server-protocol",     # the server's handshake and wire messages
+    "tilo-presence",           # who is where, their hue and their status, as plain values
     "tilo-resource",           # a resource's fields, as an app publishes them
     "tilo-resource-macros",
-    "tilo-rt",
     "tilo-seal",
-    "tilo-secrets",            # where a device keeps its keys
     "tilo-selector",
     "tilo-socket",             # a socket bound or reached by a path of any length
     "tilo-sort",
-    "tilo-unlock-protocol",   # how a boot opened its system volume, in the server's status
     "tilo-user-identity",
     "tilo-wake",
     "tilo-words",              # what a declared name is called in a sentence
