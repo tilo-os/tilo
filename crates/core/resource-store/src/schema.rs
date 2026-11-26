@@ -119,6 +119,8 @@ static HISTORY: std::sync::LazyLock<Vec<Verb>> = std::sync::LazyLock::new(|| {
 /// The resource types one app declares, and what each of its verbs writes.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Schema {
+    /// The kind the surface's own record is: the type whose version this schema declares.
+    pub kind: String,
     pub types: Vec<Type>,
     /// Each verb's write-set; a schema that declares none checks no change's verb.
     pub verbs: Vec<Verb>,
@@ -336,10 +338,7 @@ impl Schema {
             declared.push(own_type(surface));
             surface.kind.clone()
         };
-        let own = declared
-            .iter()
-            .find(|ty| ty.name == own_name)
-            .or_else(|| declared.first());
+        let own = declared.iter().find(|ty| ty.name == own_name);
         // The outside service kind the surface's origin verb declares, for a record an origin
         // keeps in step with a service.
         let origin = surface
@@ -419,6 +418,7 @@ impl Schema {
             }))
             .collect();
         Self {
+            kind: surface.kind.clone(),
             types,
             verbs,
             readers: surface
@@ -723,5 +723,63 @@ impl Type {
     #[must_use]
     pub fn field(&self, name: &str) -> Option<&Field> {
         self.fields.iter().find(|field| field.name == name)
+    }
+
+    /// Whether this declaration of the type only adds to `was`, the one version `was.version`
+    /// declared: every field keeps its name and type, and every container its name and kind. A
+    /// version that drops, moves, renames or retypes one would leave the records the older
+    /// version wrote unreadable, so the store refuses it.
+    ///
+    /// # Errors
+    /// What the declaration drops, moves, renames or retypes.
+    pub(crate) fn adds_to(&self, was: &Self) -> Result<(), String> {
+        for field in &was.fields {
+            match self.field(&field.name) {
+                None => {
+                    return Err(format!(
+                        "`{}` version {} drops the field `{}` that version {} declares",
+                        self.name, self.version, field.name, was.version
+                    ));
+                }
+                Some(now)
+                    if now.kind != field.kind
+                        || (field.optional && !now.optional)
+                        || match (&now.value, &field.value) {
+                            // A case the enum adds is a value the field newly admits.
+                            (Expected::OneOf(now), Expected::OneOf(was)) => {
+                                !was.iter().all(|case| now.contains(case))
+                            }
+                            (now, was) => now != was,
+                        } =>
+                {
+                    return Err(format!(
+                        "`{}` version {} retypes the field `{}` that version {} declares",
+                        self.name, self.version, field.name, was.version
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        if let Some((field, kind)) = was
+            .nested
+            .iter()
+            .find(|nested| !self.nested.contains(nested))
+        {
+            return Err(format!(
+                "`{}` version {} no longer nests `{kind}` in `{field}`, as version {} does",
+                self.name, self.version, was.version
+            ));
+        }
+        if let Some((container, kind)) = was
+            .founding
+            .iter()
+            .find(|(name, kind)| !self.founding.contains(&(name.clone(), *kind)))
+        {
+            return Err(format!(
+                "`{}` version {} no longer keeps `{container}` as a {kind:?}, as version {} does",
+                self.name, self.version, was.version
+            ));
+        }
+        Ok(())
     }
 }

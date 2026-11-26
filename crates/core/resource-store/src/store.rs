@@ -223,6 +223,10 @@ pub struct Store {
     changed: BTreeSet<u64>,
     /// The resource types every app declared: what a peer's change is checked against.
     schema: Schema,
+    /// The surface kind that declared each type, as [`Store::declare`] took it: a type's newer
+    /// version is only compared with the one the same surface declared, since two apps' types of
+    /// one name are unrelated.
+    types_by: BTreeMap<String, String>,
     /// The reader rule of each kind whose type names its readers, as [`Store::declare`] took it.
     rules: BTreeMap<String, tilo_actions::surface::ReaderRule>,
     /// The workspace's one read decision, for the reader fields the store places: given by the
@@ -2415,7 +2419,16 @@ impl Store {
     }
 
     /// Takes the types `schema` declares into those a peer's change is checked against.
-    pub fn declare(&mut self, schema: Schema) {
+    ///
+    /// A type's declaration only adds to the one the store holds of it: fields and containers
+    /// keep their names and kinds, so the records the earlier version wrote keep reading. A
+    /// declaration that drops, moves, renames or retypes one is refused, and the store keeps
+    /// what it holds.
+    ///
+    /// # Errors
+    /// What a newer version of a type drops, moves, renames or retypes.
+    pub fn declare(&mut self, schema: Schema) -> Result<(), String> {
+        self.refuses_evolution(&schema)?;
         // What the store holds of a kind whose rule it takes now is read as that rule says.
         let ruled: Vec<String> = schema
             .readers
@@ -2436,6 +2449,7 @@ impl Store {
                 live_kinds.push(ty.name.clone());
             }
             self.schema.types.retain(|held| held.name != ty.name);
+            self.types_by.insert(ty.name.clone(), schema.kind.clone());
             self.schema.types.push(ty);
         }
         // What the store held before a kind said when it is live is live from now on, and what
@@ -2480,6 +2494,29 @@ impl Store {
                 None => self.schema.verbs.push(verb),
             }
         }
+        Ok(())
+    }
+
+    /// Whether `schema`'s types may replace the ones the store holds: a type whose version rises
+    /// only adds to the one the same surface declared, since records the older version wrote
+    /// keep reading. Two apps' types of one name are unrelated, so only the type a surface's own
+    /// kind last declared is compared.
+    ///
+    /// # Errors
+    /// What a newer version of a type drops, moves, renames or retypes.
+    fn refuses_evolution(&self, schema: &Schema) -> Result<(), String> {
+        for ty in &schema.types {
+            if let Some(was) = self.schema.get(&ty.name)
+                && self
+                    .types_by
+                    .get(&ty.name)
+                    .is_some_and(|owner| *owner == schema.kind)
+                && ty.version > was.version
+            {
+                ty.adds_to(was)?;
+            }
+        }
+        Ok(())
     }
 
     /// Whether `received`, a founding of the record `id` of `kind`, is the one its kind and id

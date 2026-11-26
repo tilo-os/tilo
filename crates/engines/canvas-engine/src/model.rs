@@ -902,34 +902,6 @@ pub fn valid_group(group: &str) -> bool {
 
 impl Artwork {}
 
-/// Bring a document written when a mark's shape and style, a layer's
-/// adjustments and the ground were each stored as one JSON string up to the
-/// storage the artwork reads now.
-///
-/// Version 1 stored them whole, last writer wins: two people changing
-/// different fields of one mark (a fill and an opacity, a position and a
-/// width) overwrote each other. Version 2 stores each field on its own.
-/// [`retype_json`] reads an old string with its serde form, the form it was
-/// written with, so every value reads as it did.
-pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), tilo_resource::ModelError> {
-    use tilo_resource::evolution::{map_values, retype_json};
-    if from != 1 {
-        return Err(tilo_resource::ModelError::invalid(format!(
-            "no canvas migration from storage version {from}"
-        )));
-    }
-    let root = &tilo_ui::automerge::ROOT;
-    for (_, mark) in map_values(doc, root, "marks")? {
-        retype_json::<Shape>(doc, &mark, "shape")?;
-        retype_json::<Style>(doc, &mark, "style")?;
-    }
-    for (_, layer) in map_values(doc, root, "layers")? {
-        retype_json::<Option<Adjust>>(doc, &layer, "adjust")?;
-    }
-    retype_json::<Ground>(doc, root, "ground")?;
-    Ok(())
-}
-
 /// A valid id: 1–48 of `a-z`, `0-9`, `-` and `_`, so an agent can name a mark
 /// (`sun`, `tree-3`) and address it later.
 pub fn valid_id(id: &str) -> bool {

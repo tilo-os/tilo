@@ -589,7 +589,8 @@ LEGACY_API_BANS = {
         re.compile(r"\bJson\s*<"),
         "a value kept as one JSON string; give the field its model type (a struct or enum "
         "with #[derive(Model)], `Option`, `Vec`, a map), or `serde_json::Value` for JSON "
-        "another party shapes, and migrate stored ones with `evolution::retype_json`",
+        "another party shapes. A newer version of a type only adds fields and containers, "
+        "so a stored field is never retyped",
     ),
     "value_model_in_app": (
         re.compile(r"\bvalue_model\s*!"),

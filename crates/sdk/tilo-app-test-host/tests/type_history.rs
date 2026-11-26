@@ -5,6 +5,9 @@
 //!
 //! The app's own history machinery is the one under test: the same root,
 //! dispatch, storage and history verbs a person's window uses.
+//!
+//! A storage version only adds fields to a type, so a version written by a
+//! newer build of the app reads what this build knows of it.
 
 use serde_json::{Value, json};
 use tilo_app::automerge::transaction::Transactable as _;
@@ -130,25 +133,24 @@ tilo_test_env::scenario! {
         assert!(read_at(&mut app, &newest).is_ok());
     }
 
-    phase a_version_written_by_another_storage_schema_is_incompatible_not_empty;
+    phase a_version_written_by_a_newer_storage_schema_reads_what_this_build_knows;
     {
         let mut app = TestApp::<BoardApp>::new().unwrap();
         app.call("rename", json!({"title": "current"})).unwrap();
         // A member runs a newer build of the app and bumps the storage
-        // version; its change syncs here.
+        // version, adding a field beside the ones this build declares; its
+        // change syncs here.
         let mut peer = app.peer_document();
         peer.put(ROOT, VERSION_KEY, 9_u64).unwrap();
+        peer.put(ROOT, "from_the_future", "x").unwrap();
         peer.commit();
         app.merge_peer(&mut peer).unwrap();
         let version = newest(&app);
-        let refused = read_at(&mut app, &version).unwrap_err();
+        let read = read_at(&mut app, &version).expect("a newer version only adds");
+        assert_eq!(read["content"]["title"], "current");
         assert!(
-            refused.contains("newer version of the app"),
-            "a schema mismatch says so: {refused}"
-        );
-        assert!(
-            !refused.contains("could not find") && !refused.contains("not in this document"),
-            "it is not reported as a missing version: {refused}"
+            !read.to_string().contains(VERSION_KEY),
+            "the added field is not this build's: {read}"
         );
     }
 

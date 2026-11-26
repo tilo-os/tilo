@@ -139,26 +139,6 @@ impl Reply {
     }
 }
 
-/// Rewrite the paragraphs of every comment thread and answer in the
-/// collection `key` of `obj` as they are stored now: the migration of a
-/// record whose comments an older version stored with each mark's value and
-/// block attribute flat beside its variant's name
-/// ([`retype_variant_fields`](tilo_resource::evolution::retype_variant_fields)).
-pub fn store_bodies_by_variant(
-    doc: &mut tilo_resource::Doc,
-    obj: &automerge::ObjId,
-    key: &str,
-) -> Result<(), tilo_resource::ModelError> {
-    use tilo_resource::evolution::{collection_items, retype_variant_fields};
-    for comment in collection_items(doc, obj, key)? {
-        retype_variant_fields::<Vec<ClipBlock>>(doc, &comment, "body")?;
-        for reply in collection_items(doc, &comment, "replies")? {
-            retype_variant_fields::<Vec<ClipBlock>>(doc, &reply, "body")?;
-        }
-    }
-    Ok(())
-}
-
 /// `ms` after the Unix epoch as the ISO-8601 UTC time a comment is dated
 /// with, to the millisecond (`2026-10-09T13:08:01.250Z`).
 #[must_use]

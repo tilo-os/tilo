@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use tilo_resource::{
-    AppNamed, Collection, Id, Invoke, Model, ModelError, Refusal, Replica, SharedResource, resource,
+    AppNamed, Collection, Id, Invoke, Model, Refusal, Replica, SharedResource, resource,
 };
 
 use crate::{Account, AccountId, AccountTypeId};
@@ -86,50 +86,8 @@ pub struct AccountList {
     pub accounts: Collection<ListedAccount>,
 }
 
-/// Bring the workspace's accounts of an older version up to this one: what
-/// an account's connection settings are, and the account each member's
-/// window showed, which is their own preference now. Every account and every
-/// setting is kept.
-///
-/// # Errors
-/// Returns why a stored account's settings do not read as JSON.
-pub fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
-    use automerge::transaction::Transactable as _;
-    use tilo_resource::evolution::{collection_items, retype_json};
-    if from == 1 {
-        // Version 1 kept an account's connection settings as one JSON
-        // string; version 2 keeps the JSON value itself.
-        for account in collection_items(doc, &tilo_resource::__private::ROOT, "accounts")? {
-            retype_json::<serde_json::Value>(doc, &account, "config")?;
-        }
-    } else if from == 3 {
-        // Version 4 adds each account's sync, which an older account has
-        // not reported yet.
-        return Ok(());
-    } else if from != 2 {
-        return Err(ModelError::invalid(format!(
-            "no accounts migration from {from}"
-        )));
-    }
-    // Version 2 also kept, per account type, the account a window showed:
-    // one member's choice, which changed for every member. It is gone, and
-    // each member's Mail preferences keep their own.
-    doc.delete(&tilo_resource::__private::ROOT, "active")?;
-    Ok(())
-}
-
-impl AccountList {
-    /// The kind its record is of, for a crate that names the record without the resource model.
-    #[must_use]
-    pub fn kind() -> &'static str {
-        <Self as tilo_resource::Resource>::KIND
-    }
-}
-
 #[resource(
     kind = "tilo.accounts",
-    version = 4,
-    migrate = upgrade,
     read_content = tilo_resource::read::fields
 )]
 impl AccountList {
@@ -609,128 +567,6 @@ mod tests {
     use super::*;
     use tilo_resource::AppNamed;
     use tilo_resource::Replica;
-
-    /// The workspace's accounts as version 1 kept them, each account's
-    /// connection settings one JSON string, open with every account and
-    /// every setting as it was.
-    #[test]
-    fn accounts_of_version_one_keep_every_account_and_setting() {
-        use tilo_resource::{Slot, evolution};
-        let root = tilo_resource::__private::ROOT;
-        let config = serde_json::json!({
-            "host": "imap.example",
-            "port": 993,
-            "tls": true,
-            "folders": ["INBOX", "Sent"],
-        });
-        let mut replica = Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
-        let doc = replica.doc_mut();
-        evolution::fixture(
-            doc,
-            &root,
-            &serde_json::json!({
-                "accounts": {
-                    "mail-1": {
-                        "k": "a",
-                        "v": {
-                            "type_id": {"$text": "email"},
-                            "display_name": {"$text": "Work"},
-                            "config": config.to_string(),
-                            "enabled": true,
-                            "tint": 3,
-                        },
-                    },
-                    "dav-1": {
-                        "k": "b",
-                        "v": {
-                            "type_id": {"$text": "caldav"},
-                            "display_name": {"$text": "Calendar"},
-                            "config": "null",
-                            "enabled": false,
-                            "tint": 0,
-                        },
-                    },
-                },
-                "active": {"email": {"$text": "mail-1"}},
-            }),
-        )
-        .unwrap();
-        Slot::Key(&root, evolution::VERSION_KEY)
-            .put_scalar(doc, tilo_resource::__private::ScalarValue::Uint(1))
-            .unwrap();
-        doc.commit();
-        let mut old = doc.fork();
-        assert!(
-            tilo_resource::founding::bring_up_resource::<AccountList>("record", &mut old)
-            .unwrap()
-        );
-        let accounts = evolution::read_checked::<AccountList>(&old).unwrap();
-        assert_eq!(accounts.accounts.len(), 2);
-        let mail = accounts.accounts.get(&Id::from_raw("mail-1")).unwrap();
-        assert_eq!(mail.type_id, "email");
-        assert_eq!(mail.display_name, "Work");
-        assert_eq!(mail.config, config);
-        assert!(mail.enabled);
-        assert_eq!(mail.tint, 3);
-        let dav = accounts.accounts.get(&Id::from_raw("dav-1")).unwrap();
-        assert_eq!(dav.config, serde_json::Value::Null);
-        assert!(
-            evolution::map_at(&old, &root, "active").unwrap().is_none(),
-            "the account a window showed is each member's preference now"
-        );
-        assert_eq!(accounts.account("mail-1").unwrap().config["port"], 993);
-    }
-
-    /// The workspace's accounts as version 2 kept them: each account's
-    /// connection settings the JSON value itself, and the account a window
-    /// showed per type. Each account and setting stays; the shown account
-    /// is gone, each member's Mail preferences keeping their own.
-    #[test]
-    fn accounts_of_version_two_keep_every_account_and_setting() {
-        use tilo_resource::{Slot, evolution};
-        let root = tilo_resource::__private::ROOT;
-        let config = serde_json::json!({"host": "imap.example", "port": 993});
-        let mut replica = Replica::<AccountList>::new().in_app("so.tilo.model", "Model");
-        let doc = replica.doc_mut();
-        evolution::fixture(
-            doc,
-            &root,
-            &serde_json::json!({
-                "accounts": {
-                    "mail-1": {
-                        "k": "a",
-                        "v": {
-                            "type_id": {"$text": "email"},
-                            "display_name": {"$text": "Work"},
-                            "config": config,
-                            "enabled": true,
-                            "tint": 3,
-                        },
-                    },
-                },
-                "active": {"email": {"$text": "mail-1"}},
-            }),
-        )
-        .unwrap();
-        Slot::Key(&root, evolution::VERSION_KEY)
-            .put_scalar(doc, tilo_resource::__private::ScalarValue::Uint(2))
-            .unwrap();
-        doc.commit();
-        let mut old = doc.fork();
-        assert!(
-            tilo_resource::founding::bring_up_resource::<AccountList>("record", &mut old)
-            .unwrap()
-        );
-        assert_eq!(evolution::stored_version(&old), 4);
-        let accounts = evolution::read_checked::<AccountList>(&old).unwrap();
-        assert_eq!(accounts.accounts.len(), 1);
-        let mail = accounts.accounts.get(&Id::from_raw("mail-1")).unwrap();
-        assert_eq!(mail.config, config);
-        assert!(
-            evolution::map_at(&old, &root, "active").unwrap().is_none(),
-            "the shown account is each member's preference now"
-        );
-    }
 
     #[test]
     fn browser_picker_projects_settings_accounts_without_crossing_identity_or_origin() {

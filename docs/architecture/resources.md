@@ -59,7 +59,7 @@ want, not only for the value you hold.
 | `Reactions` | map of each reaction, keyed by emoji and who reacted | per person and emoji; changed only by `react`/`unreact`, which record whoever invokes them |
 | `Outbox<T>` | queue of entries settled by the owning device | see §2.4 |
 | `Option<T>`, `Box<T>`, nested `Model` structs | as the inner type | as the inner type |
-| enum with fields (`#[derive(Model)]`) | map: the variant's name under `$variant`, each field under a key of its variant (`$field/<variant>/<field>`) | per field of one variant; a change of variant is last writer wins, and a variant never reads a field another one wrote; a document of the older flat layout reads as written, and a resource migrates it with `evolution::retype_variant_fields` |
+| enum with fields (`#[derive(Model)]`) | map: the variant's name under `$variant`, each field under a key of its variant (`$field/<variant>/<field>`) | per field of one variant; a change of variant is last writer wins, and a variant never reads a field another one wrote; a newer version of the type only adds fields and containers, so a document keeps the layout it was written with |
 | `serde_json::Value` | an object as a map, an array as a list, everything else a scalar | per key of an object, by position in an array; only for JSON another party shapes (an account type's settings, a binding's literal value, a parameter's JSON Schema) |
 
 A type with a layout the table does not cover implements `Model` by hand. That
@@ -693,11 +693,10 @@ of an example: there is no ceiling to raise. What to write instead:
   that is genuinely opaque — written whole, never merged, such as a retained
   import tree compared whole on retry — implements `Model` through
   `json_model!` with a comment saying why.
-- **A document change** is a field edit or a verb. A migration
-  (`#[resource(version, migrate)]`) and a test's fixture of an older shape
-  write through the model's storage helpers: `write_key`, `Slot`,
-  `evolution::retype_json` (an old JSON-string field rewritten as its model
-  type), `evolution::collection_items` and `evolution::fixture`.
+- **A document change** is a field edit or a verb. A newer version of a type
+  only adds fields and containers, so a derived version step writes the
+  additions the model stores empty through its storage helpers (`write_key`,
+  `Slot`), and a test's fixture builds a record with `evolution::fixture`.
 
 Three apps act on other apps' published actions as data rather than through a
 resource of their own: the agent (it plans and invokes what the broker's

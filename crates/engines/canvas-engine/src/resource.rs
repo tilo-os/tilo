@@ -705,8 +705,6 @@ impl Artwork {
     search = Artwork::entries,
     answer = crate::answer::answer,
     effects = ViewOp,
-    version = 2,
-    migrate = crate::model::upgrade,
     read_content = Artwork::read_document
 )]
 impl Artwork {

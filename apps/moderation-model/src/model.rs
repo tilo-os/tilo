@@ -1,10 +1,9 @@
 //! A workspace's moderation reports and decisions. Chat owns the record.
 //! The workspace's grants decide who can report, decide or overturn a decision.
 
-use automerge::ObjId;
 use serde::{Deserialize, Serialize};
 use tilo_resource::{
-    self, ActionCx, Id, Identified, JsonSchema, Keyed, MemberId, Model, ModelError, NonBlank,
+    self, ActionCx, Id, Identified, JsonSchema, Keyed, MemberId, Model, NonBlank,
     Refusal, resource,
 };
 
@@ -168,22 +167,6 @@ fn id_like(value: &str, what: &str) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// Rewrite the decisions of the moderation resource stored at `moderation` from before a
-/// decision's reports and take-backs were model values (each one JSON string) into the
-/// shape they are stored in now: a list of report ids and a list of take-backs.
-///
-/// # Errors Returns why a stored value does not read as its new type.
-pub fn upgrade_decisions(
-    doc: &mut tilo_resource::Doc,
-    moderation: &ObjId,
-) -> Result<(), ModelError> {
-    for (_, decision) in tilo_resource::evolution::map_values(doc, moderation, "decisions")? {
-        tilo_resource::evolution::retype_json::<Vec<String>>(doc, &decision, "reports")?;
-        tilo_resource::evolution::retype_json::<Vec<Reverted>>(doc, &decision, "reverted")?;
-    }
-    Ok(())
-}
-
 impl Moderation {
     /// What the resource holds: the reports made and the decisions taken on them.
     pub fn read_document(
@@ -255,22 +238,9 @@ impl Moderation {
     kind = "tilo.moderation",
     app = "so.tilo.chat",
     params = moderation,
-    version = 2,
-    migrate = Moderation::upgrade,
     read_content = Moderation::read_document
 )]
 impl Moderation {
-    /// Bring a moderation resource of version 1 up to this one: its decisions' reports and
-    /// take-backs become model values ([`upgrade_decisions`]).
-    fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
-        if from != 1 {
-            return Err(ModelError::invalid(format!(
-                "no moderation migration from {from}"
-            )));
-        }
-        upgrade_decisions(doc, &automerge::ROOT)
-    }
-
     /// Report message.
     ///
     /// Tells the workspace's moderators that this message, and its author,

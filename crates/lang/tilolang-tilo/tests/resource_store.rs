@@ -29,7 +29,9 @@ impl Declared {
         let mut store = tilo_resource_store::Store::new();
         for file in surfaces {
             for surface in &file.resources {
-                store.declare(tilo_resource_store::Schema::from_surface(surface));
+                store
+                    .declare(tilo_resource_store::Schema::from_surface(surface))
+                    .unwrap();
             }
         }
         Self(std::cell::RefCell::new(store))

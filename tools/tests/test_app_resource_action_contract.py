@@ -1572,7 +1572,7 @@ class AppResourceActionContractTests(unittest.TestCase):
                 "fn g() { let a = Notes::RENAME.on(\"notes\"); let b = resource.action_address(\"open\"); }\n"
                 "#[derive(Model)] pub struct Account { pub config: serde_json::Value }\n"
                 "fn h(input: PendingInput) { if let PendingInput::Json(text) = input {} }\n"
-                "// a field that was `Json<T>` moves with `evolution::retype_json`\n"
+                "// a newer type version only adds fields and containers, never retypes one\n"
             )
             self.assertEqual(banned(new), [])
 

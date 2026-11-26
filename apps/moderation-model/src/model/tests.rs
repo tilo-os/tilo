@@ -182,57 +182,6 @@ fn deciding_and_overturning_sit_under_the_moderation_node() {
     assert_eq!(field("report-person"), None);
 }
 
-/// A moderation resource from before a decision's reports and take-backs were model values:
-/// each was one JSON string.
-#[test]
-fn a_decision_kept_as_json_strings_migrates_to_lists() {
-    use tilo_resource::evolution;
-    let mut doc = tilo_resource::Doc::new();
-    evolution::fixture(
-        &mut doc,
-        &automerge::ROOT,
-        &serde_json::json!({
-            "reports": {},
-            "decisions": {
-                "d1": {
-                    "id": "d1",
-                    "person": r#"{"person":"bob"}"#,
-                    "reports": r#"["r1","r2"]"#,
-                    "outcome": "ban",
-                    "reasoning": "spam in every channel",
-                    "model": "",
-                    "reverted": r#"[{"app":"so.tilo.chat","record":"","run":"run-1","changes":3}]"#,
-                    "by": r#"{"person":"mod"}"#,
-                    "at_ms": 5,
-                },
-            },
-        }),
-    )
-    .unwrap();
-    assert!(
-        evolution::read_checked::<Moderation>(&doc).is_err(),
-        "unmigrated"
-    );
-    assert!(
-        tilo_resource::founding::bring_up_resource::<Moderation>("record", &mut doc)
-        .unwrap()
-    );
-    let moderation = evolution::read_checked::<Moderation>(&doc).unwrap();
-    let decision = moderation.decisions.iter().next().unwrap();
-    assert_eq!(decision.reports, ["r1", "r2"]);
-    assert_eq!(
-        decision.reverted,
-        [Reverted {
-            app: "so.tilo.chat".into(),
-            record: String::new(),
-            run: "run-1".into(),
-            changes: 3,
-        }]
-    );
-    assert_eq!(decision.outcome, Outcome::Ban);
-    assert_eq!(decision.reasoning, "spam in every channel");
-}
-
 #[test]
 fn a_moderator_can_reconsider_a_report_after_the_bot_looked_at_it() {
     let mut ada = Replica::<Moderation>::new()

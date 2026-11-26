@@ -1,10 +1,8 @@
 //! An enum whose variants carry fields is a model type: stored as a map
-//! naming its variant, its fields stored by variant, merged field by field,
-//! and migrated from the shapes older versions stored.
+//! naming its variant, its fields stored by variant, merged field by field.
 
 use automerge::ReadDoc;
-use tilo_resource::evolution;
-use tilo_resource::{Invoke, Model, ModelError, Replica, Resource, VARIANT_KEY, resource};
+use tilo_resource::{Invoke, Model, Replica, Resource, VARIANT_KEY, resource};
 
 #[derive(Model, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Matcher {
@@ -109,7 +107,7 @@ impl Card {
     }
 }
 
-#[resource(kind = "test.rules", version = 3, migrate = Rules::upgrade, catalogue = "tests/locales")]
+#[resource(kind = "test.rules", catalogue = "tests/locales")]
 impl Rules {
     /// Match a host.
     #[action]
@@ -139,30 +137,10 @@ impl Rules {
         }
     }
 
-    fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
-        match from {
-            // Each value was one JSON string.
-            1 => {
-                evolution::retype_json::<Option<Matcher>>(doc, &automerge::ROOT, "matcher")?;
-                evolution::retype_json::<Vec<Matcher>>(doc, &automerge::ROOT, "all")?;
-            }
-            // A variant's fields were flat, beside its name.
-            2 => {
-                evolution::retype_variant_fields::<Option<Matcher>>(
-                    doc,
-                    &automerge::ROOT,
-                    "matcher",
-                )?;
-                evolution::retype_variant_fields::<Vec<Matcher>>(doc, &automerge::ROOT, "all")?;
-            }
-            _ => return Err(ModelError::invalid(format!("no migration from {from}"))),
-        }
-        Ok(())
-    }
 }
 
 tilo_test_env::scenario! {
-    fn a_data_enum_stores_merges_and_migrates_by_variant;
+    fn a_data_enum_stores_and_merges_by_variant;
 
     phase a_data_enum_round_trips_through_the_document_and_json;
     {
@@ -239,28 +217,6 @@ tilo_test_env::scenario! {
         assert_eq!(
             replica.state().unwrap().matcher,
             Some(Matcher::Path("/b".into()))
-        );
-    }
-
-    phase a_json_field_of_the_old_shape_migrates_to_the_data_enum;
-    {
-        let mut doc = old_document();
-        assert!(
-            evolution::read_checked::<Rules>(&doc).is_err(),
-            "unmigrated"
-        );
-        assert!(crate::bring_up::<Rules>(&mut doc));
-        let rules = evolution::read_checked::<Rules>(&doc).unwrap();
-        assert_eq!(
-            rules.matcher,
-            Some(Matcher::Host {
-                name: "old.example".into(),
-                port: 22,
-            })
-        );
-        assert_eq!(
-            rules.all,
-            vec![Matcher::Anything, Matcher::Path("/x".into())]
         );
     }
 
@@ -354,85 +310,5 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_flat_variant_reads_as_written_and_migrates_to_fields_by_variant;
-    // A document of the flat layout reads as it was written, and its migration
-    // stores each field by its variant, reading what the document holds.
-    {
-        let read = |doc: &tilo_resource::Doc| {
-            (
-                tilo_resource::read_key::<Option<Matcher>>(doc, &automerge::ROOT, "matcher").unwrap(),
-                tilo_resource::read_key::<Vec<Matcher>>(doc, &automerge::ROOT, "all").unwrap(),
-            )
-        };
-        let held = (
-            Some(Matcher::Host {
-                name: "flat.example".into(),
-                port: 2222,
-            }),
-            vec![Matcher::Anything, Matcher::Path("/y".into())],
-        );
-        let mut doc = version_two_document();
-        assert_eq!(read(&doc), held, "the flat fields are the variant's");
-        assert!(
-            evolution::read_checked::<Rules>(&doc).is_err(),
-            "unmigrated"
-        );
 
-        assert!(crate::bring_up::<Rules>(&mut doc));
-        assert_eq!(evolution::stored_version(&doc), 3);
-        assert_eq!(read(&doc), held, "the value is what it was");
-        let rules = evolution::read_checked::<Rules>(&doc).unwrap();
-        assert_eq!((rules.matcher, rules.all), held);
-        let (_, stored) = doc.get(automerge::ROOT, "matcher").unwrap().unwrap();
-        let mut keys: Vec<String> = doc.keys(&stored).collect();
-        keys.sort();
-        assert_eq!(
-            keys,
-            vec![
-                "$field/host/name".to_owned(),
-                "$field/host/port".to_owned(),
-                VARIANT_KEY.to_owned(),
-            ],
-            "stored by variant, the flat keys gone"
-        );
-    }
-}
-
-/// The old shape: each field one JSON string, as a field of JSON text stored it.
-fn old_document() -> tilo_resource::Doc {
-    let mut doc = tilo_resource::Doc::new();
-    let matcher = serde_json::to_string(&Some(Matcher::Host {
-        name: "old.example".into(),
-        port: 22,
-    }))
-    .unwrap();
-    let all = serde_json::to_string(&vec![Matcher::Anything, Matcher::Path("/x".into())]).unwrap();
-    tilo_resource::write_key(
-        &mut doc,
-        &automerge::ROOT,
-        "matcher",
-        &tilo_resource::Atom(matcher),
-    )
-    .unwrap();
-    tilo_resource::write_key(&mut doc, &automerge::ROOT, "all", &tilo_resource::Atom(all)).unwrap();
-    doc.commit();
-    doc
-}
-
-/// A document of the layout version 2 wrote: a variant's name under
-/// `$variant`, and its fields flat beside it.
-fn version_two_document() -> tilo_resource::Doc {
-    let mut doc = tilo_resource::Doc::new();
-    evolution::fixture(
-        &mut doc,
-        &automerge::ROOT,
-        &serde_json::json!({
-            "matcher": { VARIANT_KEY: "host", "name": {"$text": "flat.example"}, "port": 2222 },
-            "all": [{ VARIANT_KEY: "anything" }, { VARIANT_KEY: "path", "0": {"$text": "/y"} }],
-            (evolution::VERSION_KEY): 2,
-        }),
-    )
-    .unwrap();
-    doc.commit();
-    doc
 }

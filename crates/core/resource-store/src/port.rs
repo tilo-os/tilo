@@ -284,7 +284,10 @@ impl LocalPort {
 
 impl Port for LocalPort {
     fn declare(&self, schema: Schema) {
-        self.store.borrow_mut().declare(schema);
+        // A local store keeps the types of the surfaces its own process names. A refusal is a
+        // new version that drops what an older one holds: the store keeps the type it has, and
+        // the workspace's store, which declares the surfaces, says why.
+        let _ = self.store.borrow_mut().declare(schema);
     }
 
     fn set_record_reader(&self, reader: std::sync::Arc<dyn crate::RecordReader>) {

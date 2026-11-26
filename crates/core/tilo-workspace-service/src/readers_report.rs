@@ -124,10 +124,13 @@ fn surface_files(
 }
 
 /// The types and rules the surfaces in `surfaces` declare, as a store declares them before it
-/// places a write: each given to `declare`.
+/// places a write: each given to `declare`. A type whose version does not only add to the one
+/// the store holds is refused, and the store keeps the type it has.
 pub(crate) fn declare_surfaces(store: &mut Store, surfaces: &[tilo_actions::surface::Surface]) {
     for surface in surfaces {
-        store.declare(tilo_resource_store::Schema::from_surface(surface));
+        if let Err(error) = store.declare(tilo_resource_store::Schema::from_surface(surface)) {
+            tracing::error!(%error, "the store keeps the type its surface declared before");
+        }
     }
 }
 
@@ -146,31 +149,33 @@ mod tests {
     /// `ada` where every member reads them, as a workspace written before its type did.
     fn misplaced_drafts() -> Store {
         let mut store = Store::new();
-        store.declare(Schema {
-            types: vec![Type {
-                name: DRAFT.to_owned(),
-                fields: vec![
-                    Field {
-                        name: "subject".to_owned(),
-                        kind: FieldKind::Scalar,
-                        value: tilo_resource_store::Expected::Any,
-                        optional: true,
-                    },
-                    Field {
-                        name: "sent".to_owned(),
-                        kind: FieldKind::Scalar,
-                        value: tilo_resource_store::Expected::Any,
-                        optional: true,
-                    },
-                ],
-                nested: Vec::new(),
-                live: None,
-                founding: Vec::new(),
-                origin: None,
-                version: 1,
-            }],
-            ..Schema::default()
-        });
+        store
+            .declare(Schema {
+                types: vec![Type {
+                    name: DRAFT.to_owned(),
+                    fields: vec![
+                        Field {
+                            name: "subject".to_owned(),
+                            kind: FieldKind::Scalar,
+                            value: tilo_resource_store::Expected::Any,
+                            optional: true,
+                        },
+                        Field {
+                            name: "sent".to_owned(),
+                            kind: FieldKind::Scalar,
+                            value: tilo_resource_store::Expected::Any,
+                            optional: true,
+                        },
+                    ],
+                    nested: Vec::new(),
+                    live: None,
+                    founding: Vec::new(),
+                    origin: None,
+                    version: 1,
+                }],
+                ..Schema::default()
+            })
+            .expect("the first declaration of the draft is taken");
         let stamp = tilo_resource_store::Stamp {
             verb: "type".to_owned(),
             invoker: "ada".to_owned(),
@@ -202,16 +207,18 @@ mod tests {
         }
         // Its type names its readers now: the two unsent drafts sit where the rule does not
         // place them, and the sent one is every member's, as its rule says.
-        store.declare(Schema {
-            types: Vec::new(),
-            readers: BTreeMap::from([(
-                DRAFT.to_owned(),
-                ReaderRule::Author {
-                    until: Some("sent".to_owned()),
-                },
-            )]),
-            ..Schema::default()
-        });
+        store
+            .declare(Schema {
+                types: Vec::new(),
+                readers: BTreeMap::from([(
+                    DRAFT.to_owned(),
+                    ReaderRule::Author {
+                        until: Some("sent".to_owned()),
+                    },
+                )]),
+                ..Schema::default()
+            })
+            .expect("the rule is declared beside the type");
         store
     }
 

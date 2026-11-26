@@ -34,7 +34,9 @@ impl Workspaces {
         let store = || {
             let mut store = Store::new();
             for resource in &surface.resources {
-                store.declare(Schema::from_surface(resource));
+                store
+                    .declare(Schema::from_surface(resource))
+                    .expect("the settings' types evolve only by adding");
             }
             store
         };

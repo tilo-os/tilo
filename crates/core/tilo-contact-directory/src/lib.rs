@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::{
-    Collection, Id, JsonSchema, Model, ModelError, Refusal, SharedResource, resource,
+    Collection, Id, JsonSchema, Model, Refusal, SharedResource, resource,
 };
 
 /// How many people one projection may carry, so a large imported book stays one
@@ -77,38 +77,8 @@ pub struct Endpoint {
     pub removed: bool,
 }
 
-/// Bring the person `obj` of a version 1 directory up to this one: their phone and
-/// mail hints were one JSON string each, and are lists now.
-///
-/// # Errors
-///
-/// Why a stored list of hints does not read as one.
-pub fn upgrade_person(
-    doc: &mut tilo_resource::Doc,
-    obj: &automerge::ObjId,
-) -> Result<(), ModelError> {
-    tilo_resource::evolution::retype_json::<Vec<String>>(doc, obj, "phones")?;
-    tilo_resource::evolution::retype_json::<Vec<String>>(doc, obj, "emails")?;
-    Ok(())
-}
-
-/// Bring a version 1 directory up to this one ([`upgrade_person`]).
-fn upgrade(doc: &mut tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
-    if from != 1 {
-        return Err(ModelError::invalid(format!(
-            "no contact directory migration from {from}"
-        )));
-    }
-    for person in tilo_resource::evolution::collection_items(doc, &automerge::ROOT, "people")? {
-        upgrade_person(doc, &person)?;
-    }
-    Ok(())
-}
-
 #[resource(
     kind = "tilo.contacts.identities",
-    version = 2,
-    migrate = upgrade,
     read_content = tilo_resource::read::fields
 )]
 impl ContactDirectory {

@@ -146,11 +146,11 @@ impl Workspace {
             .get(tilo_resource_store::reference::KIND)
             .is_none()
         {
-            store.declare(tilo_resource_store::reference::schema());
+            let _ = store.declare(tilo_resource_store::reference::schema());
         }
         for file in collab_types::app_surface::every() {
             for surface in &file.resources {
-                store.declare(tilo_resource_store::Schema::from_surface(surface));
+                let _ = store.declare(tilo_resource_store::Schema::from_surface(surface));
             }
         }
     }

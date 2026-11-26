@@ -1,4 +1,3 @@
-use automerge::ReadDoc;
 use automerge::transaction::Transactable;
 use tilo_resource::evolution::{self, VERSION_KEY};
 use tilo_resource::{ActionKind, Model, ModelError, Outbox, Reader, Replica, Resource, resource};
@@ -53,7 +52,7 @@ impl Contact {
         let (given, family) = name.split_once(' ').unwrap_or((&name, ""));
         tilo_resource::write_key(doc, &automerge::ROOT, "given", &given.to_owned())?;
         tilo_resource::write_key(doc, &automerge::ROOT, "family", &family.to_owned())?;
-        doc.delete(automerge::ROOT, "name")?;
+        // The field the older version wrote stays: a version only adds fields.
         Ok(())
     }
 }
@@ -109,9 +108,12 @@ tilo_test_env::scenario! {
         let snapshot = doc.fork_at(&before).unwrap();
         assert_eq!(evolution::stored_version(&snapshot), 1);
         assert_eq!(ContactV1::read(&snapshot).unwrap().name, "Ada Lovelace");
-        // The build that wrote it refuses the migrated document rather than
-        // reading it as its own.
-        assert!(evolution::read_checked::<ContactV1>(&doc).is_err());
+        // The build that wrote it reads the field it knows from the migrated
+        // document too: a newer version only added to the type.
+        assert_eq!(
+            evolution::read_checked::<ContactV1>(&doc).unwrap().name,
+            "Ada Lovelace"
+        );
     }
 
     phase two_devices_migrating_concurrently_make_the_same_change;
@@ -126,11 +128,14 @@ tilo_test_env::scenario! {
         assert_eq!(Contact::read(&left).unwrap().given, "Ada");
     }
 
-    phase a_document_from_a_newer_app_is_unreadable;
+    phase a_document_from_a_newer_app_reads_what_this_build_knows;
     {
         let mut replica = Replica::<Contact>::new().in_app("so.tilo.model", "Model");
         assert_eq!(evolution::stored_version(replica.doc()), 2);
         let mut reader = Reader::<Contact>::open(replica.doc_mut()).unwrap();
+        // A newer version of a type only adds to it: this build's fields are all still there,
+        // and it reads them while the field the newer version added waits for a build that
+        // declares it.
         replica
             .doc_mut()
             .put(
@@ -139,18 +144,14 @@ tilo_test_env::scenario! {
                 automerge::ScalarValue::Uint(3),
             )
             .unwrap();
+        replica
+            .doc_mut()
+            .put(automerge::ROOT, "from_the_future", "x")
+            .unwrap();
         replica.doc_mut().commit();
-        assert!(reader.sync(replica.doc()).is_err());
-        let unreadable = reader.unreadable().unwrap();
-        assert_eq!((unreadable.stored, unreadable.expected), (3, 2));
-        assert!(unreadable.reason.contains("newer version"), "{unreadable}");
-        assert!(
-            replica
-                .doc()
-                .get(automerge::ROOT, "given")
-                .unwrap()
-                .is_some()
-        );
+        assert!(reader.sync(replica.doc()).is_ok());
+        assert!(reader.unreadable().is_none());
+        assert_eq!(reader.state().given, "");
     }
 }
 

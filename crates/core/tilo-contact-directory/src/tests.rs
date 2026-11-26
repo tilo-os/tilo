@@ -417,31 +417,6 @@ fn conflicting_confirmations_on_two_devices_converge_and_route_to_nobody() {
     assert!(routes(&state, &second(), "signal", &senders).is_empty());
 }
 
-#[test]
-fn legacy_person_records_load_without_email_hints_or_identity_changes() {
-    use tilo_resource::{Doc, Fields};
-    // A person from before mail hints, their phone hints one JSON string.
-    let mut doc = Doc::new();
-    tilo_resource::evolution::fixture(
-        &mut doc,
-        &tilo_resource::__private::ROOT,
-        &tilo_resource::__private::serde_json::json!({
-            "label": "Alex",
-            "removed": false,
-            "phones": r#"["+12025550123"]"#,
-            "endpoints": {},
-        }),
-    )
-    .expect("legacy record writes");
-    super::upgrade_person(&mut doc, &tilo_resource::__private::ROOT).expect("migrates");
-    let person = super::Person::read_fields(&doc, &tilo_resource::__private::ROOT)
-        .expect("the migrated record reads");
-    assert_eq!(person.label, "Alex");
-    assert_eq!(person.phones, ["+12025550123"]);
-    assert!(person.emails.is_empty());
-    assert!(person.endpoints.is_empty());
-}
-
 /// One projection of many people is what projecting each of them alone
 /// is: labels and hints land, a deleted person stays deleted, and the
 /// removed are tombstoned.

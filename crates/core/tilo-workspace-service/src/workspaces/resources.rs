@@ -809,7 +809,7 @@ impl HostedWorkspace {
                 .get(tilo_resource_store::reference::KIND)
                 .is_none()
             {
-                store.declare(tilo_resource_store::reference::schema());
+                let _ = store.declare(tilo_resource_store::reference::schema());
             }
         }
         if self.resources.declared != named {
@@ -817,7 +817,9 @@ impl HostedWorkspace {
             {
                 let mut store = self.resources.store_mut();
                 for (app, surface) in surfaces.resources() {
-                    store.declare(Schema::of_app(&app, &surface));
+                    if let Err(error) = store.declare(Schema::of_app(&app, &surface)) {
+                        tracing::error!(%error, "the store keeps the type its surface declared before");
+                    }
                 }
             }
             // A type that says when it is live lists what the store held before it said so.

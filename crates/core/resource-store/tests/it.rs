@@ -781,8 +781,9 @@ fn a_surface_declares_types_their_indexed_fields_and_what_nests_in_them() {
 // app declares.
 #[test]
 fn a_store_keeps_what_each_app_declares_its_actions_as() {
+    use tilo_actions::ActionKind;
     let mut store = tilo_resource_store::Store::new();
-    store.declare(Schema::of_app("so.tilo.tasks", &tracker_surface()));
+    store.declare(Schema::of_app("so.tilo.tasks", &tracker_surface())).unwrap();
     let notes: tilo_actions::surface::Surface = toml_like(serde_json::json!({
         "kind": "notes.note",
         "label": "Note",
@@ -792,7 +793,7 @@ fn a_store_keeps_what_each_app_declares_its_actions_as() {
             {"id": "q7k2", "name": "peek", "kind": "read"},
         ],
     }));
-    store.declare(Schema::of_app("so.tilo.notes", &notes));
+    store.declare(Schema::of_app("so.tilo.notes", &notes)).unwrap();
     let declared = |app: &str, action: &str| store.schema().declared_kind(app, action);
     assert_eq!(
         declared("so.tilo.tasks", "rename"),
@@ -820,6 +821,64 @@ fn a_store_keeps_what_each_app_declares_its_actions_as() {
         Schema::from_surface(&notes).declared_kind("so.tilo.notes", "peek"),
         None,
         "a surface no app named declares nothing a call is judged by"
+    );
+}
+
+/// A type's newer version only adds fields and containers: one that drops, renames, moves or
+/// retypes what an older version declares is refused, and the store keeps the older type.
+#[test]
+fn a_type_version_only_adds_fields_and_containers() {
+    use tilo_actions::surface::Surface;
+    // `tracker_surface` at version 2, as `edit` changes it.
+    let later = |edit: fn(&mut serde_json::Value)| {
+        let mut surface = serde_json::to_value(tracker_surface()).expect("a surface");
+        surface["version"] = 2.into();
+        edit(&mut surface);
+        toml_like(surface)
+    };
+    let refused = |store: &mut tilo_resource_store::Store, surface: &Surface| {
+        store
+            .declare(Schema::from_surface(surface))
+            .expect_err("a version that does not only add is refused")
+    };
+    let mut store = tilo_resource_store::Store::new();
+    store
+        .declare(Schema::from_surface(&tracker_surface()))
+        .expect("the first version is declared");
+
+    let dropped = later(|surface| {
+        surface["types"][0]["fields"]
+            .as_array_mut()
+            .expect("the tracker's fields")
+            .retain(|field| field["name"] != "name");
+    });
+    assert!(refused(&mut store, &dropped).contains("drops the field `name`"));
+    let retyped = later(|surface| surface["types"][0]["fields"][0]["type"] = "int".into());
+    assert!(refused(&mut store, &retyped).contains("retypes the field `name`"));
+    let moved = later(|surface| surface["types"][0]["fields"][1]["name"] = "rows".into());
+    assert!(refused(&mut store, &moved).contains("no longer nests `Issue` in `issues`"));
+    assert!(
+        store
+            .schema()
+            .get("Tracker")
+            .is_some_and(|tracker| tracker.field("name").is_some()),
+        "the store keeps the type the first version declared"
+    );
+
+    let added = later(|surface| {
+        surface["types"][0]["fields"]
+            .as_array_mut()
+            .expect("the tracker's fields")
+            .push(serde_json::json!({"name": "due", "type": {"option": "date"}}));
+    });
+    store
+        .declare(Schema::from_surface(&added))
+        .expect("a version that only adds is declared");
+    assert!(
+        store
+            .schema()
+            .get("Tracker")
+            .is_some_and(|tracker| tracker.field("due").is_some())
     );
 }
 
@@ -1113,7 +1172,7 @@ mod store {
                 version: 1,
             }],
             ..Schema::default()
-        });
+        }).unwrap();
         store
     }
 
@@ -1131,7 +1190,7 @@ mod store {
                 ..tilo_resource_store::Verb::default()
             }],
             ..Schema::default()
-        });
+        }).unwrap();
         store
     }
 
@@ -1152,7 +1211,7 @@ mod store {
                 ..tilo_resource_store::Verb::default()
             }],
             ..Schema::default()
-        });
+        }).unwrap();
         store
     }
 
@@ -1287,7 +1346,7 @@ mod store {
                 version: 1,
             }],
             ..Schema::default()
-        });
+        }).unwrap();
         let on = |device: &str, name: &str, at: &str| Stamp {
             device: device.to_owned(),
             device_name: name.to_owned(),
@@ -2582,7 +2641,7 @@ mod store {
             super::tilolang_todo_surface(),
             super::tilolang_comment_surface(),
         ] {
-            there.declare(Schema::from_surface(&surface));
+            there.declare(Schema::from_surface(&surface)).unwrap();
         }
         let anyone = |_: &Proposal<'_>| true;
         let item = |order: &str| Resource {
@@ -2643,7 +2702,7 @@ mod store {
             super::tilolang_todo_surface(),
             super::tilolang_item_surface(),
         ] {
-            there.declare(Schema::from_surface(&surface));
+            there.declare(Schema::from_surface(&surface)).unwrap();
         }
         let anyone = |_: &Proposal<'_>| true;
         let named = |field: &str| Resource {
@@ -2680,8 +2739,8 @@ mod store {
     #[test]
     fn a_change_writes_the_platform_field_no_type_declares() {
         let mut there = issues();
-        there.declare(Schema::from_surface(&super::tilolang_surface()));
-        there.declare(Schema::from_surface(&super::tilolang_item_surface()));
+        there.declare(Schema::from_surface(&super::tilolang_surface())).unwrap();
+        there.declare(Schema::from_surface(&super::tilolang_item_surface())).unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let item = Resource {
             readers: MEMBERS.to_owned(),
@@ -2803,6 +2862,7 @@ mod store {
         let anyone = |_: &Proposal<'_>| true;
         let mut holder = Store::new();
         holder.declare(Schema {
+            kind: String::new(),
             types: vec![record_type(ISSUE), record_type("Comment")],
             verbs: vec![Verb {
                 name: "reply".to_owned(),
@@ -2810,7 +2870,7 @@ mod store {
                 ..Verb::default()
             }],
             readers: BTreeMap::new(),
-        });
+        }).unwrap();
         let change = issues()
             .put(
                 ISSUE,
@@ -2834,7 +2894,7 @@ mod store {
     #[test]
     fn a_package_creates_its_root_under_its_surface() {
         let mut there = issues();
-        there.declare(Schema::from_surface(&super::tilolang_surface()));
+        there.declare(Schema::from_surface(&super::tilolang_surface())).unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let mut fields = BTreeMap::new();
         fields.insert("name".to_owned(), Cell::One("Gallery".into()));
@@ -2907,8 +2967,8 @@ mod store {
             "the holder's type nests the held kind"
         );
         let mut there = issues();
-        there.declare(holding);
-        there.declare(Schema::from_surface(&super::tilolang_held_surface()));
+        there.declare(holding).unwrap();
+        there.declare(Schema::from_surface(&super::tilolang_held_surface())).unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let record = |parent: Option<&str>, field: &str, text: &str| Resource {
             readers: MEMBERS.to_owned(),
@@ -2946,7 +3006,7 @@ mod store {
     fn a_change_writes_only_what_the_verb_it_names_declares() {
         use tilo_resource_store::Refusal;
         let mut there = issues();
-        there.declare(Schema::from_surface(&super::tracker_surface()));
+        there.declare(Schema::from_surface(&super::tracker_surface())).unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let comment = |stamp: Stamp, id: &str| {
             let mut fields = BTreeMap::new();
@@ -2989,7 +3049,7 @@ mod store {
     fn an_empty_record_is_founded_as_created_and_a_founding_naming_no_verb_is_refused() {
         use tilo_resource_store::{CREATE_VERB, Refusal};
         let mut there = issues();
-        there.declare(Schema::from_surface(&super::tracker_surface()));
+        there.declare(Schema::from_surface(&super::tracker_surface())).unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let founding = |stamp: Stamp, id: &str, text: Option<&str>| {
             let mut fields = BTreeMap::new();
@@ -3037,7 +3097,7 @@ mod store {
         use automerge::transaction::Transactable as _;
         use tilo_resource_store::{BRANCH_VERB, MOVE_VERB, Refusal};
         let mut there = issues();
-        there.declare(Schema::from_surface(&super::tracker_surface()));
+        there.declare(Schema::from_surface(&super::tracker_surface())).unwrap();
         let anyone = |_: &Proposal<'_>| true;
         // The step the fork's writer commits, read back as the store reads a change.
         let step = collab_types::document::identity::branch_step("c1", "Comment", "Comment");
@@ -3154,7 +3214,7 @@ mod store {
                 ..tilo_resource_store::Verb::default()
             }],
             ..Schema::default()
-        });
+        }).unwrap();
         // What the origin says lands: a declared kind, its declared fields.
         let landed = issues()
             .put(
@@ -3231,7 +3291,7 @@ mod store {
         let schema = Schema::from_surface(&super::tracker_surface());
         let containers = schema.get("Comment").unwrap().founding.clone();
         let mut there = issues();
-        there.declare(schema);
+        there.declare(schema).unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let nobody = |_: &Proposal<'_>| false;
         let empty = Resource {
@@ -3330,6 +3390,99 @@ mod store {
         ));
     }
 
+    /// Two devices whose workspace knows a type at versions 1 and 2, the newer only adding a
+    /// field: each writes the fields of its own version and keeps the other's, the newer
+    /// device's step reaches the older's store as the one it derives itself, and both stores
+    /// come out at the same heads.
+    #[test]
+    fn two_devices_on_different_type_versions_keep_one_records_fields_and_its_step() {
+        use tilo_resource_store::{Expected, Field, content_id};
+        // The type the helpers declare, at version 2: `due` alone is added.
+        let mut two = record_type(ISSUE);
+        for field in &mut two.fields {
+            field.value = Expected::Any;
+        }
+        two.version = 2;
+        two.fields.push(Field {
+            name: "due".to_owned(),
+            kind: FieldKind::Scalar,
+            value: Expected::Any,
+            optional: true,
+        });
+        let declares_two = |store: &mut Store| {
+            store
+                .declare(Schema {
+                    types: vec![two.clone()],
+                    ..Schema::default()
+                })
+                .expect("version 2 only adds `due`");
+        };
+        let mut older = issues();
+        declares_two(&mut older);
+        let mut newer = issues();
+        declares_two(&mut newer);
+        let anyone = |_: &Proposal<'_>| true;
+
+        // The record both devices read.
+        let seeded = put(&mut older, "a", resource("board", "a0", "Draft", "open"));
+        send(&seeded, &mut newer);
+
+        // Its content's chain: the founding and a step to each version, derived alike.
+        let chain = older
+            .founding(ISSUE, "a")
+            .expect("the type is declared")
+            .expect("a type with a chain");
+        assert_eq!(chain.len(), 3, "the founding and a step to each version");
+        let content = content_id(MEMBERS, ISSUE, "a");
+        let carried = |change: automerge::Change| Written {
+            doc: content.clone(),
+            readers: MEMBERS.to_owned(),
+            change,
+        };
+        for store in [&mut older, &mut newer] {
+            for change in &chain {
+                assert_eq!(deliver(&[carried(change.clone())], store, &anyone), []);
+            }
+        }
+        let heads = |store: &Store| {
+            store
+                .document(&content)
+                .map(automerge::Automerge::get_heads)
+        };
+        assert_eq!(heads(&older), heads(&newer), "the chain converges");
+
+        // Each device writes the fields of its own version: both are kept.
+        let from_older = put(&mut older, "a", resource("board", "a0", "Draft", "done"));
+        let with_due = Resource {
+            readers: MEMBERS.to_owned(),
+            parent: Some("board".to_owned()),
+            order: Some("a0".to_owned()),
+            fields: BTreeMap::from([("due".to_owned(), Cell::One("2026-12-01".into()))]),
+        };
+        let from_newer = put(&mut newer, "a", with_due);
+        send(&from_older, &mut newer);
+        send(&from_newer, &mut older);
+        let everyone = |_: &str| true;
+        let found = |store: &Store, field: &str, value: &str| {
+            listed(
+                store,
+                &Query::of(ISSUE, 10).filter(Filter::Is(field.to_owned(), value.into())),
+                &everyone,
+            )
+        };
+        for store in [&older, &newer] {
+            assert_eq!(found(store, "state", "done"), ["a"]);
+            assert_eq!(found(store, "due", "2026-12-01"), ["a"]);
+        }
+        let written = from_older[0].doc.clone();
+        let heads = |store: &Store| {
+            store
+                .document(&written)
+                .map(automerge::Automerge::get_heads)
+        };
+        assert_eq!(heads(&older), heads(&newer), "both stores converge");
+    }
+
     /// A checkpoint, a description and a link are verbs every schema has: a change that writes
     /// nothing, by someone who may write the document, saying little. One that writes, says too
     /// much, comes from someone who may not write, or names a verb nobody declared is refused.
@@ -3338,7 +3491,7 @@ mod store {
         use tilo_resource_store::{MAX_MARK_ARGS, Refusal};
         let tracker = || {
             let mut store = issues();
-            store.declare(Schema::from_surface(&super::tracker_surface()));
+            store.declare(Schema::from_surface(&super::tracker_surface())).unwrap();
             store
         };
         let mut here = tracker();
@@ -3467,7 +3620,7 @@ mod store {
         };
         let mut here = issues();
         let mut there = issues();
-        there.declare(schema);
+        there.declare(schema).unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let made = put(&mut here, "a", resource("board", "a0", "First", "open"));
         assert!(deliver(&made, &mut there, &anyone).is_empty());
@@ -3511,7 +3664,7 @@ mod store {
         let mut holders = [Store::new(), Store::new(), Store::new()];
         let made = put(&mut here, "a", resource("board", "a0", "Draft", "open"));
         for holder in &mut holders {
-            holder.declare(schema.clone());
+            holder.declare(schema.clone()).unwrap();
             send(&made, holder);
         }
         let edited = put(&mut here, "a", resource("board", "a0", "Final", "done"));
@@ -3590,6 +3743,7 @@ mod store {
             ..Verb::default()
         };
         let schema = Schema {
+            kind: String::new(),
             types: vec![ty(ISSUE), ty("Comment")],
             verbs: vec![
                 verb("reply", &["Comment"]),
@@ -3606,9 +3760,9 @@ mod store {
             holder.declare(Schema {
                 types: schema.types.clone(),
                 ..Schema::default()
-            });
+            }).unwrap();
             send(&made, holder);
-            holder.declare(schema.clone());
+            holder.declare(schema.clone()).unwrap();
         }
         let retyped = |verb: &str| {
             let mut doc = here.document(&made[0].doc).expect("held").clone();
@@ -3877,7 +4031,7 @@ mod store {
                 },
             )]),
             ..Schema::default()
-        });
+        }).unwrap();
         let ben = Stamp {
             invoker: "ben".to_owned(),
             ..Stamp::default()
@@ -3968,7 +4122,7 @@ mod store {
     /// mail app's surfaces.
     fn mailboxes() -> Store {
         let mut store = mailboxes_unruled();
-        store.declare(draft_rule());
+        store.declare(draft_rule()).unwrap();
         store
     }
 
@@ -4010,7 +4164,7 @@ mod store {
         store.declare(Schema {
             types: vec![ty(MAILBOX), ty(DRAFT)],
             ..Schema::default()
-        });
+        }).unwrap();
         store
     }
 
@@ -4230,7 +4384,7 @@ mod store {
             Some(MEMBERS),
             "with no rule, the draft is where its mailbox is"
         );
-        store.declare(draft_rule());
+        store.declare(draft_rule()).unwrap();
         assert!(
             store.misplaced(DRAFT, "d1"),
             "the draft is held where its rule does not place it"
@@ -4481,6 +4635,7 @@ mod outside_effects {
     /// a send waits in, as every app's does, read by its author alone.
     fn schema(outside: &[(&str, &[&str])]) -> Schema {
         Schema {
+            kind: String::new(),
             types: vec![
                 Type {
                     name: ITEM.to_owned(),
@@ -4534,7 +4689,7 @@ mod outside_effects {
 
     fn store(schema: Schema) -> Store {
         let mut store = Store::new();
-        store.declare(schema);
+        store.declare(schema).unwrap();
         store
     }
 
@@ -4667,6 +4822,7 @@ mod outside_effects {
     #[test]
     fn a_ruled_kind_that_keeps_its_parents_readers_is_nested_where_its_parent_nests_it() {
         let schema = || Schema {
+            kind: String::new(),
             types: vec![
                 Type {
                     name: "Holder".to_owned(),

@@ -122,9 +122,11 @@ fn every_kind_a_write_path_names_is_declared_in_the_store_a_start_builds() {
     // The store `Workspaces::store_with_surfaces` builds: the reference kind, then every
     // resource of every surface the start named.
     let mut store = Store::new();
-    store.declare(reference::schema());
+    store
+        .declare(reference::schema())
+        .expect("the reference type is declared");
     for (_, surface) in surfaces.resources() {
-        store.declare(Schema::from_surface(&surface));
+        store.declare(Schema::from_surface(&surface)).unwrap();
     }
 
     platform_writes_land(&mut store, &surfaces);

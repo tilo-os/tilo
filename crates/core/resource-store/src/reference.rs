@@ -113,6 +113,7 @@ pub fn schema() -> Schema {
         )])
     };
     Schema {
+        kind: KIND.to_owned(),
         types: vec![Type {
             name: KIND.to_owned(),
             fields: fields.clone(),

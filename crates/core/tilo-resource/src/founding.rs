@@ -218,8 +218,6 @@ pub fn new_record<R: crate::Resource>(id: &str) -> Result<AutoCommit, crate::Mod
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests")]
 
-    use std::collections::BTreeMap;
-
     use automerge::transaction::Transactable as _;
     use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _};
     use tilo_automerge::ApplyIncoming as _;
@@ -305,29 +303,25 @@ mod tests {
     }
 
     #[test]
-    fn a_rewrite_two_devices_make_apart_keeps_each_item_once() {
-        // Version 1 kept the record's tags as one JSON string; version 2 keeps them as a map. Each
-        // device wrote an item of its own on the version 1 record before either brought it up.
+    fn a_rewrite_two_devices_make_apart_keeps_one_default() {
+        // Version 2 adds the record's tags, and each device's rewrite fills the default in on its
+        // own history: the two rewrites make the same key once, and each device's items stay.
         let mut here = device(1, 1, "milk", "2 l");
-        here.put(ROOT, "tags", r#"{"red":"warm","blue":"cold"}"#)
-            .unwrap();
-        here.commit();
         let mut there = here.fork().with_actor(automerge::ActorId::from([2; 16]));
         let (_, kept) = there.get(ROOT, "items").unwrap().unwrap();
         there.put(&kept, "eggs", "6").unwrap();
         there.commit();
-        let retype = |doc: &mut AutoCommit, from: u32| {
+        let add_tags = |doc: &mut AutoCommit, from: u32| {
             assert_eq!(from, 1);
-            crate::evolution::retype_json::<BTreeMap<String, String>>(doc, &ROOT, "tags")
-                .map(drop)
+            let tags = doc.put_object(ROOT, "tags", ObjType::Map)?;
+            doc.put(&tags, "default", "kept")?;
+            Ok(())
         };
-        super::bring_up((KIND, ID, APP), 2, &containers(), &retype, &mut here).unwrap();
-        super::bring_up((KIND, ID, APP), 2, &containers(), &retype, &mut there).unwrap();
+        super::bring_up((KIND, ID, APP), 2, &containers(), &add_tags, &mut here).unwrap();
+        super::bring_up((KIND, ID, APP), 2, &containers(), &add_tags, &mut there).unwrap();
         tilo_automerge::ApplyIncoming::merge_incoming(&mut here, &mut there).unwrap();
         let (_, tags) = here.get(ROOT, "tags").unwrap().unwrap();
-        let mut held: Vec<String> = here.keys(&tags).collect();
-        held.sort();
-        assert_eq!(held, ["blue", "red"]);
+        assert_eq!(here.keys(&tags).collect::<Vec<_>>(), ["default"]);
         assert_eq!(items(&here), ["eggs", "milk"]);
         assert_eq!(stored_version(&here), 2);
     }

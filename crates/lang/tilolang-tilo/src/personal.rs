@@ -656,7 +656,7 @@ mod tests {
         phase her_state_is_read_by_her_alone;
         {
             let store = std::rc::Rc::new(std::cell::RefCell::new(tilo_resource_store::Store::new()));
-            store.borrow_mut().declare(readers());
+            store.borrow_mut().declare(readers()).expect("the personal kind's reader rule is declared");
             let hers = As { store: std::rc::Rc::clone(&store), reader: "ada" };
             let his = As { store, reader: "bo" };
             keep(&hers, APP, "AdA", &[view("AdA", "1/tasks", "place", Json::from("today"))])
