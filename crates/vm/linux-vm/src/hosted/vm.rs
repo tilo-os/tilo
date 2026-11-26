@@ -443,25 +443,6 @@ impl HostedVm {
         }
     }
 
-    /// Keep the disk still while `work` reads it: the guest flushes what it wrote, a VM that is
-    /// awake is paused for the call and goes on after it, and one that is asleep is read as it
-    /// is. A VM that does not go on is ended, as a wake that failed half-way is.
-    pub fn holding_disk<R>(&mut self, work: impl FnOnce() -> R) -> Result<R, VmError> {
-        self.reap();
-        if !self.awake() {
-            return Ok(work());
-        }
-        self.sync_guest()?;
-        let api = Api::new(self.files.api_socket());
-        api.pause()?;
-        let result = work();
-        if let Err(error) = api.resume().or_else(|_| api.resume()) {
-            self.fail();
-            return Err(error.into());
-        }
-        Ok(result)
-    }
-
     /// Sync the guest, pause it, copy its disk and let it run on. The sync puts on the disk what
     /// the guest had written, and the pause holds the disk still while it is copied: a write after
     /// the sync is either on the copy whole or a journal replays it away at the branch's boot.
