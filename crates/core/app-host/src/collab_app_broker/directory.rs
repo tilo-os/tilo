@@ -106,33 +106,23 @@ pub enum ActionDirectoryBridgeError {
     InvalidRequest,
     Unavailable,
     TimedOut,
-    StaleRevision,
-    NotFound,
-    ConfirmationRequired,
 }
 
 pub type ActionDirectoryBridgeReply =
     Result<ActionDirectoryBridgeResponse, ActionDirectoryBridgeError>;
 
-/// Where a directory bridge answer goes: a oneshot any executor may await,
-/// or a remote-action [`tilo_actions::remote::Pending`] completed on the
-/// broker `LocalSet` in the same turn the owner answered.
-pub(super) enum DirectoryReply {
-    Oneshot(tokio::sync::oneshot::Sender<ActionDirectoryBridgeReply>),
-    Pending(tilo_actions::remote::Completer<ActionDirectoryBridgeReply>),
-}
+/// Where a directory bridge answer goes: a remote-action
+/// [`tilo_actions::remote::Pending`] completed on the broker `LocalSet` in the
+/// same turn the owner answered.
+pub(super) struct DirectoryReply(tilo_actions::remote::Completer<ActionDirectoryBridgeReply>);
 
 impl DirectoryReply {
-    /// The longest this asker is waited for. The shell's own surfaces ask
-    /// for a person mid-frame and keep their last results past a short
-    /// deadline. A remote caller has a deadline of its own and gives up by
-    /// dropping its answer, which ends the wait sooner; the bound here only
-    /// stops an owner that never answers from pinning the request.
+    /// The longest this asker is waited for. A remote caller has a deadline
+    /// of its own and gives up by dropping its answer, which ends the wait
+    /// sooner; the bound here only stops an owner that never answers from
+    /// pinning the request.
     pub(super) fn patience(&self) -> Duration {
-        match self {
-            Self::Oneshot(_) => AppBrokerState::DIRECTORY_BRIDGE_TIMEOUT,
-            Self::Pending(_) => AppBrokerState::DIRECTORY_OWNER_HUNG,
-        }
+        AppBrokerState::DIRECTORY_OWNER_HUNG
     }
 
     /// `answer`, awaited for as long as this asker still wants it: the
@@ -143,29 +133,15 @@ impl DirectoryReply {
         &mut self,
         answer: impl std::future::Future<Output = T>,
     ) -> Result<T, ActionDirectoryBridgeError> {
-        let patience = self.patience();
-        match self {
-            Self::Oneshot(sender) => await_while_asked(patience, sender.closed(), answer).await,
-            Self::Pending(completer) => {
-                await_while_asked(patience, completer.abandoned(), answer).await
-            }
-        }
+        await_while_asked(self.patience(), self.0.abandoned(), answer).await
     }
 
     pub(super) fn is_closed(&self) -> bool {
-        match self {
-            Self::Oneshot(sender) => sender.is_closed(),
-            Self::Pending(completer) => completer.is_abandoned(),
-        }
+        self.0.is_abandoned()
     }
 
     pub(super) fn send(self, reply: ActionDirectoryBridgeReply) {
-        match self {
-            Self::Oneshot(sender) => {
-                let _ = sender.send(reply);
-            }
-            Self::Pending(completer) => completer.complete(reply),
-        }
+        self.0.complete(reply);
     }
 }
 
@@ -188,24 +164,16 @@ pub(super) async fn await_while_asked<T>(
 
 #[cfg(test)]
 mod directory_patience_tests {
-    use super::super::{AppBrokerState, Duration};
+    use super::super::Duration;
     use super::{ActionDirectoryBridgeError, DirectoryReply, await_while_asked};
 
-    /// A remote caller (an agent, another device) waits for an app whose
-    /// owner thread is busy with a heavy action or frame for longer than the
-    /// shell's own surfaces do; how long is the caller's to say.
+    /// A remote caller (an agent, another device) waits for an app whose owner
+    /// thread is busy with a heavy action or frame, hears when the app is hung,
+    /// and stops the moment it gives up.
     #[test]
     pub(super) fn a_remote_asker_outwaits_a_busy_owner_and_stops_when_it_gives_up() {
         let (completer, answer) =
             tilo_actions::remote::pending::<super::ActionDirectoryBridgeReply>();
-        let remote = DirectoryReply::Pending(tilo_actions::remote::pending().0);
-        let (shell, _receiver) = tokio::sync::oneshot::channel();
-        let shell = DirectoryReply::Oneshot(shell);
-        assert!(remote.patience() > shell.patience());
-        assert!(
-            AppBrokerState::DIRECTORY_OWNER_HUNG > AppBrokerState::DIRECTORY_BRIDGE_TIMEOUT * 10
-        );
-        drop(remote);
 
         // Paused: the owner's busy spell and the patience are timed by the
         // test's clock, never by how promptly a loaded host runs the timers.
@@ -232,7 +200,7 @@ mod directory_patience_tests {
             .await;
             assert_eq!(hung, Err(ActionDirectoryBridgeError::TimedOut));
 
-            let mut reply = DirectoryReply::Pending(completer);
+            let mut reply = DirectoryReply(completer);
             drop(answer);
             let abandoned = tilo_test_env::within(
                 "an abandoned asker stops the wait",
@@ -243,40 +211,31 @@ mod directory_patience_tests {
         });
     }
 
-    /// An asker that goes away — a shell surface dropping its oneshot, a
-    /// remote caller dropping its answer — releases the directory request
-    /// the moment it does. The clock is paused: any timer the wait armed
-    /// to notice would have to advance it, and none may.
+    /// An asker that goes away — a remote caller dropping its answer — releases
+    /// the directory request the moment it does. The clock is paused: any timer
+    /// the wait armed to notice would have to advance it, and none may.
     #[tokio::test(start_paused = true)]
     pub(super) async fn directory_wait_ends_immediately_when_asker_drops() {
-        let (shell, receiver) = tokio::sync::oneshot::channel();
         let (completer, answer) =
             tilo_actions::remote::pending::<super::ActionDirectoryBridgeReply>();
-        for (mut reply, asker) in [
-            (
-                DirectoryReply::Oneshot(shell),
-                Box::new(receiver) as Box<dyn Send>,
-            ),
-            (DirectoryReply::Pending(completer), Box::new(answer)),
-        ] {
-            let started = tokio::time::Instant::now();
-            let owner_never_answers = reply.awaited(std::future::pending::<()>());
-            tokio::pin!(owner_never_answers);
-            assert!(
-                futures::poll!(owner_never_answers.as_mut()).is_pending(),
-                "the asker is still there"
-            );
-            drop(asker);
-            assert_eq!(
-                owner_never_answers.await,
-                Err(ActionDirectoryBridgeError::Unavailable)
-            );
-            assert_eq!(
-                started.elapsed(),
-                Duration::ZERO,
-                "the departure woke the wait; no timer had to notice it"
-            );
-        }
+        let mut reply = DirectoryReply(completer);
+        let started = tokio::time::Instant::now();
+        let owner_never_answers = reply.awaited(std::future::pending::<()>());
+        tokio::pin!(owner_never_answers);
+        assert!(
+            futures::poll!(owner_never_answers.as_mut()).is_pending(),
+            "the asker is still there"
+        );
+        drop(answer);
+        assert_eq!(
+            owner_never_answers.await,
+            Err(ActionDirectoryBridgeError::Unavailable)
+        );
+        assert_eq!(
+            started.elapsed(),
+            Duration::ZERO,
+            "the departure woke the wait; no timer had to notice it"
+        );
     }
 }
 
@@ -348,65 +307,7 @@ impl ActionDirectoryRequestQueue {
         }
     }
 
-    pub fn try_query(
-        &self,
-        actor: BrokerActor,
-        cluster_id: impl Into<String>,
-        query: runtime_collab::ActionDirectoryQuery,
-    ) -> Result<
-        tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
-        ActionDirectoryBridgeError,
-    > {
-        if validate_directory_query_input(&query).is_err() {
-            return Err(ActionDirectoryBridgeError::InvalidRequest);
-        }
-        let (reply, response) = tokio::sync::oneshot::channel();
-        let reply = DirectoryReply::Oneshot(reply);
-        self.deliver(ActionDirectoryBridgeRequest::Query {
-            actor,
-            cluster_id: cluster_id.into(),
-            query,
-            reply,
-        })
-        .map(|()| response)
-    }
-
-    pub fn try_resolve(
-        &self,
-        actor: BrokerActor,
-        cluster_id: impl Into<String>,
-        peer_id: u64,
-        revision: impl Into<String>,
-        resource: impl Into<String>,
-        action: impl Into<String>,
-    ) -> Result<
-        tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
-        ActionDirectoryBridgeError,
-    > {
-        let cluster_id = cluster_id.into();
-        let revision = revision.into();
-        let resource = resource.into();
-        let action = action.into();
-        if validate_directory_target_input(&cluster_id, &revision, &resource, &action, None)
-            .is_err()
-        {
-            return Err(ActionDirectoryBridgeError::InvalidRequest);
-        }
-        let (reply, response) = tokio::sync::oneshot::channel();
-        let reply = DirectoryReply::Oneshot(reply);
-        self.deliver(ActionDirectoryBridgeRequest::Resolve {
-            actor,
-            cluster_id,
-            peer_id,
-            revision,
-            resource,
-            action,
-            reply,
-        })
-        .map(|()| response)
-    }
-
-    /// [`Self::try_query`] answered as a remote-action pending value.
+    /// A query answered as a remote-action pending value.
     pub(crate) fn try_query_pending(
         &self,
         actor: BrokerActor,
@@ -418,16 +319,16 @@ impl ActionDirectoryRequestQueue {
             return Err(ActionDirectoryBridgeError::InvalidRequest);
         }
         let (reply, response) = tilo_actions::remote::pending();
-        self.enqueue(ActionDirectoryBridgeRequest::Query {
+        self.deliver(ActionDirectoryBridgeRequest::Query {
             actor,
             cluster_id: cluster_id.into(),
             query,
-            reply: DirectoryReply::Pending(reply),
+            reply: DirectoryReply(reply),
         })
         .map(|()| response)
     }
 
-    /// [`Self::try_resolve`] answered as a remote-action pending value.
+    /// A resolve answered as a remote-action pending value.
     pub(crate) fn try_resolve_pending(
         &self,
         actor: BrokerActor,
@@ -448,23 +349,16 @@ impl ActionDirectoryRequestQueue {
             return Err(ActionDirectoryBridgeError::InvalidRequest);
         }
         let (reply, response) = tilo_actions::remote::pending();
-        self.enqueue(ActionDirectoryBridgeRequest::Resolve {
+        self.deliver(ActionDirectoryBridgeRequest::Resolve {
             actor,
             cluster_id,
             peer_id,
             revision,
             resource,
             action,
-            reply: DirectoryReply::Pending(reply),
+            reply: DirectoryReply(reply),
         })
         .map(|()| response)
-    }
-
-    pub(super) fn enqueue(
-        &self,
-        request: ActionDirectoryBridgeRequest,
-    ) -> Result<(), ActionDirectoryBridgeError> {
-        self.deliver(request)
     }
 }
 

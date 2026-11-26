@@ -522,9 +522,6 @@ impl AppBrokerState {
     pub(super) const DIRECTORY_MAX_BYTES: u32 = 256 * 1024;
     pub(super) const DIRECTORY_MAX_WORK: u32 = 4_096;
     pub(super) const DIRECTORY_MAX_DEPTH: u16 = 32;
-    /// How long the shell's own surfaces (palette, search) wait for an app's
-    /// directory before keeping their last results.
-    pub(super) const DIRECTORY_BRIDGE_TIMEOUT: Duration = Duration::from_secs(2);
     /// An app that has not answered its directory in this long is hung, not
     /// busy: its asker hears it timed out. Remote askers normally give up
     /// sooner, on their own deadline.

@@ -160,7 +160,7 @@ tilo_test_env::scenario! {
             resource_name: String::new(),
         };
         assert!(matches!(
-            queue.try_query(
+            queue.try_query_pending(
                 BrokerActor::person("actor-a"),
                 &fixture.cluster_id,
                 oversized_text.clone()
@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
         oversized_text.needle.clear();
         oversized_text.cursor = vec![0; DIRECTORY_MAX_CURSOR_BYTES.saturating_add(1)];
         assert!(matches!(
-            queue.try_query(
+            queue.try_query_pending(
                 BrokerActor::person("actor-a"),
                 &fixture.cluster_id,
                 oversized_text
@@ -178,7 +178,7 @@ tilo_test_env::scenario! {
             Err(ActionDirectoryBridgeError::InvalidRequest)
         ));
         assert!(matches!(
-            queue.try_resolve(
+            queue.try_resolve_pending(
                 BrokerActor::person("actor-a"),
                 "x".repeat(DIRECTORY_MAX_IDENTIFIER_BYTES.saturating_add(1)),
                 fixture.peer_id,

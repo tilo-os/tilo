@@ -2058,7 +2058,7 @@ impl AppBrokerState {
             // Admission can sign and durably record an invocation. Keep only
             // inert ownership on the UI turn; the broker revalidates it at dispatch.
             let (reply, response) = pending();
-            return match self.action_directory_request_queue().enqueue(
+            return match self.action_directory_request_queue().deliver(
                 super::ActionDirectoryBridgeRequest::InvokeEager(Box::new(
                     super::EagerActionInvokeRequest {
                         caller: caller.clone(),
