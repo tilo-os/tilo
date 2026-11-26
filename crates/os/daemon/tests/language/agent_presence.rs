@@ -480,7 +480,7 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
         let agent = host.agent();
         let (_, failed) = ls(&agent, None).await;
         assert!(!failed, "the agent lists the workspace");
-        let listed = mcp_server(&host, &host.workspace()).await;
+        let listed = mcp_server(&host, host.workspace()).await;
         assert_eq!(listed.grants.len(), 1, "the run is listed: {listed:?}");
         assert_eq!(listed.grants[0].sessions.len(), 1, "{listed:?}");
         // The person stops it: the listing keeps the agent, with no run open.
@@ -571,7 +571,7 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
         );
         let until = Instant::now() + COMES_BACK_WITHIN;
         loop {
-            let listed = mcp_server(&host, &host.workspace()).await;
+            let listed = mcp_server(&host, host.workspace()).await;
             if listed.grants.is_empty() {
                 break;
             }
