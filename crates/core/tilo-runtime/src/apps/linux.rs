@@ -61,7 +61,14 @@ pub(super) fn spawn(
     hosted: Option<super::WindowLink>,
     runs: &super::Runs,
 ) -> Result<Launch, String> {
-    let (mut command, launcher) = command(apps, app, workspace, sockets, original)?;
+    let (mut command, launcher) = command(
+        apps,
+        app,
+        workspace,
+        sockets,
+        original,
+        runs.writes.as_ref(),
+    )?;
     if let Some(hosted) = &hosted {
         command
             .arg("--tilolang-process")
@@ -173,7 +180,7 @@ pub(super) fn connector(
     original: &super::original::OriginalLaunch,
     (origin, socket): (&str, std::os::fd::BorrowedFd<'_>),
 ) -> Result<std::process::Child, String> {
-    let (mut command, launcher) = command(apps, app, workspace, sockets, original)?;
+    let (mut command, launcher) = command(apps, app, workspace, sockets, original, None)?;
     // A connector draws nothing, opens nothing and reads no record: no display goes with it.
     command.arg("--tilolang-connector").arg(origin);
     let hold = launcher::launch_hold::install(&mut command)
@@ -202,6 +209,7 @@ fn command(
     workspace: &str,
     sockets: &Sockets,
     original: &super::original::OriginalLaunch,
+    writes: Option<&super::capture::Writes>,
 ) -> Result<(Command, PathBuf), String> {
     let launcher = resolve_launcher(&apps.launcher_candidates)?;
     let runtime_dir = service_directory(sockets)
@@ -220,11 +228,15 @@ fn command(
         .arg("--expected-package-hash")
         .arg(&original.package_hash);
     // The person's grants for this app, in the file the launcher reads them
-    // from: the same one a desktop session writes.
+    // from: the same one a desktop session writes. A capture's directories are its launch's
+    // alone, so its file is written apart, where no other launch of the app reads it.
     let capabilities = launcher::capabilities::write_capability_file(
-        &apps.root.join("tilo/capabilities"),
+        &writes.map_or_else(
+            || apps.root.join("tilo/capabilities"),
+            |writes| writes.grants_dir.clone(),
+        ),
         app.app_id.as_str(),
-        &apps.app_grants(app, workspace),
+        &apps.launch_app_grants(app, workspace, writes),
     )
     .map_err(|error| format!("refusing to launch {}: its grants: {error}", app.app_id))?;
     if let Some(path) = capabilities {

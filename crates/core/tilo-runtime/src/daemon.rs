@@ -1254,7 +1254,7 @@ fn the_persons(
         frames: Frames::of_the_person(session),
         to_agents: Some(session.agents().clone()),
         #[cfg(unix)]
-        launch: Some(launch_take(session)),
+        launch: Some(launch_take(session, Asks::Person)),
         #[cfg(not(unix))]
         launch: None,
         connections: Some(Arc::clone(session.connections())),
@@ -1281,7 +1281,7 @@ fn app_take(session: &Arc<Daemon>) -> AppTake {
     // The launch an app asks on this connection: it reaches the same launch a person's program
     // asks of the daemon, which starts the installed package and records the instance.
     #[cfg(unix)]
-    let launch = Some(launch_take(session));
+    let launch = Some(launch_take(session, Asks::App));
     #[cfg(not(unix))]
     let launch = None;
     let session = Arc::downgrade(session);
@@ -3273,19 +3273,26 @@ fn is_launch_request(request: &[u8]) -> bool {
     runtime_portal::native::LaunchRequest::is_launch(request)
 }
 
+/// Who a launch request comes from, by the endpoint it reached: the person's own native
+/// endpoint, or the connection of an app the daemon started.
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Asks {
+    Person,
+    App,
+}
+
 /// What answers a launcher's request: it starts the app this computer has installed, on the
 /// launch path a window takes, so the launch record exists before the app's connection does, and
 /// tells the caller it started.
 #[cfg(unix)]
-fn launch_take(session: &Arc<Daemon>) -> Arc<LaunchTake> {
+fn launch_take(session: &Arc<Daemon>, asks: Asks) -> Arc<LaunchTake> {
     let session = Arc::downgrade(session);
     Arc::new(move |mut stream, request, descriptors| {
         // The process at the other end, as the kernel names it: an app this computer started asks
         // for another instance of itself, and a person's own program for an app it names.
-        let peer = crate::seats::Peer::of(&stream)
-            .ok()
-            .and_then(|peer| peer.pid);
-        let reply = match start_requested(&session, request, &descriptors, peer) {
+        let peer = crate::seats::Peer::of(&stream).ok();
+        let reply = match start_requested(&session, request, &descriptors, peer, asks) {
             Ok(reply) => reply,
             Err(error) => json!({"error": error.to_string()}),
         };
@@ -3298,13 +3305,14 @@ fn launch_take(session: &Arc<Daemon>) -> Arc<LaunchTake> {
 
 /// Start the app `request` names, as this computer's person asks: the installed package decides
 /// what runs, and the launch path a window takes starts it and records the process. `peer` is the
-/// process asking, when the kernel names it.
+/// process asking, when the kernel names it, and `asks` the endpoint it asked on.
 #[cfg(unix)]
 fn start_requested(
     session: &std::sync::Weak<Daemon>,
     request: &[u8],
     descriptors: &[runtime_portal::process_link::Descriptor],
-    peer: Option<u32>,
+    peer: Option<crate::seats::Peer>,
+    asks: Asks,
 ) -> io::Result<Value> {
     let request: runtime_portal::native::LaunchRequest = serde_json::from_slice(request)
         .map_err(|error| invalid(format!("the launch request: {error}")))?;
@@ -3343,7 +3351,10 @@ fn start_requested(
     // An app this computer started asks for another instance of itself, in the workspace it
     // runs in: the launch a person's own program makes is not an app's to make for another app,
     // and an app acts in its own workspace alone.
-    if let Some((started, started_in)) = peer.and_then(|pid| daemon.app_of(pid)) {
+    if let Some((started, started_in)) = peer
+        .and_then(|peer| peer.pid)
+        .and_then(|pid| daemon.app_of(pid))
+    {
         if started != request.app_id {
             return Err(io::Error::other(format!(
                 "this process runs {started}: an app asks for another instance of itself, not of {}",
@@ -3369,16 +3380,15 @@ fn start_requested(
     }
     if let Some(capture) = &request.capture {
         let args = capture.args()?;
-        let code = apps
-            .capture(&app.app_id, &serving, args)
+        let asking_app = peer
+            .and_then(|peer| peer.pid)
+            .and_then(|pid| daemon.app_of(pid))
+            .map(|(started, _)| started);
+        let writes = capture_writes(&daemon, &app, workspace, args, peer, asks, asking_app)?;
+        apps.capture(&app.app_id, workspace, args, writes.clone())
             .map_err(io::Error::other)?;
-        if code != 0 {
-            return Err(io::Error::other(format!(
-                "{}'s capture failed with exit code {code}",
-                app.app_id
-            )));
-        }
-        return Ok(json!({"captured": true}));
+        // The directories the capture was granted, for its caller to see where it wrote.
+        return Ok(json!({"captured": true, "writes": writes}));
     }
     // The app's default presentation is one: a second start shows the one running, and while the
     // first has shown nothing the launch's own lock waits for it, as a launch takes it.
@@ -3402,6 +3412,57 @@ fn start_requested(
     })
     .map_err(io::Error::other)?;
     Ok(json!({"started": true}))
+}
+
+/// The directories the capture `args` of `app` writes into, granted for its launch alone: only
+/// when the person on this device's own connection asks, for a development build this device
+/// made ([`crate::apps::capture`]).
+#[cfg(unix)]
+fn capture_writes(
+    daemon: &Arc<Daemon>,
+    app: &app_catalogue::apps::InstalledApp,
+    serving: &str,
+    args: &[String],
+    peer: Option<crate::seats::Peer>,
+    asks: Asks,
+    asking_app: Option<String>,
+) -> io::Result<Vec<std::path::PathBuf>> {
+    #[cfg(target_os = "linux")]
+    {
+        // Who asks: an app's own connection, or a process the daemon started for an app, is that
+        // app; any other on the person's endpoint is who that endpoint admits.
+        let caller = || match (asks, asking_app) {
+            (Asks::App, None) => Ok(tilo_actions::remote::Caller::launched(app.app_id.as_str())),
+            (_, Some(started)) => Ok(tilo_actions::remote::Caller::launched(started)),
+            (Asks::Person, None) => daemon
+                .connection_tree_in(Some(serving))
+                .map(|(_, caller)| caller)
+                .map_err(|error| error.to_string()),
+        };
+        let writer = crate::apps::capture::Writer {
+            personal: !tilo_api::daemon::system_daemon(),
+            app_id: app.app_id.as_str(),
+            dev: app.dev.as_ref(),
+            device: daemon.key().verifying_key().to_bytes(),
+            uid: peer.map(|peer| peer.uid),
+            protected: [
+                tilo_paths::home(),
+                tilo_paths::workspace_root(),
+                tilo_paths::data_dir(),
+                Some(daemon.apps().root().to_path_buf()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
+        };
+        crate::apps::capture::writes(args, caller, &writer)
+            .map_err(|refused| io::Error::new(io::ErrorKind::PermissionDenied, refused))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (daemon, app, serving, args, peer, asks, asking_app);
+        Ok(Vec::new())
+    }
 }
 
 /// Ask the daemon at `profile` to start an app, and answer what it said: a capture answers once
@@ -3455,10 +3516,22 @@ pub fn run_app(
         &serde_json::to_value(request).map_err(io::Error::other)?,
         capture.is_some(),
     )?;
-    match answer.get("error").and_then(Value::as_str) {
-        Some(error) => Err(io::Error::other(error.to_owned())),
-        None => Ok(()),
+    if let Some(error) = answer.get("error").and_then(Value::as_str) {
+        return Err(io::Error::other(error.to_owned()));
     }
+    // Where the capture was let write outside its sandbox, said where its caller reads it.
+    if let Some(writes) = answer
+        .get("writes")
+        .and_then(Value::as_array)
+        .filter(|writes| !writes.is_empty())
+    {
+        let dirs: Vec<&str> = writes.iter().filter_map(Value::as_str).collect();
+        eprintln!(
+            "{app_id}'s capture wrote into {}, granted for its launch alone",
+            dirs.join(", ")
+        );
+    }
+    Ok(())
 }
 
 /// An app on Windows is handed its services on its process link, by the daemon that starts it;

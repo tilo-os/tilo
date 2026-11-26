@@ -486,12 +486,16 @@ def run_situation(plan: Plan, situation: Situation, index: int, args) -> dict:
         env = profile_env(tmp / "profile", args.lib_dir)
         home = Path(env["HOME"])
         seed_home(plan, home, env)
+        # The drive's results land in a directory of their own: the daemon grants the capture the
+        # directories it writes into, and never one that holds the profile's home.
+        reports = tmp / "reports"
+        reports.mkdir()
         spec = {
             "viewport": list(VIEWPORTS["wide"]),
             "actions": resolve_home(
                 resolve_dates(situation.steps, datetime.date.today()), home
             ),
-            "results": str(tmp / "results.json"),
+            "results": str(reports / "results.json"),
             "capture": shots,
             # The desktop's window bar over the app, as a Tilo session draws
             # it: the app's slots, search and History are hosted there.
@@ -504,7 +508,7 @@ def run_situation(plan: Plan, situation: Situation, index: int, args) -> dict:
         started = time.monotonic()
         status, log = run_through_daemon(args, env, tmp, plan, spec)
         seconds = round(time.monotonic() - started, 1)
-        results = tmp / "results.json"
+        results = reports / "results.json"
         if results.is_file():
             shutil.copyfile(results, app_dir / f"{situation.name}-results.json")
     missing = [shot["path"] for shot in shots if not Path(shot["path"]).is_file()]

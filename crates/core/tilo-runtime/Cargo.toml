@@ -243,6 +243,8 @@ linux-vm = { path = "../../vm/linux-vm", optional = true, default-features = fal
 launcher = { path = "../launcher" }
 # The device's package cache: its published actions are this library's changes.
 package-actions = { path = "../package-actions" }
+# What a capture's `--headless-drive` spec writes, which its launch is granted.
+tilo-headless-schema = { version = "0.1.0", path = "../../platform/headless-schema" }
 # The repositories a version the workspaces run is fetched from.
 app-cli = { path = "../../os/app-cli" }
 # The surface a package carries, checked against the one the workspace records.

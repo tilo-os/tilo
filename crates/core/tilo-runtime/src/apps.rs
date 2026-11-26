@@ -36,6 +36,8 @@ use tilo_app_host::{
 };
 use tilo_lock::MutexRecover as _;
 
+#[cfg(target_os = "linux")]
+pub(crate) mod capture;
 #[cfg(any(target_os = "macos", windows))]
 mod carried;
 mod connection;
@@ -78,12 +80,15 @@ enum Shows {
 }
 
 /// What a start is handed beyond the installed package: the app's own arguments (a capture names
-/// the scenario it captures) and the connection to its origin's connector, which the device made
-/// and the process running the app's code here reaches.
+/// the scenario it captures), the connection to its origin's connector, which the device made
+/// and the process running the app's code here reaches, and the directories a capture writes
+/// into, granted for that launch alone.
 #[derive(Default)]
 struct Runs {
     args: Vec<String>,
     origin: Option<runtime_portal::process_link::Descriptor>,
+    #[cfg(target_os = "linux")]
+    writes: Option<capture::Writes>,
 }
 
 /// A start that has already happened: the answer a call gets when the process that takes it
@@ -439,6 +444,22 @@ impl Apps {
     )]
     fn app_grants(&self, app: &InstalledApp, workspace: &str) -> collab_types::caps::LaunchGrants {
         self.launch_grants(workspace).for_app(app.app_id.as_str())
+    }
+
+    /// [`Self::app_grants`] for one launch, with the directories a capture writes into: those
+    /// reach this launch alone and are never the workspace's.
+    #[cfg(target_os = "linux")]
+    fn launch_app_grants(
+        &self,
+        app: &InstalledApp,
+        workspace: &str,
+        writes: Option<&capture::Writes>,
+    ) -> collab_types::caps::LaunchGrants {
+        let mut grants = self.app_grants(app, workspace);
+        if let Some(writes) = writes {
+            grants.sandbox.extend(writes.grants(app.app_id.as_str()));
+        }
+        grants
     }
 
     /// The sandbox plan and outbound decision for launching `app`: what its
@@ -856,21 +877,50 @@ impl Apps {
     }
 
     /// Run one of the app's captures, the way a window launch runs the app: the device starts the
-    /// package it has installed, with the connector it runs for the app's origin and the app's
-    /// own capture arguments, and waits for the process to end. Answers its exit code.
+    /// package it has installed, with the connector it runs for the app's origin, the app's own
+    /// capture arguments and `writes`, the directories the capture writes into, writable for this
+    /// launch alone. Waits for the process to end.
     ///
     /// # Errors
     /// The app is not installed, has no window, its connector cannot be started, the launcher
-    /// refuses it, or the capture ends without a status.
+    /// refuses it, or the capture fails: what it said.
     pub(crate) fn capture(
         &self,
         app_id: &str,
         workspace: &str,
         args: &[String],
-    ) -> Result<i32, String> {
+        writes: Vec<PathBuf>,
+    ) -> Result<(), String> {
         if args.is_empty() {
             return Err("a capture names what it captures".to_owned());
         }
+        #[cfg(not(target_os = "linux"))]
+        if !writes.is_empty() {
+            return Err("a capture writes outside its app's sandbox only on Linux".to_owned());
+        }
+        // This launch's grants are written apart from every other launch's, so no other launch of
+        // the app reads them, and go with the capture.
+        #[cfg(target_os = "linux")]
+        let writes = (!writes.is_empty()).then(|| {
+            static CAPTURES: AtomicU64 = AtomicU64::new(0);
+            capture::Writes {
+                dirs: writes,
+                grants_dir: self.root.join("tilo/capabilities/captures").join(format!(
+                    "{}-{}",
+                    std::process::id(),
+                    CAPTURES.fetch_add(1, Ordering::Relaxed)
+                )),
+            }
+        });
+        #[cfg(target_os = "linux")]
+        let grants_dir = writes.as_ref().map(|writes| {
+            tracing::info!(
+                app = app_id,
+                writes = ?writes.dirs,
+                "a capture writes into these directories, granted for its launch alone"
+            );
+            writes.grants_dir.clone()
+        });
         let origin = self.origin_connection(app_id, workspace)?;
         let launch = self.start_showing(
             app_id,
@@ -880,11 +930,42 @@ impl Apps {
             &Runs {
                 args: args.to_vec(),
                 origin,
+                #[cfg(target_os = "linux")]
+                writes,
             },
-        )?;
-        launch
-            .wait()
-            .ok_or_else(|| format!("{app_id}'s capture ended without a status"))
+        );
+        #[cfg(target_os = "linux")]
+        let forget_grants = || {
+            if let Some(dir) = &grants_dir
+                && let Err(error) = std::fs::remove_dir_all(dir)
+            {
+                tracing::warn!(%error, dir = %dir.display(), "a capture's grants were not removed");
+            }
+        };
+        let launch = match launch {
+            Ok(launch) => launch,
+            Err(error) => {
+                #[cfg(target_os = "linux")]
+                forget_grants();
+                return Err(error);
+            }
+        };
+        let said = std::sync::Arc::clone(&launch.stderr);
+        let code = launch.wait();
+        #[cfg(target_os = "linux")]
+        forget_grants();
+        match code {
+            Some(status) if status.success() => Ok(()),
+            code => {
+                let said = said.lock_recover().clone();
+                let status =
+                    code.map_or_else(|| "no status".to_owned(), |status| status.to_string());
+                Err(format!(
+                    "{app_id}'s capture failed ({status}): {}",
+                    said.trim()
+                ))
+            }
+        }
     }
 
     /// The installed package `app_id`, window or none.

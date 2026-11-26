@@ -19758,6 +19758,7 @@ dependencies = [
  "tilo-fs-client",
  "tilo-fs-content",
  "tilo-fs-protocol",
+ "tilo-headless-schema",
  "tilo-host-search",
  "tilo-identity",
  "tilo-identity-client",
