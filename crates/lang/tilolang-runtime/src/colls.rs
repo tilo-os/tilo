@@ -486,14 +486,18 @@ impl Core {
             seen.whole = true;
             seen.at = Vec::new();
             vs.reads.push((seen.resource.clone(), coll.field.clone()));
-        } else if deciding && coll.derived() && !seen.whole {
+        } else if deciding && coll.derived() {
             // What a requirement, an `applies` condition or a presentation read of a filtered
             // collection is decided by every item's own fields, and it is kept as an answer
             // another turn reads again ([`crate::runtime::Reading`]): that answer is the
-            // collection's field, which a change to any item under it reaches.
-            seen.whole = true;
-            seen.at = Vec::new();
-            vs.reads.push((seen.resource.clone(), coll.field.clone()));
+            // collection's field, which a change to any item under it reaches. The view
+            // offering the action keeps what it saw of the collection too: an edit of an item
+            // names the item alone, and reaches the views whose filter reads the field it
+            // changed (`Live::reach_item`).
+            let field = (seen.resource.clone(), coll.field.clone());
+            if !vs.reads.contains(&field) {
+                vs.reads.push(field);
+            }
         }
     }
 

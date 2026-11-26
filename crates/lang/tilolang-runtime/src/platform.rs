@@ -3149,11 +3149,16 @@ impl Core {
         self.note_time(reads.changes_at);
         self.note_reads(reads.reads.clone());
         {
+            // The view offering the action reads what its requirement read: the fields, and the
+            // collections it went through, so a change to any item of one (a task checked off
+            // that a "delete finished" counts) decides the action again.
             let mut frames = self.frames.borrow_mut();
             if let Some(vs) = frames.view_mut() {
                 vs.state_reads.extend(reads.state_reads.clone());
                 vs.state_seen.extend(reads.state_seen);
                 vs.space_reads.extend(reads.space_reads.clone());
+                vs.colls.extend(reads.colls);
+                vs.listings.extend(reads.listings);
             }
         }
         // What the requirement read of the workspace, each field once: what reading it again
