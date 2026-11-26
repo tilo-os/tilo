@@ -944,6 +944,8 @@ mod tests {
                 "kind": "",
                 "effect": null,
                 "form": [],
+                "decline": null,
+                "picture": null,
             })
         );
         assert_eq!(serde_json::from_value::<Asked>(json).unwrap(), row);

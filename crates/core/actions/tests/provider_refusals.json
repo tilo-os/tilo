@@ -43,7 +43,9 @@
         "many": false,
         "kind": "",
         "effect": null,
-        "form": []
+        "form": [],
+        "decline": null,
+        "picture": null
       }
     },
     "code": "action_confirmation_required",
@@ -83,7 +85,9 @@
         "many": false,
         "kind": "",
         "effect": null,
-        "form": []
+        "form": [],
+        "decline": null,
+        "picture": null
       }
     },
     "code": "action_confirmation_required",
