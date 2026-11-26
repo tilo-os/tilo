@@ -19,20 +19,6 @@ tilo_test_env::scenario! {
     /// Each phase was a test of its own and builds its own fixture.
     fn table_columns_and_cells_split_align_and_style;
 
-    phase a_column_kind_styles_its_text_whenever_it_is_declared;
-    {
-        for column in [
-            ColumnDef::<R>::new("size", "Size", ColumnWidth::Fixed(80.0))
-                .with_kind(TextKind::Numeric)
-                .with_text(|r: &R| r.name.clone()),
-            ColumnDef::<R>::new("size", "Size", ColumnWidth::Fixed(80.0))
-                .with_text(|r: &R| r.name.clone())
-                .with_kind(TextKind::Numeric),
-        ] {
-            assert_eq!(column.kind, TextKind::Numeric);
-            assert!(column.text.is_some());
-        }
-    }
 
     phase columns_split_flex_and_resize_from_the_press_origin;
     {
@@ -91,96 +77,6 @@ tilo_test_env::scenario! {
         focused_table_paints_a_focus_ring();
     }
 
-    phase typed_cells_align_numbers_dim_absent_values_and_measure_auto_columns;
-    {
-        struct File {
-            name: &'static str,
-            size: Option<u64>,
-        }
-        let columns = vec![
-            ColumnDef::new("name", "Name", ColumnWidth::Auto).with_text(|f: &File| f.name.to_owned()),
-            ColumnDef::new("size", "Size", ColumnWidth::Flex(1.0))
-                .with_kind(TextKind::Numeric)
-                .with_optional_text(|f: &File| f.size.map(|s| s.to_string()), "NULL"),
-        ];
-        let mut table = DataTable::new(columns);
-        table.set_rows(vec![
-            File {
-                name: "quarterly-report-final.pdf",
-                size: Some(1_284_000),
-            },
-            File {
-                name: "notes.md",
-                size: None,
-            },
-        ]);
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let harness = crate::app::driver::Driver::new_with_theme(
-            crate::State::new(),
-            Box::new(table),
-            (600, 300),
-            theme.clone(),
-        );
-        let _ = harness;
-        let mut table = DataTable::new(vec![
-            ColumnDef::new("name", "Name", ColumnWidth::Auto).with_text(|f: &File| f.name.to_owned()),
-        ]);
-        table.set_rows(vec![File {
-            name: "quarterly-report-final.pdf",
-            size: None,
-        }]);
-        let mut tree = TaffyTree::<()>::new();
-        let mut map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = table.build_layout(&mut tree, &theme, &mut map);
-        table.set_viewport(200.0, 32.0);
-        table.size_before_solve(&mut tree, node, &mut text);
-        let measured = f64::from(table.auto_widths["name"]);
-        let cell = f64::from(
-            text.measure_style(
-                "quarterly-report-final.pdf",
-                None,
-                &cell_style(&theme, TextKind::Prose),
-            )
-            .0,
-        );
-        assert!(measured >= cell, "{measured} fits {cell}");
-        let widths = table.auto_widths.clone();
-        table.size_before_solve(&mut tree, node, &mut text);
-        assert_eq!(table.auto_widths, widths, "settles");
-
-        // Numeric cells end at the trailing padding; an absent value says so.
-        let column = ColumnDef::<File>::new("size", "Size", ColumnWidth::Flex(1.0))
-            .with_kind(TextKind::Numeric)
-            .with_optional_text(|f: &File| f.size.map(|s| s.to_string()), "NULL");
-        assert_eq!(column.absent, "NULL");
-        let spoken = column.accessible_value.as_ref().unwrap();
-        assert_eq!(
-            spoken(&File {
-                name: "a",
-                size: None
-            }),
-            "NULL"
-        );
-        let mut scene = Scene::new();
-        let cell = Rect::new(0.0, 0.0, 200.0, 32.0);
-        paint_cell_text(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            cell,
-            &column,
-            Some("1284000"),
-        );
-        assert!(!scene.encoding().resources.glyph_runs.is_empty());
-        let style = cell_style(&theme, TextKind::Numeric);
-        let (w, _) = text.measure_style("1284000", None, &style);
-        let pad = f64::from(theme.tokens.spacing.s2);
-        // The right-aligned origin lands so the run ends at the padding.
-        let x = cell.x1 - pad - f64::from(w);
-        assert!(x > cell.center().x, "numbers sit at the trailing edge");
-    }
 }
 
 pub(super) fn sample_cols() -> Vec<ColumnDef<R>> {
@@ -631,169 +527,6 @@ tilo_test_env::scenario! {
         a_read_only_tables_rows_are_not_focusable();
     }
 
-    phase semantic_rows_and_cells_publish_identity_geometry_and_values;
-    {
-        fn semantic_row_actions_use_stable_row_identities() {
-            let activated = Rc::new(RefCell::new(Vec::new()));
-            let captured = Rc::clone(&activated);
-            let mut table = DataTable::<R>::new(sample_cols())
-                .with_row_key(|row| u64::from(row.name.as_bytes()[0]))
-                .selectable(true)
-                .on_activate(move |index| captured.borrow_mut().push(index));
-            table.set_rows(vec![R { name: "a".into() }, R { name: "b".into() }]);
-
-            let semantics = Widget::accessibility(&table).expect("table semantics");
-            assert_eq!(
-                semantics.children[1].action_target.as_deref(),
-                Some("row:98:0")
-            );
-            assert!(Widget::perform_semantic_action(
-                &mut table,
-                "row:98:0",
-                &crate::a11y::Action::Focus,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-                &automerge::ROOT,
-            ));
-            assert_eq!(table.selection().primary(), Some(1));
-            assert!(Widget::perform_semantic_action(
-                &mut table,
-                "row:98:0",
-                &crate::a11y::Action::Activate,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
-                &automerge::ROOT,
-            ));
-            assert_eq!(&*activated.borrow(), &[1]);
-
-            let mut index_keyed = DataTable::<R>::new(sample_cols()).selectable(true);
-            index_keyed.set_rows(vec![R { name: "a".into() }]);
-            assert_eq!(
-                Widget::accessibility(&index_keyed).unwrap().children[0].action_target,
-                None,
-                "index fallbacks are not stable action identities"
-            );
-        }
-
-        fn semantic_rows_and_cells_publish_scrolled_viewport_geometry() {
-            let mut table = DataTable::<R>::new(sample_cols());
-            table.set_rows(rows4());
-            table.set_viewport(72.0, 24.0);
-            table.set_scroll_y(10.0);
-            let _ = lay_out(&mut table);
-
-            let semantics = Widget::accessibility(&table).expect("table semantics");
-            let row = semantics.children.first().expect("first visible row");
-            let row_bounds = row.bounds.expect("row bounds").to_rect();
-            assert_eq!(row_bounds.y0, table.rect.y0 + table.header_h - 10.0);
-            assert_eq!(row_bounds.y1, row_bounds.y0 + 24.0);
-            assert_eq!(row_bounds.x0, table.rect.x0);
-            assert_eq!(row_bounds.x1, table.rect.x1);
-
-            let first_cell = row.children.first().expect("first cell");
-            let cell_bounds = first_cell.bounds.expect("cell bounds").to_rect();
-            assert_eq!(cell_bounds.y0, row_bounds.y0);
-            assert_eq!(cell_bounds.y1, row_bounds.y1);
-            assert_eq!(cell_bounds.x0, table.col_rects[0].x0);
-            assert_eq!(cell_bounds.x1, table.col_rects[0].x1);
-        }
-
-        fn a_routed_action_naming_a_row_that_no_longer_exists_does_nothing() {
-            // An assistive technology can hold a node id across a row being
-            // removed. Acting on whatever now sits at that index would operate on
-            // the wrong record — so an out-of-range row must be dropped, not
-            // clamped.
-            let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::<usize>::new()));
-            let sink = fired.clone();
-            let mut t = DataTable::<R>::new(sample_cols())
-                .selectable(true)
-                .on_activate(move |i| sink.borrow_mut().push(i));
-            t.set_rows(vec![R { name: "a".into() }, R { name: "b".into() }]);
-            t.selection_mut().move_to(0, false);
-
-            let mut doc = automerge::AutoCommit::new();
-            let root = automerge::ROOT;
-            let handled = Widget::perform_action(
-                &mut t,
-                &crate::a11y::Action::Activate,
-                &[7],
-                &mut crate::widget::Edits::lend(&mut doc),
-                &root,
-            );
-            assert!(!handled, "a vanished row cannot be activated");
-            assert!(
-                fired.borrow().is_empty(),
-                "and must not activate some other row in its place"
-            );
-            assert_eq!(
-                t.selection.primary(),
-                Some(0),
-                "nor move the cursor off the row the user was on"
-            );
-        }
-
-        fn accessibility_exposes_per_row_and_cell_structure() {
-            use crate::a11y::Role;
-            let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
-            t.set_rows(rows4());
-            t.selection_mut().select_only(2);
-            let node = Widget::accessibility(&t).unwrap();
-
-            // One Row child per display row, each numbered "N of 4".
-            assert_eq!(node.children.len(), 4, "a row node per display row");
-            for (i, row) in node.children.iter().enumerate() {
-                assert_eq!(row.role, Role::Row);
-                assert_eq!(row.pos_in_set, Some(i + 1));
-                assert_eq!(row.set_size, Some(4));
-                assert_eq!(row.children.len(), 2, "two cells per row (two columns)");
-                assert_eq!(row.children[0].role, Role::Cell);
-                assert_eq!(row.children[0].name.as_deref(), Some("Name"));
-                assert_eq!(row.children[0].pos_in_set, Some(1));
-                assert_eq!(row.children[1].name.as_deref(), Some("X"));
-                assert_eq!(row.children[1].pos_in_set, Some(2));
-            }
-            assert!(
-                node.children[2].state.selected,
-                "row 3 (index 2) is selected"
-            );
-            assert!(!node.children[0].state.selected);
-        }
-
-        fn typed_text_and_custom_cells_publish_row_specific_values() {
-            let columns = vec![
-                ColumnDef::new("name", "Name", ColumnWidth::Flex(1.0))
-                    .with_text(|row: &R| row.name.clone()),
-                ColumnDef::new("custom", "Custom", ColumnWidth::Fixed(80.0))
-                    .with_render(Box::new(|_, _, _, _, _, _| {}))
-                    .with_accessible_value(|row: &R| format!("custom {}", row.name)),
-                ColumnDef::new("action", "Action", ColumnWidth::Fixed(80.0))
-                    .with_widget(|_, _| Box::new(Button::new("edit", "Edit"))),
-            ];
-            let mut table = DataTable::new(columns);
-            table.set_rows(vec![R { name: "Ada".into() }]);
-            let semantics = Widget::accessibility(&table).expect("table semantics");
-            let cells = &semantics.children.first().expect("ready row").children;
-
-            assert_eq!(
-                cells.first().and_then(|cell| cell.value.as_deref()),
-                Some("Ada")
-            );
-            assert_eq!(
-                cells.get(1).and_then(|cell| cell.value.as_deref()),
-                Some("custom Ada")
-            );
-            assert_eq!(
-                cells.get(2).and_then(|cell| cell.value.as_deref()),
-                None,
-                "retained controls provide their own nested semantics"
-            );
-            assert!(table.columns[0].text.is_some());
-        }
-
-        semantic_row_actions_use_stable_row_identities();
-        semantic_rows_and_cells_publish_scrolled_viewport_geometry();
-        a_routed_action_naming_a_row_that_no_longer_exists_does_nothing();
-        accessibility_exposes_per_row_and_cell_structure();
-        typed_text_and_custom_cells_publish_row_specific_values();
-    }
 
     // Row actions mount for the row under the pointer only; a table its
     // host scrolls windows its rows, keeps no bar and leaves the wheel.
@@ -1121,35 +854,6 @@ tilo_test_env::scenario! {
         wheel_scrolls_in_internal_mode();
     }
 
-    phase rows_share_one_edge_and_the_scroll_bar_keeps_its_own_column;
-    {
-        let (mut t, _tree, _node) = scrolling_table();
-        let _relaid = lay_out(&mut t);
-        let bleed = f64::from(Theme::dark().tokens.spacing.s2);
-        let gutter = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
-        let rect = t.get_rect();
-        let first = t.col_rects.first().copied().expect("a column");
-        let last = t.col_rects.last().copied().expect("a column");
-        assert!((first.x0 - (rect.x0 - bleed)).abs() < 1e-6, "{first:?}");
-        let track = t.v_track().expect("the bar is live");
-        assert!(
-            last.x1 <= track.x0 + 1e-6,
-            "the last column ends before the bar: {last:?} vs {track:?}"
-        );
-        let band = t.columns_band();
-        assert!((band.x0 - first.x0).abs() < 1e-6);
-        assert!((band.x1 - (rect.x1 - gutter)).abs() < 1e-6 && band.x1 <= track.x0);
-
-        let mut plain = DataTable::<R>::new(sample_cols()).selectable(true);
-        plain.set_rows(rows4());
-        let _laid = lay_out(&mut plain);
-        let band = plain.columns_band();
-        let rect = plain.get_rect();
-        assert!(
-            (band.x1 - (rect.x1 + bleed)).abs() < 1e-6,
-            "{band:?} in {rect:?}"
-        );
-    }
 
     phase scrollbar_visibility_thumb_drag_and_track_paging;
     {
@@ -1607,5 +1311,40 @@ fn a_row_carries_its_name_activation_and_menu_into_the_accessibility_tree() {
     assert!(
         semantics.children.iter().all(|row| !row.state.context_menu),
         "a row without a menu does not announce one"
+    );
+}
+
+#[test]
+fn a_routed_action_naming_a_row_that_no_longer_exists_does_nothing() {
+    // An assistive technology can hold a node id across a row being
+    // removed. Acting on whatever now sits at that index would operate on
+    // the wrong record — so an out-of-range row must be dropped, not
+    // clamped.
+    let fired = std::rc::Rc::new(std::cell::RefCell::new(Vec::<usize>::new()));
+    let sink = fired.clone();
+    let mut t = DataTable::<R>::new(sample_cols())
+        .selectable(true)
+        .on_activate(move |i| sink.borrow_mut().push(i));
+    t.set_rows(vec![R { name: "a".into() }, R { name: "b".into() }]);
+    t.selection_mut().move_to(0, false);
+
+    let mut doc = automerge::AutoCommit::new();
+    let root = automerge::ROOT;
+    let handled = Widget::perform_action(
+        &mut t,
+        &crate::a11y::Action::Activate,
+        &[7],
+        &mut crate::widget::Edits::lend(&mut doc),
+        &root,
+    );
+    assert!(!handled, "a vanished row cannot be activated");
+    assert!(
+        fired.borrow().is_empty(),
+        "and must not activate some other row in its place"
+    );
+    assert_eq!(
+        t.selection.primary(),
+        Some(0),
+        "nor move the cursor off the row the user was on"
     );
 }

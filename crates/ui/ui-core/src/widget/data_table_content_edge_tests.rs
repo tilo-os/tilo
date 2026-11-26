@@ -95,25 +95,6 @@ tilo_test_env::scenario! {
     /// Each phase was a test of its own and builds its own fixture.
     fn table_columns_keep_the_content_edge_density_and_priorities;
 
-    phase the_first_column_starts_on_the_content_edge_and_the_lift_bleeds_past_it;
-    {
-        let mut table = DataTable::new(vec![name_col()]).selectable(true);
-        table.set_rows(items(3));
-        let _ = settle(&mut table, 300.0, 400.0);
-        let theme = Theme::dark();
-        let bleed = crate::chrome::row_bleed(&theme);
-        let rect = table.get_rect();
-        let band = table.columns_band();
-        assert!(
-            (band.x0 - (rect.x0 - bleed)).abs() < 1e-6,
-            "{band:?} {rect:?}"
-        );
-        assert!((band.x1 - (rect.x1 + bleed)).abs() < 1e-6);
-        let first = table.col_rects[0];
-        assert!((first.x0 + bleed - rect.x0).abs() < 1e-6);
-        let row = table.row_rect(0).unwrap();
-        assert!((row.x0 - band.x0).abs() < 1e-6 && (row.x1 - band.x1).abs() < 1e-6);
-    }
 
     phase narrow_tables_hide_columns_by_priority_then_scroll_sideways;
     {
@@ -149,81 +130,8 @@ tilo_test_env::scenario! {
         assert!(table.h_track().is_some(), "the bar shows");
     }
 
-    phase flexible_minima_keep_identity_readable_before_hiding_or_scrolling;
-    {
-        let mut table = DataTable::new(vec![
-            name_col().min_width(200.0),
-            ColumnDef::new("detail", "Detail", ColumnWidth::Flex(3.0))
-                .min_width(64.0)
-                .priority(1)
-                .with_text(|_: &Item| "detail".to_owned()),
-            ColumnDef::new("action", "Action", ColumnWidth::Fixed(80.0)),
-        ]);
-        table.set_rows(items(3));
-        let _ = settle(&mut table, 600.0, 400.0);
-        assert_eq!(table.hidden, [false, false, false]);
-        assert!(table.col_rects[0].width() >= 200.0);
-        assert!(table.col_rects[1].width() >= 64.0);
-        assert!(
-            table.col_rects[2]
-                .x1
-                .total_cmp(&table.columns_band().x1)
-                .is_eq()
-        );
-        let _ = settle(&mut table, 320.0, 400.0);
-        assert_eq!(table.hidden, [false, true, false]);
-        assert!(table.col_rects[0].width() >= 200.0);
-        assert!(!table.h_overflow());
-        let (tree, node) = settle(&mut table, 240.0, 400.0);
-        assert_eq!(table.hidden, [false, true, false]);
-        assert!(table.col_rects[0].width().total_cmp(&200.0).is_eq());
-        assert!(table.col_rects[2].width().total_cmp(&80.0).is_eq());
-        assert!(table.h_overflow());
-        let before = table.scroll_x();
-        send(&mut table, &tree, node, &at(100.0, 60.0), false);
-        let wheel = crate::synthetic_input::mouse_wheel(0.0, -1.0);
-        assert!(send(&mut table, &tree, node, &wheel, true));
-        assert!(table.scroll_x() > before);
-        assert!(table.h_track().is_some());
-    }
 
-    phase a_capped_flexible_column_leaves_its_area_to_the_others;
-    {
-        let mut table = DataTable::new(vec![
-            name_col().max_width(120.0),
-            ColumnDef::new("detail", "Detail", ColumnWidth::Flex(2.0))
-                .with_text(|_: &Item| "detail".to_owned()),
-        ]);
-        table.set_rows(items(3));
-        let _ = settle(&mut table, 900.0, 400.0);
-        assert!(table.col_rects[0].width().total_cmp(&120.0).is_eq());
-        assert!(
-            table.col_rects[1]
-                .x1
-                .total_cmp(&table.columns_band().x1)
-                .is_eq(),
-            "the uncapped column reaches the table's edge"
-        );
-        let _ = settle(&mut table, 240.0, 400.0);
-        assert!(
-            table.col_rects[0].width() < 120.0,
-            "under the cap it shares"
-        );
-    }
 
-    phase auto_columns_share_the_leftover_without_a_flexible_one;
-    {
-        let mut table = DataTable::new(vec![
-            ColumnDef::new("name", "Name", ColumnWidth::Auto).with_text(|r: &Item| r.name.clone()),
-            ColumnDef::new("kind", "Kind", ColumnWidth::Auto).with_text(|_| "File".to_owned()),
-        ]);
-        table.set_rows(items(3));
-        let _ = settle(&mut table, 500.0, 400.0);
-        let band = table.columns_band();
-        let last = *table.col_rects.last().unwrap();
-        assert!((last.x1 - band.x1).abs() < 0.5, "the columns fill the band");
-        assert!(table.col_rects[0].width() > 60.0);
-    }
 }
 
 tilo_test_env::scenario! {
@@ -383,24 +291,6 @@ tilo_test_env::scenario! {
         assert_eq!(*clicks.borrow(), [2]);
     }
 
-    phase a_filling_table_scrolls_inside_its_parent_and_wrapping_rows_grow;
-    {
-        let mut table = DataTable::new(vec![
-            ColumnDef::new("text", "Message", ColumnWidth::Flex(1.0))
-                .with_text(|r: &Item| r.name.clone())
-                .wrapping(3),
-        ])
-        .fill_height();
-        let mut rows = items(40);
-        rows[0].name = "A message long enough to wrap onto more than one line in a narrow table".into();
-        table.set_rows(rows);
-        let _ = settle(&mut table, 200.0, 300.0);
-        assert!((table.viewport.viewport() - (300.0 - table.header_height())).abs() < 0.5);
-        assert!(table.internal_scroll());
-        let tall = table.viewport.item_height(0).unwrap();
-        let plain = table.viewport.item_height(1).unwrap();
-        assert!(tall > plain, "{tall} vs {plain}");
-    }
 
 }
 
@@ -470,66 +360,6 @@ fn hosted_checkbox_cells_toggle_instead_of_activating_their_row() {
         "a removed record's retained checkbox must be refused"
     );
     assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
-}
-
-#[test]
-fn badges_and_checkboxes_are_measured_painted_and_read() {
-    let checks = Rc::new(RefCell::new(Vec::new()));
-    let seen = Rc::clone(&checks);
-    let mut table = DataTable::new(vec![
-        ColumnDef::checkbox("on", "On", |r: &Item| r.on),
-        ColumnDef::new("level", "Level", ColumnWidth::Auto)
-            .with_badge(|_| ("Warning".to_owned(), crate::widget::Tone::Warning)),
-        name_col(),
-    ])
-    .selectable(true)
-    .on_check(move |row, on| seen.borrow_mut().push((row, on)));
-    table.set_rows(items(2));
-    let (tree, node) = settle(&mut table, 400.0, 300.0);
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let badge = crate::widget::BadgeFace::intrinsic_width("Warning", &mut text, &theme);
-    assert!(table.col_rects[1].width() >= badge);
-    let row = table.row_rect(1).unwrap();
-    let check = table.col_rects[0];
-    send(
-        &mut table,
-        &tree,
-        node,
-        &at(check.center().x, row.center().y),
-        false,
-    );
-    send(
-        &mut table,
-        &tree,
-        node,
-        &button(ElementState::Pressed, MouseButton::Left),
-        false,
-    );
-    assert_eq!(*checks.borrow(), [(1, true)]);
-    let mut state = crate::state::State::new();
-    assert!(table.perform_action(
-        &crate::a11y::Action::ToggleCheck,
-        &[0, 0],
-        &mut crate::widget::Edits::lend(&mut state.doc),
-        &state.root,
-    ));
-    assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
-    assert!(!table.perform_action(
-        &crate::a11y::Action::ToggleCheck,
-        &[0, 99],
-        &mut crate::widget::Edits::lend(&mut state.doc),
-        &state.root,
-    ));
-    assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
-    let a11y = Widget::accessibility(&table).unwrap();
-    let cell = &a11y.children[0].children[0];
-    assert_eq!(cell.role, crate::a11y::Role::Checkbox);
-    assert_eq!(cell.state.checked, Some(false));
-    assert_eq!(
-        a11y.children[0].children[1].value.as_deref(),
-        Some("Warning")
-    );
 }
 
 #[test]

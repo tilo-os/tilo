@@ -1418,12 +1418,6 @@ impl DataTableCore {
         self
     }
 
-    /// The rows, for editing in place; follow with [`Self::apply_changes`].
-    #[cfg(test)]
-    pub(crate) fn rows_mut(&mut self) -> &mut Vec<Box<AnyRow>> {
-        &mut self.rows
-    }
-
     /// Reconcile edits made through `Self::rows_mut`: cell controls stay mounted by row key (so a field
     /// being typed into keeps its focus), and only the rows named in [`TableModelChange::RowsChanged`]
     /// rebuild theirs.

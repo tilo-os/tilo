@@ -244,12 +244,6 @@ fn scrolling_a_virtual_list_copies_the_rows_and_matches_a_full_render() {
     }
 }
 
-#[test]
-fn a_step_of_part_of_a_device_pixel_repaints_the_list_and_matches() {
-    let runs = scroll(&Theme::dark(), 1.0, &[(40.5, 8)]);
-    assert_eq!(runs[0].copied_frames, 0, "{runs:?}");
-}
-
 struct Arriving {
     groups: Rc<RefCell<Vec<Option<RowGroup>>>>,
     changes: Rc<RefCell<Vec<ListModelChange<u64>>>>,

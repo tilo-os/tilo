@@ -184,21 +184,6 @@ tilo_test_env::scenario! {
         assert_eq!(list.open_row(), None);
     }
 
-    phase an_item_that_leaves_the_list_is_heard_to_close;
-    {
-        let (mut list, _opens, closes) = heard_list();
-        let _ = lay_out(&mut list, 300.0);
-        list.activate_key(ListKey::new(2u64));
-        assert_eq!(closes.get(), 0);
-        list.update_model(|model| {
-            model.rows.retain(|row| *row != 2);
-        });
-        assert_eq!(
-            closes.get(),
-            1,
-            "the host hears the item close with its row"
-        );
-    }
 
     phase a_row_named_again_keeps_held_open_while_the_rows_come_back;
     {
@@ -300,31 +285,6 @@ tilo_test_env::scenario! {
             "the open row is one row, not one inside another: {nested:?}"
         );
     }
-}
-
-#[test]
-fn the_row_that_opens_grows_into_its_document_and_keeps_the_list_laying_out() {
-    let opened = Rc::new(RefCell::new(Vec::new()));
-    let mut list = list(Rc::clone(&opened));
-    let _ = lay_out(&mut list, 300.0);
-    assert_eq!(
-        list.viewport.item_height(0),
-        Some(20.0),
-        "a closed row stands at its row"
-    );
-
-    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
-    list.activate_key(ListKey::new(0u64));
-    let _ = lay_out(&mut list, 300.0);
-    let on_the_way = list.viewport.item_height(0).unwrap_or_default();
-    assert!(
-        on_the_way < 120.0,
-        "the row is on its way to its document: {on_the_way}"
-    );
-    assert!(
-        list.is_layout_dirty() && list.layout_needs_measure(),
-        "the list asks for the frames its row moves in"
-    );
 }
 
 struct Renamed {

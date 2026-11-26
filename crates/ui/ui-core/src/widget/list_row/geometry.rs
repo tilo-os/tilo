@@ -63,26 +63,6 @@ impl ListRowFace<'_> {
         }
     }
 
-    /// The status dot's centre in `row`, as painted.
-    #[cfg(test)]
-    pub(crate) fn dot_centre(
-        &self,
-        row: Rect,
-        text: &mut TextRenderer,
-        theme: &Theme,
-    ) -> Option<vello::kurbo::Point> {
-        let m = self.metrics(theme);
-        let geo = self.geometry(row, &m, text, theme);
-        let x = geo.dot_x?;
-        let block = self.text_block(text, &m);
-        let title_line = RowMetrics::line(text, &self.title_style(&m));
-        let title_cy = row.center().y - block / 2.0 + title_line / 2.0;
-        Some(vello::kurbo::Point::new(
-            x,
-            Self::dot_cy(&geo, row, self.extra_lines() > 0, title_cy),
-        ))
-    }
-
     pub(super) fn text_block(&self, text: &mut TextRenderer, m: &RowMetrics) -> f64 {
         let title = RowMetrics::line(text, &self.title_style(m)) * f64::from(self.title_lines);
         let subtitle = if self.subtitle.is_some() {

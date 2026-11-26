@@ -18,12 +18,6 @@ impl ListRow {
         }
     }
 
-    /// Whether the row stands as a row of an outline ([`Self::set_outline`]).
-    #[cfg(test)]
-    pub(crate) const fn is_outline(&self) -> bool {
-        self.outline
-    }
-
     /// Paint the row's hover and selection over `lift_box`, the box the list that holds it lifts
     /// a chosen row in: one box whether the list or the row draws the state, so a chosen row
     /// under the pointer never shows a second, smaller box inside its own.
