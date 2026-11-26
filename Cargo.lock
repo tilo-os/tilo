@@ -3167,7 +3167,6 @@ dependencies = [
  "tilo-net",
  "tilo-reference",
  "tilo-test-env",
- "tilo-ui-base",
  "tilolang-workspace",
  "workspace-hack",
 ]
@@ -3715,7 +3714,6 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-app",
- "tilo-ui-base",
  "workspace-hack",
 ]
 
@@ -3725,7 +3723,6 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-app",
- "tilo-ui-base",
  "workspace-hack",
 ]
 
@@ -3735,7 +3732,6 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-app",
- "tilo-ui-base",
  "workspace-hack",
 ]
 
@@ -3745,7 +3741,6 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-app",
- "tilo-ui-base",
  "workspace-hack",
 ]
 
@@ -3755,7 +3750,6 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-app",
- "tilo-ui-base",
  "workspace-hack",
 ]
 
@@ -3765,7 +3759,6 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-app",
- "tilo-ui-base",
  "workspace-hack",
 ]
 
@@ -3775,7 +3768,6 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-app",
- "tilo-ui-base",
  "workspace-hack",
 ]
 
@@ -3785,7 +3777,6 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-app",
- "tilo-ui-base",
  "workspace-hack",
 ]
 
@@ -3795,7 +3786,6 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-app",
- "tilo-ui-base",
  "workspace-hack",
 ]
 
@@ -3805,7 +3795,6 @@ version = "0.1.0"
 dependencies = [
  "runtime-dylib",
  "tilo-app",
- "tilo-ui-base",
  "workspace-hack",
 ]
 
@@ -8395,7 +8384,6 @@ dependencies = [
  "tilo-contact-directory-engine",
  "tilo-messaging",
  "tilo-test-env",
- "tilo-ui-base",
  "uuid",
  "workspace-hack",
 ]
@@ -10074,7 +10062,6 @@ dependencies = [
  "tilo-settings-store",
  "tilo-taffy",
  "tilo-test-env",
- "tilo-ui-base",
  "tilo-vello",
  "tilo-winit",
  "tracing",
@@ -10881,7 +10868,6 @@ dependencies = [
  "runtime-dylib",
  "tilo-app",
  "tilo-app-test-host",
- "tilo-ui-base",
  "workspace-hack",
 ]
 
@@ -12143,7 +12129,6 @@ dependencies = [
  "tilo-settings-model",
  "tilo-taffy",
  "tilo-test-env",
- "tilo-ui-base",
  "tilo-vello",
  "tilo-winit",
  "tokio",
@@ -13427,7 +13412,6 @@ dependencies = [
  "tilo-settings-store",
  "tilo-test-env",
  "tilo-theme-sdk",
- "tilo-ui-base",
  "tilo-wallpapers",
  "tilo-wasm-aot",
  "tilolang-tilo",
@@ -14692,7 +14676,6 @@ dependencies = [
  "tilo-taffy",
  "tilo-terminal",
  "tilo-test-env",
- "tilo-ui-base",
  "tilo-vello",
  "tilo-winit",
  "tracing",
@@ -14731,7 +14714,6 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-content",
  "tilo-rich-text",
- "tilo-ui-base",
  "workspace-hack",
 ]
 
@@ -15027,7 +15009,6 @@ dependencies = [
  "tilo-server-protocol",
  "tilo-session-client",
  "tilo-test-env",
- "tilo-ui-base",
  "tilo-user-identity",
  "tokio",
  "tracing",
@@ -15182,7 +15163,6 @@ dependencies = [
  "tilo-sandbox-core",
  "tilo-surface-compile",
  "tilo-test-env",
- "tilo-ui-base",
  "tilo-ui-graph",
  "tilolang-tilo",
  "tokio",
@@ -15465,7 +15445,6 @@ dependencies = [
  "serde_json",
  "tilo-app",
  "tilo-app-builder",
- "tilo-ui-base",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
 ]
@@ -16068,7 +16047,6 @@ dependencies = [
  "tilo-media",
  "tilo-sheets",
  "tilo-test-env",
- "tilo-ui-base",
  "workspace-hack",
 ]
 
@@ -18136,7 +18114,6 @@ dependencies = [
  "tilo-app",
  "tilo-formats",
  "tilo-settings-model",
- "tilo-ui-base",
  "workspace-hack",
 ]
 
@@ -18174,7 +18151,6 @@ dependencies = [
  "tilo-compositor",
  "tilo-sheets",
  "tilo-test-env",
- "tilo-ui-base",
  "tracing",
  "workspace-hack",
 ]
@@ -18339,7 +18315,6 @@ dependencies = [
  "tilo-resource",
  "tilo-secret-vault",
  "tilo-test-env",
- "tilo-ui-base",
  "tokio",
  "tokio-tungstenite",
  "uuid",
@@ -18927,7 +18902,6 @@ version = "0.1.0"
 dependencies = [
  "tilo-app",
  "tilo-app-test-host",
- "tilo-ui-base",
  "workspace-hack",
  "zeroize",
 ]
@@ -19243,7 +19217,6 @@ dependencies = [
  "tilo-server",
  "tilo-server-protocol",
  "tilo-test-env",
- "tilo-ui-base",
  "tilo-user-identity",
  "tilo-workspace-service",
  "tilolang-cli",
@@ -19708,7 +19681,6 @@ dependencies = [
  "tilo-app-test-host",
  "tilo-doc",
  "tilo-document",
- "tilo-ui-base",
  "tracing",
  "workspace-hack",
 ]
@@ -20859,7 +20831,6 @@ dependencies = [
  "tilo-settings-store",
  "tilo-startup-metrics",
  "tilo-test-env",
- "tilo-ui-base",
  "tilo-workspace-directory",
  "tilo-workspace-join",
  "tokio",
@@ -21618,7 +21589,6 @@ version = "0.1.0"
 dependencies = [
  "tilo-app",
  "tilo-files",
- "tilo-ui-base",
  "workspace-hack",
 ]
 
@@ -21813,7 +21783,6 @@ dependencies = [
  "tilo-resource",
  "tilo-test-env",
  "tilo-thumbnail",
- "tilo-ui-base",
  "tilo-vello",
  "tilo-video-edit",
  "tracing",
@@ -22596,7 +22565,6 @@ dependencies = [
  "tilo-socket",
  "tilo-spotify",
  "tilo-test-env",
- "tilo-ui-base",
  "tilolang-runtime",
  "tilolang-tilo",
  "tokio",

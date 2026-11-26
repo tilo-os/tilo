@@ -43,7 +43,7 @@ fn a_theme_round_trips_its_document_role_by_role() {
 #[test]
 fn editing_a_finished_theme_keeps_its_look() {
     let document: ThemeDocument = serde_json::from_str(include_str!(
-        "../../../ui/ui-core/tests/fixtures/finishes/liquid-glass.json"
+        "../../../ui/ui-base/tests/fixtures/finishes/liquid-glass.json"
     ))
     .unwrap();
     let mut theme = ThemeRecord::from_document(&document);
@@ -254,7 +254,7 @@ fn an_imported_theme_is_written_only_when_it_is_admitted_and_legible() {
 fn refraction_bends_every_glass_role_in_proportion() {
     for (json, painter) in [
         (
-            include_str!("../../../ui/ui-core/tests/fixtures/finishes/liquid-glass.json"),
+            include_str!("../../../ui/ui-base/tests/fixtures/finishes/liquid-glass.json"),
             "liquid",
         ),
         (
