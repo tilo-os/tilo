@@ -1204,6 +1204,60 @@ async fn a_folder_waits_for_a_workspace_this_device_does_not_hold_yet() {
     member.shutdown().await;
 }
 
+/// A person's own workspace is founded on their computer at their first call, after the files
+/// daemon already opened its folder: the folder waits for it, and stops waiting once this
+/// device founded and hosts it, with no member copy to catch up with.
+#[cfg(feature = "files")]
+#[tokio::test]
+async fn a_folder_opened_before_its_workspace_is_founded_here_stops_waiting_once_it_is() {
+    let state = tempfile::tempdir().unwrap();
+    let (key, cert) = hosting_device();
+    let host = test_host_holding(state.path(), &key, &cert, group_keys()).await;
+    let copies = host.workspaces().clone();
+    let own = WorkspaceId::parse(&crate::workspaces::person_workspace::workspace_id(&copies))
+        .expect("the person's own workspace id");
+    let kept = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        tilo_fs::ContentStore::open(kept.path().join("content"))
+            .await
+            .expect("a content store for the folder"),
+    );
+    let folder = crate::files::start(
+        &copies,
+        own,
+        &kept.path().join("tree"),
+        (cert.device_public_key, cert.user_public_key),
+        Some(store),
+        Some(crate::content::fixtures::hosts(false, false).a),
+    )
+    .await
+    .expect("the folder opens");
+    tilo_test_env::within(
+        "the folder waits for the person's workspace, not founded yet",
+        async {
+            while !folder.status().waiting_for_workspace {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+    crate::workspaces::person_workspace::found(&copies)
+        .await
+        .expect("this device founds its person's workspace");
+    tilo_test_env::within(
+        "the folder stops waiting once this device hosts the workspace",
+        async {
+            while folder.status().waiting_for_workspace {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+    drop(folder);
+    drop(copies);
+    host.shutdown().await;
+}
+
 /// A write the device serving a member copy makes is told to whoever follows the copy's
 /// records, naming its app and document: what a folder's sync wakes on instead of reading every
 /// record again to notice the serving device's edits.

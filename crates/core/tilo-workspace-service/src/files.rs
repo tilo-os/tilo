@@ -21,7 +21,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -76,7 +76,8 @@ pub async fn start(
     store: Option<Arc<tilo_fs::ContentStore>>,
     content: Option<Arc<RouteContent>>,
 ) -> std::io::Result<TreeSync> {
-    // A workspace this device hosts has no device serving it: its copy here is the workspace.
+    // A workspace this device hosts has no device serving it: its copy here is the workspace. One
+    // founded here after the folder opened is found hosted then ([`follow`]).
     let hosted = workspaces.hosts_here(workspace).await;
     let backend = Backend::of(workspaces, workspace, content, hosted);
     TreeSync::start(tilo_fs::tree_sync::Config {
@@ -114,7 +115,7 @@ impl Backend {
             documents: ServiceDocuments::of(workspaces.clone()),
             writes: ServiceWrites::of(workspaces.clone()),
             workspace,
-            hosted,
+            hosted: AtomicBool::new(hosted),
             name: workspace.to_string(),
             answers: Mutex::new(BTreeMap::new()),
             unserved: Arc::new(AtomicUsize::new(0)),
@@ -150,8 +151,10 @@ struct Copy {
     writes: ServiceWrites,
     workspace: WorkspaceId,
     /// Whether this device hosts the workspace: then what the copy holds is what the
-    /// workspace holds, with no serving device to catch up with.
-    hosted: bool,
+    /// workspace holds, with no serving device to catch up with. A workspace founded on this
+    /// device after its folder opened (a new person's own, founded at their first call) comes to
+    /// be hosted while the folder runs.
+    hosted: AtomicBool,
     name: String,
     /// The records of the tree the sync opened, each with what the copy answered of it: `None`
     /// until it can say.
@@ -167,12 +170,17 @@ struct Copy {
 }
 
 impl Copy {
+    /// Whether this device hosts the workspace, as [`follow`] last found.
+    fn hosted(&self) -> bool {
+        self.hosted.load(Ordering::Acquire)
+    }
+
     /// What the copy answers of `chunk` now, when it can say: the workspace holds none of it only
     /// once the copy caught up with the serving device and the record still reads absent; it
     /// holds it once the copy does and the serving device holds every write of this device's to
     /// it.
     fn answer_now(&self, chunk: TreeChunk) -> Option<DocumentAnswer> {
-        let caught_up = self.hosted
+        let caught_up = self.hosted()
             || self
                 .workspaces
                 .member_caught_up(self.workspace)
@@ -290,9 +298,9 @@ impl tilo_fs::tree_sync::TreePeer for Copy {
 
     /// The folder waits for the workspace until this device takes it in as a member copy:
     /// the same link, kept up or not, whose answers [`Self::answer_now`] reads. A workspace this
-    /// device hosts is here from the start.
+    /// device hosts is here from the moment it hosts it.
     fn holds_workspace(&self) -> Option<bool> {
-        Some(self.hosted || self.workspaces.member_caught_up(self.workspace).is_some())
+        Some(self.hosted() || self.workspaces.member_caught_up(self.workspace).is_some())
     }
 }
 
@@ -337,7 +345,7 @@ impl tilo_fs::tree_sync::TreeWriter for Writer {
 /// `copy`, or with why not. A workspace this device hosts kept them in its own store as they
 /// were made: that answers at once, so the records that name them go out.
 fn served(copy: &Copy, chunks: &[TreeChunk]) -> Option<tilo_fs::tree_sync::Served> {
-    if copy.hosted {
+    if copy.hosted() {
         return Some(Box::pin(std::future::ready(Ok(()))));
     }
     let documents: Vec<String> = chunks
@@ -402,8 +410,8 @@ async fn follow(
 ) {
     let mut answered = copy.workspaces.member_writes_answered();
     let mut caught_up: Option<tokio::sync::watch::Receiver<bool>> = None;
-    let mut was_caught_up = copy.hosted;
-    if copy.hosted && wakes.send(Wake::HostReady).is_err() {
+    let mut was_caught_up = copy.hosted();
+    if was_caught_up && wakes.send(Wake::HostReady).is_err() {
         return;
     }
     // What is still going to the holders is read now and then, and the sync told only when it
@@ -414,13 +422,20 @@ async fn follow(
         tokio::select! {
             _ = look.tick() => {
                 let lacks = copy.read_host_lacks();
-                if copy.lacks.lock_recover().replace(lacks) == Some(lacks) {
-                    continue;
-                }
-                if wakes.send(Wake::Holders).is_err() {
+                if copy.lacks.lock_recover().replace(lacks) != Some(lacks)
+                    && wakes.send(Wake::Holders).is_err()
+                {
                     return;
                 }
-                continue;
+                // A workspace neither hosted nor taken in as a member copy when the folder opened
+                // may be founded here since: then it is here, and the folder stops waiting.
+                if copy.hosted()
+                    || caught_up.is_some()
+                    || !copy.workspaces.hosts_here(copy.workspace).await
+                {
+                    continue;
+                }
+                copy.hosted.store(true, Ordering::Release);
             }
             written = writes.recv() => match written {
                 Ok(written) => {
@@ -443,7 +458,7 @@ async fn follow(
             // Held as a member copy only once the device took the workspace in.
             caught_up = copy.workspaces.member_caught_up(copy.workspace);
         }
-        let now_caught_up = copy.hosted
+        let now_caught_up = copy.hosted()
             || caught_up
                 .as_ref()
                 .is_some_and(|caught_up| *caught_up.borrow());

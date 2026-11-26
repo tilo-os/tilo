@@ -2794,8 +2794,23 @@ impl Daemon {
         let (copies, cert) = (workspaces.copies().clone(), identity.cert.clone());
         let (serving, following) = (Tickets::clone(&tickets), Arc::downgrade(&asked));
         tilo_rt::app().handle().spawn(async move {
+            use tilo_workspace_service::workspaces::person_workspace;
+            // A person founded on this computer has no workspace here until their first call
+            // founds it, and settling it marks this device then
+            // ([`super::first_workspace::FirstWorkspace::settle`]).
+            let held_root = match held_root {
+                Some(root)
+                    if copies
+                        .state(&person_workspace::workspace_id(&copies))
+                        .await
+                        .is_some() =>
+                {
+                    Some(root)
+                }
+                _ => None,
+            };
             if let Some(root) = held_root {
-                match tilo_workspace_service::workspaces::person_workspace::devices::mark_root_holder(
+                match person_workspace::devices::mark_root_holder(
                     &copies, &root, &cert,
                 )
                 .await
