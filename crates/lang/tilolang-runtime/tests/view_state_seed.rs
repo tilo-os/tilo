@@ -118,51 +118,54 @@ mod cases {
             .to_owned()
     }
 
-    /// A window whose place the run stages stands on that place: the bar names it, and the entry
-    /// at the list's end says what typing there does, where the declaration's default would have
-    /// made both say Today.
-    #[test]
-    fn a_run_stages_the_place_its_window_stands_on() {
-        let w = tasks();
-        let root = w.root("Tasks");
-        w.task(&root, "milk");
-        let plain = w.window("home", &root);
-        assert_eq!(title(plain.tree()), "Today", "the declaration's default");
-        assert_eq!(entry_placeholder(plain.tree()), "New task for today");
+    tilo_test_env::scenario! {
+        fn view_state_seed_1;
 
-        w.stage("chosen", "inbox");
-        let inbox = w.window("home", &root);
-        assert_eq!(
-            title(inbox.tree()),
-            "Inbox",
-            "the place the run staged:\n{}",
-            dump(inbox.tree())
-        );
-        assert_eq!(
-            entry_placeholder(inbox.tree()),
-            "New task",
-            "what typing in the window does follows the place it stands on"
-        );
+        phase a_run_stages_the_place_its_window_stands_on;
+        // A window whose place the run stages stands on that place: the bar names it, and the entry
+        // at the list's end says what typing there does, where the declaration's default would have
+        // made both say Today.
+        {
+            let w = tasks();
+            let root = w.root("Tasks");
+            w.task(&root, "milk");
+            let plain = w.window("home", &root);
+            assert_eq!(title(plain.tree()), "Today", "the declaration's default");
+            assert_eq!(entry_placeholder(plain.tree()), "New task for today");
 
-        w.stage("chosen", "done");
-        let done = w.window("home", &root);
-        assert_eq!(
-            title(done.tree()),
-            "Done",
-            "the other place a run stages:\n{}",
-            dump(done.tree())
-        );
-        assert!(
-            w.rt.take_view_writes().is_empty(),
-            "what a run stages is no one's change to keep"
-        );
-    }
+            w.stage("chosen", "inbox");
+            let inbox = w.window("home", &root);
+            assert_eq!(
+                title(inbox.tree()),
+                "Inbox",
+                "the place the run staged:\n{}",
+                dump(inbox.tree())
+            );
+            assert_eq!(
+                entry_placeholder(inbox.tree()),
+                "New task",
+                "what typing in the window does follows the place it stands on"
+            );
 
-    /// What a run stages is the value the app's own code names: a filter of the type the state
-    /// queries, a case of the enum it holds, or a literal, and nothing else.
-    #[test]
-    fn staging_names_a_value_the_app_declares() {
-        const FILTERED: &str = r#"
+            w.stage("chosen", "done");
+            let done = w.window("home", &root);
+            assert_eq!(
+                title(done.tree()),
+                "Done",
+                "the other place a run stages:\n{}",
+                dump(done.tree())
+            );
+            assert!(
+                w.rt.take_view_writes().is_empty(),
+                "what a run stages is no one's change to keep"
+            );
+        }
+
+        phase staging_names_a_value_the_app_declares;
+        // What a run stages is the value the app's own code names: a filter of the type the state
+        // queries, a case of the enum it holds, or a literal, and nothing else.
+        {
+            const FILTERED: &str = r#"
 app so.tilo.test.filtered "Filtered"
 type Task {
     done: Bool = false
@@ -189,41 +192,41 @@ view home(b: Board) {
     }
 }
 "#;
-        let w = install(FILTERED);
-        assert_eq!(
-            w.rt.stage_view_state(&w.app.meta().app, "place", "Task.done"),
-            Ok(()),
-            "a filter the type declares"
-        );
-        let error = |state: &str, text: &str| {
-            w.rt.stage_view_state(&w.app.meta().app, state, text)
-                .unwrap_err()
-        };
-        assert!(
-            error("place", "Task.nonsense").contains("declares no filter `nonsense`"),
-            "{}",
-            error("place", "Task.nonsense")
-        );
-        assert!(
-            error("place", "Proj.done").contains("holds the filters of `Task`"),
-            "{}",
-            error("place", "Proj.done")
-        );
-        assert!(
-            error("nowhere", "Task.done").contains(&format!(
-                "no view of `{}` declares the state",
-                w.app.meta().app
-            )),
-            "{}",
-            error("nowhere", "Task.done")
-        );
-    }
+            let w = install(FILTERED);
+            assert_eq!(
+                w.rt.stage_view_state(&w.app.meta().app, "place", "Task.done"),
+                Ok(()),
+                "a filter the type declares"
+            );
+            let error = |state: &str, text: &str| {
+                w.rt.stage_view_state(&w.app.meta().app, state, text)
+                    .unwrap_err()
+            };
+            assert!(
+                error("place", "Task.nonsense").contains("declares no filter `nonsense`"),
+                "{}",
+                error("place", "Task.nonsense")
+            );
+            assert!(
+                error("place", "Proj.done").contains("holds the filters of `Task`"),
+                "{}",
+                error("place", "Proj.done")
+            );
+            assert!(
+                error("nowhere", "Task.done").contains(&format!(
+                    "no view of `{}` declares the state",
+                    w.app.meta().app
+                )),
+                "{}",
+                error("nowhere", "Task.done")
+            );
+        }
 
-    /// A place a person picked is theirs: it is what their window shows, whatever a run staged
-    /// the declaration at, and it is kept as their change.
-    #[test]
-    fn a_place_a_person_picked_wins_over_what_a_run_staged() {
-        const PLACES: &str = r#"
+        phase a_place_a_person_picked_wins_over_what_a_run_staged;
+        // A place a person picked is theirs: it is what their window shows, whatever a run staged
+        // the declaration at, and it is kept as their change.
+        {
+            const PLACES: &str = r#"
 app so.tilo.test.places "Places"
 type Note {
     title: Text
@@ -254,29 +257,30 @@ view all(n: Notes) {
     }
 }
 "#;
-        let w = install(PLACES);
-        let root = w.root("Notes");
-        w.stage("side", "Side.right");
-        let mut window = w.window("all", &root);
-        assert_eq!(title(window.tree()), "right", "the staged side");
-        let go_left = of_kind(window.tree(), "ui.Button")
-            .into_iter()
-            .find(|node| node.props.get("label") == Some(&Value::text("Go left")))
-            .unwrap_or_else(|| panic!("{}", dump(window.tree())))
-            .clone();
-        window.press(&go_left.key).unwrap();
-        window.poll_patches().unwrap();
-        assert_eq!(title(window.tree()), "left", "the side the person picked");
-        // What they picked is theirs to keep, and the window shows it from then on, though the
-        // run still stages the other side.
-        let writes = w.rt.take_view_writes();
-        assert_eq!(writes.len(), 1, "the person's pick: {writes:?}");
-        w.stage("side", "Side.right");
-        let reopened = w.window("all", &root);
-        assert_eq!(
-            title(reopened.tree()),
-            "left",
-            "the person's choice stands over the run's"
-        );
+            let w = install(PLACES);
+            let root = w.root("Notes");
+            w.stage("side", "Side.right");
+            let mut window = w.window("all", &root);
+            assert_eq!(title(window.tree()), "right", "the staged side");
+            let go_left = of_kind(window.tree(), "ui.Button")
+                .into_iter()
+                .find(|node| node.props.get("label") == Some(&Value::text("Go left")))
+                .unwrap_or_else(|| panic!("{}", dump(window.tree())))
+                .clone();
+            window.press(&go_left.key).unwrap();
+            window.poll_patches().unwrap();
+            assert_eq!(title(window.tree()), "left", "the side the person picked");
+            // What they picked is theirs to keep, and the window shows it from then on, though the
+            // run still stages the other side.
+            let writes = w.rt.take_view_writes();
+            assert_eq!(writes.len(), 1, "the person's pick: {writes:?}");
+            w.stage("side", "Side.right");
+            let reopened = w.window("all", &root);
+            assert_eq!(
+                title(reopened.tree()),
+                "left",
+                "the person's choice stands over the run's"
+            );
+        }
     }
 }

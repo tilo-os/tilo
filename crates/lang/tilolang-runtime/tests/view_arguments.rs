@@ -18,11 +18,14 @@ mod cases {
             .map_err(|error| error.to_string())
     }
 
-    /// A map keeps a number the way the handle imports carry it, and a read gives the number
-    /// back: `??` on a read is the entry, or the fallback where the key holds none.
-    #[test]
-    fn a_map_read_of_a_number_gives_the_number_back() {
-        let source = r#"app so.tilo.t "T"
+    tilo_test_env::scenario! {
+        fn view_arguments_1;
+
+        phase a_map_read_of_a_number_gives_the_number_back;
+        // A map keeps a number the way the handle imports carry it, and a read gives the number
+        // back: `??` on a read is the entry, or the fallback where the key holds none.
+        {
+            let source = r#"app so.tilo.t "T"
 
 type T {
     n: Float
@@ -52,14 +55,14 @@ view t(r: T) {
     ui.Text("{entry()} {absent()}")
 }
 "#;
-        opens(source, "t").expect("a map's entries read as the values they hold");
-    }
+            opens(source, "t").expect("a map's entries read as the values they hold");
+        }
 
-    /// A view called with a record made in the caller hands the record on: its arguments travel
-    /// as the node's `arg.<name>` properties, which the runtime gives the view itself.
-    #[test]
-    fn a_view_takes_a_record_made_in_the_caller() {
-        let source = r#"app so.tilo.t "T"
+        phase a_view_takes_a_record_made_in_the_caller;
+        // A view called with a record made in the caller hands the record on: its arguments travel
+        // as the node's `arg.<name>` properties, which the runtime gives the view itself.
+        {
+            let source = r#"app so.tilo.t "T"
 
 type T {
     n: Int
@@ -82,14 +85,14 @@ view shown(c: Count) {
     ui.Text("{c.n}")
 }
 "#;
-        opens(source, "t").expect("the record reaches the view it is passed to");
-    }
+            opens(source, "t").expect("the record reaches the view it is passed to");
+        }
 
-    /// A loop passes a record from around it to its rows' view: a row is a view too, and the
-    /// record reaches it as the loop's `arg.<name>` property.
-    #[test]
-    fn a_loop_hands_its_rows_a_record_from_around_it() {
-        let source = r#"app so.tilo.t "T"
+        phase a_loop_hands_its_rows_a_record_from_around_it;
+        // A loop passes a record from around it to its rows' view: a row is a view too, and the
+        // record reaches it as the loop's `arg.<name>` property.
+        {
+            let source = r#"app so.tilo.t "T"
 
 type T {
     things: Collection<Thing>
@@ -122,14 +125,14 @@ view t(r: T) {
     }
 }
 "#;
-        opens(source, "t").expect("the record reaches the rows' view");
-    }
+            opens(source, "t").expect("the record reaches the rows' view");
+        }
 
-    /// An action whose `List<File>` the person's chooser fills runs from a button with the other
-    /// arguments bound: the reference is the action's, and no call fills the files.
-    #[test]
-    fn an_action_whose_files_a_chooser_fills_takes_the_rest() {
-        let source = r#"app so.tilo.t "T"
+        phase an_action_whose_files_a_chooser_fills_takes_the_rest;
+        // An action whose `List<File>` the person's chooser fills runs from a button with the other
+        // arguments bound: the reference is the action's, and no call fills the files.
+        {
+            let source = r#"app so.tilo.t "T"
 
 type T {
     n: Int
@@ -148,14 +151,14 @@ view t(r: T) {
     }
 }
 "#;
-        opens(source, "t").expect("the chooser fills the files, and the button binds the rest");
-    }
+            opens(source, "t").expect("the chooser fills the files, and the button binds the rest");
+        }
 
-    /// A control in a view the tested view calls is reached through the view it is called
-    /// through: a test presses what the window shows, not only what one view declares.
-    #[test]
-    fn a_control_in_a_nested_view_is_reached_through_the_view_that_calls_it() {
-        let source = r#"app so.tilo.t "T"
+        phase a_control_in_a_nested_view_is_reached_through_the_view_that_calls_it;
+        // A control in a view the tested view calls is reached through the view it is called
+        // through: a test presses what the window shows, not only what one view declares.
+        {
+            let source = r#"app so.tilo.t "T"
 
 type T {
     label: Text
@@ -179,28 +182,28 @@ view controls(r: T) {
     } as press
 }
 "#;
-        let app = App::compile(source, &[]);
-        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).expect("a runtime");
-        app.load(&rt);
-        let root = rt.create_root("T").expect("a root");
-        let view = rt
-            .open_view(&me(), &app.view("t"), vec![Value::resource(&root)])
-            .expect("the view opens");
-        let press = app.anchor("t", "press");
-        assert!(view.tree().find(&press).is_some(), "{}", dump(view.tree()));
-        assert!(matches!(
-            view.press(&press).expect("the button runs"),
-            InvokeOutcome::Done(_)
-        ));
-        assert_eq!(rt.read(&root, "label").unwrap(), Value::text("pressed"));
-    }
+            let app = App::compile(source, &[]);
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).expect("a runtime");
+            app.load(&rt);
+            let root = rt.create_root("T").expect("a root");
+            let view = rt
+                .open_view(&me(), &app.view("t"), vec![Value::resource(&root)])
+                .expect("the view opens");
+            let press = app.anchor("t", "press");
+            assert!(view.tree().find(&press).is_some(), "{}", dump(view.tree()));
+            assert!(matches!(
+                view.press(&press).expect("the button runs"),
+                InvokeOutcome::Done(_)
+            ));
+            assert_eq!(rt.read(&root, "label").unwrap(), Value::text("pressed"));
+        }
 
-    /// A view expanded where it is called (a template, here one taking the window's state) is a
-    /// view of the app: its metadata names the anchors its body declares and the views it calls,
-    /// and the view that shows it names the template, so a test presses what a part draws.
-    #[test]
-    fn a_template_expanded_in_a_part_is_reached_through_the_view_that_shows_it() {
-        let source = r#"app so.tilo.t "T"
+        phase a_template_expanded_in_a_part_is_reached_through_the_view_that_shows_it;
+        // A view expanded where it is called (a template, here one taking the window's state) is a
+        // view of the app: its metadata names the anchors its body declares and the views it calls,
+        // and the view that shows it names the template, so a test presses what a part draws.
+        {
+            let source = r#"app so.tilo.t "T"
 
 type T {
     label: Text
@@ -231,41 +234,42 @@ view tools(r: T, open: State<Bool>) {
     } as press
 }
 "#;
-        let app = App::compile(source, &[]);
-        let meta = app.meta();
-        let t = meta.views.iter().find(|v| v.name == "t").expect("view t");
-        let tools = meta
-            .template_views
-            .iter()
-            .find(|v| v.name == "tools")
-            .expect("the template's metadata");
-        assert_eq!(
-            t.calls,
-            vec![tools.id.clone()],
-            "the view names the template it expands, not a key of its call site"
-        );
-        assert_eq!(
-            tools
-                .anchors
+            let app = App::compile(source, &[]);
+            let meta = app.meta();
+            let t = meta.views.iter().find(|v| v.name == "t").expect("view t");
+            let tools = meta
+                .template_views
                 .iter()
-                .map(|a| a.name.as_str())
-                .collect::<Vec<_>>(),
-            ["press"],
-            "the template's metadata carries the anchors its body declares"
-        );
+                .find(|v| v.name == "tools")
+                .expect("the template's metadata");
+            assert_eq!(
+                t.calls,
+                vec![tools.id.clone()],
+                "the view names the template it expands, not a key of its call site"
+            );
+            assert_eq!(
+                tools
+                    .anchors
+                    .iter()
+                    .map(|a| a.name.as_str())
+                    .collect::<Vec<_>>(),
+                ["press"],
+                "the template's metadata carries the anchors its body declares"
+            );
 
-        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).expect("a runtime");
-        app.load(&rt);
-        let root = rt.create_root("T").expect("a root");
-        let view = rt
-            .open_view(&me(), &app.view("t"), vec![Value::resource(&root)])
-            .expect("the view opens");
-        let press = app.anchor("t", "press");
-        assert!(view.tree().find(&press).is_some(), "{}", dump(view.tree()));
-        assert!(matches!(
-            view.press(&press).expect("the button runs"),
-            InvokeOutcome::Done(_)
-        ));
-        assert_eq!(rt.read(&root, "label").unwrap(), Value::text("pressed"));
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).expect("a runtime");
+            app.load(&rt);
+            let root = rt.create_root("T").expect("a root");
+            let view = rt
+                .open_view(&me(), &app.view("t"), vec![Value::resource(&root)])
+                .expect("the view opens");
+            let press = app.anchor("t", "press");
+            assert!(view.tree().find(&press).is_some(), "{}", dump(view.tree()));
+            assert!(matches!(
+                view.press(&press).expect("the button runs"),
+                InvokeOutcome::Done(_)
+            ));
+            assert_eq!(rt.read(&root, "label").unwrap(), Value::text("pressed"));
+        }
     }
 }

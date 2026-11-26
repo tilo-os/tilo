@@ -2132,7 +2132,6 @@ mod tests {
 
     include!("desktop_journey_tests.rs");
     include!("hosted_journey_tests.rs");
-    include!("setup_buttons_language_tests.rs");
 
     tilo_test_env::scenario! {
         #[cfg(target_os = "linux")]

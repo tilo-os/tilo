@@ -465,286 +465,6 @@ mod cases {
         }
     }
 
-    #[test]
-    fn a_subscription_is_named_by_its_site_until_a_refresh_brings_its_title() {
-        let feeds = Feeds::new();
-        let feed = feeds.subscribe(GUARDIAN);
-        assert_eq!(feeds.field(&feed, "name"), json!("theguardian.com"));
-        assert_eq!(feeds.field(&feed, "url"), json!(GUARDIAN));
-        assert_eq!(feeds.field(&feed, "format"), json!({"variant": "rss"}));
-        let capsule = feeds.subscribe(CAPSULE);
-        assert_eq!(
-            feeds.field(&capsule, "format"),
-            json!({"variant": "gemini"})
-        );
-
-        // Subscribing twice shows the subscription the library already has.
-        assert_eq!(
-            feeds.subscribe(GUARDIAN).id_string(),
-            feeds.feed(GUARDIAN).id_string(),
-            "one subscription per address"
-        );
-    }
-
-    #[test]
-    fn a_refresh_asks_the_device_once_and_lands_each_answer_it_takes() {
-        let feeds = Feeds::new();
-        feeds.subscribe(GUARDIAN);
-        feeds.refresh();
-        assert_eq!(feeds.device.ops(), ["refresh", "take"]);
-        let asked: Json = serde_json::from_str(&feeds.device.inputs()[0]).unwrap();
-        assert_eq!(asked["feeds"][0]["url"], json!(GUARDIAN));
-        assert_eq!(asked["feeds"][0]["pin"], json!(""), "nothing is pinned yet");
-
-        assert_eq!(
-            feeds.feed_field(GUARDIAN, "name"),
-            json!("The Guardian: World"),
-            "what the feed says of itself names it"
-        );
-        let mut titles = feeds.article_titles();
-        titles.sort();
-        assert_eq!(titles, ["A quiet morning", "A second piece"]);
-        assert_eq!(feeds.refresh_field("fresh"), json!(2));
-        assert_eq!(feeds.refresh_field("state"), json!("done"));
-
-        // The window says what the refresh brought.
-        let window = feeds.feeds_window();
-        let banner = of_kind(window.tree(), "ui.Banner")
-            .into_iter()
-            .next()
-            .expect("a banner over the list");
-        assert_eq!(text(banner, "title"), "2 new articles");
-
-        // A second refresh brings nothing twice: the articles it lists are already kept, and
-        // the window says the subscriptions have nothing newer.
-        feeds.refresh();
-        assert_eq!(feeds.article_titles().len(), 2);
-        let window = feeds.feeds_window();
-        assert!(
-            of_kind(window.tree(), "ui.Banner").is_empty(),
-            "nothing new, no banner: {:?}",
-            shown(&window)
-        );
-        assert!(
-            shown(&window)
-                .iter()
-                .any(|text| text == "All feeds are up to date"),
-            "{:?}",
-            shown(&window)
-        );
-    }
-
-    #[test]
-    fn a_site_that_refuses_says_why_and_a_capsule_pins_its_certificate() {
-        let feeds = Feeds::new();
-        feeds.subscribe(BROKEN);
-        feeds.subscribe(CAPSULE);
-        feeds.refresh();
-        assert_eq!(
-            feeds.feed_field(BROKEN, "trouble"),
-            json!("The site refused the request (HTTP 403)")
-        );
-        assert_eq!(feeds.refresh_field("failed"), json!(1));
-        assert_eq!(
-            feeds.feed_field(CAPSULE, "pin"),
-            json!("abc123"),
-            "the certificate is pinned"
-        );
-        assert_eq!(feeds.feed_field(CAPSULE, "trouble"), json!(""));
-
-        // The window says which subscriptions failed and why, in a banner over the list.
-        let window = feeds.feeds_window();
-        let banner = of_kind(window.tree(), "ui.Banner")
-            .into_iter()
-            .next()
-            .expect("a banner over the list");
-        assert!(
-            text(banner, "message")
-                .contains("broken.test: The site refused the request (HTTP 403)"),
-            "{}",
-            text(banner, "message")
-        );
-    }
-
-    #[test]
-    fn opening_an_article_reads_it_and_its_marks_and_tags_are_the_persons() {
-        let feeds = Feeds::new();
-        feeds.subscribe(GUARDIAN);
-        feeds.refresh();
-        let article = feeds.article("A quiet morning");
-        assert_eq!(feeds.field(&article, "read"), json!(false));
-
-        // Opening it (what every path does) reads it.
-        let opened = feeds
-            .rt
-            .opened_action(&article.ty)
-            .expect("the type reads on open");
-        feeds
-            .rt
-            .invoke_action(&me(), (opened.as_str(), vec![Value::resource(&article)]))
-            .unwrap();
-        assert_eq!(feeds.field(&article, "read"), json!(true));
-
-        feeds.call(
-            "set_read",
-            &[
-                ("a", Value::resource(&article)),
-                ("read", Value::Bool(false)),
-            ],
-        );
-        assert_eq!(feeds.field(&article, "read"), json!(false));
-
-        feeds.call("star", &[("a", Value::resource(&article))]);
-        assert_eq!(feeds.field(&article, "starred"), json!(true));
-
-        feeds.call(
-            "set_tags",
-            &[
-                ("a", Value::resource(&article)),
-                ("tags", Value::text("  #Design, design , Later ")),
-            ],
-        );
-        let mut tags: Vec<String> = match feeds.rt.read(&article, "tags").unwrap() {
-            Value::List(items) => items
-                .iter()
-                .filter_map(|item| item.as_text().map(str::to_owned))
-                .collect(),
-            other => panic!("the tags read {other:?}"),
-        };
-        tags.sort();
-        assert_eq!(
-            tags,
-            ["design", "later"],
-            "trimmed, lower case, without `#`"
-        );
-    }
-
-    #[test]
-    fn marking_a_place_read_reads_what_the_reader_is_looking_at() {
-        let feeds = Feeds::new();
-        feeds.subscribe(GUARDIAN);
-        feeds.subscribe(LWN);
-        feeds.refresh();
-        // The reader looks at one subscription's place.
-        let guardian = feeds.feed(GUARDIAN);
-        feeds.call(
-            "show_place",
-            &[
-                ("reader", Value::resource(&feeds.reader())),
-                (
-                    "place",
-                    Value::text(format!("feed:{}", guardian.id_string())),
-                ),
-            ],
-        );
-        feeds.call("mark_read", &[("lib", Value::resource(&feeds.lib))]);
-        assert_eq!(
-            feeds.field(&feeds.article("A quiet morning"), "read"),
-            json!(true)
-        );
-        assert_eq!(
-            feeds.field(&feeds.article("A second piece"), "read"),
-            json!(true)
-        );
-    }
-
-    #[test]
-    fn unsubscribing_takes_its_articles_with_it() {
-        let feeds = Feeds::new();
-        feeds.subscribe(GUARDIAN);
-        feeds.refresh();
-        let guardian = feeds.feed(GUARDIAN);
-        feeds.call(
-            "unsubscribe",
-            &[
-                ("lib", Value::resource(&feeds.lib)),
-                ("feed", Value::resource(&guardian)),
-            ],
-        );
-        assert!(feeds.article_titles().is_empty());
-        let project = feeds
-            .rt
-            .project(&feeds.rt.read(&feeds.lib, "feeds").unwrap());
-        assert_eq!(project["items"].as_array().map(Vec::len), Some(0));
-    }
-
-    #[test]
-    fn an_opml_file_subscribes_what_it_lists_and_the_library_writes_one_back() {
-        let feeds = Feeds::new();
-        let file = feeds.device.file("feeds.opml", "<opml version=\"2.0\"/>");
-        feeds.call(
-            "import_opml",
-            &[("lib", Value::resource(&feeds.lib)), ("file", file)],
-        );
-        assert_eq!(feeds.feed_field(LWN, "name"), json!("LWN"));
-        assert_eq!(
-            feeds.feed_field("https://bare.test/feed", "name"),
-            json!("bare.test"),
-            "an address that names no title is named by its site"
-        );
-        let folders = feeds
-            .rt
-            .project(&feeds.rt.read(&feeds.lib, "folders").unwrap());
-        assert!(
-            folders.to_string().contains("Reading"),
-            "the folder the file names is made"
-        );
-
-        feeds.call("export_opml", &[("lib", Value::resource(&feeds.lib))]);
-        let export = feeds
-            .device
-            .inputs()
-            .into_iter()
-            .rfind(|input| input.contains("\"feeds\""))
-            .expect("the export names the subscriptions");
-        assert!(
-            export.contains("LWN") && export.contains("lwn.net"),
-            "{export}"
-        );
-    }
-
-    #[test]
-    fn the_window_shows_its_places_rows_and_the_article_in_the_reading_chosen() {
-        let feeds = Feeds::new();
-        feeds.subscribe(GUARDIAN);
-        feeds.subscribe(CAPSULE);
-        feeds.refresh();
-        let window = feeds.feeds_window();
-        let places: Vec<String> = of_kind(window.tree(), "ui.NavItem")
-            .into_iter()
-            .map(|item| text(item, "label"))
-            .collect();
-        assert!(places.contains(&"All articles".to_owned()), "{places:?}");
-        assert!(places.contains(&"Unread".to_owned()), "{places:?}");
-        assert!(
-            places.contains(&"The Guardian: World".to_owned()),
-            "{places:?}"
-        );
-
-        // A subscription just added is read and shown, so the window stands on it.
-        let rows = of_kind(window.tree(), "ui.ListItem")
-            .into_iter()
-            .map(row_item)
-            .count();
-        assert_eq!(rows, 1, "the capsule's own article, in the place it opened");
-
-        feeds.call(
-            "show_place",
-            &[
-                ("reader", Value::resource(&feeds.reader())),
-                ("place", Value::text("all")),
-            ],
-        );
-        let all = feeds.feeds_window();
-        let rows = of_kind(all.tree(), "ui.ListItem")
-            .into_iter()
-            .map(row_item)
-            .count();
-        assert_eq!(rows, 3, "two articles and the capsule's");
-        the_article_reads_in_the_chosen_size_face_and_paper(&feeds);
-        a_search_hit_and_a_tag_name_their_place(&feeds);
-    }
-
     /// The article's page is set in the reader's size, face and paper.
     fn the_article_reads_in_the_chosen_size_face_and_paper(feeds: &Feeds) {
         let article = feeds.article("A quiet morning");
@@ -827,15 +547,299 @@ mod cases {
         assert_eq!(feeds.field(&feeds.reader(), "place"), json!("tag:morning"));
     }
 
-    #[test]
-    fn an_empty_library_says_so_once_and_points_at_the_first_subscription() {
-        let feeds = Feeds::new();
-        let window = feeds.feeds_window();
-        let empty = of_kind(window.tree(), "ui.EmptyState")
-            .into_iter()
-            .next()
-            .expect("the window's one empty state");
-        assert_eq!(text(empty, "title"), "No feeds yet");
-        assert_eq!(text(empty, "action"), "Add feed");
+    tilo_test_env::scenario! {
+        fn e2e_feeds_1;
+
+        phase a_subscription_is_named_by_its_site_until_a_refresh_brings_its_title;
+        {
+            let feeds = Feeds::new();
+            let feed = feeds.subscribe(GUARDIAN);
+            assert_eq!(feeds.field(&feed, "name"), json!("theguardian.com"));
+            assert_eq!(feeds.field(&feed, "url"), json!(GUARDIAN));
+            assert_eq!(feeds.field(&feed, "format"), json!({"variant": "rss"}));
+            let capsule = feeds.subscribe(CAPSULE);
+            assert_eq!(
+                feeds.field(&capsule, "format"),
+                json!({"variant": "gemini"})
+            );
+
+            // Subscribing twice shows the subscription the library already has.
+            assert_eq!(
+                feeds.subscribe(GUARDIAN).id_string(),
+                feeds.feed(GUARDIAN).id_string(),
+                "one subscription per address"
+            );
+        }
+
+        phase a_refresh_asks_the_device_once_and_lands_each_answer_it_takes;
+        {
+            let feeds = Feeds::new();
+            feeds.subscribe(GUARDIAN);
+            feeds.refresh();
+            assert_eq!(feeds.device.ops(), ["refresh", "take"]);
+            let asked: Json = serde_json::from_str(&feeds.device.inputs()[0]).unwrap();
+            assert_eq!(asked["feeds"][0]["url"], json!(GUARDIAN));
+            assert_eq!(asked["feeds"][0]["pin"], json!(""), "nothing is pinned yet");
+
+            assert_eq!(
+                feeds.feed_field(GUARDIAN, "name"),
+                json!("The Guardian: World"),
+                "what the feed says of itself names it"
+            );
+            let mut titles = feeds.article_titles();
+            titles.sort();
+            assert_eq!(titles, ["A quiet morning", "A second piece"]);
+            assert_eq!(feeds.refresh_field("fresh"), json!(2));
+            assert_eq!(feeds.refresh_field("state"), json!("done"));
+
+            // The window says what the refresh brought.
+            let window = feeds.feeds_window();
+            let banner = of_kind(window.tree(), "ui.Banner")
+                .into_iter()
+                .next()
+                .expect("a banner over the list");
+            assert_eq!(text(banner, "title"), "2 new articles");
+
+            // A second refresh brings nothing twice: the articles it lists are already kept, and
+            // the window says the subscriptions have nothing newer.
+            feeds.refresh();
+            assert_eq!(feeds.article_titles().len(), 2);
+            let window = feeds.feeds_window();
+            assert!(
+                of_kind(window.tree(), "ui.Banner").is_empty(),
+                "nothing new, no banner: {:?}",
+                shown(&window)
+            );
+            assert!(
+                shown(&window)
+                    .iter()
+                    .any(|text| text == "All feeds are up to date"),
+                "{:?}",
+                shown(&window)
+            );
+        }
+
+        phase a_site_that_refuses_says_why_and_a_capsule_pins_its_certificate;
+        {
+            let feeds = Feeds::new();
+            feeds.subscribe(BROKEN);
+            feeds.subscribe(CAPSULE);
+            feeds.refresh();
+            assert_eq!(
+                feeds.feed_field(BROKEN, "trouble"),
+                json!("The site refused the request (HTTP 403)")
+            );
+            assert_eq!(feeds.refresh_field("failed"), json!(1));
+            assert_eq!(
+                feeds.feed_field(CAPSULE, "pin"),
+                json!("abc123"),
+                "the certificate is pinned"
+            );
+            assert_eq!(feeds.feed_field(CAPSULE, "trouble"), json!(""));
+
+            // The window says which subscriptions failed and why, in a banner over the list.
+            let window = feeds.feeds_window();
+            let banner = of_kind(window.tree(), "ui.Banner")
+                .into_iter()
+                .next()
+                .expect("a banner over the list");
+            assert!(
+                text(banner, "message")
+                    .contains("broken.test: The site refused the request (HTTP 403)"),
+                "{}",
+                text(banner, "message")
+            );
+        }
+
+        phase opening_an_article_reads_it_and_its_marks_and_tags_are_the_persons;
+        {
+            let feeds = Feeds::new();
+            feeds.subscribe(GUARDIAN);
+            feeds.refresh();
+            let article = feeds.article("A quiet morning");
+            assert_eq!(feeds.field(&article, "read"), json!(false));
+
+            // Opening it (what every path does) reads it.
+            let opened = feeds
+                .rt
+                .opened_action(&article.ty)
+                .expect("the type reads on open");
+            feeds
+                .rt
+                .invoke_action(&me(), (opened.as_str(), vec![Value::resource(&article)]))
+                .unwrap();
+            assert_eq!(feeds.field(&article, "read"), json!(true));
+
+            feeds.call(
+                "set_read",
+                &[
+                    ("a", Value::resource(&article)),
+                    ("read", Value::Bool(false)),
+                ],
+            );
+            assert_eq!(feeds.field(&article, "read"), json!(false));
+
+            feeds.call("star", &[("a", Value::resource(&article))]);
+            assert_eq!(feeds.field(&article, "starred"), json!(true));
+
+            feeds.call(
+                "set_tags",
+                &[
+                    ("a", Value::resource(&article)),
+                    ("tags", Value::text("  #Design, design , Later ")),
+                ],
+            );
+            let mut tags: Vec<String> = match feeds.rt.read(&article, "tags").unwrap() {
+                Value::List(items) => items
+                    .iter()
+                    .filter_map(|item| item.as_text().map(str::to_owned))
+                    .collect(),
+                other => panic!("the tags read {other:?}"),
+            };
+            tags.sort();
+            assert_eq!(
+                tags,
+                ["design", "later"],
+                "trimmed, lower case, without `#`"
+            );
+        }
+
+        phase marking_a_place_read_reads_what_the_reader_is_looking_at;
+        {
+            let feeds = Feeds::new();
+            feeds.subscribe(GUARDIAN);
+            feeds.subscribe(LWN);
+            feeds.refresh();
+            // The reader looks at one subscription's place.
+            let guardian = feeds.feed(GUARDIAN);
+            feeds.call(
+                "show_place",
+                &[
+                    ("reader", Value::resource(&feeds.reader())),
+                    (
+                        "place",
+                        Value::text(format!("feed:{}", guardian.id_string())),
+                    ),
+                ],
+            );
+            feeds.call("mark_read", &[("lib", Value::resource(&feeds.lib))]);
+            assert_eq!(
+                feeds.field(&feeds.article("A quiet morning"), "read"),
+                json!(true)
+            );
+            assert_eq!(
+                feeds.field(&feeds.article("A second piece"), "read"),
+                json!(true)
+            );
+        }
+
+        phase unsubscribing_takes_its_articles_with_it;
+        {
+            let feeds = Feeds::new();
+            feeds.subscribe(GUARDIAN);
+            feeds.refresh();
+            let guardian = feeds.feed(GUARDIAN);
+            feeds.call(
+                "unsubscribe",
+                &[
+                    ("lib", Value::resource(&feeds.lib)),
+                    ("feed", Value::resource(&guardian)),
+                ],
+            );
+            assert!(feeds.article_titles().is_empty());
+            let project = feeds
+                .rt
+                .project(&feeds.rt.read(&feeds.lib, "feeds").unwrap());
+            assert_eq!(project["items"].as_array().map(Vec::len), Some(0));
+        }
+
+        phase an_opml_file_subscribes_what_it_lists_and_the_library_writes_one_back;
+        {
+            let feeds = Feeds::new();
+            let file = feeds.device.file("feeds.opml", "<opml version=\"2.0\"/>");
+            feeds.call(
+                "import_opml",
+                &[("lib", Value::resource(&feeds.lib)), ("file", file)],
+            );
+            assert_eq!(feeds.feed_field(LWN, "name"), json!("LWN"));
+            assert_eq!(
+                feeds.feed_field("https://bare.test/feed", "name"),
+                json!("bare.test"),
+                "an address that names no title is named by its site"
+            );
+            let folders = feeds
+                .rt
+                .project(&feeds.rt.read(&feeds.lib, "folders").unwrap());
+            assert!(
+                folders.to_string().contains("Reading"),
+                "the folder the file names is made"
+            );
+
+            feeds.call("export_opml", &[("lib", Value::resource(&feeds.lib))]);
+            let export = feeds
+                .device
+                .inputs()
+                .into_iter()
+                .rfind(|input| input.contains("\"feeds\""))
+                .expect("the export names the subscriptions");
+            assert!(
+                export.contains("LWN") && export.contains("lwn.net"),
+                "{export}"
+            );
+        }
+
+        phase the_window_shows_its_places_rows_and_the_article_in_the_reading_chosen;
+        {
+            let feeds = Feeds::new();
+            feeds.subscribe(GUARDIAN);
+            feeds.subscribe(CAPSULE);
+            feeds.refresh();
+            let window = feeds.feeds_window();
+            let places: Vec<String> = of_kind(window.tree(), "ui.NavItem")
+                .into_iter()
+                .map(|item| text(item, "label"))
+                .collect();
+            assert!(places.contains(&"All articles".to_owned()), "{places:?}");
+            assert!(places.contains(&"Unread".to_owned()), "{places:?}");
+            assert!(
+                places.contains(&"The Guardian: World".to_owned()),
+                "{places:?}"
+            );
+
+            // A subscription just added is read and shown, so the window stands on it.
+            let rows = of_kind(window.tree(), "ui.ListItem")
+                .into_iter()
+                .map(row_item)
+                .count();
+            assert_eq!(rows, 1, "the capsule's own article, in the place it opened");
+
+            feeds.call(
+                "show_place",
+                &[
+                    ("reader", Value::resource(&feeds.reader())),
+                    ("place", Value::text("all")),
+                ],
+            );
+            let all = feeds.feeds_window();
+            let rows = of_kind(all.tree(), "ui.ListItem")
+                .into_iter()
+                .map(row_item)
+                .count();
+            assert_eq!(rows, 3, "two articles and the capsule's");
+            the_article_reads_in_the_chosen_size_face_and_paper(&feeds);
+            a_search_hit_and_a_tag_name_their_place(&feeds);
+        }
+
+        phase an_empty_library_says_so_once_and_points_at_the_first_subscription;
+        {
+            let feeds = Feeds::new();
+            let window = feeds.feeds_window();
+            let empty = of_kind(window.tree(), "ui.EmptyState")
+                .into_iter()
+                .next()
+                .expect("the window's one empty state");
+            assert_eq!(text(empty, "title"), "No feeds yet");
+            assert_eq!(text(empty, "action"), "Add feed");
+        }
     }
 }

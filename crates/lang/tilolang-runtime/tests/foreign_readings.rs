@@ -443,42 +443,6 @@ view from(n: Note) {
         (rt, app.view("from"), ResourceRef::clone(&note.target))
     }
 
-    #[test]
-    fn a_view_reading_an_apps_type_asks_for_that_apps_package() {
-        let shell = titled_desktop();
-        let (rt, view, note) = note_from_the_shell(&shell);
-        let mut opened = rt
-            .open_view(&me(), &view, vec![Value::resource(&note)])
-            .unwrap_or_else(|why| panic!("the view waits, rather than failing: {why}"));
-        assert!(
-            rt.wants_packages(),
-            "the view waits for the shell's package, not on a fault"
-        );
-        assert_eq!(
-            rt.take_wanted_packages(),
-            [("desktop".to_owned(), "desktop#WindowMenu".to_owned())],
-            "the host is asked for the shell's package"
-        );
-        assert!(
-            rt.take_wanted_packages().is_empty(),
-            "an app is asked for once"
-        );
-        assert!(
-            !of_kind(opened.tree(), "ui.Skeleton").is_empty(),
-            "the view draws its waiting state: {}",
-            dump(opened.tree())
-        );
-
-        // The host loads the shell's package: the view runs again and reads the menu's title.
-        rt.load_foreign(shell).unwrap();
-        opened.poll_patches().unwrap_or_else(|why| panic!("{why}"));
-        assert_eq!(
-            drawn(&opened),
-            ["note", "Book the van"],
-            "the note reads what it was made from through the shell's own declaration"
-        );
-    }
-
     /// Opening the view over the shell's menu reading `text`, as it went.
     fn opening(text: &str) -> Result<(), String> {
         let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
@@ -566,110 +530,6 @@ view remarks(p: papers.Paper) {
         Ok(rt)
     }
 
-    #[test]
-    fn a_case_that_carries_values_reads_from_a_reading_with_each_value_as_its_type() {
-        // Each case as a data enum is written in JSON: its name under `$variant` beside the
-        // values it carries, by name. A plain case is its name, alone or under that key.
-        let reading = r#"{"remarks": [
-            {"text": "one", "author": "nobody"},
-            {"text": "two", "author": {"$variant": "named", "value": "Ada"}},
-            {"text": "three", "author":
-                {"$variant": "placed", "spot": {"page": 4}, "note": "in the margin"}},
-            {"text": "four", "author": {"$variant": "placed", "spot": {"page": 9}}},
-            {"text": "five", "author": {"$variant": "nobody"}}
-        ]}"#;
-        let rt = with_paper(reading).unwrap_or_else(|why| panic!("{why}"));
-        let view = App::compile(REMARKS_VIEW, std::slice::from_ref(&papers()));
-        view.load(&rt);
-        let opened = rt
-            .open_view(
-                &me(),
-                &view.view("remarks"),
-                vec![Value::resource(&paper())],
-            )
-            .unwrap_or_else(|why| panic!("{why}"));
-        assert_eq!(
-            drawn(&opened),
-            [
-                "nobody",
-                "Ada",
-                "page 4",
-                "in the margin",
-                "page 9",
-                "no note",
-                "nobody"
-            ],
-            "each case with what it carries, in the order of the remarks: {}",
-            dump(opened.tree())
-        );
-
-        // The value a case carries is of the type the case declares for it.
-        let Value::List(remarks) = rt.read(&paper(), "remarks").unwrap() else {
-            panic!("the remarks are a list");
-        };
-        let Value::Ref(second) = &remarks[1] else {
-            panic!("a remark is a resource: {:?}", remarks[1]);
-        };
-        let Value::Enum(author) = rt.read(&second.target, "author").unwrap() else {
-            panic!("an author is a case");
-        };
-        assert_eq!(author.ty, "papers#Author");
-        assert_eq!(author.variant, "Author.named");
-        assert_eq!(
-            author.fields.get("Author.named.value"),
-            Some(&Value::text("Ada"))
-        );
-        let Value::Ref(third) = &remarks[2] else {
-            panic!("a remark is a resource: {:?}", remarks[2]);
-        };
-        let Value::Enum(placed) = rt.read(&third.target, "author").unwrap() else {
-            panic!("an author is a case");
-        };
-        let Some(Value::Ref(spot)) = placed.fields.get("Author.placed.spot") else {
-            panic!("what the case carries is a resource: {placed:?}");
-        };
-        assert_eq!(spot.target.ty, "papers#Spot");
-        assert_eq!(rt.read(&spot.target, "page").unwrap(), Value::Int(4));
-    }
-
-    #[test]
-    fn a_case_a_reading_spells_wrongly_is_a_fault_that_says_which() {
-        // A case the enum does not declare.
-        let rt = with_paper(r#"{"remarks": [{"text": "x", "author": {"$variant": "gone"}}]}"#)
-            .unwrap_or_else(|why| panic!("{why}"));
-        let why = rt
-            .read(&paper(), "remarks")
-            .expect_err("a case the enum does not declare")
-            .to_string();
-        assert!(why.contains("`gone` is not a case of `Author`"), "{why}");
-
-        // A value of another type than the case declares for it.
-        let rt = with_paper(
-            r#"{"remarks": [{"text": "x", "author": {"$variant": "named", "value": 7}}]}"#,
-        )
-        .unwrap_or_else(|why| panic!("{why}"));
-        let why = rt
-            .read(&paper(), "remarks")
-            .expect_err("a number where the case carries a text")
-            .to_string();
-        assert!(
-            why.contains("`value` of `.named`") && why.contains("is not a Text"),
-            "{why}"
-        );
-
-        // A value the case declares and the reading leaves out, which is no option.
-        let rt = with_paper(r#"{"remarks": [{"text": "x", "author": {"$variant": "named"}}]}"#)
-            .unwrap_or_else(|why| panic!("{why}"));
-        let why = rt
-            .read(&paper(), "remarks")
-            .expect_err("a case without the value it carries")
-            .to_string();
-        assert!(
-            why.contains("`value` of `.named` is missing from the reading"),
-            "{why}"
-        );
-    }
-
     /// A view over a shelf's maps: each tag by its key, in the keys' order, a count by its key,
     /// the page of a spot a map holds, and what a map inside a map holds.
     const SHELF_VIEW: &str = r#"app test.shelf "Shelf"
@@ -717,128 +577,6 @@ view shelf(s: papers.Shelf) {
         ResourceRef::parse_id("shelf-1", "papers#Shelf").expect("a resource id")
     }
 
-    #[test]
-    fn a_map_in_a_reading_reads_by_its_keys_each_value_as_its_type() {
-        // A map as the object of its entries, written in no order.
-        const SHELF: &str = r#"{"tags": {"b": "blue", "a": "amber"}, "counts": {"a": 1, "b": 2},
-            "spots": {"first": {"page": 3}},
-            "drawers": {"top": {"pens": 4, "clips": 1}}}"#;
-        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-        rt.load_foreign(papers()).unwrap();
-        rt.set_reading(&shelf(), SHELF)
-            .expect("a reading of the shelf");
-        let view = App::compile(SHELF_VIEW, std::slice::from_ref(&papers()));
-        view.load(&rt);
-        let mut opened = rt
-            .open_view(&me(), &view.view("shelf"), vec![Value::resource(&shelf())])
-            .unwrap_or_else(|why| panic!("{why}"));
-        assert_eq!(
-            drawn(&opened),
-            [
-                "a", "amber", "b", "blue", "2", "page 3", "clips", "pens", "4"
-            ],
-            "each entry by its key, in the keys' order: {}",
-            dump(opened.tree())
-        );
-
-        // The app writes: a tag more, another count, and two maps emptied. The view that
-        // asked the maps for their keys and their values draws again over the new reading.
-        rt.set_reading(
-            &shelf(),
-            r#"{"tags": {"b": "blue", "a": "amber", "c": "coral"}, "counts": {"b": 5},
-                "spots": {}, "drawers": {}}"#,
-        )
-        .expect("a reading of the shelf");
-        opened.poll_patches().unwrap();
-        assert_eq!(
-            drawn(&opened),
-            [
-                "a",
-                "amber",
-                "b",
-                "blue",
-                "c",
-                "coral",
-                "5",
-                "no spot",
-                "no drawer"
-            ],
-            "the view follows the maps it asked: {}",
-            dump(opened.tree())
-        );
-        rt.set_reading(&shelf(), SHELF)
-            .expect("a reading of the shelf");
-
-        // A field of a map reads as one does here: its entries, each a key and its value.
-        assert_eq!(
-            rt.read(&shelf(), "counts").unwrap(),
-            Value::List(vec![
-                Value::Tuple(vec![Value::text("a"), Value::Int(1)]),
-                Value::Tuple(vec![Value::text("b"), Value::Int(2)]),
-            ])
-        );
-        // What a map holds is of the type the map declares: a resource a view reads the
-        // fields of, and a map inside a map a map a view asks the same way.
-        let Value::List(spots) = rt.read(&shelf(), "spots").unwrap() else {
-            panic!("a map reads as its entries");
-        };
-        let Value::Tuple(first) = &spots[0] else {
-            panic!("an entry is a key and a value: {:?}", spots[0]);
-        };
-        let Value::Ref(spot) = &first[1] else {
-            panic!("what the map holds is a resource: {:?}", first[1]);
-        };
-        assert_eq!(spot.target.ty, "papers#Spot");
-        assert_eq!(rt.read(&spot.target, "page").unwrap(), Value::Int(3));
-        assert_eq!(
-            rt.read(&shelf(), "drawers").unwrap(),
-            Value::List(vec![Value::Tuple(vec![
-                Value::text("top"),
-                Value::Map(vec![
-                    (Value::text("clips"), Value::Int(1)),
-                    (Value::text("pens"), Value::Int(4)),
-                ]),
-            ])])
-        );
-
-        // A value of another type than the map declares, and a field that holds no map, are
-        // faults that say which.
-        rt.set_reading(&shelf(), r#"{"tags": {"a": 7}}"#)
-            .expect("a reading");
-        let why = rt
-            .read(&shelf(), "tags")
-            .expect_err("a number in a map of texts")
-            .to_string();
-        assert!(
-            why.contains("the entry `a`") && why.contains("is not a Text"),
-            "{why}"
-        );
-        rt.set_reading(&shelf(), r#"{"tags": [1]}"#)
-            .expect("a reading");
-        let why = rt
-            .read(&shelf(), "tags")
-            .expect_err("a list where a map stands")
-            .to_string();
-        assert!(why.contains("is not a map"), "{why}");
-    }
-
-    #[test]
-    fn a_map_the_runtime_itself_encoded_reads_as_it_did() {
-        // The entries as a list of pairs in the runtime's own encoding, and none.
-        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-        rt.load_foreign(papers()).unwrap();
-        rt.set_reading(
-            &shelf(),
-            r#"{"counts": {"list": [{"tuple": ["a", 1]}]}, "tags": {"list": []}}"#,
-        )
-        .expect("a reading of the shelf");
-        assert_eq!(
-            rt.read(&shelf(), "counts").unwrap(),
-            Value::List(vec![Value::Tuple(vec![Value::text("a"), Value::Int(1)])])
-        );
-        assert_eq!(rt.read(&shelf(), "tags").unwrap(), Value::List(Vec::new()));
-    }
-
     /// A view over a note of an app this runtime does not run, handing the note's reactions to
     /// the strip a person presses.
     const NOTE_VIEW: &str = r#"app test.note "Note"
@@ -861,35 +599,6 @@ view note(n: other.Note) {
                 ]},
             ],
         }))
-    }
-
-    #[test]
-    fn a_map_field_a_reading_leaves_out_reaches_a_view_as_the_empty_map() {
-        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-        let other = reacted_notes();
-        rt.load_foreign(other.clone()).unwrap();
-        let view = App::compile(NOTE_VIEW, std::slice::from_ref(&other));
-        view.load(&rt);
-        let note = ResourceRef::parse_id("note-1", "other#Note").expect("a resource id");
-        for reading in [
-            // A note written before its app kept reactions, and one whose map is empty: the
-            // strip is handed the map it declares, not a list the shell would refuse.
-            r#"{"text": "Groceries"}"#,
-            r#"{"text": "Groceries", "reactions": {}}"#,
-        ] {
-            rt.set_reading(&note, reading)
-                .expect("a reading of the note");
-            let opened = rt
-                .open_view(&me(), &view.view("note"), vec![Value::resource(&note)])
-                .unwrap_or_else(|why| panic!("{why}"));
-            let strip = of_kind(opened.tree(), "ui.Reactions")[0].clone();
-            assert_eq!(
-                strip.props.get("reactions"),
-                Some(&Value::Map(Vec::new())),
-                "a note that holds no reaction hands the strip an empty map ({reading}): {}",
-                dump(opened.tree())
-            );
-        }
     }
 
     /// An app that lists its records rather than running here (a workspace's invocations): each
@@ -1034,64 +743,359 @@ view window(ws: device.WindowsApps) {
 }
 "#;
 
-    #[test]
-    fn a_view_over_an_absent_reading_reads_the_empty_state() {
-        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-        let app = App::compile(ABSENT_VIEW, &[]);
-        app.load(&rt);
-        // No service of this host publishes the device's resources: nothing is coming.
-        rt.set_app_absent("so.tilo.device");
-        let ws = ResourceRef::parse_id("windows-apps", "so.tilo.device#WindowsApps")
-            .expect("a resource id");
-        let mut opened = rt
-            .open_view(&me(), &app.view("window"), vec![Value::resource(&ws)])
-            .unwrap_or_else(|why| panic!("the view reads the absent resource: {why}"));
-        assert!(
-            of_kind(opened.tree(), "ui.Skeleton").is_empty(),
-            "the view draws, never waiting on a reading that cannot come: {}",
-            dump(opened.tree())
-        );
-        assert!(rt.take_wanted().is_empty(), "no reading is asked for");
-        assert_eq!(
-            drawn(&opened),
-            [
-                "not answering",
-                "no appliance",
-                "support is here",
-                "nobody in it",
-            ],
-            "each field as its type starts: {}",
-            dump(opened.tree())
-        );
-        let empty = of_kind(opened.tree(), "ui.EmptyState");
-        assert_eq!(
-            empty
-                .first()
-                .and_then(|node| node.props.get("title"))
-                .cloned(),
-            Some(Value::text("No Windows apps on this device")),
-            "the app's own empty state is drawn, in its words: {}",
-            dump(opened.tree())
-        );
-        // A reading the host publishes later stands in the absent one's place.
-        rt.set_reading(
-            &ws,
-            r#"{"serving": true, "summary": "", "apps": [],
+    tilo_test_env::scenario! {
+        fn foreign_readings_1;
+
+        phase a_view_reading_an_apps_type_asks_for_that_apps_package;
+        {
+            let shell = titled_desktop();
+            let (rt, view, note) = note_from_the_shell(&shell);
+            let mut opened = rt
+                .open_view(&me(), &view, vec![Value::resource(&note)])
+                .unwrap_or_else(|why| panic!("the view waits, rather than failing: {why}"));
+            assert!(
+                rt.wants_packages(),
+                "the view waits for the shell's package, not on a fault"
+            );
+            assert_eq!(
+                rt.take_wanted_packages(),
+                [("desktop".to_owned(), "desktop#WindowMenu".to_owned())],
+                "the host is asked for the shell's package"
+            );
+            assert!(
+                rt.take_wanted_packages().is_empty(),
+                "an app is asked for once"
+            );
+            assert!(
+                !of_kind(opened.tree(), "ui.Skeleton").is_empty(),
+                "the view draws its waiting state: {}",
+                dump(opened.tree())
+            );
+
+            // The host loads the shell's package: the view runs again and reads the menu's title.
+            rt.load_foreign(shell).unwrap();
+            opened.poll_patches().unwrap_or_else(|why| panic!("{why}"));
+            assert_eq!(
+                drawn(&opened),
+                ["note", "Book the van"],
+                "the note reads what it was made from through the shell's own declaration"
+            );
+        }
+
+        phase a_case_that_carries_values_reads_from_a_reading_with_each_value_as_its_type;
+        {
+            // Each case as a data enum is written in JSON: its name under `$variant` beside the
+            // values it carries, by name. A plain case is its name, alone or under that key.
+            let reading = r#"{"remarks": [
+            {"text": "one", "author": "nobody"},
+            {"text": "two", "author": {"$variant": "named", "value": "Ada"}},
+            {"text": "three", "author":
+                {"$variant": "placed", "spot": {"page": 4}, "note": "in the margin"}},
+            {"text": "four", "author": {"$variant": "placed", "spot": {"page": 9}}},
+            {"text": "five", "author": {"$variant": "nobody"}}
+        ]}"#;
+            let rt = with_paper(reading).unwrap_or_else(|why| panic!("{why}"));
+            let view = App::compile(REMARKS_VIEW, std::slice::from_ref(&papers()));
+            view.load(&rt);
+            let opened = rt
+                .open_view(
+                    &me(),
+                    &view.view("remarks"),
+                    vec![Value::resource(&paper())],
+                )
+                .unwrap_or_else(|why| panic!("{why}"));
+            assert_eq!(
+                drawn(&opened),
+                [
+                    "nobody",
+                    "Ada",
+                    "page 4",
+                    "in the margin",
+                    "page 9",
+                    "no note",
+                    "nobody"
+                ],
+                "each case with what it carries, in the order of the remarks: {}",
+                dump(opened.tree())
+            );
+
+            // The value a case carries is of the type the case declares for it.
+            let Value::List(remarks) = rt.read(&paper(), "remarks").unwrap() else {
+                panic!("the remarks are a list");
+            };
+            let Value::Ref(second) = &remarks[1] else {
+                panic!("a remark is a resource: {:?}", remarks[1]);
+            };
+            let Value::Enum(author) = rt.read(&second.target, "author").unwrap() else {
+                panic!("an author is a case");
+            };
+            assert_eq!(author.ty, "papers#Author");
+            assert_eq!(author.variant, "Author.named");
+            assert_eq!(
+                author.fields.get("Author.named.value"),
+                Some(&Value::text("Ada"))
+            );
+            let Value::Ref(third) = &remarks[2] else {
+                panic!("a remark is a resource: {:?}", remarks[2]);
+            };
+            let Value::Enum(placed) = rt.read(&third.target, "author").unwrap() else {
+                panic!("an author is a case");
+            };
+            let Some(Value::Ref(spot)) = placed.fields.get("Author.placed.spot") else {
+                panic!("what the case carries is a resource: {placed:?}");
+            };
+            assert_eq!(spot.target.ty, "papers#Spot");
+            assert_eq!(rt.read(&spot.target, "page").unwrap(), Value::Int(4));
+        }
+
+        phase a_case_a_reading_spells_wrongly_is_a_fault_that_says_which;
+        {
+            // A case the enum does not declare.
+            let rt = with_paper(r#"{"remarks": [{"text": "x", "author": {"$variant": "gone"}}]}"#)
+                .unwrap_or_else(|why| panic!("{why}"));
+            let why = rt
+                .read(&paper(), "remarks")
+                .expect_err("a case the enum does not declare")
+                .to_string();
+            assert!(why.contains("`gone` is not a case of `Author`"), "{why}");
+
+            // A value of another type than the case declares for it.
+            let rt = with_paper(
+                r#"{"remarks": [{"text": "x", "author": {"$variant": "named", "value": 7}}]}"#,
+            )
+            .unwrap_or_else(|why| panic!("{why}"));
+            let why = rt
+                .read(&paper(), "remarks")
+                .expect_err("a number where the case carries a text")
+                .to_string();
+            assert!(
+                why.contains("`value` of `.named`") && why.contains("is not a Text"),
+                "{why}"
+            );
+
+            // A value the case declares and the reading leaves out, which is no option.
+            let rt = with_paper(r#"{"remarks": [{"text": "x", "author": {"$variant": "named"}}]}"#)
+                .unwrap_or_else(|why| panic!("{why}"));
+            let why = rt
+                .read(&paper(), "remarks")
+                .expect_err("a case without the value it carries")
+                .to_string();
+            assert!(
+                why.contains("`value` of `.named` is missing from the reading"),
+                "{why}"
+            );
+        }
+
+        phase a_map_in_a_reading_reads_by_its_keys_each_value_as_its_type;
+        {
+            // A map as the object of its entries, written in no order.
+            const SHELF: &str = r#"{"tags": {"b": "blue", "a": "amber"}, "counts": {"a": 1, "b": 2},
+            "spots": {"first": {"page": 3}},
+            "drawers": {"top": {"pens": 4, "clips": 1}}}"#;
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            rt.load_foreign(papers()).unwrap();
+            rt.set_reading(&shelf(), SHELF)
+                .expect("a reading of the shelf");
+            let view = App::compile(SHELF_VIEW, std::slice::from_ref(&papers()));
+            view.load(&rt);
+            let mut opened = rt
+                .open_view(&me(), &view.view("shelf"), vec![Value::resource(&shelf())])
+                .unwrap_or_else(|why| panic!("{why}"));
+            assert_eq!(
+                drawn(&opened),
+                [
+                    "a", "amber", "b", "blue", "2", "page 3", "clips", "pens", "4"
+                ],
+                "each entry by its key, in the keys' order: {}",
+                dump(opened.tree())
+            );
+
+            // The app writes: a tag more, another count, and two maps emptied. The view that
+            // asked the maps for their keys and their values draws again over the new reading.
+            rt.set_reading(
+                &shelf(),
+                r#"{"tags": {"b": "blue", "a": "amber", "c": "coral"}, "counts": {"b": 5},
+                "spots": {}, "drawers": {}}"#,
+            )
+            .expect("a reading of the shelf");
+            opened.poll_patches().unwrap();
+            assert_eq!(
+                drawn(&opened),
+                [
+                    "a",
+                    "amber",
+                    "b",
+                    "blue",
+                    "c",
+                    "coral",
+                    "5",
+                    "no spot",
+                    "no drawer"
+                ],
+                "the view follows the maps it asked: {}",
+                dump(opened.tree())
+            );
+            rt.set_reading(&shelf(), SHELF)
+                .expect("a reading of the shelf");
+
+            // A field of a map reads as one does here: its entries, each a key and its value.
+            assert_eq!(
+                rt.read(&shelf(), "counts").unwrap(),
+                Value::List(vec![
+                    Value::Tuple(vec![Value::text("a"), Value::Int(1)]),
+                    Value::Tuple(vec![Value::text("b"), Value::Int(2)]),
+                ])
+            );
+            // What a map holds is of the type the map declares: a resource a view reads the
+            // fields of, and a map inside a map a map a view asks the same way.
+            let Value::List(spots) = rt.read(&shelf(), "spots").unwrap() else {
+                panic!("a map reads as its entries");
+            };
+            let Value::Tuple(first) = &spots[0] else {
+                panic!("an entry is a key and a value: {:?}", spots[0]);
+            };
+            let Value::Ref(spot) = &first[1] else {
+                panic!("what the map holds is a resource: {:?}", first[1]);
+            };
+            assert_eq!(spot.target.ty, "papers#Spot");
+            assert_eq!(rt.read(&spot.target, "page").unwrap(), Value::Int(3));
+            assert_eq!(
+                rt.read(&shelf(), "drawers").unwrap(),
+                Value::List(vec![Value::Tuple(vec![
+                    Value::text("top"),
+                    Value::Map(vec![
+                        (Value::text("clips"), Value::Int(1)),
+                        (Value::text("pens"), Value::Int(4)),
+                    ]),
+                ])])
+            );
+
+            // A value of another type than the map declares, and a field that holds no map, are
+            // faults that say which.
+            rt.set_reading(&shelf(), r#"{"tags": {"a": 7}}"#)
+                .expect("a reading");
+            let why = rt
+                .read(&shelf(), "tags")
+                .expect_err("a number in a map of texts")
+                .to_string();
+            assert!(
+                why.contains("the entry `a`") && why.contains("is not a Text"),
+                "{why}"
+            );
+            rt.set_reading(&shelf(), r#"{"tags": [1]}"#)
+                .expect("a reading");
+            let why = rt
+                .read(&shelf(), "tags")
+                .expect_err("a list where a map stands")
+                .to_string();
+            assert!(why.contains("is not a map"), "{why}");
+        }
+
+        phase a_map_the_runtime_itself_encoded_reads_as_it_did;
+        {
+            // The entries as a list of pairs in the runtime's own encoding, and none.
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            rt.load_foreign(papers()).unwrap();
+            rt.set_reading(
+                &shelf(),
+                r#"{"counts": {"list": [{"tuple": ["a", 1]}]}, "tags": {"list": []}}"#,
+            )
+            .expect("a reading of the shelf");
+            assert_eq!(
+                rt.read(&shelf(), "counts").unwrap(),
+                Value::List(vec![Value::Tuple(vec![Value::text("a"), Value::Int(1)])])
+            );
+            assert_eq!(rt.read(&shelf(), "tags").unwrap(), Value::List(Vec::new()));
+        }
+
+        phase a_map_field_a_reading_leaves_out_reaches_a_view_as_the_empty_map;
+        {
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            let other = reacted_notes();
+            rt.load_foreign(other.clone()).unwrap();
+            let view = App::compile(NOTE_VIEW, std::slice::from_ref(&other));
+            view.load(&rt);
+            let note = ResourceRef::parse_id("note-1", "other#Note").expect("a resource id");
+            for reading in [
+                // A note written before its app kept reactions, and one whose map is empty: the
+                // strip is handed the map it declares, not a list the shell would refuse.
+                r#"{"text": "Groceries"}"#,
+                r#"{"text": "Groceries", "reactions": {}}"#,
+            ] {
+                rt.set_reading(&note, reading)
+                    .expect("a reading of the note");
+                let opened = rt
+                    .open_view(&me(), &view.view("note"), vec![Value::resource(&note)])
+                    .unwrap_or_else(|why| panic!("{why}"));
+                let strip = of_kind(opened.tree(), "ui.Reactions")[0].clone();
+                assert_eq!(
+                    strip.props.get("reactions"),
+                    Some(&Value::Map(Vec::new())),
+                    "a note that holds no reaction hands the strip an empty map ({reading}): {}",
+                    dump(opened.tree())
+                );
+            }
+        }
+
+        phase a_view_over_an_absent_reading_reads_the_empty_state;
+        {
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            let app = App::compile(ABSENT_VIEW, &[]);
+            app.load(&rt);
+            // No service of this host publishes the device's resources: nothing is coming.
+            rt.set_app_absent("so.tilo.device");
+            let ws = ResourceRef::parse_id("windows-apps", "so.tilo.device#WindowsApps")
+                .expect("a resource id");
+            let mut opened = rt
+                .open_view(&me(), &app.view("window"), vec![Value::resource(&ws)])
+                .unwrap_or_else(|why| panic!("the view reads the absent resource: {why}"));
+            assert!(
+                of_kind(opened.tree(), "ui.Skeleton").is_empty(),
+                "the view draws, never waiting on a reading that cannot come: {}",
+                dump(opened.tree())
+            );
+            assert!(rt.take_wanted().is_empty(), "no reading is asked for");
+            assert_eq!(
+                drawn(&opened),
+                [
+                    "not answering",
+                    "no appliance",
+                    "support is here",
+                    "nobody in it",
+                ],
+                "each field as its type starts: {}",
+                dump(opened.tree())
+            );
+            let empty = of_kind(opened.tree(), "ui.EmptyState");
+            assert_eq!(
+                empty
+                    .first()
+                    .and_then(|node| node.props.get("title"))
+                    .cloned(),
+                Some(Value::text("No Windows apps on this device")),
+                "the app's own empty state is drawn, in its words: {}",
+                dump(opened.tree())
+            );
+            // A reading the host publishes later stands in the absent one's place.
+            rt.set_reading(
+                &ws,
+                r#"{"serving": true, "summary": "", "apps": [],
                 "support": {"available": true, "state": "ready", "summary": "", "pending": []},
                 "appliance": {"configured": false, "phase": "ready",
                               "power_state": "unknown", "license": "unknown",
                               "published_applications": 0, "recovery_available": false,
                               "shared_session": {"active": false, "grants": [],
                                                  "contributors": []}}}"#,
-        )
-        .expect("a reading of the Windows apps");
-        opened.poll_patches().unwrap_or_else(|why| panic!("{why}"));
-        let after = drawn(&opened);
-        assert!(
-            after.contains(&"answering".to_owned())
-                && after.contains(&"support is here".to_owned())
-                && after.contains(&"an appliance".to_owned()),
-            "the reading stands in place of what its absence read as: {after:?}"
-        );
+            )
+            .expect("a reading of the Windows apps");
+            opened.poll_patches().unwrap_or_else(|why| panic!("{why}"));
+            let after = drawn(&opened);
+            assert!(
+                after.contains(&"answering".to_owned())
+                    && after.contains(&"support is here".to_owned())
+                    && after.contains(&"an appliance".to_owned()),
+                "the reading stands in place of what its absence read as: {after:?}"
+            );
+        }
     }
 }

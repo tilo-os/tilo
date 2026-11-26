@@ -465,477 +465,481 @@ mod cases {
             .collect()
     }
 
-    #[test]
-    fn a_request_is_built_saved_opened_and_deleted() {
-        let s = Tester::new();
-        let draft = s.draft();
-        assert_eq!(s.text(&draft, "name"), "", "a new request starts unnamed");
+    tilo_test_env::scenario! {
+        fn e2e_api_tester_1;
 
-        s.done("add_param", vec![Value::resource(&draft)]);
-        let params = s.records(&draft, "params");
-        assert_eq!(params.len(), 1, "the parameter stands");
-        assert_eq!(s.text(&params[0], "key"), "");
+        phase a_request_is_built_saved_opened_and_deleted;
+        {
+            let s = Tester::new();
+            let draft = s.draft();
+            assert_eq!(s.text(&draft, "name"), "", "a new request starts unnamed");
 
-        // A collection holds the request, and the builder's copy opens it again.
-        let users = s.collection("Users");
-        assert_eq!(s.text(&users, "name"), "Users");
-        let added = returned_ref(s.call(
-            "add_request",
-            vec![Value::resource(&users), Value::text("List users")],
-        ));
-        assert_eq!(s.text(&added, "name"), "List users");
-        s.done(
-            "open_request",
-            vec![Value::resource(&s.root), Value::resource(&added)],
-        );
-        assert_eq!(
-            s.text(&s.draft(), "name"),
-            "List users",
-            "the builder holds what was opened"
-        );
+            s.done("add_param", vec![Value::resource(&draft)]);
+            let params = s.records(&draft, "params");
+            assert_eq!(params.len(), 1, "the parameter stands");
+            assert_eq!(s.text(&params[0], "key"), "");
 
-        // Saving the builder into another collection keeps the request there.
-        let archive = s.collection("Archive");
-        let saved = returned_ref(s.call(
-            "save_request",
-            vec![Value::resource(&s.root), Value::resource(&archive)],
-        ));
-        assert_eq!(s.text(&saved, "name"), "List users");
-        assert_eq!(s.records(&archive, "requests").len(), 1);
+            // A collection holds the request, and the builder's copy opens it again.
+            let users = s.collection("Users");
+            assert_eq!(s.text(&users, "name"), "Users");
+            let added = returned_ref(s.call(
+                "add_request",
+                vec![Value::resource(&users), Value::text("List users")],
+            ));
+            assert_eq!(s.text(&added, "name"), "List users");
+            s.done(
+                "open_request",
+                vec![Value::resource(&s.root), Value::resource(&added)],
+            );
+            assert_eq!(
+                s.text(&s.draft(), "name"),
+                "List users",
+                "the builder holds what was opened"
+            );
 
-        // Deleting the saved request takes it out of its collection.
-        s.done(
-            "delete_request",
-            vec![Value::resource(&s.root), Value::resource(&saved)],
-        );
-        assert!(s.records(&archive, "requests").is_empty());
-        assert!(s.of(&s.root, "opened").is_none());
+            // Saving the builder into another collection keeps the request there.
+            let archive = s.collection("Archive");
+            let saved = returned_ref(s.call(
+                "save_request",
+                vec![Value::resource(&s.root), Value::resource(&archive)],
+            ));
+            assert_eq!(s.text(&saved, "name"), "List users");
+            assert_eq!(s.records(&archive, "requests").len(), 1);
 
-        // A collection goes with the requests saved in it.
-        s.done(
-            "delete_collection",
-            vec![Value::resource(&s.root), Value::resource(&users)],
-        );
-        let left = s.records(&s.root, "collections");
-        assert_eq!(left.len(), 1, "only the other collection is left");
-        assert_eq!(s.text(&left[0], "name"), "Archive");
-    }
+            // Deleting the saved request takes it out of its collection.
+            s.done(
+                "delete_request",
+                vec![Value::resource(&s.root), Value::resource(&saved)],
+            );
+            assert!(s.records(&archive, "requests").is_empty());
+            assert!(s.of(&s.root, "opened").is_none());
 
-    #[test]
-    fn environments_fill_variables_and_keep_their_secrets_on_the_device() {
-        let s = Tester::new();
-        let env = returned_ref(s.call(
-            "new_environment",
-            vec![Value::resource(&s.root), Value::text("Staging")],
-        ));
-        assert_eq!(
-            s.text(&env, "name"),
-            "Staging",
-            "a new environment is in use"
-        );
-        let base = returned_ref(s.call(
-            "add_variable",
-            vec![
-                Value::resource(&env),
-                Value::text("base"),
-                Value::Bool(false),
-            ],
-        ));
-        assert_eq!(s.text(&base, "key"), "base");
-        assert!(!s.flag(&base, "secret"));
+            // A collection goes with the requests saved in it.
+            s.done(
+                "delete_collection",
+                vec![Value::resource(&s.root), Value::resource(&users)],
+            );
+            let left = s.records(&s.root, "collections");
+            assert_eq!(left.len(), 1, "only the other collection is left");
+            assert_eq!(s.text(&left[0], "name"), "Archive");
+        }
 
-        // A secret's value is typed once and kept by the device; the workspace holds a
-        // reference and no part of the value.
-        let token = returned_ref(s.call(
-            "add_variable",
-            vec![
-                Value::resource(&env),
-                Value::text("token"),
-                Value::Bool(true),
-            ],
-        ));
-        assert!(s.flag(&token, "secret"));
-        s.done(
-            "keep_variable",
-            vec![Value::resource(&token), Value::text("s3cr3t-token")],
-        );
-        let reference = s.text(&token, "reference");
-        assert!(reference.starts_with("api-ref-"), "reference: {reference}");
-        assert_eq!(
-            s.text(&token, "value"),
-            "",
-            "the value stays off the workspace"
-        );
-        assert_eq!(
-            s.engine.kept.borrow().get(&reference).map(String::as_str),
-            Some("s3cr3t-token")
-        );
-
-        // Deleting the variable takes its value off the device too.
-        s.done(
-            "delete_variable",
-            vec![Value::resource(&env), Value::resource(&token)],
-        );
-        assert!(
-            s.engine.kept.borrow().get(&reference).is_none(),
-            "a deleted variable takes its value off the device"
-        );
-
-        // With no environment, nothing fills a variable.
-        s.done("no_environment", vec![Value::resource(&s.root)]);
-        assert!(s.of(&s.root, "active_environment").is_none());
-        s.done(
-            "use_environment",
-            vec![Value::resource(&s.root), Value::resource(&env)],
-        );
-        assert_eq!(
-            s.of(&s.root, "active_environment")
-                .map(|e| s.text(&e, "name")),
-            Some("Staging".to_owned())
-        );
-    }
-
-    #[test]
-    fn a_send_hands_the_device_its_variables_and_its_sign_in() {
-        let s = Tester::new();
-        let env = returned_ref(s.call(
-            "new_environment",
-            vec![Value::resource(&s.root), Value::text("Staging")],
-        ));
-        s.done(
-            "add_variable",
-            vec![
-                Value::resource(&env),
-                Value::text("base"),
-                Value::Bool(false),
-            ],
-        );
-        // The address is typed into the window.
-        let window = s.window();
-        Tester::type_url(&window, "{{base}}/users");
-        assert_eq!(s.text(&s.draft(), "url"), "{{base}}/users");
-
-        // The sign-in is kept on the device, and only its reference stands in the workspace.
-        s.done(
-            "keep_credential",
-            vec![Value::resource(&s.root), Value::text("a-private-token")],
-        );
-        let reference = s
-            .nested(&s.draft(), "auth", "reference")
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        assert!(reference.starts_with("api-ref-"), "reference: {reference}");
-        assert_eq!(
-            s.engine.kept.borrow().get(&reference).map(String::as_str),
-            Some("a-private-token")
-        );
-
-        // Sending hands the device the request as typed, with its variables.
-        s.engine.answer_with(&answer_json(200, "{}"));
-        s.done("start_send", vec![Value::resource(&s.root)]);
-        let ask = s.engine.last_ask();
-        assert_eq!(ask.method, "GET");
-        assert_eq!(
-            ask.url, "{{base}}/users",
-            "the device resolves the variables"
-        );
-        assert_eq!(
-            ask.vars,
-            vec![("base".to_owned(), String::new(), String::new())],
-            "a shared variable's value is the workspace's"
-        );
-        assert_eq!(ask.auth_scheme, "none", "no scheme was chosen yet");
-        assert!(ask.headers.is_empty(), "a row with no name is not sent");
-    }
-
-    #[test]
-    fn the_answer_reaches_the_window_and_the_history() {
-        let s = Tester::new();
-        let window = s.window();
-        Tester::type_url(&window, "https://api.example.com/users");
-        let body = "{\"id\":1}";
-        s.engine.answer_with(&answer_json(200, body));
-
-        s.done("start_send", vec![Value::resource(&s.root)]);
-        assert!(s.flag(&s.root, "sending"), "the request is on its way");
-        s.settle();
-
-        assert!(!s.flag(&s.root, "sending"));
-        assert!(s.flag(&s.root, "answered"));
-        assert_eq!(s.text(&s.root, "failure"), "");
-        assert_eq!(
-            s.nested(&s.root, "answer", "status"),
-            serde_json::json!(200)
-        );
-        assert_eq!(
-            s.nested(&s.root, "answer", "size_bytes"),
-            serde_json::json!(body.len())
-        );
-        assert_eq!(s.nested(&s.root, "answer", "body"), serde_json::json!(body));
-        assert_eq!(
-            s.nested(&s.root, "answer", "pretty"),
-            serde_json::json!("{\n  \"id\": 1\n}"),
-            "the pretty view reads JSON as it is laid out"
-        );
-        assert_eq!(
-            s.nested(&s.root, "answer", "headers"),
-            serde_json::json!({"count": 2}),
-            "both headers stand"
-        );
-
-        // The history keeps what was sent, named by its route.
-        let history = s.records(&s.root, "history");
-        assert_eq!(history.len(), 1);
-        assert_eq!(
-            s.text(&history[0], "route"),
-            "GET https://api.example.com/users returned status 200"
-        );
-        assert_eq!(s.number(&history[0], "status"), 200);
-        assert!(
-            s.text(&history[0], "replay")
-                .contains("https://api.example.com/users"),
-            "the entry keeps the request it sent"
-        );
-    }
-
-    #[test]
-    fn a_send_can_be_stopped_and_a_failed_one_says_why() {
-        let s = Tester::new();
-        let window = s.window();
-        Tester::type_url(&window, "https://api.example.com/slow");
-        s.done("start_send", vec![Value::resource(&s.root)]);
-        s.done("cancel_send", vec![Value::resource(&s.root)]);
-        assert!(*s.engine.cancelled.borrow());
-        assert!(!s.flag(&s.root, "sending"));
-        assert_eq!(s.text(&s.root, "failure"), "The request was cancelled.");
-
-        *s.engine.state.borrow_mut() = "failed".to_owned();
-        s.done("start_send", vec![Value::resource(&s.root)]);
-        s.settle();
-        assert_eq!(
-            s.text(&s.root, "failure"),
-            "the server refused the connection"
-        );
-        assert!(
-            s.records(&s.root, "history").is_empty(),
-            "nothing came back to keep"
-        );
-    }
-
-    #[test]
-    fn a_send_answers_its_caller_with_the_response() {
-        let s = Tester::new();
-        let window = s.window();
-        Tester::type_url(&window, "https://api.example.com/users");
-        let body = "{\"id\":1}";
-        s.engine.answer_with(
-            &serde_json::json!({
-                "status": 201,
-                "status_text": "Created",
-                "duration_ms": 84,
-                "size_bytes": body.len(),
-                "size_exact": true,
-                "shown_bytes": body.len(),
-                "binary": false,
-                "content_type": "application/json; charset=utf-8",
-                "body": body,
-                "headers": [
-                    ["content-type", "application/json; charset=utf-8"],
-                    ["x-request-id", "req-42"],
+        phase environments_fill_variables_and_keep_their_secrets_on_the_device;
+        {
+            let s = Tester::new();
+            let env = returned_ref(s.call(
+                "new_environment",
+                vec![Value::resource(&s.root), Value::text("Staging")],
+            ));
+            assert_eq!(
+                s.text(&env, "name"),
+                "Staging",
+                "a new environment is in use"
+            );
+            let base = returned_ref(s.call(
+                "add_variable",
+                vec![
+                    Value::resource(&env),
+                    Value::text("base"),
+                    Value::Bool(false),
                 ],
-            })
-            .to_string(),
-        );
+            ));
+            assert_eq!(s.text(&base, "key"), "base");
+            assert!(!s.flag(&base, "secret"));
 
-        // The invocation answers the response itself, so an agent or a script reads the status,
-        // the text, the body, the size and the headers in the one call.
-        let answered = s.done("send", vec![Value::resource(&s.root)]);
-        let answer = match answered {
-            Value::Text(text) => text,
-            other => panic!("send answers its caller the response: {other:?}"),
-        };
-        let read: serde_json::Value = serde_json::from_str(&answer).expect("the answer is JSON");
-        assert_eq!(read["status"], serde_json::json!(201));
-        assert_eq!(read["status_text"], serde_json::json!("Created"));
-        assert_eq!(read["body"], serde_json::json!(body));
-        assert_eq!(read["size_bytes"], serde_json::json!(body.len()));
-        assert!(
-            read["headers"]
-                .as_array()
-                .is_some_and(|headers| headers.iter().any(|pair| pair
-                    .get(0)
-                    .and_then(|v| v.as_str())
-                    == Some("x-request-id")
-                    && pair.get(1).and_then(|v| v.as_str()) == Some("req-42"))),
-            "the headers come back with it: {}",
-            read["headers"]
-        );
-
-        // The same answer reaches the window: the pane, the flag and the history entry.
-        assert!(!s.flag(&s.root, "sending"));
-        assert!(s.flag(&s.root, "answered"));
-        assert_eq!(s.text(&s.root, "failure"), "");
-        assert_eq!(
-            s.nested(&s.root, "answer", "status"),
-            serde_json::json!(201)
-        );
-        assert_eq!(s.nested(&s.root, "answer", "body"), serde_json::json!(body));
-        let history = s.records(&s.root, "history");
-        assert_eq!(history.len(), 1, "the send is kept as one entry");
-        assert_eq!(s.number(&history[0], "status"), 201);
-        assert!(
-            s.text(&history[0], "replay")
-                .contains("https://api.example.com/users"),
-            "the entry keeps the request it sent"
-        );
-
-        // A send the engine fails answers nothing and leaves why it failed in the window.
-        *s.engine.state.borrow_mut() = "failed".to_owned();
-        let answered = s.done("send", vec![Value::resource(&s.root)]);
-        assert_eq!(answered, Value::text(""), "a failed send answers nothing");
-        assert_eq!(
-            s.text(&s.root, "failure"),
-            "the server refused the connection"
-        );
-        assert!(s.flag(&s.root, "answered"));
-        assert!(!s.flag(&s.root, "sending"));
-        assert_eq!(
-            s.records(&s.root, "history").len(),
-            1,
-            "nothing came back to keep"
-        );
-    }
-
-    #[test]
-    fn a_sent_request_opens_again_and_can_be_saved() {
-        let s = Tester::new();
-        let window = s.window();
-        Tester::type_url(&window, "https://api.example.com/users");
-        s.done("add_param", vec![Value::resource(&s.draft())]);
-        s.engine.answer_with(&answer_json(201, "{}"));
-        s.done("start_send", vec![Value::resource(&s.root)]);
-        s.settle();
-        assert_eq!(s.text(&s.root, "failure"), "", "the send went through");
-        assert!(s.flag(&s.root, "answered"));
-        let sent = s
-            .records(&s.root, "history")
-            .into_iter()
-            .next()
-            .unwrap_or_else(|| {
-                panic!(
-                    "history is empty; answer reads {:?}",
-                    s.nested(&s.root, "answer", "status")
-                )
-            });
-
-        // A fresh request replaces the builder, and the sent one brings it all back.
-        s.done("new_request", vec![Value::resource(&s.root)]);
-        assert_eq!(s.text(&s.draft(), "url"), "");
-        s.done(
-            "open_sent",
-            vec![Value::resource(&s.root), Value::resource(&sent)],
-        );
-        let opened = s.draft();
-        assert_eq!(s.text(&opened, "url"), "https://api.example.com/users");
-        assert_eq!(
-            s.records(&opened, "params").len(),
-            1,
-            "the parameters come back with it"
-        );
-
-        // It can stand in a collection as a request of its own.
-        let users = s.collection("Users");
-        let saved = returned_ref(s.call(
-            "save_sent",
-            vec![
-                Value::resource(&s.root),
-                Value::resource(&sent),
-                Value::resource(&users),
-            ],
-        ));
-        assert_eq!(
-            s.text(&saved, "url"),
-            "https://api.example.com/users",
-            "a sent request saved is a request"
-        );
-        s.done(
-            "delete_sent",
-            vec![Value::resource(&s.root), Value::resource(&sent)],
-        );
-        assert!(s.records(&s.root, "history").is_empty());
-    }
-
-    #[test]
-    fn the_answer_and_the_request_leave_the_app_as_a_copy() {
-        let s = Tester::new();
-        let window = s.window();
-        Tester::type_url(&window, "https://api.example.com/users");
-        let body = "{\"id\":1}";
-        s.engine.answer_with(&answer_json(200, body));
-        s.done("start_send", vec![Value::resource(&s.root)]);
-        s.settle();
-
-        // The body, the headers and the request each leave as the person's copy.
-        s.done("copy_body", vec![Value::resource(&s.root)]);
-        assert_eq!(s.selection.text(), body);
-        assert_eq!(s.text(&s.root, "notice"), "The body is copied");
-
-        s.done("copy_headers", vec![Value::resource(&s.root)]);
-        assert_eq!(
-            s.selection.text(),
-            "content-type: application/json; charset=utf-8\nserver: tilo-edge/2.4"
-        );
-
-        s.done("copy_request", vec![Value::resource(&s.root)]);
-        assert_eq!(
-            s.selection.text(),
-            "GET https://api.example.com/users\n",
-            "the request goes as authored, without a credential"
-        );
-    }
-
-    #[test]
-    fn the_window_shows_the_request_tabs_the_answer_and_the_sheets() {
-        let s = Tester::new();
-        let tree = s.window().tree().clone();
-        let labels = buttons(&tree);
-        for wanted in ["Send", "Add parameter", "Copy body", "Copy headers"] {
-            assert!(
-                labels.iter().any(|label| label == wanted),
-                "{wanted} stands in the window: {labels:?}"
+            // A secret's value is typed once and kept by the device; the workspace holds a
+            // reference and no part of the value.
+            let token = returned_ref(s.call(
+                "add_variable",
+                vec![
+                    Value::resource(&env),
+                    Value::text("token"),
+                    Value::Bool(true),
+                ],
+            ));
+            assert!(s.flag(&token, "secret"));
+            s.done(
+                "keep_variable",
+                vec![Value::resource(&token), Value::text("s3cr3t-token")],
             );
-        }
-        let empty = of_kind(&tree, "ui.EmptyState");
-        assert!(
-            empty.iter().any(|e| prop(e, "title") == "No response yet"),
-            "an empty answer says so: {empty:?}"
-        );
-        // Every sheet is drawn, and closed until a command opens one.
-        let sheets = of_kind(&tree, "ui.ModalDialog");
-        assert!(sheets.len() >= 8, "the window's sheets: {}", sheets.len());
-        for sheet in &sheets {
-            let open = sheet.props.get("open");
+            let reference = s.text(&token, "reference");
+            assert!(reference.starts_with("api-ref-"), "reference: {reference}");
+            assert_eq!(
+                s.text(&token, "value"),
+                "",
+                "the value stays off the workspace"
+            );
+            assert_eq!(
+                s.engine.kept.borrow().get(&reference).map(String::as_str),
+                Some("s3cr3t-token")
+            );
+
+            // Deleting the variable takes its value off the device too.
+            s.done(
+                "delete_variable",
+                vec![Value::resource(&env), Value::resource(&token)],
+            );
             assert!(
-                !matches!(open, Some(Value::Bool(true))),
-                "a sheet opens only when a command asks: {} reads {open:?}",
-                prop(sheet, "title")
+                s.engine.kept.borrow().get(&reference).is_none(),
+                "a deleted variable takes its value off the device"
+            );
+
+            // With no environment, nothing fills a variable.
+            s.done("no_environment", vec![Value::resource(&s.root)]);
+            assert!(s.of(&s.root, "active_environment").is_none());
+            s.done(
+                "use_environment",
+                vec![Value::resource(&s.root), Value::resource(&env)],
+            );
+            assert_eq!(
+                s.of(&s.root, "active_environment")
+                    .map(|e| s.text(&e, "name")),
+                Some("Staging".to_owned())
             );
         }
 
-        // With an answer, the pane shows the status and the body.
-        let window = s.window();
-        Tester::type_url(&window, "https://api.example.com/users");
-        s.engine.answer_with(&answer_json(200, "{\"id\":1}"));
-        s.done("start_send", vec![Value::resource(&s.root)]);
-        s.settle();
-        let tree = s.window().tree().clone();
-        let badges = of_kind(&tree, "ui.Badge");
-        assert!(
-            badges.iter().any(|b| prop(b, "text") == "200 OK"),
-            "the answer's status stands in the window"
-        );
-        let editors = of_kind(&tree, "ui.CodeEditor");
-        assert!(!editors.is_empty(), "the response has its editor");
+        phase a_send_hands_the_device_its_variables_and_its_sign_in;
+        {
+            let s = Tester::new();
+            let env = returned_ref(s.call(
+                "new_environment",
+                vec![Value::resource(&s.root), Value::text("Staging")],
+            ));
+            s.done(
+                "add_variable",
+                vec![
+                    Value::resource(&env),
+                    Value::text("base"),
+                    Value::Bool(false),
+                ],
+            );
+            // The address is typed into the window.
+            let window = s.window();
+            Tester::type_url(&window, "{{base}}/users");
+            assert_eq!(s.text(&s.draft(), "url"), "{{base}}/users");
+
+            // The sign-in is kept on the device, and only its reference stands in the workspace.
+            s.done(
+                "keep_credential",
+                vec![Value::resource(&s.root), Value::text("a-private-token")],
+            );
+            let reference = s
+                .nested(&s.draft(), "auth", "reference")
+                .as_str()
+                .unwrap_or_default()
+                .to_owned();
+            assert!(reference.starts_with("api-ref-"), "reference: {reference}");
+            assert_eq!(
+                s.engine.kept.borrow().get(&reference).map(String::as_str),
+                Some("a-private-token")
+            );
+
+            // Sending hands the device the request as typed, with its variables.
+            s.engine.answer_with(&answer_json(200, "{}"));
+            s.done("start_send", vec![Value::resource(&s.root)]);
+            let ask = s.engine.last_ask();
+            assert_eq!(ask.method, "GET");
+            assert_eq!(
+                ask.url, "{{base}}/users",
+                "the device resolves the variables"
+            );
+            assert_eq!(
+                ask.vars,
+                vec![("base".to_owned(), String::new(), String::new())],
+                "a shared variable's value is the workspace's"
+            );
+            assert_eq!(ask.auth_scheme, "none", "no scheme was chosen yet");
+            assert!(ask.headers.is_empty(), "a row with no name is not sent");
+        }
+
+        phase the_answer_reaches_the_window_and_the_history;
+        {
+            let s = Tester::new();
+            let window = s.window();
+            Tester::type_url(&window, "https://api.example.com/users");
+            let body = "{\"id\":1}";
+            s.engine.answer_with(&answer_json(200, body));
+
+            s.done("start_send", vec![Value::resource(&s.root)]);
+            assert!(s.flag(&s.root, "sending"), "the request is on its way");
+            s.settle();
+
+            assert!(!s.flag(&s.root, "sending"));
+            assert!(s.flag(&s.root, "answered"));
+            assert_eq!(s.text(&s.root, "failure"), "");
+            assert_eq!(
+                s.nested(&s.root, "answer", "status"),
+                serde_json::json!(200)
+            );
+            assert_eq!(
+                s.nested(&s.root, "answer", "size_bytes"),
+                serde_json::json!(body.len())
+            );
+            assert_eq!(s.nested(&s.root, "answer", "body"), serde_json::json!(body));
+            assert_eq!(
+                s.nested(&s.root, "answer", "pretty"),
+                serde_json::json!("{\n  \"id\": 1\n}"),
+                "the pretty view reads JSON as it is laid out"
+            );
+            assert_eq!(
+                s.nested(&s.root, "answer", "headers"),
+                serde_json::json!({"count": 2}),
+                "both headers stand"
+            );
+
+            // The history keeps what was sent, named by its route.
+            let history = s.records(&s.root, "history");
+            assert_eq!(history.len(), 1);
+            assert_eq!(
+                s.text(&history[0], "route"),
+                "GET https://api.example.com/users returned status 200"
+            );
+            assert_eq!(s.number(&history[0], "status"), 200);
+            assert!(
+                s.text(&history[0], "replay")
+                    .contains("https://api.example.com/users"),
+                "the entry keeps the request it sent"
+            );
+        }
+
+        phase a_send_can_be_stopped_and_a_failed_one_says_why;
+        {
+            let s = Tester::new();
+            let window = s.window();
+            Tester::type_url(&window, "https://api.example.com/slow");
+            s.done("start_send", vec![Value::resource(&s.root)]);
+            s.done("cancel_send", vec![Value::resource(&s.root)]);
+            assert!(*s.engine.cancelled.borrow());
+            assert!(!s.flag(&s.root, "sending"));
+            assert_eq!(s.text(&s.root, "failure"), "The request was cancelled.");
+
+            *s.engine.state.borrow_mut() = "failed".to_owned();
+            s.done("start_send", vec![Value::resource(&s.root)]);
+            s.settle();
+            assert_eq!(
+                s.text(&s.root, "failure"),
+                "the server refused the connection"
+            );
+            assert!(
+                s.records(&s.root, "history").is_empty(),
+                "nothing came back to keep"
+            );
+        }
+
+        phase a_send_answers_its_caller_with_the_response;
+        {
+            let s = Tester::new();
+            let window = s.window();
+            Tester::type_url(&window, "https://api.example.com/users");
+            let body = "{\"id\":1}";
+            s.engine.answer_with(
+                &serde_json::json!({
+                    "status": 201,
+                    "status_text": "Created",
+                    "duration_ms": 84,
+                    "size_bytes": body.len(),
+                    "size_exact": true,
+                    "shown_bytes": body.len(),
+                    "binary": false,
+                    "content_type": "application/json; charset=utf-8",
+                    "body": body,
+                    "headers": [
+                        ["content-type", "application/json; charset=utf-8"],
+                        ["x-request-id", "req-42"],
+                    ],
+                })
+                .to_string(),
+            );
+
+            // The invocation answers the response itself, so an agent or a script reads the status,
+            // the text, the body, the size and the headers in the one call.
+            let answered = s.done("send", vec![Value::resource(&s.root)]);
+            let answer = match answered {
+                Value::Text(text) => text,
+                other => panic!("send answers its caller the response: {other:?}"),
+            };
+            let read: serde_json::Value = serde_json::from_str(&answer).expect("the answer is JSON");
+            assert_eq!(read["status"], serde_json::json!(201));
+            assert_eq!(read["status_text"], serde_json::json!("Created"));
+            assert_eq!(read["body"], serde_json::json!(body));
+            assert_eq!(read["size_bytes"], serde_json::json!(body.len()));
+            assert!(
+                read["headers"]
+                    .as_array()
+                    .is_some_and(|headers| headers.iter().any(|pair| pair
+                        .get(0)
+                        .and_then(|v| v.as_str())
+                        == Some("x-request-id")
+                        && pair.get(1).and_then(|v| v.as_str()) == Some("req-42"))),
+                "the headers come back with it: {}",
+                read["headers"]
+            );
+
+            // The same answer reaches the window: the pane, the flag and the history entry.
+            assert!(!s.flag(&s.root, "sending"));
+            assert!(s.flag(&s.root, "answered"));
+            assert_eq!(s.text(&s.root, "failure"), "");
+            assert_eq!(
+                s.nested(&s.root, "answer", "status"),
+                serde_json::json!(201)
+            );
+            assert_eq!(s.nested(&s.root, "answer", "body"), serde_json::json!(body));
+            let history = s.records(&s.root, "history");
+            assert_eq!(history.len(), 1, "the send is kept as one entry");
+            assert_eq!(s.number(&history[0], "status"), 201);
+            assert!(
+                s.text(&history[0], "replay")
+                    .contains("https://api.example.com/users"),
+                "the entry keeps the request it sent"
+            );
+
+            // A send the engine fails answers nothing and leaves why it failed in the window.
+            *s.engine.state.borrow_mut() = "failed".to_owned();
+            let answered = s.done("send", vec![Value::resource(&s.root)]);
+            assert_eq!(answered, Value::text(""), "a failed send answers nothing");
+            assert_eq!(
+                s.text(&s.root, "failure"),
+                "the server refused the connection"
+            );
+            assert!(s.flag(&s.root, "answered"));
+            assert!(!s.flag(&s.root, "sending"));
+            assert_eq!(
+                s.records(&s.root, "history").len(),
+                1,
+                "nothing came back to keep"
+            );
+        }
+
+        phase a_sent_request_opens_again_and_can_be_saved;
+        {
+            let s = Tester::new();
+            let window = s.window();
+            Tester::type_url(&window, "https://api.example.com/users");
+            s.done("add_param", vec![Value::resource(&s.draft())]);
+            s.engine.answer_with(&answer_json(201, "{}"));
+            s.done("start_send", vec![Value::resource(&s.root)]);
+            s.settle();
+            assert_eq!(s.text(&s.root, "failure"), "", "the send went through");
+            assert!(s.flag(&s.root, "answered"));
+            let sent = s
+                .records(&s.root, "history")
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "history is empty; answer reads {:?}",
+                        s.nested(&s.root, "answer", "status")
+                    )
+                });
+
+            // A fresh request replaces the builder, and the sent one brings it all back.
+            s.done("new_request", vec![Value::resource(&s.root)]);
+            assert_eq!(s.text(&s.draft(), "url"), "");
+            s.done(
+                "open_sent",
+                vec![Value::resource(&s.root), Value::resource(&sent)],
+            );
+            let opened = s.draft();
+            assert_eq!(s.text(&opened, "url"), "https://api.example.com/users");
+            assert_eq!(
+                s.records(&opened, "params").len(),
+                1,
+                "the parameters come back with it"
+            );
+
+            // It can stand in a collection as a request of its own.
+            let users = s.collection("Users");
+            let saved = returned_ref(s.call(
+                "save_sent",
+                vec![
+                    Value::resource(&s.root),
+                    Value::resource(&sent),
+                    Value::resource(&users),
+                ],
+            ));
+            assert_eq!(
+                s.text(&saved, "url"),
+                "https://api.example.com/users",
+                "a sent request saved is a request"
+            );
+            s.done(
+                "delete_sent",
+                vec![Value::resource(&s.root), Value::resource(&sent)],
+            );
+            assert!(s.records(&s.root, "history").is_empty());
+        }
+
+        phase the_answer_and_the_request_leave_the_app_as_a_copy;
+        {
+            let s = Tester::new();
+            let window = s.window();
+            Tester::type_url(&window, "https://api.example.com/users");
+            let body = "{\"id\":1}";
+            s.engine.answer_with(&answer_json(200, body));
+            s.done("start_send", vec![Value::resource(&s.root)]);
+            s.settle();
+
+            // The body, the headers and the request each leave as the person's copy.
+            s.done("copy_body", vec![Value::resource(&s.root)]);
+            assert_eq!(s.selection.text(), body);
+            assert_eq!(s.text(&s.root, "notice"), "The body is copied");
+
+            s.done("copy_headers", vec![Value::resource(&s.root)]);
+            assert_eq!(
+                s.selection.text(),
+                "content-type: application/json; charset=utf-8\nserver: tilo-edge/2.4"
+            );
+
+            s.done("copy_request", vec![Value::resource(&s.root)]);
+            assert_eq!(
+                s.selection.text(),
+                "GET https://api.example.com/users\n",
+                "the request goes as authored, without a credential"
+            );
+        }
+
+        phase the_window_shows_the_request_tabs_the_answer_and_the_sheets;
+        {
+            let s = Tester::new();
+            let tree = s.window().tree().clone();
+            let labels = buttons(&tree);
+            for wanted in ["Send", "Add parameter", "Copy body", "Copy headers"] {
+                assert!(
+                    labels.iter().any(|label| label == wanted),
+                    "{wanted} stands in the window: {labels:?}"
+                );
+            }
+            let empty = of_kind(&tree, "ui.EmptyState");
+            assert!(
+                empty.iter().any(|e| prop(e, "title") == "No response yet"),
+                "an empty answer says so: {empty:?}"
+            );
+            // Every sheet is drawn, and closed until a command opens one.
+            let sheets = of_kind(&tree, "ui.ModalDialog");
+            assert!(sheets.len() >= 8, "the window's sheets: {}", sheets.len());
+            for sheet in &sheets {
+                let open = sheet.props.get("open");
+                assert!(
+                    !matches!(open, Some(Value::Bool(true))),
+                    "a sheet opens only when a command asks: {} reads {open:?}",
+                    prop(sheet, "title")
+                );
+            }
+
+            // With an answer, the pane shows the status and the body.
+            let window = s.window();
+            Tester::type_url(&window, "https://api.example.com/users");
+            s.engine.answer_with(&answer_json(200, "{\"id\":1}"));
+            s.done("start_send", vec![Value::resource(&s.root)]);
+            s.settle();
+            let tree = s.window().tree().clone();
+            let badges = of_kind(&tree, "ui.Badge");
+            assert!(
+                badges.iter().any(|b| prop(b, "text") == "200 OK"),
+                "the answer's status stands in the window"
+            );
+            let editors = of_kind(&tree, "ui.CodeEditor");
+            assert!(!editors.is_empty(), "the response has its editor");
+        }
     }
 }

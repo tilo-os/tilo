@@ -1742,3 +1742,22 @@ atspi = { path = "vendor/atspi" }
 atspi-common = { path = "vendor/atspi-common" }
 atspi-proxies = { path = "vendor/atspi-proxies" }
 rustypipe = { path = "vendor/rustypipe" }
+
+# Tests compile whole apps from source (tilolang-runtime's e2e suites compile a dozen per test
+# process), and a compiler built without optimisation takes seconds per app.
+[profile.dev.package.tilolang]
+opt-level = 3
+[profile.test.package.tilolang]
+opt-level = 3
+[profile.dev.package.tilolang-lex]
+opt-level = 3
+[profile.test.package.tilolang-lex]
+opt-level = 3
+[profile.dev.package.wasm-encoder]
+opt-level = 3
+[profile.test.package.wasm-encoder]
+opt-level = 3
+[profile.dev.package.unicode-segmentation]
+opt-level = 3
+[profile.test.package.unicode-segmentation]
+opt-level = 3

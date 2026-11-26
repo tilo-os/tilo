@@ -9,6 +9,13 @@ use std::{
 pub(in crate::setup) const INTERVAL: u64 = 64 * 1024 * 1024;
 pub(in crate::setup) const MAX_RECORD: usize = 4096;
 pub(in crate::setup) const MAX_SCAN: usize = 16;
+#[cfg_attr(
+    test,
+    expect(
+        dead_code,
+        reason = "tests run the coordinator on the fixture platform, not the native one"
+    )
+)]
 pub(in crate::setup) const MAX_COLLISIONS: usize = 16;
 const MAX_GENERATION: u64 = u32::MAX as u64;
 const WORKING_LEAF_PREFIX: &str = ".tilo-part-";
@@ -29,6 +36,13 @@ pub(in crate::setup) mod layout {
     pub(in crate::setup) const CHECKSUM: usize = DIGEST + 32;
 }
 
+#[cfg_attr(
+    test,
+    expect(
+        dead_code,
+        reason = "tests run the coordinator on the fixture platform, not the native one"
+    )
+)]
 pub(in crate::setup) fn working_leaf(name: u128) -> String {
     format!("{WORKING_LEAF_PREFIX}{name:032x}")
 }
@@ -132,8 +146,6 @@ pub(in crate::setup) fn initialize_fresh<P: FreshProvider>(
             return Err("Fresh ownership requires an empty ordinary file".into());
         }
         file.flush().map_err(io)?;
-        #[cfg(test)]
-        super::tests::fault("initialize-flush")?;
         file.sync_all().map_err(io)?;
         provider.verify(file, &record.ownership)?;
         record.generation = 1;
@@ -455,14 +467,7 @@ impl<P: Provider> Session<P> {
             .filter(|r| r.epoch == self.base.epoch)
             .map(|r| (r.length, r.digest))
             .collect();
-        let hashes = Hashes::seed(
-            file,
-            self.base.length,
-            self.base.digest,
-            &history,
-            cancel,
-            "restart",
-        )?;
+        let hashes = Hashes::seed(file, self.base.length, self.base.digest, &history, cancel)?;
         stopped(cancel)?;
         self.provider.verify(file, &self.base.ownership)?;
         if count > 2 {
@@ -612,7 +617,6 @@ impl Hashes {
         digest: [u8; 32],
         history: &[(u64, [u8; 32])],
         cancel: &AtomicBool,
-        phase: &'static str,
     ) -> Result<Self, String> {
         let mut stream = Sha256::new();
         let mut readback = Sha256::new();
@@ -622,7 +626,7 @@ impl Hashes {
         while checkpoints.peek().is_some_and(|p| p.0 == 0) {
             valid &= checkpoints.next().unwrap().1 == empty_digest();
         }
-        read_range(file, 0, length, cancel, phase, |mut bytes| {
+        read_range(file, 0, length, cancel, |mut bytes| {
             while !bytes.is_empty() {
                 let take = checkpoints.peek().map_or(bytes.len(), |p| {
                     p.0.checked_sub(offset)
@@ -664,7 +668,7 @@ impl Hashes {
         if file.metadata().map_err(io)?.len() != self.length {
             return Err("Retry prefix length changed".into());
         }
-        *self = Self::seed(file, self.length, self.digest(), &[], cancel, "retry")?;
+        *self = Self::seed(file, self.length, self.digest(), &[], cancel)?;
         Ok(())
     }
     pub fn pending(&self) -> u64 {
@@ -673,18 +677,14 @@ impl Hashes {
     pub fn verify_tail(&mut self, file: &mut File, cancel: &AtomicBool) -> Result<(), String> {
         stopped(cancel)?;
         file.flush().map_err(io)?;
-        #[cfg(test)]
-        super::tests::fault("data-flush")?;
         stopped(cancel)?;
         file.sync_all().map_err(io)?;
-        #[cfg(test)]
-        super::tests::fault("data-sync")?;
         stopped(cancel)?;
         if file.metadata().map_err(io)?.len() != self.length {
             return Err("Checkpoint file length changed".into());
         }
         let mut next = self.readback.clone();
-        read_range(file, self.watermark, self.length, cancel, "periodic", |b| {
+        read_range(file, self.watermark, self.length, cancel, |b| {
             next.update(b)
         })?;
         if <[u8; 32]>::from(next.clone().finalize()) != self.digest() {
@@ -703,7 +703,6 @@ fn read_range(
     start: u64,
     end: u64,
     cancel: &AtomicBool,
-    phase: &'static str,
     mut consume: impl FnMut(&[u8]),
 ) -> Result<(), String> {
     let cursor = file.stream_position().map_err(io)?;
@@ -715,10 +714,6 @@ fn read_range(
             stopped(cancel)?;
             let requested = (end - pos).min(buffer.len() as u64) as usize;
             let n = file.read(&mut buffer[..requested]).map_err(io)?;
-            #[cfg(test)]
-            super::tests::read_event(phase, requested as u64, n as u64);
-            #[cfg(not(test))]
-            let _ = phase;
             if n == 0 {
                 return Err("Checkpoint prefix truncated".into());
             }

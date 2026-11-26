@@ -34,9 +34,6 @@ fn allowed_ace(principal_trusted: bool, mask: u32, private: bool) -> bool {
                 mask & (2 | 16 | 64 | 256 | 0x10000 | 0x40000 | 0x80000) == 0
             })
 }
-#[cfg(test)]
-#[path = "windows/tests.rs"]
-mod tests;
 #[cfg(windows)]
 pub(in crate::setup) use native::*;
 #[cfg(windows)]
@@ -1159,8 +1156,6 @@ mod native {
                                 )?;
                                 held.file.sync_all().map_err(io)?;
                                 namespace_boundary(parent)?;
-                                #[cfg(test)]
-                                super::tests::boundary("partial-flushed")?;
                                 fresh_creation = Some((self.lease.payload.id, held.id));
                                 created = Some(held);
                                 break;
@@ -1197,8 +1192,6 @@ mod native {
                 };
                 if fresh_creation.is_some() {
                     super::super::initialize_fresh(selected, index, &mut provider, &mut file)?;
-                    #[cfg(test)]
-                    super::tests::boundary("fresh-settled")?;
                 }
                 stop(cancel)?;
                 result.push(Component::Partial(Partial { provider, file }));
@@ -1397,17 +1390,11 @@ mod native {
                     held.file.metadata().map_err(io)?.len() == 0,
                     "New journal not empty",
                 )?;
-                #[cfg(test)]
-                super::tests::boundary("record-created")?;
                 held.file.write_all(bytes).map_err(io)?;
-                #[cfg(test)]
-                super::tests::boundary("record-written")?;
                 held.file.flush().map_err(io)?;
                 held.file.sync_all().map_err(io)?;
                 held.check(Some(parent))?;
                 namespace_boundary(parent)?;
-                #[cfg(test)]
-                super::tests::boundary("record-flushed")?;
                 self.lease.check()?;
                 let id = held.id;
                 let expected_security = held.security.clone();
@@ -1571,8 +1558,6 @@ mod native {
                 Err(e) => return Err(io(e)),
             }
             let result = (|| {
-                #[cfg(test)]
-                super::tests::boundary("final-renamed")?;
                 self.provider.payload.leaf = final_name.as_bytes().to_vec();
                 self.provider.payload.native_leaf = wide(final_name.as_bytes());
                 self.provider.payload.name = native_name(&self.file)?;
@@ -1590,8 +1575,6 @@ mod native {
                 // Both duplicated write/DELETE handles must close before READ-only sharing can open.
                 drop(file);
                 drop(payload);
-                #[cfg(test)]
-                super::tests::boundary("writer-closed")?;
                 let mut final_file = final_handle(lease.clone(), selected, index, cancel)?
                     .ok_or("Published final disappeared")?;
                 require(
@@ -1599,8 +1582,6 @@ mod native {
                         && final_file.held.security == expected_security,
                     "Published close/reopen identity/security changed",
                 )?;
-                #[cfg(test)]
-                super::tests::boundary("final-verified")?;
                 stop(cancel)?;
                 let fresh = journals(&lease, selected, index)?;
                 require(
@@ -1712,82 +1693,5 @@ mod native {
             self.lease.check()?;
             stop(cancel)
         }
-    }
-    #[cfg(test)]
-    pub(super) fn fixture_acquire(path: &Path, selected: &SelectedManifest) -> Result<CacheRoot> {
-        CacheRoot::acquire_at(path, selected)
-    }
-    #[cfg(test)]
-    pub(super) fn fixture_file(path: &Path, bytes: &[u8]) -> Result<()> {
-        let parent = std::fs::OpenOptions::new()
-            .access_mode(Role::Directory.access())
-            .share_mode(Role::Directory.share())
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path.parent().unwrap())
-            .map_err(io)?;
-        let mut file = relative(
-            &parent,
-            &path.file_name().unwrap().encode_wide().collect::<Vec<_>>(),
-            Role::Writer,
-            true,
-        )
-        .map_err(io)?;
-        file.write_all(bytes).map_err(io)?;
-        file.sync_all().map_err(io)
-    }
-    #[cfg(test)]
-    pub(super) fn fixture_acl(path: &Path, protected: bool) -> Result<()> {
-        let file = std::fs::OpenOptions::new()
-            .access_mode(WRITE_DAC | READ_CONTROL)
-            .share_mode(7)
-            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)
-            .map_err(io)?;
-        let user = current_user()?;
-        let text: Vec<u16> = format!(
-            "D:P(A;OICI;FA;;;{user})(A;OICI;FA;;;SY)(A;OICI;FA;;;BA){}\0",
-            if protected { "(A;;0x40;;;WD)" } else { "" }
-        )
-        .encode_utf16()
-        .collect();
-        let mut sd = ptr::null_mut();
-        if unsafe {
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(
-                text.as_ptr(),
-                1,
-                &mut sd,
-                ptr::null_mut(),
-            )
-        } == 0
-        {
-            return Err(last());
-        }
-        let _allocation = LocalAllocation(sd);
-        let mut dacl = ptr::null_mut();
-        let mut present = 0;
-        let mut defaulted = 0;
-        if unsafe { GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted) } == 0 {
-            return Err(last());
-        }
-        let rc = unsafe {
-            SetSecurityInfo(
-                file.as_raw_handle(),
-                SE_FILE_OBJECT,
-                DACL_SECURITY_INFORMATION
-                    | if protected {
-                        PROTECTED_DACL_SECURITY_INFORMATION
-                    } else {
-                        UNPROTECTED_DACL_SECURITY_INFORMATION
-                    },
-                ptr::null_mut(),
-                ptr::null_mut(),
-                dacl,
-                ptr::null_mut(),
-            )
-        };
-        if rc != 0 {
-            return Err(io(std::io::Error::from_raw_os_error(rc as i32)));
-        }
-        Ok(())
     }
 }

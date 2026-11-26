@@ -258,119 +258,123 @@ mod cases {
         }
     }
 
-    #[test]
-    fn a_printed_reference_is_input_to_the_next_program() {
-        let w = world();
-        let mut session = Session::new();
-        let found = session.run(&w.rt, &agent(), "find(\"Note groceries\")");
-        let out = done(&found);
-        let literal = out.split_whitespace().next().unwrap().to_owned();
-        assert!(literal.starts_with("@notes.Note:"), "{out}");
-        let read = session.run(&w.rt, &agent(), &format!("print(read({literal}))"));
-        let text = done(&read);
-        assert!(
-            text.starts_with(&format!("{literal} \"Groceries\"  Note: 1 paragraph")),
-            "{text}"
-        );
-        assert!(
-            text.contains(&format!("{literal} title  Groceries")),
-            "{text}"
-        );
-        assert!(
-            text.contains(&format!("{literal} .pinned  false")),
-            "{text}"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn programs_1;
 
-    #[test]
-    fn errors_name_what_was_meant() {
-        let w = world();
-        let mut session = Session::new();
-        let typo = rejected(&session.run(&w.rt, &agent(), "tasks.new_taskk(1)"));
-        assert!(typo.contains("did you mean `new_task`?"), "{typo}");
-        let word = rejected(&session.run(&w.rt, &agent(), "prnt(1)"));
-        assert!(word.contains("did you mean `print`?"), "{word}");
-        let ty = rejected(&session.run(&w.rt, &agent(), "find(\"Notee launch\")"));
-        assert!(ty.contains("did you mean `Note`?"), "{ty}");
-        done(&session.run(&w.rt, &agent(), "let hits = find(\"Note launch\")"));
-        let name = rejected(&session.run(&w.rt, &agent(), "print(hitz)"));
-        assert!(name.contains("did you mean `hits`?"), "{name}");
-        let field = rejected(&session.run(&w.rt, &agent(), "for n in hits { print(n.titel) }"));
-        assert!(field.contains("did you mean `title`?"), "{field}");
-    }
+        phase a_printed_reference_is_input_to_the_next_program;
+        {
+            let w = world();
+            let mut session = Session::new();
+            let found = session.run(&w.rt, &agent(), "find(\"Note groceries\")");
+            let out = done(&found);
+            let literal = out.split_whitespace().next().unwrap().to_owned();
+            assert!(literal.starts_with("@notes.Note:"), "{out}");
+            let read = session.run(&w.rt, &agent(), &format!("print(read({literal}))"));
+            let text = done(&read);
+            assert!(
+                text.starts_with(&format!("{literal} \"Groceries\"  Note: 1 paragraph")),
+                "{text}"
+            );
+            assert!(
+                text.contains(&format!("{literal} title  Groceries")),
+                "{text}"
+            );
+            assert!(
+                text.contains(&format!("{literal} .pinned  false")),
+                "{text}"
+            );
+        }
 
-    #[test]
-    fn a_collection_changes_through_its_apps_actions() {
-        let w = world();
-        let reply = Session::new().run(
-            &w.rt,
-            &agent(),
-            &format!("let l = {}\nl.items = l.items", w.list_literal()),
-        );
-        let lines = rejected(&reply);
-        assert!(lines.contains("'s actions"), "{lines}");
-    }
+        phase errors_name_what_was_meant;
+        {
+            let w = world();
+            let mut session = Session::new();
+            let typo = rejected(&session.run(&w.rt, &agent(), "tasks.new_taskk(1)"));
+            assert!(typo.contains("did you mean `new_task`?"), "{typo}");
+            let word = rejected(&session.run(&w.rt, &agent(), "prnt(1)"));
+            assert!(word.contains("did you mean `print`?"), "{word}");
+            let ty = rejected(&session.run(&w.rt, &agent(), "find(\"Notee launch\")"));
+            assert!(ty.contains("did you mean `Note`?"), "{ty}");
+            done(&session.run(&w.rt, &agent(), "let hits = find(\"Note launch\")"));
+            let name = rejected(&session.run(&w.rt, &agent(), "print(hitz)"));
+            assert!(name.contains("did you mean `hits`?"), "{name}");
+            let field = rejected(&session.run(&w.rt, &agent(), "for n in hits { print(n.titel) }"));
+            assert!(field.contains("did you mean `title`?"), "{field}");
+        }
 
-    /// What agents wrote live, and where each error sent them: a value joined to text with `+`
-    /// is taught to go inside the text, where an Option shows its value or `none`; `let n :=`
-    /// is taught `=`; an Option compared is taught to be taken out or asked by its filter.
-    #[test]
-    fn the_programs_agents_reach_for_are_taught_what_works() {
-        let w = world();
-        w.auth.trust_actor(&agent());
-        let mut session = Session::new();
-        done(&session.run(
-            &w.rt,
-            &agent(),
-            &format!(
-                "tasks.new_task({l}, title: \"Ship\", due: 2026-06-30)\ntasks.new_task({l}, title: \"Plan\")",
-                l = w.list_literal()
-            ),
-        ));
-        let joined = rejected(&session.run(
-            &w.rt,
-            &agent(),
-            &format!(
-                "{}.items.map(t -> t.title + \" | due=\" + t.due)",
-                w.list_literal()
-            ),
-        ));
-        assert!(
-            joined.contains("put a value into text inside it"),
-            "{joined}"
-        );
-        assert!(joined.contains("print(t.title, t.due)"), "{joined}");
-        let shown = done(&session.run(
-            &w.rt,
-            &agent(),
-            &format!(
-                "for t in {}.items {{ print(\"{{t.title}} due {{t.due}}\") }}",
-                w.list_literal()
-            ),
-        ));
-        assert_eq!(shown, "Ship due 2026-06-30\nPlan due none");
-        let bound = rejected(&session.run(&w.rt, &agent(), "let n := 1"));
-        assert!(bound.contains("`let n = …`"), "{bound}");
-        let ordered = rejected(&session.run(
-            &w.rt,
-            &agent(),
-            &format!(
-                "{}.items.filter(t -> t.due <= 2026-07-01)",
-                w.list_literal()
-            ),
-        ));
-        assert!(ordered.contains("through the type's filter"), "{ordered}");
-        // Who changed a note last is a value of the host, no resource: text names its fields,
-        // and the program is refused rather than stopping halfway when it runs.
-        let note = format!("@notes.Note:{}", w.notes[0].id_string());
-        let version =
-            rejected(&session.run(&w.rt, &agent(), &format!("print(\"{{updated({note})}}\")")));
-        assert!(version.contains("interpolate its fields"), "{version}");
-        assert!(version.contains("`.at`"), "{version}");
-        done(&session.run(
-            &w.rt,
-            &agent(),
-            &format!("print(\"changed {{updated({note})?.at}}\")"),
-        ));
+        phase a_collection_changes_through_its_apps_actions;
+        {
+            let w = world();
+            let reply = Session::new().run(
+                &w.rt,
+                &agent(),
+                &format!("let l = {}\nl.items = l.items", w.list_literal()),
+            );
+            let lines = rejected(&reply);
+            assert!(lines.contains("'s actions"), "{lines}");
+        }
+
+        phase the_programs_agents_reach_for_are_taught_what_works;
+        // What agents wrote live, and where each error sent them: a value joined to text with `+`
+        // is taught to go inside the text, where an Option shows its value or `none`; `let n :=`
+        // is taught `=`; an Option compared is taught to be taken out or asked by its filter.
+        {
+            let w = world();
+            w.auth.trust_actor(&agent());
+            let mut session = Session::new();
+            done(&session.run(
+                &w.rt,
+                &agent(),
+                &format!(
+                    "tasks.new_task({l}, title: \"Ship\", due: 2026-06-30)\ntasks.new_task({l}, title: \"Plan\")",
+                    l = w.list_literal()
+                ),
+            ));
+            let joined = rejected(&session.run(
+                &w.rt,
+                &agent(),
+                &format!(
+                    "{}.items.map(t -> t.title + \" | due=\" + t.due)",
+                    w.list_literal()
+                ),
+            ));
+            assert!(
+                joined.contains("put a value into text inside it"),
+                "{joined}"
+            );
+            assert!(joined.contains("print(t.title, t.due)"), "{joined}");
+            let shown = done(&session.run(
+                &w.rt,
+                &agent(),
+                &format!(
+                    "for t in {}.items {{ print(\"{{t.title}} due {{t.due}}\") }}",
+                    w.list_literal()
+                ),
+            ));
+            assert_eq!(shown, "Ship due 2026-06-30\nPlan due none");
+            let bound = rejected(&session.run(&w.rt, &agent(), "let n := 1"));
+            assert!(bound.contains("`let n = …`"), "{bound}");
+            let ordered = rejected(&session.run(
+                &w.rt,
+                &agent(),
+                &format!(
+                    "{}.items.filter(t -> t.due <= 2026-07-01)",
+                    w.list_literal()
+                ),
+            ));
+            assert!(ordered.contains("through the type's filter"), "{ordered}");
+            // Who changed a note last is a value of the host, no resource: text names its fields,
+            // and the program is refused rather than stopping halfway when it runs.
+            let note = format!("@notes.Note:{}", w.notes[0].id_string());
+            let version =
+                rejected(&session.run(&w.rt, &agent(), &format!("print(\"{{updated({note})}}\")")));
+            assert!(version.contains("interpolate its fields"), "{version}");
+            assert!(version.contains("`.at`"), "{version}");
+            done(&session.run(
+                &w.rt,
+                &agent(),
+                &format!("print(\"changed {{updated({note})?.at}}\")"),
+            ));
+        }
     }
 }
