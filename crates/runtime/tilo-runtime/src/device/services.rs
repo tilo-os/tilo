@@ -575,7 +575,7 @@ pub(crate) fn port_from(
 /// bound as [`listen_endpoint`] binds it.
 fn endpoint(identity: &Identity, port: Option<u16>, member: bool) -> io::Result<iroh::Endpoint> {
     let Some((key, device)) = identity.login.as_ref().filter(|_| !member) else {
-        return listen_endpoint(&identity.key, port);
+        return listen_endpoint(&identity.key, port, login_relay(identity));
     };
     let bound = tilo_rt::app().handle().block_on(async {
         let server = tilo_api::daemon::enter::server_of(device).await?;
@@ -588,8 +588,64 @@ fn endpoint(identity: &Identity, port: Option<u16>, member: bool) -> io::Result<
         Ok(endpoint) => Ok(endpoint),
         Err(error) => {
             tracing::warn!(%error, "the login's server is not reached now; this device relays as the person's other devices do");
-            listen_endpoint(&identity.key, port)
+            listen_endpoint(&identity.key, port, login_relay(identity))
         }
+    }
+}
+
+/// The relay this computer reaches its person's devices through: the login's server relay, which
+/// its link to that server already goes through ([`tilo_server_client::ServerAddress::bind_at`]),
+/// or `None` on a computer that logged in to nothing, whose endpoint relays as the person set it.
+fn login_relay(identity: &Identity) -> Option<iroh::RelayUrl> {
+    let (_, device) = identity.login.as_ref()?;
+    let url = device.server_address.as_ref()?.relay_url.as_deref()?;
+    url.parse().ok()
+}
+
+/// Whether `relay` answers on this machine: an address of its loopback, or `localhost` and the
+/// names under it, which every resolver here answers itself.
+fn relay_on_this_machine(relay: &iroh::RelayUrl) -> bool {
+    let Some(host) = relay.host_str() else {
+        return false;
+    };
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    host == "localhost"
+        || host.ends_with(".localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+/// How this device's endpoint is reached: through `relay`, the server this computer logged in to,
+/// with the server's address directory and not number 0's; else through the person's relays and
+/// their directory. A relay on this machine is reached from no router, so the endpoint asks none
+/// for a port: its `UPnP` probe over `SSDP` would open one that nothing could use.
+fn endpoint_reach(
+    relay: Option<iroh::RelayUrl>,
+    person: &tilo_endpoint_reachability::EndpointRelays,
+) -> (iroh::RelayMode, bool, iroh::endpoint::PortmapperConfig) {
+    let enabled = iroh::endpoint::PortmapperConfig::default;
+    match relay {
+        Some(relay) => {
+            let portmapper = if relay_on_this_machine(&relay) {
+                iroh::endpoint::PortmapperConfig::Disabled
+            } else {
+                enabled()
+            };
+            (
+                iroh::RelayMode::Custom(iroh::RelayMap::from(relay)),
+                false,
+                portmapper,
+            )
+        }
+        None => (
+            iroh::RelayMode::Custom(person.relays.clone()),
+            person.n0_dns,
+            enabled(),
+        ),
     }
 }
 
@@ -1776,14 +1832,21 @@ fn serve_key_sessions(
 /// This device's endpoint, keyed by its device key: bound to `listen` on
 /// every interface when a host names the port it is reached at, and to
 /// whatever port the machine gives it otherwise. Its relays are the person's
-/// ([`tilo_endpoint_reachability::relays`]): a runtime on a machine of theirs
-/// relays and resolves as their other devices do.
-pub(super) fn listen_endpoint(key: &SigningKey, listen: Option<u16>) -> io::Result<iroh::Endpoint> {
-    let relays = tilo_endpoint_reachability::relays();
+/// ([`tilo_endpoint_reachability::relays`]) on a computer that logged in to nothing, and the
+/// server's own (`relay`) on one that did: a runtime relays and resolves as its person's other
+/// devices do, and a member as the server that reaches it does.
+pub(super) fn listen_endpoint(
+    key: &SigningKey,
+    listen: Option<u16>,
+    relay: Option<iroh::RelayUrl>,
+) -> io::Result<iroh::Endpoint> {
+    let person = tilo_endpoint_reachability::relays();
+    let (relay_mode, n0_dns, portmapper) = endpoint_reach(relay, &person);
     let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .relay_mode(iroh::RelayMode::Custom(relays.relays))
+        .relay_mode(relay_mode)
+        .portmapper_config(portmapper)
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
-    if relays.n0_dns {
+    if n0_dns {
         builder = builder
             .address_lookup(tilo_endpoint_reachability::collaborating())
             .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns());

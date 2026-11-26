@@ -6869,13 +6869,12 @@ name = "e2e"
 # a failure is still bisected to the commit that broke it and told to its pusher. At every head
 # it and the release-profile builds it needs cost about 2 core-hours of the node's (11-14).
 on = ["idle"]
-# No egress but what a member's runtime asks the network for: every flow meets the stack on
-# loopback (the server and API on 127.0.0.1 and localhost, the site at tilo.localhost, which the
-# image's resolver answers itself), and its programs, fonts and Caddy are its needs'. A computer a
-# flow logs in takes its workspaces' work on a runtime that holds number 0's relays: its net report
-# looks a relay's name up at the sandbox's resolver and probes a router for a port (iroh's
-# portmapper, SSDP to 239.255.255.250:1900). By design on a computer at home, and refused here
-# where the flows and the check need neither. Exactly those two, as the page checks declare them.
+# No egress: every flow meets the stack on loopback (the server and API on 127.0.0.1 and localhost,
+# the site at tilo.localhost, which the image's resolver answers itself), and its programs, fonts
+# and Caddy are its needs'. A computer a flow logs in takes its workspaces' work on a runtime that
+# relays through the stack's own relay on this machine and asks no router for a port. What a
+# runtime holding number 0's relays still sends by design — a relay name to the sandbox's resolver
+# and a router port over SSDP (iroh's portmapper) — is declared exactly, as the page checks do.
 egress = { to = ["169.254.1.1:53", "239.255.255.250:1900"] }
 # `--input flows=signin` runs the flows named there (space separated) instead of all of them, the
 # script's E2E_FLOWS: one flow's pages, and what it says, without the rest waiting on it.

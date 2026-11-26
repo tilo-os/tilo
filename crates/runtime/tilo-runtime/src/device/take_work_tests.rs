@@ -89,7 +89,7 @@ tilo_test_env::scenario! {
     // key, listening on the port its entry among its person's servers names.
     {
         let key = ed25519_dalek::SigningKey::from_bytes(&[0x44; 32]);
-        let endpoint = crate::device::services::listen_endpoint(&key, Some(0)).unwrap();
+        let endpoint = crate::device::services::listen_endpoint(&key, Some(0), None).unwrap();
         assert_eq!(
             endpoint.id().as_bytes(),
             &key.verifying_key().to_bytes(),
