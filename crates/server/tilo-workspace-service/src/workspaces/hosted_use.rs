@@ -642,7 +642,7 @@ impl Use {
         (workspace, root): (&str, &Path),
         by: &str,
         purpose: UsedFor<'_>,
-        key_permission: impl Future<Output = Result<(), ActionCallError>>,
+        (turn, scope, allowed): (&HostedTurn<'_>, &Asked, Allowance),
     ) -> Result<Value, ActionCallError> {
         match self {
             Self::Mail(adding) => {
@@ -654,8 +654,9 @@ impl Use {
                 serde_json::to_value(kept).map_err(|error| refused(error.to_string()))
             }
             Self::Key(setting) => {
+                let permission = Box::pin(workspaces.may_finish_key_use(turn, scope, allowed));
                 let kept = workspaces
-                    .key_from_item((workspace, root), &setting, by, purpose, key_permission)
+                    .key_from_item((workspace, root), &setting, by, purpose, permission)
                     .await?;
                 serde_json::to_value(kept).map_err(|error| refused(error.to_string()))
             }
@@ -1094,7 +1095,7 @@ impl Workspaces {
                     (&using.workspace, &root),
                     &using.name,
                     purpose,
-                    self.may_finish_key_use(turn, &scope, allowed),
+                    (turn, &scope, allowed),
                 )
                 .await
                 .map(TurnUse::Done);
@@ -1387,7 +1388,7 @@ impl Workspaces {
                 (&using.workspace, &root),
                 &using.name,
                 purpose,
-                self.may_finish_key_use(turn, &scope, allowed),
+                (turn, &scope, allowed),
             )
             .await
             .map(Some)
