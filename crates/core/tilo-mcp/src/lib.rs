@@ -82,6 +82,17 @@ type SweptRead = Option<(String, tilo_actions::ActionDescriptor)>;
 
 pub(crate) use session::Session;
 
+/// Whose shell `terminal#run` reaches: the app's own action, which may open the device's host
+/// shell and so asks its person first, or the workspace's own shell, served by the device that
+/// keeps the workspace's machine ([`McpServer::with_device_shell`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shell {
+    /// The app's own action, asking its person first.
+    App,
+    /// The workspace's own shell, which the device this session's calls reach serves.
+    Device,
+}
+
 /// One MCP session. Its requests are answered through `&self`, so a client
 /// may overlap them: a `tilo_status`, reading or cancelling, answers while a
 /// `tilo_do` of the same session waits for its action.
@@ -99,6 +110,8 @@ pub struct McpServer<H> {
     workspace: String,
     /// One transport-issued execution scope, independent of history labels.
     caller: Caller,
+    /// Whose shell this session's `terminal#run` reaches ([`Shell`]).
+    shell: Shell,
     /// The session every invocation of this connection is attributed to.
     agent_session: std::sync::Mutex<Option<Session>>,
     /// The caller-chosen invocation ids a call of this session is running
@@ -578,6 +591,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             watched: None,
             workspace,
             caller,
+            shell: Shell::App,
             agent_session: std::sync::Mutex::new(None),
             invoking: InFlight::default(),
             handles: std::sync::Mutex::default(),
@@ -629,6 +643,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     #[must_use]
     pub const fn with_programs_on_device(mut self) -> Self {
         self.programs_on_device = true;
+        self
+    }
+
+    /// This session is the person's own agent on the device that serves their workspace: the
+    /// `tilo mcp` their computer hands them, whose calls reach that device's own dispatch. Its
+    /// `terminal#run` runs in the workspace's Terminal there — the shell the device serves at
+    /// `record:so.tilo.terminal:<record>` — instead of the app's own shell action, which may
+    /// run on the device's host shell and so asks its person first. A workspace's agent on a
+    /// turn is not such a session: its commands keep the app's action and the ask.
+    #[must_use]
+    pub const fn with_device_shell(mut self) -> Self {
+        self.shell = Shell::Device;
         self
     }
     /// Tell `watch` of each look this session makes at an invocation, and what

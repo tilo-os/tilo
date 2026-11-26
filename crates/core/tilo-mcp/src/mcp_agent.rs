@@ -19,8 +19,8 @@
 //! whether the first one worked.
 use super::{
     ActionProvider, Addressed, CatalogueQuery, DEFAULT_WAIT_MS, Deserialize, Failure, MAX_CALLS,
-    McpServer, OneCall, RemoteActionTarget, Value, batch_invocation, invocation_id, json, page,
-    parse,
+    McpServer, OneCall, RemoteActionTarget, Shell, Value, batch_invocation, invocation_id, json,
+    page, parse,
 };
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -89,6 +89,31 @@ const LS_PAGE_MAX: usize = 1_000;
 const LABEL_CHARS: usize = 60;
 /// Longest first sentence of an action's description in an action's page.
 const DESCRIPTION_CHARS: usize = 200;
+
+/// The verbs of the workspace's own shell: what the device that keeps the workspace's machine
+/// runs on a session record, at `record:so.tilo.terminal:<record>`.
+const SHELL_VERBS: [&str; 3] = ["run", "stop", "open-terminal"];
+
+/// The provider naming the workspace's own Terminal record: the default session every device of
+/// the workspace meets on ([`collab_types::document::DocumentId::workspace_default`]), served by
+/// the device that keeps the workspace's machine.
+fn workspace_shell_provider() -> String {
+    format!(
+        "{}:{}:{}",
+        tilo_actions::remote::RESOURCE_PROVIDER,
+        tilo_app_id::apps::TERMINAL,
+        collab_types::document::DocumentId::workspace_default().as_str()
+    )
+}
+
+/// Whether `name` names Terminal, whose sessions' shell the device that keeps the workspace's
+/// machine serves: its id, or the last part of it, in any case.
+fn names_terminal(name: &str) -> bool {
+    name.trim().eq_ignore_ascii_case("terminal")
+        || name
+            .trim()
+            .eq_ignore_ascii_case(tilo_app_id::apps::TERMINAL)
+}
 
 #[path = "mcp_agent_arguments.rs"]
 mod arguments;
@@ -658,9 +683,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// whose resource no record provider answers leaves the last one named:
     /// the agent still acts there.
     fn acted_in(&self, provider: &str, app_id: &str) {
-        // The app answered where it runs: the calls after this one reach it there, rather than
-        // looking up again whether it runs and starting it when it does not.
-        self.tree.saw_running(app_id, provider);
+        // The workspace's shell record is the device that serves it answering, not an instance of
+        // the app: the app's name still finds its own directory, and its calls here move nothing.
+        let shell = app_id == tilo_app_id::apps::TERMINAL && provider == workspace_shell_provider();
+        if !shell {
+            // The app answered where it runs: the calls after this one reach it there, rather than
+            // looking up again whether it runs and starting it when it does not.
+            self.tree.saw_running(app_id, provider);
+        }
         let Some((app, document)) = tilo_actions::remote::resource_parts(provider) else {
             return;
         };
@@ -1559,13 +1589,30 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// whether the path pinned it; `None` for starting the app itself
     /// ([`Self::launch`]). One of an installed app's own actions
     /// (`terminal#run`) starts the app first and runs in what it opened, so
-    /// the caller asks once.
+    /// the caller asks once — except the workspace's own shell, which the
+    /// device that serves the workspace answers at its Terminal record for the
+    /// person's own agent there ([`McpServer::with_device_shell`]).
     async fn acting_in(
         &self,
         parsed: &Address,
         action: &str,
         wait_ms: Option<u64>,
     ) -> Result<Option<(String, String, bool)>, String> {
+        // The person's own agent on the computer that serves their workspace runs a command in
+        // the workspace's own shell, which that device serves as its Terminal record: not in a
+        // windowless copy of the app, whose `run` may reach the device's host shell and so asks
+        // its person first. The app need not be installed here: the shell is the device's.
+        if self.shell == Shell::Device
+            && below_app(parsed).is_empty()
+            && SHELL_VERBS.contains(&action)
+            && names_terminal(&app_of(parsed))
+        {
+            return Ok(Some((
+                tilo_app_id::apps::TERMINAL.to_owned(),
+                workspace_shell_provider(),
+                true,
+            )));
+        }
         let reference = match self.tree.app_ref(&app_of(parsed)).await {
             Ok(reference) => reference,
             // An action's answer names the resource it made by its kind

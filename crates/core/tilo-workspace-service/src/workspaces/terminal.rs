@@ -21,13 +21,18 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use automerge::ReadDoc as _;
 use serde_json::{Map, Value, json};
+use tilo_actions::remote::environment_commands::CommandOutput;
 use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationLog,
-    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, Reservation,
-    environment_commands::Person, pending, resource_parts,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, CatalogueRow,
+    InvocationLog, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
+    Reservation, environment_commands::Person, pending, resource_parts,
 };
-use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
+use tilo_actions::{
+    ActionAddress, ActionContract, ActionDescriptor, ActionOutput, ActionParam, ExecutionLocus,
+    ExecutionMode, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType, ResultSpec,
+};
 use tilo_agent_session::shell::{
     Opened, Opening, Recorder, ShellRan, Watching, WorkspaceShell, person_of,
 };
@@ -60,6 +65,15 @@ const REMOVE_SECRET: &str = "remove-secret";
 const SESSION_RESOURCE: &str = "terminal.session";
 /// The session record's action that records a command that ended.
 const RECORD_COMMAND: &str = "record-command";
+/// The verbs of a session record's shell: what this device answers, and how it describes them to
+/// a caller reading the record.
+const SESSION_VERBS: [&str; 3] = [RUN, OPEN, STOP];
+/// What an agent is refused when the session it asks runs in the device's own shell: a shell of
+/// its person's computer is theirs alone, as the app refuses it too.
+const HOST_SHELL_REFUSED: &str = "an agent never runs commands in the device's own shell";
+/// How long a stop waits for the command it stopped to end before it is answered: the shell
+/// notices within a tick of the flag, and one that does not is answered all the same.
+const CANCEL_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 /// The window a terminal opens at when the caller names none.
 const DEFAULT_SIZE: (u16, u16) = (80, 24);
 /// The widest and tallest window a terminal opens at.
@@ -149,6 +163,31 @@ impl TerminalService {
         Ok((workspace, record.to_owned()))
     }
 
+    /// Whether the session record `record` says it runs in the device's own shell: an agent may
+    /// not run a command there, and is refused rather than quietly given the workspace's shell.
+    async fn runs_on_host(&self, workspace: &str, record: &str) -> bool {
+        let Ok(Some(bytes)) = self
+            .copies
+            .resource_document(workspace, TERMINAL_APP, record)
+            .await
+        else {
+            return false;
+        };
+        let Ok(document) = automerge::Automerge::load(&bytes) else {
+            return false;
+        };
+        let Ok(Some((value, _))) = document.get(&automerge::ROOT, "target") else {
+            return false;
+        };
+        let automerge::Value::Scalar(scalar) = value else {
+            return false;
+        };
+        let automerge::ScalarValue::Str(target) = scalar.as_ref() else {
+            return false;
+        };
+        names_the_host_shell(target)
+    }
+
     /// Start a session's shell on a terminal for `caller`'s device, then hand the stream over.
     /// The answer names the stream and the session to come back to.
     async fn opening(
@@ -159,8 +198,15 @@ impl TerminalService {
         mut opening: Opening,
     ) -> Result<ActionOutput, ActionCallError> {
         self.machine(workspace).await?;
+        if caller.acting().is_agent() && self.runs_on_host(workspace, record).await {
+            return Err(ActionCallError::Refused {
+                reason: HOST_SHELL_REFUSED.into(),
+            });
+        }
         opening.workspace = workspace.to_owned();
-        opening.session = shell_session(caller, record);
+        // The shell this opens is the session's own, whichever caller asked for it: the record
+        // names the session, and what is typed on the terminal is recorded there.
+        opening.session = record.to_owned();
         opening.person = self.person(workspace, caller).await;
         self.shells
             .started(&opening.workspace, &opening.session, caller);
@@ -255,6 +301,18 @@ impl TerminalService {
                 reason: "one command line, without control characters".into(),
             }));
         }
+        // The shell the caller names, where it names one: an agent may not be handed the
+        // device's own shell, and is refused the same whether it names one here or asks a
+        // session whose record runs there.
+        let named = match &request.argument {
+            InvokeArgument::Json(arguments) => arguments.get("target").and_then(Value::as_str),
+            _ => None,
+        };
+        if caller.acting().is_agent() && named.is_some_and(names_the_host_shell) {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: HOST_SHELL_REFUSED.into(),
+            }));
+        }
         let invocation = request.invocation;
         let caller = caller.clone();
         let reserved = self.log.lock_recover().reserve(&caller, request);
@@ -306,6 +364,17 @@ impl TerminalService {
         stop: &Arc<AtomicBool>,
         invocation: InvocationId,
     ) -> InvocationUpdate {
+        if caller.acting().is_agent() && self.runs_on_host(workspace, record).await {
+            return InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "terminal_host_shell".into(),
+                    message: HOST_SHELL_REFUSED.into(),
+                    details: None,
+                    retryable: false,
+                },
+            };
+        }
         if let Err(refusal) = self.machine(workspace).await {
             return InvocationUpdate::Failed {
                 invocation,
@@ -323,6 +392,22 @@ impl TerminalService {
         let agent = caller.agent_session().is_some();
         let stopping = Arc::clone(stop);
         let stop_requested = move || stopping.load(Ordering::SeqCst);
+        // What the command printed so far, as it grows: whoever follows the invocation reads
+        // it ([`tilo_actions::remote::environment_commands::CommandOutput`]), so a build that
+        // takes minutes is never silent.
+        let log = Arc::clone(&self.log);
+        let moved = self.moved.clone();
+        let sequence = std::sync::atomic::AtomicU64::new(0);
+        let printed = move |output: &CommandOutput| {
+            let update = InvocationUpdate::Item {
+                invocation,
+                sequence: sequence.fetch_add(1, Ordering::Relaxed),
+                value: serde_json::to_value(output).unwrap_or_default(),
+            };
+            log.lock_recover()
+                .complete(&invocation, InvocationState::new(invocation, update));
+            moved.send_modify(|moves| *moves = moves.wrapping_add(1));
+        };
         let ran = {
             let (workspace, command, by) =
                 (workspace.to_owned(), command.to_owned(), caller.clone());
@@ -336,7 +421,7 @@ impl TerminalService {
                         agent,
                         person.as_ref(),
                         Watching {
-                            seen: None,
+                            seen: Some(&printed),
                             stop: Some(&stop_requested),
                         },
                     )
@@ -526,14 +611,108 @@ fn failed(invocation: InvocationId, reason: &str) -> InvocationUpdate {
     }
 }
 
-/// The shell a caller's commands and terminal run in: an agent's has a shell of its own,
-/// wherever its commands are recorded, so two agents in one workspace never share a directory
-/// or variables. A person's share the session's shell.
+/// The shell a caller's commands run in: an agent's has a shell of its own, wherever its
+/// commands are recorded, so two agents in one workspace never share a directory or variables.
+/// A person's share the session's shell. A terminal opened on the session is the session's own
+/// shell, whichever caller opens it.
 fn shell_session(caller: &Caller, record: &str) -> String {
     caller.agent_session().map_or_else(
         || record.to_owned(),
         |session| format!("run:{}", session.id),
     )
+}
+
+/// Whether `target`, a session's recorded target, names the device's own shell: the engine
+/// encodes it as `{"kind":"host"}`, a tilolang app writes `host` plainly, and an older encoding
+/// wrote `"Host"`.
+fn names_the_host_shell(target: &str) -> bool {
+    let target = target.trim();
+    target.eq_ignore_ascii_case("host")
+        || serde_json::from_str::<Value>(target).is_ok_and(|target| match target {
+            Value::String(name) => name.eq_ignore_ascii_case("host"),
+            Value::Object(mut fields) => {
+                let kind_is_host = fields
+                    .remove("kind")
+                    .as_ref()
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind.eq_ignore_ascii_case("host"));
+                kind_is_host || fields.remove("Host").is_some()
+            }
+            _ => false,
+        })
+}
+
+/// The action `action` of a session record, as this device declares it: the workspace's own
+/// shell, an effect on the workspace's records rather than an app's action that may reach the
+/// device's host shell. The app's own `run` stays what its surface declares, so invoking it on
+/// the app still asks its person first; a session's shell on the device that keeps the
+/// workspace's machine is the workspace's own work, as Files' verbs on its folder are.
+fn session_descriptor(action: &str) -> Option<ActionDescriptor> {
+    let (label, description, params, execution) = match action {
+        RUN => (
+            "Run command",
+            "Run a command line in the workspace's shell on this device",
+            vec![
+                ActionParam::required(
+                    "command",
+                    ParamType::Text,
+                    "The command line, as typed at the prompt",
+                ),
+                ActionParam::optional(
+                    "target",
+                    ParamType::Text,
+                    "Where the shell runs: host is this computer's own shell, which an agent is \
+                     never given",
+                ),
+            ],
+            ExecutionMode::Background { cancellable: true },
+        ),
+        OPEN => (
+            "Open on a terminal",
+            "Open the workspace's shell on a terminal for this device",
+            vec![
+                ActionParam::optional("cols", ParamType::Integer, "The window's width, in columns"),
+                ActionParam::optional("rows", ParamType::Integer, "The window's height, in rows"),
+                ActionParam::optional(
+                    "attach",
+                    ParamType::Text,
+                    "The session to come back to, by the id an open answered",
+                ),
+            ],
+            ExecutionMode::Immediate,
+        ),
+        STOP => (
+            "Stop command",
+            "Stop the commands running in the workspace's shell, as Ctrl+C at its prompt does",
+            Vec::new(),
+            ExecutionMode::Immediate,
+        ),
+        _ => return None,
+    };
+    Some(ActionDescriptor {
+        did: None,
+        state: tilo_actions::ActionState::default(),
+        semantic_identity: None,
+        address: ActionAddress::new(SESSION_RESOURCE, action),
+        resource_kind: SESSION_RESOURCE.into(),
+        resource_label: "Terminal".into(),
+        action_label: label.into(),
+        keywords: Vec::new(),
+        icon: None,
+        description: Some(description.into()),
+        locus: ExecutionLocus::default(),
+        kind: OperationKind::Effect,
+        contract: ActionContract {
+            execution,
+            result: ResultSpec::Json {
+                schema: json!({"type": ["object", "array", "null"]}),
+            },
+            ..ActionContract::default()
+        },
+        input: InputSpec::None,
+        params,
+        view: None,
+    })
 }
 
 /// The terminal `arguments` ask for, opened for `device`: its window (80 by 24 unless named),
@@ -649,14 +828,39 @@ impl ActionProvider for TerminalService {
     fn query(
         &self,
         _caller: &Caller,
-        _query: CatalogueQuery,
+        query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         // A session record's actions are its app's, and the catalogue lists them where the app
-        // runs. A call naming the record reaches this device's shells without a listing.
-        Pending::ready(Ok(CataloguePage {
-            exhausted: true,
-            ..CataloguePage::default()
-        }))
+        // runs. A call naming the record reaches this device's shells; a path resolving the
+        // record itself ([`crate::workspaces::providers`]) reads what its shell answers here.
+        let Some(provider) = query.provider.clone().filter(|provider| {
+            resource_parts(provider).is_some_and(|(app, _)| app == TERMINAL_APP)
+        }) else {
+            return Pending::ready(Ok(CataloguePage {
+                exhausted: true,
+                ..CataloguePage::default()
+            }));
+        };
+        let rows: Vec<CatalogueRow> = SESSION_VERBS
+            .iter()
+            .filter_map(|action| session_descriptor(action))
+            .map(|action| CatalogueRow::for_action(provider.clone(), TERMINAL_APP, action))
+            .collect();
+        Pending::ready(Ok(CataloguePage::from_rows(
+            rows.len().to_string(),
+            rows,
+            &query,
+        )))
+    }
+
+    fn invocation(
+        &self,
+        address: &ActionAddress,
+        _argument: Option<&str>,
+    ) -> Option<ActionDescriptor> {
+        (address.resource == SESSION_RESOURCE)
+            .then(|| session_descriptor(&address.action))
+            .flatten()
     }
 
     fn invoke(
@@ -781,14 +985,37 @@ impl ActionProvider for TerminalService {
         Some(change)
     }
 
-    fn cancel(&self, _caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
-        match self.running.lock_recover().get(id) {
-            Some(stop) => {
-                stop.store(true, Ordering::SeqCst);
-                Pending::ready(Ok(()))
+    fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        let Some(stop) = self.running.lock_recover().get(id).cloned() else {
+            return Pending::ready(Err(ActionCallError::UnknownInvocation));
+        };
+        stop.store(true, Ordering::SeqCst);
+        // Answer once the run has ended: a caller that stops a command is answered when it
+        // stopped and what it printed is recorded, as the app's own stop answers, never before.
+        let (complete, answer) = pending();
+        let service = self.clone();
+        let caller = caller.clone();
+        let id = *id;
+        let mut moved = self.moved.subscribe();
+        self.runtime.spawn(async move {
+            let until = tilo_clock::now()
+                .checked_add(CANCEL_WAIT)
+                .unwrap_or_else(tilo_clock::now);
+            loop {
+                let ended = service
+                    .log
+                    .lock_recover()
+                    .get(&caller, &id)
+                    .is_some_and(|state| state.update.is_terminal());
+                if ended || tilo_clock::now() >= until {
+                    complete.complete(Ok(()));
+                    return;
+                }
+                let left = until.saturating_duration_since(tilo_clock::now());
+                let _ = tokio::time::timeout(left, moved.changed()).await;
             }
-            None => Pending::ready(Err(ActionCallError::UnknownInvocation)),
-        }
+        });
+        answer
     }
 }
 

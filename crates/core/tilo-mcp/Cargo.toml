@@ -27,6 +27,7 @@ serde.workspace = true
 serde_json.workspace = true
 tilo-action-policy = { path = "../action-policy" }
 tilo-actions = { path = "../actions", features = ["answer-reads", "off-worker"] }
+tilo-app-id.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-content = { path = "../content" }
 tilo-files = { path = "../../platform/tilo-files" }

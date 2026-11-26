@@ -18112,6 +18112,7 @@ dependencies = [
  "tilo-actions",
  "tilo-agent-provider-config",
  "tilo-agent-turn",
+ "tilo-app-id",
  "tilo-clock",
  "tilo-collab-types",
  "tilo-content",

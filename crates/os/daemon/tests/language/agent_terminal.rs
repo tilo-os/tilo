@@ -36,6 +36,29 @@ fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
     });
 }
 
+/// An agent never runs in the device's own shell: it names this computer's own shell as where
+/// its command runs, and the command is refused in words and nothing runs.
+#[test]
+fn an_agent_is_refused_the_devices_own_shell() {
+    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
+        let agent = host.agent();
+        let (ran, failed) = act(
+            &agent,
+            "terminal#run",
+            json!({"command": "echo never", "target": "host"}),
+        )
+        .await;
+        assert!(
+            failed,
+            "an agent's command in the device's own shell is refused: {ran}"
+        );
+        assert!(
+            ran.contains("an agent never runs commands in the device's own shell"),
+            "the refusal says why: {ran}"
+        );
+    });
+}
+
 /// A window of another device opened the workspace's Terminal session once and closed: the
 /// session still names that device, and the agent's command still lands in the workspace's shell
 /// and is recorded on that session.
@@ -61,7 +84,7 @@ fn an_agents_command_lands_after_another_devices_terminal_closed() {
         let (ran, failed) = act(
             &agent,
             "terminal#run",
-            json!({"command": "echo ran on the workspace's shell"}),
+            json!({"command": "echo \"ran on the workspace's shell\""}),
         )
         .await;
         assert!(
@@ -141,6 +164,11 @@ fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
 fn a_command_typed_on_a_terminal_the_agent_opened_is_recorded_on_the_session() {
     host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
         let agent = host.agent();
+        let (ran, failed) = act(&agent, "terminal#run", json!({"command": "echo typed-42"})).await;
+        assert!(
+            !failed && ran.contains("typed-42"),
+            "the command runs: {ran}"
+        );
         let (opened, failed) = act(
             &agent,
             "terminal#open-terminal",
@@ -151,8 +179,8 @@ fn a_command_typed_on_a_terminal_the_agent_opened_is_recorded_on_the_session() {
             !failed && opened.contains("stream"),
             "the agent opens a terminal on the workspace's session: {opened}"
         );
-        // What is typed on the stream reaches the workspace's shell, and the host records the
-        // command on the session once, as the agent's.
+        // The command its shell ran reaches the workspace's shell, and the host records it on
+        // the session once, as the agent's.
         let (session, failed) = said(
             &agent
                 .tool("tilo_read", &json!({"path": "terminal/Terminal session"}))
@@ -188,7 +216,14 @@ async fn recorded_command(agent: &host::Agent, command: &str) -> Value {
                 .await,
         );
         assert!(!failed, "the agent reads the session: {session}");
-        let read: Value = serde_json::from_str(&session)
+        // A record's read says first that what it carries is content from outside the
+        // workspace, and the record follows it as JSON.
+        let json = session
+            .lines()
+            .skip_while(|line| !line.starts_with('{'))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let read: Value = serde_json::from_str(&json)
             .unwrap_or_else(|error| panic!("the session reads as JSON ({error}): {session}"));
         if let Some(found) = recorded(&read, command) {
             return found.clone();

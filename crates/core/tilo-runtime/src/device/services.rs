@@ -1922,8 +1922,12 @@ impl Daemon {
         // daemon's processes.
         let tasks = self.task_hosts(host.clone(), caller.clone(), &self.actor);
         let session = agent_session_id(&caller)?;
-        tilo_mcp::McpServer::admitted(host, caller)
-            .map(|server| server.with_agent_session(session).with_task_hosts(tasks))
+        tilo_mcp::McpServer::admitted(host, caller).map(|server| {
+            server
+                .with_agent_session(session)
+                .with_task_hosts(tasks)
+                .with_device_shell()
+        })
     }
 
     /// The device's directory.
@@ -5793,7 +5797,9 @@ impl RuntimeActionProvider {
                     &Arc::new(tokio::sync::Notify::new()),
                 );
             }
-            Ok(tilo_mcp::McpServer::admitted(session_host, caller)?.with_agent_session(session))
+            Ok(tilo_mcp::McpServer::admitted(session_host, caller)?
+                .with_agent_session(session)
+                .with_device_shell())
         })
     }
 
