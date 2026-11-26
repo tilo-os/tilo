@@ -209,12 +209,14 @@ impl HistorySource {
         }
     }
 
-    /// Leave out a record's genesis: the change that created it with its
-    /// initial content, made by an actor derived from the record's identity
-    /// at time zero, carrying the framework's genesis message (for a
-    /// package-primary document, which records no identity, the root change
-    /// that starts it). A document's own history keeps it as the version to
-    /// restore to; a feed of what people did has no one to name for it.
+    /// Leave out a record's creation: its founding, made by an actor derived
+    /// from the record's identity at time zero and carrying the framework's
+    /// genesis message (for a package-primary document, which records no
+    /// identity, the root change that starts it), and the content its app
+    /// starts with, written on top of it at time zero as external content by
+    /// whoever created the record. A document's own history keeps them as the
+    /// one version to restore to; a feed of what people did has no one to
+    /// name for either.
     #[must_use]
     pub fn without_resource_genesis(mut self) -> Self {
         self.resource_genesis = false;
@@ -267,9 +269,10 @@ fn genesis_context() -> tilo_actions::ActionContext {
     }
 }
 
-/// Whether `v` is the genesis of a document its store created: the root
-/// change, made at time zero, which the framework commits the initial
-/// content as. Nobody's edit carries the framework's genesis message.
+/// Whether `v` is the founding of a document its store created: the root
+/// change, made at time zero, that holds its containers. Nobody's edit
+/// carries the framework's genesis message. The content the record starts
+/// with follows it as a change of its own ([`HistoryLog::entries`]).
 fn is_store_genesis(doc: &mut AutoCommit, time_ms: i64, hash: &ChangeHash) -> bool {
     let genesis = tilo_actions::FrameworkChange::Genesis.change_message();
     time_ms == 0

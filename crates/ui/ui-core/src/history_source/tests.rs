@@ -1063,12 +1063,19 @@ tilo_test_env::scenario! {
         let checkout = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("document"));
         store.create_resource(&checkout).unwrap();
         let mut doc = store.read(&checkout.id, AutoCommit::clone).unwrap();
-        let genesis = genesis_actor(&doc).expect("a record names its genesis actor");
+        let versions = tilo_resource::history::versions(&mut doc);
+        // A record holds content only, so it names no identity actor; its
+        // creation is the founding and initial content made at time zero.
+        assert_eq!(
+            genesis_actor(&doc),
+            None,
+            "a record that holds content only names no identity actor"
+        );
         assert!(
-            tilo_resource::history::versions(&mut doc)
+            versions
                 .iter()
-                .any(|v| v.actor == genesis.to_hex_string() && v.time_ms == 0),
-            "the genesis is made by the record's derived actor at time zero"
+                .any(|v| v.time_ms == 0 && v.actor != doc.get_actor().to_hex_string()),
+            "the creation is made at time zero under an actor of its own"
         );
         let kept = HistorySource::new().entries(&mut doc);
         assert_eq!(

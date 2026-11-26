@@ -365,6 +365,10 @@ impl HistoryLog {
         // A person typing on in one field is one row ([`super::typing`]):
         // each author's open run, by the row it is.
         let mut typing = super::typing::TypingRuns::<usize>::default();
+        // The creation stands at time zero, in the founding and the content after it: whether the
+        // last change read was its founding decides whether this one is what the record started
+        // with.
+        let mut creation_at_zero = false;
         let made_since = source.made_since.unwrap_or(i64::MIN);
         for logged in self.changes.iter().skip(start) {
             let Some(reading) = logged
@@ -397,10 +401,43 @@ impl HistoryLog {
             let genesis = genesis_actor.as_deref() == Some(logged.actor.as_str())
                 || reading.store_genesis
                 || framework == Some(tilo_actions::FrameworkChange::Genesis);
+            let after_creation = creation_at_zero && logged.time_ms == 0;
+            creation_at_zero = genesis && logged.time_ms == 0;
             if (genesis && !source.resource_genesis)
                 || reading.marker
                 || framework.is_some_and(is_bookkeeping)
             {
+                typing.continues(&logged.actor, None, logged.time_ms);
+                continue;
+            }
+            // A record is created at time zero in two changes: the founding that holds its
+            // containers, and the content its app starts with, which its creator writes as
+            // external content so undo takes nothing of it back
+            // ([`tilo_actions::ChangeKind::External`]). Its own history keeps them as the one
+            // version it was created as, and a feed of what people did has no one to name for
+            // either.
+            let initial_content = after_creation
+                && !genesis
+                && logged.time_ms == 0
+                && tilo_resource::history::context_of(
+                    doc.committed_document(),
+                    logged.hash,
+                    logged.message.as_deref(),
+                )
+                .is_some_and(|context| context.change == tilo_actions::ChangeKind::External);
+            if initial_content {
+                creation_at_zero = false;
+                let created = out
+                    .last_mut()
+                    .filter(|created| created.is_genesis())
+                    .filter(|created| created.timestamp == timestamp_from_ms(0));
+                if let Some(created) = created
+                    && source.resource_genesis
+                {
+                    created.id = logged.id;
+                    created.entry_kind = reading.entry_kind;
+                    created.text_delta = reading.text_delta;
+                }
                 typing.continues(&logged.actor, None, logged.time_ms);
                 continue;
             }
