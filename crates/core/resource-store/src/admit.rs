@@ -177,9 +177,11 @@ pub(crate) fn declared(
     Ok(())
 }
 
-/// Whether what `touched` writes lies within what the verb `stamp` names declares it writes, the
-/// change making `operations` operations. A schema that declares no verbs checks none but the
-/// verbs of history every schema has; one that does refuses a change that names no verb.
+/// Whether what `touched` writes lies within what the verbs `stamp` names declare they write, the
+/// change making `operations` operations. A change names one verb, or the several actions of a
+/// group its entry says it was one step of, each of which must be declared and one of which
+/// admits the resource's write. A schema that declares no verbs checks none but the verbs of
+/// history every schema has; one that does refuses a change that names no verb.
 pub(crate) fn within_verb(
     schema: &Schema,
     touched: &Touched,
@@ -187,10 +189,17 @@ pub(crate) fn within_verb(
     stamp: Option<&Stamp>,
     operations: usize,
 ) -> Result<(), String> {
-    let verbs: Vec<&crate::schema::Verb> = stamp
-        .map(|stamp| schema.verbs_naming(&stamp.verb).collect())
-        .unwrap_or_default();
-    if let (Some(stamp), true) = (stamp, verbs.iter().any(|verb| verb.marks)) {
+    let names = stamp.map(named_verbs).unwrap_or_default();
+    let verbs: Vec<&crate::schema::Verb> = names
+        .iter()
+        .flat_map(|name| schema.verbs_naming(name))
+        .collect();
+    // A verb that marks a step writes nothing: a change it alone names is checked for that
+    // alone. A group of actions is no mark's, whatever one of its members says.
+    if let Some(stamp) = stamp
+        && names.len() == 1
+        && verbs.iter().any(|verb| verb.marks)
+    {
         return marks(stamp, operations);
     }
     if schema.verbs.is_empty() {
@@ -199,15 +208,26 @@ pub(crate) fn within_verb(
     let Some(stamp) = stamp else {
         return Err("the change names no verb".to_owned());
     };
-    if verbs.is_empty() {
+    if names.is_empty() {
         return Err(format!("no verb `{}` is declared", stamp.verb));
+    }
+    // Every action the change names is declared, whichever of them admits the write: a group
+    // may not name one the store's schema knows nothing of.
+    if let Some(undeclared) = names
+        .iter()
+        .find(|name| schema.verbs_naming(name).next().is_none())
+    {
+        return Err(format!("no verb `{undeclared}` is declared"));
     }
     // A branch's founding step is one record's: a change that touches another record is no step
     // of a branch's.
-    if verbs.iter().any(|verb| verb.branches) && touched.resources.len() > 1 {
+    if let Some(branch) = names
+        .iter()
+        .find(|name| schema.verbs_naming(name).any(|verb| verb.branches))
+        && touched.resources.len() > 1
+    {
         return Err(format!(
-            "`{}` is one record's step, and this change touches {}",
-            stamp.verb,
+            "`{branch}` is one record's step, and this change touches {}",
             touched.resources.len()
         ));
     }
@@ -215,7 +235,7 @@ pub(crate) fn within_verb(
         let Some(kind) = &touch.kind else {
             continue;
         };
-        // One verb of the name that admits the resource's write is enough: a family declared
+        // One verb of the names that admits the resource's write is enough: a family declared
         // by prefix writes its own kinds beside a verb of the same name another app declares.
         if !verbs
             .iter()
@@ -227,6 +247,42 @@ pub(crate) fn within_verb(
         }
     }
     Ok(())
+}
+
+/// The verbs `stamp` names: its own, every distinct action of a group its entry says the change
+/// was one step of, and, for a step through history, the platform's verb for that step (a store
+/// stamp names the same one as `$undo` or `$restore`). Empty names are left out, and a name two
+/// of those say is said once.
+fn named_verbs(stamp: &Stamp) -> Vec<&str> {
+    use tilo_actions::{Did, HistoryOp};
+    let mut names = vec![stamp.verb.as_str()];
+    if let Some(context) = stamp.context.as_deref() {
+        match context.what.as_ref() {
+            Some(Did::Group(group)) => {
+                let members = if group.distinct.is_empty() {
+                    &group.members
+                } else {
+                    &group.distinct
+                };
+                for member in members {
+                    if let Did::Verb(verb) = member {
+                        names.push(verb.action.action.as_str());
+                    }
+                }
+            }
+            Some(Did::History(step)) => names.push(match step.op {
+                HistoryOp::Undo | HistoryOp::Redo => Stamp::UNDO_VERB,
+                HistoryOp::Restore => Stamp::RESTORE_VERB,
+                HistoryOp::Checkpoint { .. } => Stamp::CHECKPOINT_VERB,
+                HistoryOp::Migrate { .. } => Stamp::MIGRATE_VERB,
+            }),
+            _ => {}
+        }
+    }
+    names.retain(|name| !name.is_empty());
+    names.sort_unstable();
+    names.dedup();
+    names
 }
 
 /// Whether a change of a verb of history, `stamp`, making `operations` operations, writes

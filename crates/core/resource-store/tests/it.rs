@@ -2800,6 +2800,133 @@ mod store {
         );
     }
 
+    /// A change that made several actions of a record at once names the group its entry says it
+    /// was: every action it names is declared, and one of them admits what the change wrote. An
+    /// action no schema declares is refused, and so is a group none of whose actions writes what
+    /// the change wrote.
+    #[test]
+    fn a_change_of_a_group_of_actions_is_admitted_by_the_verbs_it_names() {
+        use tilo_actions::{ActionKey, Did};
+        let anyone = |_: &Proposal<'_>| true;
+        let writing = |fields: &[&str]| {
+            BTreeMap::from([(
+                ISSUE.to_owned(),
+                tilo_resource_store::Writes {
+                    fields: fields.iter().map(|field| (*field).to_owned()).collect(),
+                    sets_only: false,
+                },
+            )])
+        };
+        let verb = |name: &str, fields: &[&str]| tilo_resource_store::Verb {
+            name: name.to_owned(),
+            writes: writing(fields),
+            ..tilo_resource_store::Verb::default()
+        };
+        let declaring = |verbs: Vec<tilo_resource_store::Verb>| {
+            let mut store = issues();
+            store
+                .declare(Schema {
+                    verbs,
+                    ..Schema::default()
+                })
+                .unwrap();
+            store
+        };
+        let grouped = |names: &[&str]| Stamp {
+            context: Some(Box::new(tilo_actions::ActionContext {
+                what: Some(Did::group(names.iter().map(|name| {
+                    Did::verb(ActionKey::new("so.tilo.tasks", ISSUE, *name), [])
+                }))),
+                ..tilo_actions::ActionContext::default()
+            })),
+            ..Stamp::default()
+        };
+        let write = |stamp: &Stamp| {
+            issues()
+                .put(
+                    ISSUE,
+                    "g",
+                    resource("board", "g0", "Grouped", "open"),
+                    stamp,
+                )
+                .unwrap()
+        };
+        assert_eq!(
+            deliver(
+                &write(&grouped(&["first", "second"])),
+                &mut declaring(vec![
+                    verb("first", &["title", "state", "labels"]),
+                    verb("second", &["title", "state", "labels"]),
+                ]),
+                &anyone
+            ),
+            [],
+            "the record it wrote is admitted by the actions it names"
+        );
+        assert!(
+            matches!(
+                deliver(
+                    &write(&grouped(&["first", "nope"])),
+                    &mut declaring(vec![
+                        verb("first", &["title", "state", "labels"]),
+                        verb("second", &["title", "state", "labels"]),
+                    ]),
+                    &anyone
+                )
+                .as_slice(),
+                [Refusal::Undeclared(why)] if why.contains("no verb `nope`")
+            ),
+            "a group may not name an action the store's schema knows nothing of"
+        );
+        assert!(
+            matches!(
+                deliver(
+                    &write(&grouped(&["titles", "headings"])),
+                    &mut declaring(vec![verb("titles", &["title"]), verb("headings", &["title"])]),
+                    &anyone
+                )
+                .as_slice(),
+                [Refusal::Undeclared(why)] if why.contains("labels")
+            ),
+            "a group none of whose actions writes what it wrote is refused"
+        );
+    }
+
+    /// A step through history is the platform's own write, under the verb its step is
+    /// ([`Stamp::UNDO_VERB`] or its restore): a store stamp names it, and a change's entry says
+    /// which step it takes.
+    #[test]
+    fn a_step_through_history_is_admitted_as_the_platforms_verb() {
+        use tilo_actions::{Described, Did, HistoryOp};
+        let anyone = |_: &Proposal<'_>| true;
+        for (op, id) in [
+            (HistoryOp::Undo, "u"),
+            (HistoryOp::Redo, "r"),
+            (HistoryOp::Restore, "s"),
+        ] {
+            let stamp = Stamp {
+                context: Some(Box::new(
+                    tilo_actions::ActionContext::for_resource(id, ISSUE, "Issue")
+                        .with_described(Described::new(Did::history(op.clone(), 1, None))),
+                )),
+                ..Stamp::default()
+            };
+            let made = issues()
+                .put(
+                    ISSUE,
+                    id,
+                    resource("board", id, "History", "open"),
+                    &stamp,
+                )
+                .unwrap();
+            assert_eq!(
+                deliver(&made, &mut verbed(), &anyone),
+                [],
+                "{op:?} is the platform's write, whichever form names it"
+            );
+        }
+    }
+
     /// An app's own verb named `undo` keeps exactly the write set its surface declares: the
     /// platform's wider admission is the reserved `$undo`, which the app may not declare, so a
     /// name collision never borrows it.

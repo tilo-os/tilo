@@ -671,6 +671,11 @@ pub fn carried_effect(
     if puts_files_claimed(target, record.app, &verbs) {
         return false;
     }
+    // A store's change names its verb beside the records it edits whole, so the step it takes is
+    // read from that verb and their kinds: Files' call carried out through the tree's verbs.
+    if store_files_step(target, record.app, claim) {
+        return false;
+    }
     // Files' `undo` on the workspace's folder is carried out through the tree's history.
     let members = claim.action.record_members();
     if !members.is_empty()
@@ -695,6 +700,28 @@ fn puts_files_claimed(
     !verbs.is_empty()
         && verbs.iter().all(|action| {
             collab_types::files_open_step(&target.address, (app, &action.kind, &action.action))
+        })
+}
+
+/// Whether `claim`, a store's change of `app`'s records, is the change of files the call `target`
+/// asked for: the verb it names beside the records it edits whole is one the call takes on the
+/// tree ([`collab_types::files_open_step`]), and every record it edits is the tree. A store's
+/// change names its verb where its claims keep it, not among the records, which its kinds name.
+fn store_files_step(
+    target: &tilo_actions::remote::RemoteActionTarget,
+    app: &str,
+    claim: &collab_types::claim::ChangeClaim,
+) -> bool {
+    let Some(verb) = claim.action.store_verb() else {
+        return false;
+    };
+    let members = claim.action.record_members();
+    !members.is_empty()
+        && members.iter().all(|member| match member {
+            collab_types::claim::ClaimedAction::Edit { kind, path } if path.is_empty() => {
+                collab_types::files_open_step(&target.address, (app, kind, verb))
+            }
+            _ => false,
         })
 }
 
