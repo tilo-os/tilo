@@ -1126,6 +1126,11 @@ impl StatePeer {
         if collab_types::is_unread_record(app, root) {
             return false;
         }
+        // A sealed record is kept under keys of its own: a member a rule refuses to read is
+        // given none of them, whatever it may otherwise act on there.
+        if collab_types::sealed_kind(app, root).is_some() {
+            return false;
+        }
         let kind = self
             .core
             .documents

@@ -300,30 +300,32 @@ tilo_test_env::scenario! {
     }
 
     phase a_sealed_record_has_keys_of_its_own_and_none_reach_a_member_it_refuses;
-    // Terminal declares its history's kind sealed: the record has keys of its own from its first
-    // write, though every key holder still reads it, so a member a rule later refuses it never
-    // held what opens it. A record of a kind nobody sealed is sealed by the workspace's key.
+    // Mail declares its root's kind sealed: the record has keys of its own from its first write,
+    // though every key holder still reads it, so a member a rule later refuses it never held what
+    // opens it. A record of a kind nobody sealed is sealed by the workspace's key.
     {
         let (mut peer, source, now) = fixture();
         let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
-        let terminal = tilo_app_id::apps::TERMINAL;
-        let history = collab_types::workspace_document_id("terminal.history");
-        let session = collab_types::workspace_document_id("terminal.session");
-        assert!(peer.requires_document_keys(terminal, &history, now).unwrap());
-        assert!(!peer.requires_document_keys(terminal, &session, now).unwrap());
-        assert!(peer.check_document_read(source, terminal, &history, now).is_ok());
+        let mail = tilo_app_id::apps::MAIL;
+        // The package's own record, kept under the empty id.
+        let root = "";
+        assert!(peer.requires_document_keys(mail, root, now).unwrap());
+        assert!(!peer
+            .requires_document_keys(tilo_app_id::apps::TERMINAL, root, now)
+            .unwrap());
+        assert!(peer.check_document_read(source, mail, root, now).is_ok());
         let workspace_id = peer.workspace_id().to_owned();
         put_grant(&mut peer, &Grant::new(
-            "history-hidden",
+            "mail-root-hidden",
             Grantee::person(person.as_str()),
-            collab_types::document_node(&workspace_id, terminal, &history),
+            collab_types::document_node(&workspace_id, mail, root),
             KindSet::READ,
             Answer::Deny,
             Grantee::person("a different person"),
         ));
-        assert!(peer.check_document_read(source, terminal, &history, now).is_err());
+        assert!(peer.check_document_read(source, mail, root, now).is_err());
         assert!(
-            !peer.document_key_holders(terminal, &history, now).unwrap().contains(&source),
+            !peer.document_key_holders(mail, root, now).unwrap().contains(&source),
             "the member it refuses holds none of its keys"
         );
     }
