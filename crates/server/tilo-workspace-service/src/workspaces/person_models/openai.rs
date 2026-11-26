@@ -428,7 +428,16 @@ impl Workspaces {
             }
         };
         initiator.still_allowed(self).await?;
-        let offered = account_provider(&provider_config(root), openai, using);
+        let matches = |profile: &ProviderProfile| match using {
+            AccountUse::Subscription => profile.sign_in_issuer() == Some(SignInIssuer::ChatGpt),
+            AccountUse::ApiUsage => {
+                profile.sign_in.is_none()
+                    && profile.endpoint.trim_end_matches('/') == openai.api.trim_end_matches('/')
+            }
+        };
+        let existing = provider_config(root).profiles.into_iter().find(matches);
+        let was_kept = existing.is_some();
+        let offered = existing.unwrap_or_else(|| new_account_provider(openai, using));
         let listed = listing(&offered, Some(&listing_key), reach)
             .await
             .unwrap_or_default();
@@ -436,19 +445,19 @@ impl Workspaces {
         // before the final permission check and any workspace write.
         initiator.still_allowed(self).await?;
         let mut config = provider_config(root);
-        let mut profile = account_provider(&config, openai, using);
-        if profile.id != offered.id || profile.endpoint != offered.endpoint {
-            return Err("The provider changed during sign-in. Begin again.".to_owned());
-        }
-        if let Some(kept) = config
-            .profiles
-            .iter_mut()
-            .find(|kept| kept.id == profile.id)
-        {
-            kept.enabled = true;
-        } else {
-            config.profiles.push(profile.clone());
-        }
+        let mut profile = match config.profiles.iter_mut().find(|profile| matches(profile)) {
+            Some(kept)
+                if was_kept && kept.id == offered.id && kept.endpoint == offered.endpoint =>
+            {
+                kept.enabled = true;
+                kept.clone()
+            }
+            None if !was_kept => {
+                config.profiles.push(offered.clone());
+                offered
+            }
+            _ => return Err("The provider changed during sign-in. Begin again.".to_owned()),
+        };
         save_provider_config(root, &config)?;
         keys.put(&mut profile, &credential).await?;
         save_named_key(root, &profile)?;
@@ -644,23 +653,9 @@ async fn api_key(
         .ok_or_else(|| "OpenAI issued no API key for this account.".to_owned())
 }
 
-/// The provider an account `using` answers as: the one kept already, or a new
-/// one. A plan's provider signs in; API usage is `OpenAI`'s API with a key.
-fn account_provider(
-    config: &ProviderConfig,
-    openai: &OpenAiSignIn,
-    using: AccountUse,
-) -> ProviderProfile {
-    let is_it = |profile: &ProviderProfile| match using {
-        AccountUse::Subscription => profile.sign_in_issuer() == Some(SignInIssuer::ChatGpt),
-        AccountUse::ApiUsage => {
-            profile.sign_in.is_none()
-                && profile.endpoint.trim_end_matches('/') == openai.api.trim_end_matches('/')
-        }
-    };
-    if let Some(kept) = config.profiles.iter().find(|profile| is_it(profile)) {
-        return kept.clone();
-    }
+/// A fresh profile for an account. A plan's provider signs in; API usage is
+/// `OpenAI`'s API with a key.
+fn new_account_provider(openai: &OpenAiSignIn, using: AccountUse) -> ProviderProfile {
     let mut profile = match using {
         AccountUse::Subscription => {
             let mut profile = Preset::CHATGPT.profile();
