@@ -759,6 +759,20 @@ impl AppBrokerState {
         // A call this provider runs on goes on after `Accepted`: its observation and
         // cancellation reach the provider itself, not the record this dispatch keeps of it.
         let receipt = match receipt.poll_ready() {
+            // A provider that refuses the call before it runs it is answered as a refusal, as
+            // the dispatch's own admission and a live action's refusal are: the caller is told
+            // so, and the record of the call ends failed. Only a call already taken fails.
+            PendingPoll::Ready(Err(refused)) => {
+                self.complete_host_action(
+                    &admitted,
+                    host_step_failure(
+                        request.invocation,
+                        "host_step_refused",
+                        &refused.to_string(),
+                    ),
+                )?;
+                return Err(refused);
+            }
             PendingPoll::Ready(receipt) => {
                 if receipt
                     .as_ref()
