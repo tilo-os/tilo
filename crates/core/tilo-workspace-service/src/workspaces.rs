@@ -1282,6 +1282,10 @@ struct WorkspacesInner {
     /// Held while a workspace is let go ([`Workspaces::release`]): whoever
     /// asks after it waits until what the host served of it is gone.
     releasing: AsyncMutex<()>,
+    /// The workspaces whose record this service could not read as it opened, by id, with the
+    /// file and what reading it said: each stays on disk exactly as it was, closed, while every
+    /// other workspace serves ([`Workspaces::closed`]).
+    closed: std::sync::Mutex<std::collections::BTreeMap<String, ClosedWorkspace>>,
     /// The workspaces of people's own, once the host's operator offers them
     /// ([`Workspaces::offer_own_workspaces`]).
     own: std::sync::OnceLock<own::OwnWorkspaces>,
@@ -1318,6 +1322,16 @@ impl Drop for WorkspacesInner {
             following.abort();
         }
     }
+}
+
+/// A workspace this service left closed as it opened: the record it is kept in could not be
+/// read. Its file stays on disk exactly as it was, and every other workspace serves around it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClosedWorkspace {
+    /// The record file that did not open.
+    pub file: PathBuf,
+    /// What reading it said, as the error gave it.
+    pub reason: String,
 }
 
 /// One person's place in a hosted workspace, as installed bots compare it
@@ -1669,6 +1683,7 @@ impl Workspaces {
                 host,
                 entry: wait_list::EntrySettings::default(),
                 releasing: AsyncMutex::new(()),
+                closed: std::sync::Mutex::default(),
                 own: std::sync::OnceLock::new(),
                 #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
                 puts: std::sync::OnceLock::new(),
@@ -2332,6 +2347,51 @@ impl Workspaces {
         Ok(routes)
     }
 
+    /// Every workspace this service left closed as it opened, by id, with the file that would
+    /// not read and why: each stays on disk exactly as it was, and no other workspace waits on
+    /// it. Empty for a service whose every workspace opened.
+    #[must_use]
+    pub fn closed(&self) -> std::collections::BTreeMap<String, ClosedWorkspace> {
+        self.inner.closed.lock_recover().clone()
+    }
+
+    /// [`Self::closed`]'s entry for `workspace`: why it stays closed, when its record did not
+    /// read.
+    #[must_use]
+    pub fn closed_workspace(&self, workspace: &str) -> Option<ClosedWorkspace> {
+        self.inner.closed.lock_recover().get(workspace).cloned()
+    }
+
+    /// Why `workspace` is not made here: its record did not read when the service opened, and
+    /// its files stay as they are until someone fixes them. `None` for a workspace this service
+    /// never failed to open, including one it holds.
+    fn closed_refusal(&self, workspace: &str) -> Option<String> {
+        self.closed_workspace(workspace).map(|closed| {
+            format!(
+                "this host keeps that workspace already, but its record did not read when it \
+                 opened and it stays closed: {}: {}",
+                closed.file.display(),
+                closed.reason
+            )
+        })
+    }
+
+    /// Record `workspace`, whose record `file` did not read for `reason`, as closed: what this
+    /// service reports and refuses to make again over those files.
+    pub(super) fn closed_workspace_at(&self, workspace: &str, file: PathBuf, reason: String) {
+        tracing::error!(
+            %workspace,
+            file = %file.display(),
+            %reason,
+            "a workspace's record could not be read: it stays closed on disk as it is, and the \
+             other workspaces serve"
+        );
+        self.inner
+            .closed
+            .lock_recover()
+            .insert(workspace.to_owned(), ClosedWorkspace { file, reason });
+    }
+
     /// The state of `workspace` as this host holds it now: what a channel
     /// service reads who may read the workspace's channels from.
     pub async fn state(&self, workspace: &str) -> Option<StatePeer> {
@@ -2563,13 +2623,21 @@ impl Workspaces {
         &self,
         workspace: &str,
     ) -> Result<Arc<AsyncMutex<HostedWorkspace>>, CollaborationError> {
-        self.inner
-            .workspaces
-            .lock()
-            .await
-            .get(workspace)
-            .cloned()
-            .ok_or_else(|| CollaborationError::new("this server does not hold that workspace"))
+        let held = self.inner.workspaces.lock().await.get(workspace).cloned();
+        if let Some(held) = held {
+            return Ok(held);
+        }
+        // A workspace this service did not open because its record did not read is not one it
+        // never had: whoever asks for it hears why it stays closed.
+        Err(match self.closed_workspace(workspace) {
+            Some(closed) => CollaborationError::new(format!(
+                "this service's record of that workspace did not read when it opened, and the \
+                 workspace stays closed: {}: {}",
+                closed.file.display(),
+                closed.reason
+            )),
+            None => CollaborationError::new("this server does not hold that workspace"),
+        })
     }
 
     /// Hold the workspace, admitting only the members its signed list names,

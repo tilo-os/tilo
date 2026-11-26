@@ -257,6 +257,11 @@ impl Workspaces {
         if self.inner.workspaces.lock().await.contains_key(&name) {
             return Ok(false);
         }
+        // A workspace whose record did not read as this service opened is no absent one: what
+        // moves in would be written over the files it keeps, which stay as they are.
+        if let Some(refusal) = self.closed_refusal(&name) {
+            return Err(refusal);
+        }
         for message in &workspace.frames {
             if let Ok(frame) = Frame::of(message) {
                 self.inner

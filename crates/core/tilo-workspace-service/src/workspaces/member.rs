@@ -1997,9 +1997,14 @@ impl Workspaces {
     /// and answer them by their names: a member copy is bound to this
     /// device's store, every other workspace served to its members.
     ///
+    /// A workspace whose own record cannot be read is no reason to stop serving the rest: it is
+    /// reported closed ([`Workspaces::closed`]) and its files stay exactly as they are, while
+    /// every other workspace opens.
+    ///
     /// # Errors
     ///
-    /// A workspace or a member copy's documents could not be opened.
+    /// A member copy's documents could not be opened, or the workspaces' directory could not be
+    /// read.
     pub(super) async fn open_kept(
         &self,
         dir: &Path,
@@ -2022,7 +2027,19 @@ impl Workspaces {
         }
         let opened = open_side_by_side(paths, device.as_ref(), dir).await?;
         let mut workspaces = std::collections::BTreeMap::new();
-        for workspace in opened {
+        for opened in opened {
+            let workspace = match opened {
+                Ok(workspace) => workspace,
+                Err(UnopenedRecord { file, reason }) => {
+                    // The record is named after the workspace it holds: its id is the file's.
+                    let name = file.file_stem().map_or_else(
+                        || file.display().to_string(),
+                        |stem| stem.to_string_lossy().into_owned(),
+                    );
+                    self.closed_workspace_at(&name, file, reason);
+                    continue;
+                }
+            };
             let name = workspace.workspace().to_owned();
             let reading = workspace.reading();
             let state = if let Some(member) = workspace.member.clone() {
@@ -2578,18 +2595,27 @@ mod person_devices_tests;
 #[path = "keep_devices_tests.rs"]
 mod keep_devices_tests;
 
-/// The workspaces at `paths` opened, a few at a time: each reads its own files, and one at
-/// a time made a start wait for every workspace's history in turn.
+/// A workspace whose own record could not be read as the service opened: the file, and what
+/// reading it said.
+struct UnopenedRecord {
+    file: PathBuf,
+    reason: String,
+}
+
+/// The workspaces at `paths`, each opened or reported unreadable: a few at a time, since each
+/// reads its own files, and one at a time made a start wait for every workspace's history in
+/// turn.
 ///
 /// # Errors
 ///
-/// A workspace could not be opened.
+/// Opening one of them ended without a workspace's own answer: the service cannot tell which
+/// workspaces it holds.
 #[cfg(not(target_arch = "wasm32"))]
 async fn open_side_by_side(
     paths: Vec<PathBuf>,
     device: Option<&super::DeviceKeys>,
     dir: &Path,
-) -> Result<Vec<HostedWorkspace>, String> {
+) -> Result<Vec<Result<HostedWorkspace, UnopenedRecord>>, String> {
     /// Workspaces opened at once.
     const AT_ONCE: usize = 4;
     let mut opening = tokio::task::JoinSet::new();
@@ -2601,14 +2627,18 @@ async fn open_side_by_side(
             let device = device.cloned();
             let dir = dir.to_owned();
             opening.spawn_blocking(move || {
-                HostedWorkspace::open(path.clone(), device.as_ref())
-                    .map_err(|error| super::document_format::unopened(&path, &dir, &error))
+                HostedWorkspace::open(path.clone(), device.as_ref()).map_err(|error| {
+                    UnopenedRecord {
+                        reason: super::document_format::unopened(&path, &dir, &error),
+                        file: path,
+                    }
+                })
             });
         }
         let Some(joined) = opening.join_next().await else {
             break;
         };
-        opened.push(joined.map_err(|error| error.to_string())??);
+        opened.push(joined.map_err(|error| error.to_string())?);
     }
     Ok(opened)
 }
@@ -2617,20 +2647,23 @@ async fn open_side_by_side(
 ///
 /// # Errors
 ///
-/// A workspace could not be opened.
+/// Opening one of them ended without a workspace's own answer: the service cannot tell which
+/// workspaces it holds.
 #[cfg(target_arch = "wasm32")]
 async fn open_side_by_side(
     paths: Vec<PathBuf>,
     device: Option<&super::DeviceKeys>,
     dir: &Path,
-) -> Result<Vec<HostedWorkspace>, String> {
-    paths
+) -> Result<Vec<Result<HostedWorkspace, UnopenedRecord>>, String> {
+    Ok(paths
         .into_iter()
         .map(|path| {
-            HostedWorkspace::open(path.clone(), device)
-                .map_err(|error| super::document_format::unopened(&path, dir, &error))
+            HostedWorkspace::open(path.clone(), device).map_err(|error| UnopenedRecord {
+                reason: super::document_format::unopened(&path, dir, &error),
+                file: path,
+            })
         })
-        .collect()
+        .collect())
 }
 
 /// The name a workspace's governance gives it, and its replica, as `reading`

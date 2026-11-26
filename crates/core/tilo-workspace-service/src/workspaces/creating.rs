@@ -255,6 +255,13 @@ impl super::Workspaces {
         {
             return Err("this host has that workspace already".into());
         }
+        // A workspace whose record did not read as this host opened is not absent: its files are
+        // there, and making it here would write a fresh record over them.
+        if let Some(workspace) = workspace
+            && let Some(refusal) = self.closed_refusal(workspace)
+        {
+            return Err(refusal);
+        }
         if let Some(workspace) = workspace
             && self
                 .inner

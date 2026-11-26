@@ -27,6 +27,7 @@ mod lookup;
 mod naming;
 mod one_copy_two_writers;
 mod replacing;
+mod unreadable_workspace;
 
 #[tokio::test]
 async fn a_pre_admission_for_one_person_issues_an_invitation_only_they_can_redeem() {
