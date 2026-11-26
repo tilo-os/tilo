@@ -21,10 +21,10 @@ use crate::error::RuntimeError;
 use crate::exec::MANY_ACTION;
 use crate::handles::ViewState;
 use crate::host_ui::{
-    COPY_LINK_ACTION, EXPORT_ACTION, KEEP_ACTION, SET_ACTION, SHORTCUT_ACTION, THEN_ACTION,
-    VIEW_STATE,
+    COPY_LINK_ACTION, EXPORT_ACTION, KEEP_ACTION, SET_ACTION, SHORTCUT_ACTION, VIEW_STATE,
 };
 use crate::ids::Actor;
+use crate::value::THEN_ACTION;
 use crate::value::{ActionRef, RefValue, Value};
 use crate::view::{BindTarget, NodeBuild};
 use crate::view_state::StateKey;

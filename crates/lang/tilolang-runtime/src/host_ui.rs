@@ -24,9 +24,6 @@ pub const KEEP_ACTION: &str = "$keep";
 /// (empty for the default view of its type) and whether a narrow window brings it in front.
 pub const OPEN_ACTION: &str = "$open";
 
-/// The action of `a.then(b)`: its arguments are `a` and `b`, run in turn.
-pub const THEN_ACTION: &str = "$then";
-
 /// The action of a handler that binds an action's answer (`let id = add_box(b)`): its arguments
 /// are the action, the id of the function of the steps after the binding, and the values those
 /// steps are handed besides the answer. The steps run when the action answers, and not when it
@@ -393,7 +390,7 @@ impl Core {
         }
         let author = Some(self.module_of_frame()?);
         self.ret_h(Value::Action(ActionRef {
-            action: THEN_ACTION.to_owned(),
+            action: crate::value::THEN_ACTION.to_owned(),
             args: vec![first, next],
             author,
             from: None,

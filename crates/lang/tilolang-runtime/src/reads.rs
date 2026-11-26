@@ -661,7 +661,7 @@ impl Core {
             // reading leaves it out: what a view of it reads.
             let value = match values.get(&f.id) {
                 Some(value) => value.clone(),
-                None => crate::host_res::declared_default(&f.ty, f.default.as_ref())
+                None => crate::value::declared_default(&f.ty, f.default.as_ref())
                     .map_err(|why| format!("`{}` has no `{}`: {why}", target.id_string(), f.name)),
             };
             let text_field = fields.iter().find(|t| t.info.id == f.id);
@@ -1083,7 +1083,7 @@ impl Core {
             .clock
             .borrow()
             .as_ref()
-            .map_or_else(|| crate::core::EPOCH.to_owned(), |clock| clock());
+            .map_or_else(|| crate::store::EPOCH.to_owned(), |clock| clock());
         crate::query::Clock::at(&now)
     }
 }

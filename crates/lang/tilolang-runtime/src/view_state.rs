@@ -25,6 +25,10 @@ use serde::{Deserialize, Serialize};
 use crate::ids::Actor;
 use crate::value::Value;
 
+/// The window the lenses on each resource are kept under, as view state of no window: set by
+/// the host as presence moves, read by `lenses(r)`.
+pub const LENS_WINDOW: &str = "$lenses";
+
 /// One slot of view state.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct StateKey {

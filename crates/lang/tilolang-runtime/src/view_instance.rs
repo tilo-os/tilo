@@ -17,7 +17,7 @@ use crate::host_ui::{
     ANSWER_ACTION, BLUR_ACTION, CALL_ACTION, CALL_INPUT_ACTION, CALL_VOLUME_ACTION, CHOOSE_ACTION,
     CHOOSE_FOLDER_ACTION, COPY_LINK_ACTION, EXPORT_ACTION, KEEP_ACTION, MARK_SEEN_ACTION,
     OPEN_ACTION, REVIEW_ACTION, RUN_LINE_ACTION, SAVE_ACTION, SET_ACTION, SHORTCUT_ACTION,
-    THEN_ACTION, UNDO_ACTION,
+    UNDO_ACTION,
 };
 use crate::ids::{Actor, AppId, DocId, ModuleHash};
 use crate::live::{Live, LiveStats};
@@ -27,6 +27,7 @@ use crate::registry::Package;
 use crate::render::ViewTarget;
 use crate::space::Space;
 use crate::store::{ChangeNote, ChangeSummary, Mutation, SubId};
+use crate::value::THEN_ACTION;
 use crate::value::{ActionRef, ResourceRef, Value, to_json};
 use crate::view::{BindTarget, Binding, Patch, UiNode};
 use crate::view_state::StateKey;

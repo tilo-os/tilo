@@ -30,6 +30,9 @@ pub enum StoreError {
     Declined(tilo_actions::Declined),
 }
 
+/// What `now` reads while the host has set no clock.
+pub const EPOCH: &str = "1970-01-01T00:00:00Z";
+
 /// The content of a register field. Composite runtime values travel as `Json`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Scalar {
@@ -927,10 +930,7 @@ pub fn versions_in<'c>(
             let made = std::mem::take(&mut making);
             Version {
                 who: note.invoker.clone(),
-                at: note
-                    .at
-                    .clone()
-                    .unwrap_or_else(|| crate::core::EPOCH.to_owned()),
+                at: note.at.clone().unwrap_or_else(|| EPOCH.to_owned()),
                 action: note.action.clone(),
                 run: note.group.clone(),
                 kind,

@@ -100,7 +100,7 @@ impl Members {
 /// host gives new ones.
 fn members_key() -> StateKey {
     StateKey::runtime(
-        crate::platform::LENS_WINDOW,
+        crate::view_state::LENS_WINDOW,
         None,
         "$workspace-members".to_owned(),
     )

@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Number, Value as Json};
 
 use crate::ids::{ActionId, Actor, DocId, FieldId, ItemId, ModuleHash, TypeId};
+use crate::meta::Ty;
+
+/// The action of `a.then(b)`: its arguments are `a` and `b`, run in turn.
+pub const THEN_ACTION: &str = "$then";
 
 /// A reference to a resource: a document, or an item of one, named by its id alone.
 ///
@@ -217,7 +221,7 @@ impl ActionRef {
     #[must_use]
     pub fn acting(&self) -> &Self {
         match (self.action.as_str(), self.args.first()) {
-            (crate::host_ui::THEN_ACTION, Some(Value::Action(first))) => first.acting(),
+            (THEN_ACTION, Some(Value::Action(first))) => first.acting(),
             _ => self,
         }
     }
@@ -988,6 +992,75 @@ pub fn same_value(lhs: &Value, rhs: &Value) -> bool {
     }
 }
 
+/// What a field of type `ty` reads as when a record was never given one and it declares no
+/// default.
+fn type_default(ty: &Ty) -> Result<Value, String> {
+    Ok(match ty {
+        Ty::Int => Value::Int(0),
+        Ty::Float => Value::Float(0.0),
+        Ty::Bool => Value::Bool(false),
+        // A date, a time or an identifier a record was never given reads as no text, which is
+        // what the store compares a field without one as ([`crate::store::FieldRead::of`]): a
+        // filter and a view then agree on it.
+        Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => Value::text(""),
+        Ty::RichText => Value::Rich(crate::rich::RichValue::default()),
+        // A record never given bytes reads as bytes of nothing: a view that counts its output
+        // before an engine wrote one counts none rather than failing to read.
+        Ty::Bytes => Value::Bytes(Rc::new(Vec::new())),
+        // A file a record was never given reads as a file of nothing: a view that shows its
+        // name before an action put one there shows no name rather than failing to open.
+        Ty::File => Value::File(Rc::new(crate::blob::FileValue::new("", "", 0, ""))),
+        Ty::Option(_) => Value::none(),
+        // A map reads as the map it is, here as where a field's store gives one.
+        Ty::Map(_) => Value::Map(Vec::new()),
+        Ty::List(_) | Ty::Set(_) | Ty::Collection(_) => Value::List(Vec::new()),
+        Ty::Tuple(items) => Value::Tuple(items.iter().map(type_default).collect::<Result<_, _>>()?),
+        Ty::Unit => Value::Unit,
+        Ty::Actor
+        | Ty::Record(_)
+        | Ty::Union(_)
+        | Ty::Duration
+        | Ty::Action
+        | Ty::View
+        | Ty::Length(_)
+        | Ty::Choice(_)
+        | Ty::Enum(_)
+        | Ty::Filter(_)
+        | Ty::Sort(_)
+        | Ty::Result(..)
+        | Ty::Response
+        | Ty::Json
+        | Ty::Error => {
+            return Err("the field has no value yet and no default".to_owned());
+        }
+    })
+}
+
+/// What a field of type `ty` reads as when a record was never given one: its declared
+/// `default`, or the type's own.
+pub(crate) fn declared_default(ty: &Ty, default: Option<&Json>) -> Result<Value, String> {
+    match (ty, default) {
+        (Ty::Int, Some(j)) => j
+            .as_i64()
+            .map(Value::Int)
+            .ok_or_else(|| "default is not an int".into()),
+        (Ty::Float, Some(j)) => j
+            .as_f64()
+            .map(Value::Float)
+            .ok_or_else(|| "default is not a float".into()),
+        (Ty::Bool, Some(j)) => j
+            .as_bool()
+            .map(Value::Bool)
+            .ok_or_else(|| "default is not a bool".into()),
+        (Ty::Text | Ty::Date | Ty::Time | Ty::Identifier, Some(j)) => j
+            .as_str()
+            .map(Value::text)
+            .ok_or_else(|| "default is not text".into()),
+        (Ty::Enum(_), Some(j)) => from_json(j),
+        _ => type_default(ty),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1002,7 +1075,7 @@ mod tests {
             let answer = ActionRef::new("answer", vec![Value::none()]);
             let clear = ActionRef::new("$set", vec![Value::text("box"), Value::text("")]);
             let press = ActionRef::new(
-                crate::host_ui::THEN_ACTION,
+                THEN_ACTION,
                 vec![Value::Action(answer.clone()), Value::Action(clear)],
             );
             assert_eq!(press.acting().action, answer.action);

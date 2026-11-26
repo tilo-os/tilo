@@ -388,9 +388,6 @@ pub struct Core {
     pub(crate) awaited: RefCell<std::collections::HashMap<crate::ids::RunId, Option<bool>>>,
 }
 
-/// What `now` reads while the host has set no clock.
-pub const EPOCH: &str = "1970-01-01T00:00:00Z";
-
 /// Typed access to the wasm arguments of one import call.
 pub struct Args<'a>(&'a [Wasm]);
 
@@ -751,7 +748,7 @@ impl Core {
         self.clock
             .borrow()
             .as_ref()
-            .map_or_else(|| EPOCH.to_owned(), |clock| clock())
+            .map_or_else(|| crate::store::EPOCH.to_owned(), |clock| clock())
     }
 
     /// The time of day `hour`:`minute` as the person reads a clock: the host's style, or a

@@ -789,7 +789,7 @@ impl Shell {
 
     /// The views that could not be shown since the last call, each an app, a view and why: what
     /// the parts reported (`shell.md` §6, "Nothing can lock a person out").
-    pub(crate) fn take_view_failures(&self) -> Vec<tilolang_tilo::runtime::foreign::ViewFailure> {
+    pub(crate) fn take_view_failures(&self) -> Vec<tilolang_tilo::runtime::error::ViewFailure> {
         self.parts
             .iter()
             .flat_map(|(_, part)| part.borrow().take_view_failures())
@@ -834,7 +834,7 @@ impl Shell {
     /// the next [`Self::take_view_failures`] has nothing to say of it.
     pub(crate) fn note_style_failure(
         &self,
-        failure: &tilolang_tilo::runtime::foreign::ViewFailure,
+        failure: &tilolang_tilo::runtime::error::ViewFailure,
     ) -> Option<crate::notices::Notice> {
         let style = if failure.view.contains(':') {
             failure.view.clone()
@@ -1954,7 +1954,7 @@ impl crate::Session {
     fn follow_view_failures(
         notices: &Rc<RefCell<crate::notifications::SessionNotifications>>,
         shell: &Shell,
-        failures: Vec<tilolang_tilo::runtime::foreign::ViewFailure>,
+        failures: Vec<tilolang_tilo::runtime::error::ViewFailure>,
         recoveries: (Vec<String>, Vec<(String, String)>),
     ) {
         for failure in failures {

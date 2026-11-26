@@ -194,7 +194,7 @@ pub struct SessionLink {
     /// The views that could not be shown — a package that did not load, a view that failed —
     /// each an app, a view and why: what the session hears so it can say so where the person's
     /// own choice is the one that failed (`shell.md` §6, "Nothing can lock a person out").
-    view_failures: RefCell<Vec<tilolang_tilo::runtime::foreign::ViewFailure>>,
+    view_failures: RefCell<Vec<tilolang_tilo::runtime::error::ViewFailure>>,
     /// The apps whose view failure ended — its package now loads: what the session hears so a
     /// style the person chose comes back (`shell.md` §6).
     view_recoveries: RefCell<Vec<String>>,
@@ -1089,7 +1089,7 @@ impl ShellPart {
     /// the session hears so it can say so where the person's own choice is the one that failed
     /// (`shell.md` §6, "Nothing can lock a person out").
     #[must_use]
-    pub fn take_view_failures(&self) -> Vec<tilolang_tilo::runtime::foreign::ViewFailure> {
+    pub fn take_view_failures(&self) -> Vec<tilolang_tilo::runtime::error::ViewFailure> {
         self.origin.borrow().link.take_view_failures()
     }
 

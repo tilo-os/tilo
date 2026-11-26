@@ -520,9 +520,9 @@ impl Runtime {
 
     /// The view calls that could not be shown since the last call — their package did not load
     /// here, or their view failed when it ran — each an app, a view and why
-    /// ([`crate::foreign::ViewFailure`]). What the host says the person should hear about
+    /// ([`crate::error::ViewFailure`]). What the host says the person should hear about
     /// (`shell.md` §6, "Nothing can lock a person out"). Each is handed out once.
-    pub fn take_view_failures(&self) -> Vec<crate::foreign::ViewFailure> {
+    pub fn take_view_failures(&self) -> Vec<crate::error::ViewFailure> {
         self.core.failed_views.borrow_mut().take()
     }
 
@@ -541,7 +541,7 @@ impl Runtime {
 
     /// The view calls whose failure ended — the call ran again and succeeded: what the host
     /// says the person's view is back (`shell.md` §6). Each once.
-    pub fn take_recovered_views(&self) -> Vec<crate::foreign::ViewFailure> {
+    pub fn take_recovered_views(&self) -> Vec<crate::error::ViewFailure> {
         self.core.failed_views.borrow_mut().take_recovered_views()
     }
 

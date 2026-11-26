@@ -26,10 +26,10 @@ use tilolang::types::Ty;
 use crate::abi::Imp;
 use crate::core::{Args, Core, HResult, trap};
 use crate::engine::{HostFail, Wasm};
-use crate::host_ui::THEN_ACTION;
 use crate::ids::Actor;
 use crate::meta::{ActionMeta, FieldKind, TypeKey, element_record, parse_ty};
 use crate::store::{FieldSpec, FieldValue};
+use crate::value::THEN_ACTION;
 use crate::value::{ActionRef, RefValue, ResourceRef, Value};
 
 impl Core {

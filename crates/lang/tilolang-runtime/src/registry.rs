@@ -591,7 +591,7 @@ impl Registry {
     /// The id of the type `ty` names: a type id, or another app's type as its resources name
     /// it (`app#Type`, [`crate::foreign`]).
     pub fn type_id(&self, ty: &str) -> Option<TypeId> {
-        match crate::foreign::foreign_type(ty) {
+        match crate::meta::foreign_type(ty) {
             Some(key) => self.type_for(&key),
             None => self.types.contains_key(ty).then(|| ty.to_owned()),
         }
@@ -678,7 +678,7 @@ impl Registry {
         // The type as the view's parameter names it, when its type is one this runtime holds:
         // a style of a package other than the layout's still writes `shell.Layout`,
         // the type the shell's package declares.
-        let (own_app, name) = if let Some(key) = crate::foreign::foreign_type(ty) {
+        let (own_app, name) = if let Some(key) = crate::meta::foreign_type(ty) {
             (key.app, key.name)
         } else {
             let (pkg, info) = self.type_info(ty)?;
@@ -727,7 +727,7 @@ impl Registry {
     /// Whether `ty` (a type id or an `app#Type`) holds the session's layout, the type a
     /// style is a view of (`shell.md` §6).
     fn layout_type(&self, ty: &str) -> bool {
-        let id = match crate::foreign::foreign_type(ty) {
+        let id = match crate::meta::foreign_type(ty) {
             Some(_) => return true,
             None => self.type_id(ty),
         };

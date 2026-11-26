@@ -500,7 +500,7 @@ impl Core {
             // its failure is that call's, not the screen's.
             Err(error) => {
                 let (app, view) = self.app_and_view_of(target);
-                let failure = crate::foreign::ViewFailure {
+                let failure = crate::error::ViewFailure {
                     app,
                     view,
                     reason: error.to_string(),
@@ -589,7 +589,7 @@ impl Core {
     /// "Nothing can lock a person out"). The call runs again when the package of the app it
     /// names arrives ([`crate::foreign::packages_key`]), and its tree is the same again while
     /// nothing comes.
-    fn failed_rendered(&self, key: &str, failure: &crate::foreign::ViewFailure) -> Rendered {
+    fn failed_rendered(&self, key: &str, failure: &crate::error::ViewFailure) -> Rendered {
         let mut acc = Acc {
             reads: Vec::new(),
             colls: Vec::new(),
@@ -847,7 +847,7 @@ impl Core {
                     Some((app, view)) => (app.to_owned(), view.to_owned()),
                     None => (String::new(), named.to_owned()),
                 };
-                let failure = crate::foreign::ViewFailure {
+                let failure = crate::error::ViewFailure {
                     app,
                     view,
                     reason: error.to_string(),
@@ -1165,7 +1165,7 @@ impl Core {
                 });
                 if let Some((app, reason)) = failed {
                     let view = named.unwrap_or_default().to_owned();
-                    return RuntimeError::ViewFailed(Box::new(crate::foreign::ViewFailure {
+                    return RuntimeError::ViewFailed(Box::new(crate::error::ViewFailure {
                         app,
                         view,
                         reason,
@@ -1205,7 +1205,7 @@ impl Core {
     /// type. A style reference names another package (`me.styles:timeline`), which this answers
     /// `false` for.
     fn own_package(app: &str, ty: &str, registry: &crate::registry::Registry) -> bool {
-        match crate::foreign::foreign_type(ty) {
+        match crate::meta::foreign_type(ty) {
             Some(key) => key.app == app,
             None => registry
                 .type_info(ty)

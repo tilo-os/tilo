@@ -268,7 +268,7 @@ impl Core {
         let Some(want) = registry.type_for(key) else {
             return false;
         };
-        want == r.target.ty || crate::foreign::foreign_type(&r.target.ty).as_ref() == Some(key)
+        want == r.target.ty || crate::meta::foreign_type(&r.target.ty).as_ref() == Some(key)
     }
 
     /// The value a parameter of type `ty` holds when `v` is given for it: a handle-represented

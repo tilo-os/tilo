@@ -160,7 +160,7 @@ fn encode(registry: &Registry, value: &Value) -> Result<Json, String> {
                 let held = match rec.fields.get(&field.id) {
                     Some(held) => held.clone(),
                     None => {
-                        match crate::host_res::declared_default(&field.ty, field.default.as_ref()) {
+                        match crate::value::declared_default(&field.ty, field.default.as_ref()) {
                             Ok(value) => value,
                             Err(_) => continue,
                         }
@@ -429,14 +429,12 @@ impl Reader<'_> {
                         Some(value) => {
                             fields.insert(field.id.clone(), self.read(value, &ty, &field_at)?);
                         }
-                        None => {
-                            match crate::host_res::declared_default(&ty, field.default.as_ref()) {
-                                Ok(value) => {
-                                    fields.insert(field.id.clone(), value);
-                                }
-                                Err(_) => return Err(format!("{field_at} is missing")),
+                        None => match crate::value::declared_default(&ty, field.default.as_ref()) {
+                            Ok(value) => {
+                                fields.insert(field.id.clone(), value);
                             }
-                        }
+                            Err(_) => return Err(format!("{field_at} is missing")),
+                        },
                     }
                 }
                 Ok(Value::Enum(EnumValue {

@@ -16,6 +16,7 @@ use std::rc::Rc;
 
 use serde_json::Value as Json;
 
+use crate::error::ViewFailure;
 use crate::ids::ModuleHash;
 use crate::meta::{Ty, TypeKey};
 use crate::registry::Registry;
@@ -120,8 +121,7 @@ impl Foreign {
         if matches!(self.readings.get(&Self::key(target)), Some(Reading::Absent)) {
             return true;
         }
-        crate::foreign::foreign_type(&target.ty)
-            .is_some_and(|key| self.absent_apps.contains(&key.app))
+        crate::meta::foreign_type(&target.ty).is_some_and(|key| self.absent_apps.contains(&key.app))
     }
 
     /// The host asks for the reading of a resource the code meets and this holds none of, while
@@ -680,7 +680,7 @@ impl Foreign {
             if self.publishes_nothing(target) || left_out {
                 return start_value(&field.ty, field.default.as_ref(), registry);
             }
-            return crate::host_res::declared_default(&field.ty, field.default.as_ref())
+            return crate::value::declared_default(&field.ty, field.default.as_ref())
                 .map_err(|why| format!("`{}` has no `{}`: {why}", target.id_string(), field.name));
         };
         let (value, records) = {
@@ -813,7 +813,7 @@ fn pending(ty: &Ty, default: Option<&Json>) -> Result<Value, String> {
         (Ty::Time, None) => Ok(Value::text("1970-01-01T00:00:00Z")),
         (Ty::Date, None) => Ok(Value::text("1970-01-01")),
         (Ty::Identifier, None) => Ok(Value::text("")),
-        _ => crate::host_res::declared_default(ty, default),
+        _ => crate::value::declared_default(ty, default),
     }
 }
 
@@ -841,7 +841,7 @@ fn start_value(ty: &Ty, default: Option<&Json>, registry: &Registry) -> Result<V
             fields: BTreeMap::new(),
         }));
     }
-    crate::host_res::declared_default(ty, default)
+    crate::value::declared_default(ty, default)
 }
 
 /// The value a field of a record of another app holds, as a filter compares it: what
@@ -869,16 +869,6 @@ pub(crate) fn lit_of_value(kind: crate::meta::FieldKind, value: &Value) -> Optio
     })
 }
 
-/// The type of a foreign resource as its description names it: the app and the type's name.
-#[must_use]
-pub fn foreign_type(ty: &str) -> Option<TypeKey> {
-    let (app, name) = ty.split_once('#')?;
-    Some(TypeKey {
-        app: app.to_owned(),
-        name: name.to_owned(),
-    })
-}
-
 /// The view state slot a foreign resource's reading moves, so that a view which read it runs
 /// again at the next poll. Its type and id name it, as [`Foreign::key`] does.
 #[must_use]
@@ -889,7 +879,7 @@ pub fn reading_key(target: &ResourceRef) -> StateKey {
 /// [`reading_key`] of the resource whose key ([`Foreign::key`]) is `key`.
 pub(crate) fn reading_key_at(key: &str) -> StateKey {
     StateKey::runtime(
-        crate::platform::LENS_WINDOW,
+        crate::view_state::LENS_WINDOW,
         None,
         format!("$reading:{key}"),
     )
@@ -908,14 +898,14 @@ pub fn reading_target(state: &str) -> Option<ResourceRef> {
 /// (a call that failed does not know which of the resources it read was missing).
 #[must_use]
 pub fn arrived_key() -> StateKey {
-    StateKey::runtime(crate::platform::LENS_WINDOW, None, "$readings-arrived")
+    StateKey::runtime(crate::view_state::LENS_WINDOW, None, "$readings-arrived")
 }
 
 /// The view state slot that moves when a resource of another app is first known here: a view
 /// that looked one up by id ([`Foreign::type_of`]) and found nothing runs again.
 #[must_use]
 pub fn known_key() -> StateKey {
-    StateKey::runtime(crate::platform::LENS_WINDOW, None, "$readings")
+    StateKey::runtime(crate::view_state::LENS_WINDOW, None, "$readings")
 }
 
 /// The view state slot that moves when another app's package arrives here: a view call that
@@ -923,7 +913,7 @@ pub fn known_key() -> StateKey {
 /// draws it through its app's own views.
 #[must_use]
 pub fn packages_key() -> StateKey {
-    StateKey::runtime(crate::platform::LENS_WINDOW, None, "$packages-arrived")
+    StateKey::runtime(crate::view_state::LENS_WINDOW, None, "$packages-arrived")
 }
 
 /// The apps whose package a view read a resource of, or called a view of, before the package
@@ -951,7 +941,7 @@ impl WantedPackages {
     /// Whether such a package can arrive at all: `false` for a type that is no app's (a bare
     /// type id), whose read is a fault, not one waiting.
     pub(crate) fn want(&mut self, ty: &str) -> bool {
-        let Some(key) = foreign_type(ty) else {
+        let Some(key) = crate::meta::foreign_type(ty) else {
             return false;
         };
         // The standard library is loaded beside every package and is no app a session serves:
@@ -999,34 +989,6 @@ impl WantedPackages {
     pub(crate) fn forget(&mut self, app: &str) {
         self.wanted.remove(app);
         self.asked.remove(app);
-    }
-}
-
-/// A view call that could not be shown: its package did not load, or its view failed when it
-/// ran. What a `show` boundary draws in its failed state instead of a blank frame or an endless
-/// waiting state, and what it reports to its host ([`FailedViews`]) so the session can say so
-/// (shell.md §6, "Nothing can lock a person out").
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ViewFailure {
-    /// The app whose view could not be shown.
-    pub app: String,
-    /// The view's name, as the caller named it: its id or name, without its package.
-    pub view: String,
-    /// Why, in the runtime's own words: the load's refusal, or what the view failed with.
-    pub reason: String,
-}
-
-impl std::fmt::Display for ViewFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.view.is_empty() {
-            write!(f, "`{}` could not be shown: {}", self.app, self.reason)
-        } else {
-            write!(
-                f,
-                "`{}`'s view `{}` could not be shown: {}",
-                self.app, self.view, self.reason
-            )
-        }
     }
 }
 

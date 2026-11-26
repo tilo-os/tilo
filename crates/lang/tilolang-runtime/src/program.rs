@@ -521,7 +521,7 @@ impl Core {
             .clock
             .borrow()
             .as_ref()
-            .map_or_else(|| crate::core::EPOCH.to_owned(), |clock| clock());
+            .map_or_else(|| crate::store::EPOCH.to_owned(), |clock| clock());
         Ok(crate::query::Clock::at(&now)?)
     }
 

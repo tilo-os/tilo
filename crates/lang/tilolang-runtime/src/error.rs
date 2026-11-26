@@ -23,7 +23,35 @@ pub enum RuntimeError {
     /// ran. The call draws a failed state where it stands (`shell.md` §6), and its host is told
     /// ([`crate::foreign::FailedViews`]); it is never the whole screen's failure.
     #[error("a view could not be shown: {0:?}")]
-    ViewFailed(Box<crate::foreign::ViewFailure>),
+    ViewFailed(Box<ViewFailure>),
     #[error("run {0} waits on nothing")]
     NotPending(String),
+}
+
+/// A view call that could not be shown: its package did not load, or its view failed when it
+/// ran. What a `show` boundary draws in its failed state instead of a blank frame or an endless
+/// waiting state, and what it reports to its host ([`FailedViews`]) so the session can say so
+/// (shell.md §6, "Nothing can lock a person out").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewFailure {
+    /// The app whose view could not be shown.
+    pub app: String,
+    /// The view's name, as the caller named it: its id or name, without its package.
+    pub view: String,
+    /// Why, in the runtime's own words: the load's refusal, or what the view failed with.
+    pub reason: String,
+}
+
+impl std::fmt::Display for ViewFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.view.is_empty() {
+            write!(f, "`{}` could not be shown: {}", self.app, self.reason)
+        } else {
+            write!(
+                f,
+                "`{}`'s view `{}` could not be shown: {}",
+                self.app, self.view, self.reason
+            )
+        }
+    }
 }

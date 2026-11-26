@@ -61,71 +61,6 @@ fn spec(f: &FieldInfo) -> FieldSpec {
     }
 }
 
-fn type_default(ty: &Ty) -> Result<Value, String> {
-    Ok(match ty {
-        Ty::Int => Value::Int(0),
-        Ty::Float => Value::Float(0.0),
-        Ty::Bool => Value::Bool(false),
-        // A date, a time or an identifier a record was never given reads as no text, which is
-        // what the store compares a field without one as ([`crate::store::FieldRead::of`]): a
-        // filter and a view then agree on it.
-        Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => Value::text(""),
-        Ty::RichText => Value::Rich(crate::rich::RichValue::default()),
-        // A record never given bytes reads as bytes of nothing: a view that counts its output
-        // before an engine wrote one counts none rather than failing to read.
-        Ty::Bytes => Value::Bytes(Rc::new(Vec::new())),
-        // A file a record was never given reads as a file of nothing: a view that shows its
-        // name before an action put one there shows no name rather than failing to open.
-        Ty::File => Value::File(Rc::new(crate::blob::FileValue::new("", "", 0, ""))),
-        Ty::Option(_) => Value::none(),
-        // A map reads as the map it is, here as where a field's store gives one.
-        Ty::Map(_) => Value::Map(Vec::new()),
-        Ty::List(_) | Ty::Set(_) | Ty::Collection(_) => Value::List(Vec::new()),
-        Ty::Tuple(items) => Value::Tuple(items.iter().map(type_default).collect::<Result<_, _>>()?),
-        Ty::Unit => Value::Unit,
-        Ty::Actor
-        | Ty::Record(_)
-        | Ty::Union(_)
-        | Ty::Duration
-        | Ty::Action
-        | Ty::View
-        | Ty::Length(_)
-        | Ty::Choice(_)
-        | Ty::Enum(_)
-        | Ty::Filter(_)
-        | Ty::Sort(_)
-        | Ty::Result(..)
-        | Ty::Response
-        | Ty::Json
-        | Ty::Error => {
-            return Err("the field has no value yet and no default".to_owned());
-        }
-    })
-}
-
-pub(crate) fn declared_default(ty: &Ty, default: Option<&Json>) -> Result<Value, String> {
-    match (ty, default) {
-        (Ty::Int, Some(j)) => j
-            .as_i64()
-            .map(Value::Int)
-            .ok_or_else(|| "default is not an int".into()),
-        (Ty::Float, Some(j)) => j
-            .as_f64()
-            .map(Value::Float)
-            .ok_or_else(|| "default is not a float".into()),
-        (Ty::Bool, Some(j)) => j
-            .as_bool()
-            .map(Value::Bool)
-            .ok_or_else(|| "default is not a bool".into()),
-        (Ty::Text | Ty::Date | Ty::Time | Ty::Identifier, Some(j)) => j
-            .as_str()
-            .map(Value::text)
-            .ok_or_else(|| "default is not text".into()),
-        (Ty::Enum(_), Some(j)) => from_json(j),
-        _ => type_default(ty),
-    }
-}
-
 /// The scalar to store for `v` in a register of type `ty`.
 pub(crate) fn to_scalar(v: &Value, ty: &Ty) -> Result<Scalar, String> {
     match (v, ty) {
@@ -252,7 +187,7 @@ impl Core {
             let registry = self.registry.borrow();
             // A resource of an app this runtime does not run names its type `app#Type`: the app's
             // description (`load_foreign`) declares it.
-            let id = match crate::foreign::foreign_type(ty) {
+            let id = match crate::meta::foreign_type(ty) {
                 Some(key) => registry.type_for(&key),
                 None => Some(ty.to_owned()),
             };
@@ -271,7 +206,7 @@ impl Core {
         // A type of an app whose package this runtime does not hold may come: ask for it, and
         // the call waits rather than faults. One of an app loaded here is a mistake in the
         // view, and stays a fault.
-        let may_come = crate::foreign::foreign_type(ty)
+        let may_come = crate::meta::foreign_type(ty)
             .is_some_and(|key| !self.registry.borrow().holds_app(&key.app));
         if may_come && self.wanted_packages.borrow_mut().want(ty) {
             self.foreign.borrow().remember_waiting(&why);
@@ -564,7 +499,7 @@ impl Core {
                 if let Some(held) = self.held_ref(target, field) {
                     return Ok(held);
                 }
-                declared_default(&field.ty, field.default.as_ref())
+                crate::value::declared_default(&field.ty, field.default.as_ref())
                     .map_err(|why| format!("`{}` of `{}`: {why}", field.name, target.id_string()))
             }
             (FieldKind::Register, FieldValue::Scalar(s)) => self.scalar_value(s, author),
@@ -764,7 +699,7 @@ impl Core {
             let f = field_in(&info, &field)?.clone();
             match rec.fields.get(&f.id) {
                 Some(held) => Ok(whole_map(f.kind, held.clone())),
-                None => match declared_default(&f.ty, f.default.as_ref()) {
+                None => match crate::value::declared_default(&f.ty, f.default.as_ref()) {
                     Ok(v) => Ok(whole_map(f.kind, v)),
                     Err(why) => trap(why),
                 },
@@ -1632,7 +1567,7 @@ impl Core {
                 // A resource of another app names its type `app#Type`: it is the type whose id
                 // that app's package declares it under.
                 let is = stored == ty
-                    || crate::foreign::foreign_type(&stored).is_some_and(|key| {
+                    || crate::meta::foreign_type(&stored).is_some_and(|key| {
                         self.registry
                             .borrow()
                             .type_for(&key)
@@ -2383,7 +2318,10 @@ impl Core {
                 })?;
                 let held = match held {
                     Some(held) => held,
-                    None => match declared_default(&declared.ty, declared.default.as_ref()) {
+                    None => match crate::value::declared_default(
+                        &declared.ty,
+                        declared.default.as_ref(),
+                    ) {
                         Ok(v) => v,
                         Err(why) => return trap(why),
                     },

@@ -29,7 +29,7 @@ impl Core {
             .clock
             .borrow()
             .as_ref()
-            .map_or_else(|| crate::core::EPOCH.to_owned(), |clock| clock());
+            .map_or_else(|| crate::store::EPOCH.to_owned(), |clock| clock());
         let minute = now.get(..17).map(|m| format!("{m}00Z")).unwrap_or(now);
         let zone = self.zone.borrow().as_ref().map_or(0, |zone| zone());
         Ok(Clock::at(&minute)?.in_zone(zone))
@@ -176,7 +176,7 @@ impl Core {
             // Every record of another app's type, as that app lists them: read from its
             // listing, which the view runs again on when it moves.
             Value::Opt(None) | Value::Unit if ty.contains('#') => {
-                let key = crate::foreign::foreign_type(ty)
+                let key = crate::meta::foreign_type(ty)
                     .ok_or_else(|| format!("query: `{ty}` names no app's type"))?;
                 let listing = crate::foreign::listing_of(ty);
                 self.note_reading(crate::foreign::reading_key(&listing));

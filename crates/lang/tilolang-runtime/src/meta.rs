@@ -59,3 +59,13 @@ pub fn element_record(ty: &Ty) -> Option<&TypeKey> {
         _ => None,
     }
 }
+
+/// The type of a foreign resource as its description names it: the app and the type's name.
+#[must_use]
+pub fn foreign_type(ty: &str) -> Option<TypeKey> {
+    let (app, name) = ty.split_once('#')?;
+    Some(TypeKey {
+        app: app.to_owned(),
+        name: name.to_owned(),
+    })
+}

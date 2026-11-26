@@ -166,14 +166,14 @@ impl SessionLink {
     /// The views could not be shown: `failed` says each call's app, view and why. What the
     /// session hears, so it says so where the person's choice is the one that failed
     /// (`shell.md` §6, "Nothing can lock a person out"). Each is handed out once.
-    pub(super) fn view_failed(&self, failed: Vec<tilolang_tilo::runtime::foreign::ViewFailure>) {
+    pub(super) fn view_failed(&self, failed: Vec<tilolang_tilo::runtime::error::ViewFailure>) {
         self.view_failures.borrow_mut().extend(failed);
     }
 
     /// The views that could not be shown since the last call, each an app, a view and why: what
     /// the session says the person should hear about.
     #[must_use]
-    pub fn take_view_failures(&self) -> Vec<tilolang_tilo::runtime::foreign::ViewFailure> {
+    pub fn take_view_failures(&self) -> Vec<tilolang_tilo::runtime::error::ViewFailure> {
         std::mem::take(&mut *self.view_failures.borrow_mut())
     }
 

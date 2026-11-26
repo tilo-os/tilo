@@ -29,9 +29,6 @@ const COPY_LINK_WORDS: (&str, &str) = ("tilolang-copy-link", "Copy link");
 /// language falls back to.
 const EXPORT_WORDS: (&str, &str) = ("tilolang-export", "Export…");
 
-/// The window the lenses on each resource are kept under, as view state of no window: set by
-/// the host as presence moves, read by `lenses(r)`.
-pub const LENS_WINDOW: &str = "$lenses";
 /// The window who is in the system's call held on each resource is kept under, as view state of
 /// no window: set by the host as the call service tells it, read by `call_members(r)`, and the
 /// microphones it can send from, read by `call_inputs(r)`.
@@ -253,7 +250,7 @@ pub fn delivery_key(id: &str) -> StateKey {
 /// The key of the lenses on the resource `id`.
 #[must_use]
 pub fn lens_key(id: &str) -> StateKey {
-    StateKey::runtime(LENS_WINDOW, None, id)
+    StateKey::runtime(crate::view_state::LENS_WINDOW, None, id)
 }
 
 /// The key of who is in the call held on the resource whose own id (an item's, or a document's
