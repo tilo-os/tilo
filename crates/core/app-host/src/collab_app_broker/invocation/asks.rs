@@ -216,7 +216,10 @@ impl AppBrokerState {
             address: tilo_actions::ActionAddress::new(&action.resource, &action.action),
         };
         let effects = inputs.caller.map_or_else(Vec::new, |caller| {
-            self.worded_effects(caller, &tilo_actions::remote::declared_effects(&target))
+            self.worded_effects(
+                caller,
+                &tilo_workspace_records::effects::declared_effects(&target),
+            )
         });
         let facts = || asked_facts(inputs.caller, action, &policy, inputs.argument, &effects);
         // A token minted for this very call answers for it where nobody's approve came back.

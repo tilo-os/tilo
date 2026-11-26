@@ -1766,7 +1766,7 @@ impl Offer {
     /// Offer `rows`, which `publisher` publishes on `workspace`; a provider
     /// offering nothing is not named.
     /// Each action is offered with what it declares it writes besides its own resource
-    /// ([`tilo_actions::remote::declared_effects`]), so whoever lists it reads that.
+    /// ([`tilo_workspace_records::effects::declared_effects`]), so whoever lists it reads that.
     fn add(&mut self, publisher: Publisher, workspace: &str, rows: Vec<CatalogueRow>) {
         self.add_entry(publisher.entry(workspace), rows);
     }
@@ -1779,7 +1779,7 @@ impl Offer {
                 if let Some(action) = row.action.as_mut()
                     && action.contract.effects.is_empty()
                 {
-                    action.contract.effects = tilo_actions::remote::declared_effects(
+                    action.contract.effects = tilo_workspace_records::effects::declared_effects(
                         &tilo_actions::remote::RemoteActionTarget {
                             provider: row.provider.clone(),
                             address: action.address.clone(),

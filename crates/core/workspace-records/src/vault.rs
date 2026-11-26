@@ -34,12 +34,41 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
-    ACCOUNTS_PROVIDER, CatalogueRow, MODELS_PROVIDER, RemoteActionTarget, VAULT_RESOURCE,
-    VAULT_STEPS, vault_step,
+    ACCOUNTS_PROVIDER, CatalogueRow, KEEP_SEALED, KEEP_USES, MODELS_PROVIDER, REMOVE_SEALED,
+    RemoteActionTarget, VAULT_KIND, VAULT_RESOURCE,
 };
 use tilo_resource::Effect as _;
 
 pub use tilo_actions::remote::{ItemRef, VAULT_ITEM_KIND as ITEM_KIND};
+
+/// What each of the vault's actions writes, by its id, as the host answering it takes it: the
+/// step it takes in the record the workspace keeps its vault in ([`VAULT_KIND`] in Passwords).
+/// An item kept is sealed, one forgotten goes, and every use of a secret, a copy and a reveal
+/// included, is written down. A read writes nothing, and an action not named writes nothing.
+pub const VAULT_STEPS: [(&str, &[&str]); 13] = [
+    ("add", &[KEEP_SEALED]),
+    ("ask", &[KEEP_SEALED]),
+    ("keep", &[KEEP_SEALED]),
+    ("keep-page-login", &[KEEP_SEALED]),
+    ("remove", &[REMOVE_SEALED]),
+    ("forget-page-login", &[REMOVE_SEALED]),
+    ("copy", &[KEEP_USES]),
+    ("reveal", &[KEEP_USES]),
+    ("fill-page", &[KEEP_USES]),
+    ("page-fill", &[KEEP_USES]),
+    ("web-call", &[KEEP_USES]),
+    ("sign", &[KEEP_USES]),
+    ("release", &[KEEP_USES]),
+];
+
+pub use tilo_actions::remote::VAULT_SECRET_ANSWERS;
+
+/// The step `verb` ([`KEEP_SEALED`], [`REMOVE_SEALED`], [`KEEP_USES`]) of the record the
+/// workspace's vault is kept in: what an action that writes the vault declares.
+#[must_use]
+pub fn vault_step(verb: &str) -> tilo_actions::ActionEffect {
+    tilo_actions::ActionEffect::new(tilo_app_id::apps::PASSWORDS, VAULT_KIND, verb)
+}
 
 /// The provider the workspace's vault answers under.
 pub const PROVIDER: &str = <VaultAction as tilo_resource::Effect>::OPERATION;

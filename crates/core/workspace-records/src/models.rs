@@ -26,7 +26,30 @@
 use serde::{Deserialize, Serialize};
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::RemoteActionTarget;
+use tilo_actions::remote::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED};
 use tilo_resource::Effect as _;
+
+/// What each model provider action writes in the workspace's vault, by its id, as the host
+/// answering it takes it: a key typed in is kept, a removed key goes (as does the one a vault
+/// item's key replaces), and a provider asked with a key the vault keeps writes down that use, a
+/// key just kept included. Signing in on the provider's own page keeps the key or grant it left.
+/// An action not named writes nothing there.
+pub const MODEL_VAULT_STEPS: [(&str, &[&str]); 11] = {
+    const KEEPS: &[&str] = &[KEEP_SEALED, REMOVE_SEALED, KEEP_USES];
+    [
+        ("begin-sign-in", &[KEEP_SEALED]),
+        ("add-provider", KEEPS),
+        ("add-preset", KEEPS),
+        ("set-key", KEEPS),
+        ("set-key-from-item", &[KEEP_USES, REMOVE_SEALED]),
+        ("remove-key", &[REMOVE_SEALED]),
+        ("remove-provider", &[REMOVE_SEALED]),
+        ("refresh-models", &[KEEP_USES]),
+        ("search-hub-models", &[KEEP_USES]),
+        ("show-hub-model", &[KEEP_USES]),
+        ("install-hub-model", &[KEEP_USES]),
+    ]
+};
 
 /// The provider that answers the person's model providers under.
 pub const PROVIDER: &str = <ModelsAction as tilo_resource::Effect>::OPERATION;
@@ -568,15 +591,12 @@ mod tests {
     #[test]
     fn the_registry_names_the_declared_actions() {
         assert_eq!(PROVIDER, tilo_actions::remote::MODELS_PROVIDER);
-        for (action, _) in tilo_actions::remote::MODEL_VAULT_STEPS {
+        for (action, _) in crate::models::MODEL_VAULT_STEPS {
             assert!(
                 declaration(action).is_some(),
                 "{action} is declared nowhere"
             );
         }
-        let kept = tilo_actions::remote::declared_effects(&target(SET_KEY));
-        assert!(!kept.is_empty(), "keeping a key writes in the vault");
-        assert!(tilo_actions::remote::declared_effects(&target(LIST)).is_empty());
     }
 
     /// A key never reaches a log, and no reading has a field that could

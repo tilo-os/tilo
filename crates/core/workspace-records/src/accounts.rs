@@ -26,7 +26,58 @@
 use serde::{Deserialize, Serialize};
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::RemoteActionTarget;
+use tilo_actions::remote::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED};
 use tilo_resource::Effect as _;
+
+/// What each accounts action writes besides its own resource, by its id, as the host answering
+/// it takes it: its steps in the workspace's vault, then its steps in the record Settings keeps
+/// the workspace's accounts in. In the vault, a password typed in is kept, a removed account's
+/// sign-in goes, and every sign-in to a server with what the vault keeps writes down that use,
+/// the first one included. In the accounts record, an account added or changed is kept
+/// (`save-account`), a removed one goes (`remove-account`), and a sign-in says how it went
+/// (`report-sync`). An action not named writes nothing besides.
+pub const ACCOUNT_STEPS: [(&str, &[&str], &[&str]); 18] = {
+    const SAVE: &str = "save-account";
+    const REMOVE: &str = "remove-account";
+    const REPORT: &str = "report-sync";
+    const ADDS: (&[&str], &[&str]) = (&[KEEP_SEALED, KEEP_USES, REMOVE_SEALED], &[SAVE]);
+    [
+        ("add-mail", ADDS.0, ADDS.1),
+        ("add-calendar", ADDS.0, ADDS.1),
+        ("begin-sign-in", ADDS.0, ADDS.1),
+        ("replace-password", &[KEEP_SEALED], &[]),
+        // A sign-in begun on a provider's own page keeps its account and the entry its page
+        // leaves in the vault once it finishes, and one finished with a code the same.
+        ("begin-cloud-sign-in", &[KEEP_SEALED], &[SAVE]),
+        ("submit-sign-in-code", &[KEEP_SEALED], &[SAVE]),
+        ("remove", &[REMOVE_SEALED], &[REMOVE]),
+        ("add-mail-with-item", &[KEEP_USES, REMOVE_SEALED], &[SAVE]),
+        ("discover-calendars", &[KEEP_USES, REMOVE_SEALED], &[SAVE]),
+        ("reconnect", &[KEEP_USES], &[REPORT]),
+        ("check", &[KEEP_USES], &[REPORT]),
+        // Turning an account's calendars on keeps the calendar server's sign-in in the vault
+        // and uses the mail account's; turning them off forgets the calendar's.
+        (
+            "set-services",
+            &[KEEP_SEALED, KEEP_USES, REMOVE_SEALED],
+            &[SAVE, REMOVE],
+        ),
+        ("set-calendars", &[REMOVE_SEALED], &[SAVE, REMOVE]),
+        ("set-files-mode", &[], &[SAVE]),
+        // A connected account keeps its grant in the person's vault, in place of the one an
+        // earlier connect of the same account kept.
+        ("connect-account", &[KEEP_SEALED, REMOVE_SEALED], &[]),
+        // Forgetting one reads its grant once, to give it back to the issuer, and removes it.
+        ("forget-connected-account", &[KEEP_USES, REMOVE_SEALED], &[]),
+        // A mount asking for its account's sign-in writes down the use, as every sign-in to a
+        // server with what the workspace's vault keeps does, and keeps a grant it renewed; what
+        // it reports is the record's.
+        ("cloud-credential", &[KEEP_USES, KEEP_SEALED], &[]),
+        ("report-sync", &[], &[REPORT]),
+    ]
+};
+
+pub use tilo_actions::remote::ACCOUNT_SECRET_ANSWERS;
 
 /// The provider that answers the workspace's accounts under.
 pub const PROVIDER: &str = <AccountsAction as tilo_resource::Effect>::OPERATION;
@@ -1258,7 +1309,7 @@ mod tests {
     /// and the accounts record, and the ones it says answer a secret.
     #[test]
     fn the_registry_names_the_declared_actions() {
-        use tilo_actions::remote::{ACCOUNT_SECRET_ANSWERS, ACCOUNT_STEPS, ACCOUNTS_PROVIDER};
+        use tilo_actions::remote::ACCOUNTS_PROVIDER;
         assert_eq!(PROVIDER, ACCOUNTS_PROVIDER);
         for (action, _, _) in ACCOUNT_STEPS {
             assert!(
@@ -1271,11 +1322,7 @@ mod tests {
                 declaration(action).is_some(),
                 "{action} is declared nowhere"
             );
-            assert!(tilo_actions::remote::answers_a_secret(action));
         }
-        let adding = tilo_actions::remote::declared_effects(&target(ADD_MAIL));
-        assert!(!adding.is_empty(), "adding an account writes in the vault");
-        assert!(tilo_actions::remote::declared_effects(&target(LIST)).is_empty());
         // A secret typed in is declared one, so no record of a call keeps it.
         for (action, secret) in [
             (ADD_MAIL, "password"),

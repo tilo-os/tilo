@@ -31,6 +31,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::RemoteActionTarget;
+use tilo_actions::remote::{KEEP_SEALED, KEEP_USES, REMOVE_SEALED};
+
+/// What each connection action writes in the workspace's vault, as the host answering it takes
+/// it: a service's sign-in tokens are kept, a removed connection's go, and a call made with
+/// them writes down that use. An action not named writes nothing there.
+pub const CONNECTION_VAULT_STEPS: [(&str, &[&str]); 6] = {
+    const KEEPS: &[&str] = &[KEEP_SEALED, KEEP_USES];
+    [
+        ("add", &[KEEP_SEALED]),
+        ("propose", &[KEEP_SEALED]),
+        ("remove", &[REMOVE_SEALED]),
+        ("refresh", KEEPS),
+        ("call", KEEPS),
+        ("finish-sign-in", KEEPS),
+    ]
+};
+
+/// The connection actions whose answers carry the service's own words: data from outside.
+pub const CONNECTION_SAID_ACTIONS: [&str; 4] = ["list", "look", "refresh", "call"];
 
 /// The provider that answers a person's connections under.
 pub const PROVIDER: &str = <ConnectionsAction as tilo_resource::Effect>::OPERATION;
@@ -585,7 +604,7 @@ mod tests {
     #[test]
     fn the_registry_names_the_declared_actions() {
         assert_eq!(PROVIDER, tilo_actions::remote::CONNECTIONS_PROVIDER);
-        for (action, _) in tilo_actions::remote::CONNECTION_VAULT_STEPS {
+        for (action, _) in crate::connections::CONNECTION_VAULT_STEPS {
             assert!(
                 ConnectionsAction::declaration(action).is_some(),
                 "{action} is declared nowhere"

@@ -19,7 +19,7 @@ pub mod browser;
 pub mod device_files;
 
 pub mod downloaded_apps;
-
+/// What an action declares it writes, and whether its answer is a secret.
 pub mod environment_commands;
 
 pub mod environment_device;
@@ -52,7 +52,6 @@ pub mod own_device;
 pub mod server_account;
 
 pub mod session_actions;
-
 
 pub mod task_programs;
 

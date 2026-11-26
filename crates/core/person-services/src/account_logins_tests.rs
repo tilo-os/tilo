@@ -1069,8 +1069,9 @@ fn the_account_actions_declare_steps_the_accounts_record_takes() {
         .map(|declared| declared.id)
         .collect();
     let mut declared = 0;
-    let effects =
-        |action| tilo_actions::remote::declared_effects(&workspace_accounts::target(action));
+    let effects = |action| {
+        tilo_workspace_records::effects::declared_effects(&workspace_accounts::target(action))
+    };
     for action in [
         workspace_accounts::ADD_MAIL,
         workspace_accounts::ADD_MAIL_WITH_ITEM,

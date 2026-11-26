@@ -529,7 +529,7 @@ fn declared_step(
 /// Whether the action `target` names declares taking back changes of `app`'s records
 /// ([`tilo_actions::ActionEffect::undo`]).
 fn declares_undo(target: &tilo_actions::remote::RemoteActionTarget, app: &str) -> bool {
-    tilo_actions::remote::declared_effects(target)
+    tilo_workspace_records::effects::declared_effects(target)
         .iter()
         .any(|effect| effect.undoes_in(app))
 }
@@ -541,7 +541,7 @@ fn declares(
     kind: &str,
     verb: &str,
 ) -> bool {
-    tilo_actions::remote::declared_effects(target)
+    tilo_workspace_records::effects::declared_effects(target)
         .iter()
         .any(|effect| effect.app == app && effect.kind == kind && effect.verb == verb)
 }
@@ -742,7 +742,7 @@ fn declares_kinds(
     app: &str,
     claim: &collab_types::claim::ChangeClaim,
 ) -> bool {
-    let effects = tilo_actions::remote::declared_effects(target);
+    let effects = tilo_workspace_records::effects::declared_effects(target);
     let members = claim.action.record_members();
     !members.is_empty()
         && members.into_iter().all(|member| match member {
@@ -1634,7 +1634,7 @@ mod tests {
                 address: ActionAddress::new(MODERATION_HISTORY, MODERATION_UNDO),
             };
             assert_eq!(
-                tilo_actions::remote::declared_effects(&moderating.target),
+                tilo_workspace_records::effects::declared_effects(&moderating.target),
                 vec![tilo_actions::ActionEffect::undo(MODERATED_APP)]
             );
             // An app's own undo takes back that app's records, wherever the invocation wrote.
@@ -1644,7 +1644,7 @@ mod tests {
                 address: ActionAddress::new("tl:so.tilo.chat", "undo"),
             };
             assert_eq!(
-                tilo_actions::remote::declared_effects(&taking_back.target),
+                tilo_workspace_records::effects::declared_effects(&taking_back.target),
                 vec![tilo_actions::ActionEffect::undo("so.tilo.chat")]
             );
             let mut another = request();
@@ -1653,7 +1653,7 @@ mod tests {
                 address: ActionAddress::new("so.tilo.chat", "send"),
             };
             assert!(
-                tilo_actions::remote::declared_effects(&another.target).is_empty(),
+                tilo_workspace_records::effects::declared_effects(&another.target).is_empty(),
                 "a call that declares no undo admits none"
             );
             let undo = |asked: &InvokeRequest| tilo_actions::ActionContext {

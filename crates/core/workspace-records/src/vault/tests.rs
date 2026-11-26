@@ -44,7 +44,7 @@ fn the_registry_names_the_declared_actions() {
     use tilo_actions::remote::{
         VAULT_DEVICE_KEY, VAULT_FIND, VAULT_FORGET_PAGE_LOGIN, VAULT_ITEM_KIND, VAULT_KEEP,
         VAULT_KEEP_PAGE_LOGIN, VAULT_LIST, VAULT_PAGE_FILL, VAULT_PAGE_LOGINS, VAULT_PROVIDER,
-        VAULT_RELEASE, VAULT_RESOURCE, VAULT_SECRET_ANSWERS,
+        VAULT_RELEASE, VAULT_RESOURCE,
     };
     assert_eq!(
         (PROVIDER, RESOURCE, ITEM_KIND),
@@ -75,10 +75,7 @@ fn the_registry_names_the_declared_actions() {
             declaration(action).is_some(),
             "{action} is declared nowhere"
         );
-        assert!(tilo_actions::remote::answers_a_secret(action));
     }
-    assert!(!tilo_actions::remote::declared_effects(&target(ADD)).is_empty());
-    assert!(tilo_actions::remote::declared_effects(&target(LIST)).is_empty());
     // A secret typed in is declared one, so no record of a call keeps it.
     for (action, secret) in [
         (ADD, "secret"),

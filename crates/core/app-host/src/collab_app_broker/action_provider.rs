@@ -2298,7 +2298,10 @@ impl AppBrokerState {
                 provider: request.target.provider.clone(),
                 address: tilo_actions::ActionAddress::new(&action.resource, &action.action),
             };
-            self.worded_effects(caller, &tilo_actions::remote::declared_effects(&target))
+            self.worded_effects(
+                caller,
+                &tilo_workspace_records::effects::declared_effects(&target),
+            )
         });
         let workspace = self
             .decide_for(caller, &workspace_id, |workspace, policy, now| {

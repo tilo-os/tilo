@@ -37,7 +37,7 @@ pub(super) const RESOURCE: &str = tilo_actions::remote::MODERATION_HISTORY;
 /// Read a person's recorded changes, oldest first.
 pub(super) const ACTIVITY: &str = "activity";
 /// Take exactly the changes a read returned back, as one run: the step its declaration names,
-/// an undo in the chat's record ([`tilo_actions::remote::declared_effects`]).
+/// an undo in the chat's record ([`tilo_workspace_records::effects::declared_effects`]).
 pub(super) const UNDO: &str = tilo_actions::remote::MODERATION_UNDO;
 
 /// The app whose record a moderation turn reads: the workspace's tl Chat.
@@ -95,10 +95,11 @@ impl TurnHistory {
                 contract.set_audience(tilo_actions::contract::Audience::Agents);
                 // What the undo takes back is declared, so the agent's undo is admitted as that
                 // step, and whoever asks first is shown it.
-                contract.effects = tilo_actions::remote::declared_effects(&RemoteActionTarget {
-                    provider: PROVIDER.to_owned(),
-                    address: address.clone(),
-                });
+                contract.effects =
+                    tilo_workspace_records::effects::declared_effects(&RemoteActionTarget {
+                        provider: PROVIDER.to_owned(),
+                        address: address.clone(),
+                    });
                 CatalogueRow::for_action(
                     PROVIDER.to_owned(),
                     PROVIDER.to_owned(),

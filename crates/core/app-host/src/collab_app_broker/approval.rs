@@ -166,7 +166,7 @@ impl AppBrokerState {
             }
             return Ok(facts);
         };
-        let declared = tilo_actions::remote::declared_effects(&request.target);
+        let declared = tilo_workspace_records::effects::declared_effects(&request.target);
         let mut facts = described(facts, descriptor, &request.argument);
         facts.effects = self.worded_effects(caller, &declared);
         // A Store disclosure shows exactly what leaves the workspace, and where to.

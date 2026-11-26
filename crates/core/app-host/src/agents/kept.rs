@@ -20,9 +20,10 @@ use tilo_person_services::PersonServices;
 
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
-    ActionCallError, CONNECTION_SAID_ACTIONS, CONNECTIONS_PROVIDER, Caller, CatalogueProvider,
-    CatalogueQuery, InvokeRequest, RemoteActionTarget,
+    ActionCallError, CONNECTIONS_PROVIDER, Caller, CatalogueProvider, CatalogueQuery,
+    InvokeRequest, RemoteActionTarget,
 };
+use tilo_workspace_records::connections::CONNECTION_SAID_ACTIONS;
 
 use super::turn_provider::{Ending, Rows};
 use super::{Reply, ServerAgents, TurnProvider, WorkspaceId};

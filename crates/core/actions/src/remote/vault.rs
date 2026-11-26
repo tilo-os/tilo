@@ -1,9 +1,9 @@
 //! What every vocabulary knows of the workspace's vault, whose provider declares its actions
 //! (`tilo_workspace_records::vault`): its provider, the reference that names one of
 //! its items without its secret ([`ItemRef`]) and the parameter that takes one
-//! ([`item_param`]), the steps its actions take in the record the vault is kept in
-//! ([`VAULT_STEPS`]), and which calls answer a secret ([`answers_secret`]), so no record of
-//! them keeps it.
+//! ([`item_param`]), and the steps its actions take in the record the vault is kept in. Which of
+//! its actions take which step, and which answer a secret, its declaration says
+//! (`tilo_workspace_records::vault`).
 
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +39,7 @@ pub const VAULT_FORGET_PAGE_LOGIN: &str = "forget-page-login";
 pub const VAULT_PAGE_FILL: &str = "page-fill";
 
 // The record kind the workspace keeps its vault in, in Passwords, where every action of the vault
-// that writes takes its step ([`VAULT_STEPS`]), and the id its declaration binds to it.
+// that writes takes its step, and the id its declaration binds to it.
 pub use app_fleet::{VAULT_KIND, VAULT_RECORD};
 /// The vault record's step that keeps an item, a new one or an edit of one.
 pub const KEEP_SEALED: &str = "keep-sealed";
@@ -47,37 +47,6 @@ pub const KEEP_SEALED: &str = "keep-sealed";
 pub const REMOVE_SEALED: &str = "remove-sealed";
 /// The vault record's step that writes down an item's uses.
 pub const KEEP_USES: &str = "keep-uses";
-
-/// What each of the vault's actions writes, by its id, as the host answering it takes it: the
-/// step it takes in the record the workspace keeps its vault in ([`VAULT_KIND`] in Passwords).
-/// An item kept is sealed, one forgotten goes, and every use of a secret, a copy and a reveal
-/// included, is written down. A read writes nothing, and an action not named writes nothing.
-pub const VAULT_STEPS: [(&str, &[&str]); 13] = [
-    ("add", &[KEEP_SEALED]),
-    ("ask", &[KEEP_SEALED]),
-    ("keep", &[KEEP_SEALED]),
-    ("keep-page-login", &[KEEP_SEALED]),
-    ("remove", &[REMOVE_SEALED]),
-    ("forget-page-login", &[REMOVE_SEALED]),
-    ("copy", &[KEEP_USES]),
-    ("reveal", &[KEEP_USES]),
-    ("fill-page", &[KEEP_USES]),
-    ("page-fill", &[KEEP_USES]),
-    ("web-call", &[KEEP_USES]),
-    ("sign", &[KEEP_USES]),
-    ("release", &[KEEP_USES]),
-];
-
-/// The vault's actions whose answer is a secret ([`crate::SECRET_ANSWER_TAG`]): a secret shown
-/// to its person, and the code of this moment.
-pub const VAULT_SECRET_ANSWERS: [&str; 2] = ["reveal", "code"];
-
-/// The step `verb` ([`KEEP_SEALED`], [`REMOVE_SEALED`], [`KEEP_USES`]) of the record the
-/// workspace's vault is kept in: what an action that writes the vault declares.
-#[must_use]
-pub fn vault_step(verb: &str) -> crate::ActionEffect {
-    crate::ActionEffect::new(tilo_app_id::apps::PASSWORDS, VAULT_KIND, verb)
-}
 
 /// The target of the vault's action `action` of [`VAULT_RESOURCE`].
 #[must_use]
@@ -187,6 +156,10 @@ pub fn item_param(name: &'static str, description: &'static str) -> crate::Actio
     crate::ActionParam::required(name, crate::ParamType::Resource, description)
         .of_resource_kind(VAULT_ITEM_KIND)
 }
+
+/// The vault's actions whose answer is a secret ([`crate::SECRET_ANSWER_TAG`]): a secret shown
+/// to its person, and the code of this moment.
+pub const VAULT_SECRET_ANSWERS: [&str; 2] = ["reveal", "code"];
 
 /// Whether `param` takes a secret by reference ([`item_param`]).
 #[must_use]

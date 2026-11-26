@@ -1481,7 +1481,8 @@ mod tests {
     /// answered.
     #[test]
     fn a_vault_reveal_is_recorded_as_answering_a_secret() {
-        use tilo_actions::remote::{ACCOUNTS_PROVIDER, answers_secret, vault_target};
+        use tilo_actions::remote::answers_secret;
+        use tilo_actions::remote::{ACCOUNTS_PROVIDER, vault_target};
         let invocations = Arc::new(Invocations::default());
         let asked = Caller::local_person("ada").in_new_execution();
         let mut reveal = request();

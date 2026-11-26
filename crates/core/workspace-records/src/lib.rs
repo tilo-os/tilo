@@ -8,6 +8,8 @@
 pub mod accounts;
 /// The services a workspace connected: their actions, declared once, and what they read as.
 pub mod connections;
+/// What each record's actions write besides their own resource, read off the records.
+pub mod effects;
 /// The workspace's model providers: their actions, declared once, and what they read as.
 pub mod models;
 /// The workspace's vault: its actions, declared once, and what they read as.
