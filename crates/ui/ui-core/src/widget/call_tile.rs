@@ -165,7 +165,8 @@ impl Described for CallTile {
             self.dirty = true;
             self.refresh_picture();
         }
-        changed
+        // The props are taken where the tile stands, so a person's press and focus stay.
+        true
     }
 }
 

@@ -65,10 +65,11 @@ impl Described for SearchButton {
         Self(search_button(props.request()))
     }
 
-    fn set_props(&mut self, _props: SearchButtonProps) -> bool {
-        // The request travels with the button's own action: a scope that moved (a window now
-        // showing another book) is another button, so it is built again.
-        false
+    fn set_props(&mut self, props: SearchButtonProps) -> bool {
+        // The request travels with the button's own action: the scope that moved (a window now
+        // showing another book) is the button's action, replaced where the button stands.
+        self.0 = search_button(props.request());
+        true
     }
 }
 

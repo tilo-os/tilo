@@ -318,6 +318,13 @@ impl Described for MediaCard {
     fn from_props(_key: &str, props: MediaCardProps) -> Self {
         card(props).standing_alone()
     }
+
+    /// The card the props make, taken by the card that stands there: its art, title and
+    /// interaction are the props', and its own identity, place and selection state stay.
+    fn set_props(&mut self, props: MediaCardProps) -> bool {
+        self.adopt(card(props));
+        true
+    }
 }
 
 /// Where a card takes its art from, as the view gives it.

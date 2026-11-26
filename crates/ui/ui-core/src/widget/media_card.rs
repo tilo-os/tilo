@@ -978,6 +978,17 @@ pub struct MediaCard {
 }
 
 impl MediaCard {
+    /// Take what `other`, the card these props make, shows and does, keeping where this card
+    /// stands: the props a view gives the same key again are taken in place, so the person's
+    /// selection, press and focus stay with it.
+    pub(crate) fn adopt(&mut self, mut other: Self) {
+        other.rect = self.rect;
+        other.slot.clone_from(&self.slot);
+        other.alone = self.alone;
+        other.bound = self.bound;
+        *self = other;
+    }
+
     pub fn new(id: impl Into<String>, source: MediaSource) -> Self {
         Self::new_owned(id.into(), source)
     }

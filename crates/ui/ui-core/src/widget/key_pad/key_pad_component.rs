@@ -78,17 +78,6 @@ impl Described for KeyPad {
     }
 
     fn set_props(&mut self, props: KeyPadProps) -> bool {
-        let mut changed = false;
-        if props.keys != self.keys()
-            || props.size != self.size
-            || props.caps != self.caps
-            || props.secret != self.secret
-            || props.enabled != self.enabled
-            || props.label != self.label
-            || props.description != self.description
-        {
-            changed = true;
-        }
         self.set_keys(props.keys);
         self.set_size(props.size);
         self.caps = props.caps;
@@ -129,7 +118,8 @@ impl Described for KeyPad {
                 caret.fire(Some(Value::Int(steps)));
             }) as Box<dyn FnMut(i64)>
         });
-        changed
+        // The props are taken where the pad stands, so a key held and the person's caret stay.
+        true
     }
 }
 
