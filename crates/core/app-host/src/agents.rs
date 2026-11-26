@@ -2182,7 +2182,8 @@ impl Reply {
     }
 
     /// Say `words` in the reply: its message takes them in place of what it said, or the reply
-    /// is sent with them where it was not yet.
+    /// is sent with them where it was not yet. The message is the action's own resource, as the
+    /// app publishes `edit` on it.
     async fn say(&self, words: &str) -> Result<(), String> {
         let message = self.message.lock_recover().clone();
         let Some(message) = message else {
@@ -2190,7 +2191,6 @@ impl Reply {
         };
         self.kept().await?;
         let mut arguments = Map::new();
-        arguments.insert("m".into(), json!(message));
         arguments.insert("body".into(), json!(words));
         // What the model reasoned stands beside the answer, whole each time: the reply's last
         // write carries all of it, however the writes between were spaced.
