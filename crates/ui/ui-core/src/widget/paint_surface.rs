@@ -152,10 +152,12 @@ impl PaintSurface {
     /// The transform from artwork units to the surface's logical pixels.
     fn artwork_to_screen(&self, transform: Affine) -> Affine {
         let (scale, origin) = self.fit();
+        // The pan is a distance in artwork units, as [`Self::artwork_at`] takes it: it moves the
+        // artwork before the scale, so the two are inverses and a stroke lands under the hand.
         transform
             * Affine::translate((origin.x, origin.y))
-            * Affine::translate((-self.pan.x, -self.pan.y))
             * Affine::scale(scale)
+            * Affine::translate((-self.pan.x, -self.pan.y))
     }
 
     /// The artwork unit under `screen`, in the surface's logical coordinates.
