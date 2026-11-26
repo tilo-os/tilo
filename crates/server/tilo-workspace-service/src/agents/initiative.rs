@@ -1461,7 +1461,7 @@ pub(super) async fn may_take_look(
     ) {
         return false;
     }
-    let Ok(personal) = super::assistant_of(workspaces, workspace, &person).await else {
+    let Ok(personal) = super::assistant::assistant_of(workspaces, workspace, &person).await else {
         return false;
     };
     personal.is_some_and(|personal| personal.id.0 != agent)
