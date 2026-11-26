@@ -261,15 +261,6 @@ impl Workspaces {
         Some(name)
     }
 
-    /// The name the workspace hosted here under `workspace` shows for the
-    /// member whose root is `root`; `None` for one not hosted here or a
-    /// member who chose no name.
-    pub async fn name_of_member(&self, workspace: WorkspaceId, root: [u8; 32]) -> Option<String> {
-        let hosted = self.held(workspace).await?;
-        let hosted = hosted.lock().await;
-        self.member_name_by_root(&hosted, root)
-    }
-
     /// The bytes named `hash` this host keeps for the workspace of `workspace`
     /// hosted here, checked against the hash: what its bots fetched and
     /// the files it keeps for members. `None` for a workspace not hosted here
@@ -449,55 +440,6 @@ impl Workspaces {
         }
         drop(store);
         documents
-    }
-
-    /// Run `act` while `workspace` takes no write, if none of the records
-    /// `read` read has changed since and none was added: `Ok(Ok(_))` with
-    /// what it answered, or `Ok(Err(_))` with the records that changed or
-    /// appeared, for the caller to read again. The workspace waits only as
-    /// long as `act` takes.
-    ///
-    /// # Errors
-    ///
-    /// The workspace is not hosted here.
-    pub async fn while_unwritten<R>(
-        &self,
-        workspace: &str,
-        read: &WholeDocuments,
-        act: impl FnOnce() -> R,
-    ) -> Result<Result<R, BTreeSet<(String, String)>>, CollaborationError> {
-        let state = self.workspace(workspace).await?;
-        let mut hosted = state.lock().await;
-        // A record of the store that changed since it was read.
-        let stored: Vec<(String, String)> = self
-            .stored_documents(&mut hosted, None, false)
-            .into_iter()
-            .filter(|(route, _, document)| {
-                document.as_ref().ok().map(|(revision, _)| revision) != read.revisions.get(route)
-            })
-            .map(|(route, _, _)| route)
-            .collect();
-        // Members' writes are taken into the replica under its own lock: held
-        // too, nothing lands while `act` runs.
-        let peer = hosted.peer();
-        let changed: BTreeSet<(String, String)> = peer
-            .plaintext_routes()
-            .into_iter()
-            .chain(peer.sealed_routes())
-            .filter(|(app, record)| {
-                read.revisions.get(&(app.clone(), record.clone()))
-                    != peer.document_revision(app, record).as_ref()
-            })
-            .chain(stored)
-            .collect();
-        let answer = if changed.is_empty() {
-            Ok(act())
-        } else {
-            Err(changed)
-        };
-        drop(peer);
-        drop(hosted);
-        Ok(answer)
     }
 
     /// Hand the pieces of content members send this host to `keeper`, beside

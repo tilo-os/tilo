@@ -19,7 +19,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_resource::{ActionDecl, Invoke, Replica, Resource as _};
 use tilo_server_protocol::WorkspaceId;
-use tilo_workspace_agent::{AgentPermissions, KIND, OWNER, WorkspaceAgents};
+use tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents};
 
 use super::{Verb, Workspaces};
 
@@ -465,48 +465,6 @@ impl Workspaces {
             (name.to_owned(), Value::String(value)),
         ]));
         Box::pin(self.act_on_agents((workspace, &acting, None), invoke)).await
-    }
-
-    /// The workspace's record of its agents as `caller` reads it: the agents, each with its name,
-    /// model and whether it works, as a view of another language reads them. `None` where this
-    /// device holds none of the workspace's record yet.
-    ///
-    /// # Errors
-    /// The record is on its way from another device, or it does not read.
-    pub async fn agents_reading(
-        &self,
-        workspace: &str,
-        _caller: &Caller,
-    ) -> Result<Option<Value>, ActionCallError> {
-        let Some(bytes) = self.agents_record(workspace).await? else {
-            return Ok(None);
-        };
-        let record = Replica::<WorkspaceAgents>::load(&bytes).map_err(unavailable)?;
-        let state = record.state().map_err(unavailable)?;
-        Ok(Some(tilo_resource::read::reading::<WorkspaceAgents>(
-            &state,
-        )))
-    }
-
-    /// What `caller` may change of the workspace's agents: whether the record's grants let it
-    /// pause or resume one, which is what a settings view offers the switch by.
-    ///
-    /// # Errors
-    /// The workspace is not held here, or its grants do not read.
-    pub async fn agents_permissions(
-        &self,
-        workspace: &str,
-        caller: &Caller,
-    ) -> Result<AgentPermissions, ActionCallError> {
-        let acting = caller.acting();
-        Ok(AgentPermissions {
-            pause: self
-                .admit_agents_action(workspace, acting, WorkspaceAgents::PAUSE_AGENT.id)
-                .await?,
-            resume: self
-                .admit_agents_action(workspace, acting, WorkspaceAgents::RESUME_AGENT.id)
-                .await?,
-        })
     }
 
     /// The workspace's record of its agents as this device holds it; `None` where it holds none

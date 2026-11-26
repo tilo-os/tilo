@@ -448,14 +448,6 @@ impl Workspaces {
         Ok(self.inner.own.set(own).is_ok())
     }
 
-    /// Whether this host keeps workspaces for the people it lets in
-    /// ([`Self::offer_own_workspaces`]): theirs, and the ones hosted elsewhere
-    /// that their owner has this host keep as well.
-    #[must_use]
-    pub fn keeps_workspaces_for_people(&self) -> bool {
-        self.own().is_some()
-    }
-
     pub(super) fn own(&self) -> Option<&OwnWorkspaces> {
         self.inner.own.get()
     }

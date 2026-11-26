@@ -647,53 +647,6 @@ impl Workspaces {
         Ok(history)
     }
 
-    /// Replace the sealed history of `record` of `app` in `workspace` with
-    /// `rebuilt`, the record as an operator rebuilt it from that history
-    /// ([`Self::document_history`]) where it does not merge whole: one sealed
-    /// checkpoint, compacted and signed by this host's device and carried like
-    /// any compaction, which every member takes in place of exactly the writes
-    /// it covers.
-    ///
-    /// # Errors
-    ///
-    /// The workspace is not hosted here, the record is held in the clear or
-    /// its channel's keys are not here, or the compaction could not be made,
-    /// committed or published.
-    pub async fn compact_document_into(
-        &self,
-        workspace: &str,
-        app: &str,
-        record: &str,
-        rebuilt: Vec<u8>,
-    ) -> Result<(), CollaborationError> {
-        let state = self.workspace(workspace).await?;
-        let mut hosted = state.lock().await;
-        let keys = hosted
-            .document_keys(app, record)
-            .await
-            .map_err(CollaborationError::new)?
-            .ok_or_else(|| CollaborationError::new("the record is held in the clear"))?;
-        let now = tilo_clock::wall();
-        let mut candidate = hosted.peer().clone();
-        let written = keys
-            .compact(
-                &mut candidate,
-                (app, record),
-                Some(rebuilt),
-                (&self.inner.host.cert, &self.inner.host.key),
-                now,
-            )
-            .map_err(CollaborationError::new)?;
-        let collaboration = hosted.collaboration().clone();
-        hosted.keep(candidate, &self.inner.host.key, now, |_, _| {
-            Ok(collaboration)
-        })?;
-        self.settle(&mut hosted).await?;
-        self.carry_written(hosted.workspace_id(), &written)?;
-        drop(hosted);
-        Ok(())
-    }
-
     /// The keys the host writes `record` of `app` with: in a workspace whose
     /// channels this server takes part in every new record is sealed from its
     /// first write, so its channel is opened first when it has none (its

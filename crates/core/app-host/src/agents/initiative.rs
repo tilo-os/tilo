@@ -214,12 +214,6 @@ impl Initiative {
         &self.inner.events
     }
 
-    /// The events the look-round is one of, as the device's broker serves them beside it.
-    #[must_use]
-    pub fn events_served(&self) -> Arc<WorkspaceEvents> {
-        Arc::clone(&self.inner.events)
-    }
-
     /// File what is proposed in the workspace's tracker through `actions`, the device's own,
     /// from now on: they are served by the broker the initiative is served by, so they come
     /// after it.

@@ -1748,19 +1748,6 @@ pub async fn run_on_device_watching_invocations(
         .await;
 }
 
-/// [`run_on_device`], firing the triggers on what the connectors this device runs report, read
-/// through `connectors`: the device that runs a connector is the one its events start runs on.
-pub async fn run_on_device_with_connectors(
-    workspaces: Workspaces,
-    starts: Arc<crate::collab_broker::AppActionBroker>,
-    connectors: Arc<dyn ConnectorEvents>,
-) {
-    Runner::new(workspaces, starts, Order::WORKSPACE)
-        .watching_connectors(connectors)
-        .run()
-        .await;
-}
-
 #[cfg(test)]
 #[path = "triggers_tests.rs"]
 mod tests;

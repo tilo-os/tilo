@@ -2007,31 +2007,6 @@ impl Workspaces {
         self.administers(&hosted)
     }
 
-    /// Whether this device's own person writes in `workspace` by its signed member list: their
-    /// row there is a role that writes records (an owner's, a moderator's or an editor's).
-    pub async fn own_person_writes(&self, workspace: &str) -> bool {
-        let Ok(hosted) = self.workspace(workspace).await else {
-            return false;
-        };
-        let person = hex::encode(self.inner.host.cert.user_public_key);
-        hosted
-            .lock()
-            .await
-            .peer()
-            .governance()
-            .member_policy()
-            .is_ok_and(|policy| {
-                matches!(
-                    policy.active_role(&person),
-                    Some(
-                        tilo_action_policy::Role::Owner
-                            | tilo_action_policy::Role::Moderator
-                            | tilo_action_policy::Role::Editor
-                    )
-                )
-            })
-    }
-
     /// What answers the workspace-join exchange for these workspaces.
     #[must_use]
     pub fn join_service(&self) -> tilo_peer_state::join_answer::JoinAnswer<Self> {
@@ -2414,28 +2389,6 @@ impl Workspaces {
         Ok(self.workspace(workspace).await?.lock().await.listing())
     }
 
-    /// Every person `workspace` still keeps, by person (hex root): its members that
-    /// nothing removed, the server's own person among them. What the server decides who
-    /// acts here by, an agent through the member it acts for, never what a listing shows: that
-    /// leaves the server's own account out ([`Self::membership`]).
-    ///
-    /// # Errors
-    ///
-    /// The workspace is not hosted here.
-    pub async fn kept_people(
-        &self,
-        workspace: &str,
-    ) -> Result<std::collections::BTreeSet<String>, CollaborationError> {
-        Ok(self
-            .kept_membership(workspace)
-            .await?
-            .1
-            .into_iter()
-            .filter(|(_, mark)| !mark.removed)
-            .map(|(person, _)| person)
-            .collect())
-    }
-
     /// Every person `workspace`'s governance has, by person (hex root), with the
     /// workspace's governance generation: its owner among them, also where the owner is
     /// this host's own person. What the server decides who acts here by, an agent through
@@ -2734,26 +2687,6 @@ impl Workspaces {
             };
             workspace.lock().await.asking.remove(&(app, record));
         });
-    }
-
-    /// Ask to be let into the channel that seals `record` of `app` in
-    /// `workspace`, when this host takes part in the workspace's channels:
-    /// what a host that reads a record its members write sealed asks for once
-    /// it finds the record shut, since its keys arrive only after the
-    /// channel's key holders admit it ([`Self::join_soon`]). Nothing when
-    /// the workspace is not hosted here; the keys arrive on the channel
-    /// service's own time, and the record reads once they have.
-    pub async fn ask_to_open(&self, workspace: &str, app: &str, record: &str) {
-        let Ok(state) = self.workspace(workspace).await else {
-            return;
-        };
-        let mut hosted = state.lock().await;
-        #[cfg(feature = "device-keys")]
-        self.join_soon(&mut hosted, app.to_owned(), record.to_owned());
-        #[cfg(not(feature = "device-keys"))]
-        {
-            let _ = (&mut hosted, app, record);
-        }
     }
 
     /// Whether this host waits to be let into the channel that seals `record`

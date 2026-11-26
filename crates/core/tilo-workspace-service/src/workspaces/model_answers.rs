@@ -543,52 +543,6 @@ impl Workspaces {
         }
     }
 
-    /// Whether `workspace`'s settings on this server hold what `named` names
-    /// as provider/model ([`ModelAnswerer::naming`]): what a skill may name as
-    /// the model its work is done with. It reads the settings from disk, so
-    /// an asynchronous caller asks it off the runtime's workers.
-    ///
-    /// # Errors
-    /// Nothing the workspace linked here is named so. The words say what it
-    /// linked, each provider by its name with the models it offers, and never
-    /// a key.
-    pub fn workspace_links_model(&self, workspace: &str, named: &str) -> Result<(), String> {
-        let root = self.workspace_root(workspace);
-        let linked: Vec<String> = if root.is_dir() {
-            let config = provider_config(&root);
-            if named_selection(&config, named).is_some() {
-                return Ok(());
-            }
-            config
-                .profiles
-                .iter()
-                .filter(|profile| profile.enabled)
-                .map(|profile| {
-                    let offered: Vec<&str> = profile
-                        .models
-                        .iter()
-                        .map(|model| model.id.as_str())
-                        .collect();
-                    format!("{} ({})", profile.display_label(), offered.join(", "))
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        Err(if linked.is_empty() {
-            format!(
-                "{named:?} names no model: the workspace linked no provider on this server. \
-                 Leave the model out."
-            )
-        } else {
-            format!(
-                "{named:?} names no model the workspace linked on this server. Name one as \
-                 provider/model from: {}.",
-                linked.join("; ")
-            )
-        })
-    }
-
     /// Let this host's people name providers at addresses off the public
     /// internet (a model server on the operator's own network): the choice
     /// of whoever runs the host, since a call to such an address is made

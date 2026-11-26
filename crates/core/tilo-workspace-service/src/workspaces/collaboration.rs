@@ -20,7 +20,7 @@ use tilo_server_protocol::workspaces::{
 use tilo_user_identity::DeviceCert;
 
 use tilo_action_policy::roles::governance;
-use tilo_action_policy::{Actor, Grantee, MemberId, Role};
+use tilo_action_policy::{Actor, MemberId, Role};
 use tilo_peer_state::ActionStamp;
 
 use super::authority::WorkspaceOp;
@@ -38,12 +38,6 @@ pub(super) fn actor_of(person: &str) -> Option<Actor> {
     .map(|person| Actor::Member(MemberId::person(person)))
 }
 
-/// The grantee `by` as the host's actor: a person, or the workspace's
-/// moderation bot.
-pub(super) fn actor_of_grantee(by: &Grantee) -> Option<Actor> {
-    by.as_member().cloned().map(Actor::Member)
-}
-
 /// The stamp of the governance action `verb`, decided by `by`: what every
 /// governance change of it names, so a watcher of the workspace tells a ban
 /// from a removal.
@@ -57,47 +51,6 @@ pub(super) fn carried(name: &str) -> Option<String> {
     let name = name.trim();
     (!name.is_empty() && name.chars().count() <= tilo_peer_state::join::MAX_INVITER_NAME_CHARS)
         .then(|| name.to_owned())
-}
-
-/// The root key `person`, a membership change names, spells.
-fn root(person: &str) -> Result<[u8; 32], String> {
-    hex::decode(person)
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or_else(|| "a member is named by their user root key".to_owned())
-}
-
-/// Settle what a committed moderation change leaves behind outside the member list: a ban
-/// withdraws the member's invitations and keeps them out of the copy, an unban clears what kept
-/// them out.
-fn settle_moderation(
-    workspace: &mut HostedWorkspace,
-    change: &tilo_action_policy::Change,
-    target: Option<[u8; 32]>,
-    now: u64,
-) -> Result<(), CollaborationError> {
-    match change {
-        tilo_action_policy::Change::Ban { .. } => {
-            if let Some(target) = target {
-                let mut state = workspace.collaboration().clone();
-                state.withdraw_invitations(&std::collections::BTreeSet::from([target]));
-                workspace.commit_state(state)?;
-                workspace
-                    .keep_out_removed(&std::collections::BTreeSet::from([target]), None, now)
-                    .map_err(CollaborationError::new)?;
-            }
-        }
-        tilo_action_policy::Change::Unban { .. } => {
-            if let Some(target) = target {
-                workspace
-                    .removals
-                    .clear(target)
-                    .map_err(CollaborationError::new)?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
 }
 
 pub use tilo_peer_state::workspace_membership::MemberPlace;
@@ -1284,110 +1237,6 @@ impl Workspaces {
             %person,
             outcome = ?membership,
             "workspace membership change committed"
-        );
-        drop(workspace);
-        Ok(completion)
-    }
-
-    /// Make `change`, a membership action, as the workspace's moderation bot `bot`: the same
-    /// restrict, unrestrict, ban and unban a person with moderation authority makes, decided
-    /// under the grants the workspace gave the bot when it turned its moderation agent on
-    /// ([`tilo_action_policy::bot::moderation_grants`]) and recorded as the bot's, so history
-    /// and every device name it like any other decision. Its grants reach every member but the
-    /// owner and the workspace's administrators, as anyone's grants on those actions do.
-    ///
-    /// # Errors
-    /// The bot's grants do not allow the change, the member is out of its reach, or the change
-    /// could not commit.
-    pub async fn moderate_member(
-        &self,
-        workspace: &str,
-        bot: &str,
-        change: tilo_action_policy::Change,
-    ) -> Result<GovernanceCompletion, CollaborationError> {
-        let now = tilo_clock::unix_now_ns();
-        let workspace = self.workspace(workspace).await?;
-        let mut workspace = workspace.lock().await;
-        let policy = workspace
-            .peer()
-            .governance()
-            .member_policy()
-            .map_err(CollaborationError::new)?;
-        let authority = tilo_action_policy::Authority::person(
-            policy.party_of(tilo_action_policy::Grantee::bot(bot)),
-        );
-        // A bot is no member: its id is the one its grants name, decided at each governance
-        // action's own node.
-        let actor = format!("bot:{bot}");
-        let cx = tilo_action_policy::Context::at_time(system_time(now));
-        policy
-            .check(&actor, &authority, &change, &cx, false)
-            .map_err(|refusal| CollaborationError::new(refusal.to_string()))?;
-        let by = tilo_action_policy::Grantee::bot(bot);
-        let target = change
-            .person()
-            .map(root)
-            .transpose()
-            .map_err(CollaborationError::new)?;
-        let identity = workspace.workspace().to_owned();
-        let person = change.person().map(str::to_owned);
-        let key = self.inner.host.key.clone();
-        let digest = request_digest(&(&by, &change))?;
-        // A bot's ban and unban read as the actions they are, as a person's do.
-        let stamp = match &change {
-            tilo_action_policy::Change::Ban { .. } => {
-                stamped(governance::BAN, actor_of_grantee(&by))
-            }
-            tilo_action_policy::Change::Unban { .. } => {
-                stamped(governance::UNBAN, actor_of_grantee(&by))
-            }
-            _ => None,
-        };
-        let completion = self
-            .administer_as(
-                &mut workspace,
-                digest,
-                digest,
-                |peer| match &change {
-                    tilo_action_policy::Change::Ban { person } => peer
-                        .governance_mut()
-                        .ban_member_by(root(person)?, by.clone(), &key, system_time(now)),
-                    tilo_action_policy::Change::Unban { person } => peer
-                        .governance_mut()
-                        .unban_member(root(person)?, &key, system_time(now)),
-                    tilo_action_policy::Change::Restrict { person, until_ms } => {
-                        peer.governance_mut().put_member_grants(
-                            &[tilo_action_policy::roles::restriction_grant(
-                                &identity,
-                                person,
-                                *until_ms,
-                                by.clone(),
-                            )],
-                            &key,
-                            system_time(now),
-                        )
-                    }
-                    tilo_action_policy::Change::Unrestrict { person } => {
-                        root(person)?;
-                        peer.governance_mut().remove_member_grants(
-                            &[tilo_action_policy::roles::restriction_grant_id(person)],
-                            &key,
-                            system_time(now),
-                        )
-                    }
-                    _ => Err(format!("`{}` is not a moderation action", change.action())),
-                },
-                stamp,
-                now,
-            )
-            .await?;
-        settle_moderation(&mut workspace, &change, target, now)?;
-        tracing::info!(
-            workspace = %workspace.workspace(),
-            %bot,
-            person = person.as_deref().unwrap_or_default(),
-            action = change.action(),
-            "the moderation bot committed a membership change"
         );
         drop(workspace);
         Ok(completion)

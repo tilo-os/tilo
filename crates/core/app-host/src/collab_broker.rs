@@ -951,14 +951,6 @@ impl BrokerHandle {
         Arc::clone(&self.channels)
     }
 
-    /// Snapshot the resource/action surfaces live applications published to
-    /// this session. The values are inert; invoking is a separate operation.
-    pub fn published_action_surfaces(&self) -> Vec<crate::collab_app_broker::PublishedSurface> {
-        self.fanout
-            .app_broker()
-            .map_or_else(Vec::new, |state| state.published_surfaces())
-    }
-
     /// Check one live published route without cloning unrelated descriptors.
     pub fn has_live_published_action(
         &self,

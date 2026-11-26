@@ -206,16 +206,6 @@ pub fn valid_role(role: &str) -> bool {
     }
 }
 
-/// The side of a stereo source a role plays, when it names one.
-#[must_use]
-pub fn role_side(role: &str) -> Option<&'static str> {
-    match role {
-        "left" | "surround-left" => Some("left"),
-        "right" | "surround-right" => Some("right"),
-        _ => None,
-    }
-}
-
 /// Whether the roles of `members` form a group the source can play: each role once, a stereo
 /// side with its partner, and either all room points or none.
 #[must_use]

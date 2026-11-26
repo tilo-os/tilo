@@ -917,15 +917,6 @@ impl ServerAgents {
         self
     }
 
-    /// These agents' web tools ask a server on this machine instead of the public engines and
-    /// pages: `routes` names, per engine, the address it answers, and a read reaches any address.
-    #[cfg(any(test, feature = "fixture-servers"))]
-    #[must_use]
-    pub fn web_looking_at(mut self, routes: Vec<(tilo_web_search::Engine, String)>) -> Self {
-        self.web_routes = Some(routes);
-        self
-    }
-
     /// The web a turn of `workspace` reaches: the public engines and pages, or a test's server
     /// on this machine. A body that is not text is kept where the workspace's content is.
     #[allow(

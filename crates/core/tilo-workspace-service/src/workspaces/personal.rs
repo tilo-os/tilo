@@ -62,20 +62,6 @@ impl Workspaces {
             .collect()
     }
 
-    /// Whether another device of `person`'s reads by `label`: one their record
-    /// here holds, which a revocation this host keeps has not refused. What
-    /// the host reads as it names a device pairing with them, so no two
-    /// devices of one person read alike.
-    #[must_use]
-    pub fn device_label_taken(&self, person: &[u8; 32], label: &str) -> bool {
-        let names = self.inner.device_names.lock_recover();
-        names.get(person).is_some_and(|known| {
-            known
-                .values()
-                .any(|(name, refused)| !*refused && name == label)
-        })
-    }
-
     /// Mark the device `entry` names taken back in its person's record, where
     /// this host holds it and the record holds that device of theirs: the
     /// root-signed entry is kept in the entry of the device it names, and every
