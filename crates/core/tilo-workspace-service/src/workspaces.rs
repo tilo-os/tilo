@@ -2177,16 +2177,15 @@ impl Workspaces {
         app: &str,
         record: &str,
     ) -> Result<Option<Vec<u8>>, CollaborationError> {
+        // Every read answers from the workspace's reading: its store and its copy, a command or a
+        // read at a time. A write holds the workspace across what takes long (asking the key
+        // service, a link), and the change read here was kept before the write told anyone of it.
+        let reading = self.reading_now(workspace).await?;
         if collab_types::is_store_document(record) {
-            let state = self.workspace(workspace).await?;
-            return Ok(state.lock().await.store_document(record));
+            return Ok(reading.document(record));
         }
         // A record of a kind its app declares is the store's.
-        if let Some(stored) = self
-            .stored_record_in(workspace, app, record)
-            .await
-            .map_err(CollaborationError::new)?
-        {
+        if let Some(stored) = reading.record(&self.inner.host.surfaces, app, record) {
             return Ok(Some(stored));
         }
         match self
@@ -2207,10 +2206,10 @@ impl Workspaces {
     /// Whether `workspace`'s store holds the resource `id` of `kind` now: false for a workspace
     /// not kept here.
     pub async fn store_holds(&self, workspace: &str, kind: &str, id: &str) -> bool {
-        let Ok(state) = self.workspace(workspace).await else {
+        let Ok(reading) = self.reading_now(workspace).await else {
             return false;
         };
-        state.lock().await.holds_resource(kind, id)
+        reading.store().get(kind, id, &|_| true).is_some()
     }
 
     /// What the change `hash` of the resource store's document `doc` of `workspace` wrote: each
@@ -2222,10 +2221,13 @@ impl Workspaces {
         doc: &str,
         hash: automerge::ChangeHash,
     ) -> Vec<tilo_resource_store::Wrote> {
-        let Ok(state) = self.workspace(workspace).await else {
+        let Ok(reading) = self.reading_now(workspace).await else {
             return Vec::new();
         };
-        state.lock().await.store_wrote(doc, hash)
+        if reading.document(doc).is_none() {
+            return Vec::new();
+        }
+        reading.store().wrote(doc, hash)
     }
 
     /// Every resource of `workspace`'s store that `query` finds, by id, with what the store's
@@ -2239,12 +2241,11 @@ impl Workspaces {
         workspace: &str,
         query: collab_types::store::Query,
     ) -> Result<Vec<(String, collab_types::store::Indexed)>, String> {
-        let state = self
-            .workspace(workspace)
+        let reading = self
+            .reading_now(workspace)
             .await
             .map_err(|error| error.to_string())?;
-        let found = state.lock().await.store_found(query);
-        Ok(found)
+        Ok(reading.found(query))
     }
 
     /// The resource `id` of `kind` in `workspace`'s store, as the store's index holds it; none
@@ -2255,8 +2256,8 @@ impl Workspaces {
         kind: &str,
         id: &str,
     ) -> Option<collab_types::store::Indexed> {
-        let state = self.workspace(workspace).await.ok()?;
-        state.lock().await.store_held(kind, id)
+        let reading = self.reading_now(workspace).await.ok()?;
+        reading.store().get(kind, id, &|_| true).cloned()
     }
 
     /// The `(app, record)` of every record of `workspace` the host's copy
@@ -2353,11 +2354,14 @@ impl Workspaces {
     }
 
     /// The state of `workspace` as this host holds it now: what a channel
-    /// service reads who may read the workspace's channels from.
+    /// service reads who may read the workspace's channels from, and what a record's read
+    /// answers from.
     pub async fn state(&self, workspace: &str) -> Option<StatePeer> {
-        let hosted = self.workspace(workspace).await.ok()?;
-        let state = hosted.lock().await.peer().clone();
-        Some(state)
+        // The workspace's copy answers without its lock, as every read does: a write holds the
+        // workspace across what takes long, and every read of a record and every agent's look
+        // would otherwise wait for it.
+        let reading = self.reading_now(workspace).await.ok()?;
+        Some(reading.replica.read(StatePeer::clone))
     }
 
     /// `workspace` as governance records it now.

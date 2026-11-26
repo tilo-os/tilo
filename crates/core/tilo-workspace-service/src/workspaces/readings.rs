@@ -13,6 +13,7 @@ use tilo_server_protocol::WorkspaceId;
 
 use tilo_peer_state::direct::Replica;
 
+use super::collaboration::CollaborationError;
 use super::{DeviceKeys, HostedWorkspace, StatePeer, Workspaces};
 
 /// What a hosted workspace is read through without its lock.
@@ -30,6 +31,8 @@ pub(super) struct Reading {
     /// The workspace's one store, read a command at a time: what a record's reads answer from
     /// while the workspace's lock is held by a write waiting on a key or a link.
     pub(super) store: std::sync::Arc<std::sync::Mutex<tilo_resource_store::Store>>,
+    /// Where that store keeps the files of the documents it leaves memory.
+    pub(super) root: std::path::PathBuf,
 }
 
 /// What a workspace's join log and entry say of the invitations it issued,
@@ -128,16 +131,6 @@ impl Default for Readings {
 }
 
 impl Readings {
-    pub(super) fn of(
-        &self,
-        workspace: WorkspaceId,
-        hosted: &std::sync::Arc<tokio::sync::Mutex<HostedWorkspace>>,
-    ) -> Option<Reading> {
-        let (of, reading) = self.0.lock_recover().get(&workspace)?.clone();
-        // A workspace opened again is read through its new replica.
-        (of.as_ptr() == std::sync::Arc::as_ptr(hosted)).then_some(reading)
-    }
-
     pub(super) fn keep(
         &self,
         workspace: WorkspaceId,
@@ -220,11 +213,90 @@ impl HostedWorkspace {
             invitations: self.invitations.clone(),
             member: self.member.is_some(),
             store: self.resources.shared(),
+            root: self.resources.root().to_path_buf(),
         }
     }
 }
 
+impl Reading {
+    /// The store's document `doc`, saved as the store holds it now, read without the workspace's
+    /// lock: from memory, or from the file it kept. `None` for a document the store placed none
+    /// by.
+    pub(super) fn document(&self, doc: &str) -> Option<Vec<u8>> {
+        super::resources::kept_document(&self.store, &self.root, doc)
+    }
+
+    /// The store's content document of `app`'s record `record`, saved as the store holds it,
+    /// read without the workspace's lock. `None` for a record the store holds nothing of.
+    pub(super) fn record(
+        &self,
+        surfaces: &collab_types::app_surface::Surfaces,
+        app: &str,
+        record: &str,
+    ) -> Option<Vec<u8>> {
+        super::resources::kept_record(&self.store, surfaces, app, record)
+    }
+
+    /// The store, a command at a time, without the workspace's lock.
+    pub(super) fn store(&self) -> std::sync::MutexGuard<'_, tilo_resource_store::Store> {
+        use tilo_lock::MutexRecover as _;
+        self.store.lock_recover()
+    }
+
+    /// Every resource of the store that `query` finds, page after page, by id with what the
+    /// index holds of it: read one command at a time, without the workspace's lock.
+    pub(super) fn found(
+        &self,
+        mut query: collab_types::store::Query,
+    ) -> Vec<(String, collab_types::store::Indexed)> {
+        let mut found = Vec::new();
+        {
+            let store = self.store();
+            loop {
+                let page = store.query(&query, &|_| true);
+                found.extend(page.resources);
+                match page.next {
+                    Some(next) => query.after = Some(next),
+                    None => break,
+                }
+            }
+            drop(store);
+        }
+        found
+    }
+}
+
 impl Workspaces {
+    /// What `workspace` is read through: its store and its copy, a command or a read at a time.
+    /// No lock of the workspace is taken, and none is waited for: a workspace that is held but
+    /// has not kept its reading yet is one still opening, and this waits for that reading —
+    /// published before the open answers — rather than for the workspace.
+    ///
+    /// # Errors
+    ///
+    /// This host holds no such workspace.
+    pub(super) async fn reading_now(&self, workspace: &str) -> Result<Reading, CollaborationError> {
+        if let Some(reading) = self.inner.readings.held(workspace) {
+            return Ok(reading);
+        }
+        let mut kept = self.inner.readings.holds();
+        loop {
+            if let Some(reading) = self.inner.readings.held(workspace) {
+                return Ok(reading);
+            }
+            if !self.inner.workspaces.lock().await.contains_key(workspace) {
+                return Err(CollaborationError::new(
+                    "this server does not hold that workspace",
+                ));
+            }
+            if kept.changed().await.is_err() {
+                return Err(CollaborationError::new(
+                    "this server does not hold that workspace",
+                ));
+            }
+        }
+    }
+
     /// What the workspace `workspace` hosted here is read through without
     /// its lock; `None` for a workspace not hosted here. Only the first read
     /// of a workspace opened here waits for its lock.
@@ -258,15 +330,7 @@ impl Workspaces {
     }
 
     pub(super) async fn reading(&self, workspace: WorkspaceId) -> Option<Reading> {
-        let hosted = self.held(workspace).await?;
-        if let Some(reading) = self.inner.readings.of(workspace, &hosted) {
-            return Some(reading);
-        }
-        let reading = hosted.lock().await.reading();
-        self.inner
-            .readings
-            .keep(workspace, &hosted, reading.clone());
-        Some(reading)
+        self.reading_now(&workspace.to_string()).await.ok()
     }
 
     /// Keep what `workspace`, held here, is read through without its lock: a

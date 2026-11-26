@@ -64,6 +64,45 @@ fn file_name(doc: &str) -> PathBuf {
     path
 }
 
+/// The document the store under `root` placed as `doc`, saved as it holds it now: from memory,
+/// or read from the file it kept when it left memory. `None` when the store placed none by that
+/// id.
+///
+/// The store is read a command at a time under its own lock, never the workspace's
+/// ([`super::readings::Reading`]): a read of a record answers while a write of the workspace
+/// waits on the key service or a link.
+pub(super) fn kept_document(
+    store: &std::sync::Arc<std::sync::Mutex<Store>>,
+    root: &Path,
+    doc: &str,
+) -> Option<Vec<u8>> {
+    use tilo_lock::MutexRecover as _;
+    let mut kept = store.lock_recover();
+    if kept.document(doc).is_none() {
+        let bytes = fs::read(root.join(DOCS).join(file_name(doc))).ok()?;
+        kept.load(doc, &bytes).ok()?;
+    }
+    kept.document(doc).map(Automerge::save)
+}
+
+/// The store's content document of `app`'s record `record`, saved as the store holds it: what a
+/// record's read answers, read a command at a time under the store's own lock and never the
+/// workspace's ([`super::readings::Reading`]). `None` for a record the store holds nothing of.
+pub(super) fn kept_record(
+    store: &std::sync::Arc<std::sync::Mutex<Store>>,
+    surfaces: &collab_types::app_surface::Surfaces,
+    app: &str,
+    record: &str,
+) -> Option<Vec<u8>> {
+    use tilo_lock::MutexRecover as _;
+    let mut kept = store.lock_recover();
+    let kind = record_changes::kind_of(surfaces, &kept, app, None, record)?;
+    kept.content_document(&kind, record)
+        .ok()
+        .flatten()
+        .map(Automerge::save)
+}
+
 /// Every document kept below `dir`, by its id, with its file: what [`file_name`] named.
 fn kept_docs(dir: &Path, named: &str, docs: &mut Vec<(String, PathBuf)>) {
     for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
@@ -304,12 +343,6 @@ impl Resources {
         self.publish_live();
     }
 
-    /// Whether the store holds the resource `id` of `kind`.
-    pub(super) fn holds(&self, kind: &str, id: &str) -> bool {
-        use tilo_lock::MutexRecover as _;
-        self.store.lock_recover().get(kind, id, &|_| true).is_some()
-    }
-
     /// Show this workspace's live resources in `rows`, as `reader` (a person's key in hex) may read
     /// them, from now on.
     pub(super) fn show_live(&mut self, rows: &crate::live::LiveRows, reader: String) {
@@ -366,6 +399,11 @@ impl Resources {
     /// command at a time.
     pub(super) fn shared(&self) -> std::sync::Arc<std::sync::Mutex<Store>> {
         std::sync::Arc::clone(&self.store)
+    }
+
+    /// Where the store keeps the files of the documents it leaves memory.
+    pub(super) fn root(&self) -> &Path {
+        &self.root
     }
 
     /// Place the reader sets the store writes by `policy` from now on: an agent a resource's
@@ -431,17 +469,6 @@ impl Resources {
             .heads(doc)
             .map(<[_]>::to_vec)
             .unwrap_or_default()
-    }
-
-    /// The document the store placed under `doc`, saved as it holds it now: from memory, or read
-    /// from what it kept when it left memory. `None` when it placed none by that id.
-    fn document(&mut self, doc: &str) -> Option<Vec<u8>> {
-        if self.store_mut().document(doc).is_none() {
-            let bytes = fs::read(self.root.join(DOCS).join(file_name(doc))).ok()?;
-            self.store_mut().load(doc, &bytes).ok()?;
-        }
-        self.used.insert(doc.to_owned(), tilo_clock::now());
-        self.store_mut().document(doc).map(Automerge::save)
     }
 
     /// Keeps what `doc` took since `before`: its changes appended to its file, then the
@@ -741,59 +768,6 @@ fn changes_of(
 }
 
 impl HostedWorkspace {
-    /// The document the workspace's resource store placed under `doc`, saved as the store keeps
-    /// it: a document the store keeps, which the host's replica does not
-    /// ([`is_store_document`]). `None` when the store placed none by that id.
-    pub(super) fn store_document(&mut self, doc: &str) -> Option<Vec<u8>> {
-        self.resources.document(doc)
-    }
-
-    /// Whether the workspace's store holds the resource `id` of `kind`: what a turn started on
-    /// a change reads of the item it was started on, which is gone once it is removed.
-    pub(super) fn holds_resource(&self, kind: &str, id: &str) -> bool {
-        self.resources.holds(kind, id)
-    }
-
-    /// What the change `hash` of the store's document `doc` wrote ([`Store::wrote`]).
-    pub(super) fn store_wrote(
-        &mut self,
-        doc: &str,
-        hash: ChangeHash,
-    ) -> Vec<tilo_resource_store::Wrote> {
-        // In memory, as a written document is.
-        if self.resources.document(doc).is_none() {
-            return Vec::new();
-        }
-        self.resources.store_mut().wrote(doc, hash)
-    }
-
-    /// Every resource of the store `query` finds, page after page, with what the index holds
-    /// of each ([`Store::query`]): what this device itself holds, read for its own work.
-    pub(super) fn store_found(
-        &self,
-        mut query: collab_types::store::Query,
-    ) -> Vec<(String, collab_types::store::Indexed)> {
-        let mut found = Vec::new();
-        {
-            let store = self.resources.store_mut();
-            loop {
-                let page = store.query(&query, &|_| true);
-                found.extend(page.resources);
-                match page.next {
-                    Some(next) => query.after = Some(next),
-                    None => break,
-                }
-            }
-            drop(store);
-        }
-        found
-    }
-
-    /// The resource `id` of `kind` in the store, as its index holds it ([`Store::get`]).
-    pub(super) fn store_held(&self, kind: &str, id: &str) -> Option<collab_types::store::Indexed> {
-        self.resources.store_mut().get(kind, id, &|_| true).cloned()
-    }
-
     /// The workspace's store, with the types and verbs of every app surface the device knows
     /// (`surfaces`) declared: what this device's writes and the members' are judged by.
     fn store_with_surfaces<'a>(

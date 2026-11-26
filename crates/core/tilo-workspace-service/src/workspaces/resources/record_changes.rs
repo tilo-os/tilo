@@ -13,7 +13,7 @@ use super::super::{HostedWorkspace, Workspaces};
 /// The kind `app`'s record `record` is in `store`: `kind` when the route named one the app
 /// declares, else whichever of the app's kinds holds it. `None` for a record the store holds
 /// none of, or one of another app's kinds.
-fn kind_of(
+pub(super) fn kind_of(
     surfaces: &collab_types::app_surface::Surfaces,
     store: &tilo_resource_store::Store,
     app: &str,
@@ -203,23 +203,21 @@ impl Workspaces {
     pub fn stored_records(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
         let (workspaces, workspace) = (self.clone(), workspace.to_owned());
         crate::device_documents::on_its_own(async move {
-            workspaces.stored_records_in(&workspace).await
+            // A record's read answers from the workspace's reading, as every read does: its store
+            // one command at a time, with no lock of the workspace taken.
+            let reading = workspaces
+                .reading_now(&workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut records = Vec::new();
+            {
+                let store = reading.store();
+                for (app, kind) in workspaces.inner.host.surfaces.kinds() {
+                    records.extend(store.ids_of(&kind).map(|id| (app.clone(), id.to_owned())));
+                }
+            }
+            Ok(records)
         })
-    }
-
-    async fn stored_records_in(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
-        let state = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut hosted = state.lock().await;
-        let store = self.store_of(&mut hosted);
-        let mut records = Vec::new();
-        for (app, kind) in self.inner.host.surfaces.kinds() {
-            records.extend(store.ids_of(&kind).map(|id| (app.clone(), id.to_owned())));
-        }
-        drop(store);
-        Ok(records)
     }
 
     /// The document `app`'s record `record` of `workspace` is, as the store holds it: what the
@@ -236,29 +234,14 @@ impl Workspaces {
         let workspaces = self.clone();
         let (workspace, app, record) = (workspace.to_owned(), app.to_owned(), record.to_owned());
         crate::device_documents::on_its_own(async move {
-            workspaces.stored_record_in(&workspace, &app, &record).await
+            // As [`Self::stored_records`]: the reading answers, with no lock of the workspace
+            // taken.
+            let reading = workspaces
+                .reading_now(&workspace)
+                .await
+                .map_err(|error| error.to_string())?;
+            Ok(reading.record(&workspaces.inner.host.surfaces, &app, &record))
         })
-    }
-
-    pub(in crate::workspaces) async fn stored_record_in(
-        &self,
-        workspace: &str,
-        app: &str,
-        record: &str,
-    ) -> Result<Option<Vec<u8>>, String> {
-        let state = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut hosted = state.lock().await;
-        let mut store = self.store_of(&mut hosted);
-        let Some(kind) = kind_of(&self.inner.host.surfaces, &store, app, None, record) else {
-            return Ok(None);
-        };
-        Ok(store
-            .content_document(&kind, record)
-            .map_err(|error| error.to_string())?
-            .map(automerge::Automerge::save))
     }
 
     /// Write `changes`, the app's own changes of its `record` (of `kind`, when the route named

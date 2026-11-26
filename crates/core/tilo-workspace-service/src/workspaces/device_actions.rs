@@ -1197,12 +1197,13 @@ impl super::Workspaces {
         workspace: &str,
         read: impl FnOnce(&tilo_peer_state::StatePeer) -> Result<bool, E>,
     ) -> bool {
-        let held = self.inner.workspaces.lock().await.get(workspace).cloned();
-        let Some(held) = held else {
+        // The workspace's copy answers without its lock, as every read does: a write holds the
+        // workspace across what takes long, and a turn's own admission reads this while its
+        // workspace's write may still be going.
+        let Ok(reading) = self.reading_now(workspace).await else {
             return false;
         };
-        let held = held.lock().await;
-        read(&held.peer()).unwrap_or(false)
+        reading.replica.read(read).unwrap_or(false)
     }
 
     /// The device whose claims [`Self::write_lease`] writes in `workspace`: the

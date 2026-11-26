@@ -561,7 +561,7 @@ async fn record_change_of(
     let bytes = tilo_test_env::within("the copy holds the record", async {
         loop {
             if let Some(bytes) = copies
-                .stored_record_in(workspace, app, record)
+                .resource_document(workspace, app, record)
                 .await
                 .expect("the record reads")
             {

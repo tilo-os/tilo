@@ -27,6 +27,11 @@ use super::authority::WorkspaceOp;
 use super::{HostedWorkspace, WorkspaceDocumentEntry, Workspaces, system_time};
 use tilo_lock::MutexRecover as _;
 
+/// Why a read of a workspace's own state is refused: this host keeps no such workspace.
+fn not_held() -> CollaborationError {
+    CollaborationError::new("this server does not hold that workspace")
+}
+
 /// The person `person` (a root key in hex) as the host's actor: who a
 /// governance change names as the one who decided it. `None` for a key that is
 /// no person.
@@ -1377,12 +1382,8 @@ impl Workspaces {
         lease: &str,
     ) -> Result<Option<[u8; 32]>, CollaborationError> {
         let now = system_time(tilo_clock::unix_now_ns());
-        Ok(self
-            .workspace(workspace)
-            .await?
-            .lock()
-            .await
-            .peer()
+        let peer = self.state(workspace).await.ok_or_else(not_held)?;
+        Ok(peer
             .workspace()
             .lease(lease, now)
             .holder
@@ -1399,15 +1400,8 @@ impl Workspaces {
         workspace: &str,
         lease: &str,
     ) -> Result<Option<serde_json::Value>, CollaborationError> {
-        Ok(self
-            .workspace(workspace)
-            .await?
-            .lock()
-            .await
-            .peer()
-            .workspace()
-            .done(lease)
-            .map(|done| done.answer))
+        let peer = self.state(workspace).await.ok_or_else(not_held)?;
+        Ok(peer.workspace().done(lease).map(|done| done.answer))
     }
 
     /// What the devices of `workspace` kept of the work done under every lease whose id starts
@@ -1420,12 +1414,8 @@ impl Workspaces {
         workspace: &str,
         prefix: &str,
     ) -> Result<std::collections::BTreeMap<String, serde_json::Value>, CollaborationError> {
-        Ok(self
-            .workspace(workspace)
-            .await?
-            .lock()
-            .await
-            .peer()
+        let peer = self.state(workspace).await.ok_or_else(not_held)?;
+        Ok(peer
             .workspace()
             .done_under(prefix)
             .into_iter()

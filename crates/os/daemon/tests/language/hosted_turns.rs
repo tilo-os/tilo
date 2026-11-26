@@ -653,3 +653,59 @@ fn a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_person_closed
         );
     });
 }
+
+/// A message the person sends in a channel that mentions their assistant and carries a file
+/// starts its turn, as one that carries none does: the trigger reads the message's body from
+/// the change, and the turn is told the file the message holds.
+#[test]
+fn a_message_that_carries_a_file_starts_the_turn_of_the_agent_it_mentions() {
+    use crate::language::files_support::{Session, put};
+
+    host::run_with(&[CHAT_PACKAGE], |host| async move {
+        let host = host.as_ref();
+        start_chat(host, host.workspace()).await;
+        make_scout(host).await;
+        let channel =
+            crate::language::chat::made_channel(&host.agent(), crate::language::chat::CHANNEL)
+                .await;
+
+        // A file in the workspace, posted with the question.
+        let plan = b"The launch is Friday.\n";
+        let content = put(&Session::Agent(&host.agent()), host.workspace(), plan).await;
+        let scripted = scripted(host, [Reply::text("Friday, then.")]);
+        let (wrote, failed) = write_to_scout_with(
+            host,
+            &channel,
+            "When is the launch?",
+            json!({"attachments": [{"file": {
+                "content": content,
+                "name": "launch.md",
+                "size": plan.len(),
+            }}]}),
+        )
+        .await;
+        assert!(
+            !failed,
+            "the person posts the file to their assistant: {wrote}"
+        );
+        assert!(
+            crate::language::chat::chat_holds_soon(host, "When is the launch?").await,
+            "the message is in the workspace's Chat record"
+        );
+
+        // The mention of the assistant in the message starts its turn, which is told what the
+        // message carries and where to read it.
+        tokio::time::timeout(Duration::from_secs(90), asked(&scripted, 1))
+            .await
+            .expect("the message starts the assistant's turn");
+        let told = format!("{:?}", scripted.asked()[0].request);
+        assert!(
+            told.contains("launch.md") && told.contains(&content),
+            "the turn is told the file the message carries: {told}"
+        );
+        assert!(
+            crate::language::chat::chat_holds_soon(host, "Friday, then.").await,
+            "the turn answers in the conversation"
+        );
+    });
+}
