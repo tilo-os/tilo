@@ -856,7 +856,7 @@ fn show_acting(
     );
     app.harness().poll_frame().expect("a frame is drawn");
     app.harness().relayout();
-    let faults = ui::presence::tag_faults(&app.harness().inspection().root);
+    let faults = ui::inspection::tag_faults(&app.harness().inspection().root);
     assert!(faults.is_empty(), "the agent's tag: {faults:?}");
 }
 

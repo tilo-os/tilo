@@ -361,6 +361,7 @@ pub mod secret_paint;
 pub mod selection;
 pub mod session_api;
 pub mod shared_selection;
+pub mod shared_subject;
 pub mod shell_cards;
 pub mod shell_tabs;
 pub mod snap;
@@ -441,7 +442,7 @@ pub use vello::{kurbo, peniko};
 pub use vello_encoding;
 pub use winit;
 
-pub use app::{App, local_surface_id};
+pub use app::App;
 pub use arriving::{Arrival, ArrivalClock, ArrivalCompletion, ArrivalWriter, Arriving};
 pub use caps_lock::CapsLockEstimate;
 pub use collection_transition::{RowMotion, RowMotions};
@@ -464,6 +465,7 @@ pub use local_state::{
     TaskCompletion,
 };
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
+pub use platform::local_surface_id;
 // Paragraph composition is the document engine's, so the reader, the word processor and PDF
 // export lay text out by one policy.
 pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};

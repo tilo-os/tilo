@@ -768,7 +768,7 @@ mod tests {
         staged
             .harness()
             .render_png(&captures.join(format!("{name}-agent-marker.png")));
-        let faults = ui::presence::tag_faults(&staged.harness().inspection().root);
+        let faults = ui::inspection::tag_faults(&staged.harness().inspection().root);
         assert!(faults.is_empty(), "the agent's tag: {faults:?}");
         (before, staged.harness().render_rgba())
     }

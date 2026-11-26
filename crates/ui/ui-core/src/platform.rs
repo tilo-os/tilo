@@ -658,6 +658,32 @@ mod more_keys_tests {
     }
 }
 
+/// Public because it is half of a protocol: what a pointer published in this
+/// surface's content coordinates is scoped to
+/// ([`crate::presence::PointerSpace::Surface`]) — both ends must spell the
+/// surface the same way by calling this same function.
+pub fn local_surface_id() -> String {
+    let app_id = crate::process::environment().identity.app_id.clone();
+    let binary = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+    resolve_app_id(app_id.as_deref(), binary.as_deref())
+}
+
+pub(crate) fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String {
+    let non_blank = |s: &str| {
+        let t = s.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    };
+    if let Some(id) = package_id.and_then(non_blank) {
+        return id;
+    }
+    if let Some(bin) = binary.and_then(non_blank) {
+        return bin;
+    }
+    "org.tilo.app".to_string()
+}
+
 /// What the Android activity this process runs hands out: the APK's assets.
 #[cfg(all(target_os = "android", feature = "native"))]
 pub mod android {

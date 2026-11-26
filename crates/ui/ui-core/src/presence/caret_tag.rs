@@ -181,7 +181,7 @@ impl LabeledCaret {
 }
 
 /// Whether `a` and `b` share any area.
-pub(super) fn overlaps(a: Rect, b: Rect) -> bool {
+pub fn overlaps(a: Rect, b: Rect) -> bool {
     a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
 }
 
@@ -553,65 +553,6 @@ mod tests {
             assert_eq!(shown(vec![talking], &tags), vec![1.0]);
         }
     }
-}
-
-/// What is wrong with the name tags presence drew in the frame `root`, as
-/// its inspection publishes them (`PresenceTag` nodes): a tag over a word of
-/// the frame's text, and a second tag for one actor. A tag names who is
-/// there; a word it covers is lost, and two tags of one actor read as two.
-pub fn tag_faults(root: &crate::headless::InspectionNode) -> Vec<String> {
-    fn walk<'a>(
-        node: &'a crate::headless::InspectionNode,
-        tags: &mut Vec<&'a crate::headless::InspectionNode>,
-        words: &mut Vec<&'a crate::headless::InspectionNode>,
-    ) {
-        if node.widget == TAG_WIDGET {
-            tags.push(node);
-            return;
-        }
-        let worded = node.semantics.as_ref().is_some_and(|access| {
-            access
-                .name
-                .as_deref()
-                .is_some_and(|name| !name.trim().is_empty())
-                || access
-                    .value
-                    .as_deref()
-                    .is_some_and(|value| !value.trim().is_empty())
-        });
-        // A field places a tag among its own glyphs; a mark is presence itself.
-        let own = matches!(node.widget.as_str(), "TextInput" | "PresenceMark");
-        if node.children.is_empty() && worded && !own {
-            words.push(node);
-        }
-        for child in &node.children {
-            walk(child, tags, words);
-        }
-    }
-    let rect = |r: [f64; 4]| Rect::new(r[0], r[1], r[0] + r[2], r[1] + r[3]);
-    let (mut tags, mut words) = (Vec::new(), Vec::new());
-    walk(root, &mut tags, &mut words);
-    let mut faults = Vec::new();
-    for (index, tag) in tags.iter().enumerate() {
-        let at = rect(tag.rect);
-        for word in &words {
-            if overlaps(at, rect(word.rect)) {
-                let said = word
-                    .semantics
-                    .as_ref()
-                    .and_then(|access| access.name.clone().or_else(|| access.value.clone()))
-                    .unwrap_or_default();
-                faults.push(format!("{} covers \"{said}\" ({})", tag.path, word.path));
-            }
-        }
-        if tags[..index]
-            .iter()
-            .any(|before| before.test_id == tag.test_id)
-        {
-            faults.push(format!("{} is a second tag of one actor", tag.path));
-        }
-    }
-    faults
 }
 
 /// The inspection widget a drawn name tag is published as.

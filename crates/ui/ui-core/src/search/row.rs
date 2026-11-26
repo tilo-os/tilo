@@ -86,6 +86,20 @@ pub struct RowFace {
 }
 
 impl RowFace {
+    /// The face this row states for its member: the same face and colour, dimmed while they
+    /// are away.
+    #[must_use]
+    pub fn face(&self) -> crate::presence::Face<'_> {
+        crate::presence::Face {
+            avatar: self.avatar(),
+            colour: self.colour,
+            dimmed: self.dimmed,
+            active: None,
+            scale: 1.0,
+            follows_you: false,
+        }
+    }
+
     /// A member an app knows by name and identity alone, in the colour the one rule gives
     /// them ([`crate::presence::identity_colour_of`]).
     #[must_use]

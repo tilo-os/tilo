@@ -741,7 +741,7 @@ pub fn inspect(
     walk.repeated_titles();
     walk.double_navigation();
     walk.placeholder_panes(root, &mut Vec::new());
-    for fault in ui::presence::tag_faults(root) {
+    for fault in ui::inspection::tag_faults(root) {
         out.push(Problem {
             kind: Kind::PresenceTag,
             keys: Vec::new(),

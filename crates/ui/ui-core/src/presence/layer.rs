@@ -49,7 +49,7 @@ pub struct WidgetPresence {
     /// Who is composing a message where, as the host last pruned it
     /// ([`PresenceCtx::prune_composing`]): a conversation's "… is typing".
     composing: HashSet<(PresenceKey, MemberId)>,
-    views: HashMap<MemberId, crate::view::ViewSubset>,
+    views: HashMap<MemberId, tilo_action_policy::presence::ViewSubset>,
     own: HashSet<MemberId>,
     self_member: Option<(MemberId, String)>,
     surface: Option<String>,

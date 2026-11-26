@@ -561,8 +561,8 @@ pub(crate) fn paint_pill(
             let face = Rect::from_center_size(Point::new(x + side / 2.0, cy), (side, side));
             let mut ctx = crate::paint::PaintCtx::new(scene, transform, text_renderer, theme);
             match pill.face {
-                Some(who) => crate::widget::avatar::AvatarFace::of(who),
-                None => crate::widget::avatar::AvatarFace::new(pill.label, pill.label),
+                Some(who) => crate::widget::avatar_face::AvatarFace::of(who),
+                None => crate::widget::avatar_face::AvatarFace::new(pill.label, pill.label),
             }
             .presence(colour)
             .paint(&mut ctx, face);
@@ -762,7 +762,7 @@ impl Chip {
         self
     }
 
-    /// Lead with `who`'s face as every surface draws it ([`crate::widget::avatar::AvatarFace::of`]),
+    /// Lead with `who`'s face as every surface draws it ([`crate::widget::avatar_face::AvatarFace::of`]),
     /// in the theme's palette colour for the hue they wear: a person's picture or initials, or an
     /// agent's mark, as the bar's faces show them.
     #[must_use]

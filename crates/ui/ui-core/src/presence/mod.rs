@@ -27,8 +27,7 @@ mod overlay;
 mod placed;
 pub(crate) mod render;
 pub use caret_tag::{
-    CaretTag, LabeledCaret, TAG_WIDGET, hide_names_beside_caret_tags, tag_faults, tag_gap,
-    tags_crowd,
+    CaretTag, LabeledCaret, TAG_WIDGET, hide_names_beside_caret_tags, overlaps, tag_gap, tags_crowd,
 };
 pub use chat::{
     CURSOR_CHAT_LINGER, CURSOR_CHAT_MAX_CHARS, ChatBubble, CursorChats, POINTER_NAME_LINGER,
@@ -82,7 +81,7 @@ pub fn local_workspace_key() -> Option<PresenceKey> {
 /// coordinates a winit `CursorMoved` carries are surface-local, so this
 /// is the only representation an app can provide.
 pub fn local_surface_pointer() -> PresenceKey {
-    PresenceKey::surface_pointer(crate::local_surface_id())
+    PresenceKey::surface_pointer(crate::platform::local_surface_id())
 }
 
 /// How long a person stays shown as composing after their last word: a draft under way is
@@ -503,10 +502,10 @@ pub struct PresenceCtx {
     /// what a guarded widget paints follows permissions that moved with
     /// nothing in the tree marking it.
     paint_permissions: std::cell::Cell<u64>,
-    /// Each peer's last broadcast [`ViewSubset`](crate::view::ViewSubset) —
+    /// Each peer's last broadcast [`ViewSubset`](tilo_action_policy::presence::ViewSubset) —
     /// where they're looking, distinct from their cursor. Read by
     /// **attach/follow** to bind the local viewport to a chosen peer.
-    views: HashMap<MemberId, crate::view::ViewSubset>,
+    views: HashMap<MemberId, tilo_action_policy::presence::ViewSubset>,
     /// Identities this session publishes its own presence under — what a
     /// frame it sent comes back stamped with. Empty means "unknown", which
     /// suppresses nobody. See [`Self::set_own_identity`].
@@ -1387,12 +1386,16 @@ impl PresenceCtx {
     }
 
     /// Never merged, only replaced, so a peer's entry is always exactly what they last published.
-    pub fn set_peer_view(&mut self, user: MemberId, view: crate::view::ViewSubset) {
+    pub fn set_peer_view(
+        &mut self,
+        user: MemberId,
+        view: tilo_action_policy::presence::ViewSubset,
+    ) {
         self.views.insert(user, view);
     }
 
     /// What **attach/follow** binds the local viewport to.
-    pub fn peer_view(&self, user: &MemberId) -> Option<&crate::view::ViewSubset> {
+    pub fn peer_view(&self, user: &MemberId) -> Option<&tilo_action_policy::presence::ViewSubset> {
         self.views.get(user)
     }
 
@@ -2716,7 +2719,7 @@ mod own_identity_tests {
             // as a reason to move the viewport.
             {
                 let mut ctx = mine();
-                let subset = crate::view::ViewSubset {
+                let subset = tilo_action_policy::presence::ViewSubset {
                     scroll: vec![10.0],
                     open_resource: None,
                     viewport: crate::view::ViewRect {

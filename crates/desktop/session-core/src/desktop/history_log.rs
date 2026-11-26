@@ -139,7 +139,7 @@ mod tests {
             let author = directory.resolve("aa");
             assert_eq!(author.name, "Eager Dolphin");
             assert_eq!(author.rgb(), pink);
-            assert_eq!(ui::widget::avatar::initials_for_name(&author.name), "ED");
+            assert_eq!(ui::widget::avatar_face::initials_for_name(&author.name), "ED");
 
             let mut unknown = ui::AuthorDirectory::new();
             register_authors(&mut unknown, &authors, &|_| None);

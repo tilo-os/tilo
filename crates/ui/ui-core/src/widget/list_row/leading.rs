@@ -104,6 +104,6 @@ impl ListRow {
     #[cfg(feature = "local-daemons")]
     #[must_use]
     pub fn with_profile_photo(self, photo: &tilo_identity_client::ProfilePhoto) -> Self {
-        self.avatar_image(crate::widget::avatar::profile_image(photo))
+        self.avatar_image(crate::widget::avatar_face::profile_image(photo))
     }
 }

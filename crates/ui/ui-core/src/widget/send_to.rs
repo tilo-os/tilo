@@ -27,6 +27,7 @@ use crate::paint::PaintCtx;
 use crate::platform::PlatformConventions;
 use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::shared_selection::{SendToRequest, SharedSelection};
+pub use crate::shared_subject::subject_label;
 use crate::text_render::TextRenderer;
 use crate::text_selection::Selection;
 use crate::theme::Theme;
@@ -1801,66 +1802,6 @@ impl SendToBox {
     }
 }
 
-/// Whether `line` is the excerpt's own count of what it left out (`- and 3
-/// more`), which names no subject.
-fn is_overflow(line: &str) -> bool {
-    line.strip_prefix("- and ")
-        .and_then(|rest| rest.strip_suffix(" more"))
-        .is_some_and(|count| !count.is_empty() && count.chars().all(|c| c.is_ascii_digit()))
-}
-
-/// What a subject chip reads: the words selected — the first line of them, and
-/// how many more there are — else what the resource is called, else the item it
-/// is.
-#[must_use]
-pub fn subject_label(subject: &SharedSelection) -> String {
-    if let Some(excerpt) = subject.anchor.excerpt.as_deref() {
-        let lines: Vec<String> = excerpt
-            .lines()
-            .map(str::trim)
-            .filter(|line| !is_overflow(line))
-            .map(|line| {
-                line.strip_prefix("- ")
-                    .unwrap_or(line)
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .filter(|line| !line.is_empty())
-            .collect();
-        if let Some(first) = lines.first() {
-            // A list's items are what the selection says it holds; its excerpt
-            // lists as many as it could fit.
-            let more = subject
-                .anchor
-                .items
-                .len()
-                .max(lines.len())
-                .saturating_sub(1);
-            let mut label: String = first.chars().take(48).collect();
-            if more > 0 {
-                label.push_str(&format!(" +{more}"));
-            }
-            return label;
-        }
-    }
-    if let Some(label) = subject
-        .resource
-        .as_ref()
-        .map(|resource| resource.label.trim())
-        .filter(|label| !label.is_empty())
-    {
-        return label.to_owned();
-    }
-    subject
-        .anchor
-        .place
-        .as_ref()
-        .map(|place| place.item.clone())
-        .or_else(|| subject.anchor.items.first().map(|item| item.item.clone()))
-        .unwrap_or_default()
-}
-
 /// The glyph a subject chip leads with: the item's own where the app names one,
 /// else the app whose surface holds the resource the subject names.
 #[must_use]
@@ -1881,7 +1822,7 @@ fn subject_glyph(subject: &SharedSelection) -> crate::icons::Icon {
 /// agent's own face, a person's avatar in their colour, and a conversation's
 /// or the report destination's glyph.
 fn paint_recipient_mark(ctx: &mut PaintCtx<'_>, recipient: &Recipient, rect: Rect) {
-    let face = crate::widget::avatar::AvatarFace::new(&recipient.name, &recipient.id);
+    let face = crate::widget::avatar_face::AvatarFace::new(&recipient.name, &recipient.id);
     match recipient.kind {
         RecipientKind::NewAgent => {
             let accent = ctx.theme.tokens.colors.intent.accent_ink;

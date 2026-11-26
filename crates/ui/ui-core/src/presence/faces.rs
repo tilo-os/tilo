@@ -48,20 +48,6 @@ impl<'a> Face<'a> {
         Self::wearing(AvatarFace::member(name, member), colour)
     }
 
-    /// The face a search row states for its member ([`crate::search::RowFace`]): the same
-    /// face and colour, dimmed while they are away.
-    #[must_use]
-    pub fn of_row(row: &'a crate::search::RowFace) -> Self {
-        Self {
-            avatar: row.avatar(),
-            colour: row.colour,
-            dimmed: row.dimmed,
-            active: None,
-            scale: 1.0,
-            follows_you: false,
-        }
-    }
-
     /// Software, not a person: the agent's mark ([`AvatarFace::agent`]), for a stack that knows
     /// only whether its member is one.
     #[must_use]
@@ -505,7 +491,7 @@ mod tests {
                     let avatar = AvatarFace::new("Ben", "ben").presence(colour);
                     let fill = if dimmed { avatar.idle_on(bar) } else { avatar }.colour(&theme);
                     let ratio =
-                        contrast_ratio(crate::widget::avatar::initial_ink(fill, &theme), fill);
+                        contrast_ratio(crate::widget::avatar_face::initial_ink(fill, &theme), fill);
                     assert!(
                         ratio >= ON_FILL_MIN_CONTRAST,
                         "{label} {hue:?} dimmed={dimmed}: {ratio:.2}:1"
@@ -636,7 +622,7 @@ mod tests {
             ] {
                 let theme = crate::theme::Theme::dark();
                 let mut tr = crate::text_render::TextRenderer::new();
-                let style = crate::widget::avatar::initials_style(&theme, stack.side);
+                let style = crate::widget::avatar_face::initials_style(&theme, stack.side);
                 let (advance, _) = tr.measure_style("CC", None, &style);
                 let initials_right = stack.side / 2.0 + f64::from(advance) / 2.0;
                 // Where the next face's ground begins, from the step the stack stands by.

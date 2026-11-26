@@ -21,7 +21,7 @@ pub enum AgentIdentityStyle {
 ///
 /// `color` is the actor's stable identity colour. The tile wears it, and the mark is inked
 /// as a person's initials are on a face of the same colour
-/// ([`initial_ink`](crate::widget::avatar::initial_ink)): chosen through the active theme and
+/// ([`initial_ink`](crate::widget::avatar_face::initial_ink)): chosen through the active theme and
 /// tinted with the tile's hue, so an agent beside a person reads at the same weight in every
 /// theme instead of wearing a fixed black or white glyph. The geometry scales down to the 9px
 /// live-presence badge without relying on a font or a UTF symbol.
@@ -43,7 +43,7 @@ pub fn draw_agent_identity_mark(
     let ink = match style {
         AgentIdentityStyle::Solid => {
             scene.fill(Fill::NonZero, transform, color, None, &tile);
-            crate::widget::avatar::initial_ink(color, theme)
+            crate::widget::avatar_face::initial_ink(color, theme)
         }
         AgentIdentityStyle::Outline { alpha } => {
             let stroke_color = color.with_alpha_factor(alpha.clamp(0.0, 1.0));

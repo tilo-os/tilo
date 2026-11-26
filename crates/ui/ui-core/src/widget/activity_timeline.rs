@@ -79,8 +79,11 @@ fn wash(surface: Color, alpha: u8) -> Color {
     crate::tokens::colors::Colors::hairline_on(surface, alpha)
 }
 
-fn author_face(author: &HistoryAuthor, colour: Color) -> crate::widget::avatar::AvatarFace<'_> {
-    let face = crate::widget::avatar::AvatarFace::new(&author.name, &author.identity_short)
+fn author_face(
+    author: &HistoryAuthor,
+    colour: Color,
+) -> crate::widget::avatar_face::AvatarFace<'_> {
+    let face = crate::widget::avatar_face::AvatarFace::new(&author.name, &author.identity_short)
         .presence(colour);
     if author.relation == crate::widget::history::AuthorRelation::Software {
         face.agent()

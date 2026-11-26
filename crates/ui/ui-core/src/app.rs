@@ -1,6 +1,7 @@
 use crate::floating_surface::FloatingSurfaceWidgetExt as _;
-#[cfg(feature = "native")]
 use crate::gpu::RenderContext;
+#[cfg(feature = "native")]
+use crate::platform::resolve_app_id;
 #[cfg(feature = "native")]
 use crate::render_thread::RenderThreadHandle;
 #[cfg(feature = "native")]
@@ -851,7 +852,7 @@ impl AppConstructionInputs {
                 crate::floating_surface::FloatingSurfaceServiceClient::for_window,
             #[cfg(feature = "model")]
             startup_presence_scope: crate::presence::local_workspace_key,
-            surface_id: ConstructionValue::Lazy(crate::local_surface_id),
+            surface_id: ConstructionValue::Lazy(crate::platform::local_surface_id),
         }
     }
 
@@ -3015,32 +3016,6 @@ fn resolve_window_title(explicit: Option<&str>) -> String {
         app_id.as_deref(),
         binary.as_deref(),
     )
-}
-
-/// Public because it is half of a protocol: what a pointer published in this
-/// surface's content coordinates is scoped to
-/// ([`crate::presence::PointerSpace::Surface`]) — both ends must spell the
-/// surface the same way by calling this same function.
-pub fn local_surface_id() -> String {
-    let app_id = crate::process::environment().identity.app_id.clone();
-    let binary = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
-    resolve_app_id(app_id.as_deref(), binary.as_deref())
-}
-
-fn resolve_app_id(package_id: Option<&str>, binary: Option<&str>) -> String {
-    let non_blank = |s: &str| {
-        let t = s.trim();
-        (!t.is_empty()).then(|| t.to_string())
-    };
-    if let Some(id) = package_id.and_then(non_blank) {
-        return id;
-    }
-    if let Some(bin) = binary.and_then(non_blank) {
-        return bin;
-    }
-    "org.tilo.app".to_string()
 }
 
 #[cfg(feature = "native")]

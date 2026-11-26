@@ -34,7 +34,7 @@ pub trait PublishesPresence: Widget {
     /// those cannot describe (one spanning blocks, offsets in another text)
     /// answers itself.
     #[cfg(feature = "model")]
-    fn shared_selection(&self) -> Option<crate::shared_selection::SharedSelection> {
+    fn shared_selection(&self) -> Option<crate::shared_subject::SharedSelection> {
         None
     }
 

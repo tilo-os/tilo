@@ -243,7 +243,7 @@ fn draw_trailing(
             .faces
             .iter()
             .take(shown)
-            .map(crate::presence::Face::of_row)
+            .map(crate::search::RowFace::face)
             .collect();
         stack.paint(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),

@@ -417,7 +417,7 @@ impl ListRowFace<'_> {
                 Point::new(words, y),
                 None,
             );
-            crate::widget::avatar::AvatarFace::of(change.by).paint(ctx, face);
+            crate::widget::avatar_face::AvatarFace::of(change.by).paint(ctx, face);
         }
         if let Some(note) = self.note {
             let secondary_line = RowMetrics::line(ctx.text, &m.secondary);
@@ -891,7 +891,7 @@ impl ListRowFace<'_> {
         ctx.scene
             .fill(Fill::NonZero, ctx.transform, fill, None, &revealed);
         let ink = if action.destructive {
-            crate::widget::avatar::initial_ink(fill, theme)
+            crate::widget::avatar_face::initial_ink(fill, theme)
         } else {
             theme.text_primary
         };

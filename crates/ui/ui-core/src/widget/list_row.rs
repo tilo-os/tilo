@@ -31,7 +31,7 @@ use vello::kurbo::{Point, Rect};
 use vello::peniko::{Color, ImageData};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::widget::avatar::AvatarFace;
+use crate::widget::avatar_face::AvatarFace;
 use crate::widget::{
     ActionEmitter, ChipStyle, DrawChild, Element, Fact, MediaArt, MediaAspect, MediaSource,
     TaffyTreeExt, Tone, Widget,
