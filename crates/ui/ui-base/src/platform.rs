@@ -692,7 +692,7 @@ pub mod android {
 
     use winit::platform::android::activity::AndroidApp;
 
-    pub(crate) static APP: OnceLock<AndroidApp> = OnceLock::new();
+    pub static APP: OnceLock<AndroidApp> = OnceLock::new();
 
     /// The activity this process runs, once `android_main` has started.
     pub fn app() -> Option<&'static AndroidApp> {

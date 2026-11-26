@@ -15,7 +15,7 @@ use winit::window::{Window, WindowId};
 
 type MakeAdapter = Box<dyn Fn(&mut JNIEnv<'_>, &JObject<'_>) -> InjectingAdapter>;
 
-pub(crate) struct Adapter {
+pub struct Adapter {
     /// `None` only while one provider is swapped for the next.
     provider: Option<InjectingAdapter>,
     /// Whether `provider` has asked for its tree.
@@ -30,7 +30,7 @@ pub(crate) struct Adapter {
 impl Adapter {
     /// Inject the provider into `window`'s activity. Must run on the thread
     /// that later calls [`Self::update_if_active`].
-    pub(crate) fn new<T: From<accesskit_winit::Event> + Send + 'static>(
+    pub fn new<T: From<accesskit_winit::Event> + Send + 'static>(
         event_loop: &ActiveEventLoop,
         window: &Window,
         proxy: EventLoopProxy<T>,
@@ -82,7 +82,7 @@ impl Adapter {
         })
     }
 
-    pub(crate) fn update_if_active(&mut self, updater: impl FnOnce() -> TreeUpdate) {
+    pub fn update_if_active(&mut self, updater: impl FnOnce() -> TreeUpdate) {
         if self.service_enabled() {
             if let Some(adapter) = self.provider.as_mut() {
                 adapter.update_if_active(updater);
@@ -120,7 +120,7 @@ impl Adapter {
         clippy::unused_self,
         reason = "mirrors accesskit_winit::Adapter, which the runner drives identically"
     )]
-    pub(crate) fn process_event(&self, _window: &Window, _event: &winit::event::WindowEvent) {}
+    pub fn process_event(&self, _window: &Window, _event: &winit::event::WindowEvent) {}
 }
 
 fn decor_view<'local>(

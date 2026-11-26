@@ -80,7 +80,7 @@ pub mod a11y;
 pub mod a11y_child_route;
 pub mod a11y_walk;
 #[cfg(all(feature = "native", target_os = "android"))]
-mod accesskit_android_adapter;
+pub mod accesskit_android_adapter;
 pub mod accesskit_bridge;
 pub mod agent_identity;
 pub mod animation;
