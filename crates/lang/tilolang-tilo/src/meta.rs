@@ -176,8 +176,8 @@ pub trait MetaExt {
     fn resource_type(&self) -> String;
 
     /// The kinds the package's own records are of, as its signed manifest declares them: each
-    /// root's, the kind the workspace keeps a record of the app's under where it keeps one apart
-    /// (Mail's mailbox, Chat's drafts), and each person's own state of it. An app reads and acts
+    /// root's, the kind of each of its sealed records (Mail's mailbox, the vault), and each
+    /// person's own state of it. An app reads and acts
     /// in its own node only within the kinds it declares, so a record it keeps of a kind left out
     /// would be refused to it.
     fn declared_kinds(&self) -> Vec<String>;
@@ -330,9 +330,16 @@ impl MetaExt for Meta {
                 .find(|declared| declared.id == *id)
                 .map(|declared| self.kind_of(&declared.name))
         });
-        let kept_apart = tilo_action_policy::roles::protected_kinds_of(&self.app)
+        // Its sealed records: the package's own, and those the system keeps for it at a fixed id.
+        let kept_apart = collab_types::sealed_kind(&self.app, "")
             .into_iter()
-            .map(str::to_owned);
+            .chain(
+                collab_types::WORKSPACE_DOCUMENTS
+                    .iter()
+                    .filter(|kept| kept.app == self.app)
+                    .filter_map(|kept| collab_types::sealed_kind(&self.app, kept.fixed?)),
+            )
+            .map(std::borrow::Cow::into_owned);
         for kind in roots
             .chain(kept_apart)
             .chain([tilolang::PERSONAL_RESOURCE_TYPE.to_owned()])

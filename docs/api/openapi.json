@@ -52936,8 +52936,7 @@
               "in_reply_to",
               "references",
               "conversation",
-              "invitation",
-              "set_aside"
+              "invitation"
             ],
             "type": "string"
           },

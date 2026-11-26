@@ -2,9 +2,9 @@
 //! grants, delegations and revocations as the workspace document records them.
 use super::facades::{PeerGovernance, PeerGovernanceMut};
 use super::{
-    BTreeMap, BTreeSet, DeviceCert, DeviceRow, Grant, GrantId, Grantee, Member, MemberAccess,
-    MemberId, MemberList, MemberListAccess, MembershipError, Person, ROOT, ReadDoc, RevocationList,
-    Role, SystemTime, Transactable, err, keeping_device_keys_of, now_ns, person_of, workspace,
+    BTreeMap, BTreeSet, DeviceCert, DeviceRow, Grant, GrantId, Member, MemberAccess, MemberId,
+    MemberList, MemberListAccess, MembershipError, Person, ROOT, ReadDoc, RevocationList, Role,
+    SystemTime, Transactable, err, keeping_device_keys_of, now_ns, person_of, workspace,
     workspace_map,
 };
 use crate::join::WorkspaceId;
@@ -1835,67 +1835,6 @@ impl PeerGovernanceMut<'_> {
             doc.delete(&peers, named.as_str()).map_err(err)?;
         }
         self.peer.write_governance(doc, &before, key, now)
-    }
-    /// Rewrite each administrator's grant still in the shape workspaces held
-    /// before [`tilo_action_policy::roles::administrator_grant`] (on the
-    /// workspace's resource, where the Editor's own Deny outranked it) to that
-    /// grant, keeping its id and giver. A device runs it before it publishes
-    /// governance, so a workspace's next governance change carries its
-    /// administrators' authority. Whether the workspace changed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if a grant needs rewriting and `key`'s device may not
-    /// change it, or governance cannot be updated.
-    pub fn reconcile_administrator_grants(
-        self,
-        key: &dyn DeviceSigner,
-        now: SystemTime,
-    ) -> Result<bool, String> {
-        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
-            return Ok(false);
-        };
-        let workspace = self.peer.core.workspace.as_str();
-        let grants = &doc.workspace_policy(workspace).grants;
-        let mut rewritten = grants
-            .iter()
-            .filter(|grant| {
-                tilo_action_policy::roles::is_legacy_administrator_grant(workspace, grant)
-            })
-            .filter_map(|grant| match &grant.grantee {
-                Grantee::Member(tilo_action_policy::MemberId::Person(person)) => {
-                    Some(tilo_action_policy::roles::administrator_grant(
-                        workspace,
-                        person.as_str(),
-                        grant.granted_by.clone(),
-                    ))
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        // Every administrator moderates the workspace too.
-        for grant in grants {
-            if let Some(person) = grant.grantee.person_id()
-                && grant.id == tilo_action_policy::roles::administrator_grant_id(person)
-                && grant.answer == tilo_action_policy::Answer::Allow
-            {
-                let moderation_id =
-                    tilo_action_policy::roles::administrator_moderation_grant_id(person);
-                if !grants.iter().any(|held| held.id == moderation_id) {
-                    rewritten.push(tilo_action_policy::roles::administrator_moderation_grant(
-                        workspace,
-                        person,
-                        grant.granted_by.clone(),
-                    ));
-                }
-            }
-        }
-        if rewritten.is_empty() {
-            return Ok(false);
-        }
-        self.peer
-            .governance_mut()
-            .put_member_grants(&rewritten, key, now)
     }
     /// Remove grants a member's device decided to take back, by id.
     /// Memberships are removed through member governance.

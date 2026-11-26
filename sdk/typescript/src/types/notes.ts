@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.notes@c3b7e2edd8181bfe";
+export const SURFACE = "so.tilo.notes@e6fada14e24a45ce";
 
 /** The arguments of `edit-block`. */
 export interface EditBlockArgs {
@@ -315,7 +315,6 @@ export function note(ws: tilo.Workspace, path: string): Note {
 /** Notebook — `tl.so.tilo.notes.Notebook`. */
 export interface Notebook extends tilo.Resource {
   tmqqtkeb: Array<tilo.Entry<Note>>;  // notes
-  qgq6mcy7: Array<tilo.Entry<Note>>;  // set_aside
   dq2mnb22: Array<tilo.Entry<Tag>>;  // tags
   /** Starts a note titled `title` and saying `body` (Markdown) when the caller knows them already. Started from the notebook both are empty: what is typed first names it. It stands under `parent` (at the top of the tree when none) and — where a caller names the note it belongs after (`after`) — at that place among the notes there; without one it comes after the notes already under `parent`, never at the foot of a tree it does not stand in. */
   new_note(args?: {

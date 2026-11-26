@@ -6,7 +6,9 @@ use ui::tilo_resource::{
 };
 
 pub const MAX_REMEMBERED: usize = 10_000;
-pub(crate) use ui::tilo_actions::policy::roles::WORKSPACE_TERMINAL_HISTORY_DOCUMENT as DOCUMENT;
+/// The history's record, named by its kind, which binds the id to it: the kind is sealed
+/// (`[resources] sealed`), so the record has keys of its own from its first write.
+pub(crate) const DOCUMENT: &str = "derived:terminal.history@tab:0000000000000000";
 #[cfg(feature = "desktop")]
 pub(crate) type HistoryRecord = ui::framework::WorkspaceResource<CommandHistory>;
 

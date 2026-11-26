@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn a_record_beside_the_window_whose_history_never_arrives_is_on_its_way() {
         const APP: &str = "so.tilo.terminal";
-        const RECORD: &str = "uuid:8038f29a-fb3e-400a-adc5-f411efb63325";
+        const RECORD: &str = "derived:terminal.history@tab:0000000000000000";
         let (opened, answer) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let workspace = uuid::Uuid::new_v4();

@@ -72,6 +72,9 @@ pub struct FleetEntry {
     pub windows_personal: bool,
     /// Whether each window shows a document of its own rather than the workspace's.
     pub window_documents: bool,
+    /// The kinds of record kept under keys of their own from the first write (a root type's
+    /// `sealed: true`, a native manifest's `[resources] sealed`).
+    pub sealed: Vec<String>,
     /// The compiled surface its package ships, as generated from the same metadata.
     pub surface: String,
     /// The ids it was published under before.
@@ -183,6 +186,12 @@ pub fn fleet(dir: &Path, search: &[PathBuf]) -> Result<Option<FleetEntry>, Strin
         window_kind: meta.resource_type(),
         windows_personal: meta.windows_are_personal(),
         window_documents: meta.windows_hold_documents(),
+        // The root's record is the package's own, kept as the package's kind.
+        sealed: if meta.types.iter().any(|ty| ty.sealed) {
+            vec![format!("tl.{}", meta.app)]
+        } else {
+            Vec::new()
+        },
         surface: String::from_utf8_lossy(&surface).into_owned(),
         previously: meta.previously.clone(),
     }))
@@ -396,6 +405,8 @@ pub struct FleetFile {
     pub window_documents: bool,
     /// The kinds of record each member of a workspace keeps one of (`[resources] private`).
     pub private: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sealed: Vec<String>,
     pub previously: Vec<String>,
     /// Whether search and the Store offer the app; a service publishes a surface without it.
     pub listed: bool,
@@ -425,6 +436,7 @@ impl FleetFile {
             windows_personal: entry.windows_personal,
             window_documents: entry.window_documents,
             private: Vec::new(),
+            sealed: entry.sealed,
             previously: entry.previously,
             listed: true,
             surface: Some(entry.surface),
@@ -637,10 +649,13 @@ fn native_fleet(dir: &Path) -> Result<Option<NativeEntry>, String> {
         .and_then(toml::Value::as_str)
         .unwrap_or("gui");
     let resources = manifest.get("resources").and_then(toml::Value::as_table);
-    let private = resources
-        .and_then(|resources| resources.get("private"))
-        .map(strings)
-        .unwrap_or_default();
+    let declared = |key| {
+        resources
+            .and_then(|resources| resources.get(key))
+            .map(strings)
+            .unwrap_or_default()
+    };
+    let private = declared("private");
     let resource_types = document_types(dir, &manifest, &id, &name, &surface);
     let tagline = native_tagline(dir);
     Ok(Some(NativeEntry {
@@ -659,6 +674,7 @@ fn native_fleet(dir: &Path) -> Result<Option<NativeEntry>, String> {
             window_kind: first_kind(&surface),
             windows_personal: declares(dir, PERSONAL_WINDOWS),
             window_documents: declares(dir, DOCUMENT_WINDOWS),
+            sealed: declared("sealed"),
             surface,
             previously,
         },
@@ -1010,6 +1026,31 @@ mod tests {
     }
 
     #[test]
+    fn a_sealed_root_seals_the_packages_record_and_no_other_type_is_sealed() {
+        let sealed = |ty: &str| {
+            let dir = package(&format!(
+                "app t.vault \"Vault\"\n\ntype Entry {{\n    name: Text\n}}\n\n\
+                 type Vault{} {{\n    entries: Collection<Entry>\n}}\n\nroot vault: Vault\n\n\
+                 default view vault for Vault\n\nview vault(v: Vault) {{\n    text(\"Vault\")\n}}\n",
+                ty
+            ));
+            fleet(dir.path(), &[]).map(|entry| entry.expect("an app").sealed)
+        };
+        assert_eq!(
+            sealed(" (sealed: true)").expect("it compiles"),
+            ["tl.t.vault"]
+        );
+        assert!(sealed("").expect("it compiles").is_empty());
+        let dir = package(
+            "app t.vault \"Vault\"\n\ntype Entry (sealed: true) {\n    name: Text\n}\n\n\
+             type Vault {\n    entries: Collection<Entry>\n}\n\nroot vault: Vault\n\n\
+             default view vault for Vault\n\nview vault(v: Vault) {\n    text(\"Vault\")\n}\n",
+        );
+        let refused = fleet(dir.path(), &[]).expect_err("an item's type is no record's");
+        assert!(refused.contains("E150"), "{refused}");
+    }
+
+    #[test]
     fn the_fleet_reads_a_packages_own_declaration() {
         let dir = package(
             "app t.notes \"Notes\" (\n    icon: .file_text,\n    category: .office,\n    \
@@ -1205,7 +1246,7 @@ mod tests {
             "[package]\nid = \"t.leaf\"\nname = \"Leaf\"\ncategory = \"Office\"\n\
              platforms = [\"linux\"]\n\n[package.names]\nen = \"Leaf\"\nde = \"Blatt\"\n\n\
              [providers]\next = [\"leaf\"]\n\n[resources]\nkinds = [\"leaf.note\", \"other.thing\", \"leaf.history\"]\n\
-             private = [\"leaf.history\"]\n\n\
+             private = [\"leaf.history\"]\nsealed = [\"leaf.note\"]\n\n\
              [[offers]]\nresource = \"leaf.note\"\naction = \"new\"\nlabel = \"New leaf\"\nasks = \"title\"\n\n\
              [[offers]]\nresource = \"leaf.note\"\naction = \"note\"\nlabel = \"Note it\"\n\
              asks = [{ name = \"words\", type = \"text\", description = \"What to write\" }]\n",
@@ -1251,6 +1292,7 @@ mod tests {
             [("leaf.note".to_owned(), "Note".to_owned())]
         );
         assert_eq!(entry.private, ["leaf.history"]);
+        assert_eq!(entry.entry.sealed, ["leaf.note"]);
         assert!(entry.listed);
         assert!(entry.entry.window_documents);
         assert!(!entry.entry.windows_personal);

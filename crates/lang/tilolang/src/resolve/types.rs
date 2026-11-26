@@ -186,6 +186,7 @@ impl Resolver<'_> {
                 label: t.label.clone(),
                 noun: t.noun.clone(),
                 readers: t.readers.as_ref().map(|r| r.rule.clone()),
+                sealed: t.sealed,
                 live: None,
             });
         }

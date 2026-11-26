@@ -1,7 +1,7 @@
 //! The workspace's vault, as the device this service runs on holds it.
 //!
 //! A workspace keeps one vault: Passwords' vault document
-//! ([`roles::WORKSPACE_VAULT_DOCUMENT`]). Its entries are sealed under the document's own keys,
+//! ([`VAULT_RECORD`]). Its entries are sealed under the document's own keys,
 //! which every device the workspace's policy lets read Passwords holds: a member's laptop, a
 //! page, and a server, which is a device that stores more and holds them through the grant its
 //! administrator membership is. Whatever this service needs a secret for (a mail account it signs
@@ -28,7 +28,7 @@ use super::vault_entries::{WorkspaceVaultEntries, uses_field};
 use accounts::vault_items::{UseRecord, VaultChange, VaultItems};
 use accounts::{SecretId, SecretItem};
 use tilo_action_policy::Acting;
-use tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT;
+use tilo_actions::remote::person_vault::VAULT_RECORD;
 use tilo_actions::remote::{CallAllowed, InvokeRequest, SignedCall};
 use tilo_resource::{AppNamed, Id, Replica, Resource as _};
 use zeroize::Zeroizing;
@@ -101,7 +101,7 @@ fn route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRoute {
     tilo_peer_state::document_frame::DocumentRoute {
         app_id: APP.to_owned(),
         cluster_id: workspace.to_owned(),
-        document: WORKSPACE_VAULT_DOCUMENT.to_owned(),
+        document: VAULT_RECORD.to_owned(),
     }
 }
 
@@ -144,7 +144,7 @@ impl Workspaces {
         if let Err(reason) = state.check_document_read(
             self.inner.host.cert.device_public_key,
             APP,
-            WORKSPACE_VAULT_DOCUMENT,
+            VAULT_RECORD,
             tilo_clock::wall(),
         ) {
             tracing::debug!(%workspace, %reason, "the policy does not let this device read the vault");
@@ -264,20 +264,15 @@ impl Workspaces {
     async fn vault_document(&self, workspace: &str) -> Result<Option<Vec<u8>>, String> {
         if self.holds_own_copy(workspace).await {
             return self
-                .resource_document(workspace, APP, WORKSPACE_VAULT_DOCUMENT)
+                .resource_document(workspace, APP, VAULT_RECORD)
                 .await
                 .map_err(|error| error.to_string());
         }
-        if !self.holds_resource(workspace, APP, WORKSPACE_VAULT_DOCUMENT) {
+        if !self.holds_resource(workspace, APP, VAULT_RECORD) {
             return Ok(None);
         }
         let read = self
-            .own_read(
-                workspace,
-                (APP, WORKSPACE_VAULT_DOCUMENT),
-                &[],
-                MAX_VAULT_BYTES,
-            )
+            .own_read(workspace, (APP, VAULT_RECORD), &[], MAX_VAULT_BYTES)
             .await?;
         match read {
             tilo_peer_state::workspace_documents::DocumentRead::Whole { bytes, .. }
@@ -347,7 +342,7 @@ impl Workspaces {
         let keys = &opened.keys;
         Box::pin(self.author_record(
             &opened.workspace,
-            (APP, WorkspaceVaultEntries::KIND, WORKSPACE_VAULT_DOCUMENT),
+            (APP, WorkspaceVaultEntries::KIND, VAULT_RECORD),
             |doc| {
                 let mut replica = in_passwords(Replica::from_doc(std::mem::take(doc)))
                     .as_invoker_acting(acting.clone());
@@ -482,7 +477,7 @@ impl Workspaces {
         (app, record): (&str, &str),
         document: &mut Vec<u8>,
     ) -> Result<(), String> {
-        if (app, record) != (APP, WORKSPACE_VAULT_DOCUMENT) {
+        if (app, record) != (APP, VAULT_RECORD) {
             return Ok(());
         }
         let keys = |workspace: &str, create: bool| {
@@ -947,7 +942,7 @@ pub(crate) fn may_read_vault(
     let acting = by.acting();
     let mut granted = acting.handed_preset(workspace);
     granted.extend(by.granted());
-    let node = collab_types::document_node(workspace, APP, WORKSPACE_VAULT_DOCUMENT);
+    let node = collab_types::document_node(workspace, APP, VAULT_RECORD);
     let cx = tilo_action_policy::Context::at_time(tilo_clock::wall());
     tilo_action_policy::Authority::of_acting(acting, policy, &granted)
         .decide(&node, tilo_action_policy::ActionKind::Read, &cx)

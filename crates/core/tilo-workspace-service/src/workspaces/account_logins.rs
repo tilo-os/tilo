@@ -161,7 +161,7 @@ impl Workspaces {
             &collab_types::document_node(
                 workspace,
                 super::vault::APP,
-                tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
+                tilo_actions::remote::person_vault::VAULT_RECORD,
             ),
             MAY_NOT_USE_PASSWORDS,
         )?;

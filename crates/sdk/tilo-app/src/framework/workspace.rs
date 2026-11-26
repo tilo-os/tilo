@@ -346,7 +346,7 @@ impl Core {
     fn independently_sealed(&self) -> bool {
         use tilo_actions::policy::roles;
         let (app, route) = (self.owner, self.id().route());
-        roles::requires_document_keys(app, route)
+        collab_types::sealed_kind(app, route).is_some()
             || roles::has_member_reader(app, self.kind)
             || roles::is_workspace_moderation(app, route)
     }

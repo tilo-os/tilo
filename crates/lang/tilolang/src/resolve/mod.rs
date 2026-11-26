@@ -558,6 +558,7 @@ impl Env {
                 label: t.label.clone(),
                 noun: t.noun.clone(),
                 readers: t.readers.clone(),
+                sealed: t.sealed,
                 live: t.live.clone(),
             });
         }
@@ -3303,6 +3304,19 @@ impl Resolver<'_> {
                 })
                 .unwrap_or_default();
             self.err("E018", span, format!("the root `{0}` has no default view, which is what opening it shows; add `default view <view> for {0}`", key.name));
+        }
+        // Keys of its own are the record's: the root's, which the package keeps in one record.
+        for item in &module.items {
+            if let Item::Type(t) = item
+                && t.sealed
+                && !self.env.roots.iter().any(|root| root.name == t.name.name)
+            {
+                let words = format!(
+                    "`{}` is no root, and only the root's record is sealed; seal the type `root` names",
+                    t.name.name
+                );
+                self.err("E150", t.name.span, words);
+            }
         }
         self.window_decls(module);
     }

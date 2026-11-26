@@ -227,6 +227,21 @@ pub fn every_private_kind() -> impl Iterator<Item = (&'static str, &'static str)
     generated::PRIVATE_KINDS.iter().copied()
 }
 
+/// Whether records of `kind` are kept under keys of their own from their first write, as the
+/// app that declares the kind says (`[resources] sealed`, a tilolang root's `sealed: true`).
+#[must_use]
+pub fn is_sealed(kind: &str) -> bool {
+    generated::SEALED_KINDS
+        .iter()
+        .any(|(_, declared)| *declared == kind)
+}
+
+/// The kind of `package_id`'s own record, which a tilolang package keeps its root in.
+#[must_use]
+pub fn package_kind(package_id: &str) -> String {
+    format!("tl.{}", canonical(package_id))
+}
+
 /// `package_id` as the fleet names it: a development build's `dev.tilo.` app is its `so.tilo.` one,
 /// and an id an app was published under before names that app.
 fn canonical(package_id: &str) -> std::borrow::Cow<'_, str> {

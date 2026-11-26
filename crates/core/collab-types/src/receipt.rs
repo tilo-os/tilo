@@ -625,10 +625,10 @@ pub fn written_node(document: &WrittenDocument<'_>) -> TreePath {
             published_resource(document.document)
         };
     let app = TreePath::workspace(document.workspace).app(document.app);
-    // A record the workspace keeps apart (the vault, a mailbox's copies) is decided at its kind,
+    // A sealed record (the vault, the mailbox) is decided at its kind,
     // as every reader of it decides it ([`crate::document_node`]), whether or not an app here
     // publishes a surface for it.
-    match tilo_action_policy::roles::protected_resource_kind(document.app, &resource) {
+    match crate::workspace_document::sealed_kind(document.app, &resource) {
         Some(kind) => app.kind(kind),
         None => app,
     }

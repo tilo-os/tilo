@@ -8,25 +8,8 @@ use crate::{
     Verdict,
 };
 
-/// The workspace vault's document id within Passwords.
-pub const WORKSPACE_VAULT_DOCUMENT: &str = "uuid:56daeee1-adbe-4b63-b0cc-5fd549e93077";
-/// The resource kind of [`WORKSPACE_VAULT_DOCUMENT`], which always uses independent document
-/// keys ([`protected_resource_kind`]).
-pub const WORKSPACE_VAULT_KIND: &str = "passwords.workspace-vault";
-/// The Mail workspace's shared sender trust.
-pub const WORKSPACE_MAIL_TRUST_DOCUMENT: &str = "uuid:9523105b-4fbb-4129-90b2-0d40b9f3758b";
-/// The Mail workspace's retained server messages.
-pub const WORKSPACE_MAIL_COPIES_DOCUMENT: &str = "uuid:600987c0-d575-42bf-8724-a12a9342ca63";
-
-/// The chain whose parts hold the workspace mailbox's message state.
-pub const WORKSPACE_MAIL_MESSAGES_DOCUMENT: &str =
-    "derived:mail-messages@derived:default@tab:0000000000000000";
-
 /// The workspace's unsent Messages drafts.
 pub const WORKSPACE_MESSAGE_DRAFTS_DOCUMENT: &str = "uuid:fe64cba3-45c6-4e34-a3ac-95b0038e889a";
-
-/// The workspace's unsent channel messages.
-pub const WORKSPACE_CHAT_DRAFTS_DOCUMENT: &str = "uuid:6cafe9f7-825f-4016-b040-a37578d3152f";
 
 /// The workspace's moderation reports and decisions, kept by Chat.
 pub const WORKSPACE_MODERATION_DOCUMENT: &str = "derived:tilo.moderation@tab:0000000000000000";
@@ -37,9 +20,6 @@ pub fn is_workspace_moderation(app: &str, document: &str) -> bool {
     matches!(app, tilo_app_id::apps::CHAT | "dev.tilo.chat")
         && document == WORKSPACE_MODERATION_DOCUMENT
 }
-
-/// The workspace's Terminal command history.
-pub const WORKSPACE_TERMINAL_HISTORY_DOCUMENT: &str = "uuid:8038f29a-fb3e-400a-adc5-f411efb63325";
 
 /// The workspace's Tube watch history.
 pub const WORKSPACE_TUBE_HISTORY_DOCUMENT: &str = "uuid:3bd2daf5-120b-469b-be38-d5203c58efb2";
@@ -190,70 +170,6 @@ pub(crate) fn lacks_private_record_owner_at(node: &TreePath) -> bool {
     node.id_at(Level::App)
         .zip(node.id_at(Level::Resource))
         .is_some_and(|(app, record)| lacks_private_record_owner(app, record))
-}
-
-/// The kinds of `app`'s records the workspace keeps apart ([`protected_resource_kind`]), each
-/// once: what the app declares it keeps, so it reaches its own records by the kinds it declares.
-#[must_use]
-pub fn protected_kinds_of(app: &str) -> Vec<&'static str> {
-    let mut kinds = Vec::new();
-    for document in [
-        "",
-        WORKSPACE_VAULT_DOCUMENT,
-        WORKSPACE_CHAT_DRAFTS_DOCUMENT,
-        WORKSPACE_MESSAGE_DRAFTS_DOCUMENT,
-        WORKSPACE_TERMINAL_HISTORY_DOCUMENT,
-        WORKSPACE_TUBE_HISTORY_DOCUMENT,
-        WORKSPACE_MAIL_COPIES_DOCUMENT,
-        WORKSPACE_MAIL_TRUST_DOCUMENT,
-        WORKSPACE_MAIL_MESSAGES_DOCUMENT,
-    ] {
-        if let Some(kind) = protected_resource_kind(app, document)
-            && !kinds.contains(&kind)
-        {
-            kinds.push(kind);
-        }
-    }
-    kinds
-}
-
-/// The resource kind of a record that always uses independent document keys.
-#[must_use]
-pub fn protected_resource_kind(app: &str, document: &str) -> Option<&'static str> {
-    match (app, document) {
-        (tilo_app_id::apps::PASSWORDS | "dev.tilo.passwords", WORKSPACE_VAULT_DOCUMENT) => {
-            Some(WORKSPACE_VAULT_KIND)
-        }
-        (tilo_app_id::apps::CHAT | "dev.tilo.chat", WORKSPACE_CHAT_DRAFTS_DOCUMENT) => {
-            Some("chat.drafts")
-        }
-        (tilo_app_id::apps::MESSAGES | "dev.tilo.messages", WORKSPACE_MESSAGE_DRAFTS_DOCUMENT) => {
-            Some("messages.drafts")
-        }
-        (
-            tilo_app_id::apps::TERMINAL | "dev.tilo.terminal",
-            WORKSPACE_TERMINAL_HISTORY_DOCUMENT,
-        ) => Some("terminal.history"),
-        ("so.tilo.tube" | "dev.tilo.tube", WORKSPACE_TUBE_HISTORY_DOCUMENT) => {
-            Some("tube.watch-history")
-        }
-        // The tilolang Mail keeps its record where the native Mail kept its mailbox; the native
-        // app's other documents keep their kinds, so its carrying migration still reads them.
-        ("so.tilo.mail" | "dev.tilo.mail", document) => match document {
-            "" => Some("tl.so.tilo.mail"),
-            WORKSPACE_MAIL_COPIES_DOCUMENT => Some("mail.copies"),
-            WORKSPACE_MAIL_TRUST_DOCUMENT => Some("mail.trusted-senders"),
-            WORKSPACE_MAIL_MESSAGES_DOCUMENT => Some("mail.messages"),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Whether the document needs independent keys from its first write.
-#[must_use]
-pub fn requires_document_keys(app: &str, document: &str) -> bool {
-    protected_resource_kind(app, document).is_some()
 }
 
 /// The kind id of the workspace's own resource. Its actions are the workspace's
@@ -449,11 +365,6 @@ pub fn administrator_grant_id(person: &str) -> GrantId {
 /// what they hold ([`crate::Refusal::AboveActorGrant`]). A ban or a live
 /// restriction on them stops their governance with the rest of their
 /// changes ([`crate::WorkspacePolicy::check_action`]).
-///
-/// Workspaces written before the grant took this node held it on
-/// [`workspace_resource`], where the Editor's own Deny at the same node outranked
-/// it; [`is_legacy_administrator_grant`] finds those so a member's governance
-/// operation rewrites them.
 #[must_use]
 pub fn administrator_grant(workspace: &str, person: &str, granted_by: Grantee) -> Grant {
     Grant {
@@ -516,19 +427,6 @@ pub fn administrator_named(id: &GrantId) -> Option<&str> {
 #[must_use]
 pub fn administrators_node(workspace: &str) -> TreePath {
     governance_action(workspace, "administer")
-}
-
-/// Whether `grant` is an administrator's grant of `workspace` in the shape workspaces
-/// held before [`administrator_grant`]: the owner's lasting Allow on the
-/// workspace's resource, where it decides nothing an Editor's role does not
-/// already deny. Anything else under the id (a Deny, an expiring grant) is
-/// not one, so rewriting never widens it.
-#[must_use]
-pub fn is_legacy_administrator_grant(workspace: &str, grant: &Grant) -> bool {
-    matches!(&grant.grantee, Grantee::Member(crate::MemberId::Person(person)) if grant.id == administrator_grant_id(person))
-        && grant.node == workspace_resource(workspace)
-        && grant.answer == Answer::Allow
-        && grant.lifetime == Lifetime::UntilRevoked
 }
 
 /// Where comments live in a workspace, at any depth.

@@ -5,8 +5,8 @@
 //! other administrators, and unmade by the owner alone.
 
 use tilo_action_policy::{
-    Acting, ActionKind, Answer, Authority, Change, Context, Grant, Grantee, KindSet, Lifetime,
-    Refusal, Role, TreePath, WorkspacePolicy,
+    Acting, ActionKind, Answer, Authority, Change, Context, Grant, Grantee, KindSet, Refusal, Role,
+    TreePath, WorkspacePolicy,
     roles::{self, governance},
 };
 
@@ -210,25 +210,6 @@ tilo_test_env::scenario! {
             Answer::Allow,
             Grantee::person(OWNER),
         );
-        assert!(roles::is_legacy_administrator_grant("r", &legacy));
-        assert!(!roles::is_legacy_administrator_grant(
-            "r",
-            &roles::administrator_grant("r", CAROL, Grantee::person(OWNER))
-        ));
-        let denied = Grant {
-            answer: Answer::Deny,
-            ..legacy.clone()
-        };
-        let expiring = Grant {
-            lifetime: Lifetime::Until(NOW + 1),
-            ..legacy.clone()
-        };
-        for other in [denied, expiring] {
-            assert!(
-                !roles::is_legacy_administrator_grant("r", &other),
-                "rewriting {other:?} would widen it"
-            );
-        }
         workspace.grants.push(legacy);
         let carol = Authority::person(workspace.party(CAROL));
         assert!(matches!(

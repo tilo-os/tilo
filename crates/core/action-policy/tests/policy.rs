@@ -39,21 +39,19 @@ fn answer(grants: &[Grant], node: &TreePath, kind: ActionKind) -> Answer {
     decide(grants, &[alice()], node, kind, &cx()).answer
 }
 
+/// The workspace vault's record.
+const VAULT: &str = "uuid:56daeee1-adbe-4b63-b0cc-5fd549e93077";
+
 /// The workspace's mail and vault resources, at the nodes every reader decides them on.
 fn workspace_mail_and_vault() -> Vec<TreePath> {
     let mail = TreePath::workspace("r").app("so.tilo.mail");
     vec![
         mail.clone().resource(""),
-        mail.clone().kind("mail.mailbox").resource(""),
-        mail.clone()
-            .kind("mail.copies")
-            .resource(roles::WORKSPACE_MAIL_COPIES_DOCUMENT),
-        mail.kind("mail.trusted-senders")
-            .resource(roles::WORKSPACE_MAIL_TRUST_DOCUMENT),
+        mail.kind("tl.so.tilo.mail").resource(""),
         TreePath::workspace("r")
             .app(tilo_app_id::apps::PASSWORDS)
             .kind("passwords.workspace-vault")
-            .resource(roles::WORKSPACE_VAULT_DOCUMENT),
+            .resource(VAULT),
     ]
 }
 
@@ -92,7 +90,7 @@ fn members_reach_the_workspace_mail_and_vault_through_their_role() {
 fn an_owner_closes_the_workspace_vault_and_shares_it_with_one_member() {
     let vault = TreePath::workspace("r")
         .app(tilo_app_id::apps::PASSWORDS)
-        .resource(roles::WORKSPACE_VAULT_DOCUMENT);
+        .resource(VAULT);
     let mut grants = roles::workspace_role_grants("r", &alice());
     grants.push(Grant::new(
         "vault-closed",
@@ -169,7 +167,7 @@ fn an_agent_reaches_workspace_mail_through_a_grant_scoped_to_mail() {
             &[key],
             &TreePath::workspace("r")
                 .app(tilo_app_id::apps::PASSWORDS)
-                .resource(roles::WORKSPACE_VAULT_DOCUMENT),
+                .resource(VAULT),
             ActionKind::Read,
             &cx()
         )

@@ -542,7 +542,7 @@ fn the_workspaces_denial_of_an_agent_reaches_it_for_every_person() {
     const OWNER: &str = "0be7";
     let vault = TreePath::workspace(WORKSPACE)
         .app("so.tilo.passwords")
-        .kind(tilo_action_policy::roles::WORKSPACE_VAULT_KIND);
+        .kind("passwords.workspace-vault");
     let mail = TreePath::workspace(WORKSPACE)
         .app("so.tilo.mail")
         .kind("mail.mailbox");

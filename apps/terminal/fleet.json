@@ -290,6 +290,9 @@
   "windows_personal": false,
   "window_documents": true,
   "private": [],
+  "sealed": [
+    "terminal.history"
+  ],
   "previously": [],
   "listed": true,
   "surface_file": "surface.json"

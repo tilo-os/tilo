@@ -64,6 +64,8 @@ struct Entry {
     window_documents: bool,
     #[serde(default)]
     private: Vec<String>,
+    #[serde(default)]
+    sealed: Vec<String>,
     previously: Vec<String>,
     /// Whether search and the Store offer it.
     listed: bool,
@@ -209,7 +211,20 @@ fn render(apps: &[App], sections: Option<&str>) -> String {
     out.push_str(&previous(&listed));
     out.push_str(&own_windows(&listed));
     out.push_str(&document_windows(&listed));
-    out.push_str(&private_kinds(&listed));
+    out.push_str(&kinds_by_app(
+        listed.iter().copied(),
+        "/// `(app, kind)`: the kinds of record of which each member of a workspace keeps one\n\
+         /// that only they read and change (`[resources] private`).\n\
+         pub(super) const PRIVATE_KINDS",
+        |app| &app.entry.private,
+    ));
+    out.push_str(&kinds_by_app(
+        apps,
+        "/// `(app, kind)`: the kinds of record kept under keys of their own from the first write\n\
+         /// (`[resources] sealed`, a tilolang root type's `sealed: true`).\n\
+         pub(super) const SEALED_KINDS",
+        |app| &app.entry.sealed,
+    ));
     out.push_str(&surfaces(apps, sections));
     out.push_str(&surface_names(apps, sections.is_some()));
     out.push_str("pub(super) const APPS: &[FleetApp] = &[\n");
@@ -269,15 +284,15 @@ fn document_windows(apps: &[&App]) -> String {
     out
 }
 
-/// `(app, kind)` of the kinds of record each member keeps one of.
-fn private_kinds(apps: &[&App]) -> String {
-    let mut out = String::from(
-        "/// `(app, kind)`: the kinds of record of which each member of a workspace keeps one\n\
-         /// that only they read and change (`[resources] private`).\n\
-         pub(super) const PRIVATE_KINDS: &[(&str, &str)] = &[\n",
-    );
+/// `(app, kind)` of the kinds of record each app declares in `kinds`, as the constant `head`.
+fn kinds_by_app<'a>(
+    apps: impl IntoIterator<Item = &'a App>,
+    head: &str,
+    kinds: impl Fn(&App) -> &Vec<String>,
+) -> String {
+    let mut out = format!("{head}: &[(&str, &str)] = &[\n");
     for app in apps {
-        for kind in &app.entry.private {
+        for kind in kinds(app) {
             line(
                 &mut out,
                 &format!("    ({}, {}),", quoted(&app.entry.id), quoted(kind)),

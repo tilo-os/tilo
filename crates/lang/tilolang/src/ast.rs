@@ -187,6 +187,8 @@ pub struct TypeDecl {
     pub noun: Option<String>,
     /// `(readers: author)`: who reads a record of the type, when not every member.
     pub readers: Option<ReadersDecl>,
+    /// `(sealed: true)`: a root type whose record has keys of its own from its first write.
+    pub sealed: bool,
     pub fields: Vec<FieldDecl>,
     pub search: Option<SearchBlock>,
     /// `live when state == .playing`: when a resource of the type is live, a predicate over its own

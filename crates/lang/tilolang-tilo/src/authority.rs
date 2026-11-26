@@ -337,7 +337,7 @@ impl Authority for TiloAuthority {
                 None => node.resource(target.document.clone()),
             },
             None if access.is_some()
-                && tilo_action_policy::roles::requires_document_keys(action.app.as_str(), "") =>
+                && collab_types::sealed_kind(action.app.as_str(), "").is_some() =>
             {
                 node.resource("")
             }
@@ -739,9 +739,7 @@ mod tests {
             );
             authority
         };
-        let one = with(vec![deny(&format!(
-            "outside:{APP}:smtp.send"
-        ))]);
+        let one = with(vec![deny(&format!("outside:{APP}:smtp.send"))]);
         assert!(!one.may_reach(APP, "smtp.send"), "the denied one stops");
         assert!(
             one.may_reach(APP, "imap.search"),

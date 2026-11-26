@@ -2607,6 +2607,18 @@ impl Store {
         {
             return Err(Refusal::Unplaced);
         }
+        // A record whose id is bound to a sealed kind is kept as no other: the kind a write names
+        // for it never takes it out from under its own keys (`collab_types::sealed_kind`).
+        if let Some((id, bound)) = touched.resources.iter().find_map(|(id, touch)| {
+            let bound = collab_types::bound_kind(id)?;
+            (touch.kind.as_deref().is_some_and(|kind| kind != bound)
+                && collab_types::is_sealed_kind(bound))
+            .then_some((id, bound))
+        }) {
+            return Err(Refusal::Undeclared(format!(
+                "`{id}` is a record of the sealed `{bound}` and is kept as no other kind"
+            )));
+        }
         // A store that declares no type has nothing to judge a change by: it admits none, so a
         // writer whose surface was never named here is refused rather than taken on trust.
         if undeclared {

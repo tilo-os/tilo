@@ -417,6 +417,10 @@ pub struct TypeMeta {
     /// `(readers: author)`: who reads a record of the type, when not every member.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub readers: Option<ReaderRule>,
+    /// `(sealed: true)`: the root type whose record has keys of its own from its first write,
+    /// so only the members its rules let read it ever hold them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sealed: bool,
     /// `live when ...`: when an instance is a live activity, and the view the shell shows of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live: Option<LiveMeta>,

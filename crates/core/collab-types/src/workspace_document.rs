@@ -11,115 +11,81 @@ pub struct WorkspaceDocument {
     pub app: &'static str,
     /// Its resource kind.
     pub kind: &'static str,
+    /// The id it is kept under, where that is not the one its kind derives
+    /// ([`workspace_document_id`]). Either way the id is bound to the kind ([`bound_kind`]).
+    pub fixed: Option<&'static str>,
+    /// Whether it is kept under keys of its own from its first write ([`is_sealed_kind`]).
+    pub sealed: bool,
+}
+
+impl WorkspaceDocument {
+    const fn kept(app: &'static str, kind: &'static str) -> Self {
+        Self {
+            app,
+            kind,
+            fixed: None,
+            sealed: false,
+        }
+    }
 }
 
 /// The records apps keep for their whole workspace.
 pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
     // What a workspace's VM session keeps for its next one, its settings by name: the one
     // record its device writes besides its window's (`tilo-workspace-service::environment`).
-    WorkspaceDocument {
-        app: "so.tilo.browser",
-        kind: "browser.environment",
-    },
+    WorkspaceDocument::kept("so.tilo.browser", "browser.environment"),
     // The workspace's own emoji, which any view draws for `:name:`
     // (`tilo-workspace-emoji`).
-    WorkspaceDocument {
-        app: "so.tilo.chat",
-        kind: "tilo.workspace.emoji",
-    },
+    WorkspaceDocument::kept("so.tilo.chat", "tilo.workspace.emoji"),
     // Which vault items the workspace's Linux machine hands the programs it
     // starts, and in which variable: Terminal keeps it, and the server reads it
     // when a program starts there (`tilo_environment::machine_secrets`).
-    WorkspaceDocument {
-        app: "so.tilo.terminal",
-        kind: "terminal.machine-secrets",
-    },
-    WorkspaceDocument {
-        app: "so.tilo.chat",
-        kind: "chat.skills",
-    },
+    WorkspaceDocument::kept("so.tilo.terminal", "terminal.machine-secrets"),
+    WorkspaceDocument::kept("so.tilo.chat", "chat.skills"),
     // The workspace's agents: their names, colours, models and who added them,
     // which the workspace settings sheet, the apps and their devices all
     // read (`tilo-workspace-agent`).
-    WorkspaceDocument {
-        app: "so.tilo.workspace",
-        kind: "tilo.workspace.agent",
-    },
+    WorkspaceDocument::kept("so.tilo.workspace", "tilo.workspace.agent"),
     // The reports and decisions Chat keeps for its workspace.
-    WorkspaceDocument {
-        app: "so.tilo.chat",
-        kind: "tilo.moderation",
-    },
+    WorkspaceDocument::kept("so.tilo.chat", "tilo.moderation"),
     // Each person's place in the workspace's tilolang apps: their windows' and
     // lenses' state and what they have seen, kept once for every package of the
     // language rather than per package (`tilolang-tilo::personal`).
-    WorkspaceDocument {
-        app: "tilo.host",
-        kind: "tilolang.personal",
-    },
+    WorkspaceDocument::kept("tilo.host", "tilolang.personal"),
     // The workspace's accounts (mail, calendar, messaging), which Settings keeps
     // and Mail, Calendar and Messages read; their secrets are the vault's
     // (`accounts::person`).
-    WorkspaceDocument {
-        app: "so.tilo.settings",
-        kind: "tilo.accounts",
-    },
+    WorkspaceDocument::kept("so.tilo.settings", "tilo.accounts"),
     // The people the workspace knows, with the identities each is reached at,
     // which Contacts keeps and Mail, Calendar and Messages address
     // (`tilo-contact-directory`).
-    WorkspaceDocument {
-        app: "so.tilo.contacts",
-        kind: "tilo.contacts.identities",
-    },
+    WorkspaceDocument::kept("so.tilo.contacts", "tilo.contacts.identities"),
     // What the workspace browsed and kept: its history, its bookmarks, the
     // addresses it fills in and what operated each tab's page (Browser).
-    WorkspaceDocument {
-        app: "so.tilo.browser",
-        kind: "browser.browsing-history",
-    },
-    WorkspaceDocument {
-        app: "so.tilo.browser",
-        kind: "browser.personal-bookmarks",
-    },
-    WorkspaceDocument {
-        app: "so.tilo.browser",
-        kind: "browser.address-book",
-    },
-    WorkspaceDocument {
-        app: "so.tilo.browser",
-        kind: "browser.page-record",
-    },
+    WorkspaceDocument::kept("so.tilo.browser", "browser.browsing-history"),
+    WorkspaceDocument::kept("so.tilo.browser", "browser.personal-bookmarks"),
+    WorkspaceDocument::kept("so.tilo.browser", "browser.address-book"),
+    WorkspaceDocument::kept("so.tilo.browser", "browser.page-record"),
     // The workspace's vault: its sealed entries and who may use each, which Passwords keeps and
     // every device's vault actions write (`tilo-workspace-service`'s `vault_entries`).
     WorkspaceDocument {
-        app: "so.tilo.passwords",
-        kind: "passwords.workspace-vault",
+        fixed: Some(tilo_actions::remote::person_vault::VAULT_RECORD),
+        sealed: true,
+        ..WorkspaceDocument::kept(
+            "so.tilo.passwords",
+            tilo_actions::remote::person_vault::VAULT_KIND,
+        )
     },
     // The workspace's files: its tree's own record and each chunk of it (`fs-protocol`'s tree).
-    WorkspaceDocument {
-        app: "so.tilo.file-explorer",
-        kind: "files.tree",
-    },
+    WorkspaceDocument::kept("so.tilo.file-explorer", "files.tree"),
     // The workspace's shared desktop, each person's view of it and each window's view of what it
     // showed (`desktop-model`'s record).
-    WorkspaceDocument {
-        app: "so.tilo.browser-desktop",
-        kind: "tilo.desktop",
-    },
-    WorkspaceDocument {
-        app: "so.tilo.browser-desktop",
-        kind: "desktop.person-view",
-    },
-    WorkspaceDocument {
-        app: "so.tilo.browser-desktop",
-        kind: "desktop.window-view",
-    },
+    WorkspaceDocument::kept("so.tilo.browser-desktop", "tilo.desktop"),
+    WorkspaceDocument::kept("so.tilo.browser-desktop", "desktop.person-view"),
+    WorkspaceDocument::kept("so.tilo.browser-desktop", "desktop.window-view"),
     // What the person answered about the devices of their machines, kept once for all of them
     // (`tilo-peer-state`'s device answers).
-    WorkspaceDocument {
-        app: "so.tilo.identity",
-        kind: "identity.device-answers",
-    },
+    WorkspaceDocument::kept("so.tilo.identity", "identity.device-answers"),
 ];
 
 /// The workspace document of `kind`, whichever app keeps it.
@@ -142,6 +108,40 @@ pub fn workspace_document(app: &str, document: &str) -> Option<&'static Workspac
     WORKSPACE_DOCUMENTS
         .iter()
         .find(|known| known.app == app && known.kind == kind)
+}
+
+/// The kind the id `record` is bound to, whatever kind a write names for it: the kind a derived
+/// id names, or the kind a fixed id is declared for. `None` for an id that names no kind.
+#[must_use]
+pub fn bound_kind(record: &str) -> Option<&str> {
+    WORKSPACE_DOCUMENTS
+        .iter()
+        .find(|kept| kept.fixed == Some(record))
+        .map(|kept| kept.kind)
+        .or_else(|| crate::person_resource_type(record))
+}
+
+/// Whether records of `kind` are kept under keys of their own from their first write, as the
+/// kind's owner declares: its app (`app_fleet::is_sealed`), or the system for a record it keeps.
+#[must_use]
+pub fn is_sealed_kind(kind: &str) -> bool {
+    app_fleet::is_sealed(kind)
+        || WORKSPACE_DOCUMENTS
+            .iter()
+            .any(|kept| kept.sealed && kept.kind == kind)
+}
+
+/// The sealed kind of the record `record` of `app`: the package's own record (`""`), kept as the
+/// package's kind, or a record whose id is bound to its kind ([`bound_kind`]), when that kind is
+/// sealed ([`is_sealed_kind`]). Only the kind decides: an app's name seals nothing.
+#[must_use]
+pub fn sealed_kind(app: &str, record: &str) -> Option<std::borrow::Cow<'static, str>> {
+    if record.is_empty() {
+        let kind = app_fleet::package_kind(app);
+        return is_sealed_kind(&kind).then_some(std::borrow::Cow::Owned(kind));
+    }
+    let kind = bound_kind(record)?;
+    is_sealed_kind(kind).then(|| std::borrow::Cow::Owned(kind.to_owned()))
 }
 
 /// The app whose records say which content the host stopped keeping: the

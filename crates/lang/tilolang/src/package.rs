@@ -915,6 +915,7 @@ fn build_meta(
                     label: info.label.clone(),
                     noun: info.noun.clone(),
                     readers: info.readers.clone(),
+                    sealed: info.sealed,
                     live: info.live.clone(),
                 });
             }

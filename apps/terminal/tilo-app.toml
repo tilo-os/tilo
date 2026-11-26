@@ -41,6 +41,7 @@ optional = ["processes", "clipboard", "files.paths", "app-files", "threads", "se
 
 [resources]
 kinds = ["terminal.history", "terminal.session", "environment", "terminal.recent-environments", "terminal.machine-secrets"]
+sealed = ["terminal.history"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

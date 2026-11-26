@@ -296,14 +296,34 @@ tilo_test_env::scenario! {
                 "an editing grant cannot restore the old group's read access"
             );
         }
+    }
+
+    phase a_sealed_record_has_keys_of_its_own_and_none_reach_a_member_it_refuses;
+    // Terminal declares its history's kind sealed: the record has keys of its own from its first
+    // write, though every key holder still reads it, so a member a rule later refuses it never
+    // held what opens it. A record of a kind nobody sealed is sealed by the workspace's key.
+    {
+        let (mut peer, source, now) = fixture();
+        let person = hex::encode(row(&peer, &source).device_cert.user_public_key);
+        let terminal = tilo_app_id::apps::TERMINAL;
+        let history = collab_types::workspace_document_id("terminal.history");
+        let session = collab_types::workspace_document_id("terminal.session");
+        assert!(peer.requires_document_keys(terminal, &history, now).unwrap());
+        assert!(!peer.requires_document_keys(terminal, &session, now).unwrap());
+        assert!(peer.check_document_read(source, terminal, &history, now).is_ok());
+        let workspace_id = peer.workspace_id().to_owned();
+        put_grant(&mut peer, &Grant::new(
+            "history-hidden",
+            Grantee::person(person.as_str()),
+            collab_types::document_node(&workspace_id, terminal, &history),
+            KindSet::READ,
+            Answer::Deny,
+            Grantee::person("a different person"),
+        ));
+        assert!(peer.check_document_read(source, terminal, &history, now).is_err());
         assert!(
-            peer.check_document_read(
-                source,
-                "so.tilo.chat",
-                roles::WORKSPACE_CHAT_DRAFTS_DOCUMENT,
-                now,
-            ).is_ok(),
-            "the workspace's channel drafts remain shared by role"
+            !peer.document_key_holders(terminal, &history, now).unwrap().contains(&source),
+            "the member it refuses holds none of its keys"
         );
     }
 

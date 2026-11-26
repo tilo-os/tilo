@@ -186,7 +186,7 @@ ImportDroppedArgs = TypedDict("ImportDroppedArgs", {
 
 class Notice(Resource):
     """Notice — `tl.tilo.host.Notice`."""
-    __surface__ = "so.tilo.notes@c3b7e2edd8181bfe"
+    __surface__ = "so.tilo.notes@e6fada14e24a45ce"
     @property
     def notice_to(self) -> str:
         """to (`notice-to` on the wire)."""
@@ -247,7 +247,7 @@ class Notice(Resource):
 
 class Note(Resource):
     """Note — `tl.so.tilo.notes.Note`."""
-    __surface__ = "so.tilo.notes@c3b7e2edd8181bfe"
+    __surface__ = "so.tilo.notes@e6fada14e24a45ce"
     dpj7scfe: str  # title
     olsyp3aw: str  # body
     pmjerv63: dict[str, str]  # images
@@ -464,9 +464,8 @@ class Note(Resource):
 
 class Notebook(Resource):
     """Notebook — `tl.so.tilo.notes.Notebook`."""
-    __surface__ = "so.tilo.notes@c3b7e2edd8181bfe"
+    __surface__ = "so.tilo.notes@e6fada14e24a45ce"
     tmqqtkeb: list[Entry[Note]]  # notes
-    qgq6mcy7: list[Entry[Note]]  # set_aside
     dq2mnb22: list[Entry[Tag]]  # tags
 
     def new_note(self,
@@ -666,13 +665,13 @@ class Notebook(Resource):
 
 class Tag(Resource):
     """Tag — `tl.so.tilo.notes.Tag`."""
-    __surface__ = "so.tilo.notes@c3b7e2edd8181bfe"
+    __surface__ = "so.tilo.notes@e6fada14e24a45ce"
     itadoh74: str  # name
 
 
 class Found(Resource):
     """Found — `tl.so.tilo.notes.Found`."""
-    __surface__ = "so.tilo.notes@c3b7e2edd8181bfe"
+    __surface__ = "so.tilo.notes@e6fada14e24a45ce"
     dxxdlopq: int  # at
     @property
     def _2vlaqp45(self) -> str:
@@ -686,5 +685,5 @@ class Found(Resource):
 
 class Notes(Resource):
     """Notes — `tl.so.tilo.notes`."""
-    __surface__ = "so.tilo.notes@c3b7e2edd8181bfe"
+    __surface__ = "so.tilo.notes@e6fada14e24a45ce"
 

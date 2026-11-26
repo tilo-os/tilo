@@ -209,7 +209,7 @@ impl Members {
             .unwrap()
             .document_key_holders(
                 tilo_app_id::apps::PASSWORDS,
-                tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
+                tilo_actions::remote::person_vault::VAULT_RECORD,
                 tilo_clock::wall(),
             )
             .unwrap()
@@ -814,7 +814,7 @@ fn vault_route(workspace: &str) -> tilo_peer_state::document_frame::DocumentRout
     tilo_peer_state::document_frame::DocumentRoute {
         app_id: tilo_app_id::apps::PASSWORDS.into(),
         cluster_id: workspace.to_owned(),
-        document: tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT.into(),
+        document: tilo_actions::remote::person_vault::VAULT_RECORD.into(),
     }
 }
 
@@ -905,7 +905,7 @@ async fn a_member_refused_passwords_opens_nothing_the_vault_keeps_after() {
     let artifact = collab_types::document_artifact_id(
         tilo_app_id::apps::PASSWORDS,
         &workspace,
-        tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
+        tilo_actions::remote::person_vault::VAULT_RECORD,
     );
     let (metadata, sealed) = next
         .seal_content(

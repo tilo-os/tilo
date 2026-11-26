@@ -32,7 +32,7 @@ pub(in crate::state) fn document_reached(
 ) -> bool {
     let root = collab_types::document_access_target(app, record).unwrap_or(record);
     let node = match kind {
-        Some(kind) if tilo_action_policy::roles::protected_resource_kind(app, root).is_none() => {
+        Some(kind) if collab_types::sealed_kind(app, root).is_none() => {
             tilo_action_policy::TreePath::workspace(workspace)
                 .app(app)
                 .kind(kind)

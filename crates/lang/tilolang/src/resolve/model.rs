@@ -34,6 +34,8 @@ pub struct TypeInfo {
     /// `(noun: "notebook")`: what one of the type is called in a sentence.
     pub noun: Option<String>,
     pub readers: Option<crate::meta::ReaderRule>,
+    /// `(sealed: true)`: its record has keys of its own from its first write.
+    pub sealed: bool,
     /// `live when ...`, once its predicate is lowered and its `view live` found.
     pub live: Option<crate::meta::LiveMeta>,
 }

@@ -65,7 +65,7 @@ async fn vault_history(
         .resource_document(
             &workspace_id.to_string(),
             tilo_app_id::apps::PASSWORDS,
-            tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
+            tilo_actions::remote::person_vault::VAULT_RECORD,
         )
         .await
         .unwrap()
@@ -363,7 +363,7 @@ async fn a_members_login_is_the_workspaces_and_every_member_reads_only_what_is_s
             .resource_document(
                 &workspace_id.to_string(),
                 tilo_app_id::apps::PASSWORDS,
-                tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
+                tilo_actions::remote::person_vault::VAULT_RECORD,
             )
             .await
             .unwrap()
@@ -1983,7 +1983,7 @@ async fn a_host_kept_from_passwords_signs_in_with_none_of_the_vaults_entries() {
                 workspace: workspace.clone(),
                 request_id: [9; 32],
                 app: tilo_app_id::apps::PASSWORDS.into(),
-                document: tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT.into(),
+                document: tilo_actions::remote::person_vault::VAULT_RECORD.into(),
                 recipient: format!("member:{}", hex::encode(owner.user_public_key)),
                 access: "no-access".into(),
             },
@@ -2392,7 +2392,7 @@ async fn last_allowed(
         .resource_document(
             &workspace_id.to_string(),
             tilo_app_id::apps::PASSWORDS,
-            tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
+            tilo_actions::remote::person_vault::VAULT_RECORD,
         )
         .await
         .unwrap()

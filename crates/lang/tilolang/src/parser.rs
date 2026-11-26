@@ -1431,14 +1431,16 @@ impl<'a> Parser<'a> {
         let mut label = None;
         let mut noun = None;
         let mut readers = None;
+        let mut sealed = false;
         if self.eat(&Tok::LParen) {
             loop {
                 self.skip_nl();
                 if self.eat(&Tok::RParen) {
                     break;
                 }
-                let key =
-                    self.ident("`origin`, `title`, `untitled`, `label`, `noun` or `readers`")?;
+                let key = self.ident(
+                    "`origin`, `title`, `untitled`, `label`, `noun`, `readers` or `sealed`",
+                )?;
                 self.expect(&Tok::Colon)?;
                 match key.name.as_str() {
                     "origin" => origin = Some(self.type_origin()?),
@@ -1498,11 +1500,17 @@ impl<'a> Parser<'a> {
                             span: span.to(Span::new(self.prev_end(), self.prev_end())),
                         });
                     }
+                    "sealed" => {
+                        sealed = self.eat_kw("true");
+                        if !sealed && !self.eat_kw("false") {
+                            return self.unexpected("`true` or `false` after `sealed:`");
+                        }
+                    }
                     other => {
                         return self.fail(
                             key.span,
                             format!(
-                                "a type's options are `origin:`, `title:`, `untitled:`, `label:`, `noun:` and `readers:`, not `{other}:`"
+                                "a type's options are `origin:`, `title:`, `untitled:`, `label:`, `noun:`, `readers:` and `sealed:`, not `{other}:`"
                             ),
                         );
                     }
@@ -1608,6 +1616,7 @@ impl<'a> Parser<'a> {
             label,
             noun,
             readers,
+            sealed,
             fields,
             search,
             live,

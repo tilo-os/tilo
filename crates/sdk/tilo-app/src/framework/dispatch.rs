@@ -606,7 +606,7 @@ impl DispatchCore {
         // A record of a kind each person keeps their own of is decided on that
         // record, which the workspace grants its person.
         let kind = self.applied_as.map_or(self.kind, |(kind, _)| kind);
-        if tilo_actions::policy::roles::requires_document_keys(self.app_id, &self.record) {
+        if collab_types::sealed_kind(self.app_id, &self.record).is_some() {
             return app.kind(kind).resource(&*self.record);
         }
         if !self.record.is_empty()

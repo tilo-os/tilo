@@ -447,7 +447,7 @@ pub fn document_node(workspace: &str, app: &str, document: &str) -> TreePath {
             id
         };
         let path = TreePath::workspace(workspace).app(app);
-        let path = match tilo_action_policy::roles::protected_resource_kind(app, id) {
+        let path = match crate::workspace_document::sealed_kind(app, id) {
             Some(kind) => path.kind(kind),
             None => path,
         };
@@ -466,14 +466,51 @@ mod protected_document_tests {
     use super::*;
 
     #[test]
-    fn a_kind_grant_covers_the_protected_record_at_the_host() {
-        use tilo_action_policy::roles::WORKSPACE_MAIL_COPIES_DOCUMENT;
-        let node = document_node("workspace", "so.tilo.mail", WORKSPACE_MAIL_COPIES_DOCUMENT);
+    fn a_kind_grant_covers_the_sealed_record_at_the_host() {
+        let vault = crate::workspace_document_of_kind("passwords.workspace-vault")
+            .and_then(|kept| kept.fixed)
+            .expect("the vault's fixed id");
+        let node = document_node("workspace", "so.tilo.passwords", vault);
         let kind = TreePath::workspace("workspace")
-            .app("so.tilo.mail")
-            .kind("mail.copies");
+            .app("so.tilo.passwords")
+            .kind("passwords.workspace-vault");
         assert!(kind.covers(&node));
-        assert!(kind.resource(WORKSPACE_MAIL_COPIES_DOCUMENT).covers(&node));
+        assert!(kind.resource(vault).covers(&node));
+    }
+
+    /// Sealing follows the kind a record's id is bound to, as the kind's owner declares it: an app
+    /// whose own records are of no sealed kind seals nothing, whatever it is called.
+    #[test]
+    fn an_app_name_seals_nothing() {
+        let vault = crate::workspace_document_of_kind("passwords.workspace-vault")
+            .and_then(|kept| kept.fixed)
+            .expect("the vault's fixed id");
+        assert!(requires_independent_document_keys(
+            "so.tilo.passwords",
+            vault
+        ));
+        assert!(requires_independent_document_keys("so.tilo.notes", vault));
+        assert!(!requires_independent_document_keys("so.tilo.passwords", ""));
+        assert!(!requires_independent_document_keys(
+            "so.tilo.passwords",
+            "uuid:00000000-0000-4000-8000-000000000001"
+        ));
+        assert!(requires_independent_document_keys("so.tilo.mail", ""));
+        assert!(requires_independent_document_keys("dev.tilo.mail", ""));
+        assert!(!requires_independent_document_keys("so.tilo.notes", ""));
+        let history = crate::workspace_document_id("terminal.history");
+        assert!(requires_independent_document_keys(
+            "so.tilo.terminal",
+            &history
+        ));
+        assert!(requires_independent_document_keys(
+            "so.tilo.notes",
+            &history
+        ));
+        assert!(!requires_independent_document_keys(
+            "so.tilo.terminal",
+            &crate::workspace_document_id("terminal.machine-secrets")
+        ));
     }
 }
 
@@ -504,7 +541,7 @@ pub fn requires_independent_document_keys(app: &str, document: &str) -> bool {
     // A call's media keys go only to the people its rule admits ([`crate::calls::media_document`]).
     (app == crate::scope::MEDIA_APP && crate::calls::parse_media_document(document).is_some())
         || document_access_target(app, document)
-            .is_some_and(|root| tilo_action_policy::roles::requires_document_keys(app, root))
+            .is_some_and(|root| crate::workspace_document::sealed_kind(app, root).is_some())
 }
 
 /// The access editor's route: an empty app selects workspace defaults or the default for the

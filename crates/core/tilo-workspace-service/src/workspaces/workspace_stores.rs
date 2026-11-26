@@ -54,7 +54,7 @@ impl Store {
     /// The items of the workspace's vault, in Passwords.
     pub const VAULT: Self = Self {
         app: tilo_app_id::apps::PASSWORDS,
-        kind: tilo_action_policy::roles::WORKSPACE_VAULT_KIND,
+        kind: tilo_actions::remote::person_vault::VAULT_KIND,
     };
     /// The workspace's model providers and their keys.
     pub const MODELS: Self = Self {

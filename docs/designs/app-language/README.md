@@ -112,7 +112,11 @@ reads a type's resources unless it says who does: `(readers: author)` makes each
 alone, sealed to the keys of their devices, so no other member lists, finds, counts or opens it;
 `until sent` hands it to every member once its `Bool` field `sent` holds, for good (setting it
 back is refused); `(readers: guests)` seals it to the people a `Set<Actor>` field names, and a
-change of them moves it to the new ones. The store works out the readers; no action names them:
+change of them moves it to the new ones. A root type whose record is read by every member but
+must never be opened by the workspace's own keys says `(sealed: true)`: its record has keys of its
+own from its first write, which go only to the devices of members its rules let read it, so one a
+rule later refuses never held them (a mailbox). The store works out the readers; no action names
+them:
 
 ```
 type Draft (title: subject, untitled: "New message", readers: author until sent) {

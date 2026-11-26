@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.mail@3d8d68c3ca9b0145";
+export const SURFACE = "so.tilo.mail@e425c220cad01233";
 
 /** The arguments of `set_signature`. */
 export interface SetSignatureArgs {
@@ -426,7 +426,6 @@ export interface Draft extends tilo.Resource {
   h2nvr2op: boolean;  // recalled
   em6rrmae: string;  // invitation
   "2tq2zegc": unknown[];  // attachments
-  ozukvva2: string;  // set_aside
   /** Takes a file along with the message: one the person picks, or one an agent hands over. A message takes up to sixteen files of up to 32 MB each, as mail servers take them. */
   attach(args: {
     file: unknown;

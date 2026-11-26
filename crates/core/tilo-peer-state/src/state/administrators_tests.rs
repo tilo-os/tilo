@@ -3,8 +3,8 @@
 //! own rule on its resource does not outrank, so workspaces that held the grant
 //! where it did are rewritten to govern through it.
 use super::*;
+use tilo_action_policy::KindSet;
 use tilo_action_policy::roles::{self, governance};
-use tilo_action_policy::{Answer, KindSet};
 
 /// How many of the workspace's governance actions the member with device
 /// `device` may run, as `peer`'s workspace policy decides it now.
@@ -253,83 +253,6 @@ tilo_test_env::scenario! {
             .unwrap();
         assert!(change_settings(&mut peer, &editor, rename, now).unwrap());
         assert_eq!(peer.governance().workspace_name().as_deref(), Some("Plans"));
-    }
-}
-
-tilo_test_env::scenario! {
-    fn administrator_grants_of_earlier_builds_are_reconciled_once;
-
-    phase an_administrator_grant_on_the_workspaces_resource_is_rewritten_once;
-    {
-        let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
-        let (editor, user) = crate::admission_tests::add_editor(&mut peer, &host_key, now);
-        let person = hex::encode(user);
-        let owner = Grantee::person(hex::encode(peer.owner()));
-        // The grant as workspaces held it before: on the workspace's resource, where the
-        // Editor's Deny at the same node outranks it.
-        let legacy = Grant::new(
-            roles::administrator_grant_id(&person).as_str(),
-            Grantee::person(person.clone()),
-            roles::workspace_resource(peer.workspace_id()),
-            KindSet::ALL,
-            Answer::Allow,
-            owner.clone(),
-        );
-        assert!(roles::is_legacy_administrator_grant(
-            peer.workspace_id(),
-            &legacy
-        ));
-        peer.governance_mut()
-            .put_member_grants(std::slice::from_ref(&legacy), &host_key, now)
-            .unwrap();
-        assert!(is_administrator(&peer, user, now));
-        assert_eq!(
-            administers(&peer, editor.device_public_key, now),
-            0,
-            "the Editor's Deny outranks the grant where it sits"
-        );
-
-        assert!(
-            peer.governance_mut()
-                .reconcile_administrator_grants(&host_key, now)
-                .unwrap()
-        );
-        assert_eq!(administers(&peer, editor.device_public_key, now), EVERY);
-        assert!(is_administrator(&peer, user, now));
-        let held = peer.permissions(editor.device_public_key, now).unwrap();
-        let rewritten = held
-            .policy
-            .grants
-            .iter()
-            .filter(|grant| grant.id == legacy.id)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            rewritten,
-            [&roles::administrator_grant(
-                peer.workspace_id(),
-                &person,
-                owner
-            )]
-        );
-        assert!(
-            !peer
-                .governance_mut()
-                .reconcile_administrator_grants(&host_key, now)
-                .unwrap()
-        );
-    }
-
-    phase reconciling_a_workspace_without_old_grants_writes_nothing_and_needs_no_writer;
-    {
-        let (mut peer, host_key, _, _, now) = crate::admission_tests::seeded();
-        crate::admission_tests::add_editor(&mut peer, &host_key, now);
-        let stranger = SigningKey::from_bytes(&[77; 32]);
-        assert!(
-            !peer
-                .governance_mut()
-                .reconcile_administrator_grants(&stranger, now)
-                .unwrap()
-        );
     }
 }
 

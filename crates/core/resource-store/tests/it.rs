@@ -782,7 +782,9 @@ fn a_surface_declares_types_their_indexed_fields_and_what_nests_in_them() {
 #[test]
 fn a_store_keeps_what_each_app_declares_its_actions_as() {
     let mut store = tilo_resource_store::Store::new();
-    store.declare(Schema::of_app("so.tilo.tasks", &tracker_surface())).unwrap();
+    store
+        .declare(Schema::of_app("so.tilo.tasks", &tracker_surface()))
+        .unwrap();
     let notes: tilo_actions::surface::Surface = toml_like(serde_json::json!({
         "kind": "notes.note",
         "label": "Note",
@@ -792,7 +794,9 @@ fn a_store_keeps_what_each_app_declares_its_actions_as() {
             {"id": "q7k2", "name": "peek", "kind": "read"},
         ],
     }));
-    store.declare(Schema::of_app("so.tilo.notes", &notes)).unwrap();
+    store
+        .declare(Schema::of_app("so.tilo.notes", &notes))
+        .unwrap();
     let declared = |app: &str, action: &str| store.schema().declared_kind(app, action);
     assert_eq!(
         declared("so.tilo.tasks", "rename"),
@@ -1156,22 +1160,24 @@ mod store {
             optional: true,
         };
         let mut store = Store::new();
-        store.declare(Schema {
-            types: vec![tilo_resource_store::Type {
-                name: ISSUE.to_owned(),
-                fields: vec![
-                    field("title", FieldKind::Scalar),
-                    field("state", FieldKind::Scalar),
-                    field("labels", FieldKind::Set),
-                ],
-                nested: Vec::new(),
-                live: None,
-                founding: Vec::new(),
-                origin: None,
-                version: 1,
-            }],
-            ..Schema::default()
-        }).unwrap();
+        store
+            .declare(Schema {
+                types: vec![tilo_resource_store::Type {
+                    name: ISSUE.to_owned(),
+                    fields: vec![
+                        field("title", FieldKind::Scalar),
+                        field("state", FieldKind::Scalar),
+                        field("labels", FieldKind::Set),
+                    ],
+                    nested: Vec::new(),
+                    live: None,
+                    founding: Vec::new(),
+                    origin: None,
+                    version: 1,
+                }],
+                ..Schema::default()
+            })
+            .unwrap();
         store
     }
 
@@ -1179,17 +1185,19 @@ mod store {
     /// workspace store that declares any verb does.
     fn verbed() -> Store {
         let mut store = issues();
-        store.declare(Schema {
-            verbs: vec![tilo_resource_store::Verb {
-                name: "edit".to_owned(),
-                writes: BTreeMap::from([(
-                    ISSUE.to_owned(),
-                    tilo_resource_store::Writes::default(),
-                )]),
-                ..tilo_resource_store::Verb::default()
-            }],
-            ..Schema::default()
-        }).unwrap();
+        store
+            .declare(Schema {
+                verbs: vec![tilo_resource_store::Verb {
+                    name: "edit".to_owned(),
+                    writes: BTreeMap::from([(
+                        ISSUE.to_owned(),
+                        tilo_resource_store::Writes::default(),
+                    )]),
+                    ..tilo_resource_store::Verb::default()
+                }],
+                ..Schema::default()
+            })
+            .unwrap();
         store
     }
 
@@ -1197,20 +1205,22 @@ mod store {
     /// the platform writes under `$undo`, so no app needs the plain name for it.
     fn app_undo() -> Store {
         let mut store = issues();
-        store.declare(Schema {
-            verbs: vec![tilo_resource_store::Verb {
-                name: "undo".to_owned(),
-                writes: BTreeMap::from([(
-                    ISSUE.to_owned(),
-                    tilo_resource_store::Writes {
-                        fields: BTreeSet::from(["title".to_owned()]),
-                        sets_only: false,
-                    },
-                )]),
-                ..tilo_resource_store::Verb::default()
-            }],
-            ..Schema::default()
-        }).unwrap();
+        store
+            .declare(Schema {
+                verbs: vec![tilo_resource_store::Verb {
+                    name: "undo".to_owned(),
+                    writes: BTreeMap::from([(
+                        ISSUE.to_owned(),
+                        tilo_resource_store::Writes {
+                            fields: BTreeSet::from(["title".to_owned()]),
+                            sets_only: false,
+                        },
+                    )]),
+                    ..tilo_resource_store::Verb::default()
+                }],
+                ..Schema::default()
+            })
+            .unwrap();
         store
     }
 
@@ -1327,25 +1337,27 @@ mod store {
     fn a_resource_is_live_while_its_types_condition_holds_and_read_as_its_document_is() {
         use tilo_resource_store::{Expected, Field, Type};
         let mut store = Store::new();
-        store.declare(Schema {
-            types: vec![Type {
-                name: ISSUE.to_owned(),
-                fields: ["title", "state"]
-                    .map(|name| Field {
-                        name: name.to_owned(),
-                        kind: FieldKind::Scalar,
-                        value: Expected::Any,
-                        optional: true,
-                    })
-                    .to_vec(),
-                nested: Vec::new(),
-                live: Some(vec![Filter::Is("state".to_owned(), "playing".into())]),
-                founding: Vec::new(),
-                origin: None,
-                version: 1,
-            }],
-            ..Schema::default()
-        }).unwrap();
+        store
+            .declare(Schema {
+                types: vec![Type {
+                    name: ISSUE.to_owned(),
+                    fields: ["title", "state"]
+                        .map(|name| Field {
+                            name: name.to_owned(),
+                            kind: FieldKind::Scalar,
+                            value: Expected::Any,
+                            optional: true,
+                        })
+                        .to_vec(),
+                    nested: Vec::new(),
+                    live: Some(vec![Filter::Is("state".to_owned(), "playing".into())]),
+                    founding: Vec::new(),
+                    origin: None,
+                    version: 1,
+                }],
+                ..Schema::default()
+            })
+            .unwrap();
         let on = |device: &str, name: &str, at: &str| Stamp {
             device: device.to_owned(),
             device_name: name.to_owned(),
@@ -1822,6 +1834,29 @@ mod store {
         assert_eq!(text_of(&mut there), Some(("Hello world".to_owned(), 1)));
         let old = there.document(&emptied.doc).unwrap();
         assert_eq!(old.length(automerge::ROOT), 0, "the old content is emptied");
+    }
+
+    /// A record whose id is bound to a sealed kind (Terminal's history) is refused under any other
+    /// kind on its first write, while the same write of an unbound id lands.
+    #[test]
+    fn a_first_write_naming_another_kind_for_a_sealed_id_is_refused() {
+        let history = collab_types::workspace_document_id("terminal.history");
+        let mut here = issues();
+        let mut there = issues();
+        let sealed = put(
+            &mut here,
+            &history,
+            resource("board", "a0", "Draft", "open"),
+        );
+        assert!(
+            matches!(
+                &deliver(&sealed, &mut there, &|_: &Proposal<'_>| true)[..],
+                [Refusal::Undeclared(why)] if why.contains("terminal.history")
+            ),
+            "an issue cannot be what the history's id names"
+        );
+        let open = put(&mut here, "a", resource("board", "a1", "Plan", "open"));
+        assert!(deliver(&open, &mut there, &|_: &Proposal<'_>| true).is_empty());
     }
 
     /// Carries `written` to `to` as sync does, judged by `admit`; answers why each refused one
@@ -2738,8 +2773,12 @@ mod store {
     #[test]
     fn a_change_writes_the_platform_field_no_type_declares() {
         let mut there = issues();
-        there.declare(Schema::from_surface(&super::tilolang_surface())).unwrap();
-        there.declare(Schema::from_surface(&super::tilolang_item_surface())).unwrap();
+        there
+            .declare(Schema::from_surface(&super::tilolang_surface()))
+            .unwrap();
+        there
+            .declare(Schema::from_surface(&super::tilolang_item_surface()))
+            .unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let item = Resource {
             readers: MEMBERS.to_owned(),
@@ -2860,16 +2899,18 @@ mod store {
         use tilo_resource_store::{Verb, Writes};
         let anyone = |_: &Proposal<'_>| true;
         let mut holder = Store::new();
-        holder.declare(Schema {
-            kind: String::new(),
-            types: vec![record_type(ISSUE), record_type("Comment")],
-            verbs: vec![Verb {
-                name: "reply".to_owned(),
-                writes: BTreeMap::from([("Comment".to_owned(), Writes::default())]),
-                ..Verb::default()
-            }],
-            readers: BTreeMap::new(),
-        }).unwrap();
+        holder
+            .declare(Schema {
+                kind: String::new(),
+                types: vec![record_type(ISSUE), record_type("Comment")],
+                verbs: vec![Verb {
+                    name: "reply".to_owned(),
+                    writes: BTreeMap::from([("Comment".to_owned(), Writes::default())]),
+                    ..Verb::default()
+                }],
+                readers: BTreeMap::new(),
+            })
+            .unwrap();
         let change = issues()
             .put(
                 ISSUE,
@@ -2893,7 +2934,9 @@ mod store {
     #[test]
     fn a_package_creates_its_root_under_its_surface() {
         let mut there = issues();
-        there.declare(Schema::from_surface(&super::tilolang_surface())).unwrap();
+        there
+            .declare(Schema::from_surface(&super::tilolang_surface()))
+            .unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let mut fields = BTreeMap::new();
         fields.insert("name".to_owned(), Cell::One("Gallery".into()));
@@ -2967,7 +3010,9 @@ mod store {
         );
         let mut there = issues();
         there.declare(holding).unwrap();
-        there.declare(Schema::from_surface(&super::tilolang_held_surface())).unwrap();
+        there
+            .declare(Schema::from_surface(&super::tilolang_held_surface()))
+            .unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let record = |parent: Option<&str>, field: &str, text: &str| Resource {
             readers: MEMBERS.to_owned(),
@@ -3005,7 +3050,9 @@ mod store {
     fn a_change_writes_only_what_the_verb_it_names_declares() {
         use tilo_resource_store::Refusal;
         let mut there = issues();
-        there.declare(Schema::from_surface(&super::tracker_surface())).unwrap();
+        there
+            .declare(Schema::from_surface(&super::tracker_surface()))
+            .unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let comment = |stamp: Stamp, id: &str| {
             let mut fields = BTreeMap::new();
@@ -3048,7 +3095,9 @@ mod store {
     fn an_empty_record_is_founded_as_created_and_a_founding_naming_no_verb_is_refused() {
         use tilo_resource_store::{CREATE_VERB, Refusal};
         let mut there = issues();
-        there.declare(Schema::from_surface(&super::tracker_surface())).unwrap();
+        there
+            .declare(Schema::from_surface(&super::tracker_surface()))
+            .unwrap();
         let anyone = |_: &Proposal<'_>| true;
         let founding = |stamp: Stamp, id: &str, text: Option<&str>| {
             let mut fields = BTreeMap::new();
@@ -3096,7 +3145,9 @@ mod store {
         use automerge::transaction::Transactable as _;
         use tilo_resource_store::{BRANCH_VERB, MOVE_VERB, Refusal};
         let mut there = issues();
-        there.declare(Schema::from_surface(&super::tracker_surface())).unwrap();
+        there
+            .declare(Schema::from_surface(&super::tracker_surface()))
+            .unwrap();
         let anyone = |_: &Proposal<'_>| true;
         // The step the fork's writer commits, read back as the store reads a change.
         let step = collab_types::document::identity::branch_step("c1", "Comment", "Comment");
@@ -3202,18 +3253,20 @@ mod store {
         let mut origin_kind = record_type(ISSUE);
         origin_kind.origin = Some("imap.issue".to_owned());
         let mut there = Store::new();
-        there.declare(Schema {
-            types: vec![origin_kind, record_type("gallery.Item")],
-            verbs: vec![tilo_resource_store::Verb {
-                name: ORIGIN_VERB.to_owned(),
-                writes: BTreeMap::from([(
-                    ISSUE.to_owned(),
-                    tilo_resource_store::Writes::default(),
-                )]),
-                ..tilo_resource_store::Verb::default()
-            }],
-            ..Schema::default()
-        }).unwrap();
+        there
+            .declare(Schema {
+                types: vec![origin_kind, record_type("gallery.Item")],
+                verbs: vec![tilo_resource_store::Verb {
+                    name: ORIGIN_VERB.to_owned(),
+                    writes: BTreeMap::from([(
+                        ISSUE.to_owned(),
+                        tilo_resource_store::Writes::default(),
+                    )]),
+                    ..tilo_resource_store::Verb::default()
+                }],
+                ..Schema::default()
+            })
+            .unwrap();
         // What the origin says lands: a declared kind, its declared fields.
         let landed = issues()
             .put(
@@ -3490,7 +3543,9 @@ mod store {
         use tilo_resource_store::{MAX_MARK_ARGS, Refusal};
         let tracker = || {
             let mut store = issues();
-            store.declare(Schema::from_surface(&super::tracker_surface())).unwrap();
+            store
+                .declare(Schema::from_surface(&super::tracker_surface()))
+                .unwrap();
             store
         };
         let mut here = tracker();
@@ -3756,10 +3811,12 @@ mod store {
         for holder in &mut holders {
             // The record's first write names no verb: it is taken by the types alone, and the
             // verbs judge what comes after it.
-            holder.declare(Schema {
-                types: schema.types.clone(),
-                ..Schema::default()
-            }).unwrap();
+            holder
+                .declare(Schema {
+                    types: schema.types.clone(),
+                    ..Schema::default()
+                })
+                .unwrap();
             send(&made, holder);
             holder.declare(schema.clone()).unwrap();
         }
@@ -4022,15 +4079,17 @@ mod store {
         const REPORT: &str = "Report";
         const NOTE: &str = "Note";
         let mut store = Store::new();
-        store.declare(Schema {
-            readers: BTreeMap::from([(
-                REPORT.to_owned(),
-                ReaderRule::AuthorAnd {
-                    role: Role::Moderator,
-                },
-            )]),
-            ..Schema::default()
-        }).unwrap();
+        store
+            .declare(Schema {
+                readers: BTreeMap::from([(
+                    REPORT.to_owned(),
+                    ReaderRule::AuthorAnd {
+                        role: Role::Moderator,
+                    },
+                )]),
+                ..Schema::default()
+            })
+            .unwrap();
         let ben = Stamp {
             invoker: "ben".to_owned(),
             ..Stamp::default()
@@ -4160,10 +4219,12 @@ mod store {
             version: 1,
         };
         let mut store = Store::new();
-        store.declare(Schema {
-            types: vec![ty(MAILBOX), ty(DRAFT)],
-            ..Schema::default()
-        }).unwrap();
+        store
+            .declare(Schema {
+                types: vec![ty(MAILBOX), ty(DRAFT)],
+                ..Schema::default()
+            })
+            .unwrap();
         store
     }
 

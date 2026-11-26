@@ -1411,11 +1411,7 @@ mod tests {
             adding.target = person_vault::target(person_vault::ADD);
             let asked = signed(&adding, &cert, &key, NOW);
             let acting = Acting::person(hex::encode(cert.user_public_key));
-            let passwords = tilo_action_policy::roles::protected_resource_kind(
-                "so.tilo.passwords",
-                tilo_action_policy::roles::WORKSPACE_VAULT_DOCUMENT,
-            )
-            .expect("the vault's record has its kind");
+            let passwords = person_vault::VAULT_KIND;
             let step = |verb: &str| {
                 let mut context = tilo_actions::ActionContext {
                     source_invocation: Some(asked.invocation),
@@ -1467,7 +1463,7 @@ mod tests {
             let asked = signed(&filling, &host, &host_key, NOW);
             let ada = hex::encode([3; 32]);
             let agent = Acting::agent("assistant", ada.clone()).acting_for(Acting::person(ada.clone()));
-            let passwords = tilo_action_policy::roles::WORKSPACE_VAULT_KIND;
+            let passwords = person_vault::VAULT_KIND;
             let step = |verb: &str, acting: &Acting| tilo_actions::ActionContext {
                 source_invocation: Some(asked.invocation),
                 signed: tilo_actions::remote::SignedCall::of(&asked).map(Box::new),
