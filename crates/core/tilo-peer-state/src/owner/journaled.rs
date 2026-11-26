@@ -100,7 +100,7 @@ struct Earlier {
     workspace: WorkspaceId,
     snapshot: Vec<u8>,
     version: u32,
-    ownership: Option<serde_json::Value>,
+    held: Option<serde_json::Value>,
     entries: Option<Vec<u8>>,
     list: Option<Vec<u8>>,
 }
@@ -200,9 +200,9 @@ impl Journaled {
     }
 
     /// The snapshot and journal the earlier build wrote, kept as they are until the pair this build
-    /// writes is named. A journal is a delta of the snapshot beside it, and one beside the snapshot
-    /// of the build before this one is a delta of the ownership that snapshot held, which its step
-    /// drops, so that is read too.
+    /// writes is named. A journal is a delta of the snapshot beside it as the build that appended it
+    /// split it, which keeps what this build's steps drop (an earlier build's ownership, every field
+    /// of a version 7 one), so that is read too.
     fn read_earlier(
         &mut self,
         parts: &dyn JournalParts,
@@ -211,7 +211,7 @@ impl Journaled {
         snapshot: Vec<u8>,
         version: u32,
     ) -> Result<Earlier, String> {
-        let ownership = journal::ownership_before(&snapshot)
+        let held = journal::held_before(&snapshot)
             .map_err(|error| format!("{workspace}'s snapshot does not read: {error}"))?;
         let log = journal_name(workspace, snapshot_revision);
         let entries = match parts.read_part(&log)? {
@@ -233,7 +233,7 @@ impl Journaled {
             workspace,
             snapshot,
             version,
-            ownership,
+            held,
             entries,
             list,
         })
@@ -377,9 +377,8 @@ impl Journaled {
             ));
         }
         if let Some(entries) = read.entries {
-            let (replayed, _) =
-                journal::replay(stored, &entries, read.version, read.ownership.as_ref())
-                    .map_err(|error| format!("{workspace}'s journal does not read: {error}"))?;
+            let (replayed, _) = journal::replay(stored, &entries, read.version, read.held.as_ref())
+                .map_err(|error| format!("{workspace}'s journal does not read: {error}"))?;
             stored = replayed;
         }
         if stored.workspace != workspace {
@@ -1053,7 +1052,11 @@ mod tests {
     const ADDED_FRAME: &[u8] = b",\"frames\":[{\"bytes\":\"AQEB\"}]}";
 
     /// The golden entries of the builds whose journal this one replays, by the version they name.
-    const EARLIER: [(u32, &str); 3] = [
+    const EARLIER: [(u32, &str); 4] = [
+        (
+            7,
+            include_str!("../../golden/owner-workspace-document/v7.hex"),
+        ),
         (
             8,
             include_str!("../../golden/owner-workspace-document/v8.hex"),
@@ -1159,6 +1162,20 @@ mod tests {
     struct EarlierRecord {
         parts: Memory,
         workspace: WorkspaceId,
+        /// The replica the snapshot held, which the entry leaves as it was.
+        peer: Vec<u8>,
+    }
+
+    /// What the released build, of version 7, appended beside [`EARLIER`]'s version 7 snapshot,
+    /// written by that build's own journal: an entry that moves the generation to 7 and carries the
+    /// server's answer to a document's writes.
+    const RELEASED_JOURNAL: &str = include_str!("../../golden/owner-workspace-journal/v7.hex");
+
+    /// `hex`, bytes as a golden file holds them.
+    fn golden_bytes(hex: &str) -> Result<Vec<u8>, std::num::ParseIntError> {
+        hex.split_whitespace()
+            .map(|byte| u8::from_str_radix(byte, 16))
+            .collect()
     }
 
     /// [`EarlierRecord`] as a version `version` build kept it from `golden`, its entry carrying
@@ -1168,10 +1185,7 @@ mod tests {
         golden: &str,
         answered: bool,
     ) -> Result<EarlierRecord, Box<dyn std::error::Error>> {
-        let golden: Vec<u8> = golden
-            .split_whitespace()
-            .map(|byte| u8::from_str_radix(byte, 16))
-            .collect::<Result<_, _>>()?;
+        let golden = golden_bytes(golden)?;
         let workspace = WorkspaceId::parse("40267648-f762-4c8d-89ad-c5ab27aa13b8")
             .ok_or("the golden entry's workspace")?;
         let parts = Memory::default();
@@ -1189,9 +1203,108 @@ mod tests {
         check(held.frames.is_empty(), "the golden entry keeps no frame")?;
         parts.write_part(
             &journal_name(workspace, 1),
-            &earlier_entry(version, &golden, &held, answered)?,
+            &if version == 7 {
+                golden_bytes(RELEASED_JOURNAL)?
+            } else {
+                earlier_entry(version, &golden, &held, answered)?
+            },
         )?;
-        Ok(EarlierRecord { parts, workspace })
+        let peer = held.peer.to_vec();
+        Ok(EarlierRecord {
+            parts,
+            workspace,
+            peer,
+        })
+    }
+
+    /// The frames `stored` keeps, as their bytes.
+    fn frames_of(stored: &StoredWorkspace) -> Vec<Vec<u8>> {
+        stored
+            .frames
+            .iter()
+            .map(|frame| frame.bytes.to_vec())
+            .collect()
+    }
+
+    /// Records builds of version 7 to 10 kept open with the entry each appended beside its
+    /// snapshot. A device that updates with writes still in its journal keeps them: this build
+    /// reads the change, the frames a build of version 8 or 9 kept among the fields included, the
+    /// ownership gone with any answer an entry carried, and its next publication writes a
+    /// snapshot of its own layout. Version 7's entry is the one the released build wrote.
+    #[test]
+    fn a_record_an_earlier_build_kept_opens_with_its_journal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (version, golden) in EARLIER {
+            for answered in [false, true] {
+                opens_with_its_journal(version, golden, answered)
+                    .map_err(|error| format!("version {version}, answered {answered}: {error}"))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The record [`earlier_record`] makes of `version` and `golden` opens with its entry's change.
+    fn opens_with_its_journal(
+        version: u32,
+        golden: &str,
+        answered: bool,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let EarlierRecord {
+            parts,
+            workspace,
+            peer,
+        } = earlier_record(version, golden, answered)?;
+        let (mut journaled, read) = Journaled::open(&parts)?.ok_or("the record is not kept")?;
+        let stored = read.stored(workspace).ok_or("the journal's workspace")?;
+        check(stored.generation == 7, "the entry's change is read")?;
+        let expected = if (8..10).contains(&version) {
+            vec![vec![1, 1, 1]]
+        } else {
+            Vec::new()
+        };
+        check(
+            frames_of(stored) == expected,
+            "the frames the entry kept are the device's",
+        )?;
+        check(
+            stored.version == crate::owner::stored::WORKSPACE_VERSION,
+            "the record reads as this build's",
+        )?;
+        check(
+            peer_of(&read, workspace)? == peer,
+            "the replica is the snapshot's",
+        )?;
+
+        journaled.publish(
+            &parts,
+            &read,
+            &Change::Workspace {
+                workspace,
+                shown: false,
+            },
+        )?;
+        let again = Journaled::open(&parts)?.ok_or("the record is not kept")?.1;
+        let reopened = again.stored(workspace).ok_or("the workspace is kept")?;
+        check(
+            reopened.generation == 7 && frames_of(reopened) == expected,
+            "the next publication keeps what the entry changed",
+        )?;
+        let (_, kept_now) = parts
+            .parts
+            .lock()
+            .map_err(|error| error.to_string())?
+            .iter()
+            .filter(|(name, _)| name.starts_with('w'))
+            .map(|(name, bytes)| (name.clone(), bytes.clone()))
+            .next_back()
+            .ok_or("a snapshot is kept")?;
+        check(
+            crate::owner::stored::format::stored_version(&kept_now)?
+                == crate::owner::stored::WORKSPACE_VERSION
+                && !String::from_utf8_lossy(&kept_now).contains("\"publication\""),
+            "the next publication writes a snapshot of this build's layout, without ownership",
+        )?;
+        Ok(())
     }
 
     /// A store that stopped after writing the pair it brings a workspace up with, before the index
@@ -1200,7 +1313,7 @@ mod tests {
     #[test]
     fn an_open_that_stops_before_naming_the_brought_up_pair_reads_the_journal()
     -> Result<(), Box<dyn std::error::Error>> {
-        let (version, golden) = EARLIER[2];
+        let (version, golden) = EARLIER[3];
         let EarlierRecord {
             parts, workspace, ..
         } = earlier_record(version, golden, false)?;

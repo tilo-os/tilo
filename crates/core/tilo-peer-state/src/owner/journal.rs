@@ -110,6 +110,32 @@ impl From<EntryBeforeFrames> for Entry {
     }
 }
 
+/// An entry a version 7 build appended: the whole of the workspace's fields, ownership's lists of
+/// writes among them, and the answers its server gave apart from them.
+#[derive(Deserialize)]
+struct EntryOfFields {
+    revision: u64,
+    fields: Vec<Op>,
+    #[serde(rename = "answered")]
+    _answered: Vec<earlier::Answered>,
+    head: Vec<Op>,
+    documents: Vec<(Route, Option<DocumentOps>)>,
+    tail: Vec<Op>,
+}
+
+impl From<EntryOfFields> for Entry {
+    fn from(entry: EntryOfFields) -> Self {
+        Self {
+            revision: entry.revision,
+            fields: entry.fields,
+            frames: Vec::new(),
+            head: entry.head,
+            documents: entry.documents,
+            tail: entry.tail,
+        }
+    }
+}
+
 /// One stretch of the frames a device keeps: frames it kept before, or frames of its own.
 #[derive(Debug, Serialize, Deserialize)]
 enum FrameStretch {
@@ -156,10 +182,15 @@ pub(crate) const LAYOUT_VERSION: u32 = 11;
 /// publication writes a snapshot of this build's layout first.
 pub(crate) const PREVIOUS_LAYOUT: u32 = 10;
 
-/// The oldest layout of a journal this build replays: one a version 8 build appended, whose
-/// frames were among the workspace's fields ([`EntryBeforeFrames`]). Version 9 changed no stored
-/// byte of version 8's. A version 7 journal is refused.
-pub(crate) const OLDEST_LAYOUT: u32 = 8;
+/// The layout of a journal whose entries carry ownership's lists of writes apart from the
+/// workspace's fields, the frames a device keeps among them ([`EntryBeforeFrames`]). Version 9
+/// changed no stored byte of version 8's.
+pub(crate) const WRITES_APART: u32 = 8;
+
+/// The oldest layout of a journal this build replays: one a version 7 build appended, the released
+/// one, each entry a delta of every field that build kept ([`EntryOfFields`]). A device on that
+/// build keeps there what it wrote since its last snapshot.
+pub(crate) const OLDEST_LAYOUT: u32 = 7;
 
 /// What an entry carries of a record: its fields and the frames it keeps.
 struct Split {
@@ -293,13 +324,13 @@ fn frame(entry: &Entry) -> Result<Vec<u8>, String> {
 /// the revision of the last entry, or `None` when the journal holds none.
 /// Reading stops at the first entry that is cut short or does not match its
 /// digest: no publication after it was acknowledged. `layout` is the version of the snapshot the
-/// journal was appended beside, which a build of that version appended; `ownership` is what a
-/// snapshot of version [`OLDEST_LAYOUT`] to [`PREVIOUS_LAYOUT`] held of it ([`ownership_before`]).
+/// journal was appended beside, which a build of that version appended; `held` is what that
+/// snapshot held that this build's record leaves out ([`held_before`]).
 pub(super) fn replay(
     stored: StoredWorkspace,
     log: &[u8],
     layout: u32,
-    ownership: Option<&serde_json::Value>,
+    held: Option<&serde_json::Value>,
 ) -> Result<(StoredWorkspace, Option<u64>), String> {
     let mut rest = log;
     match layout {
@@ -313,7 +344,7 @@ pub(super) fn replay(
             )
         }
         PREVIOUS_LAYOUT => {
-            let fields = previous_fields(&stored, layout, ownership)?;
+            let fields = previous_fields(&stored, layout, held)?;
             replay_entries(
                 stored,
                 &fields,
@@ -325,13 +356,30 @@ pub(super) fn replay(
                 false,
             )
         }
-        OLDEST_LAYOUT..PREVIOUS_LAYOUT => {
-            let fields = previous_fields(&stored, layout, ownership)?;
+        WRITES_APART..PREVIOUS_LAYOUT => {
+            let fields = previous_fields(&stored, layout, held)?;
             replay_entries(
                 stored,
                 &fields,
                 std::iter::from_fn(|| {
                     take::<EntryBeforeFrames>(&mut rest)
+                        .map(|entry| entry.map(Entry::from))
+                        .transpose()
+                }),
+                true,
+            )
+        }
+        OLDEST_LAYOUT => {
+            let fields = held
+                .map(serde_json::to_vec)
+                .transpose()
+                .map_err(|error| error.to_string())?
+                .ok_or("the snapshot's fields were not read")?;
+            replay_entries(
+                stored,
+                &fields.into(),
+                std::iter::from_fn(|| {
+                    take::<EntryOfFields>(&mut rest)
                         .map(|entry| entry.map(Entry::from))
                         .transpose()
                 }),
@@ -345,23 +393,38 @@ pub(super) fn replay(
     }
 }
 
-/// What a snapshot `bytes` of version [`OLDEST_LAYOUT`] to [`PREVIOUS_LAYOUT`] held of the
-/// outgoing ownership a build before the one path kept, which the journal beside it is a delta
-/// of; `None` for a snapshot of another version, or one that held none.
+/// What a snapshot `bytes` an earlier build wrote held that this build's record leaves out, which
+/// the journal beside it is a delta of; `None` for a snapshot of another version, or one that held
+/// none.
+///
+/// Of version [`WRITES_APART`] to [`PREVIOUS_LAYOUT`] that is the outgoing ownership a build
+/// before the one path kept. Of version [`OLDEST_LAYOUT`] it is every field, as that build split
+/// them from its replica: the snapshot's own, in its order, its replica empty and its server's
+/// answers left out, which that build's entries carried apart.
 ///
 /// # Errors
 /// The snapshot does not read.
-pub(super) fn ownership_before(bytes: &[u8]) -> Result<Option<serde_json::Value>, String> {
-    #[derive(Deserialize)]
-    struct Held {
-        version: u32,
-        #[serde(default)]
-        publication: Option<serde_json::Value>,
+pub(super) fn held_before(bytes: &[u8]) -> Result<Option<serde_json::Value>, String> {
+    let mut held: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    let version = held
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or("the snapshot names no version")?;
+    if version == u64::from(OLDEST_LAYOUT) {
+        held.insert(
+            "peer".into(),
+            serde_json::to_value(DurablePeer::default()).map_err(|error| error.to_string())?,
+        );
+        if let Some(serde_json::Value::Object(ownership)) = held.get_mut("publication") {
+            ownership.shift_remove("answered");
+        }
+        return Ok(Some(serde_json::Value::Object(held)));
     }
-    let held: Held = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    Ok(held
-        .publication
-        .filter(|_| (OLDEST_LAYOUT..=PREVIOUS_LAYOUT).contains(&held.version)))
+    if !(u64::from(WRITES_APART)..=u64::from(PREVIOUS_LAYOUT)).contains(&version) {
+        return Ok(None);
+    }
+    Ok(held.shift_remove("publication"))
 }
 
 /// The fields the first entry of a version `layout` build is a delta of: this build's, naming
