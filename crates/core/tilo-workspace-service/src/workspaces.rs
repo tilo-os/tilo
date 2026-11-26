@@ -18,10 +18,10 @@
 //! over HTTPS, where someone the workspace lets invite then admits it.
 
 mod actions;
-/// The invitation actions a member asks a workspace for, beside its `invite`.
-pub use actions::{CANCEL_INVITATION, INVITATIONS};
 #[cfg(feature = "apps")]
 pub use actions::agents::FollowedAgents;
+/// The invitation actions a member asks a workspace for, beside its `invite`.
+pub use actions::{CANCEL_INVITATION, INVITATIONS};
 /// The route a workspace's record is addressed at, as this service's record reads take it: a
 /// program answers with its app's route without naming the store's own crates.
 pub use tilo_peer_state::document_frame::DocumentRoute;
@@ -2204,13 +2204,13 @@ impl Workspaces {
         if app == tilo_workspace_agent::OWNER
             && record == collab_types::workspace_document_id(tilo_workspace_agent::KIND)
         {
-            *self
+            let mut written = self
                 .inner
                 .agents_written
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entry(workspace.to_owned())
-                .or_default() += 1;
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let count = written.entry(workspace.to_owned()).or_default();
+            *count = count.saturating_add(1);
         }
     }
 
