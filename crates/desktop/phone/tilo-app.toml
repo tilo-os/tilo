@@ -11,9 +11,10 @@ x86_64 = "v3"
 aarch64 = "aarch64"
 
 # What the app's code uses (tilolang check holds the code to this list): the device daemon's
-# threads, and the app's own data area, where the apps it opens keep their documents.
+# threads, the app's own data area, where the apps it opens keep their documents, and — on
+# Android only — the process the app context stands for, so that one is optional.
 [capabilities]
-optional = ["app-files", "files.paths", "threads"]
+optional = ["app-files", "files.paths", "processes", "threads"]
 
 [publisher]
 identity = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
