@@ -108,7 +108,7 @@ impl Connections {
         }
         if !host.runs(&key.0, &key.1) {
             tracing::warn!(workspace = %key.0, app = %key.1, "an app's connection ended, so this device starts it again");
-            if let Err(error) = host.start(&key.0, &key.1) {
+            if let Err(error) = host.start(&key.0, &key.1).await {
                 tracing::error!(workspace = %key.0, app = %key.1, %error, "an app's connection did not start again");
                 self.again_at_ms
                     .insert(key.clone(), now_ms.saturating_add(millis(AFTER_FAILURE)));
@@ -139,7 +139,7 @@ impl Connections {
         match takes_turn_in(workspaces, &key.0, &turn, order).await {
             Ok(claim) => {
                 self.free_since.remove(&key);
-                if let Err(error) = host.start(&key.0, &key.1) {
+                if let Err(error) = host.start(&key.0, &key.1).await {
                     tracing::error!(workspace = %key.0, app = %key.1, %error, "this device took an app's connection but its process did not start");
                     self.again_at_ms
                         .insert(key, now_ms.saturating_add(millis(AFTER_FAILURE)));

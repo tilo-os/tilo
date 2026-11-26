@@ -106,12 +106,18 @@ impl HostConnections for Device {
     fn on_power(&self) -> bool {
         locked(&self.has).power
     }
-    fn start(&self, workspace: &str, app: &str) -> Result<(), String> {
-        let mut starts = locked(&self.starts);
-        *starts = starts.saturating_add(1);
-        drop(starts);
-        locked(&self.running).insert((workspace.to_owned(), app.to_owned()));
-        Ok(())
+    fn start<'a>(
+        &'a self,
+        workspace: &'a str,
+        app: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut starts = locked(&self.starts);
+            *starts = starts.saturating_add(1);
+            drop(starts);
+            locked(&self.running).insert((workspace.to_owned(), app.to_owned()));
+            Ok(())
+        })
     }
     fn runs(&self, workspace: &str, app: &str) -> bool {
         locked(&self.running).contains(&(workspace.to_owned(), app.to_owned()))

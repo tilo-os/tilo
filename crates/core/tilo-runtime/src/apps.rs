@@ -23,6 +23,7 @@ use std::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 use tilo_app_host::{
     app_actions::{AppActionAccess, AppActionAccessResolver, AppResourceKindsResolver},
@@ -78,6 +79,21 @@ fn ready_when_started() -> tilo_app_host::services::WindowlessStart {
     let _ = started.send(Ok(()));
     start
 }
+
+/// How long a start whose app is not expected to connect waits for the process to end as it
+/// starts before taking a running one as started.
+const START_GRACE: Duration = Duration::from_millis(100);
+
+/// How often a start looks again at its process while it waits for its app's connection: the
+/// connection wakes the wait at once, the process's own end notifies nothing.
+const LOOK_AGAIN: Duration = Duration::from_millis(100);
+
+/// How long an app may take to connect before its start fails, naming it: a process that keeps
+/// running without ever connecting is no app anyone can use, and the start is what must say so.
+const CONNECTED_BY: Duration = Duration::from_secs(60);
+
+/// How often a start whose app has not connected says so in the log while it waits.
+const CONNECTED_WARNED: Duration = Duration::from_secs(5);
 
 /// The profile's installed applications and the launches it made.
 pub struct Apps {
@@ -802,7 +818,7 @@ impl Apps {
     ///
     /// # Errors
     /// The app is not installed, has no window, or the launcher refuses it.
-    pub(crate) fn start_watched_window(
+    pub(crate) async fn start_watched_window(
         &self,
         app_id: &str,
         workspace: &str,
@@ -815,21 +831,13 @@ impl Apps {
             drop(guard);
             return started;
         }
-        let launch = self.start(app_id, workspace)?;
-        let pid = launch.pid;
-        let watched = app_id.to_owned();
-        let launched = Arc::clone(&self.launched);
-        std::thread::Builder::new()
-            .name("tilo-app-reaper".into())
-            .spawn(move || {
-                watch_end(&watched, launch);
-                launched.forget(pid);
-                // The default presentation's launch lock lives while its app runs: a start
-                // during it waits, or shows the window this one published.
-                drop(guard);
-            })
-            .map_err(|error| format!("could not watch {app_id}: {error}"))?;
-        Ok(())
+        let launch = self.start(app_id, workspace).await?;
+        self.watch(app_id, launch, move || {
+            // The default presentation's launch lock lives while its app runs: a start during
+            // it waits, or shows the window this one published.
+            drop(guard);
+        })
+        .map_err(|error| format!("could not watch {app_id}: {error}"))
     }
 
     /// The installed package `app_id`, window or none.
@@ -841,17 +849,20 @@ impl Apps {
     }
 
     /// Launch `app_id` into this profile's workspace through the platform
-    /// launcher; the launch's handle, recorded for attestation.
+    /// launcher; the launch's handle, recorded for attestation, once the app
+    /// is up ([`Self::started`]).
     ///
     /// # Errors
-    /// The workspace is not served here, the app is not installed, or no
-    /// launcher can start it.
-    pub fn start(&self, app_id: &str, workspace: &str) -> Result<Launch, String> {
-        self.start_showing(app_id, workspace, Shows::Window, None)
+    /// The workspace is not served here, the app is not installed, no
+    /// launcher can start it, or it did not come up.
+    pub async fn start(&self, app_id: &str, workspace: &str) -> Result<Launch, String> {
+        let launch = self.start_showing(app_id, workspace, Shows::Window, None)?;
+        self.started(launch, app_id).await
     }
 
     /// [`Self::start`], showing a window or running the app's code with none, on `record` when the
-    /// launch names one: the app opens it, or creates it when nothing wrote it yet.
+    /// launch names one: the app opens it, or creates it when nothing wrote it yet. The launch is
+    /// recorded and its process runs; whether it comes up is [`Self::started`]'s answer.
     ///
     /// # Errors
     /// As [`Self::start`].
@@ -933,17 +944,20 @@ impl Apps {
             launch.kill();
             return Err(format!("could not let {app_id}'s launcher go on: {error}"));
         }
-        self.started(launch, app_id)
+        Ok(launch)
     }
 
-    /// The start answers once the app is up: its launcher has connected, as the broker
+    /// The start's answer, once the app is up: its launcher has connected, as the broker
     /// attests it. A process that ends first ends the start, with what it said, never answering
-    /// that it started; one that stays alive without connecting is waited for, not cut off at a
-    /// time this code invented, and said so in the log while it waits. Where no connection is
-    /// expected (a test's launch), a process still running after the start grace is taken as
-    /// started.
-    fn started(&self, mut launch: Launch, app_id: &str) -> Result<Launch, String> {
+    /// that it started; one that stays alive without connecting is waited for as long as it may
+    /// still come up, and ends the start at [`CONNECTED_BY`], naming the app. Where no
+    /// connection is expected (a test's launch), a process still running after [`START_GRACE`]
+    /// is taken as started.
+    async fn started(&self, mut launch: Launch, app_id: &str) -> Result<Launch, String> {
         let started = std::time::Instant::now();
+        // A connection wakes this wait at once; the tick only looks again at the process, whose
+        // end nothing here notifies.
+        let mut connections = self.launched.connections();
         let mut warned = started;
         loop {
             if self.launched.connected(launch.pid) {
@@ -974,41 +988,81 @@ impl Apps {
                     return Err(format!("{app_id}'s start could not be read: {error}"));
                 }
             }
+            let waited = started.elapsed();
             if self.connection_wait {
-                if warned.elapsed() >= std::time::Duration::from_secs(5) {
-                    // A start whose app never connects is a start that failed: the first
-                    // report is an error, with the last of what the app wrote, so a session
-                    // log that keeps errors alone still says why. The ones after it are the
-                    // same wait going on, and stay at warn.
+                if waited >= CONNECTED_BY {
+                    let said = launch.said();
+                    self.launched.forget(launch.pid);
+                    launch.kill();
+                    tracing::error!(
+                        app = app_id,
+                        waited_s = waited.as_secs(),
+                        said = said.trim(),
+                        "an app did not connect since its start, so its start failed"
+                    );
+                    return Err(format!(
+                        "{app_id} did not connect within {} s of its start",
+                        CONNECTED_BY.as_secs()
+                    ));
+                }
+                if warned.elapsed() >= CONNECTED_WARNED {
+                    // A start whose app takes its time is said so in the log while it waits,
+                    // with the last of what the app wrote: the first report is an error, so a
+                    // session log that keeps errors alone still says why, and the ones after it
+                    // are the same wait going on.
                     let first = warned == started;
                     warned = std::time::Instant::now();
                     if first {
                         tracing::error!(
                             app = app_id,
-                            waited_s = started.elapsed().as_secs(),
+                            waited_s = waited.as_secs(),
                             said = launch.said(),
                             "an app has not connected since its start"
                         );
                     } else {
                         tracing::warn!(
                             app = app_id,
-                            waited_s = started.elapsed().as_secs(),
+                            waited_s = waited.as_secs(),
                             said = launch.said(),
                             "an app has not connected since its start"
                         );
                     }
                 }
-            } else if started.elapsed() >= std::time::Duration::from_millis(100) {
-                break;
+            } else if waited >= START_GRACE {
+                return Ok(launch);
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            tokio::select! {
+                _ = connections.changed() => {}
+                () = tokio::time::sleep(LOOK_AGAIN) => {}
+            }
         }
-        Ok(launch)
     }
 
-    /// [`Self::start_showing`] `app` in `workspace` with `shows` on `record`, forgetting its record
-    /// once the process is reaped; the launch's ticket.
-    fn start_watched(
+    /// Follow `launch` on a thread of its own until it ends, then forget its record: what a start
+    /// leaves running. `ended` runs once it did.
+    fn watch(
+        &self,
+        app: &str,
+        launch: Launch,
+        ended: impl FnOnce() + Send + 'static,
+    ) -> std::io::Result<()> {
+        let watched = app.to_owned();
+        let pid = launch.pid;
+        let launched = Arc::clone(&self.launched);
+        std::thread::Builder::new()
+            .name("tilo-app-reaper".into())
+            .spawn(move || {
+                watch_end(&watched, launch);
+                launched.forget(pid);
+                ended();
+            })
+            .map(drop)
+    }
+
+    /// [`Self::start_showing`] `app` in `workspace` with `shows` on `record`, its process watched
+    /// and its record forgotten once it is reaped, answering once the app is up; the launch's
+    /// ticket.
+    async fn start_watched(
         &self,
         app: &str,
         workspace: &str,
@@ -1017,17 +1071,28 @@ impl Apps {
     ) -> Result<Option<u64>, String> {
         let launch = self.start_showing(app, workspace, shows, record)?;
         let ticket = self.launched.ticket(launch.pid);
-        let watched = app.to_owned();
-        let launched = Arc::clone(&self.launched);
-        std::thread::Builder::new()
-            .name("tilo-app-reaper".into())
-            .spawn(move || {
-                let pid = launch.pid;
-                watch_end(&watched, launch);
-                launched.forget(pid);
-            })
-            .map(|_| ticket)
-            .map_err(|error| format!("could not watch the launched app: {error}"))
+        let launch = self.started(launch, app).await?;
+        self.watch(app, launch, || {})
+            .map_err(|error| format!("could not watch the launched app: {error}"))?;
+        Ok(ticket)
+    }
+
+    /// The start of a caller that is answered by the process running: [`Self::start_showing`] with
+    /// its process watched and its record forgotten once reaped, never waiting for the app to
+    /// connect. What the app publishes is what such a caller waits for, on its own. The launch's
+    /// ticket.
+    fn start_running(
+        &self,
+        app: &str,
+        workspace: &str,
+        shows: Shows,
+        record: Option<&str>,
+    ) -> Result<Option<u64>, String> {
+        let launch = self.start_showing(app, workspace, shows, record)?;
+        let ticket = self.launched.ticket(launch.pid);
+        self.watch(app, launch, || {})
+            .map_err(|error| format!("could not watch the launched app: {error}"))?;
+        Ok(ticket)
     }
 
     /// Start what the window of the tilolang app `app` in `workspace` runs: an instance of the
@@ -1197,7 +1262,7 @@ impl LauncherServices for Apps {
         if crate::device::package_runs::runs_in_process(app) {
             return self.start_tilolang_window(app, &workspace.id().to_string());
         }
-        self.start_watched(app, &workspace.id().to_string(), Shows::Window, None)
+        self.start_running(app, &workspace.id().to_string(), Shows::Window, None)
             .map(drop)
     }
 
@@ -1221,7 +1286,7 @@ impl LauncherServices for Apps {
             return Ok(LaunchOutcome::Unconfirmed);
         }
         Ok(self
-            .start_watched(app, &workspace.id().to_string(), Shows::Window, None)?
+            .start_running(app, &workspace.id().to_string(), Shows::Window, None)?
             .map_or(LaunchOutcome::Unconfirmed, |ticket| {
                 LaunchOutcome::Started { ticket }
             }))
@@ -1267,7 +1332,7 @@ impl LauncherServices for Apps {
         }
         // Started and answered: the broker waits for what the process publishes, as it does for
         // a tilolang process with no view.
-        let _ = self.start_watched(app, workspace, Shows::Nothing, record)?;
+        let _ = self.start_running(app, workspace, Shows::Nothing, record)?;
         Ok(Some(ready_when_started()))
     }
 
@@ -1526,7 +1591,6 @@ impl Launch {
 /// The processes this runtime launched, by pid, with the start time that
 /// tells a live launch from a later process reusing its pid, and the last
 /// launch ticket handed out.
-#[derive(Default)]
 pub(crate) struct Launched(
     Mutex<HashMap<u32, LaunchRecord>>,
     AtomicU64,
@@ -1534,7 +1598,21 @@ pub(crate) struct Launched(
     /// instances it starts, the origin connectors and the task hosts. A connection from one is
     /// admitted as the app it runs, never as the account that started it.
     Mutex<HashMap<u32, StartedRecord>>,
+    /// Bumped whenever a launch connects, so a start waiting for its app's connection wakes and
+    /// looks again at the record it waits on.
+    tokio::sync::watch::Sender<u64>,
 );
+
+impl Default for Launched {
+    fn default() -> Self {
+        Self(
+            Mutex::default(),
+            AtomicU64::default(),
+            Mutex::default(),
+            tokio::sync::watch::channel(0).0,
+        )
+    }
+}
 
 /// A process the daemon started for a tilolang app, and the workspace it runs in.
 struct StartedRecord {
@@ -1664,14 +1742,32 @@ impl Launched {
         }
         record.connected = true;
         drop(launches);
+        self.connected_now();
         true
     }
 
     /// The app launched as `pid` has connected.
     fn connects(&self, pid: u32) {
-        if let Some(record) = self.0.lock_recover().get_mut(&pid) {
-            record.connected = true;
-        }
+        let mut launches = self.0.lock_recover();
+        let Some(record) = launches.get_mut(&pid) else {
+            return;
+        };
+        record.connected = true;
+        drop(launches);
+        self.connected_now();
+    }
+
+    /// A launch has connected: the start waiting for it wakes, and the others look again at the
+    /// record each waits on.
+    fn connected_now(&self) {
+        self.3
+            .send_modify(|connections| *connections = connections.wrapping_add(1));
+    }
+
+    /// A receiver woken whenever a launch connects, for a start to wait on: taken before the
+    /// record is looked at, so no connection made meanwhile is missed.
+    fn connections(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.3.subscribe()
     }
 
     /// Whether the app launched as `pid` has connected.

@@ -54,26 +54,34 @@ impl HostConnections for Apps {
         on_power()
     }
 
-    fn start(&self, workspace: &str, app: &str) -> Result<(), String> {
-        if crate::device::package_runs::runs_in_process(app) && !self.keeps_its_own_process(app) {
-            // A tilolang app's outside connection is its origin's connector.
-            if crate::device::package_runs::origin_of(app)?.is_none() {
-                return Err(format!(
-                    "{app} says it keeps a connection, but its manifest names no outside service \
-                     (`[entrypoint] origins`) to keep it to"
-                ));
+    fn start<'a>(
+        &'a self,
+        workspace: &'a str,
+        app: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async move {
+            if crate::device::package_runs::runs_in_process(app) && !self.keeps_its_own_process(app)
+            {
+                // A tilolang app's outside connection is its origin's connector.
+                if crate::device::package_runs::origin_of(app)?.is_none() {
+                    return Err(format!(
+                        "{app} says it keeps a connection, but its manifest names no outside service \
+                         (`[entrypoint] origins`) to keep it to"
+                    ));
+                }
+                let origin = self.origin_connection(app, workspace)?;
+                return self
+                    .instances
+                    .start_with_no_view(app, workspace, origin)
+                    .map(drop);
             }
-            let origin = self.origin_connection(app, workspace)?;
-            return self
-                .instances
-                .start_with_no_view(app, workspace, origin)
-                .map(drop);
-        }
-        if self.launched.no_window_running(app, workspace, None) {
-            return Ok(());
-        }
-        self.start_watched(app, workspace, Shows::Connection, None)
-            .map(drop)
+            if self.launched.no_window_running(app, workspace, None) {
+                return Ok(());
+            }
+            self.start_watched(app, workspace, Shows::Connection, None)
+                .await
+                .map(drop)
+        })
     }
 
     fn runs(&self, workspace: &str, app: &str) -> bool {

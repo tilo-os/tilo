@@ -1,4 +1,5 @@
 use super::*;
+use crate::device::workspaces::block_on_owned;
 use collab_types::caps::{Access, CapOverride, Scope};
 use ed25519_dalek::{Signer as _, SigningKey};
 use package_store::{Catalog, InstalledPackage, Layout, PackageStore};
@@ -170,6 +171,22 @@ fn apps(store: &Store, root: &Path, candidates: Vec<PathBuf>) -> Apps {
     apps
 }
 
+/// [`Apps::start`] waited for on a test's own thread — no runtime's, so the wait drives the app
+/// runtime's own work — what a launch answers. The fixture is borrowed, which the start's future
+/// carries, so this is no `block_on_owned` of its own.
+fn launched(apps: &Apps, app: &str, workspace: &str) -> Result<Launch, String> {
+    tilo_rt::app().handle().block_on(apps.start(app, workspace))
+}
+
+/// [`HostConnections::start`] waited for on a test's own thread: what a device's turn of a held
+/// connection answers.
+fn connection_started(apps: &Apps, workspace: &str, app: &str) -> Result<(), String> {
+    use tilo_workspace_service::work::HostConnections;
+    tilo_rt::app()
+        .handle()
+        .block_on(HostConnections::start(apps, workspace, app))
+}
+
 /// The apps installed in `store`, before the workspace service answers what they are granted.
 fn installed(store: &Store, root: &Path, candidates: Vec<PathBuf>) -> Apps {
     Apps::new(
@@ -305,13 +322,11 @@ tilo_test_env::scenario! {
         assert_eq!(resolver("so.tilo.unknown"), nothing);
         assert_eq!(apps.display_name("so.tilo.unknown-app"), "Unknown App");
 
-        let err = apps
-            .start("so.tilo.tool", WORKSPACE)
+        let err = launched(&apps, "so.tilo.tool", WORKSPACE)
             .map(|_| ())
             .unwrap_err();
         assert!(err.contains("no window"), "{err}");
-        let err = apps
-            .start("so.tilo.unknown", WORKSPACE)
+        let err = launched(&apps, "so.tilo.unknown", WORKSPACE)
             .map(|_| ())
             .unwrap_err();
         assert!(err.contains("not installed"), "{err}");
@@ -336,8 +351,7 @@ tilo_test_env::scenario! {
             &[("probe", b"binary")],
         );
         let apps = apps(&store, &root, Vec::new());
-        let err = apps
-            .start(VIEWER, "4f1d0f7a-9d0e-4c43-8d3b-2f6f7b8f3a21")
+        let err = launched(&apps, VIEWER, "4f1d0f7a-9d0e-4c43-8d3b-2f6f7b8f3a21")
             .map(|_| ())
             .unwrap_err();
         assert!(err.contains("not served by this runtime"), "{err}");
@@ -358,7 +372,7 @@ tilo_test_env::scenario! {
             &[("probe", b"binary")],
         );
         let apps = apps(&store, &root, vec![root.join("missing/tilo-launcher")]);
-        let err = apps.start(VIEWER, WORKSPACE).map(|_| ()).unwrap_err();
+        let err = launched(&apps, VIEWER, WORKSPACE).map(|_| ()).unwrap_err();
         assert!(err.contains("tilo-launcher was not found"), "{err}");
         assert!(apps.launched.0.lock().unwrap().is_empty());
     }
@@ -489,8 +503,8 @@ tilo_test_env::scenario! {
         // This builder has no launcher: the launch stops there, after the
         // runtime took the package's surface.
         let apps = apps(&store, &root, vec![root.join("missing/tilo-launcher")]);
-        let _ = apps.start(KEEPER, WORKSPACE);
-        let _ = apps.start(TAMPERED, WORKSPACE);
+        let _ = launched(&apps, KEEPER, WORKSPACE);
+        let _ = launched(&apps, TAMPERED, WORKSPACE);
         assert_eq!(declared(KEEPER), ["person-keeper.history"]);
         assert!(
             declared(TAMPERED).is_empty(),
@@ -806,7 +820,7 @@ tilo_test_env::scenario! {
         )
         .unwrap();
         let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
-        let launch = apps.start(VIEWER, WORKSPACE).unwrap();
+        let launch = launched(&apps, VIEWER, WORKSPACE).unwrap();
         let handed = wait_for(&format!("{}.args", said.display()));
         assert!(
             !handed.lines().any(|line| line == "--tilolang-process"),
@@ -844,7 +858,7 @@ tilo_test_env::scenario! {
             .expect("the device launches the build it made");
         assert_eq!(app.app_id.as_str(), dev.id, "it runs under its own id");
         assert_ne!(app.app_id.as_str(), of);
-        let launch = apps.start(&dev.id, WORKSPACE).unwrap();
+        let launch = launched(&apps, &dev.id, WORKSPACE).unwrap();
         assert_eq!(
             apps.attested(launch.pid),
             Some((dev.id, WORKSPACE.to_owned())),
@@ -1070,7 +1084,11 @@ view value(v: Value) {
         // What starts here is the installed package's own program with no window, as a device
         // with no display starts it.
         let launcher = tilo_test_env::stand_in(root.join("tilo-launcher"), "hold\n").unwrap();
-        let apps = installed(&store, &root, vec![launcher.path().to_owned()]);
+        let apps = Arc::new(installed(
+            &store,
+            &root,
+            vec![launcher.path().to_owned()],
+        ));
         // What the workspace granted the app this is a build of.
         let to_the_app = CapOverride::grant(
             Grantee::person("person-7"),
@@ -1082,9 +1100,14 @@ view value(v: Value) {
         let dev = apps
             .launchable(&id)
             .expect("the device launches the build it installed");
-        let launch = apps
-            .start_showing(&id, WORKSPACE, Shows::Nothing, None)
-            .expect("the staged build starts");
+        let launch = block_on_owned({
+            let (apps, app) = (Arc::clone(&apps), id.clone());
+            async move {
+                let launch = apps.start_showing(&app, WORKSPACE, Shows::Nothing, None)?;
+                apps.started(launch, &app).await
+            }
+        })
+        .expect("the staged build starts");
         assert_eq!(
             apps.attested(launch.pid),
             Some((id, WORKSPACE.to_owned())),
@@ -1111,7 +1134,7 @@ tilo_test_env::scenario! {
         // `Apps` has a launch of its own called `start`, and its installed list: the
         // connection host's are named through the trait.
         use tilo_workspace_service::work::HostConnections;
-        let start = |apps: &Apps| HostConnections::start(apps, WORKSPACE, BRIDGE);
+        let start = |apps: &Apps| connection_started(apps, WORKSPACE, BRIDGE);
 
         const BRIDGE: &str = "so.tilo.bridge";
         let (_temp, root) = canonical_temp();
@@ -1213,11 +1236,10 @@ tilo_test_env::scenario! {
         .unwrap();
         let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
         assert!(
-            apps.start(BRIDGE, WORKSPACE).is_err(),
+            launched(&apps, BRIDGE, WORKSPACE).is_err(),
             "it has no window to open"
         );
-        HostConnections::start(&apps, WORKSPACE, BRIDGE)
-            .expect("its connection starts with no window");
+        connection_started(&apps, WORKSPACE, BRIDGE).expect("its connection starts with no window");
         assert!(apps.runs(WORKSPACE, BRIDGE));
         let env = wait_for(&format!("{}.env", said.display()));
         assert!(env.lines().any(|line| line == "TILO_NO_WINDOW=1"), "{env}");
@@ -1295,7 +1317,7 @@ tilo_test_env::scenario! {
             [BRIDGE.to_owned()],
             "it is the app's held connection"
         );
-        HostConnections::start(&apps, WORKSPACE, BRIDGE)
+        connection_started(&apps, WORKSPACE, BRIDGE)
             .expect("its program is started as its own process, not its origin's connector");
         assert!(apps.runs(WORKSPACE, BRIDGE), "the program runs");
         let env = wait_for(&format!("{}.env", said.display()));
@@ -1365,7 +1387,7 @@ fn a_payload_that_does_not_verify_is_refused() {
     let err = verified::verify_installed(&store.catalog(), &installed()).unwrap_err();
     assert!(err.contains("refusing to launch"), "{err}");
     let apps = apps(&store, &root, Vec::new());
-    let err = apps.start(VIEWER, WORKSPACE).map(|_| ()).unwrap_err();
+    let err = launched(&apps, VIEWER, WORKSPACE).map(|_| ()).unwrap_err();
     assert!(err.contains("refusing to launch"), "{err}");
     assert!(apps.launched.0.lock().unwrap().is_empty());
     std::fs::write(&record, signed).unwrap();
@@ -1578,7 +1600,7 @@ int main(void) {
     let collab = UnixListener::bind(root.join(crate::COLLAB_SOCKET)).unwrap();
     let _identity = UnixListener::bind(root.join(crate::IDENTITY_SOCKET)).unwrap();
     let apps = apps(&store, &root, Vec::new());
-    let launch = apps.start(VIEWER, WORKSPACE).unwrap();
+    let launch = launched(&apps, VIEWER, WORKSPACE).unwrap();
     assert!(apps.attest_process(launch.pid, VIEWER, WORKSPACE));
     assert!(!apps.attest_process(launch.pid, "so.tilo.other", WORKSPACE));
     // The app's connection is queued, never accepted; closing the listener
@@ -1758,12 +1780,17 @@ fn a_launch_asks_the_launcher_for_the_installed_packages_own_program() {
         ),
     )
     .unwrap();
-    let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
+    let apps = Arc::new(apps(&store, &root, vec![launcher.path().to_owned()]));
     // The windowless start, as a device with no display takes it: the launch is the package's,
     // through the same launcher a window goes through.
-    let launch = apps
-        .start_showing(VIEWER, WORKSPACE, Shows::Nothing, None)
-        .expect("the installed app starts");
+    let launch = block_on_owned({
+        let apps = Arc::clone(&apps);
+        async move {
+            let launch = apps.start_showing(VIEWER, WORKSPACE, Shows::Nothing, None)?;
+            apps.started(launch, VIEWER).await
+        }
+    })
+    .expect("the installed app starts");
     let asked = wait_for(&asked.display().to_string());
     assert!(
         asked.starts_with("run ")
@@ -1815,7 +1842,7 @@ tilo_test_env::scenario! {
         .unwrap();
         let apps =
             apps(&store, &root, vec![launcher.path().to_owned()]).expecting_connection();
-        let Err(error) = apps.start(&dev.id, WORKSPACE) else {
+        let Err(error) = launched(&apps, &dev.id, WORKSPACE) else {
             panic!("a start that ran no app is refused");
         };
         assert!(error.contains("ended as it started"), "{error}");
@@ -1844,10 +1871,77 @@ tilo_test_env::scenario! {
         .unwrap();
         let apps =
             apps(&store, &root, vec![launcher.path().to_owned()]).expecting_connection();
-        let Err(error) = apps.start(&dev.id, WORKSPACE) else {
+        let Err(error) = launched(&apps, &dev.id, WORKSPACE) else {
             panic!("a start that ended before connecting is refused");
         };
         assert!(error.contains("ended as it started"), "{error}");
         assert!(error.contains("the app could not load its module"), "{error}");
     }
+}
+
+// A start whose app is slow to connect waits for it without holding the runtime it runs on:
+// another task there goes on while it waits, and the app's connection is what ends it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_start_that_waits_for_its_app_leaves_the_runtime_it_runs_on_going() {
+    let (_temp, root) = canonical_temp();
+    let mut store = Store::new(&root);
+    let device = SigningKey::from_bytes(&[7_u8; 32]);
+    let of = "org.example.notes";
+    store.install(of, &manifest(of, "gui", ""), &[("probe", b"binary")]);
+    let dev = store.install_dev(of, &device);
+    let display = root.join("wayland-0");
+    std::fs::write(&display, b"").unwrap();
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment.set("WAYLAND_DISPLAY", &display);
+    // A launcher that runs on, and an app that connects only once the test says so.
+    let launcher = tilo_test_env::stand_in(root.join("tilo-launcher"), "sleep 5\n").unwrap();
+    let apps = std::sync::Arc::new(
+        apps(&store, &root, vec![launcher.path().to_owned()]).expecting_connection(),
+    );
+    let progress = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let local = tokio::task::LocalSet::new();
+    let (waited, looked) = runtime.block_on(local.run_until(async {
+        let waiting = tokio::task::spawn_local({
+            let apps = std::sync::Arc::clone(&apps);
+            let app = dev.id.clone();
+            async move { apps.start(&app, WORKSPACE).await }
+        });
+        let ticking = tokio::task::spawn_local({
+            let (apps, progress) = (
+                std::sync::Arc::clone(&apps),
+                std::sync::Arc::clone(&progress),
+            );
+            async move {
+                for _ in 0..4 {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    progress.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                let pid = loop {
+                    let recorded = apps.launched.0.lock().unwrap().keys().next().copied();
+                    if let Some(pid) = recorded {
+                        break pid;
+                    }
+                    assert!(std::time::Instant::now() < until, "the launch is recorded");
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                };
+                apps.launched.connects(pid);
+            }
+        });
+        tokio::join!(waiting, ticking)
+    }));
+    looked.unwrap();
+    let launch = waited
+        .unwrap()
+        .expect("the app's connection answers its start");
+    assert!(
+        progress.load(std::sync::atomic::Ordering::SeqCst) >= 4,
+        "the runtime went on with other work while the start waited"
+    );
+    assert!(apps.attested(launch.pid).is_some(), "the app runs");
 }

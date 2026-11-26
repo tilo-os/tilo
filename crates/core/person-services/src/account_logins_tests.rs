@@ -983,8 +983,12 @@ impl tilo_workspace_service::work::HostConnections for HeldBridge {
     fn on_power(&self) -> bool {
         true
     }
-    fn start(&self, _: &str, _: &str) -> Result<(), String> {
-        Ok(())
+    fn start<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
     }
     fn runs(&self, _: &str, _: &str) -> bool {
         false
@@ -1116,8 +1120,12 @@ impl HostConnections for MailHeld {
     fn on_power(&self) -> bool {
         true
     }
-    fn start(&self, _: &str, _: &str) -> Result<(), String> {
-        Ok(())
+    fn start<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
     }
     fn runs(&self, _: &str, _: &str) -> bool {
         true

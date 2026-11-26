@@ -932,11 +932,15 @@ pub trait HostConnections: Send + Sync {
     fn on_power(&self) -> bool;
 
     /// Start `app`'s process in `workspace` with no window, unless it runs
-    /// there already.
+    /// there already, answering once the app is up.
     ///
     /// # Errors
     /// Why the process did not start.
-    fn start(&self, workspace: &str, app: &str) -> Result<(), String>;
+    fn start<'a>(
+        &'a self,
+        workspace: &'a str,
+        app: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
 
     /// Whether the process this device started for `app` in `workspace` runs.
     fn runs(&self, workspace: &str, app: &str) -> bool;

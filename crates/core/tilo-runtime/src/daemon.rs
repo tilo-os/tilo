@@ -3345,8 +3345,17 @@ fn start_requested(
     } else {
         None
     };
-    apps.start_watched_window(&app.app_id, workspace, guard)
-        .map_err(io::Error::other)?;
+    // The start answers once the app is up: this thread is a launch's own, never the app
+    // runtime's, so it waits on that runtime's own work.
+    let app_id = app.app_id;
+    let workspace = workspace.to_owned();
+    crate::device::workspaces::block_on_owned(async move {
+        daemon
+            .apps()
+            .start_watched_window(&app_id, &workspace, guard)
+            .await
+    })
+    .map_err(io::Error::other)?;
     Ok(json!({"started": true}))
 }
 
