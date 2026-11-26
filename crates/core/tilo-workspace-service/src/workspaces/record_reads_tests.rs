@@ -1081,13 +1081,24 @@ async fn a_persons_shell_lists_their_invocations_without_a_refusal() {
         }
         _ => panic!("the read is answered as a reading"),
     };
+    // The items of a listing's reading: the page of calls it holds.
+    let items = |reading: &serde_json::Value| {
+        reading
+            .pointer("/records/0/value/items")
+            .and_then(serde_json::Value::as_array)
+            .unwrap_or_else(|| panic!("the listing is a page: {reading}"))
+            .clone()
+    };
     // The workspace in front, which this device holds.
     let held = reading(
         std::sync::Arc::clone(&reads)
             .answer_read(&person, 0, listing(&h.kitchen))
             .await,
     );
-    assert!(held["items"].is_array(), "{held}");
+    assert!(
+        items(&held).is_empty(),
+        "the person's page of waiting calls is read, and holds none yet: {held}"
+    );
     // The workspace the shell shows after a switch to one this device keeps no copy of: the
     // listing still answers the person's own calls, instead of a policy refusing a record the
     // device keeps none of.
@@ -1097,15 +1108,16 @@ async fn a_persons_shell_lists_their_invocations_without_a_refusal() {
             .answer_read(&person, 0, listing(&elsewhere))
             .await,
     );
-    assert!(moved["items"].is_array(), "{moved}");
+    assert!(
+        items(&moved).is_empty(),
+        "the page is read in a workspace this device keeps no copy of: {moved}"
+    );
     // Nobody else's calls are in it: another person reads their own list, which holds none of
     // the person's.
     let stranger = Caller::local_person("someone else").in_workspace(h.kitchen.clone());
     let theirs = reading(reads.answer_read(&stranger, 0, listing(&h.kitchen)).await);
     assert!(
-        theirs["items"]
-            .as_array()
-            .is_some_and(std::vec::Vec::is_empty),
+        items(&theirs).is_empty(),
         "another person's list holds none of the person's calls: {theirs}"
     );
     h.server.shutdown().await;
