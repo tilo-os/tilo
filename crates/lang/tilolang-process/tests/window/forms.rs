@@ -116,6 +116,13 @@ fn click(app: &mut TestApp<TlApp>, at: ui::kurbo::Point) {
     settle(app);
 }
 
+/// The row of the task `title` in the list: a task opened in the window's content column titles
+/// its page with the same name, and the person's menu is the row's.
+fn task_row(app: &mut TestApp<TlApp>, title: &str) -> ui::kurbo::Rect {
+    bounds_of(app, title, Some(ui::a11y::Role::ListItem))
+        .unwrap_or_else(|| panic!("the task {title} shows: {:?}", all_names(app)))
+}
+
 /// Open the menu of the task `title` and choose `item`.
 fn choose(app: &mut TestApp<TlApp>, title: &str, item: &str) {
     choose_in(app, title, None, item);
@@ -124,8 +131,7 @@ fn choose(app: &mut TestApp<TlApp>, title: &str, item: &str) {
 /// Open the menu of the task `title`, the run `run` of it when one is named, and choose `item`:
 /// a command the view puts in a run stands under that run's row.
 fn choose_in(app: &mut TestApp<TlApp>, title: &str, run: Option<&str>, item: &str) {
-    let row = bounds_of(app, title, None)
-        .unwrap_or_else(|| panic!("the task {title} shows: {:?}", all_names(app)));
+    let row = task_row(app, title);
     right_click(app, (row.center().x, row.center().y));
     if let Some(run) = run {
         let items = menu_items(app);
@@ -148,8 +154,7 @@ fn open_run(app: &mut TestApp<TlApp>, title: &str, run: &str) -> Vec<String> {
 
 /// Opens the menu of the task `title` and the run `run` of it, without choosing a command.
 fn choose_open(app: &mut TestApp<TlApp>, title: &str, run: &str) {
-    let row = bounds_of(app, title, None)
-        .unwrap_or_else(|| panic!("the task {title} shows: {:?}", all_names(app)));
+    let row = task_row(app, title);
     right_click(app, (row.center().x, row.center().y));
     let items = menu_items(app);
     let at = bounds_of(app, run, Some(ui::a11y::Role::MenuItem))
