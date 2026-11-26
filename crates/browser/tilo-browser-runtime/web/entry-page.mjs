@@ -640,7 +640,10 @@ export async function startEntryPage({mode}) {
         return true;
       }
       const ownRequested = query.get('own-workspace') === '1';
-      if (!embed && !guestTicket && !enteredViaEntry && (ownRequested || query.get('new-workspace') === '1') &&
+      // A returning member also reconnects through the Lounge's public entry. Their signed
+      // device can enter their own workspace from there; creating a named one is separate.
+      const newRequested = !enteredViaEntry && query.get('new-workspace') === '1';
+      if (!embed && !guestTicket && (ownRequested || newRequested) && admitted?.userPublicKey &&
           page.peer === admitted && page.workspace === admitted?.workspace &&
           admitted?.host?.hostCert?.capabilities?.can_own_workspaces) {
         const own = ownRequested ? await ensureOwnWorkspace(admitted) : await askNewWorkspace(admitted, messages);

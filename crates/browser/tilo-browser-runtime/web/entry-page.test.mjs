@@ -187,9 +187,11 @@ async function fixture({boot, remembered = [], own = false, search = '', session
 
 /** A workspace of the host other than its listed one (the Lounge), which a link names. */
 const STUDIO = '7d7cf1fb-7214-4cce-9b34-1b5fdf9c0d3c';
-test('the personal workspace link admits this existing device to its own workspace', async () => {
+test('the personal workspace link re-enters the Lounge as the existing person and opens their private workspace', async () => {
   let asks = 0;
-  const {failure, at} = await fixture({search: '?own-workspace=1', member: {
+  let member;
+  const {failure, at} = await fixture({search: '?own-workspace=1',
+    join: async ({identity}) => { assert.equal(identity.userPublicKey, USER); return member; }, member: {
     host: {hostCert: {device_public_key: Array(32).fill(0xcd), capabilities: {can_own_workspaces: true}}},
     enterOwnWorkspace: async options => {
       assert.equal(options.name, undefined, 'the existing workspace is requested');
@@ -197,8 +199,10 @@ test('the personal workspace link admits this existing device to its own workspa
       return {workspace: STUDIO, name: 'Private'};
     },
   }, boot: async ({deps}, page) => {
-    await deps.onAdmitted(page.peer);
-    assert.equal(await deps.holdFirstScreen({...page, workspace: 'current'}), true);
+    member = page.peer;
+    const peer = await deps.enterViaHost({workspace: {name: 'Lounge', host: {origin: ORIGIN}}});
+    await deps.onAdmitted(peer);
+    assert.equal(await deps.holdFirstScreen({...page, peer, workspace: peer.workspace}), true);
   }});
   assert.ifError(failure);
   assert.equal(asks, 1);
