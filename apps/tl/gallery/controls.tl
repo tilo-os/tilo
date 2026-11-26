@@ -214,6 +214,75 @@ view controls(g: Gallery) {
                 on choose: set(layer, 1)
             }
         }
+        ui.Section("Keys") {
+            // The on-screen keys an app draws: rows laid out by their widths, raw touch with one
+            // finger per thumb, a long press that offers a letter's forms and a space bar that
+            // steers the caret. The words around them — the field, the suggestions — are the
+            // app's.
+            ui.KeyPad(
+                keys: [
+                    ui.PadKey.key(
+                        label: "Q",
+                        name: "Q",
+                        icon: "",
+                        row: 0,
+                        column: 0,
+                        holds: ["1"],
+                    ),
+                    ui.PadKey.key(
+                        label: "W",
+                        name: "W",
+                        icon: "",
+                        row: 0,
+                        column: 1,
+                        holds: ["2"],
+                    ),
+                    ui.PadKey.key(
+                        label: "E",
+                        name: "E",
+                        icon: "",
+                        row: 0,
+                        column: 2,
+                        holds: ["3"],
+                    ),
+                    ui.PadKey.key(
+                        label: "Shift",
+                        name: "Shift",
+                        icon: "arrow-big-up",
+                        tone: .modifier,
+                        width: 1.5,
+                        row: 1,
+                        column: 0,
+                        holds: [],
+                    ),
+                    ui.PadKey.key(
+                        label: "space",
+                        name: "Space",
+                        icon: "",
+                        width: 3.0,
+                        row: 1,
+                        column: 1,
+                        holds: [],
+                        caret: true,
+                    ),
+                    ui.PadKey.key(
+                        label: "Backspace",
+                        name: "Backspace",
+                        icon: "delete",
+                        tone: .modifier,
+                        width: 1.5,
+                        row: 1,
+                        column: 3,
+                        holds: [],
+                        repeat: true,
+                    ),
+                ],
+                size: .compact,
+                label: .some("On-screen keyboard"),
+            ) {
+                on press(i, at): set(cadence, i + at.len())
+            }
+        }
         ui.Section("Pictures") {
             ui.PictureChoice(selected: text_size, label: "Text size") {
                 ui.PictureOption("Small", picture: .text_size_small)

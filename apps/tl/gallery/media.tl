@@ -87,6 +87,16 @@ view media(g: Gallery) {
             }
         }
         part(
+            "Brush preview",
+            "The mark a brush, its size and a pigment will paint, drawn as a sample stroke before the canvas takes one.",
+        ) {
+            row(gap: .related, align: .center) {
+                ui.StrokePreview("pencil", size: 4.0, colour: "#3a3a3a", label: "Pencil")
+                ui.StrokePreview("marker", size: 18.0, colour: "#d55a3a", label: "Marker")
+                ui.StrokePreview("airbrush", size: 32.0, colour: "#3a7bd5", label: "Airbrush")
+            }
+        }
+        part(
             "Slideshow",
             "A picture shown large for its time, then the next asked for: a presentation a view opens.",
         ) {
