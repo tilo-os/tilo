@@ -163,7 +163,7 @@ impl Workspaces {
             "a host keeps one store of the calls that wait"
         );
         self.action_service()
-            .admit_approvals_from(Arc::clone(store));
+            .admit_approvals_from(Arc::<AskedStore>::clone(store));
         self.link_asked();
     }
 

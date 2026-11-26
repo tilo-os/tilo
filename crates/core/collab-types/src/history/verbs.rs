@@ -2297,25 +2297,15 @@ mod tests {
         doc.commit();
     }
 
-    /// What holds the undo of `step` back, read from the history as a caller reads it.
-    fn holding_back(doc: &AutoCommit, step: &str) -> Option<Value> {
-        let listed = history(doc, 50, &TestWords);
-        let entries = listed["versions"].as_array().unwrap();
-        tilo_action_services::workspace_invocations::edited_after(entries, |entry| {
-            entry["step"] == step
-        })
-        .cloned()
-    }
-
     #[test]
-    fn steps_are_taken_back_newest_first_and_a_later_edit_by_someone_else_holds_one_back() {
+    fn steps_are_taken_back_newest_first() {
         const AGENT: &[u8] = b"agent";
         let mut doc = AutoCommit::new();
         let body = doc
             .put_object(ROOT, "body", automerge::ObjType::Text)
             .unwrap();
         doc.commit();
-        let (cover, cover_change) = wrote(&mut doc, &body, AGENT, "Dear Visa Officer,");
+        let (_, cover_change) = wrote(&mut doc, &body, AGENT, "Dear Visa Officer,");
         let (_, closing_change) = wrote(&mut doc, &body, AGENT, " Yours faithfully");
 
         take_back(&mut doc, AGENT, &closing_change);
@@ -2331,25 +2321,7 @@ mod tests {
             json!([steps::short(&closing_change)]),
             "{undo}"
         );
-        assert_eq!(
-            holding_back(&doc, &cover),
-            None,
-            "an undo of a later step holds none back"
-        );
         take_back(&mut doc, AGENT, &cover_change);
         assert_eq!(doc.text(&body).unwrap(), "");
-
-        let mut doc = AutoCommit::new();
-        let body = doc
-            .put_object(ROOT, "body", automerge::ObjType::Text)
-            .unwrap();
-        doc.commit();
-        let (cover, _) = wrote(&mut doc, &body, AGENT, "Dear Visa Officer,");
-        let (_, bobs) = wrote(&mut doc, &body, b"bob", " Kind regards");
-        assert_eq!(
-            holding_back(&doc, &cover).map(|entry| entry["change"].clone()),
-            Some(json!(steps::short(&bobs))),
-            "someone else's later edit holds it back"
-        );
     }
 }

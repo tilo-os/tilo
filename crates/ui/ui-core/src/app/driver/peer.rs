@@ -928,7 +928,7 @@ impl Driver {
             // own frame, where the app would answer by its own word what its person was asked.
             // Their yes reaches the call only through the device's re-admission
             // ([`Driver::confirm_asked`]).
-            if let Err(forged) = tilo_remote_actions::asked::admit_frame(None, &request) {
+            if let Err(forged) = tilo_actions::remote::asked::admit_frame(None, &request) {
                 if request.target.provider == tilo_actions::remote::OWN_PROVIDER {
                     peer.refused.push((request.invocation, forged.clone()));
                 }

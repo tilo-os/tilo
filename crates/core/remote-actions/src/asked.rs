@@ -19,8 +19,8 @@ use zeroize::Zeroizing;
 
 use tilo_actions::outcome::InvocationId;
 use tilo_actions::remote::asked::{
-    Approval, Asked, AskedBy, AskedDispatch, AskedFacts, AskedGrants, AskedKeeping, AskedRecords,
-    KeptAsk, Offer, RecordRef, Resolve, answering_person, asked_person,
+    Approval, ApprovalsHanded, Asked, AskedBy, AskedDispatch, AskedFacts, AskedGrants,
+    AskedKeeping, AskedRecords, KeptAsk, Offer, RecordRef, Resolve, answering_person, asked_person,
 };
 use tilo_actions::remote::secret_arguments::{
     SecretParameters, restore, secret_arguments, without_secrets,
@@ -73,7 +73,7 @@ struct Record {
     asked_at_ms: u64,
     status: Status,
     /// Whether the approved call was admitted from a frame once already
-    /// ([`AskedStore::admits_approval`]).
+    /// ([`ApprovalsHanded::admits_approval`]).
     relayed: bool,
     /// The dispatch that keeps the call, by its name ([`AskedStore::for_dispatch`]).
     dispatch: String,
@@ -468,35 +468,6 @@ impl AskedStore {
         kept.moved();
         drop(kept);
         Ok(at)
-    }
-
-    /// Whether `request`, arriving as a frame from outside a dispatch, may carry the person's
-    /// approve it carries: only the call a resolve of its record approved and handed back,
-    /// byte for byte the same, under the same id, and once. A frame that carries an approve
-    /// this does not admit is refused whole, never run without it: a caller cannot approve
-    /// its own call. A frame that carries none is admitted as it is.
-    pub fn admits_approval(&self, request: &InvokeRequest) -> bool {
-        let Some(approval) = request.approval() else {
-            return true;
-        };
-        let mut kept = self.kept.lock_recover();
-        let Some(record) = kept.find(&approval.record) else {
-            return false;
-        };
-        // The arguments its person changed, if they did, are the ones the approve carries.
-        let as_changed = approval.arguments.as_deref() == record.edited.as_ref();
-        let (call, sealed) = without_secrets(request, &record.sealed);
-        let admitted = record.status == Status::Running
-            && !record.relayed
-            && record.invocation == request.invocation
-            && as_changed
-            && digest_of(&sealed) == record.digest
-            && tilo_actions::remote::asked::same_call(&record.request, &call);
-        if admitted {
-            record.relayed = true;
-        }
-        drop(kept);
-        admitted
     }
 
     /// Answer the record `at` as `answering` says ([`Resolve`]): admitted only from the person
@@ -1297,21 +1268,28 @@ impl AskedRecords for DispatchRecords {
     }
 }
 
-/// Admit `request`, a caller's frame, as its approve stands: refused where it carries an
-/// approve `store` did not hand back ([`AskedStore::admits_approval`]), or any approve where no
-/// store keeps asked records here.
-///
-/// # Errors
-/// [`FORGED`](tilo_actions::remote::asked::FORGED), refused.
-pub fn admit_frame(
-    store: Option<&AskedStore>,
-    request: &tilo_actions::remote::InvokeRequest,
-) -> Result<(), tilo_actions::remote::ActionCallError> {
-    if request.approval().is_none() || store.is_some_and(|store| store.admits_approval(request)) {
-        Ok(())
-    } else {
-        Err(tilo_actions::remote::ActionCallError::Refused {
-            reason: tilo_actions::remote::asked::FORGED.to_owned(),
-        })
+impl ApprovalsHanded for AskedStore {
+    fn admits_approval(&self, request: &InvokeRequest) -> bool {
+        let Some(approval) = request.approval() else {
+            return true;
+        };
+        let mut kept = self.kept.lock_recover();
+        let Some(record) = kept.find(&approval.record) else {
+            return false;
+        };
+        // The arguments its person changed, if they did, are the ones the approve carries.
+        let as_changed = approval.arguments.as_deref() == record.edited.as_ref();
+        let (call, sealed) = without_secrets(request, &record.sealed);
+        let admitted = record.status == Status::Running
+            && !record.relayed
+            && record.invocation == request.invocation
+            && as_changed
+            && digest_of(&sealed) == record.digest
+            && tilo_actions::remote::asked::same_call(&record.request, &call);
+        if admitted {
+            record.relayed = true;
+        }
+        drop(kept);
+        admitted
     }
 }

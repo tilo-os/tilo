@@ -169,7 +169,7 @@ pub fn admit_to(
         return Err(ActionCallError::UnknownAction);
     }
     // No store keeps asked records here: an approve a frame carries is no one's.
-    tilo_remote_actions::asked::admit_frame(None, request)?;
+    tilo_actions::remote::asked::admit_frame(None, request)?;
     let arguments = match &request.argument {
         InvokeArgument::None => Map::new(),
         InvokeArgument::Json(arguments) => arguments.clone(),

@@ -6886,8 +6886,10 @@ impl ActionProvider for RuntimeActionProvider {
         }
         // An approve only the device hands back: one a caller writes into its own call is
         // refused whole, nothing of it run.
-        if let Err(forged) = tilo_remote_actions::asked::admit_frame(
-            self.asked.as_ref().map(|asked| asked.store()),
+        if let Err(forged) = tilo_actions::remote::asked::admit_frame(
+            self.asked
+                .as_ref()
+                .map(|asked| asked.store() as &dyn tilo_actions::remote::asked::ApprovalsHanded),
             &request,
         ) {
             return Pending::ready(Err(forged));

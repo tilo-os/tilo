@@ -337,7 +337,7 @@ struct Inner {
     certificate: Mutex<Option<tilo_user_identity::DeviceCert>>,
     /// Where the approves its people gave are kept: a request carrying one admits only where
     /// this store handed it back ([`ActionService::admit_approvals_from`]).
-    asked: std::sync::OnceLock<Arc<tilo_remote_actions::asked::AskedStore>>,
+    asked: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::ApprovalsHanded>>,
     replay: Mutex<ActionReplayWindow>,
     /// The calls visitors made, per client address ([`visitors`]).
     visitors: Mutex<visitors::VisitorWindows>,
@@ -388,7 +388,10 @@ impl ActionService {
 
     /// Admit the approves `store` hands back from now on: until it is named, a request carrying
     /// an approve is refused. The first store named stays.
-    pub fn admit_approvals_from(&self, store: Arc<tilo_remote_actions::asked::AskedStore>) {
+    pub fn admit_approvals_from(
+        &self,
+        store: Arc<dyn tilo_actions::remote::asked::ApprovalsHanded>,
+    ) {
         let _ = self.0.asked.set(store);
     }
 
@@ -866,8 +869,10 @@ impl ActionService {
         // carries is that device's to vouch for, not this one's to check.
         if remote.is_some()
             && let RemoteActionMessage::Invoke(invoke) = request
-            && let Err(error) =
-                tilo_remote_actions::asked::admit_frame(self.0.asked.get().map(Arc::as_ref), invoke)
+            && let Err(error) = tilo_actions::remote::asked::admit_frame(
+                self.0.asked.get().map(Arc::as_ref),
+                invoke,
+            )
         {
             return tilo_actions::remote::refuse(request, error);
         }

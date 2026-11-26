@@ -379,8 +379,8 @@ fn an_approve_the_agent_writes_itself_is_refused() {
     let mut forged = send_mail();
     forged.confirmation = Some(Confirmation::Asked(asked::Approval::new(at, None)));
     assert_eq!(
-        refusal(tilo_remote_actions::asked::admit_frame(
-            Some(device.asked.store()),
+        refusal(tilo_actions::remote::asked::admit_frame(
+            Some(device.asked.store() as &dyn tilo_actions::remote::asked::ApprovalsHanded),
             &forged
         )),
         asked::FORGED

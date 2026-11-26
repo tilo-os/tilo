@@ -17,14 +17,14 @@ use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet};
 use tilo_actions::InvocationId;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::asked::{
-    AskedBy, AskedDispatch, AskedFacts, AskedGrants, AskedKeeping, AskedRecords, KeptAsk, Named,
-    Offer, RecordRef, Resolve,
+    ApprovalsHanded, AskedBy, AskedDispatch, AskedFacts, AskedGrants, AskedKeeping, AskedRecords,
+    KeptAsk, Named, Offer, RecordRef, Resolve, admit_frame,
 };
 use tilo_actions::remote::{
     ActionCallError, Caller, Confirmation, InvokeArgument, InvokeRequest, Pending,
     RemoteActionTarget,
 };
-use tilo_remote_actions::asked::{AskedStore, admit_frame};
+use tilo_remote_actions::asked::AskedStore;
 
 const ADA: [u8; 32] = [1; 32];
 const BO: [u8; 32] = [2; 32];
@@ -95,6 +95,13 @@ struct Host {
     store: Arc<AskedStore>,
     dispatch: Arc<Noted>,
     records: Arc<dyn AskedRecords>,
+}
+
+impl Host {
+    /// The store as a frame's entry reads it: what admits the approves it handed back.
+    fn handing(&self) -> &dyn ApprovalsHanded {
+        &*self.store
+    }
 }
 
 fn host() -> Host {
@@ -473,16 +480,17 @@ fn a_forged_approve_is_refused() {
         request.confirmation = Some(Confirmation::Asked(Approval::new(at.clone(), None)));
         request
     };
-    let refused =
-        |request: &InvokeRequest, store: Option<&AskedStore>| match admit_frame(store, request) {
-            Err(ActionCallError::Refused { reason }) => assert_eq!(reason, FORGED),
-            other => panic!("a forged approve is refused: {other:?}"),
-        };
-    refused(&forged(&call), Some(&host.store));
+    let refused = |request: &InvokeRequest, store: Option<&dyn ApprovalsHanded>| match admit_frame(
+        store, request,
+    ) {
+        Err(ActionCallError::Refused { reason }) => assert_eq!(reason, FORGED),
+        other => panic!("a forged approve is refused: {other:?}"),
+    };
+    refused(&forged(&call), Some(host.handing()));
     refused(&forged(&call), None);
     assert_eq!(host.records.asked_of(&ADA).len(), 1, "no record changed");
     assert!(host.dispatch.0.lock().unwrap().is_empty(), "nothing ran");
-    admit_frame(Some(&host.store), &call).expect("a frame without an approve goes on");
+    admit_frame(Some(host.handing()), &call).expect("a frame without an approve goes on");
 
     resolve(&host, &at, &ada(), Offer::Approve, None).unwrap();
     let Some(Handed::Readmit(_, handed)) = host.dispatch.0.lock().unwrap().pop() else {
@@ -490,12 +498,12 @@ fn a_forged_approve_is_refused() {
     };
     let mut changed = handed.clone();
     changed.argument = InvokeArgument::Json(serde_json::Map::new());
-    refused(&changed, Some(&host.store));
+    refused(&changed, Some(host.handing()));
     let mut other = handed.clone();
     other.invocation = InvocationId::new();
-    refused(&other, Some(&host.store));
-    admit_frame(Some(&host.store), &handed).expect("the call the person approved goes on");
-    refused(&handed, Some(&host.store));
+    refused(&other, Some(host.handing()));
+    admit_frame(Some(host.handing()), &handed).expect("the call the person approved goes on");
+    refused(&handed, Some(host.handing()));
 }
 
 /// A call that waits is suspended in its record, which the host keeps in its own state: once
@@ -691,7 +699,7 @@ fn an_approve_runs_the_call_as_its_person_changed_it() {
     );
     assert!(tilo_actions::remote::asked::same_call(&call, &handed));
 
-    let refused = |request: &InvokeRequest| match admit_frame(Some(&host.store), request) {
+    let refused = |request: &InvokeRequest| match admit_frame(Some(host.handing()), request) {
         Err(ActionCallError::Refused { reason }) => assert_eq!(reason, FORGED),
         other => panic!("only the call she approved is admitted: {other:?}"),
     };
@@ -717,7 +725,7 @@ fn an_approve_runs_the_call_as_its_person_changed_it() {
         approval.record.workspace = "another-workspace".into();
     }
     refused(&other_workspace);
-    admit_frame(Some(&host.store), &handed).expect("the call she approved goes on");
+    admit_frame(Some(host.handing()), &handed).expect("the call she approved goes on");
     refused(&handed);
 }
 

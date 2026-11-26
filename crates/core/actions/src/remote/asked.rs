@@ -24,9 +24,39 @@ use zeroize::Zeroizing;
 
 use super::RemoteActionTarget;
 
-/// What a frame carrying an approve no resolve handed back is refused with (tilo-remote-actions'
-/// `AskedStore::admits_approval`).
+/// What a frame carrying an approve no resolve handed back is refused with
+/// ([`ApprovalsHanded::admits_approval`]).
 pub const FORGED: &str = "This call carries an approve its person did not give";
+
+/// Where the approves a person gave are kept: the asked records a host keeps
+/// (tilo-remote-actions' `AskedStore`), which hand an approved call back to its dispatch.
+pub trait ApprovalsHanded: Send + Sync {
+    /// Whether `request`, arriving as a frame from outside a dispatch, may carry the person's
+    /// approve it carries: only the call a resolve of its record approved and handed back,
+    /// byte for byte the same, under the same id, and once. A frame that carries an approve
+    /// this does not admit is refused whole, never run without it: a caller cannot approve
+    /// its own call. A frame that carries none is admitted as it is.
+    fn admits_approval(&self, request: &super::InvokeRequest) -> bool;
+}
+
+/// Admit `request`, a caller's frame, as its approve stands: refused where it carries an
+/// approve `store` did not hand back ([`ApprovalsHanded::admits_approval`]), or any approve
+/// where no store keeps asked records here.
+///
+/// # Errors
+/// [`FORGED`], refused.
+pub fn admit_frame(
+    store: Option<&dyn ApprovalsHanded>,
+    request: &super::InvokeRequest,
+) -> Result<(), super::ActionCallError> {
+    if request.approval().is_none() || store.is_some_and(|store| store.admits_approval(request)) {
+        Ok(())
+    } else {
+        Err(super::ActionCallError::Refused {
+            reason: FORGED.to_owned(),
+        })
+    }
+}
 
 /// What a resolve from anything but the system's own confirmation is refused with: the
 /// person's shell asks them, and the CLI asks them at its own prompt.

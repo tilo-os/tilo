@@ -421,49 +421,6 @@ pub struct Invocations {
     pub next_cursor: Option<String>,
 }
 
-/// The change someone else made after the last edit in effect of the step
-/// `of_step` tells, still in effect: what holds the step's undo back, since
-/// taking it back under their work would change what they see. `entries` are
-/// a document's history entries, oldest first. Housekeeping changes nothing
-/// the step wrote, and an undo or redo that only moves steps made after it
-/// (`takes_back`, `brings_back`) leaves it as it was: those steps hold it back
-/// themselves while they are in effect.
-#[must_use]
-pub fn edited_after(
-    entries: &[serde_json::Value],
-    of_step: impl Fn(&serde_json::Value) -> bool,
-) -> Option<&serde_json::Value> {
-    let in_effect = |entry: &serde_json::Value| {
-        entry.get("undone").and_then(serde_json::Value::as_bool) != Some(true)
-    };
-    let is_edit = |entry: &serde_json::Value| entry.get("change_kind").is_none();
-    let last = entries
-        .iter()
-        .rposition(|entry| of_step(entry) && in_effect(entry) && is_edit(entry))?;
-    let after = entries.get(last.saturating_add(1)..)?;
-    let later: Vec<&str> = after
-        .iter()
-        .filter_map(|entry| entry.get("change").and_then(serde_json::Value::as_str))
-        .collect();
-    let moves_only_later = |entry: &serde_json::Value| {
-        ["takes_back", "brings_back"].iter().any(|key| {
-            entry
-                .get(*key)
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(|moved| {
-                    moved.iter().all(|change| {
-                        change
-                            .as_str()
-                            .is_some_and(|change| later.contains(&change))
-                    })
-                })
-        })
-    };
-    after.iter().find(|entry| {
-        in_effect(entry) && is_edit(entry) && !of_step(entry) && !moves_only_later(entry)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -525,25 +482,5 @@ mod tests {
         );
         let unnamed = serde_json::to_value(InvocationBy::default()).unwrap();
         assert!(unnamed.get("id").is_none(), "{unnamed}");
-    }
-
-    #[test]
-    fn an_undo_of_a_later_step_holds_no_earlier_step_back_and_a_later_edit_does() {
-        use serde_json::json;
-        let cover = |entry: &serde_json::Value| entry["step"] == "cover";
-        let mut entries = vec![
-            json!({"change": "a1", "step": "cover"}),
-            json!({"change": "b1", "step": "closing", "undone": true}),
-            json!({"change": "c1", "step": "u1", "takes_back": ["b1"]}),
-            json!({"change": "d1", "change_kind": "Housekeeping"}),
-        ];
-        assert_eq!(edited_after(&entries, cover), None);
-
-        entries.push(json!({"change": "e1", "step": "u2", "takes_back": ["z9"]}));
-        assert_eq!(edited_after(&entries, cover).unwrap()["change"], "e1");
-        entries.pop();
-
-        entries.push(json!({"change": "e1", "step": "bob"}));
-        assert_eq!(edited_after(&entries, cover).unwrap()["change"], "e1");
     }
 }
