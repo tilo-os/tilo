@@ -24,6 +24,12 @@ use crate::{Level, UiNode};
 /// show what theirs are bound to.
 pub type BoundValues = Rc<RefCell<HashMap<String, crate::Value>>>;
 
+/// The rows a window asks the app for at once, as many as the app sends with a list before it is
+/// asked: a list asks for the range it shows out to whole pages of this many rows, so a list that
+/// grows as it measures its rows, or that a scroll moves a few rows on, finds them in the page it
+/// asked for and asks the app nothing more until it reaches past it.
+const PAGE: usize = 48;
+
 pub struct RemoteRows {
     level: Level,
     list: String,
@@ -470,22 +476,39 @@ impl RowSource for RemoteRows {
     /// held outside the range are kept until the app answers, so a list that asks for more than it
     /// did a frame ago shows them meanwhile.
     fn request_range(&mut self, range: Range<usize>, open: Option<String>) {
-        // The app renders what the list shows and forgets the rest: it hears of every range, and of
-        // the row that opened or closed, whose document it renders or drops.
+        // The app renders the pages the list shows and forgets the rest: it hears of a range that
+        // reaches past the pages it was asked for, and of the row that opened or closed, whose
+        // document it renders or drops. A range inside what it was asked for (or sent unasked) is
+        // answered there.
         let menu = self.menu.clone();
-        let asked = Asked { range, open, menu };
-        if self.sent
-            && let Some(sent) = &self.asked
-            && (sent.open.as_ref(), sent.menu.as_ref())
-                == (asked.open.as_ref(), asked.menu.as_ref())
-            && sent.range.start <= asked.range.start
-            && asked.range.end.min(self.keys.len()) <= sent.range.end
+        let len = self.keys.len();
+        // A list whose length the app has not said yet asks for what it shows.
+        let end = if len == 0 {
+            range.end
+        } else {
+            range.end.min(len)
+        };
+        let covers = |asked: &Asked| {
+            (asked.open.as_ref(), asked.menu.as_ref()) == (open.as_ref(), menu.as_ref())
+                && asked.range.start <= range.start
+                && end <= asked.range.end
+        };
+        if self
+            .wanted
+            .as_ref()
+            .or(self.asked.as_ref())
+            .is_some_and(covers)
         {
             return;
         }
-        if self.asked.as_ref() != Some(&asked) {
-            self.wanted = Some(asked);
-        }
+        let start = range.start - range.start % PAGE;
+        let paged = end.div_ceil(PAGE).saturating_mul(PAGE);
+        let end = if len == 0 { paged } else { paged.min(len) }.max(end);
+        self.wanted = Some(Asked {
+            range: start..end,
+            open,
+            menu,
+        });
     }
 
     /// Ask the app for the row `key` again with its menu, the range and the open row as they
@@ -792,14 +815,21 @@ mod tests {
                 Level::Root,
                 "list".to_owned(),
                 Asked {
-                    range: 0..20,
+                    range: 0..PAGE,
                     open: None,
                     menu: None,
                 }
-            ))
+            )),
+            "the page the range is on is asked for"
         );
         rows.request_range(0..20, None);
         assert_eq!(rows.take_wanted(), None, "asked once");
+        rows.request_range(4..PAGE, None);
+        assert_eq!(
+            rows.take_wanted(),
+            None,
+            "a list that grows or moves within the page it asked for asks nothing more"
+        );
         assert!(!rows.wants());
         assert_eq!(rows.key_at(5), None, "a row not named yet");
     }
@@ -816,8 +846,8 @@ mod tests {
         rows.request_range(30..60, None);
         assert_eq!(
             rows.take_wanted().map(|(_, _, asked)| asked.range),
-            Some(30..60),
-            "rows past the ones sent are asked for"
+            Some(0..2 * PAGE),
+            "rows past the ones sent are asked for, by the pages they are on"
         );
         rows.request_range(0..20, Some("v/4".to_owned()));
         assert_eq!(
@@ -860,7 +890,7 @@ mod tests {
         assert_eq!(
             rows.take_wanted().map(|(_, _, asked)| asked),
             Some(Asked {
-                range: 0..20,
+                range: 0..PAGE,
                 open: None,
                 menu: None,
             })
