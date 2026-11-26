@@ -1,7 +1,7 @@
 //! A phone is told what its person's assistant tells them, while it runs and while it is closed.
 //!
 //! The phone signs in with a ticket another of the person's devices printed, and hands its host the
-//! web push endpoint a UnifiedPush distributor gave it, with a key of its own. While it runs, its
+//! web push endpoint a `UnifiedPush` distributor gave it, with a key of its own. While it runs, its
 //! daemon reads the person's log through the same action every device of theirs reads it by, and
 //! each thing that waits becomes a notification on the phone; answering one elsewhere takes it
 //! away. With the daemon stopped, the host's teller pushes to that endpoint through the sender it
@@ -66,10 +66,10 @@ impl PushService {
                 let acceptor = acceptor.clone();
                 let kept = Arc::clone(&kept);
                 tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
                     let Ok(mut stream) = acceptor.accept(connection).await else {
                         return;
                     };
-                    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
                     let mut request = Vec::new();
                     let mut chunk = [0u8; 4096];
                     // The body is one record, encrypted: read the head, then its length.
@@ -77,7 +77,9 @@ impl PushService {
                         if let Some(end) =
                             request.windows(4).position(|window| window == b"\r\n\r\n")
                         {
-                            break (request[..end].to_vec(), request[end + 4..].to_vec());
+                            let (head, rest) = request.split_at(end);
+                            let body = rest.strip_prefix(b"\r\n\r\n").unwrap_or_default();
+                            break (head.to_vec(), body.to_vec());
                         }
                         let Ok(read) = stream.read(&mut chunk).await else {
                             return;
@@ -85,7 +87,7 @@ impl PushService {
                         if read == 0 {
                             return;
                         }
-                        request.extend_from_slice(&chunk[..read]);
+                        request.extend_from_slice(chunk.get(..read).unwrap_or_default());
                     };
                     let length: usize = String::from_utf8_lossy(&head)
                         .lines()
@@ -103,7 +105,7 @@ impl PushService {
                         if read == 0 {
                             break;
                         }
-                        body.extend_from_slice(&chunk[..read]);
+                        body.extend_from_slice(chunk.get(..read).unwrap_or_default());
                     }
                     kept.lock().unwrap().push(body);
                     let _ = stream
@@ -223,21 +225,34 @@ fn a_phone_is_told_what_waits_while_it_runs_and_through_its_push_endpoint_while_
     );
     assert!(plain.is_err(), "an address of no https was kept: {plain:?}");
 
+    what_waits_reaches_it_while_it_runs(&server, &phone, &key, &person);
+    pushed_while_it_is_closed(&server, phone, &push, &data, &key, &person);
+}
+
+/// What waits for the person becomes a notification on the phone as its daemon reads their log,
+/// and answering it on another device of theirs takes it away.
+fn what_waits_reaches_it_while_it_runs(
+    server: &Server,
+    phone: &tilo_runtime::in_process::Device,
+    key: &Key,
+    person: &[u8; 32],
+) {
     // While the phone runs, its daemon reads the person's log, and what waits becomes a
     // notification with its words and its buttons.
     let told = tilo_person_services::PersonServices::of(&server.workspaces())
-        .tell(&person, to_tell("The deploy is waiting", "Deploy"))
+        .tell(person, to_tell("The deploy is waiting", "Deploy"))
         .expect("the person is told");
     let (services, recorder) = tilo_process_services::process::ProcessServices::recording();
     let mut watching = Watching::new(Some(key.auth_bytes().unwrap()));
     watching
-        .catch_up(&phone, &server.workspace, services.notifications.as_ref())
+        .catch_up(phone, &server.workspace, services.notifications.as_ref())
         .expect("the phone reads what its person was told");
     let shown = recorder.notifications();
     assert_eq!(shown.len(), 1, "one thing waits: {shown:?}");
-    assert_eq!(shown[0].title, "Deploy");
-    assert_eq!(shown[0].body, "The deploy is waiting");
-    let tag = shown[0].tag.clone();
+    let what_waits = shown.first().expect("one thing waits");
+    assert_eq!(what_waits.title, "Deploy");
+    assert_eq!(what_waits.body, "The deploy is waiting");
+    let tag = what_waits.tag.clone();
     assert!(
         tag.starts_with("tilo-told-"),
         "a notification is named as a push names it: {tag}"
@@ -246,26 +261,37 @@ fn a_phone_is_told_what_waits_while_it_runs_and_through_its_push_endpoint_while_
     // Answered on another device of theirs, it is taken away from the phone.
     tilo_person_services::PersonServices::of(&server.workspaces())
         .acknowledge_told(
-            &person,
+            person,
             &told.id,
             "Ada's laptop",
             person_telling::BY_ANSWERED,
         )
         .expect("the answer is written down");
     watching
-        .catch_up(&phone, &server.workspace, services.notifications.as_ref())
+        .catch_up(phone, &server.workspace, services.notifications.as_ref())
         .expect("the phone reads the log again");
     assert!(
         recorder.notifications().is_empty(),
         "a thing answered elsewhere waits no more: {:?}",
         recorder.notifications()
     );
+}
 
+/// With the phone's daemon stopped, what waits for its person is pushed to the endpoint it handed
+/// over; answered, the push that shows nothing names the thing as gone.
+fn pushed_while_it_is_closed(
+    server: &Server,
+    phone: tilo_runtime::in_process::Device,
+    push: &PushService,
+    data: &std::path::Path,
+    key: &Key,
+    person: &[u8; 32],
+) {
     // The app closes; what waits for the person is pushed to the endpoint it handed over.
     let id = "cause:deploy:7";
     let told = tilo_person_services::PersonServices::of(&server.workspaces())
         .tell(
-            &person,
+            person,
             ToTell {
                 id: Some(id.to_owned()),
                 ..to_tell("The build is red", "Build")
@@ -314,7 +340,7 @@ fn a_phone_is_told_what_waits_while_it_runs_and_through_its_push_endpoint_while_
     // Answered, a push that shows nothing names it as gone.
     tilo_person_services::PersonServices::of(&server.workspaces())
         .acknowledge_told(
-            &person,
+            person,
             &told.id,
             "Ada's laptop",
             person_telling::BY_ANSWERED,
