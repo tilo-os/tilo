@@ -958,7 +958,7 @@ impl Processes {
         #[cfg(target_os = "linux")]
         if self.content_of.get().is_some() {
             let processes = Arc::clone(self);
-            let workspace = key.workspace.clone();
+            let workspace = key.workspace;
             tilo_rt::app()
                 .handle()
                 .spawn(async move { processes.content_changed(&workspace).await });

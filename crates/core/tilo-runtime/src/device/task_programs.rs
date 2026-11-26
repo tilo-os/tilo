@@ -69,7 +69,7 @@ pub(crate) struct DaemonPrograms(Arc<Sessions>);
 struct Sessions {
     person_api: PersonApi,
     hosts: StartHosts,
-    sessions: std::sync::Mutex<HashMap<Key, Session>>,
+    open: std::sync::Mutex<HashMap<Key, Session>>,
 }
 
 impl DaemonPrograms {
@@ -77,13 +77,12 @@ impl DaemonPrograms {
         Self(Arc::new(Sessions {
             person_api,
             hosts,
-            sessions: std::sync::Mutex::default(),
+            open: std::sync::Mutex::default(),
         }))
     }
 }
 
 impl Sessions {
-
     /// The session `request` names, started when it has none, its calls going through what
     /// `request` brings now. Sessions whose connection ended go first, and their hosts with them.
     fn session_of(&self, request: &ProgramRequest<'_>) -> Result<Arc<Api>, String> {
@@ -100,13 +99,13 @@ impl Sessions {
             },
         };
         let ended: Vec<Session> = self
-            .sessions
+            .open
             .lock_recover()
             .extract_if(|_, session| !session.goes())
             .map(|(_, session)| session)
             .collect();
         drop(ended);
-        let mut sessions = self.sessions.lock_recover();
+        let mut sessions = self.open.lock_recover();
         if let Some(session) = sessions.get(&key) {
             if let Some(provider) = &request.provider {
                 session.latest.set(Arc::clone(provider));
