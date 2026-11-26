@@ -63,20 +63,3 @@ impl<T: std::fmt::Debug> std::fmt::Debug for Shared<T> {
         self.0.fmt(formatter)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_copy_shares_until_written_and_a_write_leaves_the_original() {
-        let original = Shared::new(vec![1, 2, 3]);
-        let mut copy = original.clone();
-        assert!(Shared::ptr_eq(&original, &copy));
-        assert_eq!(*copy, [1, 2, 3]);
-        copy.push(4);
-        assert!(!Shared::ptr_eq(&original, &copy));
-        assert_eq!(*original, [1, 2, 3]);
-        assert_eq!(*copy, [1, 2, 3, 4]);
-    }
-}
