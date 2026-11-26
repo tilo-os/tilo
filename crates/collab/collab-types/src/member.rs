@@ -10,6 +10,9 @@ use crate::identity::AvatarBytes;
 use crate::presence::PresenceHue;
 use crate::role::Role;
 
+/// Longest agent identifier admitted by workspace governance and its signing protocols, in bytes.
+pub const MAX_AGENT_ID_BYTES: usize = 128;
+
 /// A person as a surface shows them, in the colour they wear there.
 ///
 /// Every field is written, absent ones too: the collaboration wire is postcard, which reads

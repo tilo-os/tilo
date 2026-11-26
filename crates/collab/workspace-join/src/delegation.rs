@@ -10,12 +10,13 @@
 //! touch and a bot nobody renews should stop on its own.
 
 use collab_types::WorkspaceId;
+use collab_types::member::MAX_AGENT_ID_BYTES;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::StatementSigner;
 use tilo_user_identity::canonical::signing_digest;
 
-/// Largest agent id and label.
+/// Longest delegate display label, in bytes.
 pub const MAX_DELEGATE_TEXT_BYTES: usize = 64;
 pub const MAX_DELEGATED_WORKSPACES: usize = 16;
 pub const MAX_DELEGATED_APPS: usize = 64;
@@ -34,7 +35,7 @@ const DELEGATION_DOMAIN: &[u8] = b"tilo-delegation-v3\0";
 #[serde(rename_all = "snake_case")]
 pub enum Delegate {
     Agent {
-        /// Stable id, 1..=[`MAX_DELEGATE_TEXT_BYTES`] bytes.
+        /// Stable id, 1..=[`MAX_AGENT_ID_BYTES`] bytes.
         agent_id: String,
     },
     /// An installed bot.
@@ -187,12 +188,13 @@ impl Delegation {
     }
 
     fn validate(&self) -> Result<(), DelegationError> {
-        let text = |value: &str| !value.is_empty() && value.len() <= MAX_DELEGATE_TEXT_BYTES;
-        if !text(&self.label) {
+        if self.label.is_empty() || self.label.len() > MAX_DELEGATE_TEXT_BYTES {
             return Err(DelegationError::Invalid("label"));
         }
         match &self.delegate {
-            Delegate::Agent { agent_id } if !text(agent_id) => {
+            Delegate::Agent { agent_id }
+                if agent_id.is_empty() || agent_id.len() > MAX_AGENT_ID_BYTES =>
+            {
                 return Err(DelegationError::Invalid("agent id"));
             }
             Delegate::Bot { installation }

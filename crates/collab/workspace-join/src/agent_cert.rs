@@ -11,12 +11,13 @@
 //! certificate inside the device certificate's window.
 
 use collab_types::WorkspaceId;
+use collab_types::member::MAX_AGENT_ID_BYTES;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::canonical::signing_digest;
 use tilo_user_identity::{DeviceCert, StatementSigner};
 
-use crate::delegation::{DelegationError, MAX_DELEGATE_TEXT_BYTES};
+use crate::delegation::DelegationError;
 
 /// Longest window of an agent certificate.
 pub const MAX_AGENT_CERT_NS: u64 = 24 * 3600 * 1_000_000_000;
@@ -115,7 +116,7 @@ impl AgentCert {
 
     fn validate(&self) -> Result<(), DelegationError> {
         if self.agent_id.is_empty()
-            || self.agent_id.len() > MAX_DELEGATE_TEXT_BYTES
+            || self.agent_id.len() > MAX_AGENT_ID_BYTES
             || self.agent_id.chars().any(char::is_control)
         {
             return Err(DelegationError::Invalid("agent id"));
@@ -274,6 +275,60 @@ mod tests {
         let device = certificate(&root(), &device());
         assert_eq!(cert.verify(&device, workspace(), NOW + 1), Ok(()));
         assert_eq!(AgentCert::decode(&cert.encode()).unwrap(), cert);
+    }
+
+    #[test]
+    fn delegations_and_session_certificates_accept_the_same_bounded_agent_ids() {
+        use crate::delegation::{Delegate, DelegateProposal, DelegateScope};
+
+        let root = root();
+        let device = device();
+        let owner = root.verifying_key().to_bytes();
+        let device_cert = certificate(&root, &device);
+        let delegate = |id: &str| {
+            DelegateProposal {
+                delegate: Delegate::Agent {
+                    agent_id: id.to_owned(),
+                },
+                label: "Assistant".into(),
+                color: [1, 2, 3],
+                scope: DelegateScope {
+                    workspaces: vec![workspace()],
+                    apps: vec!["so.tilo.chat".into()],
+                },
+                expires_at_ns: NOW + HOUR_NS,
+            }
+            .sign(&root, agent(), NOW)
+        };
+        let session = |id: &str| {
+            AgentCert::sign(
+                &device,
+                owner,
+                agent(),
+                (id, "a chat turn"),
+                workspace(),
+                NOW,
+                NOW + HOUR_NS,
+            )
+        };
+        let canonical = format!("assistant-{}", "a1".repeat(32));
+        for id in [canonical.clone(), format!("{canonical}-2"), "a".repeat(128)] {
+            let grant = delegate(&id).unwrap();
+            assert_eq!(grant.delegate.agent_id(), Some(id.as_str()));
+            grant.verify(&owner, NOW).unwrap();
+            let cert = session(&id).unwrap();
+            assert_eq!(cert.agent_id, id);
+            cert.verify(&device_cert, workspace(), NOW).unwrap();
+        }
+        let too_long = "a".repeat(129);
+        assert_eq!(
+            delegate(&too_long),
+            Err(DelegationError::Invalid("agent id"))
+        );
+        assert_eq!(
+            session(&too_long),
+            Err(DelegationError::Invalid("agent id"))
+        );
     }
 
     #[test]

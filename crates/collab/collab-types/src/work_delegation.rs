@@ -50,7 +50,7 @@ pub const MAX_LIFETIME_NS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
 /// Most grant paths one delegation may name.
 pub const MAX_DELEGATED_WORK: usize = 32;
 /// Longest agent id a delegation may act as.
-pub const MAX_DELEGATED_ACTOR_BYTES: usize = 64;
+pub const MAX_DELEGATED_ACTOR_BYTES: usize = crate::member::MAX_AGENT_ID_BYTES;
 /// Most of the member's vault items one delegation may let the server use.
 pub const MAX_DELEGATED_SECRETS: usize = 32;
 
@@ -573,6 +573,47 @@ mod tests {
             valid,
         )
         .unwrap()
+    }
+
+    /// Signed work for a native assistant keeps the same bounded id as its workspace membership.
+    #[test]
+    fn work_can_be_given_to_a_canonical_personal_assistant() {
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let person = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
+        let assistant = format!("assistant-{}", hex::encode(person));
+        let given = |agent: String| {
+            let grant = Grant::new(
+                "read",
+                tilo_action_policy::Grantee::agent(agent.clone()),
+                TreePath::workspace("w").app("so.tilo.chat"),
+                tilo_action_policy::KindSet::READ,
+                Answer::Allow,
+                tilo_action_policy::Grantee::person(hex::encode(person)),
+            );
+            WorkDelegation::sign(
+                &key,
+                person,
+                [8; 32],
+                "w",
+                Some(agent),
+                vec![grant],
+                Vec::new(),
+                (1, 1_000),
+            )
+        };
+        for id in [
+            assistant.clone(),
+            format!("{assistant}-2"),
+            "a".repeat(MAX_DELEGATED_ACTOR_BYTES),
+        ] {
+            let signed = given(id.clone()).expect("a workspace agent can receive work");
+            signed.verify("w", 500).expect("its signed work verifies");
+            assert_eq!(signed.agent.as_deref(), Some(id.as_str()));
+        }
+        assert!(matches!(
+            given("a".repeat(MAX_DELEGATED_ACTOR_BYTES + 1)),
+            Err(WorkDelegationError::Invalid("agent"))
+        ));
     }
 
     /// The member's device signs a delegation, every reader checks it, a

@@ -361,7 +361,7 @@ async fn provision(
     check_the_persons_session(caller, cert)?;
     if asked.workspaces.as_slice() != [workspace.to_string()]
         || asked.agent_id.is_empty()
-        || asked.agent_id.len() > tilo_server_protocol::delegation::MAX_DELEGATE_TEXT_BYTES
+        || asked.agent_id.len() > collab_types::member::MAX_AGENT_ID_BYTES
     {
         return Err(keeper_required());
     }

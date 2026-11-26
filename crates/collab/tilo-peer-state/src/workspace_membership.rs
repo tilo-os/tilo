@@ -526,7 +526,7 @@ impl WorkspaceMembershipCommand {
 /// bounded, with no control characters.
 pub fn valid_agent_id(agent: &str) -> Result<(), String> {
     if agent.is_empty()
-        || agent.len() > 128
+        || agent.len() > collab_types::member::MAX_AGENT_ID_BYTES
         || agent.trim() != agent
         || agent.to_lowercase() != agent
         || agent.chars().any(char::is_control)
