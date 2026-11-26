@@ -197,7 +197,10 @@ impl Tickets {
         {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(why)) => Err(format!("{why:#}")),
-            Err(_) => Err(format!("it did not answer within {}s", REACH_WITHIN.as_secs())),
+            Err(_) => Err(format!(
+                "it did not answer within {}s",
+                REACH_WITHIN.as_secs()
+            )),
         }
     }
 

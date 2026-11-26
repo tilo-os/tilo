@@ -667,14 +667,14 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
     let caller_for = |cert: &DeviceCert, workspace: &str| {
         Caller::authenticated(cert.user_public_key, cert.device_public_key).in_workspace(workspace)
     };
-    let ask_as = |cert: &DeviceCert, workspace: &str| {
+    let ask_for = |cert: &DeviceCert, workspace: &str, action: &str| {
         let caller = caller_for(cert, workspace);
         let request = tilo_actions::remote::InvokeRequest {
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
             target: tilo_actions::remote::RemoteActionTarget {
                 provider: tilo_device_identity::login::PROVIDER.to_owned(),
-                address: tilo_actions::ActionAddress::new(super::ticket::SERVER, "restart"),
+                address: tilo_actions::ActionAddress::new(super::ticket::SERVER, action),
             },
             argument: InvokeArgument::Json(serde_json::Map::from_iter([(
                 "service".to_owned(),
@@ -689,6 +689,7 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
         };
         on_the_machine.invoke(&caller, request)
     };
+    let ask_as = |cert: &DeviceCert, workspace: &str| ask_for(cert, workspace, "restart");
     let refused = ActionCallError::Refused {
         reason: "Only the person this server belongs to, and the administrators of the \
                  workspaces it serves, control it."
@@ -729,6 +730,16 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
             tilo_actions::remote::ReceiptStatus::Completed { .. }
         ),
         "the machine restarted the unit for Carol: {carols:?}"
+    );
+    // A control the machine's catalogue does not declare says nothing of what it is able to
+    // do, so no grant admits it.
+    let undeclared = ask_for(&carol_cert, &studio, "format-disks")
+        .await
+        .expect("the machine answers");
+    assert_eq!(
+        undeclared.err(),
+        Some(refused.clone()),
+        "an undeclared control is refused, grant or not"
     );
     // The machine's own settings service decides each setting at its node, in the person's own
     // workspace as this device holds it.

@@ -608,10 +608,15 @@ async fn allows_control(
         &own.device_public_key,
         tilo_workspace_service::workspaces::server_controls::CONTROL,
     );
-    // What the catalogue calls a read reads; every other control changes the machine.
-    let kind = match action {
-        "status" | "journal" => ActionKind::Read,
-        _ => ActionKind::Undoable,
+    // The kind the machine's catalogue declares the control as: a control it does not declare
+    // says nothing of what it is able to do, so no grant admits it.
+    let Some(kind) = server_rows()
+        .into_iter()
+        .filter_map(|row| row.action)
+        .find(|declared| declared.address.action == action)
+        .map(|declared| declared.contract.kind)
+    else {
+        return false;
     };
     tilo_workspace_service::workspaces::server_controls::caller_may(&policy, caller, &node, kind)
 }
