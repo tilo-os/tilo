@@ -35,6 +35,8 @@ use tilo_workspace_service::workspaces::fixtures::{
 use tilo_workspace_service::workspaces::providers::Reach;
 
 const BRIDGE: &str = "so.tilo.bridge";
+/// The kind of the bridge's channel record, as its process publishes it.
+const CHANNEL_KIND: &str = "bridge.channel";
 const NEEDS: [&str; 2] = ["network.http", "secrets"];
 
 /// The order both devices keep here: no device waits for another, so each look decides.
@@ -474,9 +476,7 @@ impl ActionProvider for BridgeProcess {
         ) else {
             unreachable!("the bridge's send declares its operation")
         };
-        vec![
-            tilo_actions::ResourceSpec::new(CHANNEL, "bridge.channel", "Channel").with_action(send),
-        ]
+        vec![tilo_actions::ResourceSpec::new(CHANNEL, CHANNEL_KIND, "Channel").with_action(send)]
     }
 
     fn query(
@@ -498,7 +498,7 @@ impl ActionProvider for BridgeProcess {
                 state: tilo_actions::ActionState::default(),
                 semantic_identity: None,
                 address: address.clone(),
-                resource_kind: "bridge.channel".into(),
+                resource_kind: CHANNEL_KIND.into(),
                 resource_label: "Channel".into(),
                 action_label: "Send".into(),
                 keywords: Vec::new(),
@@ -565,33 +565,33 @@ fn app_calls(
     let Some(workspace_id) = crate::test_support::WorkspaceId::parse(workspace) else {
         unreachable!("the workspace the devices share parses as an id")
     };
+    let person = hex::encode(persons_root().verifying_key().to_bytes());
     let mut tree_workspace = crate::test_support::Workspace::new(workspace_id, "Bridged");
-    tree_workspace
-        .policy
-        .set_owner(hex::encode(persons_root().verifying_key().to_bytes()));
-    tree_workspace.allow_agent("scribe", crate::test_support::KindSet::ALL);
+    tree_workspace.policy.set_owner(person.clone());
+    // The agent of the person the workspace is theirs, as the settings grant it: not one of the
+    // fixture's own default person.
+    tree_workspace.allow(
+        tilo_action_policy::Grantee::agent("scribe", person.as_str()),
+        &crate::test_support::TreePath::root(),
+        crate::test_support::KindSet::ALL,
+    );
     // Sending on the bridge reaches outside the workspace: the agent does it unasked only where
     // its person allowed that one action, as "Always allow this" does.
     tree_workspace
         .policy
         .grant(tilo_action_policy::agent_answers::grant(
             workspace,
-            (
-                "scribe",
-                &hex::encode(persons_root().verifying_key().to_bytes()),
-            ),
+            ("scribe", person.as_str()),
             (
                 &tilo_action_policy::agent_answers::AnswerScope::Action {
                     app: BRIDGE.into(),
-                    kind: "bridge.channel".into(),
+                    kind: CHANNEL_KIND.into(),
                     action: "send".into(),
                 },
                 tilo_action_policy::ActionKind::Outside,
             ),
             tilo_action_policy::Answer::Allow,
-            tilo_action_policy::Grantee::person(hex::encode(
-                persons_root().verifying_key().to_bytes(),
-            )),
+            tilo_action_policy::Grantee::person(person.clone()),
         ));
     let mut tree = crate::test_support::WorkspaceTree::default();
     tree.workspaces.push(tree_workspace);
@@ -641,6 +641,33 @@ fn send(workspace: &str, signer: Option<(&DeviceCert, &SigningKey)>) -> InvokeRe
         request.signed = Some(Box::new(attached));
     }
     request
+}
+
+/// The person's answer for the bridge's channel `send` in `workspace`, which reaches outside the
+/// workspace: an agent does such an action unasked only where its person allowed that one, as
+/// "Always allow this" does. The answer is the workspace's own, as the settings write it, so
+/// every device of the workspace decides the agent's call alike.
+async fn allow_the_bridge_send(workspaces: &Workspaces, workspace: &str) {
+    let person = hex::encode(persons_root().verifying_key().to_bytes());
+    tilo_workspace_service::workspaces::fixtures::record_grants(
+        workspaces,
+        workspace,
+        &[tilo_action_policy::agent_answers::grant(
+            workspace,
+            ("scribe", person.as_str()),
+            (
+                &tilo_action_policy::agent_answers::AnswerScope::Action {
+                    app: BRIDGE.into(),
+                    kind: CHANNEL_KIND.into(),
+                    action: "send".into(),
+                },
+                tilo_action_policy::ActionKind::Outside,
+            ),
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(person.as_str()),
+        )],
+    )
+    .await;
 }
 
 /// How `request` ends when `provider` is asked it as `caller`: its receipt once settled.
@@ -697,6 +724,7 @@ async fn an_agents_call_runs_where_the_connection_is_as_the_agent() {
     let (mut on_desktop, mut on_laptop) =
         (runner(desktop.workspaces()), runner(laptop.workspaces()));
     let (scribe_key, scribe) = admit_scribe(desktop.workspaces(), &workspace).await;
+    allow_the_bridge_send(desktop.workspaces(), &workspace).await;
     // The laptop's app calls answer the calls brought to it while the test runs.
     let (on_desktop_calls, _on_laptop_calls) = (
         app_calls(

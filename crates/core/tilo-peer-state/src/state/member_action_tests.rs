@@ -33,6 +33,7 @@ fn a_commenters_device_runs_what_its_role_covers_where_the_action_sits() {
             device,
             (DISCUSSION, COMMENTS, "comment"),
             &undoable(Some("comments")),
+            None,
             now
         )
         .unwrap(),
@@ -46,6 +47,7 @@ fn a_commenters_device_runs_what_its_role_covers_where_the_action_sits() {
                 device,
                 (DISCUSSION, COMMENTS, "comment"),
                 &undoable(None),
+                None,
                 now
             )
             .unwrap(),
@@ -58,6 +60,7 @@ fn a_commenters_device_runs_what_its_role_covers_where_the_action_sits() {
                 device,
                 (TASKS, "tl:so.tilo.tasks", "new_task"),
                 &undoable(None),
+                None,
                 now
             )
             .unwrap(),
@@ -74,6 +77,7 @@ fn a_commenters_device_runs_what_its_role_covers_where_the_action_sits() {
                 device,
                 (DISCUSSION, COMMENTS, "comment"),
                 &undoable(Some("comments")),
+                None,
                 now
             )
             .unwrap(),

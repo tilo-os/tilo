@@ -911,16 +911,31 @@ impl Providers {
                 )
             })
             .flatten();
+        // The kind of the record the call names, as the provider that publishes it declares it:
+        // the node its app's own dispatch decides the action at names it, so an answer the
+        // person gave for the action reaches the call here too.
+        let resource_kind = judged
+            .then(|| {
+                declared
+                    .as_ref()
+                    .map(|declared| declared.resource_kind.clone())
+                    .filter(|kind| !kind.is_empty())
+                    .or_else(|| {
+                        self.published(&request.target, Reach::Devices)
+                            .and_then(|published| {
+                                locate(&published.published, &request.target.address)
+                                    .map(|(resource, _)| resource.kind.clone())
+                            })
+                    })
+            })
+            .flatten();
         runtime.spawn(async move {
             let address = &request.target.address;
             if judged {
                 let permitted = permits(
                     (&workspaces, &surfaces),
-                    declared.as_ref().map(|declared| tilo_actions::ActionNeed {
-                        kind: declared.contract.kind,
-                        field: declared.contract.field.clone(),
-                        privileged: false,
-                    }),
+                    declared.as_ref(),
+                    resource_kind.as_deref(),
                     device,
                     &workspace,
                     &app,
@@ -1143,17 +1158,21 @@ fn record_of(served: &BTreeMap<Arc<str>, Registered>, provider: &str) -> Option<
 /// Whether `workspace`'s grants let `device` run `action` on `resource` of the application `app`
 /// now, judged at what the action is declared as: by the provider that answers it (`declared`)
 /// and by `app`'s surface in the workspace's store (`surfaces` names what this device knows of
-/// those), the greater where both declare it. Its kind and the field its declaration places it
-/// under are both judged ([`tilo_peer_state::StatePeer::permits_app_action`]): a commenter's verb
-/// under the `comments` is theirs, though the same kind on the record is not. The refusal its
-/// caller reads when they do not. An action declared nowhere is refused: nothing says what it is
-/// able to do.
+/// those), the greater where both declare it. Its kind, the field its declaration places it
+/// under and the kind of its resource are all judged
+/// ([`tilo_peer_state::StatePeer::app_action_answer`]): a commenter's verb under the `comments`
+/// is theirs, though the same kind on the record is not, and an answer its person gave for the
+/// action reaches the call at the kind its app publishes it on. The refusal its caller reads when
+/// they do not; the answer that waits for its person is the one the caller asks again, since it
+/// may not have reached this device yet. An action declared nowhere is refused: nothing says what
+/// it is able to do.
 async fn permits(
     (workspaces, surfaces): (
         &super::device_actions::WorkspacesMap,
         &collab_types::app_surface::Surfaces,
     ),
-    declared: Option<tilo_actions::ActionNeed>,
+    declared: Option<&tilo_actions::ActionDescriptor>,
+    resource_kind: Option<&str>,
     device: [u8; 32],
     workspace: &str,
     app: &str,
@@ -1166,18 +1185,35 @@ async fn permits(
         });
     };
     let mut kept = kept.lock().await;
-    let Some(need) = the_greater(declared, kept.call_need(surfaces, app, action)) else {
+    let declared_kind = declared.map(|declared| declared.contract.kind);
+    let declared_field = declared.and_then(|declared| declared.contract.field.clone());
+    let Some(need) = the_greater(
+        declared_kind.map(|kind| tilo_actions::ActionNeed {
+            kind,
+            field: declared_field,
+            privileged: false,
+        }),
+        kept.call_need(surfaces, app, action),
+    ) else {
         return Err(ActionCallError::Refused {
             reason: format!("{app} declares no action {resource}#{action}"),
         });
     };
-    let permitted =
-        kept.peer()
-            .permits_app_action(device, (app, resource, action), &need, tilo_clock::wall());
+    let answered = kept.peer().app_action_answer(
+        device,
+        (app, resource, action),
+        &need,
+        resource_kind,
+        tilo_clock::wall(),
+    );
     drop(kept);
-    match permitted {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(ActionCallError::Refused {
+    match answered {
+        Ok(tilo_action_policy::Answer::Allow) => Ok(()),
+        // The person's answer for this action has not reached this device, or they answered it
+        // nowhere here: the call is not run, and whoever asked asks again once the workspace's
+        // answer is here.
+        Ok(tilo_action_policy::Answer::Ask) => Err(ActionCallError::NotPermitted),
+        Ok(tilo_action_policy::Answer::Deny) => Err(ActionCallError::Refused {
             reason: format!(
                 "your grants in this workspace do not let this device run {resource}#{action} of \
                  {app}"

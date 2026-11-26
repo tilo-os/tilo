@@ -910,9 +910,13 @@ impl StatePeer {
     /// here now, an action its app declares as `need` (its kind, and the
     /// field of the resource it sits under, where its declaration names
     /// one): the workspace's per-action permission for whatever its actor is
-    /// decides it at that kind and field, never the kind of member a device
-    /// belongs to. A verb its app declares under the `comments` is decided
-    /// where comments are, as the app's own dispatch decides it.
+    /// decides it at the node the app's own dispatch decides it at
+    /// ([`tilo_actions::action_node`]), never the kind of member a device
+    /// belongs to. That node names the resource's kind where the caller knows
+    /// it (`resource_kind`), so an answer its person gave for the action
+    /// reaches the call however it arrived: a verb its app declares under the
+    /// `comments` is decided where comments are, and one of a resource of a
+    /// kind is decided inside that kind.
     ///
     /// # Errors
     ///
@@ -923,20 +927,46 @@ impl StatePeer {
         source: [u8; 32],
         (app, resource, action): (&str, &str, &str),
         need: &tilo_actions::ActionNeed,
+        resource_kind: Option<&str>,
         now: SystemTime,
     ) -> Result<bool, MembershipError> {
+        Ok(
+            self.app_action_answer(source, (app, resource, action), need, resource_kind, now)?
+                == tilo_action_policy::Answer::Allow,
+        )
+    }
+
+    /// What the workspace's per-action permission answers `source` for `action` of `resource` in
+    /// `app` here now ([`Self::permits_app_action`]): allowed, refused, or waiting for the
+    /// person's answer, which a device call retries once it reaches this device.
+    ///
+    /// # Errors
+    ///
+    /// Why the device is no member of this workspace at all, as
+    /// [`Self::permissions`].
+    pub fn app_action_answer(
+        &self,
+        source: [u8; 32],
+        (app, resource, action): (&str, &str, &str),
+        need: &tilo_actions::ActionNeed,
+        resource_kind: Option<&str>,
+        now: SystemTime,
+    ) -> Result<tilo_action_policy::Answer, MembershipError> {
         let member = self.permissions(source, now)?;
-        let node = TreePath::workspace(&member.policy.workspace)
-            .app(app)
-            .rest()
-            .resource(resource)
-            .rest();
-        let node = match need.field.as_deref() {
-            Some(field) => node.field(field),
-            None => node,
-        }
-        .action(action);
-        Ok(member.allows(&node, need.kind, now))
+        let base = TreePath::workspace(&member.policy.workspace);
+        let node = if let Some(kind) = resource_kind.filter(|kind| !kind.is_empty()) {
+            tilo_actions::action_node(&base, app, kind, resource, need.field.as_deref(), action)
+        } else {
+            // An action whose kind this caller cannot name is decided at the
+            // resource: a grant naming the kind alone is not it.
+            let node = base.app(app).rest().resource(resource).rest();
+            match need.field.as_deref() {
+                Some(field) => node.field(field),
+                None => node,
+            }
+            .action(action)
+        };
+        Ok(member.answer(&node, need.kind, &tilo_action_policy::Context::at_time(now)))
     }
 
     /// Whether the device `source` may open `resource` of `app` here now: read
