@@ -521,10 +521,11 @@ impl Writer {
     ///
     /// A change that installs leaves the package in the store; the modules it runs are compiled
     /// here, by the device's one compiler, so the app's first open finds the machine code it
-    /// runs on instead of compiling it then.
+    /// runs on instead of compiling it then, and its signed surface is named here, so its types
+    /// and actions are known before anything opens it.
     fn apply(&self, change: package_actions::Change) -> Result<package_actions::Report, String> {
-        // What was installed before the change, so what the change installs is compiled; a
-        // reading that failed is no reason to compile everything.
+        // What was installed before the change, so what the change installs is compiled and
+        // named; a reading that failed is no reason to compile everything.
         let before = if Self::installs(&change) {
             self.installed().ok()
         } else {
@@ -535,8 +536,30 @@ impl Writer {
             && applied.is_ok()
         {
             self.compile_installed(&before);
+            self.name_installed_surfaces(&before);
         }
         applied
+    }
+
+    /// Run every package installed since `before` with the surface its signed package ships, so
+    /// its types and actions are known here from now on: an install does this, whatever installed
+    /// the package (the Store, a command, or the workspace's own follower), and a daemon's start
+    /// names every package it already holds the same way.
+    fn name_installed_surfaces(&self, before: &std::collections::BTreeSet<String>) {
+        let catalog =
+            package_store::Catalog::at(&self.root, package_store::SystemStore::from_env());
+        let Ok(packages) = catalog.list() else {
+            return;
+        };
+        for package in packages {
+            if before.contains(&format!("{}:{}", package.id, package.package_id_hex)) {
+                continue;
+            }
+            let Some(surface) = package_store::integrity::signed_surface(&package) else {
+                continue;
+            };
+            tilo_app_host::register_package_surface(&package.id, &surface);
+        }
     }
 
     /// Make `change` to the cache.
@@ -1509,11 +1532,6 @@ impl PackageCache {
         self.writer.rows.arrived(&release.app);
         match applied {
             Ok(_) => {
-                // What the package publishes is known here from now on, as it is for a package
-                // installed before this device started: its types and actions.
-                if let Some((_, file)) = &surface {
-                    tilo_app_host::register_package_surface(&release.app, file);
-                }
                 tracing::info!(app = %release.app, version = %release.version, "installed the version a workspace runs");
                 true
             }

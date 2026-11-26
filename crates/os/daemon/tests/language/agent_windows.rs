@@ -319,9 +319,9 @@ fn a_view_an_agent_opens_stands_on_the_layout_the_persons_shell_reads() {
     });
 }
 
-/// The app a device installed was compiled when it was installed: after the computer starts its
-/// daemon again, the first open hands its instance machine code the device's cache already
-/// holds, and compiles nothing.
+/// The app a device installed is the person's after the computer starts its daemon again: their
+/// own dispatch lists it and starts it, and the instance the device hands runs on machine code
+/// the cache holds, so the first open compiles nothing.
 #[test]
 fn a_restarted_computer_opens_an_installed_app_without_compiling() {
     host::run_with(&["sheets"], |host| async move {
@@ -331,11 +331,26 @@ fn a_restarted_computer_opens_an_installed_app_without_compiling() {
             tilo_runtime::device::processes::last_handover().is_none(),
             "the restarted daemon handed nothing yet"
         );
-        // The person's agent starts the app once: it opens on the layout as any agent's start
-        // does, and the instance the device hands runs on machine code the install compiled.
-        let agent = host.agent();
-        let (started, failed) = act(&agent, "sheets#start", json!({})).await;
-        assert!(!failed, "the restarted computer starts Sheets: {started}");
+        // The person finds the app the device installed in what their own dispatch offers.
+        let page = host::listed(host.as_ref(), "so.tilo.sheets")
+            .await
+            .expect("the person's dispatch answers what it offers");
+        assert!(
+            page.rows.iter().any(|row| {
+                row.action.as_ref().is_some_and(|action| {
+                    action.address.resource == "app.so.tilo.sheets"
+                        && action.address.action == "open"
+                })
+            }),
+            "the restarted computer offers the app it installed: {page:?}"
+        );
+        // The person starts the app once, their own way: it opens on the layout as any agent's
+        // start does, and the instance the device hands runs on machine code the install compiled.
+        let started = host::start_app(host.as_ref(), "so.tilo.sheets").await;
+        assert!(
+            started.is_ok(),
+            "the restarted computer starts Sheets: {started:?}"
+        );
         let (app, parts, cached) = tilo_runtime::device::processes::last_handover()
             .expect("the daemon reports the module it handed its instance");
         assert_eq!(app, "so.tilo.sheets", "{app}");

@@ -295,6 +295,53 @@ fn device() -> (tempfile::TempDir, PackageCache, tilo_test_env::ScopedEnv) {
     (dir, cache, env)
 }
 
+/// A package installed through the cache's own change — the Store's way, or a command's — is
+/// named here as it installs: its surface's types and actions are known before anything opens
+/// it, as they are for one a workspace's follower installs, and as a daemon's start names every
+/// package it already holds.
+#[test]
+fn an_install_through_the_cache_names_the_apps_actions_now() {
+    const APP: &str = "so.tilo.cache-installed-surface";
+    let (dir, cache, _env) = device();
+    let tapp = author_carrying(APP, "1.0.0", Some(SURFACE));
+    let hash = blake3::hash(&tapp).to_hex().to_string();
+    let content = dir.path().join("content");
+    std::fs::create_dir_all(&content).unwrap();
+    std::fs::write(content.join(&hash), &tapp).unwrap();
+    assert!(
+        collab_types::app_surface::bytes_of(APP).is_none(),
+        "this process knows nothing of the app before it installs"
+    );
+    let applied = cache.writer.apply(package_actions::Change::Install {
+        file: package_actions::Uploaded {
+            source: format!("tilo.content:{hash}"),
+        },
+        trust: package_actions::Trust {
+            require_package_root: None,
+            require_publisher: None,
+            require_attestor: None,
+            allow_self_signed: false,
+            attestors: Vec::new(),
+            revoked: Vec::new(),
+        },
+        pinned: false,
+        replacement: package_actions::Replacement::Replace,
+        ignore_missing_runtime: false,
+        dry_run: false,
+        payload_from: None,
+    });
+    assert!(applied.is_ok(), "the package installs: {applied:?}");
+    let surface = collab_types::app_surface::bytes_of(APP)
+        .expect("the app's surface is known here as soon as it installs");
+    assert!(
+        std::str::from_utf8(&surface)
+            .unwrap()
+            .contains("sheets.book"),
+        "its types and actions are the ones its package ships: {}",
+        String::from_utf8_lossy(&surface)
+    );
+}
+
 #[test]
 fn a_release_a_registry_offers_is_fetched_checked_and_installed() {
     const APP: &str = "so.tilo.follower-e2e";
