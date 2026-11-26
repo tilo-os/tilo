@@ -181,7 +181,9 @@ pub fn scan(src: &Path) -> std::io::Result<Scan> {
     let mut pub_mods: Vec<(String, String)> = Vec::new();
     let mut structs: Vec<FoundStruct> = Vec::new();
     let mut widget_impls: Vec<String> = Vec::new();
-    let mut mod_gates: std::collections::BTreeMap<Vec<String>, Vec<String>> =
+    // Every declaration of each file module, with its `cfg` conditions: a module declared under
+    // two (`mod m;` without a feature, `pub mod m;` with it) is compiled under either.
+    let mut mod_gates: std::collections::BTreeMap<Vec<String>, Vec<Vec<String>>> =
         std::collections::BTreeMap::new();
     let mut file_modules: Vec<(PathBuf, Vec<String>)> = Vec::new();
     for file in &files {
@@ -189,10 +191,10 @@ pub fn scan(src: &Path) -> std::io::Result<Scan> {
         let text = without_tests(&without_comments(&raw));
         let rel = file.strip_prefix(src).unwrap_or(file);
         let modules = module_path(rel);
-        for (name, conditions) in gated_mods(&text) {
+        for (name, conditions) in declared_mods(&text) {
             let mut path = modules.clone();
             path.push(name);
-            mod_gates.insert(path, conditions);
+            mod_gates.entry(path).or_default().push(conditions);
         }
         file_modules.push((file.clone(), modules.clone()));
         let top = modules.first().cloned().unwrap_or_default();
@@ -234,9 +236,8 @@ pub fn scan(src: &Path) -> std::io::Result<Scan> {
         .dedup_by(|a, b| a.name == b.name && a.file == b.file);
     for (file, modules) in file_modules {
         let conditions: Vec<String> = (1..=modules.len())
-            .filter_map(|depth| mod_gates.get(&modules[..depth]))
+            .filter_map(|depth| either(mod_gates.get(&modules[..depth])?))
             .flatten()
-            .cloned()
             .collect();
         if !conditions.is_empty() {
             out.gates.insert(file, conditions);
@@ -246,9 +247,26 @@ pub fn scan(src: &Path) -> std::io::Result<Scan> {
     Ok(out)
 }
 
-/// Each file module the text declares under `#[cfg(..)]` (`mod name;`), with the conditions of
-/// the `cfg` attributes just above it.
-fn gated_mods(text: &str) -> Vec<(String, Vec<String>)> {
+/// The conditions a module declared by each of `declarations` is compiled under: none when one
+/// declaration has none, else what any of them has.
+fn either(declarations: &[Vec<String>]) -> Option<Vec<String>> {
+    match declarations {
+        [] => None,
+        _ if declarations.iter().any(Vec::is_empty) => None,
+        [one] => Some(one.clone()),
+        several => {
+            let each: Vec<String> = several
+                .iter()
+                .map(|conditions| format!("all({})", conditions.join(", ")))
+                .collect();
+            Some(vec![format!("any({})", each.join(", "))])
+        }
+    }
+}
+
+/// Each file module the text declares (`mod name;`), with the conditions of the `cfg` attributes
+/// just above it, none when it has none.
+fn declared_mods(text: &str) -> Vec<(String, Vec<String>)> {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = Vec::new();
     for (at, line) in lines.iter().enumerate() {
@@ -272,9 +290,7 @@ fn gated_mods(text: &str) -> Vec<(String, Vec<String>)> {
             .filter_map(|above| above.strip_prefix("#[cfg(")?.strip_suffix(")]"))
             .map(str::to_owned)
             .collect();
-        if !conditions.is_empty() {
-            out.push((name.trim().to_owned(), conditions));
-        }
+        out.push((name.trim().to_owned(), conditions));
     }
     out
 }
@@ -694,4 +710,37 @@ pub fn registry_source(scan: &Scan, toolkit: &str, exports: Exports) -> String {
     }
     out.push_str("];\n");
     out
+}
+
+#[cfg(test)]
+mod tests {
+    /// A module declared twice, privately without a feature and publicly with it, is compiled
+    /// either way: its components are registered in every build, not only the feature's.
+    #[test]
+    fn a_module_declared_under_two_cfgs_is_registered_under_either() {
+        let src = std::env::temp_dir().join(format!("component-scan-{}", std::process::id()));
+        let widget = src.join("widget");
+        std::fs::create_dir_all(&widget).unwrap();
+        std::fs::write(src.join("lib.rs"), "pub mod widget;\n").unwrap();
+        std::fs::write(
+            widget.join("mod.rs"),
+            "#[cfg(not(feature = \"t\"))]\nmod panel;\n#[cfg(feature = \"t\")]\npub mod panel;\n\
+             #[cfg(feature = \"m\")]\nmod history;\nmod plain;\n",
+        )
+        .unwrap();
+        for file in ["panel.rs", "history.rs", "plain.rs"] {
+            std::fs::write(widget.join(file), "").unwrap();
+        }
+        let scan = super::scan(&src).unwrap();
+        std::fs::remove_dir_all(&src).unwrap();
+        let gate = |file: &str| scan.gates.get(&widget.join(file)).cloned();
+        assert_eq!(
+            gate("panel.rs"),
+            Some(vec![
+                "any(all(not(feature = \"t\")), all(feature = \"t\"))".to_owned()
+            ])
+        );
+        assert_eq!(gate("history.rs"), Some(vec!["feature = \"m\"".to_owned()]));
+        assert_eq!(gate("plain.rs"), None);
+    }
 }
