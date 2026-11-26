@@ -74,6 +74,23 @@ fn answer(
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return None,
             Err(error) => panic!("accepting the local API call: {error}"),
         };
+        // A readiness connection closes without sending an HTTP request. Darwin refuses to
+        // set a socket timeout once its peer is gone. Peek without consuming a request byte.
+        let size = tilo_test_env::wait_for("the local API request or its readiness probe", || {
+            use rustix::net::{RecvFlags, recv};
+            match recv(
+                &stream,
+                &mut [0u8; 1],
+                RecvFlags::PEEK | RecvFlags::DONTWAIT,
+            ) {
+                Ok((_, size)) => Some(size),
+                Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) => None,
+                Err(error) => panic!("reading the local API connection: {error}"),
+            }
+        });
+        if size == 0 {
+            return None;
+        }
         stream
             .set_read_timeout(Some(tilo_test_env::hang_bound()))
             .unwrap();

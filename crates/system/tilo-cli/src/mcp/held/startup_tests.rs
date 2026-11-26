@@ -12,6 +12,7 @@ use std::thread;
 use advisory_lock::FileLock;
 use rustix::process::{Pid, WaitOptions, waitpid};
 use tilo_api::daemon::startup::{STAGES_FILE, StartupLimits};
+use tilo_test_env::SpawnUnderEnvLock as _;
 
 use super::{DaemonPlace, Duration, Instant, ReachLimits, Started, reach_with_limits};
 
@@ -112,7 +113,7 @@ impl Holder {
             .env(BEHAVIOR, behavior)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .spawn()
+            .spawn_locked()
             .unwrap();
         let pid = Pid::from_child(&process);
         let input = process.stdin.take();
