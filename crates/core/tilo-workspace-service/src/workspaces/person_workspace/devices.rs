@@ -82,6 +82,18 @@ pub const SEEN_FACT: &str = "seen";
 /// relay and no discovery find it, as an offline device pairs on its own network.
 pub const ENDPOINT_FACT: &str = "endpoint";
 
+/// The resource under which a device's daemon publishes the person's devices that hold a session
+/// with it now: what a shell reads to know which of their devices it reaches at this moment.
+pub const ONLINE: &str = "so.tilo.device/online-devices";
+
+/// The reading at [`ONLINE`]: the keys (lowercase hex) of the person's devices that are online
+/// now, this device among them.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OnlineDevices {
+    #[serde(default)]
+    pub devices: Vec<String>,
+}
+
 /// The person's devices, by device key (lowercase hex), their Wi-Fi and their answers to boots.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Devices {

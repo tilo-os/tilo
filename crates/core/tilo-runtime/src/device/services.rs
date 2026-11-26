@@ -2521,6 +2521,20 @@ impl Daemon {
             identity.cert.user_public_key,
             workspaces.copies().clone(),
         ));
+        // The person's devices that hold a session with this one now, published for their shell:
+        // what is theirs lasts in the record, and being reachable is this.
+        let online = {
+            let _entered = tilo_rt::app().handle().enter();
+            super::online::Online::new(
+                actions.clone(),
+                identity.cert.device_public_key,
+                identity.cert.user_public_key,
+                workspaces.copies().follow_record(
+                    &person_workspace::workspace_id(workspaces.copies()),
+                    devices::DEVICES,
+                ),
+            )
+        };
         stage("serving the device's endpoint");
         // Another of the person's devices at early boot asks this one for its disk-unlock half:
         // the exchange is the device's own, answered as this device, and the person's yes is an
@@ -2714,6 +2728,7 @@ impl Daemon {
                 key_sessions: key_sessions.as_ref(),
                 nearby: Arc::clone(&nearby),
                 clipboard: Arc::clone(&clipboard),
+                online: Arc::clone(&online),
                 shell_links: &shell_links,
                 shell_dispatch: &shell_dispatch,
                 identity: identity_broker.handover(),
@@ -3449,6 +3464,8 @@ struct BrokerParts<'a> {
     nearby: Arc<super::nearby::Nearby>,
     /// The copies the person's other devices offer, which this device's shell reads.
     clipboard: Arc<super::clipboard::Clipboard>,
+    /// The person's devices that hold a session with this one now, which their shell reads.
+    online: Arc<super::online::Online>,
     /// The links of the shells this daemon starts.
     shell_links: &'a Arc<tilo_app_host::shell::ShellLinks>,
     /// The person's key sessions, which serve the workspaces' apps as pages: a page's view's
@@ -3572,6 +3589,9 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
     let nearby: Arc<dyn PublishedResources> = Arc::new(parts.nearby.published());
     // The copies the person's other devices offer, read by their shell over the shell link.
     let clipboard: Arc<dyn PublishedResources> = Arc::new(parts.clipboard.published());
+    // The person's devices that hold a session with this one now, read by their shell: what says
+    // which of their devices it reaches at this moment.
+    let online: Arc<dyn PublishedResources> = Arc::new(parts.online.published());
     // What is live in the workspaces this device keeps, which the desktop shows.
     let live: Arc<dyn PublishedResources> = super::live::Published::of(parts.workspaces.copies());
     // The record each window this device runs holds, which its desktop notes beside the window.
@@ -3610,6 +3630,7 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
         )
         .serving(&[super::nearby::RESOURCE], Arc::clone(&nearby))
         .serving(&[super::clipboard::RESOURCE], Arc::clone(&clipboard))
+        .serving(&[super::online::RESOURCE], Arc::clone(&online))
         .serving(&[tilo_workspace_service::live::RESOURCE], Arc::clone(&live))
         .serving(
             &[tilo_app_host::window_notes::RESOURCE],

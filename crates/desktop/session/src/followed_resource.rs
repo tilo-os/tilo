@@ -20,6 +20,9 @@ use tilo_ui_base::{
 
 /// How long a follow waits for a write before it asks again.
 const FOLLOW_WAIT_MS: u32 = 25_000;
+/// How long a change asked of the daemon is waited for: a linked daemon answers at once, and one
+/// that does not is not waited on forever.
+const INVOKE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 /// How long a follow waits before it asks a daemon that did not answer again.
 const ASK_AGAIN: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -705,6 +708,21 @@ where
     ) {
         self.core
             .unwaited(std::slice::from_ref(invoke), |went| done(went.result()));
+    }
+
+    /// Run `invoke` at the device's daemon and wait for how it went: for a part of the session
+    /// that changes the resource from another thread, where the answer is what the caller needs.
+    ///
+    /// # Errors
+    /// The daemon refused the action, saying why, or did not answer in time.
+    pub(crate) fn invoke(&self, invoke: &Invoke<P>) -> Result<(), String> {
+        let (finished, answered) = std::sync::mpsc::sync_channel(1);
+        self.invoke_unwaited(invoke, move |went| {
+            let _ = finished.send(went);
+        });
+        answered
+            .recv_timeout(INVOKE_WAIT)
+            .map_err(|_| "this device's daemon did not answer in time".to_owned())?
     }
 }
 

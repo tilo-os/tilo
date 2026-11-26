@@ -353,6 +353,9 @@ struct Inner {
     /// proves the key at its other end and nothing more: a request is passed on over one only
     /// to a device of the workspace it names.
     dialled_in: Mutex<std::collections::HashSet<[u8; 32]>>,
+    /// Moves each time a device holds a link to this one or lets it go: what
+    /// [`ActionService::reached`] answers, followed.
+    reached: tokio::sync::watch::Sender<u64>,
     /// The host that placed this device for records of one workspace, and that workspace, when
     /// it is such a device ([`ActionService::answer_only`]): the one device it answers.
     placed_by: Mutex<Option<([u8; 32], String)>>,
@@ -438,6 +441,7 @@ impl ActionService {
             callers: Mutex::default(),
             held: Mutex::default(),
             dialled_in: Mutex::default(),
+            reached: tokio::sync::watch::Sender::new(0),
             placed_by: Mutex::default(),
             invocations: Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
@@ -474,6 +478,7 @@ impl ActionService {
             callers: Mutex::default(),
             held: Mutex::default(),
             dialled_in: Mutex::default(),
+            reached: tokio::sync::watch::Sender::new(0),
             placed_by: Mutex::default(),
             invocations: Mutex::default(),
             runtime: tokio::runtime::Handle::current(),
@@ -487,6 +492,27 @@ impl ActionService {
     pub fn reach_device_at(&self, device: [u8; 32], transport: Arc<dyn Transport>) {
         self.0.dialled_in.lock_recover().remove(&device);
         self.0.held.lock_recover().insert(device, transport);
+        self.tell_reached();
+    }
+
+    /// The devices with a link held open to this one now, by key: each reached over it, and each
+    /// dialled in on it.
+    #[must_use]
+    pub fn reached(&self) -> Vec<[u8; 32]> {
+        self.0.held.lock_recover().keys().copied().collect()
+    }
+
+    /// Moves each time [`Self::reached`] may say something else.
+    #[must_use]
+    pub fn reached_changed(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.0.reached.subscribe()
+    }
+
+    /// Tell whoever follows [`Self::reached`] that the set of devices may have moved.
+    fn tell_reached(&self) {
+        self.0
+            .reached
+            .send_modify(|moved| *moved = moved.wrapping_add(1));
     }
 
     /// Forget the way to `device` recorded by [`Self::reach_device_at`], when
@@ -501,6 +527,7 @@ impl ActionService {
             held.remove(&device);
             drop(held);
             self.0.dialled_in.lock_recover().remove(&device);
+            self.tell_reached();
         }
     }
 

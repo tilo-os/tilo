@@ -246,6 +246,8 @@ mod keyboard_map;
 #[cfg(target_os = "linux")]
 mod listings;
 mod live_list;
+#[cfg(target_os = "linux")]
+mod person_store;
 // What the session publishes for the quick settings to draw: the Devices section's rows, the
 // clipboard's copies and the notification centre.
 #[cfg(target_os = "linux")]

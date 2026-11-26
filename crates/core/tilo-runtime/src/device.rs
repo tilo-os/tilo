@@ -95,6 +95,7 @@ pub(crate) mod migrate;
 mod models;
 pub mod nearby;
 mod offload_place;
+pub mod online;
 mod own_device;
 pub mod package_runs;
 pub mod packages;
@@ -143,9 +144,9 @@ pub(crate) mod unlock;
 // A vault item released to the app process whose connection asks for it.
 pub(crate) mod store_lane;
 pub(crate) mod vault_release;
+pub(crate) mod version_notice;
 #[cfg(target_os = "linux")]
 pub(crate) mod vm_environment;
-pub(crate) mod version_notice;
 pub mod wake;
 pub mod wifi;
 mod window_follow;

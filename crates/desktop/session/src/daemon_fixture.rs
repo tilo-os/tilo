@@ -17,6 +17,7 @@ use tilo_app_host::services::{
     AuthenticatedApplicationLaunch, LaunchPlace, LaunchableApplication, LauncherServices,
     ProcessServices,
 };
+use tilo_app_host::services::{Caller, PublishedResources, Reading, ResourceWatch};
 use tilo_app_host::shell::{ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices};
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::workspace_documents::{DeviceDocuments, DeviceWrites};
@@ -27,6 +28,7 @@ use tilo_workspace_service::workspaces::fixtures::{
     TestGroupKeys, TestHost, device_cert, hosting_device, signed_pre_admission, test_host,
     test_host_holding,
 };
+use tilo_workspace_service::workspaces::person_workspace::devices::OnlineDevices;
 
 use crate::layout::Layouts;
 use crate::workspace_view::WorkspaceView;
@@ -65,6 +67,11 @@ pub(crate) struct TestDaemon {
     links: Arc<ShellLinks>,
     /// The session's one stream of record changes, as its roles reach the workspaces here.
     changes: crate::platform::records::Changes,
+    /// The person's devices this daemon says are online now: the reading the session follows.
+    online: Arc<Online>,
+    /// The device key this process took as the daemon's, where a session in this process reads
+    /// its identity from: held for the daemon's life, as the one writer of the key.
+    identity: std::sync::OnceLock<tilo_device_identity::persist::DeviceKeyLock>,
     _dir: tempfile::TempDir,
 }
 
@@ -182,6 +189,7 @@ impl TestDaemon {
         let actions = Arc::new(Governance {
             workspaces: workspaces.clone(),
         });
+        let online = Online::new();
         let services = ProcessServices {
             shell: Some(Arc::new(ShellServices {
                 links: Arc::clone(&links),
@@ -194,7 +202,12 @@ impl TestDaemon {
                 }),
                 actions,
                 standing,
-                published: None,
+                published: Some(Arc::new(
+                    tilo_runtime::device::published::Published::new().serving(
+                        &[tilo_workspace_service::workspaces::person_workspace::devices::ONLINE],
+                        Arc::clone(&online) as Arc<dyn PublishedResources>,
+                    ),
+                )),
                 workspaces: workspaces.clone(),
                 identity: None,
                 api: None,
@@ -256,8 +269,49 @@ impl TestDaemon {
             socket,
             links,
             changes: crate::platform::records::Changes::default(),
+            online,
+            identity: std::sync::OnceLock::new(),
             _dir: dir,
         }
+    }
+
+    /// Keep this daemon's device identity where a session in this process reads its own: its
+    /// key and certificate, in `home`'s identity directory, and the file secret store a test's
+    /// identity keeps its keys in.
+    pub(crate) fn serve_identity(&self, home: &mut tilo_test_env::TestHome) {
+        let root = home.root().join("identity");
+        home.env()
+            .set("TILO_IDENTITY_ROOT", &root)
+            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+        let paths = tilo_identity::provisioning::collaboration_identity_paths();
+        std::fs::create_dir_all(
+            paths
+                .device_privkey
+                .parent()
+                .expect("the device key has a directory"),
+        )
+        .expect("the identity directory is made");
+        std::fs::create_dir_all(
+            paths
+                .device_cert
+                .parent()
+                .expect("the device certificate has a directory"),
+        )
+        .expect("the identity directory is made");
+        tilo_device_identity::persist::write_device_key(&paths.device_privkey, &self.key)
+            .expect("the device key is written");
+        tilo_device_identity::persist::write_device_cert(&paths.device_cert, &self.cert)
+            .expect("the device certificate is written");
+        // The one process that writes as the device is this one: a session here reads the key it
+        // took, as it reads the key of the daemon that started it.
+        let lock = tilo_device_identity::persist::take_device_key(&paths)
+            .expect("this process takes the device's key");
+        let _ = self.identity.set(lock);
+    }
+
+    /// Say these devices of the person's are online now, as this daemon's own reading does.
+    pub(crate) fn set_online(&self, devices: impl IntoIterator<Item = [u8; 32]>) {
+        self.online.set(devices);
     }
 
     /// The session's one stream of record changes, as its roles reach the workspaces here.
@@ -715,5 +769,139 @@ impl tilo_actions::remote::ActionProvider for GovernanceCall {
         tilo_actions::remote::Pending::ready(Err(
             tilo_actions::remote::ActionCallError::UnknownInvocation,
         ))
+    }
+}
+
+/// The person's devices this daemon says are online now, as the daemon's own reading publishes
+/// them: what the session follows over the shell link.
+pub(crate) struct Online {
+    listed: std::sync::Mutex<OnlineDevices>,
+    revision: std::sync::atomic::AtomicU64,
+    changed: tokio::sync::watch::Sender<u64>,
+    watches: std::sync::Mutex<Vec<u64>>,
+    next_watch: std::sync::atomic::AtomicU64,
+    /// This provider, for the tasks its watches run: what they read while a watch lives.
+    me: std::sync::OnceLock<std::sync::Weak<Self>>,
+}
+
+impl Online {
+    /// The reading, with no device online yet.
+    pub(crate) fn new() -> Arc<Self> {
+        let online = Arc::new(Self {
+            listed: std::sync::Mutex::default(),
+            revision: std::sync::atomic::AtomicU64::default(),
+            changed: tokio::sync::watch::channel(0).0,
+            watches: std::sync::Mutex::default(),
+            next_watch: std::sync::atomic::AtomicU64::default(),
+            me: std::sync::OnceLock::new(),
+        });
+        let _ = online.me.set(Arc::downgrade(&online));
+        online
+    }
+
+    /// Say `devices` are online now.
+    pub(crate) fn set(&self, devices: impl IntoIterator<Item = [u8; 32]>) {
+        let mut online = self.listed.lock().expect("the online reading");
+        online.devices = devices.into_iter().map(hex::encode).collect();
+        drop(online);
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.changed
+            .send_modify(|changed| *changed = changed.wrapping_add(1));
+    }
+
+    fn reading(&self) -> Reading {
+        let online = self.listed.lock().expect("the online reading").clone();
+        let bytes = serde_json::to_vec(&online).expect("the online reading encodes");
+        (
+            self.revision.load(std::sync::atomic::Ordering::Relaxed),
+            Some(bytes),
+        )
+    }
+}
+
+impl PublishedResources for Online {
+    fn snapshot(
+        &self,
+        _caller: &Caller,
+        resource: &str,
+    ) -> tokio::sync::oneshot::Receiver<Result<Reading, String>> {
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let reading = (resource
+            == tilo_workspace_service::workspaces::person_workspace::devices::ONLINE)
+            .then(|| self.reading());
+        let _ = answer.send(Ok(reading.unwrap_or((0, None))));
+        answered
+    }
+
+    fn watch(
+        &self,
+        _caller: &Caller,
+        resource: &str,
+        sink: tokio::sync::mpsc::UnboundedSender<runtime_collab::wire::Event>,
+    ) -> Result<ResourceWatch, String> {
+        if resource != tilo_workspace_service::workspaces::person_workspace::devices::ONLINE {
+            return Err(format!("this daemon publishes no `{resource}` resource"));
+        }
+        let id = self
+            .next_watch
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.watches.lock().expect("the online watches").push(id);
+        let (revision, reading) = self.reading();
+        if sink
+            .send(runtime_collab::wire::Event::Reading {
+                resource: resource.to_owned(),
+                revision,
+                reading,
+            })
+            .is_err()
+        {
+            return Err("the reader of the reading went away".to_owned());
+        }
+        let mut changed = self.changed.subscribe();
+        let online = self
+            .me
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| "the reading's provider is not kept".to_owned())?;
+        let named = resource.to_owned();
+        tokio::spawn(async move {
+            while changed.changed().await.is_ok() {
+                let (revision, reading) = online.reading();
+                if sink
+                    .send(runtime_collab::wire::Event::Reading {
+                        resource: named.clone(),
+                        revision,
+                        reading,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        Ok(ResourceWatch::new(id))
+    }
+
+    fn unwatch(&self, watch: ResourceWatch) {
+        self.watches
+            .lock()
+            .expect("the online watches")
+            .retain(|id| *id != watch.id());
+    }
+
+    fn invoke(
+        &self,
+        _caller: &Caller,
+        resource: &str,
+        action: &str,
+        _arguments: Vec<u8>,
+    ) -> tokio::sync::oneshot::Receiver<runtime_collab::wire::Receipt> {
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let _ = answer.send(runtime_collab::wire::Receipt::Refused {
+            code: "unknown_action".to_owned(),
+            message: format!("`{resource}` is only read; `{action}` is not its"),
+        });
+        answered
     }
 }

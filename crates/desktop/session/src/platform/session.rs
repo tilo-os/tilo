@@ -790,8 +790,24 @@ impl Session {
         if let (Some(personal), Some(seed)) = (&personal, seed) {
             personal.borrow_mut().hold_seed(seed);
         }
-        // The fabric the session acts on: a stand-in a test hands its options.
-        let fabric: Option<crate::platform::fabric::SharedLink> = options.fabric.clone();
+        // The person's devices as their daemon knows them — the record of them it follows, and
+        // which of them hold a session with it now — or the stand-in a test hands its options.
+        let fabric: Option<crate::platform::fabric::SharedLink> =
+            options.fabric.clone().or_else(|| {
+                let identity = crate::sync::device_identity()?;
+                let (record, _) = owner_devices.as_ref()?.record();
+                Some(std::sync::Arc::new(crate::person_store::DaemonFabric::new(
+                    record.shared(),
+                    crate::person_store::DaemonReading::follow(
+                        &daemon,
+                        &own_workspace,
+                        tilo_workspace_service::workspaces::person_workspace::devices::ONLINE,
+                        options.wake.handle(),
+                    ),
+                    identity.device_cert,
+                    continuity.clone(),
+                )) as crate::platform::fabric::SharedLink)
+            });
         if let Some(devices) = &owner_devices {
             // Notifications continue on the person's other devices, through the record of them.
             let (record, _) = devices.record();

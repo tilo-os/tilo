@@ -77,6 +77,11 @@ impl Continuity {
         );
     }
 
+    /// Whether the person lets what plays here go on playing on their other devices.
+    pub(crate) fn media_permitted(&self) -> bool {
+        self.media.load(Ordering::Relaxed)
+    }
+
     /// Whether the person lets notifications continue on their other devices.
     pub(crate) fn notifications_permitted(&self) -> bool {
         self.notifications.load(Ordering::Relaxed)
