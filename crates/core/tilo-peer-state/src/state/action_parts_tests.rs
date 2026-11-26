@@ -177,12 +177,8 @@ fn receive(
     message: NeighbourMsg,
     now: SystemTime,
 ) -> ReceiveOutcome {
-    peer.receive_from(
-        TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
-        message,
-        now,
-    )
-    .unwrap()
+    peer.receive_from(crate::fixture::origin(&key), message, now)
+        .unwrap()
 }
 
 #[test]
@@ -253,11 +249,7 @@ fn a_commit_naming_more_records_than_can_wait_is_refused_by_name() {
     }
     let part = write(&writer, &b, RECORDS[0], child, Some(&commit), 0, now);
     let refused = a
-        .receive_from(
-            TransportOrigin::ServerDelta(b.verifying_key().to_bytes()),
-            part,
-            now,
-        )
+        .receive_from(crate::fixture::origin(&b), part, now)
         .unwrap_err()
         .to_string();
     assert!(

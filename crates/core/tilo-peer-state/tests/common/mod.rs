@@ -11,32 +11,13 @@ use tilo_peer_state::direct::DirectSync;
 pub use tilo_peer_state::sealed_records::{
     members_keys, opened, opened_heads, sealed_write, write_sealed,
 };
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+
+pub use tilo_peer_state::fixture::certify as device_with;
 
 /// A member device key `n` certified by `root`.
 pub fn device(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
     device_with(root, n, DeviceCapabilities::member())
-}
-
-/// A device key `n` certified by `root`, with `capabilities`.
-pub fn device_with(
-    root: &SigningKey,
-    n: u8,
-    capabilities: DeviceCapabilities,
-) -> (SigningKey, DeviceCert) {
-    let key = SigningKey::from_bytes(&[n; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("device-{n}"),
-        capabilities,
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    (key, cert)
 }
 
 pub use tilo_peer_state::loopback::{addr, endpoint as localhost_endpoint};
@@ -48,18 +29,11 @@ pub fn workspace(
     a: &(SigningKey, DeviceCert),
     roster: &[DeviceCert],
 ) -> StatePeer {
-    let now = tilo_clock::wall();
-    let mut peer = StatePeer::new(
-        workspace,
-        a.1.clone(),
-        roster.to_vec(),
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    peer.select_exact_admissions().unwrap();
-    tilo_peer_state::fixture::found(&mut peer, (&a.0, &a.1), roster, Vec::new(), now);
-    peer
+    tilo_peer_state::fixture::Founding::by(a)
+        .named(workspace)
+        .with(roster)
+        .at(tilo_clock::wall())
+        .exact()
 }
 
 /// `sync`, keeping what it holds and is sent in a store in `directory`, as

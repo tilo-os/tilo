@@ -9,211 +9,49 @@
 //! the person revoked is refused with the reason, before its request reaches
 //! the actions there.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
+use iroh::Endpoint;
 use iroh::protocol::Router;
-use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use serde_json::{Value, json};
-use tilo_actions::remote::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
-    CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeRequest, Pending,
-    ReceiptStatus,
-};
+use tilo_actions::remote::{ActionCallError, ActionProvider, Caller, CatalogueQuery};
 use tilo_mcp::McpServer;
+use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, NoActions, RemoteDevice};
 use tilo_peer_state::direct::Replica;
-use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{
-    DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
-    sign_device_cert, sign_revocation_entry,
+    DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, sign_revocation_entry,
 };
 
 /// The workspace B keeps, which the agent on A works in.
 const WORKSPACE: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 
-/// The app B runs, which an agent lists and acts on.
-const NOTES: &str = "so.tilo.notes";
+use super::actions_host::{Broker as Host, addr, endpoint};
 
 /// A device key `n` certified by `root` as one of its person's devices,
 /// called `label`.
 fn device(root: &SigningKey, n: u8, label: &str) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&[n; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
+    let cert = tilo_peer_state::fixture::labelled(root, &key, label, DeviceCapabilities::member());
     (key, cert)
-}
-
-/// A localhost endpoint with no relay whose identity is the device `key`.
-async fn endpoint(key: &SigningKey) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
-        .relay_mode(RelayMode::Disabled)
-        .secret_key(SecretKey::from_bytes(&key.to_bytes()))
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
-        .await
-        .unwrap()
-}
-
-fn addr(endpoint: &Endpoint) -> EndpointAddr {
-    EndpointAddr::new(endpoint.id()).with_ip_addr(std::net::SocketAddr::from((
-        std::net::Ipv4Addr::LOCALHOST,
-        endpoint.bound_sockets().first().unwrap().port(),
-    )))
 }
 
 /// The workspace, made by `maker` with `members` in it, as the device that
 /// keeps it holds it.
 fn workspace(maker: &(SigningKey, DeviceCert), members: &[DeviceCert]) -> StatePeer {
-    let now = tilo_clock::wall();
-    let mut peer = StatePeer::new(
-        WORKSPACE,
-        maker.1.clone(),
-        members.to_vec(),
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    peer.select_exact_admissions().unwrap();
-    peer.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(WORKSPACE, &maker.1, members).unwrap(),
-            documents: Vec::new(),
-        },
-        &maker.0,
-        now,
-    )
-    .unwrap();
-    peer
+    tilo_peer_state::fixture::Founding::by(maker)
+        .named(WORKSPACE)
+        .with(members)
+        .at(tilo_clock::wall())
+        .exact()
 }
 
-/// B's action host: Notes runs there, its notebook offering one action, and
-/// every caller that asked anything is kept.
-#[derive(Clone, Default)]
-struct Host {
-    callers: Arc<Mutex<Vec<Caller>>>,
-    invoked: Arc<Mutex<Vec<InvokeRequest>>>,
-}
-
-fn notebook(action: Option<&str>) -> CatalogueRow {
-    CatalogueRow {
-        offered: None,
-        provider: "1".into(),
-        app_id: NOTES.into(),
-        parent_resource: String::new(),
-        resource: CatalogueResource {
-            id: "notes.notebook".into(),
-            kind: "notes.notebook".into(),
-            label: "Notebook".into(),
-            presentation: None,
-        },
-        action: action.map(|action| tilo_actions::ActionDescriptor {
-            did: None,
-            state: tilo_actions::ActionState::default(),
-            semantic_identity: None,
-            address: tilo_actions::ActionAddress::new("notes.notebook", action),
-            resource_kind: "notes.notebook".into(),
-            resource_label: "Notebook".into(),
-            action_label: "Pin".into(),
-            keywords: Vec::new(),
-            icon: None,
-            description: None,
-            locus: tilo_actions::ExecutionLocus::ClientLocal,
-            kind: tilo_actions::OperationKind::Effect,
-            contract: tilo_actions::ActionContract::default(),
-            input: tilo_actions::InputSpec::None,
-            params: Vec::new(),
-            view: None,
-        }),
-        has_children: false,
-        visibility: None,
-        surface: None,
-    }
-}
-
-impl ActionProvider for Host {
-    fn query(
-        &self,
-        caller: &Caller,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        self.callers.lock().unwrap().push(caller.clone());
-        let page = match query.provider.as_deref() {
-            None => CataloguePage {
-                revision: "1".into(),
-                providers: vec![CatalogueProvider {
-                    provider: "1".into(),
-                    app_id: NOTES.into(),
-                    workspace: WORKSPACE.into(),
-                    document_id: String::new(),
-                    browsable: true,
-                }],
-                ..CataloguePage::default()
-            },
-            Some("1") => CataloguePage::from_rows(
-                "1".into(),
-                vec![notebook(None), notebook(Some("pin"))],
-                &query,
-            ),
-            Some(_) => CataloguePage::from_rows("1".into(), Vec::new(), &query),
-        };
-        Pending::ready(Ok(page))
-    }
-
-    fn invoke(
-        &self,
-        caller: &Caller,
-        request: InvokeRequest,
-    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        self.callers.lock().unwrap().push(caller.clone());
-        let invocation = request.invocation;
-        self.invoked.lock().unwrap().push(request);
-        Pending::ready(Ok(InvocationReceipt {
-            invocation,
-            status: ReceiptStatus::Completed {
-                output: tilo_actions::ActionOutput::default(),
-            },
-        }))
-    }
-
-    fn observe(
-        &self,
-        _caller: &Caller,
-        id: &tilo_actions::InvocationId,
-    ) -> Option<InvocationState> {
-        let ran = self
-            .invoked
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|request| request.invocation == *id);
-        ran.then(|| {
-            InvocationState::new(
-                *id,
-                tilo_actions::InvocationUpdate::Succeeded {
-                    invocation: *id,
-                    output: tilo_actions::ActionOutput::default(),
-                },
-            )
-        })
-    }
-
-    fn cancel(
-        &self,
-        _caller: &Caller,
-        _id: &tilo_actions::InvocationId,
-    ) -> Pending<Result<(), ActionCallError>> {
-        Pending::ready(Ok(()))
+/// B's action host, answering for the workspace B keeps.
+fn host() -> Host {
+    Host {
+        workspace: WORKSPACE.into(),
+        ..Host::default()
     }
 }
 
@@ -230,7 +68,7 @@ struct B {
 impl B {
     async fn keeping(key: (SigningKey, DeviceCert), members: &[DeviceCert]) -> Self {
         let kept = Replica::new(workspace(&key, members));
-        let host = Host::default();
+        let host = host();
         let endpoint = endpoint(&key.0).await;
         let service = ActionService::new(key.0.clone(), Arc::new(host.clone()));
         service.hold(kept.clone());

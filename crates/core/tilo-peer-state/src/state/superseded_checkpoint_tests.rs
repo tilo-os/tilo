@@ -49,7 +49,7 @@ fn double_publish() -> DoublePublish {
     let newer = snapshot(&mut author, &key, later, "N+1");
     assert_eq!(seq(&newer), seq(&older).checked_add(1).unwrap());
     let workspace = author.workspace_message();
-    let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
+    let origin = crate::fixture::origin(&key);
 
     let first = receiver
         .receive_from_report(origin, older.clone(), later)
@@ -105,7 +105,7 @@ tilo_test_env::scenario! {
         let later = now.checked_add(Duration::from_secs(301)).unwrap();
         let older = snapshot(&mut author, &key, later, "N");
         let newer = snapshot(&mut author, &key, later, "N+1");
-        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
+        let origin = crate::fixture::origin(&key);
         receiver
             .receive_from_report(origin, author.workspace_message(), later)
             .unwrap();
@@ -134,7 +134,7 @@ tilo_test_env::scenario! {
         let covered = snapshot(&mut author, &key, later, "N");
         let workspace = author.workspace_message();
         let ahead = snapshot(&mut author, &key, later, "N+1");
-        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
+        let origin = crate::fixture::origin(&key);
         receiver
             .receive_from_report(origin, workspace, later)
             .unwrap();
@@ -180,7 +180,7 @@ tilo_test_env::scenario! {
         let genuine = snapshot(&mut author, &key, later, "genuine");
         let counterfeit = snapshot(&mut forger, &key, later, "forged");
         assert_eq!(seq(&genuine), seq(&counterfeit));
-        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
+        let origin = crate::fixture::origin(&key);
         receiver
             .receive_from_report(origin, author.workspace_message(), later)
             .unwrap();
@@ -246,7 +246,7 @@ tilo_test_env::scenario! {
             app: "test.app".into(),
             record: "tab:1".into(),
         };
-        let origin = |key: &SigningKey| TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
+        let origin = |key: &SigningKey| crate::fixture::origin(&key);
 
         let mut first = receiver.clone();
         let covered = snapshot(&mut first, &first_key, later, "covered");

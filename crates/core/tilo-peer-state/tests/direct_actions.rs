@@ -49,13 +49,7 @@ fn agent_device(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-fn ns(at: SystemTime) -> u64 {
-    at.duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap()
-}
+use tilo_peer_state::fixture::ns;
 
 /// The moment this test reads, the clock the engines read with it: a test
 /// that holds the wall clock holds both sides of every exchange.

@@ -30,7 +30,7 @@ use tilo_actions::remote::{
 use tilo_fs::Access;
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 use tilo_server_protocol::workspaces::{RemoveMemberRequest, Role};
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use tilo_workspace_service::files::{FOLDERS_APP, FolderList};
 
 use super::workspaces::ServiceWorkspaces;
@@ -42,17 +42,7 @@ fn enrol(
     capabilities: DeviceCapabilities,
 ) -> (SigningKey, DeviceCert) {
     let key = SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(getrandom::SysRng));
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities,
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
+    let cert = tilo_peer_state::fixture::labelled(root, &key, label, capabilities);
     (key, cert)
 }
 

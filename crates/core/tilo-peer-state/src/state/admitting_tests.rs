@@ -283,7 +283,7 @@ fn refusal_of_tampered_admission(
     let workspace = peer.workspace_id().to_owned();
     let refused = peer
         .receive_from(
-            TransportOrigin::ServerDelta(editor_key.verifying_key().to_bytes()),
+            crate::fixture::origin(&editor_key),
             NeighbourMsg::SyncResp { changes, workspace },
             now,
         )

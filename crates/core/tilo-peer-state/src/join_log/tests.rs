@@ -9,13 +9,7 @@ use tilo_user_identity::{
     DeviceCapabilities, EndpointDelegation, RevocationList, sign_device_cert,
 };
 
-fn ns(now: SystemTime) -> u64 {
-    now.duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap()
-}
+use crate::fixture::ns;
 
 fn guest() -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[41; 32]);

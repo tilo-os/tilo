@@ -47,15 +47,7 @@ fn write(
     .unwrap()
 }
 
-/// The person whose certified device `key` is in `peer`'s workspace.
-fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
-    let device = key.verifying_key().to_bytes();
-    peer.certificates()
-        .into_iter()
-        .find(|cert| cert.device_public_key == device)
-        .expect("the workspace holds the device's certificate")
-        .user_public_key
-}
+use tilo_peer_state::fixture::person;
 
 fn value(peer: &StatePeer, keys: &ContentKeys, key: &str) -> Option<String> {
     let record = AutoCommit::load(&opened(peer, keys, (APP, RECORD))?).ok()?;

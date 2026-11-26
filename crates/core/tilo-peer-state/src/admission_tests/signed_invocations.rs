@@ -27,14 +27,7 @@ fn agents() -> (&'static str, String) {
     )
 }
 
-fn now_ns(now: SystemTime) -> u64 {
-    u64::try_from(
-        now.duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    )
-    .unwrap()
-}
+use crate::fixture::ns as now_ns;
 
 /// The fixture's workspace, its devices' keys and certificates, and its clock:
 /// the copy returned is device `a`'s.

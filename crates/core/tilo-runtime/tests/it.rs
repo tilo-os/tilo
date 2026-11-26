@@ -29,6 +29,8 @@
 // entry every module's tests start.
 tilo_automerge_isolate::test_worker!();
 
+#[path = "actions_host.rs"]
+mod actions_host;
 #[path = "device_actions.rs"]
 mod device_actions;
 #[path = "device_host.rs"]

@@ -220,15 +220,7 @@ fn comment() -> Did {
     Did::Verb(VerbCall::new(ActionKey::new(APP, KIND, "comment"), []))
 }
 
-/// The person whose device `key` is, as `peer`'s workspace certifies it.
-fn person_of(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
-    let device = key.verifying_key().to_bytes();
-    peer.certificates()
-        .into_iter()
-        .find(|cert| cert.device_public_key == device)
-        .expect("the workspace certifies the writer's device")
-        .user_public_key
-}
+use crate::fixture::person as person_of;
 
 /// The guest's signed write: what `write` does to the record, committed as
 /// `what` on `item`.
@@ -1287,7 +1279,7 @@ fn a_device_running_on_two_machines_is_refused_by_name_until_one_is_readded() {
 
     // The owner writes on meanwhile.
     let owner_key = SigningKey::from_bytes(&[2; 32]);
-    let owner_origin = TransportOrigin::ServerDelta(owner_key.verifying_key().to_bytes());
+    let owner_origin = crate::fixture::origin(&owner_key);
     let mut doc = AutoCommit::load(&peer.document(APP, RECORD).unwrap()).unwrap();
     doc.set_actor(automerge::ActorId::from(b"the owner".to_vec()));
     let heads = doc.get_heads();

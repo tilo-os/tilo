@@ -16,7 +16,7 @@ use automerge::ReadDoc as _;
 use ed25519_dalek::SigningKey;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_DOCUMENT, DESKTOP_KIND};
 use tilo_peer_state::workspace_documents::{DeviceDocuments as _, DeviceWrites as _, DocumentRead};
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
 use tilo_workspace_service::workspaces::Workspaces;
 
@@ -31,17 +31,7 @@ fn enrol(
     capabilities: DeviceCapabilities,
 ) -> (SigningKey, DeviceCert) {
     let key = SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(getrandom::SysRng));
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities,
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
+    let cert = tilo_peer_state::fixture::labelled(root, &key, label, capabilities);
     (key, cert)
 }
 

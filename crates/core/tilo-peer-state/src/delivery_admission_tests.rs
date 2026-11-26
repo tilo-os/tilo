@@ -19,16 +19,7 @@ fn incremental(
         .publish_incremental("test.app", "tab:1", doc.save_after(&heads), key, now)
         .unwrap()
 }
-/// The person whose certified device `key` is in `peer`'s workspace: the root
-/// key that signs the writes its devices publish.
-fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
-    let device = key.verifying_key().to_bytes();
-    peer.certificates()
-        .into_iter()
-        .find(|cert| cert.device_public_key == device)
-        .expect("the workspace holds the device's certificate")
-        .user_public_key
-}
+use crate::fixture::person;
 fn restore(peer: &StatePeer, now: SystemTime) -> StatePeer {
     StatePeer::restore(
         &peer.durable().unwrap(),
@@ -49,7 +40,7 @@ tilo_test_env::scenario! {
         let (mut receiver, _, key, _, now) = seeded();
         let mut author = receiver.clone();
         let message = incremental(&mut author, &key, now, "A");
-        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
+        let origin = crate::fixture::origin(&key);
         let before = receiver.durable().unwrap();
         assert!(matches!(
             receiver.receive_from_report(origin, message.clone(), now),
@@ -83,7 +74,7 @@ tilo_test_env::scenario! {
         let (mut receiver, _, key, _, now) = seeded();
         let mut author = receiver.clone();
         let message = incremental(&mut author, &key, now, "A");
-        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
+        let origin = crate::fixture::origin(&key);
         let mut legacy = receiver.clone();
         legacy.receive_from(origin, message.clone(), now).unwrap();
         legacy = restore(&legacy, now);
@@ -156,7 +147,7 @@ tilo_test_env::scenario! {
             envelope.seq += 1;
             collab_types::sign_op(envelope, &key).unwrap();
         }
-        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
+        let origin = crate::fixture::origin(&key);
         receiver.select_exact_admissions().unwrap();
         let first = receiver.receive_from_report(origin, first, now).unwrap();
         let rows = receiver.rows();
@@ -172,7 +163,7 @@ tilo_test_env::scenario! {
     {
         let (mut receiver, key, _, _, now) = seeded();
         receiver.select_exact_admissions().unwrap();
-        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
+        let origin = crate::fixture::origin(&key);
         let message = receiver.workspace_message();
         let report = receiver.receive_from_report(origin, message, now).unwrap();
         assert_eq!(report.primary(), &InputDisposition::MetadataOnly);
@@ -198,7 +189,7 @@ tilo_test_env::scenario! {
         let (mut receiver, owner_copy, key, _, now) = seeded();
         let mut author = receiver.clone();
         let message = incremental(&mut author, &key, now, "A");
-        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
+        let origin = crate::fixture::origin(&key);
         receiver.select_exact_admissions().unwrap();
         receiver
             .receive_from_report(origin, message.clone(), now)
@@ -307,7 +298,7 @@ tilo_test_env::scenario! {
         let op = collab_types::canonical_bytes(envelope.as_ref()).unwrap();
         collab_types::verify_op(envelope.as_ref()).unwrap();
         receiver.select_exact_admissions().unwrap();
-        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
+        let origin = crate::fixture::origin(&key);
         let report = receiver.receive_from_report(origin, decoded, now).unwrap();
         let InputDisposition::Accepted(admitted) = report.primary() else {
             panic!("message rejected: {:?}", report.primary())
@@ -329,7 +320,7 @@ tilo_test_env::scenario! {
         let mut author = receiver.clone();
         let first = incremental(&mut author, &key, now, "A");
         let second = incremental(&mut author, &key, now, "B");
-        let origin = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
+        let origin = crate::fixture::origin(&key);
         receiver.select_exact_admissions().unwrap();
         let deferred = receiver
             .receive_from_report(origin, second.clone(), now)
@@ -350,7 +341,7 @@ tilo_test_env::scenario! {
         }
         let waiting = receiver
             .receive_from_report(
-                TransportOrigin::ServerDelta(absent_key.verifying_key().to_bytes()),
+                crate::fixture::origin(&absent_key),
                 unrelated,
                 now,
             )
@@ -439,7 +430,7 @@ tilo_test_env::scenario! {
         let workspace = receiver.workspace_message();
         let report = receiver
             .receive_from_report(
-                TransportOrigin::ServerDelta(authority.verifying_key().to_bytes()),
+                crate::fixture::origin(&authority),
                 workspace,
                 later,
             )

@@ -41,15 +41,7 @@ pub(super) fn device(root: u8, seed: u8) -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-/// The person whose certified device `key` is in `peer`'s workspace.
-pub(super) fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
-    let device = key.verifying_key().to_bytes();
-    peer.certificates()
-        .into_iter()
-        .find(|cert| cert.device_public_key == device)
-        .expect("the workspace holds the device's certificate")
-        .user_public_key
-}
+pub(super) use crate::fixture::person;
 
 pub(super) fn fixture() -> Fixture {
     fixture_holding(&[RECORD])
@@ -195,7 +187,7 @@ fn artifact() -> collab_types::ArtifactId {
 }
 
 pub(super) fn origin(key: &SigningKey) -> TransportOrigin {
-    TransportOrigin::ServerDelta(key.verifying_key().to_bytes())
+    crate::fixture::origin(&key)
 }
 
 fn route() -> Route {

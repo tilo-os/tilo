@@ -246,7 +246,6 @@ tilo_test_env::scenario! {
         let ticket = crate::fixture::invitation(&peer, &host_key, now, |grant| {
             grant.nonce = [43; 16];
             grant.recipient_user_public_key = Some(cert.user_public_key);
-            grant.expires_at_ns = now_ns(now) + 1_000_000;
         });
         let redemption = crate::fixture::redeem(&ticket, (&key, &cert), 44, now);
         peer.governance_mut()

@@ -59,7 +59,7 @@ fn fixture() -> Fixture {
 }
 
 fn origin(key: &SigningKey) -> TransportOrigin {
-    TransportOrigin::ServerDelta(key.verifying_key().to_bytes())
+    crate::fixture::origin(&key)
 }
 
 fn metadata(epoch: u64) -> EncryptionMetadata {

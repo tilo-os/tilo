@@ -27,15 +27,7 @@ fn incremental(
         .unwrap()
 }
 
-/// The person whose certified device `key` is in `peer`'s workspace.
-fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
-    let device = key.verifying_key().to_bytes();
-    peer.certificates()
-        .into_iter()
-        .find(|cert| cert.device_public_key == device)
-        .expect("the workspace holds the device's certificate")
-        .user_public_key
-}
+use crate::fixture::person;
 
 /// `message` as `key`'s write at `seq`: signed by a device the workspace never
 /// certifies, so the certificate it waits for never comes.
@@ -69,7 +61,7 @@ tilo_test_env::scenario! {
         let mut author = receiver.clone();
         let write = incremental(&mut author, &key, now, "kept");
         let stranger = SigningKey::from_bytes(&[77; 32]);
-        let origin = TransportOrigin::ServerDelta(stranger.verifying_key().to_bytes());
+        let origin = crate::fixture::origin(&stranger);
         let first = receiver
             .receive_from_report(origin, as_author(&write, &stranger, 1), now)
             .unwrap();
@@ -122,7 +114,7 @@ tilo_test_env::scenario! {
         // A member's write is still admitted, and nothing let go was applied.
         let admitted = receiver
             .receive_from_report(
-                TransportOrigin::ServerDelta(key.verifying_key().to_bytes()),
+                crate::fixture::origin(&key),
                 write,
                 now,
             )
@@ -165,7 +157,7 @@ tilo_test_env::scenario! {
         assert_eq!(receiver.pending_count(), 1);
         let stranger = SigningKey::from_bytes(&[78; 32]);
         let filler = incremental(&mut receiver.clone(), &owner_key, now, "filler");
-        let origin = TransportOrigin::ServerDelta(stranger.verifying_key().to_bytes());
+        let origin = crate::fixture::origin(&stranger);
         let mut settled = Vec::new();
         for seq in 1..=u64::try_from(MAX_HELD_INPUTS).unwrap() {
             let report = receiver
@@ -195,7 +187,7 @@ tilo_test_env::scenario! {
         let mut author = receiver.clone();
         let first = incremental(&mut author, &key, now, "first");
         let second = incremental(&mut author, &key, now, "second");
-        let member = TransportOrigin::ServerDelta(key.verifying_key().to_bytes());
+        let member = crate::fixture::origin(&key);
         let held = receiver
             .receive_from_report(member, second.clone(), now)
             .unwrap();
@@ -205,7 +197,7 @@ tilo_test_env::scenario! {
         );
         // The queue fills behind it, and the change it builds on has not come.
         let stranger = SigningKey::from_bytes(&[79; 32]);
-        let origin = TransportOrigin::ServerDelta(stranger.verifying_key().to_bytes());
+        let origin = crate::fixture::origin(&stranger);
         let mut let_go = Vec::new();
         for seq in 1..=u64::try_from(MAX_HELD_INPUTS).unwrap() {
             let report = receiver

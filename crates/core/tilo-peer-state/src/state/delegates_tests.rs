@@ -17,13 +17,7 @@ const ROOT_SEED: [u8; 32] = [1; 32];
 /// The agent every delegation here names.
 const AGENT: &str = "scribe";
 
-fn ns(at: SystemTime) -> u64 {
-    at.duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap()
-}
+use crate::fixture::ns;
 
 const fn no_capabilities() -> DeviceCapabilities {
     DeviceCapabilities::nothing()
@@ -272,7 +266,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     assert!(
         member
             .receive_from(
-                TransportOrigin::ServerDelta(authority.verifying_key().to_bytes()),
+                crate::fixture::origin(&authority),
                 owner_copy.workspace_message(),
                 now,
             )

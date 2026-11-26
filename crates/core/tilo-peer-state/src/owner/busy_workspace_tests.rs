@@ -18,9 +18,7 @@ use tilo_user_identity::{DeviceCert, RevocationList};
 /// People who write in the workspace before the joining device arrives.
 const AUTHORS: u8 = 40;
 
-fn ns(now: SystemTime) -> u64 {
-    crate::owner::testing::ns(now).unwrap()
-}
+use crate::fixture::ns;
 
 /// The host's invitation for `device`, redeemed by it.
 fn redemption(

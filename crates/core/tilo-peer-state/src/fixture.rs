@@ -142,7 +142,11 @@ impl Founding {
 
     /// `devices` are on the roster too.
     pub fn with<'a>(mut self, devices: impl IntoIterator<Item = &'a DeviceCert>) -> Self {
-        self.roster.extend(devices.into_iter().cloned());
+        for device in devices {
+            if !self.roster.contains(device) {
+                self.roster.push(device.clone());
+            }
+        }
         self
     }
 

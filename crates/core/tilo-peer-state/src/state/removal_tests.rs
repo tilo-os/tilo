@@ -57,15 +57,7 @@ fn write_at(peer: &mut StatePeer, key: &SigningKey, field: &str, at: SystemTime)
         .unwrap()
 }
 
-/// The person whose certified device `key` is in `peer`'s workspace.
-fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
-    let device = key.verifying_key().to_bytes();
-    peer.certificates()
-        .into_iter()
-        .find(|cert| cert.device_public_key == device)
-        .expect("the workspace holds the device's certificate")
-        .user_public_key
-}
+use crate::fixture::person;
 
 fn removal_of(device: &SigningKey, reason: RevocationReason, now: SystemTime) -> RevocationEntry {
     let root = SigningKey::from_bytes(&[1; 32]);

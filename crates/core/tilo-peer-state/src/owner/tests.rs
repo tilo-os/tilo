@@ -400,7 +400,7 @@ tilo_test_env::scenario! {
                 .owner
                 .receive(
                     joined.workspace,
-                    TransportOrigin::ServerDelta(owner_copy_key.verifying_key().to_bytes()),
+                    crate::fixture::origin(&owner_copy_key),
                     frame,
                     joined.now,
                 )

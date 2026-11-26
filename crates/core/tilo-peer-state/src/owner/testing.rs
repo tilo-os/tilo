@@ -15,7 +15,7 @@ use neighbour_wire::NeighbourMsg;
 use std::time::SystemTime;
 use tilo_automation::Shortcut;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
 pub mod workspace;
 

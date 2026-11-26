@@ -1,6 +1,5 @@
 //! Names the workspace keeps for nobody it holds.
 
-use crate::TransportOrigin;
 use crate::admission_tests::{add_editor, seeded};
 
 /// A person the workspace names goes with their name: removed, no name stays
@@ -35,7 +34,7 @@ fn a_removed_persons_name_goes_with_them() {
             .name_person(root, "Ada Lovelace", &delegate_key, now)
             .unwrap()
     );
-    let origin = TransportOrigin::ServerDelta(delegate_key.verifying_key().to_bytes());
+    let origin = crate::fixture::origin(&delegate_key);
     peer.receive_from(origin, named.workspace_message(), now)
         .expect("the naming merges");
     assert_eq!(
