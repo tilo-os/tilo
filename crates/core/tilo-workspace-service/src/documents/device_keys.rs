@@ -37,6 +37,13 @@ pub type KeysChangedFuture<'a> = Pin<Box<dyn Future<Output = Option<u64>> + Send
 #[cfg(target_family = "wasm")]
 pub type KeysChangedFuture<'a> = Pin<Box<dyn Future<Output = Option<u64>> + 'a>>;
 
+/// A device's own answer, asked for: `T` once it is given.
+#[cfg(not(target_family = "wasm"))]
+pub type KeysFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+/// A device's own answer, asked for: a page's key service answers on its one thread.
+#[cfg(target_family = "wasm")]
+pub type KeysFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+
 /// The group keys of the device a workspace service runs on, asked of it.
 pub trait GroupKeys: collab_types::signer::MaybeSendSync + 'static {
     /// The reader list bound to a document's registered key group, if held here.
@@ -72,6 +79,34 @@ pub trait GroupKeys: collab_types::signer::MaybeSendSync + 'static {
     /// workspace's host would replay them. A device with none of the person's other devices to
     /// ask does nothing. `group` is a workspace, a reader set's group or a document's.
     fn behind(&self, _group: collab_types::WorkspaceId, _held: u64) {}
+
+    /// This device's signed request for the keys of `workspace`'s own group, made before anything
+    /// admits it: what a server answers the device about to hand it the workspace, which commits
+    /// it into the group and hands the commit over with the workspace ([`Self::admit`]). `None`
+    /// when the device keeps no groups, or is in the group already.
+    fn access_request(
+        &self,
+        _workspace: collab_types::WorkspaceId,
+    ) -> KeysFuture<'_, Option<collab_types::MlsAccessRequestV1>> {
+        Box::pin(std::future::ready(None))
+    }
+
+    /// Commit `request`'s device into `workspace`'s own group now, and answer the frames it joins
+    /// from: what a device handing the workspace to a server hands over with it, so the server
+    /// opens what it holds as it takes it in. Judged against the workspace's policy as every
+    /// request is.
+    ///
+    /// # Errors
+    /// This device holds no keys of the workspace, or the policy does not admit that device.
+    fn admit(
+        &self,
+        _workspace: collab_types::WorkspaceId,
+        _request: collab_types::MlsAccessRequestV1,
+    ) -> KeysFuture<'_, Result<Vec<neighbour_wire::NeighbourMsg>, String>> {
+        Box::pin(std::future::ready(Err(
+            "this device admits no one into a workspace's keys".to_owned(),
+        )))
+    }
 }
 
 /// [`GroupKeys`] as the host's shared handle.

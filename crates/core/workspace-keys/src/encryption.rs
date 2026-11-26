@@ -1707,6 +1707,74 @@ impl WorkspaceKeys {
         }
     }
 
+    /// Take `request` and commit its device into `workspace`'s group now, rather than on this
+    /// device's turn: what a device handing the workspace to a server does, so the frames the
+    /// server joins from travel with the hand-over ([`Self::admitted_frames`]). Judged as every
+    /// request is ([`Self::receive_request`]): the policy names both devices. The commit's
+    /// signature may be owed yet ([`Self::take_signing`]).
+    ///
+    /// # Errors
+    /// This device settles no group of the workspace, or holds no keys of it to admit with.
+    pub fn admit_now(
+        &mut self,
+        workspace: WorkspaceId,
+        request: MlsAccessRequestV1,
+        now: Instant,
+        wall: u64,
+    ) -> Result<(), String> {
+        let device = request.device;
+        self.receive_request(workspace, request, now, wall);
+        let entry = self
+            .peers
+            .get_mut(&workspace)
+            .ok_or("this device takes no part in the workspace's keys")?;
+        if !matches!(entry.peer.access(), Access::Ready { .. }) {
+            return Err("this device holds no keys of the workspace to admit another with".into());
+        }
+        if entry.peer.members().contains(&device) {
+            return Ok(());
+        }
+        entry.turn_at = Some(now);
+        entry.committed_at = None;
+        self.reconcile(workspace, now, wall);
+        Ok(())
+    }
+
+    /// The frames `device` joins `workspace`'s group from, once this device committed it in
+    /// ([`Self::admit_now`]): the group's genesis and head, the head's join material with them.
+    ///
+    /// # Errors
+    /// The device is not in the group, or the commit still waits on its signature.
+    pub fn admitted_frames(
+        &self,
+        workspace: WorkspaceId,
+        device: &Ed25519PublicKey,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let entry = self
+            .peers
+            .get(&workspace)
+            .ok_or("this device takes no part in the workspace's keys")?;
+        if entry.signing.is_some() {
+            return Err("the commit admitting the device waits on its signature".into());
+        }
+        if !entry.peer.members().contains(device) {
+            return Err("the workspace's policy does not let this device admit that one".into());
+        }
+        let scope = self
+            .wire_scope(workspace)
+            .ok_or("the workspace's keys have no route")?;
+        Ok(entry
+            .peer
+            .current_frames()
+            .into_iter()
+            .map(|frame| NeighbourMsg::MlsGovernance {
+                workspace: scope.clone(),
+                frame: Box::new(frame),
+                delivery: 0,
+            })
+            .collect())
+    }
+
     /// The frames of `workspace`'s group from `epoch` on that `asker`, a device that holds the group
     /// at `epoch`, follows to this device's head ([`GroupPeer::frames_from`]): what the workspace's
     /// host replays to a device that was away, answered by a member when the host is not there.
@@ -2234,6 +2302,42 @@ impl SharedKeys {
                 self.with_service(|service| service.entry_signed(workspace, request, now))
             }
         }
+    }
+
+    /// See [`WorkspaceKeys::admit_now`]: `request`'s device committed into `workspace`'s group,
+    /// and the frames it joins from ([`WorkspaceKeys::admitted_frames`]). The ownership's
+    /// signature of the commit is awaited without holding the service.
+    ///
+    /// # Errors
+    /// As there, or the service is gone.
+    pub async fn admit(
+        &self,
+        workspace: WorkspaceId,
+        request: MlsAccessRequestV1,
+        wall: u64,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let device = request.device;
+        let now = tilo_clock::now();
+        let owed = self
+            .with_service(|service| {
+                service.admit_now(workspace, request, now, wall)?;
+                Ok::<_, String>(service.take_signing())
+            })
+            .ok_or("the key service is gone")??;
+        for (group, owed, signing) in owed {
+            let signed = signing.await;
+            self.with_service(|service| service.signed(group, owed, signed, tilo_clock::now()))
+                .ok_or("the key service is gone")?;
+        }
+        // The commit goes to the group's other members as every commit does: the pump publishes
+        // it on its next pass.
+        let frames = self
+            .with_service(|service| service.admitted_frames(workspace, &device))
+            .ok_or("the key service is gone")?;
+        if let Some(wake) = &self.wake {
+            wake();
+        }
+        frames
     }
 
     /// Forget `workspace`, deleted ([`WorkspaceKeys::forget_workspace`]).

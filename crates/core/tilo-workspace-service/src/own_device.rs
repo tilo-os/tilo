@@ -23,7 +23,7 @@ use tilo_workspace_keys::KeyProvider;
 use crate::service::{ServiceConfig, ServiceError, ServiceIdentity, WorkspaceService};
 use crate::workspaces::{
     AskingBehind, DeviceKeyGroups, GroupKeys, GroupKeysAnswerFuture, KeySink, KeysChangedFuture,
-    MemberDevice,
+    KeysFuture, MemberDevice,
 };
 
 pub use crate::workspaces::sealed_documents::OPEN_WAIT;
@@ -235,5 +235,41 @@ impl GroupKeys for DeviceGroupKeys {
         if let Some(behind) = &self.behind {
             behind(group, held);
         }
+    }
+
+    fn access_request(
+        &self,
+        workspace: collab_types::WorkspaceId,
+    ) -> KeysFuture<'_, Option<collab_types::MlsAccessRequestV1>> {
+        Box::pin(async move {
+            self.keys
+                .get()?
+                .ask_on_entry(workspace, tilo_clock::now(), tilo_clock::unix_now())
+                .await
+        })
+    }
+
+    fn admit(
+        &self,
+        workspace: collab_types::WorkspaceId,
+        request: collab_types::MlsAccessRequestV1,
+    ) -> KeysFuture<'_, Result<Vec<neighbour_wire::NeighbourMsg>, String>> {
+        Box::pin(async move {
+            // The group exists before anyone is committed into it: the device that founded the
+            // workspace opens it on its first use.
+            match self
+                .group_keys(&workspace.to_string(), collab_types::EVERY_MEMBER, true)
+                .await
+            {
+                Some(Ok(_)) => {}
+                Some(Err(error)) => return Err(error),
+                None => return Err("this device takes no part in the workspace's keys".into()),
+            }
+            self.keys
+                .get()
+                .ok_or("this device's key service is not running")?
+                .admit(workspace, request, tilo_clock::unix_now())
+                .await
+        })
     }
 }

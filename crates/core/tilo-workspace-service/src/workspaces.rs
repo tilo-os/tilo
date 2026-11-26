@@ -167,7 +167,7 @@ pub enum Held {
 }
 pub use crate::documents::device_keys::{
     AskingBehind, DeviceKeyGroups, DeviceKeys, GroupKeys, GroupKeysAnswer, GroupKeysAnswerFuture,
-    KeySink, KeysChangedFuture,
+    KeySink, KeysChangedFuture, KeysFuture,
 };
 #[cfg(test)]
 mod copy_now_tests;

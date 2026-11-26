@@ -16,7 +16,7 @@ pub(crate) mod sealed;
 pub mod session_page;
 
 pub use device_keys::{
-    DeviceKeys, GroupKeys, GroupKeysAnswer, GroupKeysAnswerFuture, KeysChangedFuture,
+    DeviceKeys, GroupKeys, GroupKeysAnswer, GroupKeysAnswerFuture, KeysChangedFuture, KeysFuture,
 };
 pub use held::HeldDocuments;
 
