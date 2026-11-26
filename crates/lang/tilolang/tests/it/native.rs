@@ -1142,6 +1142,18 @@ tilo_test_env::scenario! {
             &format!("{DATED}view v(t: Task) {{\n    text(\"{{now}}\")\n}}"),
         );
         expect("E049", &format!("{DATED}fn f() -> Time {{\n    now\n}}"));
+        // A condition the offer is judged by is the action's own, so it reads the clock the
+        // action declares; a view of its own still has none, and an action that reads it
+        // without declaring it is refused where it runs.
+        ok(&format!(
+            "{DATED}action a(t: Task) uses time {{\n    require now > Time(\"2026-01-01T00:00:00Z\") \"Not yet\"\n}}"
+        ));
+        expect(
+            "E121",
+            &format!(
+                "{DATED}action a(t: Task) {{\n    require now > Time(\"2026-01-01T00:00:00Z\") \"Not yet\"\n}}"
+            ),
+        );
         expect("E099", "type T {\n    d: Date = Date(\"x\")\n}");
         expect(
             "E020",

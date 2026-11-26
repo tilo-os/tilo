@@ -344,7 +344,12 @@ impl Checker<'_> {
             return Ex::error();
         }
         if name == "now" {
-            if matches!(self.st.ctx, Ctx::Action | Ctx::Program) || self.st.press {
+            // A guard judges the action where it is offered, so it reads the clock the action
+            // declares; a view of its own still has none.
+            if matches!(self.st.ctx, Ctx::Action | Ctx::Program)
+                || self.st.press
+                || self.st.invoker == super::Invoker::Viewer
+            {
                 self.reads(crate::effects::Effect::Time, span, "`now`");
                 return Ex::host(Imp::Now, vec![], Ty::Time);
             }
@@ -359,7 +364,10 @@ impl Checker<'_> {
         // `today` reads it.
         if name == "today" {
             // A program reaches the refusal that says how it asks by time instead.
-            if matches!(self.st.ctx, Ctx::Action | Ctx::Program) || self.st.press {
+            if matches!(self.st.ctx, Ctx::Action | Ctx::Program)
+                || self.st.press
+                || self.st.invoker == super::Invoker::Viewer
+            {
                 self.reads(crate::effects::Effect::Time, span, "`today`");
                 return Ex::host(Imp::Today, vec![], Ty::Date);
             }

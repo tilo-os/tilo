@@ -130,6 +130,8 @@ mod e2e_weather;
 mod e2e_youtube;
 #[path = "engine.rs"]
 mod engine;
+#[path = "guard_clock.rs"]
+mod guard_clock;
 
 #[path = "e2e_store.rs"]
 mod e2e_store;
