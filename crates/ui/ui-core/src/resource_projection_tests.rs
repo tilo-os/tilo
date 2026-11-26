@@ -54,7 +54,9 @@ fn control_availability_follows_permissions_and_reads_without_committing() {
         // rest of the app's surface — the control's own semantic action — still stands.
         let offered = app.collect_resources();
         assert!(
-            !offered.iter().any(|resource| resource.id == "test.obj:1"),
+            !offered
+                .iter()
+                .any(|resource| resource.id.as_str() == "test.obj:1"),
             "a resource id published twice is refused whole"
         );
         assert!(
@@ -64,7 +66,7 @@ fn control_availability_follows_permissions_and_reads_without_committing() {
         assert!(
             !app.collect_local_resources()
                 .iter()
-                .any(|resource| resource.id == "test.obj:1")
+                .any(|resource| resource.id.as_str() == "test.obj:1")
         );
         app.refresh_control_action_availability();
         assert!(app.root_widget.children()[0].is_enabled());
