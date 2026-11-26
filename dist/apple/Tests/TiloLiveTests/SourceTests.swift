@@ -272,6 +272,7 @@ final class TiloSourceTests: XCTestCase {
             window.heard.push({resource, action, args});
             const item = resource.startsWith('chat.messages/messages/') ? window.messages.find(m => m.id === resource.split('/').pop()) : null;
             if (resource === 'chain:messages' && action === 'read') {
+              if (window.chatReply) await window.chatReply;
               // A Chat that keeps a field on no message refuses a read that names it.
               const none = (args.fields ?? []).find(field => (window.noFields ?? []).includes(field));
               if (none) throw new Error('unknown_field: a message has no field ' + none);
@@ -1359,6 +1360,40 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(sent, [["kind": "agent", "id": "reed", "name": "Reed"]])
         let made = try await page("return String(window.heard.filter(h => h.action === 'ensure-personal-assistant').length)")
         XCTAssertEqual(made, "0")
+    }
+
+    func testFirstUseOffersAProviderWhileTheConversationReadIsPending() async throws {
+        try await start(.assistant)
+        try await run("""
+            window.byKind = true; window.unlinked = true; window.agents = [];
+            window.chatReply = new Promise(resolve => { window.resumeChat = resolve; });
+            direct({id: 'm1', author: {person: ADA}, text: 'Kept in Chat'});
+            location.hash = '#/w/ws-1/so.tilo.chat'; enter(true)
+            """)
+        do {
+            try await until("Chat was asked for the personal conversation") {
+                (try? await self.page("return String(window.heard.some(h => h.resource === 'chain:messages' && h.action === 'read' && h.args.where?.channel === DIRECT))")) == "true"
+            }
+            try await until("the provider step is offered while Chat is still reading") {
+                guard case .needsProvider(let choices) = self.setups.last else { return false }
+                return choices.contains(ProviderChoice(id: "openai", name: "OpenAI"))
+            }
+        } catch {
+            try await run("window.resumeChat()")
+            throw error
+        }
+        XCTAssertTrue(setups.contains(.makingAssistant))
+        XCTAssertFalse(setups.contains(.ready))
+        XCTAssertTrue(changes.isEmpty, "Chat has not answered the first read")
+        let listed = try await page("return String(window.asks.includes('tilo.models list'))")
+        XCTAssertEqual(listed, "true", "the provider choices follow the person's model listing")
+        let writes = try await page("""
+            return JSON.stringify(window.asks.filter(what => (what.startsWith('agents ') && what !== 'agents read')
+                || (what.startsWith('tilo.models ') && what !== 'tilo.models list')))
+            """)
+        XCTAssertEqual(writes, #"["agents ensure-personal-assistant"]"#)
+        try await run("window.resumeChat()")
+        try await until("the held read delivers the original message") { self.held.map(self.words) == ["Kept in Chat"] }
     }
 
     func testWithNoProviderLinkedTheMainChatOffersTheStepAndTheKeyGoesToThePersonsServerOnly() async throws {

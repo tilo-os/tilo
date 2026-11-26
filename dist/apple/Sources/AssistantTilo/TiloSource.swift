@@ -665,11 +665,12 @@ public final class TiloSource: AssistantSource {
         toldRefused = false
         await readToldOnce()
         for chat in Array(feeds.keys) { feeds[chat]?.told = false }
-        await look()
+        async let conversation: Void = look()
         // Personal discovery already read this roster or reported why it could not. A second
         // immediate read would turn a denied or unanswered setup into an unsolicited retry.
         if mainChat != .assistant { await readAgents() }
         await survey(.everything)
+        await conversation
         // The start has read what it reads. What her server left unsaid is waited for no
         // longer: where nothing stands in the way, or nothing is known of it, nothing is said.
         // A page that is on its way in again reads all of it anew when it is in.
@@ -1043,8 +1044,9 @@ public final class TiloSource: AssistantSource {
             guard self.assistant != nil else { return }
             // Found: her conversation with it and what stands beside it are read, as after her press.
             for chat in Array(self.feeds.keys) { self.feeds[chat]?.told = false }
-            await self.look()
+            async let conversation: Void = self.look()
             await self.survey(.everything)
+            await conversation
         }
     }
 
@@ -1077,8 +1079,9 @@ public final class TiloSource: AssistantSource {
         guard mainChat == .assistant else { return }
         await findAssistant()
         for chat in Array(feeds.keys) { feeds[chat]?.told = false }
-        await look()
+        async let conversation: Void = look()
         await survey(.everything)
+        await conversation
     }
 
     /// The id Chat keeps the conversation of the person and one agent under, as this page spells it.
@@ -2357,8 +2360,15 @@ public final class TiloSource: AssistantSource {
         while let now = next {
             surveyAgain = nil
             var seen = supervisionNow.now
+            var missed = false
+            // Choosing the first model depends only on the person's providers. A Chat
+            // transcript or another workspace record can still be arriving.
+            if now != .records { await surveyProviders(&seen, unanswered: &missed) }
             if now != .server { await surveyRecords(&seen) }
-            if now != .records { unanswered = await surveyServer(&seen) }
+            if now != .records {
+                let rest = await surveyServer(&seen)
+                unanswered = missed || rest
+            }
             seen.learned = learnedOnHost + learnedInChat
             seen.learnedCount = max(seen.learned.count, seen.learnedCount)
             // The one workspace the assistant works in. Nothing is said of any other of the person's.
@@ -2473,9 +2483,7 @@ public final class TiloSource: AssistantSource {
         }
     }
 
-    /// Says whether one of the asks went unanswered.
-    private func surveyServer(_ seen: inout Supervision) async -> Bool {
-        var unanswered = false
+    private func surveyProviders(_ seen: inout Supervision, unanswered: inout Bool) async {
         // The person's models: which one the main chat answers on.
         if let linked = await answered(&unanswered, { try await self.engine.modelProviders() }) {
             seen.model = linked.model(for: WorkKind.request.rawValue).map { chosen in
@@ -2485,6 +2493,11 @@ public final class TiloSource: AssistantSource {
             providerSetup = TiloSource.setup(of: linked)
             saySetup()
         }
+    }
+
+    /// Says whether one of the asks went unanswered.
+    private func surveyServer(_ seen: inout Supervision) async -> Bool {
+        var unanswered = false
         // What it can sign in to: the vault's items, by where each belongs. Never a secret.
         if let items = await answered(&unanswered, { try await self.engine.vaultItems() }) {
             seen.logins = items.map {
