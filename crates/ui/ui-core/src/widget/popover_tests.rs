@@ -66,36 +66,6 @@ fn present<C: Widget + 'static>(p: &mut Popover<C>, theme: &Theme) -> Scene {
     scene
 }
 
-struct Fixed {
-    rect: Rect,
-    w: f32,
-    h: f32,
-}
-
-impl Widget for Fixed {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size::from_lengths(self.w, self.h),
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, origin: Point) {
-        self.rect = Rect::from_origin_size(origin, (f64::from(self.w), f64::from(self.h)));
-    }
-    fn name(&self) -> &'static str {
-        "Fixed"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
 tilo_test_env::scenario! {
     fn a_popover_menu_is_placed_painted_and_driven_by_keys_and_pointer;
 
@@ -227,11 +197,7 @@ tilo_test_env::scenario! {
 
         {
             let anchor = Rect::new(200.0, 100.0, 280.0, 132.0);
-            let mut p = Popover::with_content(Fixed {
-                rect: Rect::ZERO,
-                w: 120.0,
-                h: 60.0,
-            })
+            let mut p = Popover::with_content(crate::testing::Block::new(120.0, 60.0))
             .anchored(anchor)
             .with_viewport(WINDOW)
             .open(true);
@@ -252,11 +218,7 @@ tilo_test_env::scenario! {
 
         {
             let anchor = Rect::new(200.0, 540.0, 280.0, 572.0);
-            let mut p = Popover::with_content(Fixed {
-                rect: Rect::ZERO,
-                w: 120.0,
-                h: 120.0,
-            })
+            let mut p = Popover::with_content(crate::testing::Block::new(120.0, 120.0))
             .anchored(anchor)
             .with_viewport(WINDOW)
             .open(true);

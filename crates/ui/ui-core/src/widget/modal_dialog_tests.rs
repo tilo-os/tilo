@@ -27,22 +27,6 @@ fn lay(spec: &ModalSpec<'_>, theme: &Theme) -> ModalLayout {
     layout_for(VIEWPORT, spec, &mut tr, theme, environment())
 }
 
-struct TestContent;
-
-impl Widget for TestContent {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        taffy.widget_leaf(Style::default(), node_map, self)
-    }
-    fn name(&self) -> &'static str {
-        "TestContent"
-    }
-}
-
 struct CountingContent {
     events: Rc<Cell<usize>>,
     rect: Rect,
@@ -437,7 +421,7 @@ tilo_test_env::scenario! {
     {
         let _settled = crate::motion::testing::settled();
         {
-            let mut d = ModalDialog::new("Title", TestContent).open(true);
+            let mut d = ModalDialog::new("Title", crate::testing::Block::auto()).open(true);
             lay_out(
                 &mut d,
                 Rect::new(300.0, 100.0, 700.0, 500.0),
@@ -461,7 +445,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let mut d = ModalDialog::new("Title", TestContent).open(false);
+            let mut d = ModalDialog::new("Title", crate::testing::Block::auto()).open(false);
             lay_out(&mut d, WINDOW, &Theme::dark());
             let scene = present(&mut d, WINDOW, &Theme::dark());
             assert!(
@@ -800,7 +784,7 @@ tilo_test_env::scenario! {
         {
             let fired = Rc::new(Cell::new(0));
             let callback = fired.clone();
-            let mut dialog = ModalDialog::new("Review", TestContent)
+            let mut dialog = ModalDialog::new("Review", crate::testing::Block::auto())
                 .open(true)
                 .primary_action("Restore", move || callback.set(callback.get() + 1));
             let target = dialog.accessibility().unwrap().children[0]
@@ -845,7 +829,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let d = ModalDialog::new("Confirm delete", TestContent)
+            let d = ModalDialog::new("Confirm delete", crate::testing::Block::auto())
                 .open(true)
                 .on_dismiss(|| {});
             let node = Widget::accessibility(&d).unwrap();
@@ -858,7 +842,7 @@ tilo_test_env::scenario! {
                     .any(|c| c.name.as_deref() == Some("Close")),
                 "a dialog with no Cancel exposes its close control"
             );
-            let closed = ModalDialog::new("Confirm delete", TestContent).open(false);
+            let closed = ModalDialog::new("Confirm delete", crate::testing::Block::auto()).open(false);
             assert!(Widget::accessibility(&closed).unwrap().state.hidden);
             assert_eq!(Widget::children(&d).len(), 1);
         }
@@ -897,7 +881,7 @@ tilo_test_env::scenario! {
         {
             let dismissed = Rc::new(Cell::new(0));
             let flag = Rc::clone(&dismissed);
-            let mut d = ModalDialog::new("Title", TestContent)
+            let mut d = ModalDialog::new("Title", crate::testing::Block::auto())
                 .open(true)
                 .on_dismiss(move || flag.set(flag.get() + 1));
             lay_out(&mut d, WINDOW, &Theme::dark());
@@ -923,7 +907,7 @@ tilo_test_env::scenario! {
         {
             let dismissed = Rc::new(Cell::new(0));
             let flag = Rc::clone(&dismissed);
-            let mut d = ModalDialog::new("Title", TestContent)
+            let mut d = ModalDialog::new("Title", crate::testing::Block::auto())
                 .open(true)
                 .dismiss_on_scrim(false)
                 .on_dismiss(move || flag.set(flag.get() + 1));
@@ -961,7 +945,7 @@ tilo_test_env::scenario! {
 
         {
             use crate::platform::{Platform, PlatformConventions};
-            let mut d = ModalDialog::new("Title", TestContent)
+            let mut d = ModalDialog::new("Title", crate::testing::Block::auto())
                 .primary_action("Save", || {})
                 .secondary_action("Cancel", || {})
                 .open(true);
@@ -1012,7 +996,7 @@ tilo_test_env::scenario! {
         let (saved, save) = counter();
         let (discarded, discard) = counter();
         let (cancelled, cancel) = counter();
-        let mut d = ModalDialog::new("Save changes to notes.md?", TestContent)
+        let mut d = ModalDialog::new("Save changes to notes.md?", crate::testing::Block::auto())
             .primary_action("Save", save)
             .tertiary_action("Don't save", discard)
             .with_destructive_tertiary(true)
@@ -1057,7 +1041,7 @@ tilo_test_env::scenario! {
         let _settled = crate::motion::testing::settled();
         let (erased, erase) = counter();
         let (cancelled, cancel) = counter();
-        let mut d = ModalDialog::new("Erase disk?", TestContent)
+        let mut d = ModalDialog::new("Erase disk?", crate::testing::Block::auto())
             .primary_action("Erase", erase)
             .secondary_action("Cancel", cancel)
             .with_destructive(true)
@@ -1098,14 +1082,14 @@ tilo_test_env::scenario! {
         let valid = Rc::new(Cell::new(false));
         let (saved, save) = counter();
         let check = Rc::clone(&valid);
-        let mut d = ModalDialog::new("Back up vault", TestContent)
+        let mut d = ModalDialog::new("Back up vault", crate::testing::Block::auto())
             .primary_action("Choose file…", save)
             .secondary_action("Cancel", || {})
             .primary_enabled_if(move |_| check.get())
             .open(true);
         lay_out(&mut d, WINDOW, &Theme::dark());
         present(&mut d, WINDOW, &Theme::dark());
-        let primary = |d: &ModalDialog<TestContent>| {
+        let primary = |d: &ModalDialog<crate::testing::Block>| {
             footer_buttons(d)
                 .into_iter()
                 .find(|node| node.name.as_deref() == Some("Choose file…"))
@@ -1126,7 +1110,7 @@ tilo_test_env::scenario! {
     {
         let _settled = crate::motion::testing::settled();
         let (fired, fire) = counter();
-        let mut d = ModalDialog::new("Erase disk", TestContent)
+        let mut d = ModalDialog::new("Erase disk", crate::testing::Block::auto())
             .primary_action("Erase", fire)
             .open(true);
         d.set_primary_enabled(false);
@@ -1253,7 +1237,7 @@ tilo_test_env::scenario! {
     phase footer_actions_are_addressable_by_name;
     {
         let _settled = crate::motion::testing::settled();
-        let mut d = ModalDialog::new("Delete note?", TestContent)
+        let mut d = ModalDialog::new("Delete note?", crate::testing::Block::auto())
             .with_test_id("notes.delete")
             .primary_action("Delete", || {})
             .secondary_action("Cancel", || {})
@@ -1724,7 +1708,7 @@ fn what_stands_behind_an_open_sheet_never_takes_its_input() {
     let seen = behind.events.clone();
     let (confirmed, confirm) = counter();
     let page = Column::new().push(Box::new(behind)).push(Box::new(
-        ModalDialog::new("Delete this rule?", TestContent)
+        ModalDialog::new("Delete this rule?", crate::testing::Block::auto())
             .with_test_id("confirm")
             .primary_action("Delete rule", confirm)
             .secondary_action("Cancel", || {})
@@ -1825,7 +1809,7 @@ fn a_shared_appearance_arrives_once_and_leaves_until_it_is_gone() {
     let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
     let appearance = Appearance::shared();
     let build = |open: bool| {
-        ModalDialog::new("Settings", TestContent)
+        ModalDialog::new("Settings", crate::testing::Block::auto())
             .appearing(appearance.clone())
             .open(open)
     };
@@ -1883,7 +1867,7 @@ fn a_dialog_moves_on_the_motion_the_person_allows() {
     let theme = Theme::dark().with_reduce_motion(true);
     let t0 = crate::time::now();
     let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
-    let mut d = ModalDialog::new("Settings", TestContent);
+    let mut d = ModalDialog::new("Settings", crate::testing::Block::auto());
     with_monotonic_time(t0, || {
         d.set_open(true);
         lay_out(&mut d, WINDOW, &theme);
@@ -1938,7 +1922,7 @@ fn published_controls(
 fn an_agent_closes_a_hosted_dialog_through_its_published_close_control() {
     let (dismissed, dismiss) = counter();
     let (deleted, delete) = counter();
-    let dialog = ModalDialog::new("Delete rule?", TestContent)
+    let dialog = ModalDialog::new("Delete rule?", crate::testing::Block::auto())
         .with_test_id("firewall-delete")
         .primary_action("Delete rule", delete)
         .on_dismiss(dismiss)
@@ -1970,7 +1954,7 @@ fn an_agent_closes_a_hosted_dialog_through_its_published_close_control() {
 fn an_agent_presses_a_dialog_footer_through_its_published_controls() {
     let (saved, save) = counter();
     let (cancelled, cancel) = counter();
-    let dialog = ModalDialog::new("Rename", TestContent)
+    let dialog = ModalDialog::new("Rename", crate::testing::Block::auto())
         .with_test_id("rename")
         .primary_action("Save", save)
         .secondary_action("Cancel", cancel)

@@ -1648,54 +1648,13 @@ fn a_scroll_keeps_the_named_descendant_in_view() {
     );
 }
 
-/// A one-colour leaf of a fixed size, to stand content in a scroll.
-struct Block {
-    rect: Rect,
-    size: (f64, f64),
-}
-
-impl Widget for Block {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a test's blocks are whole pixels"
-        )]
-        let style = Style {
-            size: Size::from_lengths(self.size.0 as f32, self.size.1 as f32),
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
-
-    fn name(&self) -> &'static str {
-        "Block"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
 /// A wheel goes to the scroller under the pointer, innermost first: one that does not scroll that
 /// way, or that the pointer stands outside of, leaves it to the one above, as a row of windows
 /// takes the sideways wheel a window's own column is no use for.
 #[test]
 fn a_wheel_a_scroll_refuses_reaches_the_row_above_it() {
-    let block = |width: f64, height: f64| {
-        Box::new(Block {
-            rect: Rect::ZERO,
-            size: (width, height),
-        }) as Element
-    };
+    let block =
+        |width: f32, height: f32| Box::new(crate::testing::Block::new(width, height)) as Element;
     let inner = Scrollable::new_vertical()
         .with_cursor(Point::new(50.0, 50.0))
         .with_child(block(200.0, 1600.0));

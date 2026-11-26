@@ -794,13 +794,7 @@ tilo_test_env::scenario! {
         let query = SharedRc::new(RefCell::new(String::new()));
         let list = Filtered {
             query: SharedRc::clone(&query),
-            inner: Probe {
-                id: "overview",
-                deadline: None,
-                animating: false,
-                rect: Rect::ZERO,
-                events: SharedRc::new(Cell::new(0)),
-            },
+            inner: Probe::new("overview"),
         };
         let shell = NavShell::new()
             .overview(Box::new(list))
@@ -912,13 +906,7 @@ tilo_test_env::scenario! {
     {
         let filtered = |query: &SharedRc<RefCell<String>>| Filtered {
             query: SharedRc::clone(query),
-            inner: Probe {
-                id: "sidebar",
-                deadline: None,
-                animating: false,
-                rect: Rect::ZERO,
-                events: SharedRc::new(Cell::new(0)),
-            },
+            inner: Probe::new("sidebar"),
         };
         let query = SharedRc::new(RefCell::new(String::new()));
         let shell = NavShell::new()

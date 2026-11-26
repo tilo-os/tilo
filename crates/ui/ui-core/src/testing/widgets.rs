@@ -233,3 +233,122 @@ impl crate::widget::Widget for TwoWindows {
         "TwoWindows"
     }
 }
+
+/// A leaf that fills the space it is given, answers to `id` and counts the events it is
+/// sent: the content a test puts inside a container to see where the container placed it and
+/// whether input reached it.
+pub(crate) struct Probe {
+    pub(crate) id: &'static str,
+    pub(crate) rect: ::vello::kurbo::Rect,
+    events: ::std::rc::Rc<::std::cell::Cell<usize>>,
+}
+
+impl Probe {
+    pub(crate) fn new(id: &'static str) -> Self {
+        Self {
+            id,
+            rect: ::vello::kurbo::Rect::ZERO,
+            events: ::std::rc::Rc::default(),
+        }
+    }
+
+    /// The probe as an element, with the counter of the events it will be sent.
+    pub(crate) fn boxed(
+        id: &'static str,
+    ) -> (
+        crate::widget::Element,
+        ::std::rc::Rc<::std::cell::Cell<usize>>,
+    ) {
+        let probe = Self::new(id);
+        let events = ::std::rc::Rc::clone(&probe.events);
+        (Box::new(probe), events)
+    }
+}
+
+impl crate::widget::Widget for Probe {
+    fn build_layout(
+        &mut self,
+        taffy: &mut ::taffy::TaffyTree<()>,
+        _: &crate::theme::Theme,
+        node_map: &mut ::std::collections::HashMap<::taffy::NodeId, *mut dyn crate::widget::Widget>,
+    ) -> ::taffy::NodeId {
+        crate::widget::TaffyTreeExt::fill_leaf(taffy, node_map, self)
+    }
+
+    crate::rect_geometry!();
+
+    fn handle_event(
+        &mut self,
+        _event: &::winit::event::WindowEvent,
+        _ctx: &mut crate::widget::EventCtx<'_>,
+    ) {
+        self.events.set(self.events.get().saturating_add(1));
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == ::vello::kurbo::Rect::ZERO
+    }
+
+    fn name(&self) -> &'static str {
+        "Probe"
+    }
+
+    fn as_any(&self) -> Option<&dyn ::std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn ::std::any::Any> {
+        Some(self)
+    }
+
+    fn test_id(&self) -> Option<&str> {
+        Some(self.id)
+    }
+}
+
+/// A leaf of a fixed size, or as small as its (absent) content: what a test puts inside a
+/// container, a scroll or a dialog to give it something to place.
+pub(crate) struct Block {
+    size: Option<(f32, f32)>,
+    rect: ::vello::kurbo::Rect,
+}
+
+impl Block {
+    pub(crate) fn new(width: f32, height: f32) -> Self {
+        Self {
+            size: Some((width, height)),
+            rect: ::vello::kurbo::Rect::ZERO,
+        }
+    }
+
+    /// A leaf with no size of its own.
+    pub(crate) fn auto() -> Self {
+        Self {
+            size: None,
+            rect: ::vello::kurbo::Rect::ZERO,
+        }
+    }
+}
+
+impl crate::widget::Widget for Block {
+    fn build_layout(
+        &mut self,
+        taffy: &mut ::taffy::TaffyTree<()>,
+        _: &crate::theme::Theme,
+        node_map: &mut ::std::collections::HashMap<::taffy::NodeId, *mut dyn crate::widget::Widget>,
+    ) -> ::taffy::NodeId {
+        let style = ::taffy::Style {
+            size: self.size.map_or_else(::taffy::Size::auto, |(w, h)| {
+                ::taffy::Size::from_lengths(w, h)
+            }),
+            ..::taffy::Style::default()
+        };
+        crate::widget::TaffyTreeExt::widget_leaf(taffy, style, node_map, self)
+    }
+
+    crate::rect_geometry!();
+
+    fn name(&self) -> &'static str {
+        "Block"
+    }
+}

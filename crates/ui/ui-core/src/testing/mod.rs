@@ -36,7 +36,9 @@ pub use tilo_test_env::{hang_bound, hang_deadline, wait_for, wait_until};
 #[cfg(feature = "model")]
 pub(crate) use widgets::TwoWindows;
 #[cfg(test)]
-pub(crate) use widgets::{delegate_widget_methods, inert_widget_methods, test_app_widget};
+pub(crate) use widgets::{
+    Block, Probe, delegate_widget_methods, inert_widget_methods, test_app_widget,
+};
 
 /// Write the frame a regression test drew, when a run asks for the evidence: a PNG under
 /// `$TILO_DRAW_REGRESSION_DIR` named `<case>-<theme>-<phase>.png`, where the phase is
