@@ -235,7 +235,8 @@ fn boxed(v: Value) -> Value {
 }
 
 /// Whether an error is the action's own failure, rolled back with it, rather than a mistake in
-/// the request or a store that could not hold it: what a caller sees as a failed invocation.
+/// the request, a store that could not hold it, or a scenario that stopped at a step it may not
+/// take (which keeps what it wrote before): what a caller sees as a failed invocation.
 fn failed(e: &RuntimeError) -> bool {
     !matches!(
         e,
@@ -243,6 +244,7 @@ fn failed(e: &RuntimeError) -> bool {
             | RuntimeError::Store(_)
             | RuntimeError::NotFound(_)
             | RuntimeError::NotPending(_)
+            | RuntimeError::Stopped(_)
     )
 }
 
