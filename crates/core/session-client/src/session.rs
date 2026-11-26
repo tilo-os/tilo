@@ -408,7 +408,7 @@ fn session_task(
         behind: BTreeMap::new(),
         links: BTreeMap::new(),
         dialing: BTreeSet::new(),
-        sent: BTreeSet::new(),
+        sent: BTreeMap::new(),
         actions: None,
         latched: Latched::default(),
         lent,
@@ -619,9 +619,9 @@ struct Task {
     links: BTreeMap<WorkspaceId, WorkspaceLink>,
     /// The workspaces whose link is being dialled now.
     dialing: BTreeSet<WorkspaceId>,
-    /// The ownership entries sent on the current link of each workspace: a new link sends
-    /// everything again.
-    sent: BTreeSet<(WorkspaceId, [u8; 32])>,
+    /// The ownership entries sent on the current link of each workspace, each with its frame,
+    /// until its answer retires it: a new link sends everything again.
+    sent: BTreeMap<(WorkspaceId, [u8; 32]), Vec<u8>>,
     /// The link this session asks its host's action service on, once it is up.
     actions: Option<tilo_server_client::link::Link>,
     /// The one-off facts this session latches and clears as it acts on them.
@@ -1320,7 +1320,7 @@ impl Task {
             });
         }
         self.sent
-            .retain(|(workspace, _)| *workspace != workspace_id);
+            .retain(|(workspace, _), _| *workspace != workspace_id);
         if let Ok(peer) =
             iroh_base::EndpointId::from_bytes(&self.config.server_cert.device_public_key)
         {
@@ -1916,7 +1916,7 @@ impl Task {
     ) {
         self.links.remove(&workspace_id);
         self.sent
-            .retain(|(workspace, _)| *workspace != workspace_id);
+            .retain(|(workspace, _), _| *workspace != workspace_id);
         if self.joined(workspace_id) {
             self.reports.change(|status| {
                 status.workspaces.insert(workspace_id, false);
@@ -2228,7 +2228,13 @@ impl Task {
 
     /// This device's own frame of `workspace_id` that hashes to `write`, with what it was
     /// written to and the changes it carries.
+    ///
+    /// A write in flight is found by its name; only an answer to one sent on an earlier link
+    /// reads the whole record.
     fn outgoing_named(&self, workspace_id: WorkspaceId, write: [u8; 32]) -> NamedOutgoing {
+        if let Some(bytes) = self.sent.get(&(workspace_id, write)) {
+            return Some((write, bytes.clone(), written_to(bytes)));
+        }
         self.ownership(workspace_id)
             .into_iter()
             .find(|(id, ..)| *id == write)
@@ -3665,16 +3671,17 @@ impl Task {
         // A link a queue behind ends, and the next sends it all again: each answer makes room.
         let mut room = IN_FLIGHT.saturating_sub(
             kept.iter()
-                .filter(|(id, ..)| self.sent.contains(&(workspace_id, *id)))
+                .filter(|(id, ..)| self.sent.contains_key(&(workspace_id, *id)))
                 .count(),
         );
         for (id, bytes, ..) in kept {
             let Some(left) = room.checked_sub(1) else {
                 break;
             };
-            if !self.sent.insert((workspace_id, id)) {
+            if self.sent.contains_key(&(workspace_id, id)) {
                 continue;
             }
+            self.sent.insert((workspace_id, id), bytes.clone());
             room = left;
             let message = match neighbour_wire::NeighbourMsg::decode(&bytes) {
                 Ok(message) => message,
@@ -3810,11 +3817,15 @@ impl Task {
         if owed.is_empty() {
             return owed;
         }
-        for entry in self.ownership(workspace) {
-            if written_to(&entry.1).is_some_and(|(route, _)| !documents.contains(&route)) {
-                owed.retain(|id| *id != entry.0);
-            }
-        }
+        let elsewhere: BTreeSet<[u8; 32]> = self
+            .ownership(workspace)
+            .into_iter()
+            .filter(|(_, bytes, ..)| {
+                written_to(bytes).is_some_and(|(route, _)| !documents.contains(&route))
+            })
+            .map(|(id, ..)| id)
+            .collect();
+        owed.retain(|id| !elsewhere.contains(id));
         owed
     }
 
@@ -3968,6 +3979,7 @@ impl Task {
             if let Err(error) = owner.sent(answer.workspace, &answer.frame) {
                 self.fail_on(FailureKind::Storage, "storage-transaction-failed", error);
             }
+            self.sent.remove(&(answer.workspace, answer.id));
         }
         self.reports.change(|status| {
             for answer in &answered {
