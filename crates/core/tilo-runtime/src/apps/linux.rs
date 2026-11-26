@@ -114,6 +114,7 @@ pub(super) fn spawn(
     if origin_reader.is_some() {
         command.arg("--tilolang-origin-reader");
     }
+    let joined = joined_links(&mut command, workspace, runs)?;
     // A capture names what it captures, exactly as a person's own run of the app does; the `--`
     // tail is the app's own and comes after every flag the launcher reads.
     if !runs.args.is_empty() {
@@ -166,7 +167,31 @@ pub(super) fn spawn(
         window_link,
         _link: link,
         origin_reader,
+        joined,
     })
+}
+
+/// A capture's instance joins its workspace over the connections made for it: the launch names the
+/// instance and its person, and the connections are released after the origin connection.
+fn joined_links(
+    command: &mut std::process::Command,
+    workspace: &str,
+    runs: &super::Runs,
+) -> Result<Vec<std::os::fd::OwnedFd>, String> {
+    let Some(joined) = &runs.joined else {
+        return Ok(Vec::new());
+    };
+    command
+        .arg("--tilolang-joined")
+        .arg(format!("{} {workspace} {}", joined.instance, joined.person));
+    [&joined.collaboration, &joined.identity]
+        .into_iter()
+        .map(|connection| {
+            connection
+                .try_clone()
+                .map_err(|error| format!("the joined instance's connection: {error}"))
+        })
+        .collect()
 }
 
 /// Start `app`'s connector for `origin` in `workspace`: the app's own launch with no window

@@ -302,6 +302,11 @@ pub struct Spec {
     /// Mount the app as `--shots --scenario <name>` does: built from that scenario's fixtures instead
     /// of the device's sources, with the scenario staged before the actions run.
     pub scenario: Option<String>,
+    /// Run the capture over the workspace its device serves, as a launched window runs: what it
+    /// stages and calls goes through the device's dispatch, so a scenario's records are the
+    /// workspace's and a call reaches another app (a session's playback). The device admits it
+    /// only for its person's capture of a development build it made.
+    pub workspace: bool,
 }
 
 /// Parse and strictly validate one complete headless-driver payload.
@@ -326,9 +331,10 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
                 | "resources"
                 | "window_bar"
                 | "scenario"
+                | "workspace"
         ) {
             return Err(format!(
-                "unknown field {key:?}; expected viewport, actions, capture, audit, audit_report, dump, targets, inspect, results, resources, window_bar, or scenario"
+                "unknown field {key:?}; expected viewport, actions, capture, audit, audit_report, dump, targets, inspect, results, resources, window_bar, scenario, or workspace"
             ));
         }
     }
@@ -367,6 +373,11 @@ pub fn parse_spec(raw: &str) -> Result<Spec, String> {
             .transpose()?
             .unwrap_or(false),
         scenario: optional_string(object, "scenario")?,
+        workspace: object
+            .get("workspace")
+            .map(|value| value.as_bool().ok_or("workspace must be true or false"))
+            .transpose()?
+            .unwrap_or(false),
     })
 }
 
@@ -1046,6 +1057,9 @@ mod tests {
             assert!(!parse_spec("{}").unwrap().window_bar);
             assert!(parse_spec(r#"{"window_bar":true}"#).unwrap().window_bar);
             assert!(parse_spec(r#"{"window_bar":"yes"}"#).is_err());
+            assert!(!parse_spec("{}").unwrap().workspace);
+            assert!(parse_spec(r#"{"workspace":true}"#).unwrap().workspace);
+            assert!(parse_spec(r#"{"workspace":1}"#).is_err());
         }
 
         // Phase: bound_answers_fill_later_resources_and_arguments.

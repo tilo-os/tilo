@@ -158,6 +158,11 @@ enum Cmd {
         /// process as the `tilolang-origin-reader` service (`LaunchOptions::tilolang_origin_reader`).
         #[arg(long, conflicts_with_all = ["service", "tilolang_connector"])]
         tilolang_origin_reader: bool,
+        /// The instance a capture's process joins its workspace as, and the person at it
+        /// (`<instance> <workspace> <person>`): the device's daemon made its collaboration and identity
+        /// connections, handed to this process with the release (`LaunchOptions::tilolang_joined`).
+        #[arg(long, conflicts_with_all = ["service", "tilolang_connector"])]
+        tilolang_joined: Option<String>,
         /// Trusted service argv, forwarded verbatim after the entrypoint.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         rest: Vec<String>,
@@ -687,6 +692,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         tilolang_process,
         tilolang_connector,
         tilolang_origin_reader,
+        tilolang_joined,
         rest,
     } = command
     else {
@@ -718,6 +724,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         tilolang_process,
         tilolang_connector,
         tilolang_origin_reader,
+        tilolang_joined,
         rest,
     })
 }
@@ -938,6 +945,7 @@ struct RunCliArgs {
     tilolang_process: bool,
     tilolang_connector: Option<String>,
     tilolang_origin_reader: bool,
+    tilolang_joined: Option<String>,
     rest: Vec<String>,
 }
 
@@ -1003,6 +1011,7 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         tilolang_process: args.tilolang_process,
         tilolang_connector: args.tilolang_connector,
         tilolang_origin_reader: args.tilolang_origin_reader,
+        tilolang_joined: args.tilolang_joined,
         granted: granted_from(args.grants),
     };
     // Held from before the package is verified until the app exits, so an update meanwhile leaves the
@@ -1472,6 +1481,7 @@ fn run_installed(
         tilolang_process: false,
         tilolang_connector: None,
         tilolang_origin_reader: false,
+        tilolang_joined: None,
         granted: Vec::new(),
     };
     match launcher::run::launch_with(&manifest, &entry.payload_root, &opts) {

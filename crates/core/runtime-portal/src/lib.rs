@@ -36,6 +36,8 @@ pub mod launch_hold {
 }
 /// The device's tilolang processes, as a desktop session hands them its windows' instances.
 pub mod device_processes;
+/// The workspace a capture's instance joins, over the connections the device's daemon made for it.
+pub mod joined_capture;
 pub mod local_socket;
 /// The messages that travel over a connected socket: Unix sockets and the
 /// descriptors they carry, so Linux only, like the clients that use it.

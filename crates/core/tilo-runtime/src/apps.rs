@@ -89,6 +89,10 @@ struct Runs {
     origin: Option<runtime_portal::process_link::Descriptor>,
     #[cfg(target_os = "linux")]
     writes: Option<capture::Writes>,
+    /// The instance a capture's process joins its workspace as, over the connections this daemon
+    /// made for it ([`runtime_portal::joined_capture`]).
+    #[cfg(target_os = "linux")]
+    joined: Option<capture::Joined>,
 }
 
 /// A start that has already happened: the answer a call gets when the process that takes it
@@ -879,25 +883,51 @@ impl Apps {
     /// Run one of the app's captures, the way a window launch runs the app: the device starts the
     /// package it has installed, with the connector it runs for the app's origin, the app's own
     /// capture arguments and `writes`, the directories the capture writes into, writable for this
-    /// launch alone. Waits for the process to end.
+    /// launch alone. When `joins`, a tilolang app's instance joins the workspace over connections
+    /// this daemon makes for it, attested as that instance, so what the capture calls goes through
+    /// the device's dispatch as a launched window's calls do. Waits for the process to end.
     ///
     /// # Errors
-    /// The app is not installed, has no window, its connector cannot be started, the launcher
-    /// refuses it, or the capture fails: what it said.
+    /// The app is not installed, has no window, its connector cannot be started, its instance's
+    /// connections cannot be made, the launcher refuses it, or the capture fails: what it said.
     pub(crate) fn capture(
         &self,
         app_id: &str,
         workspace: &str,
         args: &[String],
         writes: Vec<PathBuf>,
+        joins: bool,
     ) -> Result<(), String> {
         if args.is_empty() {
             return Err("a capture names what it captures".to_owned());
         }
         #[cfg(not(target_os = "linux"))]
-        if !writes.is_empty() {
-            return Err("a capture writes outside its app's sandbox only on Linux".to_owned());
+        if !writes.is_empty() || joins {
+            return Err(
+                "a capture writes outside its app's sandbox, or joins its workspace, only on Linux"
+                    .to_owned(),
+            );
         }
+        // The instance's connections, made here and attested as the instance they name before the
+        // capture's process holds them.
+        #[cfg(target_os = "linux")]
+        let joined = if joins && crate::device::package_runs::runs_in_process(app_id) {
+            let (person, instance, collaboration, identity) =
+                self.instances.window_here(app_id, workspace)?;
+            tracing::info!(
+                app = app_id,
+                instance,
+                "a capture's instance joins its workspace over the connections made for it"
+            );
+            Some(capture::Joined {
+                instance,
+                person,
+                collaboration,
+                identity,
+            })
+        } else {
+            None
+        };
         // This launch's grants are written apart from every other launch's, so no other launch of
         // the app reads them, and go with the capture.
         #[cfg(target_os = "linux")]
@@ -932,6 +962,8 @@ impl Apps {
                 origin,
                 #[cfg(target_os = "linux")]
                 writes,
+                #[cfg(target_os = "linux")]
+                joined,
             },
         );
         #[cfg(target_os = "linux")]
@@ -1617,6 +1649,10 @@ pub struct Launch {
     /// the device made none for. A hosted window has none: its host reaches the connector.
     #[cfg(target_os = "linux")]
     origin_reader: Option<std::os::fd::OwnedFd>,
+    /// A capture's instance's collaboration and identity connections, released after the origin
+    /// connection; empty for any other launch.
+    #[cfg(target_os = "linux")]
+    joined: Vec<std::os::fd::OwnedFd>,
     #[cfg(target_os = "macos")]
     app: launcher_macos::LaunchedApp,
     /// A tilolang window's link, which its patch connection came on: held while the window runs.
@@ -1651,14 +1687,19 @@ impl Launch {
             // A hosted window's link goes with the release: the launcher hands it to the window,
             // whose patch connection is waiting on it. A process running the app's instance here
             // is handed the connection to its origin's connector the same way.
-            let link = self
-                .window_link
-                .take()
-                .or_else(|| self.origin_reader.take());
-            return match link {
-                Some(link) => hold.release_with_window_link(std::os::fd::AsFd::as_fd(&link)),
-                None => hold.release(),
+            // A capture's joined instance's connections follow, in the order the launcher takes
+            // them.
+            let links: Vec<std::os::fd::OwnedFd> = match self.window_link.take() {
+                Some(link) => vec![link],
+                None => self
+                    .origin_reader
+                    .take()
+                    .into_iter()
+                    .chain(std::mem::take(&mut self.joined))
+                    .collect(),
             };
+            let links: Vec<_> = links.iter().map(std::os::fd::AsFd::as_fd).collect();
+            return hold.release_with_links(&links);
         }
         Ok(())
     }

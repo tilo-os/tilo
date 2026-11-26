@@ -44,6 +44,43 @@ impl Writes {
     }
 }
 
+/// The instance a capture's process joins its workspace as, the person at it, and the
+/// collaboration and identity connections this daemon made for it, attested as that instance: the
+/// capture's calls go through the device's dispatch as a launched window's do.
+pub(crate) struct Joined {
+    pub instance: u64,
+    pub person: String,
+    pub collaboration: runtime_portal::process_link::Descriptor,
+    pub identity: runtime_portal::process_link::Descriptor,
+}
+
+/// Whether the capture `args` of `writer`'s app joins the workspace its device serves, as a spec
+/// asks (`"workspace": true`): its instance runs over the workspace's one store, a scenario it
+/// stages is written there and what it calls goes through the device's dispatch. Only the person
+/// on this device's own connection has a development build this device made join; a capture that
+/// does not ask runs over a store of its own and reaches nothing of the workspace.
+///
+/// # Errors
+/// A spec that does not parse, or a capture asking to join for a caller other than the person on
+/// this device's own connection, or of an app that is not this device's development build.
+pub(crate) fn joins(
+    args: &[String],
+    caller: impl FnOnce() -> Result<tilo_actions::remote::Caller, String>,
+    writer: &Writer<'_>,
+) -> Result<bool, String> {
+    if !specs(args)?.iter().any(|spec| spec.workspace) {
+        return Ok(false);
+    }
+    admit(&caller()?, writer).map_err(|_| {
+        format!(
+            "a capture joins its workspace only when the person on this device's own connection \
+             starts it, for a development build this device made: {} is refused",
+            writer.app_id
+        )
+    })?;
+    Ok(true)
+}
+
 /// Who may have a capture write outside its sandbox, and for which app.
 pub(crate) struct Writer<'a> {
     /// Whether this daemon is its account's own, as the device's package cache reads it.
@@ -117,22 +154,30 @@ fn admit(caller: &tilo_actions::remote::Caller, writer: &Writer<'_>) -> Result<(
     Ok(())
 }
 
-/// The directories holding every file the `--headless-drive` specs in `args` write: its pictures,
-/// its results and its reports.
-fn named_dirs(args: &[String]) -> Result<Vec<PathBuf>, String> {
-    let mut specs = Vec::new();
+/// The `--headless-drive` specs in `args`, parsed as the app parses them.
+fn specs(args: &[String]) -> Result<Vec<tilo_headless_schema::Spec>, String> {
+    let mut raw = Vec::new();
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         if arg == "--headless-drive" {
-            specs.extend(rest.next().map(String::as_str));
+            raw.extend(rest.next().map(String::as_str));
         } else if let Some(spec) = arg.strip_prefix("--headless-drive=") {
-            specs.push(spec);
+            raw.push(spec);
         }
     }
+    raw.into_iter()
+        .map(|spec| {
+            tilo_headless_schema::parse_spec(spec)
+                .map_err(|error| format!("the capture's --headless-drive: {error}"))
+        })
+        .collect()
+}
+
+/// The directories holding every file the `--headless-drive` specs in `args` write: its pictures,
+/// its results and its reports.
+fn named_dirs(args: &[String]) -> Result<Vec<PathBuf>, String> {
     let mut dirs: Vec<PathBuf> = Vec::new();
-    for spec in specs {
-        let spec = tilo_headless_schema::parse_spec(spec)
-            .map_err(|error| format!("the capture's --headless-drive: {error}"))?;
+    for spec in specs(args)? {
         let files = spec
             .captures
             .iter()
@@ -315,6 +360,53 @@ mod tests {
                 "{who} is told who may grant it: {refused}"
             );
         }
+    }
+
+    // A capture joins the workspace only when it asks, and only as the person's own capture of
+    // the device's development build: one an agent, another member or the app asks for, and one
+    // of a release, is refused.
+    #[test]
+    fn a_capture_joins_its_workspace_only_as_its_persons_capture_of_the_devices_build() {
+        let dev_id = tilo_app_package::dev_app_id(APP, &DEVICE);
+        let dev = dev();
+        let writer = Writer {
+            personal: true,
+            app_id: &dev_id,
+            dev: Some(&dev),
+            device: DEVICE,
+            uid: None,
+            protected: Vec::new(),
+        };
+        let asks = [
+            "--headless-drive".to_owned(),
+            r#"{"workspace":true}"#.to_owned(),
+        ];
+        let keeps_its_own = ["--headless-drive".to_owned(), "{}".to_owned()];
+        assert_eq!(joins(&asks, || Ok(person()), &writer), Ok(true));
+        assert_eq!(joins(&keeps_its_own, || Ok(person()), &writer), Ok(false));
+        for (who, caller) in [
+            ("an agent", Caller::local_agent("agent-1", "person-7")),
+            ("another member", Caller::authenticated([3; 32], [4; 32])),
+            ("the app itself", Caller::launched(dev_id.clone())),
+        ] {
+            let refused = joins(&asks, || Ok(caller.clone()), &writer)
+                .expect_err(&format!("{who}'s capture joined the workspace"));
+            assert!(
+                refused.contains("own connection"),
+                "{who} is told why: {refused}"
+            );
+            // Asking for nothing, it is no one's business who started it.
+            assert_eq!(joins(&keeps_its_own, || Ok(caller), &writer), Ok(false));
+        }
+        let released = Writer {
+            app_id: APP,
+            dev: None,
+            ..writer
+        };
+        assert!(
+            joins(&asks, || Ok(person()), &released).is_err(),
+            "a release's capture joined the workspace"
+        );
     }
 
     // Each directory is checked as the device reads it: an existing directory of the person's,

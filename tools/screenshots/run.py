@@ -110,6 +110,10 @@ class Situation:
     # drive): an app that shows the machine it runs on refuses a capture
     # without one, so its pictures show made-up data, never the machine's.
     scenario: str | None = None
+    # Whether the capture runs over the workspace its device serves (`workspace = true`): what it
+    # stages and calls goes through the device's dispatch, so a call reaches another app (a
+    # session's playback). It writes into the workspace, so it gets a device of its own.
+    workspace: bool = False
 
 
 @dataclass
@@ -173,7 +177,10 @@ def load_plan(entry: dict) -> Plan:
             scenario = raw.get("scenario")
             if scenario is not None and (not isinstance(scenario, str) or not scenario):
                 raise ValueError(f"{path}: situation {name}: a scenario is a name, got {scenario!r}")
-            situations.append(Situation(name, raw.get("title", name), steps, scenario))
+            workspace = raw.get("workspace", False)
+            if not isinstance(workspace, bool):
+                raise ValueError(f"{path}: situation {name}: workspace is true or false, got {workspace!r}")
+            situations.append(Situation(name, raw.get("title", name), steps, scenario, workspace))
         if not situations:
             raise ValueError(f"{path}: no situations")
         names = [s.name for s in situations]
@@ -526,8 +533,10 @@ class Session:
 def shares_a_session(situation: Situation) -> bool:
     """Whether a situation can be captured on the device its app's other situations use: one
     built from a scenario reads that scenario's fixtures, and one without steps changes nothing.
-    A situation whose steps write into the person's workspace gets a device of its own, so no
-    picture shows what another situation wrote."""
+    A situation whose steps write into the person's workspace, or that runs over it, gets a
+    device of its own, so no picture shows what another situation wrote."""
+    if situation.workspace:
+        return False
     return situation.scenario is not None or not situation.steps
 
 
@@ -557,6 +566,8 @@ def run_situation(session: Session, situation: Situation, first: bool) -> dict:
     }
     if situation.scenario:
         spec["scenario"] = situation.scenario
+    if situation.workspace:
+        spec["workspace"] = True
     if first:
         spec["resources"] = str(app_dir / "resources.json")
     started = time.monotonic()

@@ -184,6 +184,36 @@ fn in_process(
     {
         tilolang_tilo::runtime::engine::compiled_from(std::path::PathBuf::from(dir));
     }
+    // A capture the device's daemon started for its person joins the workspace over the
+    // connections the daemon made for its instance: what it keeps is the workspace's, and what
+    // it calls goes through the device's dispatch, as a launched window's calls do.
+    #[cfg(all(unix, feature = "app-launch"))]
+    if let Some(joined) = runtime_portal::joined_capture::take() {
+        let Ok(joined_workspace) = uuid::Uuid::parse_str(&joined.workspace) else {
+            tracing::error!(
+                workspace = joined.workspace,
+                "a joined capture's workspace is no id"
+            );
+            return None;
+        };
+        let route = crate::route_of(&bundle.meta, joined_workspace, &joined.person);
+        let spec = crate::hosted::Spec::new(
+            bundle.meta.app.clone(),
+            &joined.workspace,
+            joined.instance,
+            &joined.person,
+        );
+        return super::hosted::HostedWindow::in_process_joined(
+            spec,
+            route,
+            bundle,
+            (joined.collaboration, joined.identity),
+        )
+        .inspect_err(
+            |error| tracing::error!(%error, "the app's instance did not join its workspace"),
+        )
+        .ok();
+    }
     let route = crate::route_of(&bundle.meta, workspace_id, me);
     let spec = crate::hosted::Spec::new(bundle.meta.app.clone(), workspace, 1, me);
     super::hosted::HostedWindow::in_process(spec, route, bundle, storage)

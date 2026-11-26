@@ -52,22 +52,32 @@ impl LaunchHold {
 
     #[cfg(target_os = "linux")]
     pub fn release_with_window_link(self, link: std::os::fd::BorrowedFd<'_>) -> io::Result<()> {
+        self.release_with_links(&[link])
+    }
+
+    /// Let the child go on, handing it `links` in this order: the launch takes them one by one
+    /// ([`take_window_link`]), each for the service its own flag names.
+    #[cfg(target_os = "linux")]
+    pub fn release_with_links(self, links: &[std::os::fd::BorrowedFd<'_>]) -> io::Result<()> {
         use std::os::fd::AsFd as _;
-        crate::message::send(self.0.as_fd(), &[&[1]], &[link])
+        crate::message::send(self.0.as_fd(), &[&[1]], links)
     }
 }
 
-/// The window link the shell handed over with the release, until the launch
-/// takes it ([`take_window_link`]).
+/// The links the host handed over with the release, in its order, until the launch takes them
+/// ([`take_window_link`]).
 #[cfg(target_os = "linux")]
-static WINDOW_LINK: std::sync::Mutex<Option<OwnedFd>> = std::sync::Mutex::new(None);
+static WINDOW_LINKS: std::sync::Mutex<std::collections::VecDeque<OwnedFd>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
 
+/// The next link the host handed over with the release: a window's link, or the next connection a
+/// launch flag names.
 #[cfg(target_os = "linux")]
 pub fn take_window_link() -> Option<OwnedFd> {
-    WINDOW_LINK.lock().map_or_else(
-        |poisoned| poisoned.into_inner().take(),
-        |mut link| link.take(),
-    )
+    WINDOW_LINKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .pop_front()
 }
 
 /// Make `command` start held: its child's stdin is a private socket, named by
@@ -118,21 +128,21 @@ fn read_release() -> io::Result<()> {
     // SAFETY: fd 0 is the socket the host handed over, open until `dup2`
     // replaces it after this returns.
     let hold = unsafe { std::os::fd::BorrowedFd::borrow_raw(0) };
-    if let Some(link) = read_release_from(hold)? {
-        *WINDOW_LINK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(link);
-    }
+    let links = read_release_from(hold)?;
+    WINDOW_LINKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .extend(links);
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn read_release_from(hold: std::os::fd::BorrowedFd<'_>) -> io::Result<Option<OwnedFd>> {
+fn read_release_from(hold: std::os::fd::BorrowedFd<'_>) -> io::Result<Vec<OwnedFd>> {
     let mut release = [0_u8; 1];
     let Some((1, fds)) = crate::message::receive(hold, &mut release)? else {
         return Err(io::ErrorKind::UnexpectedEof.into());
     };
-    Ok(fds.into_iter().next())
+    Ok(fds)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -284,11 +294,24 @@ mod tests {
         LaunchHold(release)
             .release_with_window_link(link.as_fd())
             .expect("release");
-        assert!(read_release_from(wait.as_fd()).expect("released").is_some());
+        assert_eq!(read_release_from(wait.as_fd()).expect("released").len(), 1);
+
+        // Several links ride on one release, in the order the host gave them.
+        let (release, wait) = UnixStream::pair().expect("socket pair");
+        let (first, _first_app) = UnixStream::pair().expect("link");
+        let (second, _second_app) = UnixStream::pair().expect("link");
+        LaunchHold(release)
+            .release_with_links(&[first.as_fd(), second.as_fd()])
+            .expect("release");
+        assert_eq!(read_release_from(wait.as_fd()).expect("released").len(), 2);
 
         let (release, wait) = UnixStream::pair().expect("socket pair");
         LaunchHold(release).release().expect("release");
-        assert!(read_release_from(wait.as_fd()).expect("released").is_none());
+        assert!(
+            read_release_from(wait.as_fd())
+                .expect("released")
+                .is_empty()
+        );
 
         let (release, wait) = UnixStream::pair().expect("socket pair");
         drop(LaunchHold(release));

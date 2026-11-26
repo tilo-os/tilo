@@ -263,6 +263,11 @@ pub struct LaunchOptions {
     /// process that runs the app's instance here as the service
     /// [`runtime_portal::origin_connector::READER`] names.
     pub tilolang_origin_reader: bool,
+    /// The instance a capture's process joins its workspace as, and the person at it
+    /// (`<instance> <workspace> <person>`, [`runtime_portal::joined_capture::ENV`]): its collaboration and
+    /// identity connections, which the device's daemon made, come with the release after the
+    /// origin connection.
+    pub tilolang_joined: Option<String>,
     /// What the person gave this app a choice on, bound into its sandbox at the reference each was
     /// answered with: exactly these, read and written as each choice allows, and nothing else.
     pub granted: Vec<GrantedPath>,
@@ -313,6 +318,7 @@ impl Default for LaunchOptions {
             tilolang_process: false,
             tilolang_connector: None,
             tilolang_origin_reader: false,
+            tilolang_joined: None,
             granted: Vec::new(),
         }
     }
@@ -3173,6 +3179,32 @@ pub(crate) fn launch_with_context(
                 child_fd: runtime_portal::origin_connector::CHILD_FD,
             });
         }
+        // The connections a capture's instance joins its workspace over, which the device's
+        // daemon made and released with this launch after the origin connection.
+        #[cfg(target_os = "linux")]
+        if opts.tilolang_joined.is_some() {
+            use runtime_portal::joined_capture as joined;
+            let (Some(collaboration), Some(identity)) = (
+                crate::launch_hold::take_window_link(),
+                crate::launch_hold::take_window_link(),
+            ) else {
+                return Err(LaunchError::InvalidServiceLaunch(
+                    "the launch names a joined instance, but its release handed no connections \
+                     for it"
+                        .into(),
+                ));
+            };
+            resolved.push(crate::services::ResolvedService {
+                name: joined::COLLABORATION.to_owned(),
+                host: collaboration,
+                child_fd: joined::COLLABORATION_CHILD_FD,
+            });
+            resolved.push(crate::services::ResolvedService {
+                name: joined::IDENTITY.to_owned(),
+                host: identity,
+                child_fd: joined::IDENTITY_CHILD_FD,
+            });
+        }
         // The shell opens the app's later windows in this process through the link it released this
         // launch with (`runtime_portal::process_link`).
         #[cfg(target_os = "linux")]
@@ -3227,6 +3259,19 @@ pub(crate) fn launch_with_context(
         splice_cli_setenv(
             &mut argv,
             Some((runtime_portal::process_link::HOSTED_ENV.into(), "1".into())),
+        )?;
+    }
+    if let Some(joined) = &opts.tilolang_joined {
+        // What the process joins its workspace as: the instance its connections were made for,
+        // and the person at it.
+        if runtime_portal::joined_capture::named(joined).is_none() {
+            return Err(LaunchError::InvalidServiceLaunch(format!(
+                "a joined instance is named `<instance> <workspace> <person>`, not {joined:?}"
+            )));
+        }
+        splice_cli_setenv(
+            &mut argv,
+            Some((runtime_portal::joined_capture::ENV.into(), joined.clone())),
         )?;
     }
     if let Some(origin) = &opts.tilolang_connector {

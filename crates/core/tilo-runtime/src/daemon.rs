@@ -3384,8 +3384,16 @@ fn start_requested(
             .and_then(|peer| peer.pid)
             .and_then(|pid| daemon.app_of(pid))
             .map(|(started, _)| started);
-        let writes = capture_writes(&daemon, &app, workspace, args, peer, asks, asking_app)?;
-        apps.capture(&app.app_id, workspace, args, writes.clone())
+        let (writes, joins) = capture_grant(
+            &daemon,
+            &app,
+            workspace,
+            args,
+            peer,
+            asks,
+            asking_app.as_deref(),
+        )?;
+        apps.capture(&app.app_id, workspace, args, writes.clone(), joins)
             .map_err(io::Error::other)?;
         // The directories the capture was granted, for its caller to see where it wrote.
         return Ok(json!({"captured": true, "writes": writes}));
@@ -3414,19 +3422,19 @@ fn start_requested(
     Ok(json!({"started": true}))
 }
 
-/// The directories the capture `args` of `app` writes into, granted for its launch alone: only
-/// when the person on this device's own connection asks, for a development build this device
-/// made ([`crate::apps::capture`]).
+/// The directories the capture `args` of `app` writes into, granted for its launch alone, and
+/// whether its instance joins the workspace: both only when the person on this device's own
+/// connection asks, for a development build this device made ([`crate::apps::capture`]).
 #[cfg(unix)]
-fn capture_writes(
+fn capture_grant(
     daemon: &Arc<Daemon>,
     app: &app_catalogue::apps::InstalledApp,
     serving: &str,
     args: &[String],
     peer: Option<crate::seats::Peer>,
     asks: Asks,
-    asking_app: Option<String>,
-) -> io::Result<Vec<std::path::PathBuf>> {
+    asking_app: Option<&str>,
+) -> io::Result<(Vec<std::path::PathBuf>, bool)> {
     #[cfg(target_os = "linux")]
     {
         // Who asks: an app's own connection, or a process the daemon started for an app, is that
@@ -3455,13 +3463,16 @@ fn capture_writes(
             .flatten()
             .collect(),
         };
-        crate::apps::capture::writes(args, caller, &writer)
-            .map_err(|refused| io::Error::new(io::ErrorKind::PermissionDenied, refused))
+        let granted = crate::apps::capture::writes(args, caller, &writer)
+            .map_err(|refused| io::Error::new(io::ErrorKind::PermissionDenied, refused))?;
+        let joins = crate::apps::capture::joins(args, caller, &writer)
+            .map_err(|refused| io::Error::new(io::ErrorKind::PermissionDenied, refused))?;
+        Ok((granted, joins))
     }
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (daemon, app, serving, args, peer, asks, asking_app);
-        Ok(Vec::new())
+        Ok((Vec::new(), false))
     }
 }
 
