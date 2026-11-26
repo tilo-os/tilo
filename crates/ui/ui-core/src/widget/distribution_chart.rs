@@ -191,6 +191,11 @@ pub struct DistributionMarks {
     frame: PlotFrame<usize>,
 }
 
+/// The box a distribution chart stands in at its narrowest names: its title, its scale, the
+/// marks and one line of names under them. A name wrapped to more lines than that asks for its
+/// own line's room in [`PlotMarks::natural_height`], so the marks keep the height they have.
+const NATURAL_HEIGHT: f64 = 360.0;
+
 /// Box plots or violins summarising each series' samples.
 pub type DistributionChart = Plot<DistributionMarks>;
 
@@ -199,7 +204,7 @@ impl DistributionChart {
         Plot::from_marks(DistributionMarks {
             series,
             style: DistributionStyle::default(),
-            frame: PlotFrame::new(360.0, 140.0),
+            frame: PlotFrame::fill(140.0),
         })
     }
     #[must_use]
@@ -280,6 +285,62 @@ impl DistributionMarks {
     fn center_x(&self, index: usize) -> f64 {
         self.plot_rect().x0
             + (f64::from(u32::try_from(index).unwrap_or(u32::MAX)) + 0.5) * self.slot_width()
+    }
+
+    /// The room the chart keeps inside a box `width` wide, and how many lines the longest name
+    /// takes under the marks once wrapped to its slot. Placing and measuring both read it, so
+    /// the room reserved under the marks is the room the names are drawn in.
+    fn margins_at(&self, tr: &mut TextRenderer, theme: &Theme, width: f64) -> (Margins, usize) {
+        let range = self.range(&self.summaries());
+        let widest = ValueAxis::widest(tr, theme, range, |value, step| {
+            format_axis_tick(value, step, AxisLabelFormat::Compact)
+        });
+        let margins = Margins::header(theme, &self.frame.title, 0).value_axis(theme, widest);
+        let slot = crate::num::f32_of_f64(
+            margins
+                .inside(Rect::new(0.0, 0.0, width.max(0.0), 0.0))
+                .width()
+                / crate::num::f64_of_usize(self.series.len().max(1)),
+        );
+        let lines = (0..self.series.len())
+            .map(|index| self.name_lines(tr, theme, index, slot))
+            .max()
+            .unwrap_or(1);
+        (margins, lines.max(1))
+    }
+
+    /// How many lines series `index`'s name takes wrapped to `slot`, in the chart's caption type.
+    fn name_lines(&self, tr: &mut TextRenderer, theme: &Theme, index: usize, slot: f32) -> usize {
+        let Some(series) = self.series.get(index) else {
+            return 1;
+        };
+        let style = theme.text(TextRole::Caption);
+        let (_, height) = tr.measure_style(&series.label, Some(slot), &style);
+        let lines = crate::num::usize_of_f64(
+            (f64::from(height) / crate::widget::plot::caption_line(theme)).round(),
+        );
+        lines.max(1)
+    }
+
+    /// The box series `index`'s name takes under the marks, and the width it is both measured
+    /// and drawn at: wrapped to its slot, centred on the mark, and held inside the chart's box
+    /// when the box is shorter than the room its names asked for.
+    fn name_box(&self, tr: &mut TextRenderer, theme: &Theme, index: usize) -> Option<(Rect, f32)> {
+        let series = self.series.get(index)?;
+        let wrap = crate::num::f32_of_f64(self.slot_width().max(0.0));
+        let (width, height) =
+            tr.measure_style(&series.label, Some(wrap), &theme.text(TextRole::Caption));
+        let (width, height) = (f64::from(width), f64::from(height));
+        let (plot, rect) = (self.plot_rect(), self.frame.rect);
+        let left =
+            (self.center_x(index) - width / 2.0).clamp(rect.x0, (rect.x1 - width).max(rect.x0));
+        let below = plot.y1 + crate::widget::plot::step(theme);
+        let top = if below + height <= rect.y1 {
+            below
+        } else {
+            (rect.y1 - height).max(rect.y0)
+        };
+        Some((Rect::new(left, top, left + width, top + height), wrap))
     }
 
     /// The violin's kernel bandwidth (Silverman's rule) and the span it is drawn over: past the
@@ -417,14 +478,23 @@ impl PlotMarks for DistributionMarks {
             .collect()
     }
 
+    fn keeps_natural_height(&self) -> bool {
+        true
+    }
+
+    /// [`NATURAL_HEIGHT`] holds one line of names under the marks; every further line the names
+    /// wrap to at `width` adds its own room, so wrapping never eats into the marks.
+    fn natural_height(&self, tr: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
+        let (_, lines) = self.margins_at(tr, theme, width);
+        let extra = crate::num::f64_of_usize(lines.saturating_sub(1))
+            * (crate::widget::plot::caption_line(theme) + f64::from(theme.tokens.spacing.s1));
+        NATURAL_HEIGHT + extra
+    }
+
     fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
-        let range = self.range(&self.summaries());
-        let widest = ValueAxis::widest(tr, theme, range, |value, step| {
-            format_axis_tick(value, step, AxisLabelFormat::Compact)
-        });
-        self.frame.margins = Margins::header(theme, &self.frame.title, 0)
-            .value_axis(theme, widest)
-            .labels_under(theme, 1);
+        let width = self.frame.rect.width();
+        let (margins, lines) = self.margins_at(tr, theme, width);
+        self.frame.margins = margins.labels_under(theme, lines);
     }
 
     #[allow(
@@ -578,19 +648,16 @@ impl PlotMarks for DistributionMarks {
                     ),
                 );
             }
-            let (width, _) = tr.measure_style(&series.label, None, &theme.text(TextRole::Caption));
-            tr.draw_style(
-                scene,
-                &series.label,
-                theme.tokens.colors.text_dim,
-                transform
-                    * Affine::translate((
-                        x - f64::from(width) / 2.0,
-                        plot.y1 + crate::widget::plot::step(theme),
-                    )),
-                Some(crate::num::f32_of_f64(self.slot_width())),
-                &theme.text(TextRole::Caption),
-            );
+            if let Some((name, wrap)) = self.name_box(tr, theme, index) {
+                tr.draw_style(
+                    scene,
+                    &series.label,
+                    theme.tokens.colors.text_dim,
+                    transform * Affine::translate((name.x0, name.y0)),
+                    Some(wrap),
+                    &theme.text(TextRole::Caption),
+                );
+            }
         }
     }
 
@@ -630,6 +697,8 @@ pub use distribution_chart_component::{
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::Widget as _;
+
     #[test]
     fn distribution_summary_interpolates_quartiles_or_is_absent() {
         fn quartiles_interpolate() {
@@ -645,5 +714,65 @@ mod tests {
 
         quartiles_interpolate();
         empty_distribution_has_no_summary();
+    }
+
+    #[test]
+    fn names_wrapped_under_the_marks_stay_inside_the_chart_at_a_phone_width() {
+        let theme = Theme::dark();
+        let series = || {
+            vec![
+                DistributionSeries::from_palette(
+                    "cold",
+                    "Full image build after a clean checkout",
+                    0,
+                    [64.0, 71.0, 58.0, 82.0, 69.0, 75.0, 90.0, 66.0],
+                ),
+                DistributionSeries::from_palette(
+                    "docs",
+                    "Incremental docs build on the build server",
+                    1,
+                    [22.0, 25.0, 19.0, 28.0, 24.0, 21.0, 31.0, 26.0],
+                ),
+            ]
+        };
+        let line = crate::widget::plot::caption_line(&theme);
+        let mut chart_widths = Vec::new();
+        let mut wrapped = false;
+        for width in [342.0_f32, 900.0] {
+            let mut chart =
+                DistributionChart::new(series()).titled("The same week, from a cold cache");
+            crate::testing::lay_out_in(&mut chart, width, 1600.0, &theme)
+                .expect("a distribution chart lays out in a page");
+            let rect = chart.get_rect();
+            assert!(
+                (rect.width() - f64::from(width)).abs() < 1.0,
+                "the chart takes the width it is given: {rect:?} at {width}"
+            );
+            let names = crate::text_render::with_layout_renderer(&theme, |tr| {
+                (0..chart.marks.series.len())
+                    .filter_map(|index| chart.marks.name_box(tr, &theme, index))
+                    .map(|(name, _)| name)
+                    .collect::<Vec<_>>()
+            });
+            assert_eq!(names.len(), 2, "every series is named under its mark");
+            for name in &names {
+                assert!(
+                    name.x0 >= rect.x0 - 0.5
+                        && name.x1 <= rect.x1 + 0.5
+                        && name.y0 >= rect.y0 - 0.5
+                        && name.y1 <= rect.y1 + 0.5,
+                    "{name:?} is drawn outside the chart's box {rect:?}"
+                );
+            }
+            wrapped |= names.iter().any(|name| name.height() > 1.5 * line);
+            chart_widths.push((chart.marks.plot_rect().height(), rect.height()));
+        }
+        assert!(wrapped, "a name wraps to a second line at the phone width");
+        // A name that wraps asks for its own line's room, so the marks keep their height.
+        let (phone, laptop) = (chart_widths[0], chart_widths[1]);
+        assert!(
+            (phone.0 - laptop.0).abs() < 0.5 && phone.1 > laptop.1,
+            "the marks keep their height and the box grows: {phone:?} against {laptop:?}"
+        );
     }
 }
