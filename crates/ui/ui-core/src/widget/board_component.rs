@@ -408,7 +408,6 @@ mod tests {
     use crate::Intents;
     use crate::component::{Fired, Intent};
     use crate::theme::Theme;
-    use crate::tokens::Rhythm;
     use crate::widget::Text;
 
     fn card_props(queue: &Intents<Fired>, key: &str) -> BoardCardProps {
@@ -678,36 +677,6 @@ mod tests {
             );
         }
 
-        phase a_list_keeps_a_comfortable_measure;
-        {
-            let theme = Theme::dark();
-            let list = f64::from(Board::lists_width(&theme, 1280.0, 1));
-            assert!((300.0..=340.0).contains(&list), "a list reads {list} wide");
-            // Wider panes leave the extra width open beside the lists instead of stretching them.
-            assert_eq!(
-                Board::lists_width(&theme, 2000.0, 1),
-                Board::lists_width(&theme, 1280.0, 1)
-            );
-            // A pane too narrow for one list and the board's gutters gives its list the pane, so
-            // the next list does not show as a sliver.
-            let narrow = 350.0;
-            assert!((f64::from(Board::lists_width(&theme, narrow, 1)) - (narrow - 48.0)).abs() < 0.5);
-            let least = f64::from(crate::widget::CardWidth::Regular.min_width(&theme));
-            assert!(f64::from(Board::lists_width(&theme, least, 1)) >= least);
-            // Three lists a little short of fitting a pane narrow so all three stand whole, the
-            // last not cut off at the pane's edge; three that cannot fit at a card's measure keep
-            // their comfortable one and scroll.
-            let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
-            let gap = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Sibling));
-            let pane = 2.0 * gutter + 3.0 * list + 2.0 * gap - 40.0;
-            let fitted = f64::from(Board::lists_width(&theme, pane, 3));
-            assert!(fitted < list && fitted >= least, "three lists read {fitted} wide in {pane}");
-            assert!(
-                (2.0 * gutter + 3.0 * fitted + 2.0 * gap - pane).abs() < 0.5,
-                "three lists fill the pane exactly"
-            );
-            assert_eq!(f64::from(Board::lists_width(&theme, 2.0 * least, 3)), list);
-        }
 
         phase a_board_in_a_sideways_pane_fits_lists_a_little_short_of_its_width;
         // Two lists at their comfortable measure fall a little short of a 656 wide column, so

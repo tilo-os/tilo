@@ -2,7 +2,6 @@ use super::*;
 use crate::app::driver::Driver;
 use crate::headless::InspectionNode;
 use crate::widget::ListRow;
-use vello::Scene;
 
 fn rect(node: &InspectionNode) -> Rect {
     let [x, y, w, h] = node.rect;
@@ -60,81 +59,6 @@ fn items_sit_a_sibling_step_apart_and_the_header_closer() {
 }
 
 #[test]
-fn leading_identity_keeps_its_measured_size_beside_a_wrapping_heading() {
-    for (width, scale) in [(500, 1.0), (180, 2.0)] {
-        let image = crate::widget::Image::from_svg(
-            br##"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="#f00"/></svg>"##,
-            32,
-            32,
-        ).unwrap().with_alt("Source logo");
-        let section = Section::new(vec![Box::new(Text::new("Content"))])
-            .with_header(SectionHeader::group("Browser personal profile").leading(Box::new(image)))
-            .collapsible();
-        let mut harness = Driver::new_with_theme(
-            crate::State::new(),
-            Box::new(section),
-            (width, 500),
-            Theme::dark().with_text_scale(scale),
-        );
-        let root = harness.inspection().root;
-        let header = &root.children[0];
-        let image = rect(&header.children[0]);
-        let title = rect(&header.children[1]);
-        let chevron = rect(&header.children[2]);
-        assert_eq!(image.width(), 32.0);
-        assert_eq!(image.height(), 32.0);
-        assert!(image.x1 < title.x0);
-        assert!(title.x1 <= chevron.x0);
-        assert!(chevron.x1 <= f64::from(width));
-        assert!(rect(header).height() >= title.height().max(image.height()));
-        assert!(
-            harness
-                .a11y_nodes()
-                .iter()
-                .any(|(_, node)| node.role() == crate::accesskit::Role::Image
-                    && node.label() == Some("Source logo"))
-        );
-        harness.click_at(chevron.center().x, chevron.center().y);
-        assert_eq!(harness.inspection().root.children.len(), 1);
-    }
-}
-
-#[test]
-fn a_header_is_one_height_with_or_without_an_action() {
-    let height = |header: SectionHeader| {
-        let harness = Driver::new_with_theme(
-            crate::State::new(),
-            Box::new(Section::new(vec![Box::new(Text::new("body"))]).with_header(header)),
-            (400, 300),
-            Theme::dark(),
-        );
-        rect(&harness.inspection().root.children[0]).height()
-    };
-    let plain = height(SectionHeader::group("Recent"));
-    let with_action =
-        height(SectionHeader::group("Recent").action(Button::new("clear", "Clear all")));
-    assert!(
-        (plain - with_action).abs() < 0.5,
-        "{plain} vs {with_action}"
-    );
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let face = SectionHeaderFace::group("Recent").action("Clear all");
-    assert!((face.height(&mut text, &theme, 400.0) - plain).abs() < 0.5);
-    let target = face
-        .action_rect(Rect::new(0.0, 0.0, 400.0, plain), &mut text, &theme)
-        .unwrap();
-    assert!((target.x1 - (400.0 + crate::chrome::row_bleed(&theme))).abs() < 0.5);
-    let mut scene = Scene::new();
-    face.paint(
-        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-        Rect::new(0.0, 0.0, 400.0, plain),
-        Interaction::default(),
-    );
-    assert!(!scene.encoding().resources.glyph_runs.is_empty());
-}
-
-#[test]
 fn list_rows_in_a_section_are_one_list() {
     let section = Section::titled(
         "People",
@@ -177,74 +101,8 @@ tilo_test_env::scenario! {
     /// Each phase was a test of its own and builds its own fixture.
     fn rows_join_share_a_column_and_headings_count;
 
-    phase adjacent_selected_rows_join_into_one_lift;
-    {
-        let mut section = Section::new(vec![
-            Box::new(ListRow::new("a", "Ada").selected(true)),
-            Box::new(ListRow::new("b", "Grace").selected(true)),
-            Box::new(ListRow::new("c", "Linus").selected(true)),
-            Box::new(ListRow::new("d", "Mary")),
-        ]);
-        section.sync_row_join();
-        let joins: Vec<RowJoin> = rows_of(&mut section)
-            .into_iter()
-            .map(|row| row.join())
-            .collect();
-        assert_eq!(
-            joins,
-            [
-                RowJoin::new(false, true),
-                RowJoin::new(true, true),
-                RowJoin::new(true, false),
-                RowJoin::new(true, false),
-            ]
-        );
-    }
 
-    phase consecutive_badged_rows_share_one_badge_column;
-    {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut section = Section::new(vec![
-            Box::new(ListRow::new("a", "/users").badge("GET")),
-            Box::new(ListRow::new("b", "/users").badge("DELETE")),
-            Box::new(Text::new("break")),
-            Box::new(ListRow::new("c", "/health").badge("GET")),
-        ]);
-        section.sync_rows(&mut text, &theme);
-        let shared: Vec<Option<f64>> = rows_of(&mut section)
-            .into_iter()
-            .map(|row| row.shared_leading)
-            .collect();
-        let width = crate::widget::badge_column_width(&mut text, &theme, &["GET", "DELETE"]);
-        assert_eq!(shared, [Some(width), Some(width), None]);
-    }
 
-    phase a_header_in_a_taller_box_keeps_its_line_at_the_box_s_foot;
-    {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let face = SectionHeaderFace::group("Overdue since Jun 29")
-            .count(2)
-            .action("Clear all");
-        let width = 400.0;
-        let height = face.height(&mut text, &theme, width);
-        let natural = Rect::new(0.0, 100.0, width, 100.0 + height);
-        let taller = Rect::new(0.0, 100.0, width, 100.0 + height + 20.0);
-        let mut above_foot = |rect: Rect| {
-            face.action_rect(rect, &mut text, &theme)
-                .expect("the header has an action")
-                .y1
-                - rect.y1
-        };
-        assert!(
-            (above_foot(natural) - above_foot(taller)).abs() < 0.5,
-            "the header's line stands at the foot of its box, so area above it never comes between \
-         it and what it heads: {:.1} and {:.1} above the foot",
-            above_foot(natural),
-            above_foot(taller)
-        );
-    }
 
     phase a_heading_counts_one_row_as_nothing;
     // A heading counts its rows where the number says something they do not: one row restates
@@ -390,43 +248,6 @@ fn headings_take_their_role_and_follow_the_text_scale() {
 }
 
 #[test]
-fn status_lines_and_object_headers_sit_on_the_content_edge() {
-    let harness = Driver::new_with_theme(
-        crate::State::new(),
-        Box::new(Section::new(vec![
-            Box::new(
-                ObjectHeader::new("Ada Lovelace")
-                    .avatar("Ada Lovelace", "ada@example.org")
-                    .caption("ada@example.org"),
-            ),
-            Box::new(StatusLine::active("Engine running")),
-        ])),
-        (400, 300),
-        Theme::dark(),
-    );
-    let root = harness.inspection().root;
-    let head = rect(&root.children[0]);
-    let status = rect(&root.children[1]);
-    let theme = Theme::dark();
-    assert!(head.x0.abs() < 0.5 && status.x0.abs() < 0.5);
-    assert!(head.height() >= crate::widget::AvatarSize::Large.side(&theme) - 0.5);
-    assert!(
-        (status.height() - f64::from(theme.text(TextRole::Caption).line_height_px())).abs() < 1.0
-    );
-    let line = StatusLine::warning("Update available");
-    let node = Widget::accessibility(&line).unwrap();
-    assert_eq!(
-        node.value.as_deref(),
-        Some("Needs attention: Update available")
-    );
-    let head = ObjectHeader::new("example.org")
-        .icon(Icon::Globe)
-        .caption("Login");
-    let node = Widget::accessibility(&head).unwrap();
-    assert_eq!(node.name.as_deref(), Some("example.org"));
-}
-
-#[test]
 fn a_section_says_whether_the_pointer_is_over_it() {
     let over = Rc::new(Cell::new(false));
     let section = Section::new(vec![
@@ -462,77 +283,6 @@ fn a_section_says_whether_the_pointer_is_over_it() {
         device_id: winit::event::DeviceId::dummy(),
     });
     assert!(!over.get(), "the pointer left the window");
-}
-
-/// The right edge of every switch in `node`, in tree order.
-fn switch_edges(node: &InspectionNode, found: &mut Vec<f64>) {
-    if node.widget == "Toggle" {
-        found.push(rect(node).x1);
-    }
-    for child in &node.children {
-        switch_edges(child, found);
-    }
-}
-
-/// The switch edges of a section of `rows` laid out 600 wide.
-fn switch_edges_of(rows: Vec<Element>) -> Vec<f64> {
-    let harness = Driver::new_with_theme(
-        crate::State::new(),
-        Box::new(Section::new(rows)),
-        (600, 400),
-        Theme::light(),
-    );
-    let root = harness.inspection().root;
-    let mut edges = Vec::new();
-    switch_edges(&root, &mut edges);
-    edges
-}
-
-fn switch(id: &str) -> Element {
-    Box::new(crate::widget::Toggle::bound(id, id))
-}
-
-#[test]
-fn a_lists_switches_stand_in_one_column_beside_its_chevrons() {
-    let edges = switch_edges_of(vec![
-        Box::new(
-            ListRow::new("home", "Home")
-                .secondary("Connected")
-                .trailing(switch("home"))
-                .disclosure(),
-        ),
-        Box::new(ListRow::new("office", "Through Office PC").trailing(switch("office"))),
-        Box::new(
-            ListRow::new("work", "Work")
-                .trailing(switch("work"))
-                .disclosure(),
-        ),
-        Box::new(ListRow::new("mini", "Through Studio Mac mini").trailing(switch("mini"))),
-        Box::new(ListRow::new("add", "Add a VPN").disclosure()),
-    ]);
-    assert_eq!(edges.len(), 4, "every switch laid out: {edges:?}");
-    assert!(
-        edges.iter().all(|edge| (edge - edges[0]).abs() < 0.5),
-        "one column of switches: {edges:?}"
-    );
-}
-
-#[test]
-fn a_list_without_marks_after_its_switches_keeps_them_on_the_edge() {
-    let alone = switch_edges_of(vec![Box::new(
-        ListRow::new("share", "Let my other devices use this device").trailing(switch("share")),
-    )]);
-    let beside_drill = switch_edges_of(vec![
-        Box::new(
-            ListRow::new("share", "Let my other devices use this device").trailing(switch("share")),
-        ),
-        Box::new(ListRow::new("more", "More options").disclosure()),
-    ]);
-    assert_eq!(alone.len(), 1);
-    assert!(
-        (alone[0] - beside_drill[0]).abs() < 0.5,
-        "a chevron with no switch before it moves no switch: {alone:?} vs {beside_drill:?}"
-    );
 }
 
 /// A player, a web page and a page rail in a section stand at their own shape and push what

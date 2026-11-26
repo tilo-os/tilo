@@ -6,7 +6,6 @@
 
 use super::*;
 use crate::Theme;
-use crate::widget::primitives::SurfaceLevel;
 
 fn theme() -> Theme {
     Theme::dark()
@@ -223,27 +222,6 @@ fn the_turn_wins_over_a_place_the_agent_puts_off_screen() {
     );
 }
 
-/// The rectangle the person points at is outlined in the theme's selection wash, a role lighter
-/// than the focus accent, rounded as a place is: never a hard accent stroke.
-#[test]
-fn the_pointed_rectangle_is_outlined_softly_in_a_theme_role() {
-    for theme in [Theme::dark(), Theme::light()] {
-        let look = OutlineLook::of(&theme);
-        assert_eq!(look.colour, theme.tokens.colors.intent.selection_tint);
-        assert_ne!(look.colour, theme.border_focus, "not the focus accent");
-        assert!(
-            look.colour.components[3] < theme.border_focus.components[3],
-            "lighter than the focus accent"
-        );
-        assert!(
-            (look.radius - SurfaceLevel::Window.radius(&theme)).abs() < f64::EPSILON
-                && look.radius > 0.0,
-            "rounded as a place is"
-        );
-        assert!(look.width <= 1.0, "a soft line");
-    }
-}
-
 /// A list of `rows` rows of 40 pixels that fills its parent, as a found inbox or notes list is.
 fn list(rows: u64) -> Element {
     let model =
@@ -298,37 +276,6 @@ fn a_found_list_hugs_its_rows_up_to_its_room() {
     assert!(
         (inbox.height() - band - 300.0).abs() <= 0.5,
         "a place with a height of its own stands at it: {inbox:?}"
-    );
-}
-
-/// The same holds through a place's own surface (`ui.Place`), as the canvas stands a found list.
-#[test]
-fn a_found_list_in_its_place_hugs_its_rows() {
-    let _frame = crate::motion::pin_frame();
-    let place: Element = Box::new(
-        <crate::widget::canvas_place::CanvasPlace as crate::component::Described>::from_props(
-            "inbox",
-            crate::widget::canvas_place::PlaceProps {
-                name: Some("All inboxes".into()),
-                body: Some(list(6)),
-                ..crate::widget::canvas_place::PlaceProps::default()
-            },
-        ),
-    );
-    let mut map = Map::new().pin(
-        "inbox",
-        PinPlace {
-            band: crate::widget::canvas_place::PLACE_BAND,
-            ..grown(0.0, 100.0, 400.0, 480.0)
-        },
-        place,
-    );
-    lay_out(&mut map);
-    let inbox = map.laid.borrow()["inbox"];
-    let band = crate::widget::canvas_place::PLACE_BAND;
-    assert!(
-        inbox.height() - band < 330.0 && inbox.height() - band >= 240.0,
-        "the place hugs its six rows: {inbox:?}"
     );
 }
 

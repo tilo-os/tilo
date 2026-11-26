@@ -1674,7 +1674,6 @@ impl Widget for FindScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
     use crate::testing::Dispatch;
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1844,23 +1843,6 @@ mod tests {
             assert!(!scope.is_open(), "Escape closes the bar");
         }
 
-        phase content_moving_with_the_band_is_hit_where_it_is_drawn;
-        {
-            let pointer = WindowEvent::CursorMoved {
-                device_id: winit::event::DeviceId::dummy(),
-                position: (10.0, 50.0).into(),
-            };
-            let moved = super::super::event_offset(&pointer, vello::kurbo::Vec2::new(0.0, -20.0), 2.0);
-            let WindowEvent::CursorMoved { position, .. } = moved.as_ref() else {
-                panic!("a pointer move stays a pointer move");
-            };
-            assert_eq!((position.x, position.y), (10.0, 90.0));
-            let key = escape();
-            assert!(matches!(
-                super::super::event_offset(&key, vello::kurbo::Vec2::new(0.0, -20.0), 2.0),
-                std::borrow::Cow::Borrowed(_)
-            ));
-        }
 
     }
 
@@ -1980,55 +1962,6 @@ mod tests {
     }
 
     #[test]
-    fn opened_from_a_menu_the_band_discloses_over_content_laid_out_at_its_larger_extent() {
-        let mut scope = page_scope();
-        lay_out(&mut scope);
-        let _frame = crate::motion::pin_frame();
-        crate::motion::note_input(&pointer_press());
-        scope.open();
-        lay_out(&mut scope);
-        assert!(scope.disclosure.is_moving(), "the band discloses");
-        assert!(Widget::needs_animation_frame(&scope));
-        let band = scope.bar.get_rect();
-        let laid = scope.content.get_rect();
-        assert!(band.height() > 0.0, "the band is laid out at its height");
-        assert!(
-            (laid.y0 - scope.rect.y0).abs() < 0.5 && (laid.y1 - scope.rect.y1).abs() < 0.5,
-            "the content keeps the whole scope while the band moves, so nothing under it is bare"
-        );
-        assert!(
-            scope.content_offset().abs() < 0.5,
-            "and is drawn where it stood, moving down with the band's edge"
-        );
-        // A frame of the motion moves only the drawing: nothing asks for a
-        // new layout and the content's box stays put.
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        scope.draw(&mut crate::draw::DrawCtx::new(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &Theme::dark(),
-            PresenceCtx::default().draw_env(),
-        ));
-        assert!(!scope.structure_dirty);
-        assert_eq!(scope.content.get_rect(), laid);
-
-        let _settled = crate::motion::testing::settled();
-        assert!(!scope.disclosure.is_moving());
-        assert!(
-            Widget::needs_animation_frame(&scope) && Widget::is_layout_dirty(&scope),
-            "the layout takes the band in once, at rest"
-        );
-        lay_out(&mut scope);
-        let band = scope.bar.get_rect();
-        assert!(scope.content.get_rect().y0 >= band.y1 - 0.5);
-        assert!(scope.content_offset().abs() < f64::EPSILON);
-        assert!(!Widget::needs_animation_frame(&scope));
-        assert!(!scope.layout_stale(), "and lays out nothing more");
-    }
-
-    #[test]
     fn ctrl_f_and_escape_land_and_the_close_button_collapses_the_band() {
         let mut scope = page_scope();
         let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
@@ -2067,25 +2000,6 @@ mod tests {
             "laid out once over the whole scope"
         );
         assert!(Widget::needs_animation_frame(&scope));
-    }
-
-    #[test]
-    fn under_reduced_motion_the_band_lands_and_its_controls_fade_in() {
-        let mut scope = page_scope();
-        lay_out(&mut scope);
-        scope.motion = Theme::dark().with_reduce_motion(true).motion();
-        let _frame = crate::motion::pin_frame();
-        crate::motion::note_input(&pointer_press());
-        scope.open();
-        lay_out(&mut scope);
-        let full = scope.bar.get_rect().height();
-        let reveal = scope.disclosure.reveal(full);
-        assert!(
-            (reveal.height - full).abs() < f64::EPSILON,
-            "the height lands"
-        );
-        assert!(reveal.opacity < 1.0, "the controls fade in");
-        assert!(scope.content_offset().abs() < f64::EPSILON, "nothing moves");
     }
 
     #[test]

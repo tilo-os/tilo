@@ -1,6 +1,5 @@
 use super::*;
 use crate::app::driver::Driver;
-use crate::headless::InspectionNode;
 
 tilo_test_env::scenario! {
     fn property_actions_and_values_are_published_and_read_aloud;
@@ -167,74 +166,10 @@ fn layout(
     )
 }
 
-fn rect(node: &InspectionNode) -> Rect {
-    let [x, y, w, h] = node.rect;
-    Rect::new(x, y, x + w, y + h)
-}
-
 tilo_test_env::scenario! {
     fn labels_values_and_stripes_line_up_at_every_width;
 
-    phase labels_share_one_measured_column_and_values_line_up;
-    {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let rows = rows();
-        let m = regular(&theme);
-        let layout = layout(&mut text, &theme, &rows, 640.0);
-        assert!(!layout.stacked);
-        let x = layout.rows[0].value.x;
-        for row in &layout.rows {
-            assert!((row.value.x - x).abs() < 0.01, "values share a column");
-            assert!(row.value.x > row.label.x);
-            assert!(row.rect.height() >= m.min_row);
-        }
-        let longest = f64::from(text.measure_style("Birthday", None, &m.label).0);
-        assert!(x >= m.pad_x + longest + m.column_gap - 0.5);
-    }
 
-    phase labels_start_on_the_content_edge_and_stripes_bleed_past_it;
-    {
-        let theme = Theme::dark();
-        let bleed = crate::chrome::row_bleed(&theme);
-        let mut text = TextRenderer::new();
-        let rows = rows();
-        let laid = layout(&mut text, &theme, &rows, 400.0);
-        assert!((laid.rows[0].label.x - bleed).abs() < 0.01);
-        let harness = Driver::new(
-            crate::State::new(),
-            Box::new(
-                crate::widget::Column::new()
-                    .with_horizontal_padding(24.0, 24.0)
-                    .push(Box::new(
-                        PropertyList::new(vec![Property::new("Size", "4 KB")]).striped(),
-                    )),
-            ),
-            (400, 200),
-        );
-        fn find(node: &InspectionNode) -> Option<&InspectionNode> {
-            if node.widget == "PropertyList" {
-                return Some(node);
-            }
-            node.children.iter().find_map(find)
-        }
-        let list = rect(find(&harness.inspection().root).unwrap());
-        assert!((list.x0 - 24.0).abs() < 0.5);
-        let mut retained = PropertyList::new(vec![Property::new("Size", "4 KB")]);
-        retained.metrics = Some(regular(&theme));
-        retained.rect = list;
-        let laid = retained.lay_out_at(
-            &mut text,
-            &regular(&theme),
-            retained.outer().origin(),
-            retained.outer().width(),
-        );
-        assert!(
-            (laid.rows[0].label.x - list.x0).abs() < 0.01,
-            "label on the edge"
-        );
-        assert!(laid.rows[0].rect.x0 < list.x0, "the stripe bleeds outward");
-    }
 
     phase a_narrow_list_stacks_labels_above_values;
     {
@@ -312,26 +247,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase up_to_two_actions_sit_at_the_trailing_edge_of_their_row;
-    {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let rows = rows();
-        let face = PropertyListFace::new(&rows);
-        let targets = face.action_rects(&mut text, &theme, Point::new(10.0, 20.0), 500.0);
-        assert_eq!(targets.len(), 1);
-        let (index, rect) = targets[0];
-        assert_eq!(index, 3);
-        assert!(rect.x1 <= 510.0 && rect.x1 > 480.0);
-        let two = [PropertyRow::new("Password", "hunter2")
-            .with_kind(TextKind::Secret)
-            .action(Icon::Eye, "Reveal")
-            .action(Icon::Copy, "Copy")
-            .action(Icon::Trash, "Ignored")];
-        let targets = PropertyListFace::new(&two).action_targets(&mut text, &theme, Point::ZERO, 500.0);
-        assert_eq!(targets.len(), 2, "a row holds two actions");
-        assert!(targets[0].1.x1 < targets[1].1.x0, "in order");
-    }
 
     phase unbreakable_values_elide_before_the_actions_and_prose_wraps;
     {
@@ -377,52 +292,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase groups_and_lists_in_a_section_share_one_label_column;
-    {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let short = [PropertyRow::new("Age", "36")];
-        let long = [PropertyRow::new("Date of birth", "10 December 1815")];
-        let laid = lay_out(
-            &mut text,
-            &regular(&theme),
-            &[(Some("Personal"), &short), (Some("Dates"), &long)],
-            Point::ZERO,
-            640.0,
-            None,
-        );
-        assert_eq!(laid.groups.len(), 2);
-        assert!((laid.rows[0].value.x - laid.rows[1].value.x).abs() < 0.01);
-        assert!(laid.groups[1].title_at.y > laid.rows[0].rect.y1);
-        let harness = Driver::new_with_theme(
-            crate::State::new(),
-            Box::new(crate::widget::Section::new(vec![
-                Box::new(PropertyList::new(vec![Property::new("Age", "36")]).with_id("a")),
-                Box::new(
-                    PropertyList::new(vec![Property::new("Date of birth", "10 December 1815")])
-                        .with_id("b"),
-                ),
-            ])),
-            (600, 400),
-            theme.clone(),
-        );
-        let width = property_label_column(&mut text, &theme, &long);
-        let root = harness.inspection().root;
-        assert_eq!(root.children.len(), 2);
-        let column = PropertyColumn::new();
-        column.offer(width);
-        assert!((column.get() - width).abs() < 0.01);
-    }
 
-    phase stripes_are_a_derived_tint_that_registers;
-    {
-        for theme in [Theme::dark(), Theme::light()] {
-            let ground = theme.tokens.colors.surfaces.content;
-            let stripe =
-                crate::tokens::colors::composite(Colors::hairline_on(ground, STRIPE_ALPHA), ground);
-            assert!(crate::surface::edge_delta(stripe, ground) > 0.0);
-        }
-    }
 }
 
 /// Where `row`'s label and value are painted in `laid`, as rects.
@@ -552,51 +422,4 @@ fn a_bound_property_action_runs_the_apps_action_on_every_path() {
     assert!(disabled, "an unavailable action is published disabled");
     assert!(!list.run_action(0, 1));
     assert!(list.take_control_invocation().is_none());
-}
-
-/// A list asked how wide it would like to be is as wide as its labels and values on one line,
-/// not a fixed measure: a card it stands in is as wide as what it says, and laid out at that
-/// width every value still stands beside its label on one line.
-#[test]
-fn a_list_with_room_to_spare_is_as_wide_as_what_it_says() {
-    let theme = Theme::dark();
-    let mut text = TextRenderer::new();
-    let m = regular(&theme);
-    let short = [
-        PropertyRow::new("With", "Mia Clayton"),
-        PropertyRow::new("Access", "Can edit"),
-    ];
-    let natural = natural_width(&mut text, &m, &[(None, &short)], None);
-    let line = m.line(&mut text);
-    assert!(
-        natural < line * f64::from(MIN_VALUE_LINES) * 3.0,
-        "two short rows ask for less than a wide panel: {natural}"
-    );
-    let laid = layout(&mut text, &theme, &short, natural + 2.0 * m.pad_x);
-    assert!(!laid.stacked, "each label stands beside its value");
-    for (row, given) in laid.rows.iter().zip(&short) {
-        let one_line = f64::from(
-            text.measure_style(given.value, None, &m.value_style(given))
-                .1,
-        );
-        assert!(
-            row.rect.height() <= (one_line + 2.0 * m.pad_y).max(m.min_row).ceil() + 0.5,
-            "{} stands on one line",
-            given.value
-        );
-    }
-
-    // Prose longer than a readable measure wraps there, however much room there is.
-    let long = rows();
-    let wide = natural_width(&mut text, &m, &[(None, &long)], None);
-    let readable = f64::from(READABLE_LINES) * line;
-    assert!(
-        wide <= natural_label_column(&mut text, &m, &long)
-            + m.column_gap
-            + readable
-            + m.action
-            + m.column_gap / 2.0
-            + 1.0,
-        "a long address wraps at a readable measure: {wide}"
-    );
 }

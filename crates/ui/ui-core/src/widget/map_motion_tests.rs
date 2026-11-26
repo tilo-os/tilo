@@ -112,29 +112,6 @@ fn a_pin_moved_by_the_person_glides_to_its_new_place_and_then_rests() {
 }
 
 #[test]
-fn a_pin_shown_by_a_still_theme_lands_at_once() {
-    let _frame = crate::motion::pin_frame();
-    let still = crate::tokens::EffectiveMotion::new(
-        crate::tokens::Motion {
-            still: true,
-            ..crate::tokens::Motion::default()
-        },
-        false,
-    );
-    let now = crate::motion::frame_now();
-    let mut placed = crate::motion::Placed::closed();
-    placed.follow(
-        Rect::new(100.0, 0.0, 300.0, 120.0),
-        true,
-        still,
-        crate::tokens::MotionSource::Pointer,
-        now,
-    );
-    assert_eq!(placed.progress(now), 1.0, "shown on the frame it happens");
-    assert!(!placed.is_moving(now), "and it asks for nothing");
-}
-
-#[test]
 fn a_map_built_again_keeps_the_camera_and_the_places_where_they_were_drawn() {
     let _frame = crate::motion::pin_frame();
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);

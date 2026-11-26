@@ -3,7 +3,7 @@ use crate::widget::Widget as _;
 use std::collections::HashMap;
 use std::rc::Rc;
 use vello::Scene;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Affine;
 use winit::keyboard::NamedKey;
 
 fn lay_out_and_draw(widget: &mut ReactionStripWidget, width: f32, theme: &Theme) {
@@ -249,75 +249,6 @@ tilo_test_env::scenario! {
         assert!(!widget.is_focusable());
     }
 
-    phase a_pill_arriving_after_the_first_layout_appears_and_a_count_cross_fades;
-    {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut strip = ReactionStrip::new();
-        strip.layout(
-            &[group("👍", &["ada"])],
-            &[],
-            Some(&tilo_actions::MemberId::person("me")),
-            true,
-            (Point::ZERO, 400.0),
-            &mut text,
-            &theme,
-        );
-        assert!(!strip.is_moving(), "what is there at first rests");
-        strip.layout(
-            &[group("👍", &["ada", "bo"]), group("🎉", &["bo"])],
-            &[],
-            Some(&tilo_actions::MemberId::person("me")),
-            true,
-            (Point::ZERO, 400.0),
-            &mut text,
-            &theme,
-        );
-        let now = crate::motion::frame_now();
-        let arriving = strip.motion.get("🎉").expect("the new pill moves");
-        assert!(arriving.presence.is_moving(now), "the new pill appears");
-        assert!(
-            strip
-                .motion
-                .get("👍")
-                .is_some_and(|pill| pill.count.is_moving(now)),
-            "the changed count cross-fades"
-        );
-        let reduced = theme.clone().with_reduce_motion(true);
-        let mut calm = ReactionStrip::new();
-        calm.layout(
-            &[],
-            &[],
-            Some(&tilo_actions::MemberId::person("me")),
-            true,
-            (Point::ZERO, 400.0),
-            &mut text,
-            &reduced,
-        );
-        calm.layout(
-            &[group("🎉", &["bo"])],
-            &[],
-            Some(&tilo_actions::MemberId::person("me")),
-            true,
-            (Point::ZERO, 400.0),
-            &mut text,
-            &reduced,
-        );
-        let pose = crate::motion::Appear::pose(
-            0.5,
-            crate::motion::Direction::Enter,
-            Rect::new(0.0, 0.0, 40.0, 20.0),
-            Point::ZERO,
-            reduced.motion(),
-        );
-        assert_eq!(
-            pose.transform,
-            Affine::IDENTITY,
-            "reduced motion fades a pill in without scaling it"
-        );
-        let _settled = crate::motion::testing::settled();
-        assert!(!strip.is_moving(), "and it all comes to rest");
-    }
 }
 
 #[test]

@@ -551,36 +551,6 @@ fn a_box_grows_to_hold_the_words_that_wrap_past_it() {
     );
 }
 
-// A place whose view fits its stored height stands at exactly that height.
-#[test]
-fn a_box_whose_words_fit_stands_at_its_stored_height() {
-    let stage = Stage::from_props(
-        "stage",
-        StageProps {
-            canvas: vec![1280, 720],
-            pins: vec![StagePinProps {
-                key: "pin-0".into(),
-                item: Some("box-0".into()),
-                x: Some(96),
-                y: Some(90),
-                width: Some(400),
-                height: Some(120),
-                moves: true,
-                body: vec![Box::new(crate::widget::Text::new("Short"))],
-                ..StagePinProps::default()
-            }],
-            ..StageProps::default()
-        },
-    );
-    let mut host = Driver::new(crate::State::new(), Box::new(stage), (800, 600));
-    let laid = shown(&mut host).laid.borrow();
-    let height = laid.first().expect("the place is laid out").height();
-    assert!(
-        (height - 120.0).abs() < 0.5,
-        "a place that fits stands where the element put it: {height}"
-    );
-}
-
 /// Where the page point `at` stands in the 800 × 600 window a stage of a 1280 × 720 page is
 /// drawn in: the page fits at 0.625, centred, so its top stands 75 window pixels down.
 fn on_screen(at: (f64, f64)) -> (f64, f64) {

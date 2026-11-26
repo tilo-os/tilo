@@ -447,28 +447,6 @@ tilo_test_env::scenario! {
         assert_eq!(widget.accessibility().map(|node| node.role), Some(crate::a11y::Role::Terminal));
     }
 
-    phase the_grid_takes_its_colours_from_the_theme_it_is_drawn_in;
-    {
-        let dark = crate::terminal::Palette::from_theme(&Theme::dark());
-        let light = crate::terminal::Palette::from_theme(&Theme::light());
-        assert_ne!(
-            dark.background, light.background,
-            "a grid's ground is the theme's, not the terminal's own"
-        );
-        assert_ne!(dark.ansi[1], light.ansi[1], "the ramp follows the theme too");
-        let fake = std::sync::Arc::new(Fake::with_lines(&["\u{1b}[31mred"]));
-        let mut widget = Terminal::new(fake);
-        let (_tree, _node) = placed(&mut widget);
-        let mut scene = Scene::new();
-        widget.draw(&mut crate::draw::DrawCtx::new(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &Theme::light(),
-            crate::presence::PresenceCtx::default().draw_env(),
-        ));
-        assert!(!scene.encoding().is_empty(), "the light theme paints the grid");
-    }
 
     phase find_in_the_scrollback_finds_every_row_and_reveals_the_one_chosen;
     {

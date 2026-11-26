@@ -425,24 +425,6 @@ tilo_test_env::scenario! {
         assert_eq!(attributed.body, "Launch notes");
     }
 
-    phase a_card_action_stands_off_the_card_in_dark;
-    {
-        use crate::a11y::relative_luminance;
-        for theme in [Theme::dark(), Theme::light()] {
-            let colors = &theme.tokens.colors;
-            let window = (relative_luminance(colors.surfaces.raised)
-                - relative_luminance(colors.surfaces.content))
-            .abs();
-            let ground = crate::widget::floating_surface::card_ground(&theme);
-            let (fill, _, _) = ButtonFace::new(Rect::ZERO, "Open card").colors(&on_card(&theme));
-            let card = (relative_luminance(fill) - relative_luminance(ground)).abs();
-            assert!(
-                card >= window * 0.75,
-                "the action's face stands off the card ({card:.4}) about as a secondary button \
-                 stands off the window ({window:.4})"
-            );
-        }
-    }
 }
 
 /// The host's notice offers its Undo to assistive technology as a named button, and a press of

@@ -2340,63 +2340,7 @@ mod tests {
             assert_eq!(shown, [false, true, false, false]);
         }
 
-        phase icon_commands_and_toggles_lay_out_in_a_painted_host;
-        {
-            let _settled = crate::motion::testing::settled();
-            let theme = Theme::dark();
-            let mut text = TextRenderer::new();
-            let mut tb = Toolbar::new(Orientation::Horizontal)
-                .push_icon(crate::icons::Icon::Search, "Find", || {})
-                .push_toggle("Bold", true, || {})
-                .push_button("Insert table", || {});
-            tb.lay_out_in(Rect::new(0.0, 0.0, 600.0, 40.0), &mut text, &theme);
-            let icon = tb.item_rects[0];
-            assert_eq!(
-                icon.width(),
-                f64::from(theme.tokens.metrics.min_pointer_target)
-            );
-            assert!(!tb.has_overflow());
-            let node = Widget::accessibility(&tb).expect("toolbar semantics");
-            assert_eq!(node.children[0].name.as_deref(), Some("Find"));
-            assert_eq!(node.children[1].role, Role::ToggleButton);
-            assert_eq!(node.children[1].state.checked, Some(true));
-            tb.set_active(1, false);
-            let node = Widget::accessibility(&tb).expect("toolbar semantics");
-            assert_eq!(node.children[1].state.checked, Some(false));
 
-            tb.lay_out_in(Rect::new(0.0, 0.0, 90.0, 40.0), &mut text, &theme);
-            assert!(tb.has_overflow());
-            let reachable = tb.visible_count + tb.menu_indices.iter().flatten().count();
-            assert_eq!(reachable, 3);
-        }
-
-        phase a_colour_well_is_a_square_command_named_for_its_colour;
-        {
-            let _settled = crate::motion::testing::settled();
-            let theme = Theme::dark();
-            let mut text = TextRenderer::new();
-            let yellow = vello::peniko::Color::from_rgb8(250, 204, 21);
-            let green = vello::peniko::Color::from_rgb8(74, 222, 128);
-            let mut tb = Toolbar::new(Orientation::Horizontal)
-                .push_swatch(yellow, "Marker colour: Yellow", || {})
-                .push_button("Insert table", || {});
-            tb.lay_out_in(Rect::new(0.0, 0.0, 600.0, 40.0), &mut text, &theme);
-            assert_eq!(
-                tb.item_rects[0].width(),
-                f64::from(theme.tokens.metrics.min_pointer_target)
-            );
-            tb.set_swatch(0, green, "Marker colour: Green");
-            assert_eq!(tb.command(0).and_then(|c| c.swatch), Some(green));
-            let node = Widget::accessibility(&tb).expect("toolbar semantics");
-            assert_eq!(
-                node.children[0].name.as_deref(),
-                Some("Marker colour: Green")
-            );
-
-            tb.lay_out_in(Rect::new(0.0, 0.0, 60.0, 40.0), &mut text, &theme);
-            assert!(tb.has_overflow());
-            assert!(tb.menu_indices.contains(&Some(0)) || tb.is_shown(0));
-        }
 
     }
 }

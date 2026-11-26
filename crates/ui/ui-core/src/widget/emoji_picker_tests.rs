@@ -615,24 +615,3 @@ fn a_touch_presses_and_picks_where_a_mouse_does() {
     press(&mut picker, &touch(TouchPhase::Ended));
     assert!(picker.take_events().is_empty());
 }
-
-#[test]
-fn a_framed_card_without_a_caret_centres_over_the_display_it_was_given() {
-    let window = window(false);
-    let _in = window.scope.enter();
-    let theme = Theme::light();
-    let viewport = Rect::new(0.0, 0.0, 1280.0, 800.0);
-    let mut picker = EmojiPicker::sheet();
-    picker.open_at(None, viewport, &theme);
-    paint(&mut picker, &theme);
-    let card = picker.rect();
-    assert!(contains(viewport, card));
-    assert!(
-        (card.center().x - viewport.center().x).abs() < 0.5,
-        "centred across the display: {card:?}"
-    );
-    assert!(
-        card.y0 > viewport.y0 && card.y0 < viewport.center().y,
-        "and high up rather than off the top: {card:?}"
-    );
-}

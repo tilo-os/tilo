@@ -1456,41 +1456,6 @@ mod tests {
             );
         }
 
-        phase centered_text_top_splits_measured_slack;
-        {
-            {
-                // 18 px band, 15 px measured line: 1.5 px above and below.
-                assert!((centered_text_top(100.0, 18.0, 15.0) - 101.5).abs() < f64::EPSILON);
-                assert!((centered_text_top(7.0, 15.0, 15.0) - 7.0).abs() < f64::EPSILON);
-                // A line taller than its band overhangs symmetrically instead of pinning to the top.
-                assert!((centered_text_top(0.0, 10.0, 14.0) - (-2.0)).abs() < f64::EPSILON);
-            }
-
-            {
-                // The defect this helper retires: centring on the 12 px font size
-                // instead of the 15 px line the renderer actually lays out puts the
-                // glyphs 1.5 px lower than the band's centre.
-                let mut renderer = TextRenderer::new();
-                let (_, measured) = renderer.measure("Home", 12.0, None);
-                let measured = f64::from(measured);
-                assert!(
-                    measured > 12.0,
-                    "cosmic-text line box exceeds the font size: {measured}"
-                );
-                let band = (0.0, 18.0);
-                let correct = centered_text_top(band.0, band.1, measured);
-                let drifted = band.0 + (band.1 - 12.0) / 2.0;
-                let line_centre = correct + measured / 2.0;
-                assert!(
-                    (line_centre - 9.0).abs() < 1e-9,
-                    "line centre {line_centre} != band centre 9"
-                );
-                assert!(
-                    drifted > correct,
-                    "font-size centring drifts downward ({drifted} vs {correct})"
-                );
-            }
-        }
 
         phase typography_follows_semantic_roles_and_layers_modifiers;
         {

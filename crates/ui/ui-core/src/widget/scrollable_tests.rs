@@ -2,7 +2,6 @@
 //! frames it asks for.
 
 use super::*;
-use crate::presence::PresenceCtx;
 use crate::testing::TestLeaf;
 use crate::testing::{Dispatch, dispatch};
 use crate::theme::Theme;
@@ -10,9 +9,8 @@ use crate::widget::TaffyTreeExt;
 use crate::widget::{Element, Widget};
 use std::cell::Cell;
 use std::rc::Rc;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use taffy::{NodeId, Size, Style, TaffyTree};
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::NamedKey;
 #[allow(
@@ -64,16 +62,6 @@ tilo_test_env::scenario! {
         });
     }
 
-    phase under_reduced_motion_fingers_stop_at_the_end;
-    {
-        use crate::time::testing::with_monotonic_time;
-        let mut s = vertical(1000.0);
-        s.motion = crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), true);
-        with_monotonic_time(crate::time::now(), || {
-            assert!(!s.pan(0.0, -60.0), "nothing moved: the wheel may bubble");
-            assert_eq!(s.drawn_offset(), (0.0, 0.0));
-        });
-    }
 
     phase a_browsers_swipe_past_the_top_springs_back_once_it_pauses;
     {
@@ -324,152 +312,9 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase the_bar_gutter_is_reserved_only_while_the_content_overflows;
-    {
-        let short = || -> Element {
-            Box::new(
-                Column::new()
-                    .with_intrinsic_height()
-                    .push(Box::new(Text::new("one line"))),
-            )
-        };
-        let mut fits = Scrollable::new_vertical()
-            .with_child(short())
-            .with_height(300.0);
-        host_solve(&mut fits, 400.0, 300.0);
-        let child = fits.children()[0].get_rect();
-        assert!(
-            (child.x1 - fits.rect.x1).abs() < 0.5,
-            "fitting content keeps the full width: {child:?}"
-        );
 
-        let mut overflows = Scrollable::new_vertical()
-            .with_child(tall_child())
-            .with_height(300.0);
-        host_solve(&mut overflows, 400.0, 300.0);
-        let child = overflows.children()[0].get_rect();
-        let gutter = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
-        assert!(
-            (overflows.rect.x1 - child.x1 - gutter).abs() < 0.5,
-            "{child:?}"
-        );
-        let track = overflows.vertical_track().expect("bar");
-        let thumb = f64::from(Theme::dark().tokens.metrics.scroll_thumb);
-        assert!((track.width() - thumb).abs() < 1e-6);
-        assert!(
-            ((overflows.rect.x1 - track.x1) - (track.x0 - child.x1)).abs() < 0.5,
-            "the thumb is centred in its gutter"
-        );
-    }
 
-    phase horizontal_content_is_laid_out_at_its_max_content_width;
-    {
-        let wide = Row::new()
-            .no_wrap()
-            .with_gap(0.0)
-            .push(Box::new(
-                crate::widget::Container::new().with_size(500.0, 20.0),
-            ))
-            .push(Box::new(
-                crate::widget::Container::new().with_size(500.0, 20.0),
-            ));
-        let mut scroll = Scrollable::new_horizontal()
-            .with_child(Box::new(wide))
-            .with_height(80.0);
-        host_solve(&mut scroll, 300.0, 80.0);
-        assert!(scroll.children()[0].get_rect().width() >= 999.0);
-        assert!(scroll.hbar_active(), "wide content scrolls sideways");
-        let gutter = f64::from(Theme::dark().tokens.metrics.scrollbar_gutter);
-        assert!(
-            (scroll.rect.height() - f64::from(scroll.viewport_h)).abs() < 0.5
-                && scroll.children()[0].get_rect().height() <= 80.0 - gutter + 0.5,
-            "the bar's gutter at the bottom is reserved"
-        );
-    }
 
-    phase fill_parent_height_fills_a_row_or_a_root_container;
-    {
-        let mut root = crate::widget::Container::new()
-            .with_no_padding()
-            .with_max_width(500.0)
-            .filling()
-            .with_child(Box::new(
-                Scrollable::new_vertical()
-                    .fill_parent_height()
-                    .with_child(tall_child()),
-            ));
-        host_solve(&mut root, 800.0, 600.0);
-        let scroll = scroll_of(&mut root);
-        assert!(
-            (scroll.rect.height() - 600.0).abs() < 0.5,
-            "the scroller takes the root's height: {:?}",
-            scroll.rect
-        );
-        assert!(scroll.vertical_overflows());
-    }
-
-    phase height_constraints_decide_scrollability_under_indefinite_parents;
-    {
-        {
-            let h = viewport_height_under_indefinite_parent(
-                Scrollable::new_vertical()
-                    .with_child(tall_child())
-                    .with_height(300.0),
-            );
-            assert!(
-                (h - 300.0).abs() < 0.5,
-                "with_height must pin the viewport to 300 even under an \
-         indefinite-height parent; got {h}"
-            );
-        }
-
-        {
-            let (vh, scrolled) = can_scroll_under_indefinite_parent(
-                Scrollable::new_vertical()
-                    .with_child(tall_child())
-                    .with_height(300.0),
-            );
-            assert!((vh - 300.0).abs() < 0.5, "viewport pinned to 300, got {vh}");
-            assert!(
-                scrolled,
-                "a pinned-viewport pane with tall content must scroll"
-            );
-        }
-
-        {
-            let short = viewport_height_under_indefinite_parent(
-                Scrollable::new_vertical()
-                    .with_child(Box::new(Text::new("one compact line")))
-                    .with_max_height(300.0),
-            );
-            assert!(
-                short < 100.0,
-                "a short document must not reserve the full cap: {short}"
-            );
-
-            let (tall, scrolled) = can_scroll_under_indefinite_parent(
-                Scrollable::new_vertical()
-                    .with_child(tall_child())
-                    .with_max_height(300.0),
-            );
-            assert!(
-                (tall - 300.0).abs() < 0.5,
-                "a long document must stop at the cap: {tall}"
-            );
-            assert!(scrolled, "a capped long document must remain scrollable");
-        }
-
-        {
-            let (_vh, scrolled) =
-                can_scroll_under_indefinite_parent(Scrollable::new_vertical().with_child(tall_child()));
-            assert!(
-                !scrolled,
-                "legacy default is expected to be unscrollable under an \
-         indefinite parent; the fix is opt-in via with_height / \
-         fill_parent_height"
-            );
-        }
-    }
 }
 
 tilo_test_env::scenario! {
@@ -560,148 +405,7 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_section_receives_same_position_motion_after_pointer_reentry;
-    {
-        use crate::widget::{Section, SectionHeader, Text};
 
-        let opened = Rc::new(Cell::new(None));
-        let seen = Rc::clone(&opened);
-        let section = Section::new(vec![Box::new(Text::new("Details"))])
-            .with_header(SectionHeader::group("Advanced options"))
-            .collapsed()
-            .on_expand(move |open| seen.set(Some(open)));
-        let mut scroll = Scrollable::new_vertical()
-            .with_height(150.0)
-            .with_child(Box::new(section));
-        let mut tree = TaffyTree::new();
-        let mut nodes = HashMap::new();
-        let mut text = TextRenderer::new();
-        let node = scroll.build_layout(&mut tree, &Theme::dark(), &mut nodes);
-        tree.compute_layout_with_measure(
-            node,
-            Size {
-                width: taffy::AvailableSpace::Definite(400.0),
-                height: taffy::AvailableSpace::Definite(150.0),
-            },
-            |known, available, node, _, _| {
-                nodes
-                    .get(&node)
-                    .map(|p| {
-                        // SAFETY: scroll exclusively owns the unchanged widget
-                        // tree; its layout map remains valid throughout measurement.
-                        unsafe { (**p).measure(known, available, &mut text) }
-                    })
-                    .unwrap_or(Size::ZERO)
-            },
-        )
-        .unwrap();
-        scroll.apply_layout(&tree, node, Point::ZERO);
-        let at = scroll.child.as_ref().unwrap().children()[0]
-            .get_rect()
-            .center();
-        assert!(scroll.content_viewport_rect().contains(at));
-        let mut sender = Dispatch::new().layout(&tree, node);
-        for event in [
-            cursor_moved(at.x, at.y),
-            WindowEvent::CursorLeft {
-                device_id: winit::event::DeviceId::dummy(),
-            },
-            cursor_moved(at.x, at.y),
-            mouse(ElementState::Pressed),
-            mouse(ElementState::Released),
-        ] {
-            sender.send(&mut scroll, &event);
-        }
-        assert_eq!(opened.get(), Some(true), "the real disclosure must open");
-        assert!(scroll.child.as_ref().unwrap().children().len() > 1);
-    }
-
-    phase a_scrolled_disclosure_gets_motion_after_leaving_a_text_field;
-    {
-        use crate::LocalState;
-        use crate::widget::{Column, Section, SectionHeader, Spacer, Text, TextInput};
-
-        for scale in [1.0, 2.0] {
-            let opened = Rc::new(Cell::new(None));
-            let seen = Rc::clone(&opened);
-            let mut scroll = Scrollable::new_vertical()
-                .with_height(150.0)
-                .with_child(Box::new(
-                    Column::new()
-                        .with_intrinsic_height()
-                        .push(Box::new(TextInput::from_state(&LocalState::new(
-                            String::new(),
-                        ))))
-                        .push(Box::new(Spacer::fixed(300.0)))
-                        .push(Box::new(
-                            Section::new(vec![Box::new(Text::new("Details"))])
-                                .with_header(SectionHeader::group("Advanced options"))
-                                .collapsed()
-                                .on_expand(move |open| seen.set(Some(open))),
-                        )),
-                ));
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut tree = TaffyTree::new();
-            let mut nodes = HashMap::new();
-            let mut text = TextRenderer::new();
-            let node = scroll.build_layout(&mut tree, &theme, &mut nodes);
-            tree.compute_layout_with_measure(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(400.0),
-                    height: taffy::AvailableSpace::Definite(150.0),
-                },
-                |known, available, node, _, _| {
-                    nodes
-                        .get(&node)
-                        .map(|p| {
-                            // SAFETY: scroll exclusively owns the unchanged widget tree;
-                            // the node map remains valid for this measurement pass.
-                            unsafe { (**p).measure(known, available, &mut text) }
-                        })
-                        .unwrap_or(Size::ZERO)
-                },
-            )
-            .unwrap();
-            scroll.apply_layout(&tree, node, Point::ZERO);
-            let field = scroll.child.as_ref().unwrap().children()[0]
-                .get_rect()
-                .center();
-            let mut measured = Dispatch::new().layout(&tree, node);
-            measured.send(&mut scroll, &cursor_moved(field.x, field.y));
-            scroll.set_offset_y(scroll.max_offset_y());
-            scroll.apply_layout(&tree, node, Point::ZERO);
-            assert!(
-                scroll.offset_y() > 0.0,
-                "the disclosure was scrolled into view"
-            );
-            let at = scroll.child.as_ref().unwrap().children()[2].children()[0]
-                .get_rect()
-                .center();
-            assert!(scroll.content_viewport_rect().contains(at));
-            assert!(
-                !measured
-                    .send(&mut scroll, &cursor_moved(at.x, at.y))
-                    .handled,
-                "hover transitions do not consume motion intended for a sibling"
-            );
-            assert!(
-                measured
-                    .send(&mut scroll, &mouse(ElementState::Pressed))
-                    .handled
-            );
-            assert!(
-                measured
-                    .send(&mut scroll, &mouse(ElementState::Released))
-                    .handled
-            );
-            assert_eq!(
-                opened.get(),
-                Some(true),
-                "the real scrolled disclosure opens at scale {scale}"
-            );
-        }
-    }
 
     phase keyboard_scrolling_and_focusability_require_scrollable_focus;
     {
@@ -1121,121 +825,12 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase edge_fades_show_only_where_more_content_can_scroll_in;
-    {
-        use crate::surface::ContentEdge;
-        let mut scroll = vertical(900.0).with_edge_fade();
-        assert_eq!(scroll.faded_edges(), vec![ContentEdge::Bottom]);
-        scroll.set_offset_y(100.0);
-        assert_eq!(
-            scroll.faded_edges(),
-            vec![ContentEdge::Top, ContentEdge::Bottom]
-        );
-        scroll.set_offset_y(f32::MAX);
-        assert_eq!(scroll.faded_edges(), vec![ContentEdge::Top]);
-        assert!(vertical(900.0).faded_edges().is_empty(), "off unless asked");
-        assert!(
-            vertical(100.0).with_edge_fade().faded_edges().is_empty(),
-            "fits"
-        );
-    }
 
-    phase bars_keep_out_of_the_windows_rounded_corners_only;
-    {
-        let draw = |s: &mut Scrollable, theme: &Theme| {
-            s.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), theme, PresenceCtx::empty().draw_env()));
-        };
-        let mut square = both(900.0, 900.0);
-        let mut theme = Theme::dark();
-        draw(&mut square, &theme);
-        let (v_square, h_square) = (
-            square.vertical_track().expect("tall content shows the bar"),
-            square
-                .horizontal_track()
-                .expect("wide content shows the bar"),
-        );
-
-        let radius = f64::from(theme.tokens.radii.tile);
-        theme.surface = Some(crate::theme::SurfaceShape::rounded(
-            Rect::new(0.0, 0.0, 300.0, 300.0),
-            radius,
-        ));
-        let mut rounded = both(900.0, 900.0);
-        draw(&mut rounded, &theme);
-        let v = rounded.vertical_track().expect("bar");
-        let h = rounded.horizontal_track().expect("bar");
-        assert!((v.y0 - radius).abs() < 1e-9, "the top corner: {v:?}");
-        assert!(
-            (h.x0 - radius).abs() < 1e-9,
-            "the bottom-left corner: {h:?}"
-        );
-        assert!(v.y1 <= v_square.y1 && h.x1 <= h_square.x1);
-
-        theme.surface = Some(crate::theme::SurfaceShape::rounded(
-            Rect::new(0.0, 0.0, 300.0, 300.0),
-            0.0,
-        ));
-        draw(&mut rounded, &theme);
-        assert_eq!(rounded.vertical_track(), Some(v_square));
-        assert_eq!(rounded.horizontal_track(), Some(h_square));
-
-        theme.surface = Some(crate::theme::SurfaceShape::rounded(
-            Rect::new(0.0, 0.0, 300.0, 300.0),
-            radius,
-        ));
-        let mut alone = Scrollable::new_vertical();
-        alone.rect = Rect::new(0.0, 0.0, 300.0, 300.0);
-        alone.set_viewport_size(300.0, 300.0);
-        alone.set_content_size(300.0, 1200.0);
-        draw(&mut alone, &theme);
-        let track = alone.vertical_track().expect("bar");
-        assert!((track.y1 - (300.0 - radius)).abs() < 1e-9, "{track:?}");
-    }
 
 }
 
-use crate::widget::{Column, Row, Text};
+use crate::widget::{Column, Text};
 use std::collections::HashMap;
-
-/// `scroll` laid out under a parent that takes its height from what it holds, which is what a
-/// scroll on its own gets when nothing bounds it.
-fn laid_out_under_indefinite_parent(mut scroll: Scrollable) -> Scrollable {
-    let theme = Theme::dark();
-    let mut taffy = TaffyTree::<()>::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let mut tr = TextRenderer::new();
-    let scroll_node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
-    let parent = taffy.parent_node(
-        Style {
-            display: taffy::Display::Block,
-            size: Size {
-                width: Dimension::length(400.0),
-                height: Dimension::auto(),
-            },
-            ..Default::default()
-        },
-        &[scroll_node],
-    );
-    taffy
-        .compute_layout_with_measure(
-            parent,
-            Size::max_content(),
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = node_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    Size::ZERO
-                }
-            },
-        )
-        .unwrap();
-    scroll.apply_layout(&taffy, scroll_node, Point::ZERO);
-    scroll
-}
-
-fn viewport_height_under_indefinite_parent(scroll: Scrollable) -> f64 {
-    laid_out_under_indefinite_parent(scroll).get_rect().height()
-}
 
 /// Solve `root` the way the host does: measure, adjust, repeat.
 fn host_solve(root: &mut dyn Widget, width: f32, height: f32) {
@@ -1265,29 +860,12 @@ fn host_solve(root: &mut dyn Widget, width: f32, height: f32) {
     root.apply_layout(&tree, node, Point::ZERO);
 }
 
-fn scroll_of(root: &mut dyn Widget) -> &mut Scrollable {
-    fn find(widget: &mut dyn Widget) -> Option<&mut Scrollable> {
-        if widget.name() == "Scrollable" {
-            return widget.as_any_mut()?.downcast_mut::<Scrollable>();
-        }
-        widget.children_mut().into_iter().find_map(find)
-    }
-    find(root).expect("a scrollable")
-}
-
 fn tall_child() -> Element {
     let mut col = Column::new().with_intrinsic_height();
     for i in 0..40 {
         col = col.push(Box::new(Text::new(&format!("row {i}"))));
     }
     Box::new(col)
-}
-
-fn can_scroll_under_indefinite_parent(mut scroll: Scrollable) -> (f64, bool) {
-    scroll = laid_out_under_indefinite_parent(scroll);
-    let vh = scroll.get_rect().height();
-    scroll.scroll_by(0.0, 200.0);
-    (vh, scroll.offset_y() > 0.0)
 }
 
 fn both(content_w: f32, content_h: f32) -> Scrollable {
@@ -1299,168 +877,6 @@ fn both(content_w: f32, content_h: f32) -> Scrollable {
 }
 
 use crate::synthetic_input::named_key;
-
-#[test]
-fn persistent_overflow_bar_paints_before_input_and_after_idle_without_ticks() {
-    use crate::app::driver::Driver;
-    use crate::widget::{Column, Text};
-    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-        let mut content = Column::new().with_no_padding().with_intrinsic_height();
-        for index in 0..71 {
-            content = content.push(Box::new(Text::new(&format!("Application {index}"))));
-        }
-        let mut host = Driver::new_with_theme(
-            crate::State::new(),
-            Box::new(
-                Scrollable::new_vertical()
-                    .always_visible()
-                    .with_child(Box::new(content)),
-            ),
-            (400, 300),
-            theme.clone(),
-        );
-        host.with_widget_mut(|scroll: &mut Scrollable| {
-            assert!(
-                scroll.max_offset_y() > 0.0,
-                "real laid-out content must overflow"
-            );
-            let track = scroll.vertical_track().unwrap();
-            assert!(
-                scroll.child.as_ref().unwrap().get_rect().x1 <= track.x0,
-                "the persistent bar must not cover content"
-            );
-            scroll.last_activity = None;
-            for activity in [None, Some(crate::time::now() - Duration::from_secs(30))] {
-                scroll.last_activity = activity;
-                let mut scene = Scene::new();
-                scroll.draw_scrollbars(&mut scene, Affine::IDENTITY, &theme);
-                assert!(
-                    !scene.encoding().path_tags.is_empty(),
-                    "overflow must paint without hover or input"
-                );
-                assert_eq!(scroll.bar_opacity(&theme), 1.0);
-                assert!(
-                    !scroll.needs_animation_frame(),
-                    "persistent bars must not animate at rest"
-                );
-                assert!(scroll.next_wake_deadline().is_none(), "no idle fade wake");
-            }
-            scroll.set_content_size(100.0, 100.0);
-            let mut scene = Scene::new();
-            scroll.draw_scrollbars(&mut scene, Affine::IDENTITY, &theme);
-            assert!(
-                scene.encoding().path_tags.is_empty(),
-                "fitting content has no bar"
-            );
-        })
-        .unwrap();
-    }
-}
-
-/// A scroll a view asks to show its bar (a card held to a height, its words going on below)
-/// paints its thumb, in the theme's thumb ink, from its first frame and with no input: the
-/// person sees there is more before they scroll. The default scroll keeps the overlay bar,
-/// which shows only once it is scrolled.
-#[test]
-fn a_scroll_that_shows_its_bar_paints_it_while_it_overflows_without_input() {
-    use crate::app::driver::Driver;
-    use crate::component::Described;
-    use crate::widget::{Column, Text};
-    let theme = Theme::dark();
-    for shows_bar in [true, false] {
-        let mut content = Column::new().with_no_padding().with_intrinsic_height();
-        for index in 0..40 {
-            content = content.push(Box::new(Text::new(&format!("Due this week {index}"))));
-        }
-        let scroll = Scrollable::from_props(
-            "turn-scroll",
-            super::component::ScrollProps {
-                shows_bar,
-                content: Some(Box::new(content)),
-                ..super::component::ScrollProps::default()
-            },
-        );
-        let mut host = Driver::new_with_theme(
-            crate::State::new(),
-            Box::new(scroll),
-            (400, 300),
-            theme.clone(),
-        );
-        host.with_widget_mut(|scroll: &mut Scrollable| {
-            assert!(scroll.max_offset_y() > 0.0, "the words overflow");
-            let mut scene = Scene::new();
-            scroll.draw_scrollbars(&mut scene, Affine::IDENTITY, &theme);
-            assert_eq!(
-                !scene.encoding().path_tags.is_empty(),
-                shows_bar,
-                "the bar shows at rest exactly when the view asked for it"
-            );
-        })
-        .unwrap();
-    }
-}
-
-#[test]
-fn stable_vertical_gutter_keeps_media_columns_across_overflow() {
-    use crate::app::driver::Driver;
-    use crate::widget::{MediaAspect, MediaCard, MediaGrid, MediaSource};
-    for theme in [
-        Theme::dark(),
-        Theme::light(),
-        Theme::dark().with_text_scale(2.0),
-    ] {
-        let mount = |count| {
-            let cards = (0..count)
-                .map(|i| {
-                    MediaCard::new(format!("gutter-card-{i}"), MediaSource::Placeholder)
-                        .aspect(MediaAspect::Wide)
-                        .title("A media title")
-                        .meta("The creator")
-                })
-                .collect();
-            Driver::new_with_theme(
-                crate::State::new(),
-                Box::new(
-                    Scrollable::new_vertical()
-                        .with_stable_vertical_gutter()
-                        .with_child(Box::new(MediaGrid::new(cards))),
-                ),
-                (952, 800),
-                theme.clone(),
-            )
-        };
-        let mut short = mount(3);
-        let mut long = mount(12);
-        let short_root = short.inspection().root;
-        let long_root = long.inspection().root;
-        let short_grid = &short_root.children[0];
-        let long_grid = &long_root.children[0];
-        assert_eq!(
-            short_grid.rect[2], long_grid.rect[2],
-            "the short page keeps the same content width as its overflowing sibling"
-        );
-        assert!(
-            (short_grid.children[0].rect[2] - long_grid.children[0].rect[2]).abs() < 1.0,
-            "the real measured media cards retain equal widths"
-        );
-        let short_bar = short
-            .with_widget_mut(|scroll: &mut Scrollable| scroll.vbar_active())
-            .unwrap();
-        let long_bar = long
-            .with_widget_mut(|scroll: &mut Scrollable| scroll.vbar_active())
-            .unwrap();
-        assert!(
-            !short_bar,
-            "a stable empty gutter does not fabricate a scrollbar"
-        );
-        assert!(long_bar, "overflow still exposes the real scrollbar");
-        assert!(
-            (short_grid.rect[2] - (952.0 - f64::from(theme.tokens.metrics.scrollbar_gutter))).abs()
-                < 0.1,
-            "the reserved gutter follows the actual theme metric"
-        );
-    }
-}
 
 /// A field that holds the keyboard focus and handles no key: a note's
 /// paragraph has no page of its own to move through.

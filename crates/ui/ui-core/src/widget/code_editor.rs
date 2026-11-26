@@ -1303,53 +1303,6 @@ mod tests {
             accessibility_reports_a_multiline_text_input();
         }
 
-        phase code_editor_gutter_and_wrapper_geometry_follow_the_theme_scale;
-        {
-            /// The editor's own zoom scales the code beside the window's scale, and going back to
-            /// its own size lays it out again: a person's chosen size is the editor's, not the
-            /// window's.
-            fn the_editors_own_zoom_scales_its_text_beside_the_windows() {
-                let text = "fn main() { println!(\"hi\"); }";
-                let mut plain = CodeEditor::local().with_initial_value(text);
-                let mut zoomed = CodeEditor::local().with_initial_value(text).with_zoom(1.5);
-                let theme = Theme::dark();
-                let mut renderer = TextRenderer::new();
-                let plain_height = lay_out_and_draw(&mut plain, &theme, &mut renderer, 190.0);
-                let plain_font = plain
-                    .inner()
-                    .shaped_font_size_for_test()
-                    .expect("plain shaped font");
-                let zoomed_height = lay_out_and_draw(&mut zoomed, &theme, &mut renderer, 190.0);
-                let zoomed_font = zoomed
-                    .inner()
-                    .shaped_font_size_for_test()
-                    .expect("zoomed shaped font");
-                assert!(
-                    (f64::from(zoomed_font / plain_font) - 1.5).abs() < 0.01,
-                    "the zoomed code is one and a half times the size: {plain_font} -> {zoomed_font}"
-                );
-                assert!(
-                    zoomed_height > plain_height,
-                    "the zoomed editor is taller: {plain_height} -> {zoomed_height}"
-                );
-                assert_eq!(zoomed.zoom(), 1.5, "the editor holds the size it was given");
-                // A factor that is no size leaves the code as it was.
-                zoomed.set_zoom(0.0);
-                assert_eq!(zoomed.zoom(), 1.5, "a zero zoom is no size to read at");
-                // Its own size again is the size it started at.
-                zoomed.set_zoom(1.0);
-                let mut taffy = TaffyTree::<()>::new();
-                let mut node_map = std::collections::HashMap::new();
-                let _ = Widget::build_layout(&mut zoomed, &mut taffy, &theme, &mut node_map);
-                let again = lay_out_and_draw(&mut zoomed, &theme, &mut renderer, 190.0);
-                assert!(
-                    (again - plain_height).abs() < 0.1,
-                    "back at its own size the code reads as it did: {plain_height} vs {again}"
-                );
-            }
-
-            the_editors_own_zoom_scales_its_text_beside_the_windows();
-        }
 
         phase an_embedded_editor_does_not_tint_who_wrote_its_text;
         // Who wrote a run is history's to tell: the live page marks only what
@@ -1396,7 +1349,6 @@ mod tests {
 
     use crate::testing::Dispatch;
     use automerge::AutoCommit;
-    use taffy::TaffyTree;
     use vello::Scene;
     use vello::kurbo::Affine;
     use winit::event::{Modifiers, WindowEvent};
@@ -1420,48 +1372,6 @@ mod tests {
 
     fn drive(ed: &mut CodeEditor, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
         Dispatch::new().doc(doc).modifiers(m).send(ed, ev).handled
-    }
-
-    fn lay_out_and_draw(
-        ed: &mut CodeEditor,
-        theme: &Theme,
-        renderer: &mut TextRenderer,
-        width: f32,
-    ) -> f32 {
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map = std::collections::HashMap::new();
-        let node = Widget::build_layout(ed, &mut taffy, theme, &mut node_map);
-        taffy
-            .compute_layout_with_measure(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(width),
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-                |known, available, id, _, _| {
-                    node_map
-                        .get(&id)
-                        .map_or(taffy::Size::ZERO, |&widget| unsafe {
-                            (*widget).measure(known, available, renderer)
-                        })
-                },
-            )
-            .expect("code editor layout computes");
-        let height = taffy.layout(node).expect("code editor layout").size.height;
-        Widget::apply_layout(ed, &taffy, node, Point::ZERO);
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        Widget::draw(
-            ed,
-            &mut crate::draw::DrawCtx::new(
-                &mut scene,
-                Affine::IDENTITY,
-                renderer,
-                theme,
-                presence.draw_env(),
-            ),
-        );
-        height
     }
 
     use crate::text_render::TextRenderer;

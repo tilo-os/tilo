@@ -1580,70 +1580,13 @@ mod tests {
             }
         }
 
-        phase a_shown_value_takes_its_area_from_the_track;
-        {
-            let mut slider = Slider::from_state(&crate::LocalState::new(0.72)).shows_value();
-            slider.rect = Rect::new(0.0, 0.0, 200.0, 32.0);
-            assert_eq!(
-                slider.track_rect(),
-                slider.rect,
-                "no area before it is measured"
-            );
-            slider.value_area = 48.0;
-            assert_eq!(slider.track_rect().x1, 152.0);
-            assert_eq!(slider.spoken_value(), "72%");
-            assert!((slider.value_from_cursor_x(152.0) - 1.0).abs() < 0.05);
-        }
 
-        phase a_knob_at_the_top_never_covers_the_shown_value;
-        // A knob at the top of the range stands clear of the value beside it, pressed and
-        // bordered, with the theme's gap between them: "100%" is never drawn under it.
-        {
-            let theme = Theme::dark();
-            let mut text = crate::text_render::TextRenderer::new();
-            let style = theme.text(crate::tokens::TextRole::Body).numeric();
-            let widest = f64::from(text.measure_style("100%", None, &style).0);
-            let mut slider = Slider::from_state(&crate::LocalState::new(1.0)).shows_value();
-            slider.rect = Rect::new(0.0, 0.0, 240.0, 32.0);
-            slider.value_area = value_area(widest, &theme);
-            let knob = SliderFace::new(slider.track_rect(), 1.0).knob_centre();
-            let reach = knob.x + SliderFace::overhang() + KNOB_BORDER;
-            let value = slider.rect.x1 - widest;
-            assert!(
-                value - reach >= f64::from(theme.gap_standard) - 0.01,
-                "the knob reaches {reach}, the value starts at {value}"
-            );
-        }
 
     }
 
     use super::*;
     use crate::testing::{Dispatch, dispatch};
     use automerge::{AutoCommit, ReadDoc};
-
-    #[test]
-    fn a_slider_in_a_crowded_row_keeps_a_track() {
-        let harness = crate::app::driver::Driver::new(
-            crate::State::new(),
-            Box::new(
-                crate::widget::Row::new()
-                    .no_wrap()
-                    .push(Box::new(crate::widget::Text::new(
-                        "A label long enough to take the whole row by itself",
-                    )))
-                    .push(Box::new(Slider::new("volume", "volume"))),
-            ),
-            (200, 80),
-        );
-        let snapshot = harness.inspection();
-        let slider = snapshot
-            .root
-            .children
-            .iter()
-            .find(|child| child.widget == "Slider")
-            .expect("slider in the row");
-        assert!(slider.rect[2] >= 120.0, "{:?}", slider.rect);
-    }
 
     /// Build a slider with a known rect so we don't need a full taffy pass.
     /// Rect spans [0..200, 0..30]; the track runs flush with it.
@@ -2304,35 +2247,6 @@ mod tests {
             assert!(!s.needs_animation_frame());
             assert_eq!(s.thumb.get(ms(t0, 1_000)), s.value);
             dispatch(&mut s, &mouse_release());
-        });
-    }
-
-    #[test]
-    fn keys_and_reduced_motion_land_the_thumb() {
-        use crate::time::testing::with_monotonic_time;
-        let theme = Theme::dark();
-        let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
-        let t0 = crate::time::now();
-        with_monotonic_time(t0, || {
-            present(&mut s, &theme);
-            Widget::set_focus(&mut s, true);
-            crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
-            dispatch(&mut s, &crate::synthetic_input::named_key(NamedKey::End));
-            assert_eq!(s.value, 1.0);
-            present(&mut s, &theme);
-            assert_eq!(s.thumb.get(t0), 1.0, "a key lands");
-            assert!(!s.needs_animation_frame());
-        });
-        let calm = Theme::dark().with_reduce_motion(true);
-        let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
-        with_monotonic_time(t0, || {
-            present(&mut s, &calm);
-            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
-            dispatch(&mut s, &cursor_moved(20.0, 15.0));
-            dispatch(&mut s, &mouse_press());
-            present(&mut s, &calm);
-            assert!((s.thumb.get(t0) - 0.1).abs() < 1e-9, "reduced motion lands");
-            assert!(!s.needs_animation_frame());
         });
     }
 

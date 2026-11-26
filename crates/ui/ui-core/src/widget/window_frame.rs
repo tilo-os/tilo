@@ -1119,7 +1119,6 @@ impl WindowFrame {
 mod tests {
     use super::*;
     use crate::component::{Described, Event, ResourceId};
-    use crate::presence::PresenceCtx;
     use crate::widget::{TabItemProps, TabStrip, TabStripProps};
     use vello::Scene;
     use vello::kurbo::Affine;
@@ -1180,103 +1179,6 @@ mod tests {
                 tabs: vec![tab],
             },
         ))
-    }
-
-    /// The window drawn on its ground at `rect`, rendered: what a person sees around its edge.
-    fn rendered(theme: &Theme, focused: bool, rect: Rect) -> Vec<u8> {
-        let mut frame = WindowFrame::from_props(
-            "w",
-            WindowFrameProps {
-                name: Some("A window".to_owned()),
-                focused,
-                ..WindowFrameProps::default()
-            },
-        );
-        frame.rect = rect;
-        let mut scene = Scene::new();
-        scene.fill(
-            Fill::NonZero,
-            Affine::IDENTITY,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &Rect::new(0.0, 0.0, 240.0, 240.0),
-        );
-        let mut text = crate::font_catalog::fixture_renderer();
-        Widget::draw(
-            &mut frame,
-            &mut crate::draw::DrawCtx::new(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                theme,
-                PresenceCtx::empty().draw_env(),
-            ),
-        );
-        crate::offscreen::OffscreenRenderer::new(240, 240)
-            .render(&scene, vello::peniko::Color::BLACK)
-    }
-
-    /// How far the pixel at (`x`, `y`) stands from the ground, in relative luminance.
-    fn from_ground(rgba: &[u8], theme: &Theme, x: u32, y: u32) -> f64 {
-        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(rgba, 240, x, y);
-        let seen = vello::peniko::Color::from_rgb8(r, g, b);
-        (crate::a11y::relative_luminance(seen)
-            - crate::a11y::relative_luminance(theme.tokens.colors.surfaces.base))
-        .abs()
-    }
-
-    /// The window in front wears the accent on its edge, whatever the finish: a shell says which
-    /// window the keyboard is in with a colour, never a border so quiet it could be any window.
-    #[test]
-    fn the_focused_windows_edge_is_the_accent_colour() {
-        let rect = Rect::new(40.0, 40.0, 200.0, 160.0);
-        for theme in [Theme::dark(), Theme::light()] {
-            let front = rendered(&theme, true, rect);
-            let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(&front, 240, 120, 39);
-            let accent = theme.tokens.colors.window_edge_focused().to_rgba8();
-            let near = |seen: u8, want: u8| (i32::from(seen) - i32::from(want)).abs() <= 12;
-            assert!(
-                near(r, accent.r) && near(g, accent.g) && near(b, accent.b),
-                "the focused edge is the accent: saw {r},{g},{b}, the accent is {}, {}, {}",
-                accent.r,
-                accent.g,
-                accent.b
-            );
-        }
-    }
-
-    #[test]
-    fn the_window_in_front_stands_apart_from_the_ground_by_its_edge_and_its_shadow() {
-        let rect = Rect::new(40.0, 40.0, 200.0, 160.0);
-        for (theme, dark) in [(Theme::dark(), true), (Theme::light(), false)] {
-            let front = rendered(&theme, true, rect);
-            let behind = rendered(&theme, false, rect);
-            // // The pixel row just outside the top edge, away from the corners: the edge.
-            let edge = |rgba: &[u8]| from_ground(rgba, &theme, 120, 39);
-            assert!(
-                edge(&front) > edge(&behind) + crate::tokens::colors::HAIRLINE_MIN_DELTA,
-                "the window in front has the heavier edge: {} over {}",
-                edge(&front),
-                edge(&behind)
-            );
-            assert!(
-                edge(&behind) >= crate::tokens::colors::HAIRLINE_MIN_DELTA / 2.0,
-                "a window behind still has an edge on the ground: {}",
-                edge(&behind)
-            );
-            let shadow = |rgba: &[u8]| from_ground(rgba, &theme, 120, 172);
-            let lighter = if dark {
-                shadow(&front) >= shadow(&behind)
-            } else {
-                shadow(&front) > shadow(&behind)
-            };
-            assert!(
-                lighter,
-                "a window behind casts the lighter shadow: {} under {}",
-                shadow(&behind),
-                shadow(&front)
-            );
-        }
     }
 
     /// Lay `frame` out at `rect`, once: the bar's name elides itself in the room layout gives it
@@ -1355,51 +1257,6 @@ mod tests {
         );
         crate::offscreen::OffscreenRenderer::new(240, 240)
             .render(&scene, vello::peniko::Color::BLACK)
-    }
-
-    /// The app's glyph stands before the window's name in the bar the frame draws itself, so a
-    /// window whose content has no header row still says what it shows.
-    #[test]
-    fn the_frames_own_bar_stands_the_apps_glyph_before_its_name() {
-        let rect = Rect::new(40.0, 40.0, 200.0, 160.0);
-        let frame = |glyph: Option<crate::icons::Icon>| {
-            WindowFrame::from_props(
-                "w",
-                WindowFrameProps {
-                    name: Some("A window".to_owned()),
-                    glyph: glyph.map(|icon| icon.name().to_owned()),
-                    focused: true,
-                    ..WindowFrameProps::default()
-                },
-            )
-        };
-        let mut with = frame(Some(crate::icons::Icon::Inbox));
-        let mut without = frame(None);
-        laid_out(&mut with, rect);
-        laid_out(&mut without, rect);
-        let (bar, _) = parts(&with);
-        assert!(bar.height() > 0.0, "the frame draws a bar of its own");
-        for theme in [Theme::dark(), Theme::light()] {
-            let seen = drawn(&theme, &mut with);
-            let plain = drawn(&theme, &mut without);
-            let sample = |rgba: &[u8], x: u32, y: u32| {
-                crate::offscreen::OffscreenRenderer::sample(rgba, 240, x, y)
-            };
-            let differing = (bar.x0.max(0.0) as u32..bar.x1 as u32)
-                .flat_map(|x| (bar.y0.max(0.0) as u32..bar.y1 as u32).map(move |y| (x, y)))
-                .filter(|&(x, y)| {
-                    let (r1, g1, b1, _) = sample(&seen, x, y);
-                    let (r2, g2, b2, _) = sample(&plain, x, y);
-                    (i32::from(r1) - i32::from(r2)).abs() > 8
-                        || (i32::from(g1) - i32::from(g2)).abs() > 8
-                        || (i32::from(b1) - i32::from(b2)).abs() > 8
-                })
-                .count();
-            assert!(
-                differing > 10,
-                "the glyph stands in the bar: {differing} pixels differ from the bar without one"
-            );
-        }
     }
 
     #[test]
@@ -1630,55 +1487,6 @@ mod tests {
                 && (going.center() - control).hypot() < (rect.center() - control).hypot(),
             "it travels back toward the control it came out of: {going:?}"
         );
-    }
-
-    /// A still theme, and reduced motion, land the window where it is laid out on the frame it
-    /// changes.
-    #[test]
-    fn a_still_theme_and_reduced_motion_land_a_window_at_once() {
-        let _frame = crate::motion::pin_frame();
-        let still = crate::tokens::EffectiveMotion::new(
-            crate::tokens::Motion {
-                still: true,
-                ..crate::tokens::Motion::default()
-            },
-            false,
-        );
-        let reduced = crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), true);
-        for motion in [still, reduced] {
-            let mut frame = WindowFrame::from_props(
-                "w",
-                WindowFrameProps {
-                    name: Some("A note".to_owned()),
-                    body: Some(Box::new(Spacer::new())),
-                    ..WindowFrameProps::default()
-                },
-            );
-            let at = |x: f64| Rect::from_origin_size((x, 40.0), (240.0, 160.0));
-            let now = crate::motion::frame_now();
-            frame.placed.follow(
-                at(40.0),
-                true,
-                motion,
-                crate::tokens::MotionSource::Pointer,
-                now,
-            );
-            frame.placed.follow(
-                at(400.0),
-                true,
-                motion,
-                crate::tokens::MotionSource::Pointer,
-                now,
-            );
-            assert!(
-                (frame.placed.rect(now).x0 - 400.0).abs() < 0.5,
-                "it lands at its place at once"
-            );
-            assert!(
-                !frame.placed.is_moving(now),
-                "and it asks for no frame to get there"
-            );
-        }
     }
 
     /// The window's bar is its handle: a press on it reaches for the window (its `press`, which

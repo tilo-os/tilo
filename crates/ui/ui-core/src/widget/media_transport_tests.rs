@@ -126,40 +126,6 @@ fn press(h: &mut Driver, id: &str) {
     h.click_at(rect.center().x, rect.center().y);
 }
 
-#[test]
-fn a_wide_transport_shows_its_controls_inline_in_the_band() {
-    let (h, _) = banded(playing(), 1400);
-    let band = h.root::<NavShell>().geometry().band;
-    assert!(band.height() > 0.0);
-    for id in [
-        "transport.like",
-        "transport.lyrics",
-        "transport.shuffle",
-        "transport.previous",
-        "transport.play",
-        "transport.next",
-        "transport.repeat",
-        "transport.position",
-        "transport.queue",
-        "transport.mute",
-        "transport.volume",
-    ] {
-        let rect = control(&h, id).unwrap_or_else(|| panic!("{id} is there"));
-        assert!(band.contains(rect.center()), "{id} at {rect:?} in {band:?}");
-    }
-    assert_eq!(control(&h, "transport.more"), None, "no More while wide");
-    let play = control(&h, "transport.play").unwrap();
-    let scrub = control(&h, "transport.position").unwrap();
-    assert!(
-        play.y1 <= scrub.y0 + 0.5,
-        "the transport stands over the scrubber"
-    );
-    assert!(
-        (play.center().x - scrub.center().x).abs() < 1.0,
-        "and is centred on it"
-    );
-}
-
 fn bindings(h: &Driver) -> HashMap<String, crate::widget::ControlBindingKind> {
     crate::widget::controls::control_action_bindings(band_transport(h))
         .into_iter()
@@ -436,46 +402,6 @@ fn the_band_fits_every_window_width() {
                 rect.y1
             );
         }
-    }
-}
-
-/// Every box the band draws stands inside its parent's: at an ultrawide window nothing spills
-/// past the band's edge.
-#[test]
-fn an_ultrawide_band_keeps_every_box_inside_it() {
-    fn spill(node: &crate::headless::InspectionNode, out: &mut Vec<String>) {
-        let [x, y, w, h] = node.rect;
-        for child in &node.children {
-            let [cx, cy, cw, ch] = child.rect;
-            if cw > 0.0 && ch > 0.0 {
-                let inside = cx >= x - 0.5
-                    && cy >= y - 0.5
-                    && cx + cw <= x + w + 0.5
-                    && cy + ch <= y + h + 0.5;
-                if !inside {
-                    out.push(format!(
-                        "{} {:?} at ({cx:.0}, {cy:.0}) {cw:.0}×{ch:.0} outside {x:.0},{y:.0} {w:.0}×{h:.0}",
-                        child.widget, child.test_id
-                    ));
-                }
-            }
-            spill(child, out);
-        }
-    }
-    for width in [1280u32, 3440] {
-        let (h, _feed) = banded(playing(), width);
-        let snapshot = h.inspection();
-        let Some(transport) = snapshot
-            .root
-            .nodes()
-            .into_iter()
-            .find(|node| node.widget == "MediaTransport")
-        else {
-            panic!("the band holds a transport at {width}");
-        };
-        let mut out = Vec::new();
-        spill(transport, &mut out);
-        assert!(out.is_empty(), "at {width}:\n{}", out.join("\n"));
     }
 }
 

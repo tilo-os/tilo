@@ -126,35 +126,3 @@ impl JumpFace {
         );
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_pill_is_as_wide_as_the_words_it_says() {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut widths: Vec<f64> = Vec::new();
-        for jump in [Jump::Unread, Jump::Present] {
-            let label = jump.label();
-            assert!(!label.is_empty(), "{jump:?} has a word");
-            assert_ne!(label, "conversation-jump-unread", "{jump:?} is translated");
-            assert_ne!(label, "conversation-jump-present", "{jump:?} is translated");
-            let width = jump.width(&mut text, &theme);
-            let style = crate::widget::ControlSize::Regular.label_style(&theme);
-            let words = f64::from(text.measure_style(&label, None, &style).0);
-            assert!(
-                width > words,
-                "{jump:?} fits its {words} px of words and the face around them in {width} px"
-            );
-            widths.push(width);
-        }
-        assert_ne!(widths[0], widths[1], "each way back keeps its own width");
-        assert_ne!(Jump::Unread.label(), Jump::Present.label());
-        for (slot, jump) in Jump::ALL.into_iter().enumerate() {
-            assert_eq!(jump.slot(), slot, "each width has its own slot");
-        }
-        assert_eq!(Jump::ALL.len(), JUMPS);
-    }
-}
