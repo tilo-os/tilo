@@ -4319,11 +4319,7 @@ impl Hosted {
             return;
         }
         let _phase = tilo_resource::profiling::Phase::start("tl.host.publish");
-        let resources = if surface.everything {
-            surface.resources(None)
-        } else {
-            surface.resources(Some(&shown))
-        };
+        let resources = surface.resources((!surface.everything).then_some(shown.as_slice()));
         let handlers: HashSet<String> = HashSet::from([
             <HostEffect as tilo_resource::Effect>::OPERATION.to_owned(),
             <OpenEffect as tilo_resource::Effect>::OPERATION.to_owned(),

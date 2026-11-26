@@ -732,13 +732,6 @@ mod tests {
             sent
         }
 
-        fn answer(&self, calls: &mut Calls, correlation: u64, result: Result<Snapshot, String>) {
-            calls.answers([(
-                correlation,
-                result.map_err(|why| ActionCallError::Unavailable { reason: why }),
-            )]);
-        }
-
         /// The correlation of the last request that answers `wanted`.
         fn correlation_of(&self, wanted: impl Fn(&Request) -> bool) -> u64 {
             self.asked
@@ -762,8 +755,8 @@ mod tests {
         line.say(calls)
     }
 
-    fn answer(calls: &mut Calls, line: &Line, correlation: u64, snapshot: Snapshot) {
-        line.answer(calls, correlation, Ok(snapshot));
+    fn answer(calls: &mut Calls, correlation: u64, snapshot: Snapshot) {
+        calls.answers([(correlation, Ok(snapshot))]);
     }
 
     fn picture(person: &str, source: PictureSource, byte: u8) -> Picture {
@@ -792,7 +785,7 @@ mod tests {
             let mut calls = Calls::new(ME);
             let mut line = Line::default();
             let id = joined(&mut calls, &mut line);
-            answer(&mut calls, &line, id, snapshot(State::Live, channel_call(true, false)));
+            answer(&mut calls, id, snapshot(State::Live, channel_call(true, false)));
             let requests = sent(&mut calls, &mut line);
             assert!(
                 requests.iter().any(|request| matches!(
@@ -830,7 +823,7 @@ mod tests {
             let id = joined(&mut calls, &mut line);
             let mut local = snapshot(State::Live, channel_call(true, false));
             local.pictures_local = true;
-            answer(&mut calls, &line, id, local);
+            answer(&mut calls, id, local);
             let requests = sent(&mut calls, &mut line);
             assert!(
                 requests.iter().any(|request| matches!(
@@ -858,7 +851,7 @@ mod tests {
             let mut calls = Calls::new(ME);
             let mut line = Line::default();
             let id = joined(&mut calls, &mut line);
-            answer(&mut calls, &line, id, snapshot(State::Live, channel_call(true, true)));
+            answer(&mut calls, id, snapshot(State::Live, channel_call(true, true)));
             let requests = sent(&mut calls, &mut line);
             let collect = requests
                 .iter()
@@ -873,7 +866,7 @@ mod tests {
             let mut with_pictures = snapshot(State::Live, channel_call(true, true));
             with_pictures.pictures = vec![picture(ADA, PictureSource::Camera, 7)];
             with_pictures.pictures_cursor = 1;
-            answer(&mut calls, &line, request_id, with_pictures);
+            answer(&mut calls, request_id, with_pictures);
 
             let window = calls.take_window_message().expect("the picture reaches the window");
             let ToUi::CallPictures { pictures, .. } = window else {
@@ -921,7 +914,7 @@ mod tests {
                 },
             ];
             live.camera_id = Some("video0".to_owned());
-            answer(&mut calls, &line, id, live);
+            answer(&mut calls, id, live);
             sent(&mut calls, &mut line);
 
             let target = ResourceRef::root("voice:standup", "call");
@@ -976,11 +969,8 @@ mod tests {
             let mut calls = Calls::new(ME);
             let mut line = Line::default();
             let id = joined(&mut calls, &mut line);
-            line.answer(
-                &mut calls,
-                id,
-                Err("this app may not join this workspace's calls".to_owned()),
-            );
+            let reason = "this app may not join this workspace's calls".to_owned();
+            calls.answers([(id, Err(ActionCallError::Unavailable { reason }))]);
             assert!(!calls.joined(), "a refused join leaves no call");
             assert_eq!(
                 calls.refused.as_deref(),
@@ -1006,7 +996,7 @@ mod tests {
             let mut calls = Calls::new(ME);
             let mut line = Line::default();
             let id = joined(&mut calls, &mut line);
-            answer(&mut calls, &line, id, snapshot(State::Live, channel_call(true, false)));
+            answer(&mut calls, id, snapshot(State::Live, channel_call(true, false)));
             sent(&mut calls, &mut line);
             let showing = calls.take_window_message().expect("the window shows the tile");
             let ToUi::CallPictures { shown, .. } = showing else {

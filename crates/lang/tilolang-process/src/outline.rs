@@ -81,17 +81,17 @@ pub fn read(instance: &Instance) -> tilo_actions::ActionOutput {
         } = message
         {
             reading.protected = *capture_protected;
-            let shows = reading.address(&target.id);
+            let address = reading.address(&target.id);
             let level_name = match level {
                 Level::Root => "window",
                 Level::Detail => "detail",
             };
-            reading.line(0, &format!("{level_name} shows {shows}"));
+            reading.line(0, &format!("{level_name} shows {address}"));
             let mut children = Vec::new();
             reading.node(*level, view, 1, &mut children);
             tree.push(serde_json::json!({
                 "role": level_name,
-                "resource": shows,
+                "resource": address,
                 "children": children,
             }));
         }
@@ -149,10 +149,10 @@ impl Reading<'_> {
 
     fn line(&mut self, depth: usize, words: &str) -> bool {
         if self.lines >= MAX_LINES {
-            self.omitted += 1;
+            self.omitted = self.omitted.saturating_add(1);
             return false;
         }
-        self.lines += 1;
+        self.lines = self.lines.saturating_add(1);
         let _ = writeln!(self.text, "{}{words}", "  ".repeat(depth));
         true
     }
@@ -162,9 +162,9 @@ impl Reading<'_> {
         let read = self.read(level, node);
         let (depth, into) = match &read {
             Some(read) if self.line(depth, &read.line()) => {
+                let at = tree.len();
                 tree.push(read.json());
-                let at = tree.len() - 1;
-                (depth + 1, Some(at))
+                (depth.saturating_add(1), Some(at))
             }
             Some(_) => return,
             None => (depth, None),
@@ -302,20 +302,21 @@ impl Read {
     }
 
     fn json(&self) -> serde_json::Value {
-        let mut node = serde_json::json!({ "role": self.role });
+        let mut node = serde_json::Map::new();
+        node.insert("role".into(), self.role.clone().into());
         if let Some(name) = &self.name {
-            node["name"] = name.clone().into();
+            node.insert("name".into(), name.clone().into());
         }
         if let Some(value) = &self.value {
-            node["value"] = value.clone().into();
+            node.insert("value".into(), value.clone().into());
         }
         if !self.state.is_empty() {
-            node["state"] = self.state.clone().into();
+            node.insert("state".into(), self.state.clone().into());
         }
         if !self.actions.is_empty() {
-            node["actions"] = self.actions.clone().into();
+            node.insert("actions".into(), self.actions.clone().into());
         }
-        node
+        node.into()
     }
 }
 

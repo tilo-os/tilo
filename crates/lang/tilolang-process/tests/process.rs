@@ -2614,7 +2614,7 @@ fn notes_bundle() -> Bundle {
     let notes_source = include_str!("../../../../apps/tl/notes/app.tl");
     let mut imports = tilolang_tilo::platform_apps::named_platform_packages(notes_source)
         .expect("the platform's packages read");
-    imports.push(discussion.meta.clone());
+    imports.push(discussion.meta);
     let compiled = compile(notes_source, &lock, &imports)
         .unwrap_or_else(|diagnostics| panic!("the notes app compiles: {diagnostics:?}"));
     Bundle::new(&compiled, [])
