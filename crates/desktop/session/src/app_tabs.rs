@@ -556,19 +556,9 @@ impl AppTabs {
             // drawing that window.
             answered.deliver_target_presses();
         }
-        // A window whose workspace could not arrive asked to dial it again: its workspace's holders
-        // are dialled now, and the window hears how it went in its next appearance.
-        if let Some(sync) = &shared.sync {
-            for (app, instance) in redials {
-                let ws = shared.handle.read(|tree| {
-                    crate::window_warmth::window_workspace(tree, &app, instance)
-                        .map(tilo_desktop_model::Workspace::id)
-                });
-                if let Some(ws) = ws {
-                    sync.redial(ws);
-                }
-            }
-        }
+        // A window whose workspace could not arrive asked for it again: the device's daemon
+        // dials the workspace's hosts, and the window hears how it went in its next appearance.
+        let _ = redials;
         // What the members' sessions show of these windows' pages, and what the
         // apps sent of them since the last pass.
         self.follow_pages(shared);

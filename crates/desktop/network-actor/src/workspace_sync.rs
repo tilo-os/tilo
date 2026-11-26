@@ -129,7 +129,7 @@ pub fn other_version(ws: WorkspaceId, theirs: u32) {
 /// not yet synced: no host of the workspace carries them now, or the host
 /// did not keep them. Whether that changed what the workspace's apps are
 /// told.
-pub(crate) fn unsynced(ws: WorkspaceId, count: usize) -> bool {
+pub fn unsynced(ws: WorkspaceId, count: usize) -> bool {
     let count = u32::try_from(count).unwrap_or(u32::MAX);
     let mut unsynced = UNSYNCED.lock_recover();
     let before = if count == 0 {

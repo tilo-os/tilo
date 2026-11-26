@@ -29,12 +29,12 @@ use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
 use tilo_app_host::clipboard_continuity::{Reading, RemoteCopy};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::FOLLOW_DEADLINE;
-use tilo_workspace_service::workspaces::PersonResources;
 use tilo_workspace_service::workspaces::person_workspace::devices::KeyKind;
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 use super::reading::{Changes, Read, Served};
-use super::workspaces::ServiceWorkspaces;
+use super::workspaces::{ServiceWorkspaces, block_on_owned};
+use tilo_workspace_service::workspaces::person_workspace;
 
 /// The provider the copies are answered under on this device's dispatch and by another of the
 /// person's devices over the action service.
@@ -87,8 +87,8 @@ pub(crate) struct Clipboard {
 
 struct Inner {
     workspaces: Arc<ServiceWorkspaces>,
-    /// The person's devices, as their own workspace lists them: whom a copy goes to.
-    personal: PersonResources,
+    /// The person this device's person is: whose devices a copy goes to.
+    person: [u8; 32],
     state: Mutex<State>,
     /// Moves with every change of the state: what a reading follows.
     changed: tokio::sync::watch::Sender<u64>,
@@ -148,13 +148,14 @@ impl Copy {
 }
 
 impl Clipboard {
-    /// The copies the person's devices share with this one, kept in `personal`.
-    pub(crate) fn new(workspaces: &Arc<ServiceWorkspaces>, personal: PersonResources) -> Arc<Self> {
+    /// The copies the person's devices share with this one, kept in the person's own record,
+    /// which this device's daemon keeps.
+    pub(crate) fn new(workspaces: &Arc<ServiceWorkspaces>) -> Arc<Self> {
         let (changed, _) = tokio::sync::watch::channel(0);
         Arc::new(Self {
             inner: Arc::new(Inner {
                 workspaces: Arc::clone(workspaces),
-                personal,
+                person: workspaces.device_cert().user_public_key,
                 state: Mutex::new(State::default()),
                 changed,
                 resources: resources(),
@@ -248,6 +249,18 @@ impl Clipboard {
             .to_string()
     }
 
+    /// The person's devices as their record lists them, and where each answers: the record is
+    /// this device's daemon's, read where it keeps it.
+    fn device_endpoints(&self) -> Vec<(tilo_user_identity::DeviceCert, Vec<std::net::SocketAddr>)> {
+        let copies = self.inner.workspaces.copies().clone();
+        let person = self.inner.person;
+        block_on_owned(async move {
+            person_workspace::devices::of(&copies, &person)
+                .await
+                .certified_at_with_endpoints(&person, tilo_clock::unix_now_ns())
+        })
+    }
+
     /// Share `copies` with every other device of the person's their record lists, in
     /// `workspace`: the one the person shared them in, where both devices are members.
     fn share(&self, workspace: &str, copies: &[WireCopy]) -> Result<(), String> {
@@ -265,7 +278,7 @@ impl Clipboard {
         }
         self.inner.state.lock_recover().shared.clone_from(&carried);
         // The copies are this device's own: the copy made here is the one another device keeps.
-        for (cert, addrs) in self.inner.personal.kept_devices_at() {
+        for (cert, addrs) in self.device_endpoints() {
             if KeyKind::of(&cert) != KeyKind::Device
                 || cert.device_public_key == own.device_public_key
             {
@@ -316,9 +329,7 @@ impl Clipboard {
         };
         if !own.is_empty()
             && let Some((cert, addrs)) = self
-                .inner
-                .personal
-                .kept_devices_at()
+                .device_endpoints()
                 .into_iter()
                 .find(|(cert, _)| cert.device_public_key == sender)
             && KeyKind::of(&cert) == KeyKind::Device

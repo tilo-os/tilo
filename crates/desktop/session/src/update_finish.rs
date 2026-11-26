@@ -342,26 +342,9 @@ impl Session {
     /// always-on host into it, and ask the person for a restart of the machine. Called once per
     /// pass of the loop.
     pub(super) fn follow_update(&mut self) {
-        // A member's device at another protocol version is the person's to know: this device
-        // updates when theirs is the newer one, and otherwise theirs is the one that must.
-        let mismatched = self
-            .shared
-            .sync
-            .as_ref()
-            .map(|sync| sync.take_version_mismatches())
-            .unwrap_or_default();
-        let mut wanted = false;
-        for mismatch in mismatched {
-            wanted |= mismatch.theirs_is_newer();
-            let device = crate::network::device_at(self.shared.fabric.as_ref(), &mismatch.endpoint);
-            self.shared
-                .notifications
-                .borrow()
-                .tell(&crate::notices::version_mismatch_notice(
-                    &mismatch,
-                    device.as_deref(),
-                ));
-        }
+        // Nothing asks for the newest system on its own: the person's update setting and the
+        // update service's own reading do.
+        let wanted = false;
         let now = Instant::now();
         let presence = Presence {
             idle: self.compositor.input_idle(),

@@ -1,13 +1,10 @@
 use std::rc::Rc;
 
-use super::network::event_of;
 use super::*;
 use collab_types::PeerPresencePayload;
 use collab_types::presence::{DESKTOP_APP, Payload, Presence, PresenceKey};
-use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::{Tab, Workspace, WorkspaceId as ModelWorkspaceId};
-use tilo_network_actor::NetEvent;
 use tilo_session_client::{InCall, presence::now_ms, topic_of};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -37,23 +34,6 @@ fn shell(workspace: &str) -> Layout {
     }
 }
 
-/// A device of the person's, certified for their root key, and the key it signs with.
-fn certified(user: u8, device_seed: u8, label: &str) -> (DeviceCert, SigningKey) {
-    let person = SigningKey::from_bytes(&[user; 32]);
-    let this = SigningKey::from_bytes(&[device_seed; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: this.verifying_key().to_bytes(),
-        device_label: label.to_owned(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-    (cert, this)
-}
 
 /// A session in `WORKSPACE` with no transport, and what it would have said.
 fn session(label: &str, user: Option<u8>) -> (Client, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
@@ -513,76 +493,8 @@ tilo_test_env::scenario! {
     }
 }
 
-/// Two relays nobody listens on: this endpoint never has a home relay to be published with, so the
-/// directory hold cannot open, and nothing here waits on a network.
-fn unused_relays() -> iroh::RelayMap {
-    ["http://127.0.0.1:9/", "http://127.0.0.1:10/"]
-        .into_iter()
-        .map(|url| url.parse::<iroh::RelayUrl>().expect("a relay url"))
-        .collect()
-}
-
 tilo_test_env::scenario! {
     fn the_roster_shows_one_face_for_each_person_of_the_workspace_in_front;
-
-    phase the_relays_wait_until_a_workspace_with_someone_else_is_shown;
-    {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .expect("a runtime for the collaboration endpoint");
-        // The endpoint the real client binds, its directory held and its relays held back.
-        let hold = tilo_endpoint_reachability::collaborating();
-        let (endpoint, reachability) = runtime.block_on(async {
-            let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-                .address_lookup(hold.clone())
-                .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()))
-                .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-                .expect("a loopback address")
-                .secret_key(iroh::SecretKey::generate())
-                .bind()
-                .await
-                .expect("a collaboration endpoint binds");
-            let reachability = Reachability::defer(
-                &endpoint,
-                &unused_relays(),
-                tokio::runtime::Handle::current(),
-                Some(tilo_endpoint_reachability::REST_AFTER),
-            );
-            (endpoint, reachability)
-        });
-        let own = OwnPresence {
-            label: "Quinten".into(),
-            ..OwnPresence::default()
-        };
-        let (sync, _said) = Client::offline(device(0xf0), own);
-        sync.hold_relays_with(reachability.clone());
-        sync.follow_desktop(&shell(WORKSPACE));
-
-        // Nobody else in the workspace this desktop shows: it names no relay,
-        // and number 0's directory is told nothing of this device.
-        assert!(reachability.is_dormant());
-        assert_eq!(reachability.holders(), (None, None));
-        assert!(!hold.is_open());
-        assert_eq!(endpoint.addr().relay_urls().count(), 0);
-
-        // Someone else is here: what could dial this device starts.
-        here(&sync, 1);
-        assert!(!reachability.is_dormant());
-        assert_eq!(
-            reachability.holders(),
-            (None, Some("a workspace is shown with someone else"))
-        );
-
-        // They leave: nothing here needs this device dialable again.
-        heard(&sync, 1, WORKSPACE, PeerPresencePayload::Left);
-        assert_eq!(reachability.holders(), (None, None));
-
-        // Someone in a workspace this desktop does not show needs nothing of this device.
-        heard(&sync, 2, OTHER_WORKSPACE, PeerPresencePayload::Arrived);
-        assert_eq!(reachability.holders().1, None);
-    }
 
     phase only_the_workspace_in_front_lists_people;
     {
@@ -853,63 +765,6 @@ tilo_test_env::scenario! {
             payloads(&sync).is_empty(),
             "a wave at this person goes nowhere"
         );
-    }
-}
-
-tilo_test_env::scenario! {
-    fn a_host_is_dialled_as_configured_and_where_it_was_reached;
-
-    phase a_configured_host_is_read_as_an_id_or_an_address;
-    {
-        let host = device(7);
-        assert_eq!(host_addr(&host.to_string()).map(|addr| addr.id), Some(host));
-        let json = serde_json::to_string(&EndpointAddr::new(host)).unwrap();
-        assert_eq!(host_addr(&json).map(|addr| addr.id), Some(host));
-        assert!(host_addr("").is_none());
-        assert!(host_addr("not an address").is_none());
-    }
-
-    phase this_devices_endpoint_holds_back_the_relays_its_person_chose;
-    // This device's endpoint holds back the relays its person chose, and a session that takes part as
-    // nobody relays nowhere.
-    {
-        let (cert, key) = certified(1, 2, "here");
-        let identity = DeviceIdentity::kept(cert, key);
-        let own = tilo_endpoint_reachability::EndpointRelays::for_choice(
-            &settings_store::relay::Relays::Own("https://relay.example.com.".into()),
-        );
-        let lan = tilo_endpoint_reachability::Nearby::new(std::sync::Arc::new(|| {}));
-        let held = endpoint_for(Some(&identity), &own, &lan, &super::network::WorkspaceDevices::default())
-            .expect("an endpoint to bind")
-            .1;
-        assert_eq!(held.urls::<Vec<_>>(), own.relays.urls::<Vec<_>>());
-        let nobody = endpoint_for(None, &own, &lan, &super::network::WorkspaceDevices::default())
-            .expect("a loopback endpoint to bind")
-            .1;
-        assert!(
-            nobody.is_empty(),
-            "a session that takes part as nobody relays nowhere"
-        );
-    }
-
-    phase a_host_is_dialled_before_the_workspaces_it_carries;
-    {
-        let host = device(7);
-        let (sync, mut said) = Client::without_network(
-            device(0xf0),
-            OwnPresence::default(),
-            vec![EndpointAddr::new(host)],
-        );
-        sync.follow_desktop(&shell(WORKSPACE));
-        let commands = sent(&mut said);
-        let connect = commands
-            .iter()
-            .position(|command| matches!(command, Cmd::Connect(addr) if addr.id == host));
-        let join = commands
-            .iter()
-            .position(|command| matches!(command, Cmd::Join(_)));
-        assert_eq!(connect, Some(0), "the host is dialled first");
-        assert_eq!(join, Some(1), "the workspace is joined after its host");
     }
 }
 
@@ -1534,55 +1389,4 @@ tilo_test_env::scenario! {
             "the agent's cursor stands where it acted"
         );
     }
-}
-
-/// What a device of the person's proves on its session, what it sends there and the session's end
-/// reach the session on the one path, in the order the peer network said them: the device is known
-/// before anything it said is taken, and what it said is bound to the certificate it proved.
-#[test]
-fn a_devices_session_and_what_it_sends_reach_the_session_in_the_order_they_were_said() {
-    let (cert, _key) = certified(0x01, 0x02, "Laptop");
-    let peer = device(0x02);
-    let epoch = tilo_network_actor::MembershipEpoch::for_test(1);
-    let said = [
-        NetEvent::Sibling {
-            peer,
-            membership_epoch: epoch,
-            certs: vec![cert.clone()],
-            revocations: Vec::new(),
-        },
-        NetEvent::PersonalFabric {
-            peer,
-            membership_epoch: epoch,
-            user_public_key: cert.user_public_key,
-            payload: tilo_network_actor::PersonalFabricPayload::Here,
-            received: std::time::Instant::now(),
-        },
-        NetEvent::SiblingLeft {
-            peer,
-            membership_epoch: epoch,
-        },
-    ];
-    let kept: Vec<&str> = said
-        .into_iter()
-        .map(|event| match event_of(event) {
-            Some(Err(DesktopEvent::Sibling { peer: from, .. })) => {
-                assert_eq!(from, peer, "the device that proved itself");
-                "its session"
-            }
-            Some(Err(DesktopEvent::PersonalFabric { peer: from, .. })) => {
-                assert_eq!(from, peer, "a frame, from that device");
-                "a frame"
-            }
-            Some(Err(DesktopEvent::SiblingLeft { peer: from })) => {
-                assert_eq!(from, peer, "the device whose session ended");
-                "its session ended"
-            }
-            other => panic!(
-                "a device's session and the frames on it are the session's own to keep, in \
-                 order: {other:?}"
-            ),
-        })
-        .collect();
-    assert_eq!(kept, ["its session", "a frame", "its session ended"]);
 }

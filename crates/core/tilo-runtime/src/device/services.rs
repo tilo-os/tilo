@@ -2493,15 +2493,6 @@ impl Daemon {
                 &fanout,
             )
         };
-        // What is the person's alone is kept in their own workspace, read and written here on
-        // this daemon's runtime once its service holds it: their devices, and the answers they
-        // gave about this device's camera and microphone, which their other devices see and can
-        // take back.
-        let personal = tilo_workspace_service::workspaces::PersonResources::default();
-        personal.attach(
-            std::sync::Arc::new(workspaces.copies().clone()),
-            tilo_rt::app().handle(),
-        );
         // The device VPN's peer-to-peer half: the daemon is the one process with the device key,
         // so it is the one that dials another of the person's devices and the one their other
         // devices dial to route through this one. The shell keeps the TUN devices, which only it
@@ -2509,7 +2500,7 @@ impl Daemon {
         let vpn = Arc::new(super::vpn::DeviceVpn::new(
             workspaces.endpoint(),
             identity.cert.user_public_key,
-            personal.clone(),
+            workspaces.copies().clone(),
         ));
         stage("serving the device's endpoint");
         // Another of the person's devices at early boot asks this one for its disk-unlock half:
@@ -2577,7 +2568,7 @@ impl Daemon {
         // Clipboard continuity between the person's devices: what their session here copies is
         // shared over the action service this daemon already serves, and what their other devices
         // copied is kept here, where their shell reads it as the copies another device offers.
-        let clipboard = super::clipboard::Clipboard::new(&workspaces, personal.clone());
+        let clipboard = super::clipboard::Clipboard::new(&workspaces);
         clipboard.register(&workspaces.copies().providers());
         // The interfaces this computer wakes through are kept there too, and the wakes of the
         // person's devices asked there are answered from here: the packets for a device on one

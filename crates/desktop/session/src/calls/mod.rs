@@ -482,16 +482,16 @@ pub(crate) fn channel_name(
 /// who this device accepts frames from.
 pub(crate) type Admitted = Arc<dyn Fn(&str) -> Vec<[u8; 32]> + Send + Sync>;
 
-/// Where a call's carrier reads what only the session knows: its endpoint,
-/// the channel service, the workspace's governance, the person's answers,
-/// and what the audio runs on.
+/// Where a call reads what only the session knows: this device's key, the
+/// channel service, the workspace's governance, the person's answers, and what
+/// the audio runs on.
 pub(crate) struct Sources {
     /// The calls of the workspaces this session takes part in, as the loop heard them: who else is
     /// in the channel this device joins.
     pub(crate) calls: Arc<Calls>,
-    /// The session's own endpoint, which names this device. `None` for a session taking part in no
+    /// This device's key, which names it in a call. `None` for a session taking part in no
     /// transport, which carries no call.
-    pub(crate) endpoint: Option<Arc<std::sync::OnceLock<iroh::Endpoint>>>,
+    pub(crate) device: Option<[u8; 32]>,
     /// This device's channel keys: the ones a call in the channel seals its audio with.
     pub(crate) keys: Option<tilo_workspace_keys::KeyProvider>,
     /// The devices `workspace` admits, which a call's roster names.
@@ -520,12 +520,12 @@ pub(crate) struct Factory {
 }
 
 impl Sources {
-    /// What a session's own calls read: its endpoint, the channel service,
+    /// What a session's own calls read: this device's key, the channel service,
     /// the workspace's governance, and the person's prompts.
     #[must_use]
     pub(crate) fn carrier(
         calls: Arc<Calls>,
-        endpoint: Arc<std::sync::OnceLock<iroh::Endpoint>>,
+        device: [u8; 32],
         keys: Option<tilo_workspace_keys::KeyProvider>,
         roster: Admitted,
         questions: Option<tilo_service::AskSender>,
@@ -533,7 +533,7 @@ impl Sources {
     ) -> Self {
         Self {
             calls,
-            endpoint: Some(endpoint),
+            device: Some(device),
             keys,
             roster: Some(roster),
             questions,
@@ -582,18 +582,13 @@ async fn open(
     consents: Option<tilo_portal::consent::Consents>,
     target: CallTarget,
 ) -> Result<Box<dyn MediaSession>, Issue> {
-    let Some(endpoint) = sources
-        .endpoint
-        .as_ref()
-        .and_then(|slot| slot.get().cloned())
-    else {
+    let Some(own) = sources.device else {
         // No transport, no call.
         return Err(Issue::Unavailable);
     };
     let workspace_id = WorkspaceId::parse(&target.workspace).ok_or(Issue::Unavailable)?;
     let (access, keys) = call_keys(sources, workspace_id)?;
     let roster = admitted(sources, &target.workspace);
-    let own = *endpoint.id().as_bytes();
     let video = pictures::Video::new(own);
     let (voice, microphones, offered) = opened_microphones(sources.audio).await?;
     let live = keys.is_some();

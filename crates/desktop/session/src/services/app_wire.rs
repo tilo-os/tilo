@@ -261,12 +261,6 @@ pub(crate) fn start_app_wire(
         actions.serve_on(shell.clone());
     }
     let socket = crate::app_socket::serve(&path, std::sync::Arc::clone(&options.launches), shell)?;
-    // The person's other devices are dialled as this session's siblings, and the session's pass
-    // wakes when their own workspace moves: the session between two of theirs is where they tell
-    // each other what they hold, and what their device fabric says.
-    if let Some(sync) = sync {
-        sync.follow_person(tilo_rt::app().handle(), options.wake.handle());
-    }
     // No call outlives the daemon that knew it: a lane a session that ended left behind would
     // let the next launch's app send without one.
     launcher::egress_proxy::forget_calls(
@@ -372,9 +366,9 @@ fn calls_service(
     let sync = sync?;
     calls.follow(sync, None);
     let service = tilo_native_media::NativeMediaService::new();
-    // A call's stream runs on the session's own endpoint, sealed with the workspace's channel keys
-    // and admitted by the workspace's governance: what every member of the workspace needs to be in
-    // the channel's call.
+    // A call's stream runs on the workspace's live session, sealed with the workspace's channel
+    // keys and admitted by the workspace's governance: what every member of the workspace needs to
+    // be in the channel's call.
     let roster = view.map_or_else(
         || {
             std::sync::Arc::new(|_: &str| Vec::new())
@@ -389,7 +383,7 @@ fn calls_service(
     );
     let sources = crate::calls::Sources::carrier(
         std::sync::Arc::clone(calls),
-        sync.endpoint_handle(),
+        *sync.publisher().as_bytes(),
         // The channels' keys are the device daemon's: a call is carried once it seals through it.
         None,
         roster,

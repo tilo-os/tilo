@@ -1374,19 +1374,11 @@ tilo_test_env::scenario! {
     // before a mail that does cross, which the laptop then shows alone.
     {
         let devices = two_devices();
-        let mismatch = crate::network::VersionMismatch {
-            endpoint: "zpeerexample".into(),
-            theirs: 91,
-            ours: 90,
-        };
         devices
             .desktop
             .bridge
             .borrow_mut()
-            .tell(&crate::notices::version_mismatch_notice(
-                &mismatch,
-                Some("Framework 16"),
-            ));
+            .tell(&crate::notices::update_state_notice());
         devices.desktop.step();
         devices.desktop_continuity.read(
             serde_json::json!({ "continuity": { "enabled": false } })
@@ -1487,56 +1479,6 @@ tilo_test_env::scenario! {
     }
 }
 
-/// A member's device at another protocol version reaches the shell as an ordinary banner
-/// naming it: the person reads what to update, not an operator's log line.
-#[test]
-fn a_device_on_another_version_is_named_on_the_shell() {
-    let rig = rig();
-    let mismatch = crate::network::VersionMismatch {
-        endpoint: "zpeerexample".into(),
-        theirs: 91,
-        ours: 90,
-    };
-    rig.bridge
-        .borrow_mut()
-        .tell(&crate::notices::version_mismatch_notice(
-            &mismatch,
-            Some("Framework 16"),
-        ));
-    rig.step();
-    let feed = rig.feed();
-    assert_eq!(feed.banners.len(), 1, "it is a banner over the session");
-    let banner = &feed.banners[0].notification;
-    assert!(
-        banner.title.contains("Framework 16") && banner.title.contains("newer Tilo"),
-        "the device names the title: {}",
-        banner.title
-    );
-    assert!(
-        banner.body.contains("restarts"),
-        "the body says what happens here: {}",
-        banner.body
-    );
-    assert_eq!(
-        banner.app_name.as_deref(),
-        Some("Updates"),
-        "the system raises it in its own name, never a sender's claim"
-    );
-    assert_eq!(
-        banner.mark().icon,
-        Some(tilo_ui_base::icons::Icon::Bell),
-        "the system's mark, not a generic window"
-    );
-    assert_eq!(
-        rig.desktop.log().active().len(),
-        1,
-        "and it waits in the centre"
-    );
-}
-
-/// The centre's reading says how long ago each notice arrived and whether its body may show, so a
-/// view can write "3 min ago" and a banner can keep a secret: the rest of the reading is the
-/// centre's own, which a reader that knows those fields reads as before.
 #[test]
 fn the_reading_says_how_long_ago_each_notice_arrived_and_whether_it_may_show() {
     let rig = rig();

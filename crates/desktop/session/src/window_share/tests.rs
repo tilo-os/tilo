@@ -333,7 +333,6 @@ fn member_on(
             label: format!("Device {seed:x}"),
             ..OwnPresence::default()
         },
-        Vec::new(),
     );
     let sync = sync.on_live_sessions(
         live_session(device(seed)),

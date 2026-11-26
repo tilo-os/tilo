@@ -3,9 +3,9 @@
 //!
 //! The client itself — the boards of each workspace, this device's own word on them, and the peer network
 //! service every host carries it over — lives in `tilo-session-client`, so an agent or a program links
-//! it without a desktop. What this session adds is the desktop's own host: the peer actor on an
-//! iroh endpoint, the live session, the workspaces' state and their channels, the device fabric and
-//! the transfers, and the roster the bar draws.
+//! it without a desktop. What this session adds is the desktop's own host: the live session its
+//! device's daemon gives it, the workspaces' state and their channels, and the roster the bar
+//! draws.
 
 pub use tilo_session_client::presence;
 pub use tilo_session_client::{
@@ -38,9 +38,5 @@ pub const JOIN_PATIENCE: std::time::Duration = std::time::Duration::from_secs(
 
 mod client;
 pub use client::Client;
-#[cfg(all(test, target_os = "linux"))]
-pub(crate) use client::HostCmd;
 #[cfg(target_os = "linux")]
-pub(crate) use client::HostOutbox;
-#[cfg(target_os = "linux")]
-pub use client::{Entry, configured_hosts, device_identity};
+pub use client::device_identity;

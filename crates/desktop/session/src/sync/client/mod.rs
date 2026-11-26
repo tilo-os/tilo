@@ -1,25 +1,19 @@
-//! This desktop's half of the peer network: the peer actor on this device's own iroh
-//! endpoint, the live session, the workspaces this session holds and their channels, the person's
-//! device fabric, the transfers between their devices, and the roster the bar draws.
+//! This desktop's half of the peer network: the live session its device's daemon gives it, the
+//! workspaces this session shows and their channels, and the roster the bar draws.
 //!
 //! The member itself is `tilo_session_client::Client`, which every host links. [`Client`] here
-//! is that client plus this desktop's host. The endpoint keeps number 0's directory behind a check
-//! and its relays held back ([`tilo_endpoint_reachability`]): a desktop with nobody else in its
-//! workspaces publishes nothing and keeps no relay.
+//! is that client plus this desktop's host. The session dials nothing and binds no endpoint: the
+//! device's daemon holds the key and the one endpoint, and the session is its client.
 
 use std::cell::RefCell;
 use std::rc::Rc;
 #[cfg(target_os = "linux")]
 use std::sync::Arc;
-#[cfg(target_os = "linux")]
-use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use iroh::{EndpointAddr, EndpointId};
 #[cfg(target_os = "linux")]
 use tilo_desktop_model::Layout;
-#[cfg(target_os = "linux")]
-use tilo_endpoint_reachability::Nearby;
 #[cfg(target_os = "linux")]
 use tilo_live::live::Track;
 #[cfg(target_os = "linux")]
@@ -33,196 +27,16 @@ use tilo_session_client::client::Shell as PolicyShell;
 use tilo_session_client::message_policy::WorkspaceAction;
 use tilo_session_client::{Client as SessionClient, Device, OwnPresence, Transport};
 #[cfg(target_os = "linux")]
-use tilo_session_client::{Cmd, Event, Outbox, Topic};
+use tilo_session_client::{Cmd, Event, Outbox};
 #[cfg(target_os = "linux")]
 use tilo_session_core::desktop::here::{Here, LiveMember, Person};
 #[cfg(target_os = "linux")]
 use tilo_session_core::desktop::state::DesktopHandle;
-
-#[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
-use crate::platform::fabric::DeviceId;
-#[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
-use crate::platform::fabric::{Continuity, Reach, SessionFabric};
-#[cfg(target_os = "linux")]
-use tilo_endpoint_reachability::{Need, Reachability};
 #[cfg(target_os = "linux")]
 use tilo_identity::identity_store::DeviceIdentity;
 #[cfg(target_os = "linux")]
 use tilo_network_actor::WorkspaceId;
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "linux")]
-mod network;
-
-#[cfg(target_os = "linux")]
-use network::{Serving, Wire, run};
-
-/// How long the session waits for this device's endpoint to bind before it starts without one: a
-/// desktop with no one else on it, rather than a session that never opens.
-#[cfg(target_os = "linux")]
-const BIND_WITHIN: Duration = Duration::from_secs(30);
-
-/// The endpoint the thread bound, within [`BIND_WITHIN`]: what publishes on it, the endpoint
-/// itself, and whether this device can be reached.
-#[cfg(target_os = "linux")]
-type Bound = (EndpointId, EndpointAddr, Reachability);
-
-#[cfg(target_os = "linux")]
-fn wait_for_bound(
-    bound: &std::sync::mpsc::Receiver<Result<Bound, String>>,
-) -> std::io::Result<Bound> {
-    bound
-        .recv_timeout(BIND_WITHIN)
-        .map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "the collaboration endpoint did not bind",
-            )
-        })?
-        .map_err(std::io::Error::other)
-}
-
-/// What this desktop's endpoint carries beside the client's own commands: the ownership sessions and
-/// records its workspaces are held through, its device fabric, and the transfers between the
-/// person's devices.
-#[derive(Debug)]
-#[cfg(target_os = "linux")]
-pub(crate) enum HostCmd {
-    /// One of the client's own commands.
-    Network(Cmd),
-    /// Send this device's fabric to the person's other devices, or to the one at `target`.
-    Fabric {
-        user_public_key: [u8; 32],
-        target: Option<EndpointId>,
-        payload: tilo_network_actor::PersonalFabricPayload,
-    },
-}
-
-/// One host's end of its transport, as the client says its own commands through it.
-#[derive(Clone, Debug)]
-#[cfg(target_os = "linux")]
-pub(crate) struct HostOutbox {
-    commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
-}
-
-#[cfg(target_os = "linux")]
-impl Outbox for HostOutbox {
-    fn send(&self, command: Cmd) -> Result<(), tilo_session_client::Closed> {
-        self.network(command)
-            .then_some(())
-            .ok_or(tilo_session_client::Closed)
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl HostOutbox {
-    /// An outbox over `commands`, for a service that speaks the peer network's vocabulary and nothing
-    /// else.
-    #[cfg(test)]
-    pub(crate) fn of(commands: tokio::sync::mpsc::UnboundedSender<HostCmd>) -> Self {
-        Self { commands }
-    }
-
-    /// Say one of the client's own commands to the peer network; `false` when the transport is gone.
-    pub(crate) fn network(&self, command: Cmd) -> bool {
-        self.say(HostCmd::Network(command))
-    }
-
-    /// Say one command of this desktop's own to the peer network.
-    pub(crate) fn say(&self, command: HostCmd) -> bool {
-        self.commands.send(command).is_ok()
-    }
-
-    /// Send this device's fabric to the person's other devices, or to the one at `target`.
-    pub(crate) fn fabric(
-        &self,
-        user_public_key: [u8; 32],
-        target: Option<EndpointId>,
-        payload: tilo_network_actor::PersonalFabricPayload,
-    ) {
-        let _ = self.say(HostCmd::Fabric {
-            user_public_key,
-            target,
-            payload,
-        });
-    }
-}
-
-/// What the peer actor and the fabric said that only this desktop keeps: which of the person's
-/// devices proved itself on a session with this one, and the session's end, the fabric traffic they
-/// send.
-#[derive(Debug)]
-#[cfg(target_os = "linux")]
-enum DesktopEvent {
-    /// One of the person's devices proved itself on its session with this one, or proved itself
-    /// anew there: it comes before anything that device sent.
-    Sibling {
-        peer: EndpointId,
-        certs: Vec<tilo_user_identity::DeviceCert>,
-        revocations: Vec<tilo_user_identity::RevocationEntry>,
-    },
-    /// The session with one of the person's devices ended.
-    SiblingLeft { peer: EndpointId },
-    PersonalFabric {
-        peer: EndpointId,
-        payload: tilo_network_actor::PersonalFabricPayload,
-        /// When the frame reached this device, read where it was taken off the wire.
-        received: std::time::Instant,
-    },
-    /// The host of the workspace on topic `ws` said its owner deleted it.
-    WorkspaceDeleted { ws: Topic },
-}
-
-/// The person's other devices, dialled as this device's siblings: the session between two of their
-/// sessions is where each tells the other the workspaces it holds, and what it hosts, so one can adopt
-/// what the other keeps.
-#[derive(Clone)]
-#[cfg(target_os = "linux")]
-pub(crate) struct SiblingDials {
-    /// This device's endpoint id: its own session is never dialled.
-    ours: [u8; 32],
-    outgoing: HostOutbox,
-    /// The relay this device's settings name, when they name one: the
-    /// person's devices are configured with the same relay, so a sibling is
-    /// reached through it while its key resolves nowhere else.
-    relay: Option<iroh::RelayUrl>,
-}
-
-#[cfg(target_os = "linux")]
-impl SiblingDials {
-    /// Dial from `ours`, the endpoint this device's sessions run on, through
-    /// `relay` when the person's settings name one.
-    pub(crate) fn new(ours: [u8; 32], outgoing: HostOutbox, relay: Option<iroh::RelayUrl>) -> Self {
-        Self {
-            ours,
-            outgoing,
-            relay,
-        }
-    }
-
-    /// Dial `device` as a sibling, unless it is this device, at where its record says it answers
-    /// (the addresses its own daemon wrote) and through the person's relay when they name one.
-    /// The peer network dials again whatever has no session, for as long as that lasts.
-    pub(crate) fn dial(&self, device: [u8; 32], addresses: &[std::net::SocketAddr]) {
-        if device == self.ours {
-            return;
-        }
-        let Ok(id) = iroh::EndpointId::from_bytes(&device) else {
-            tracing::warn!(device = %hex::encode(device), "a device of the person has no endpoint id");
-            return;
-        };
-        let mut addr = EndpointAddr::new(id);
-        if let Some(relay) = &self.relay {
-            addr = addr.with_relay_url(relay.clone());
-        }
-        for address in addresses {
-            addr = addr.with_ip_addr(*address);
-        }
-        let _ = self.outgoing.send(Cmd::ConnectDevice(addr));
-    }
-}
-
 /// Everything this device keeps of the peer network beside the client's boards: who is here as the bar
 /// lists them, the workspaces' state and channels, the live session, the fabric and the transfers.
 #[cfg(target_os = "linux")]
@@ -230,11 +44,6 @@ pub(crate) struct Local {
     /// The session this session shows, whose workspaces' policies every message from another member is
     /// held to.
     session: RefCell<Option<DesktopHandle>>,
-    /// Where this device's own commands go: the client's vocabulary is its own, this is the
-    /// desktop's own beside it.
-    commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
-    /// What the peer actor and the fabric said that only this desktop keeps.
-    desktop_events: std::sync::mpsc::Receiver<DesktopEvent>,
     /// The call audio the workspaces' live sessions heard since the last call, each with the
     /// workspace it was heard in: what the calls playing it take ([`Self::take_call_audio`]).
     call_audio: RefCell<Vec<(String, Heard)>>,
@@ -250,31 +59,18 @@ pub(crate) struct Local {
     /// since the last call, each with the workspace it was heard in: what the shares take
     /// ([`Self::take_share_objects`]).
     share_objects: RefCell<Vec<(String, Heard)>>,
-    /// The workspaces whose host said their owner deleted them since the last call: what the
-    /// session takes off the shell and out of this device's record ([`Self::take_deleted`]).
-    deleted: RefCell<Vec<tilo_desktop_model::WorkspaceId>>,
     /// This device's workspaces as its daemon says them: `None` until the session reaches the
     /// daemon ([`Client::attach_view`]), and on a session that keeps none.
     view: RefCell<Option<Arc<crate::workspace_view::WorkspaceView>>>,
-    /// The member's devices the peer network heard at another peer protocol version since the last
-    /// call: what the person is answered.
-    versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
     /// The devices each workspace's topic carries to this session: those heard on it, and its
     /// hosts, which the members they reach are behind.
     topologies: RefCell<std::collections::BTreeMap<WorkspaceId, Topology>>,
-    /// This device's fabric, when it is a certified device of the person's: `None` on a session
-    /// that takes part as nobody.
-    fabric: Option<Arc<SessionFabric>>,
     /// The record of the person's devices in their own workspace, as the session follows it at
-    /// the device's daemon, and this device's certificate there, whether this session keeps a
-    /// fabric or not.
+    /// the device's daemon, and this device's certificate there.
     person: Option<(PersonDevicesRecord, tilo_user_identity::DeviceCert)>,
     /// The workspaces' live resources, told which devices this session reaches in each: a row
     /// live on a device that went away goes with it.
     live_rows: tilo_workspace_service::live::LiveRows,
-    /// This device's relays, held back until a workspace this session takes part in has someone
-    /// else in it.
-    reachability: RefCell<Reachability>,
     /// The workspaces' live session: their relays and this device's sessions in them, shared with
     /// the session that runs them through the daemon.
     live: Rc<RefCell<Option<crate::live::Live>>>,
@@ -414,12 +210,6 @@ impl Local {
             return false;
         };
         change(topology)
-    }
-
-    /// Take the workspaces whose host said their owner deleted them since the last call.
-    #[must_use]
-    pub(crate) fn take_deleted(&self) -> Vec<tilo_desktop_model::WorkspaceId> {
-        std::mem::take(&mut *self.deleted.borrow_mut())
     }
 
     /// Take the call audio the workspaces' live sessions heard since the last call, each with the
@@ -580,73 +370,14 @@ impl Local {
     /// `viewers` alone: over the authenticated route to each of them, never fanned out to the
     /// workspace.
     #[cfg(target_os = "linux")]
-    /// Take what the peer actor and the fabric said that only this desktop keeps.
-    fn keep_desktop_events(&self, client: &SessionClient) {
-        while let Ok(event) = self.desktop_events.try_recv() {
-            match event {
-                DesktopEvent::WorkspaceDeleted { ws } => {
-                    if let Some(workspace) = client
-                        .workspace_id(ws)
-                        .and_then(|id| tilo_desktop_model::WorkspaceId::parse(&id))
-                    {
-                        self.deleted.borrow_mut().push(workspace);
-                    }
-                }
-                DesktopEvent::Sibling {
-                    peer,
-                    certs,
-                    revocations,
-                } => {
-                    if let Some(fabric) = &self.fabric {
-                        fabric.sibling(peer, &certs, &revocations);
-                    }
-                }
-                DesktopEvent::SiblingLeft { peer } => {
-                    if let Some(fabric) = &self.fabric {
-                        fabric.sibling_left(peer);
-                    }
-                }
-                DesktopEvent::PersonalFabric {
-                    peer,
-                    payload,
-                    received,
-                } => {
-                    if let Some(fabric) = &self.fabric {
-                        fabric.arrived(peer, &payload, received);
-                    }
-                }
-            }
-        }
-    }
-
-    /// This device's fabric, when the person certified it: the link the session's services act on.
-    #[must_use]
-    pub(crate) fn fabric(&self) -> Option<crate::platform::fabric::SharedLink> {
-        self.fabric
-            .as_ref()
-            .map(|fabric| Arc::clone(fabric) as crate::platform::fabric::SharedLink)
-    }
-
-    /// The record of the person's devices in their own workspace, as the session follows it, and
-    /// this device's certificate there.
+    /// The person's own workspace's resources, read and written through this device's daemon,
+    /// which keeps the workspace: the one place what is theirs alone is read and written.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn person_devices(
         &self,
     ) -> Option<(PersonDevicesRecord, tilo_user_identity::DeviceCert)> {
         self.person.clone()
-    }
-
-    /// The actions one of the person's devices sent this one since the last call, for the session's
-    /// pass to carry out.
-    #[must_use]
-    pub(crate) fn fabric_actions(
-        &self,
-    ) -> Vec<crate::platform::fabric::PersonalFabricActionEnvelope> {
-        self.fabric
-            .as_ref()
-            .map(|fabric| fabric.take_actions())
-            .unwrap_or_default()
     }
 
     /// The workspaces' live session: what this session says into and hears from each of them, and the
@@ -661,37 +392,6 @@ impl Local {
     #[must_use]
     pub(crate) fn view(&self) -> Option<Arc<crate::workspace_view::WorkspaceView>> {
         self.view.borrow().clone()
-    }
-
-    /// The member's devices the peer network heard at another peer protocol version since the last
-    /// call, each once per device and version.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn take_version_mismatches(&self) -> Vec<crate::network::VersionMismatch> {
-        self.versions.try_iter().collect()
-    }
-
-    /// Why what this session takes part in needs this device reachable, if it does: a workspace it
-    /// shows has someone else here, or a link is out of a workspace it holds as its holder. A host
-    /// is dialled at start and on every reconnect, and the peer actor holds the relays up for every
-    /// remote party it is connected to or keeps dialling
-    /// ([`tilo_endpoint_reachability::Need::Transport`]).
-    fn reachability_need(&self, client: &SessionClient) -> Option<&'static str> {
-        let own = client.publisher();
-        if client.anyone_else_here(own) {
-            return Some("a workspace is shown with someone else");
-        }
-        self.view()
-            .is_some_and(|view| view.invitations_open(tilo_clock::wall()))
-            .then_some("a link into a workspace is out")
-    }
-
-    /// Tell the relays what this session has recorded: they stay up while a workspace it shows has
-    /// someone else here or a link it handed out waits to be redeemed, and may rest once none does
-    /// ([`tilo_endpoint_reachability::REST_AFTER`]).
-    fn note_reachability(&self, client: &SessionClient) {
-        self.reachability
-            .borrow()
-            .need(Need::Session, self.reachability_need(client));
     }
 
     /// Take every object the workspaces' live sessions heard since the last call: a member's presence
@@ -794,8 +494,8 @@ pub(crate) struct Roster {
     for_apps: RefCell<Vec<(String, tilo_actions::SemanticInteraction)>>,
 }
 
-/// What this session keeps of the peer network beside the client's boards: the roster every surface reads,
-/// and, on a desktop, the peer actor's own half.
+/// What this session keeps of the peer network beside the client's boards: the roster every reader
+/// draws, and, on a desktop, what the live link and the workspaces' state tell it.
 pub(crate) struct Hosting {
     roster: Rc<Roster>,
     #[cfg(target_os = "linux")]
@@ -981,7 +681,6 @@ impl Host for Hosting {
     }
 
     fn touched(&self, client: &SessionClient) {
-        self.local.note_reachability(client);
         self.roster.show_here(client);
         self.roster.show_waves();
     }
@@ -993,17 +692,7 @@ impl Host for Hosting {
     }
 
     fn pass(&self, client: &SessionClient) {
-        let local = &self.local;
-        local.keep_desktop_events(client);
-        let moved = local.hear_live(client);
-        // The clock of every peer something holds in sync: its probes leave here, so the audio
-        // timed against them can play in time.
-        if let Some(fabric) = &local.fabric {
-            fabric.pump_clock();
-        }
-        if moved {
-            local.note_reachability(client);
-        }
+        self.local.hear_live(client);
     }
 }
 
@@ -1031,18 +720,12 @@ impl PolicyShell for MessagePolicy {
     }
 }
 
-/// The session's client of the peer network: the member's own client, and the desktop
-/// host that carries it — the peer actor, the live session, this device's workspaces and channels,
-/// its fabric and its transfers.
+/// The session's client of the peer network: the member's own client, and the desktop host that
+/// carries it — the live session its device's daemon gives it, and the workspaces and channels the
+/// session shows.
 pub struct Client {
     inner: SessionClient,
     hosting: Rc<Hosting>,
-    /// Where this client says its own commands, beside the client's.
-    #[cfg(target_os = "linux")]
-    outgoing: Arc<dyn Outbox>,
-    /// The thread running the peer actor, stopped when this drops.
-    #[cfg(target_os = "linux")]
-    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for Client {
@@ -1062,14 +745,7 @@ impl std::ops::Deref for Client {
 impl Drop for Client {
     fn drop(&mut self) {
         #[cfg(target_os = "linux")]
-        {
-            // The live sessions end before the peer network's thread joins.
-            self.hosting.local.live.borrow_mut().take();
-            let _ = self.outgoing.send(Cmd::Stop);
-            if let Some(thread) = self.thread.take() {
-                let _ = thread.join();
-            }
-        }
+        self.hosting.local.live.borrow_mut().take();
     }
 }
 
@@ -1079,175 +755,7 @@ type PersonDevicesRecord = crate::followed_resource::SharedFollow<
     tilo_workspace_service::workspaces::person_workspace::devices::Devices,
 >;
 
-/// What this device brings as it enters the peer network: the identity its endpoint runs on,
-/// where it dials, and how it hears back.
-#[cfg(target_os = "linux")]
-pub struct Entry {
-    /// This device's collaboration identity, on whose key the endpoint runs: with it, every
-    /// workspace is told which device and which person is here. Without one — a test, a stand-in
-    /// session — the session is a device nobody certified and stays anonymous in workspaces.
-    pub identity: Option<DeviceIdentity>,
-    /// What the person's settings say this device says of them here.
-    pub own: OwnPresence,
-    /// The hosts the person points this device at.
-    pub hosts: Vec<EndpointAddr>,
-    /// What the person's settings say may continue on their other devices,
-    /// kept current by the session's settings watch.
-    pub continuity: Continuity,
-    /// What tells the peer actor the network speaks.
-    pub wake: Arc<dyn Fn() + Send + Sync>,
-    /// The relays the person's setting names ([`tilo_endpoint_reachability::relays`]), which this
-    /// device's endpoint holds back until something needs it dialable.
-    pub relays: tilo_endpoint_reachability::EndpointRelays,
-    /// How this device hears the person's other devices on a local network
-    /// ([`tilo_endpoint_reachability::Nearby`]): `None` discovers on the networks the endpoint is
-    /// on, and a caller that knows which one its person's devices share says so.
-    pub lan: Option<tilo_endpoint_reachability::Nearby>,
-    /// The workspaces' live sessions, this device's one place in each ([`crate::live::Live`]):
-    /// what this session hears and says there, and the one that says the person's word. `None`
-    /// for a client that runs its own on this process's endpoint (a test's), rather than through
-    /// a device daemon's.
-    pub live: Option<Rc<std::cell::RefCell<Option<crate::live::Live>>>>,
-    /// The record of the person's devices in their own workspace, as the session follows it at
-    /// the device's daemon: what lasts of each of their devices, read and changed there. `None`
-    /// where the session follows none (one that reaches no daemon, or a test's).
-    pub devices: Option<PersonDevicesRecord>,
-}
-
 impl Client {
-    /// Take part in the peer network: bind this device's endpoint, start the peer actor,
-    /// and from then on hear the workspaces the session joins. `beside` is what else this session
-    /// serves on that endpoint (its protocols are fixed once it binds).
-    ///
-    /// This is the client of a process that holds the device's key — its own endpoint. A session
-    /// the device's daemon started cannot ([`Self::over`] instead): the daemon owns the key, and
-    /// two endpoints under one key push each other off the network.
-    ///
-    /// # Errors
-    /// The endpoint could not be bound.
-    #[cfg(target_os = "linux")]
-    pub fn start(
-        entry: Entry,
-        beside: tilo_network_actor::own_service::Protocols,
-    ) -> std::io::Result<Self> {
-        let (identity, wake, devices) = (entry.identity, entry.wake, entry.devices);
-        let live_rows = tilo_workspace_service::live::LiveRows::default();
-        let (commands, host_commands) = tokio::sync::mpsc::unbounded_channel();
-        let (arrivals, arrived) = std::sync::mpsc::channel();
-        let (desktop_events, desktop_arrived) = std::sync::mpsc::channel();
-        let (ready, bound) = std::sync::mpsc::channel();
-        let (user, device) = certified_as(identity.as_ref());
-        // What this device hears on its local network wakes the session, which shows which of the
-        // person's devices are nearby.
-        let lan = entry.lan.unwrap_or_else(|| Nearby::new(Arc::clone(&wake)));
-        let host_outbox = HostOutbox {
-            commands: commands.clone(),
-        };
-        let outgoing: Arc<dyn Outbox> = Arc::new(host_outbox.clone());
-        let person = devices.clone().zip(
-            identity
-                .as_ref()
-                .map(|identity| identity.device_cert.clone()),
-        );
-        let fabric = fabric_of(
-            identity.as_ref(),
-            devices,
-            host_outbox,
-            entry.continuity,
-            lan.clone(),
-        );
-        // What the actor serves is installed before it starts: every actor built after answers it.
-        let versions = crate::network::install();
-        let endpoint_handle = Arc::new(std::sync::OnceLock::new());
-        let binding = network::Bound::new(Arc::clone(&endpoint_handle), entry.relays, lan);
-        // The workspaces' live sessions are the session's, run through this device's daemon: the
-        // daemon holds the relay and the device's endpoint, and this client hears what they carry.
-        // A client given none is the device's own endpoint and runs them itself.
-        let live = entry.live.unwrap_or_else(|| {
-            Rc::new(RefCell::new(identity.as_ref().map(|identity| {
-                crate::live::Live::new(identity.device_cert.clone(), Arc::clone(&wake))
-            })))
-        });
-        let served = beside.iter().map(|(alpn, _)| alpn.clone()).collect();
-        let thread = std::thread::Builder::new()
-            .name("tilo-sync".into())
-            .spawn(move || {
-                run(
-                    identity,
-                    host_commands,
-                    Wire {
-                        arrivals,
-                        desktop_events,
-                        ready,
-                    },
-                    wake,
-                    Serving::new(binding, beside),
-                );
-            })?;
-        let (publisher, endpoint, reachability) = wait_for_bound(&bound)?;
-        // This device's presence is its daemon's to say: the session tells it the person's word
-        // over the live session's telling, which reaches the daemon's shell link.
-        let saying = live.borrow().as_ref().map(|live| {
-            tilo_session_client::Saying::Word(
-                Arc::new(live.telling()) as Arc<dyn tilo_session_client::TellWord>
-            )
-        });
-        let inner = SessionClient::over(
-            Transport {
-                outgoing: Arc::clone(&outgoing),
-                arrived,
-                saying,
-            },
-            Device {
-                publisher,
-                endpoint,
-                person: user,
-                name: device,
-            },
-            entry.own,
-        )
-        .serving(served)
-        .bound_to(endpoint_handle);
-        let hosting = Local::hosting(Hosted {
-            commands,
-            desktop_events: desktop_arrived,
-            versions,
-            fabric,
-            person,
-            live_rows,
-            reachability,
-            live,
-        });
-        Ok(Self::started(inner, hosting, outgoing, thread, entry.hosts))
-    }
-
-    /// The client, hearing the person's other devices and then the hosts the entry names.
-    #[cfg(target_os = "linux")]
-    fn started(
-        inner: SessionClient,
-        hosting: Rc<Hosting>,
-        outgoing: Arc<dyn Outbox>,
-        thread: std::thread::JoinHandle<()>,
-        hosts: Vec<EndpointAddr>,
-    ) -> Self {
-        inner.attach_host(Rc::clone(&hosting) as Rc<dyn Host>);
-        let client = Self {
-            inner,
-            hosting,
-            outgoing,
-            thread: Some(thread),
-        };
-        // The person's other devices are heard from the start, so a list one of them published is
-        // taken even when this session shows none of their workspaces yet.
-        let _ = client.outgoing.send(Cmd::WatchSiblings);
-        // The hosts next: a workspace joined before them is replayed to this device when its host
-        // session comes up, never lost.
-        for host in hosts {
-            let _ = client.outgoing.send(Cmd::Connect(host));
-        }
-        client
-    }
-
     /// A client on a transport another host brings, with this desktop's host beside it: a session
     /// whose device daemon holds the endpoint takes part this way, its daemon's live sessions
     /// (`live`) carrying who is here, and a test hands it what it wants the session to show. The
@@ -1261,13 +769,7 @@ impl Client {
         live: Rc<RefCell<Option<crate::live::Live>>>,
     ) -> Self {
         #[cfg(target_os = "linux")]
-        let host = {
-            let (commands, _host_commands) = tokio::sync::mpsc::unbounded_channel();
-            let (_desktop_events, desktop_arrived) = std::sync::mpsc::channel();
-            Rc::new(Local::bare(commands, desktop_arrived, live))
-        };
-        #[cfg(target_os = "linux")]
-        let outgoing = std::sync::Arc::clone(&transport.outgoing);
+        let host = Rc::new(Local::bare(live));
         let inner = SessionClient::over(transport, device, own);
         let hosting = Rc::new(Hosting {
             roster: Rc::new(Roster::new()),
@@ -1275,14 +777,7 @@ impl Client {
             local: host,
         });
         inner.attach_host(Rc::clone(&hosting) as Rc<dyn Host>);
-        Self {
-            inner,
-            hosting,
-            #[cfg(target_os = "linux")]
-            outgoing,
-            #[cfg(target_os = "linux")]
-            thread: None,
-        }
+        Self { inner, hosting }
     }
 
     /// A session taking part in a peer network with no transport, for tests that hand it what it would
@@ -1293,14 +788,14 @@ impl Client {
         publisher: EndpointId,
         own: OwnPresence,
     ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
-        Self::without_network(publisher, own, Vec::new())
+        Self::without_network(publisher, own)
     }
 
     /// A client taking part in no transport: it publishes nowhere and hears only what it is handed.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub fn untethered(publisher: EndpointId, own: OwnPresence) -> Self {
-        Self::without_network(publisher, own, Vec::new()).0
+        Self::without_network(publisher, own).0
     }
 
     /// A client of a peer network with no transport: what both the real client and [`Self::untethered`]
@@ -1310,12 +805,9 @@ impl Client {
     pub(crate) fn without_network(
         publisher: EndpointId,
         own: OwnPresence,
-        hosts: Vec<EndpointAddr>,
     ) -> (Self, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
         let (outgoing, said) = tokio::sync::mpsc::unbounded_channel();
         let (_unheard, arrived) = std::sync::mpsc::channel();
-        let (commands, _host_commands) = tokio::sync::mpsc::unbounded_channel();
-        let (_desktop_events, desktop_arrived) = std::sync::mpsc::channel();
         let outbox: Arc<dyn Outbox> = Arc::new(outgoing);
         let inner = SessionClient::over(
             Transport {
@@ -1333,19 +825,10 @@ impl Client {
         );
         let hosting = Rc::new(Hosting {
             roster: Rc::new(Roster::new()),
-            local: Rc::new(Local::bare(commands, desktop_arrived, Rc::default())),
+            local: Rc::new(Local::bare(Rc::default())),
         });
         inner.attach_host(Rc::clone(&hosting) as Rc<dyn Host>);
-        let client = Self {
-            inner,
-            hosting,
-            outgoing: outbox,
-            thread: None,
-        };
-        for host in hosts {
-            let _ = client.outgoing.send(Cmd::Connect(host));
-        }
-        (client, said)
+        (Self { inner, hosting }, said)
     }
 
     /// The same peer network, taken part in as `person` (their user root, hex): what a device's
@@ -1364,13 +847,6 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub(crate) fn take_narrated(&self) -> Vec<(String, tilo_actions::SemanticInteraction)> {
         std::mem::take(&mut *self.hosting.roster.for_apps.borrow_mut())
-    }
-
-    /// Take the workspaces whose host said their owner deleted them since the last call.
-    #[must_use]
-    #[cfg(target_os = "linux")]
-    pub(crate) fn take_deleted(&self) -> Vec<tilo_desktop_model::WorkspaceId> {
-        self.hosting.local.take_deleted()
     }
 
     /// Take the call audio the workspaces' live sessions heard since the last call, already opened.
@@ -1519,9 +995,6 @@ impl Client {
     /// thread already hears them. Whether any did.
     #[cfg(target_os = "linux")]
     pub(crate) fn follow_live(&self) -> bool {
-        if self.thread.is_some() {
-            return false;
-        }
         let topics: Vec<(tilo_desktop_model::WorkspaceId, String)> = {
             let held = self.hosting.local.live.borrow();
             let Some(live) = held.as_ref() else {
@@ -1544,41 +1017,8 @@ impl Client {
         self.hosting.local.view.replace(view);
     }
 
-    /// Dial the person's other devices as this session's siblings, and wake the session when
-    /// their own workspace moves: the session between two of theirs is where they tell each other
-    /// what they hold, and carries their device fabric.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn follow_person(&self, runtime: &tokio::runtime::Handle, wake: tilo_service::Wake) {
-        let (Some(dials), Some((record, cert))) = (self.sibling_dials(), self.person_devices())
-        else {
-            return;
-        };
-        let person = cert.user_public_key;
-        runtime.spawn(async move {
-            let mut changes = record.changes();
-            let mut again = tokio::time::interval(std::time::Duration::from_secs(60));
-            loop {
-                for (device, addresses) in record
-                    .get()
-                    .certified_at_with_endpoints(&person, tilo_clock::unix_now_ns())
-                {
-                    dials.dial(device.device_public_key, &addresses);
-                }
-                wake();
-                tokio::select! {
-                    moved = changes.changed() => {
-                        if moved.is_err() {
-                            return;
-                        }
-                    }
-                    _ = again.tick() => {}
-                }
-            }
-        });
-    }
-
-    /// The record of the person's devices in their own workspace, as the session follows it, and
-    /// this device's certificate there.
+    /// The person's own workspace's resources, which this session reads and writes what is theirs
+    /// alone through once its service holds the workspace.
     #[must_use]
     #[cfg(target_os = "linux")]
     pub(crate) fn person_devices(
@@ -1600,42 +1040,6 @@ impl Client {
         &self.hosting.roster.here
     }
 
-    /// This device's fabric, when the person certified it.
-    #[must_use]
-    #[cfg(target_os = "linux")]
-    pub fn fabric(&self) -> Option<crate::platform::fabric::SharedLink> {
-        self.hosting.local.fabric()
-    }
-
-    /// The actions one of the person's devices sent this one since the last call.
-    #[must_use]
-    #[cfg(target_os = "linux")]
-    pub fn fabric_actions(&self) -> Vec<crate::platform::fabric::PersonalFabricActionEnvelope> {
-        self.hosting.local.keep_desktop_events(&self.inner);
-        self.hosting.local.fabric_actions()
-    }
-
-    /// The member's devices the peer network heard at another peer protocol version.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn take_version_mismatches(&self) -> Vec<crate::network::VersionMismatch> {
-        self.hosting.local.take_version_mismatches()
-    }
-
-    /// Hold this device's relays back behind `reachability`: what a test asks of what this desktop
-    /// keeps dialable.
-    #[cfg(test)]
-    #[cfg(target_os = "linux")]
-    pub(crate) fn hold_relays_with(&self, reachability: Reachability) {
-        *self.hosting.local.reachability.borrow_mut() = reachability;
-    }
-
-    /// This device's collaboration endpoint, once it has bound.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[must_use]
-    pub fn endpoint(&self) -> Option<iroh::Endpoint> {
-        self.inner.endpoint()
-    }
-
     /// Hand the workspace check the session this session shows: whose workspaces' policies hold every
     /// member's messages to what the workspace grants them.
     #[cfg(target_os = "linux")]
@@ -1651,48 +1055,6 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub(crate) fn view(&self) -> Option<Arc<crate::workspace_view::WorkspaceView>> {
         self.hosting.local.view()
-    }
-
-    /// Dial the holders of workspace `ws` again now: the person pressed "Try again" in a window
-    /// whose workspace could not arrive.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn redial(&self, ws: tilo_desktop_model::WorkspaceId) {
-        let _ = self.outgoing.send(Cmd::Redial(ws));
-    }
-
-    /// Dial one of the person's own devices, whose address this session was told: the session
-    /// between the two carries their device fabric.
-    #[cfg(target_os = "linux")]
-    pub fn connect(&self, addr: EndpointAddr) {
-        let _ = self.outgoing.send(Cmd::ConnectDevice(addr));
-    }
-
-    /// Where the person's own devices are dialled as this device's siblings from a thread of their
-    /// own (the store's), once the endpoint has bound.
-    #[must_use]
-    #[cfg(target_os = "linux")]
-    pub(crate) fn sibling_dials(&self) -> Option<SiblingDials> {
-        // One relay is the person's own, and their devices name the same one: a sibling is
-        // reached through it. Number 0's relays are many, and the directory names which one a
-        // device is at, so nothing is guessed there.
-        let urls = self
-            .hosting
-            .local
-            .reachability
-            .try_borrow()
-            .map(|reachability| reachability.relay_urls())
-            .unwrap_or_default();
-        let relay = match urls.as_slice() {
-            [relay] => Some(relay.clone()),
-            _ => None,
-        };
-        Some(SiblingDials::new(
-            *self.inner.endpoint()?.id().as_bytes(),
-            HostOutbox {
-                commands: self.hosting.local.commands.clone(),
-            },
-            relay,
-        ))
     }
 
     /// This device's handle in a workspace, as a window's stream names it.
@@ -1746,88 +1108,20 @@ impl Client {
 }
 
 #[cfg(target_os = "linux")]
-/// What a desktop's host runs beside: the thread's channels, its workspaces, its channels'
-/// service, its fabric, its app wire, its relays and its live sessions.
-#[cfg(target_os = "linux")]
-struct Hosted {
-    commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
-    desktop_events: std::sync::mpsc::Receiver<DesktopEvent>,
-    versions: std::sync::mpsc::Receiver<crate::network::VersionMismatch>,
-    fabric: Option<Arc<SessionFabric>>,
-    person: Option<(PersonDevicesRecord, tilo_user_identity::DeviceCert)>,
-    live_rows: tilo_workspace_service::live::LiveRows,
-    reachability: Reachability,
-    live: Rc<std::cell::RefCell<Option<crate::live::Live>>>,
-}
-
-#[cfg(target_os = "linux")]
 impl Local {
-    /// The host this client runs with, and the roster beside it.
-    fn hosting(
-        Hosted {
-            commands,
-            desktop_events,
-            versions,
-            fabric,
-            person,
-            live_rows,
-            reachability,
-            live,
-        }: Hosted,
-    ) -> Rc<Hosting> {
-        Rc::new(Hosting {
-            roster: Rc::new(Roster::new()),
-            local: Rc::new(Self {
-                session: RefCell::new(None),
-                commands,
-                desktop_events,
-                call_audio: RefCell::new(Vec::new()),
-                call_pictures: RefCell::new(Vec::new()),
-                window_objects: RefCell::new(Vec::new()),
-                share_objects: RefCell::new(Vec::new()),
-                deleted: RefCell::new(Vec::new()),
-                view: RefCell::new(None),
-                versions,
-                topologies: RefCell::new(std::collections::BTreeMap::new()),
-                fabric,
-                person,
-                live_rows,
-                reachability: RefCell::new(reachability),
-                live,
-                #[cfg(test)]
-                test_live_sessions: RefCell::default(),
-                #[cfg(test)]
-                test_said: RefCell::default(),
-                #[cfg(test)]
-                test_runtime: RefCell::default(),
-            }),
-        })
-    }
-
     /// A local with no peer network of its own: what a client takes part in over a transport another host
     /// brings.
-    fn bare(
-        commands: tokio::sync::mpsc::UnboundedSender<HostCmd>,
-        desktop_events: std::sync::mpsc::Receiver<DesktopEvent>,
-        live: Rc<std::cell::RefCell<Option<crate::live::Live>>>,
-    ) -> Self {
-        let (_said, versions) = std::sync::mpsc::channel();
+    fn bare(live: Rc<std::cell::RefCell<Option<crate::live::Live>>>) -> Self {
         Self {
             session: RefCell::new(None),
-            commands,
-            desktop_events,
             call_audio: RefCell::new(Vec::new()),
             call_pictures: RefCell::new(Vec::new()),
             window_objects: RefCell::new(Vec::new()),
             share_objects: RefCell::new(Vec::new()),
-            deleted: RefCell::new(Vec::new()),
             view: RefCell::new(None),
-            versions,
             topologies: RefCell::new(std::collections::BTreeMap::new()),
-            fabric: None,
             person: None,
             live_rows: tilo_workspace_service::live::LiveRows::default(),
-            reachability: RefCell::new(Reachability::default()),
             live,
             #[cfg(test)]
             test_live_sessions: RefCell::default(),
@@ -1839,153 +1133,12 @@ impl Local {
     }
 }
 
-/// This device's collaboration identity: the key and certificate this session's endpoint runs on,
-/// when this host holds one.
-/// A session on a host without one takes part in no workspace as anybody: it binds a fresh key
-/// and stays anonymous until the person sets a device up.
+/// This device's collaboration identity: the key and certificate it signs and presents with, when
+/// this host holds one. A session on a host without one takes part in no workspace as anybody.
 #[must_use]
 #[cfg(target_os = "linux")]
 pub fn device_identity() -> Option<DeviceIdentity> {
     tilo_session_client::identity::device_identity()
-}
-
-/// The workspace hosts this session was started to dial: an always-on peer that keeps what the
-/// person's devices publish while the others are away, named by `TILO_COLLAB_HOST` (one address or
-/// endpoint id) or `TILO_COLLAB_HOSTS` (a JSON array of addresses).
-#[must_use]
-#[cfg(target_os = "linux")]
-pub fn configured_hosts() -> Vec<EndpointAddr> {
-    let mut hosts = Vec::new();
-    if let Some(value) = std::env::var_os("TILO_COLLAB_HOSTS") {
-        match serde_json::from_str::<Vec<EndpointAddr>>(&value.to_string_lossy()) {
-            Ok(parsed) => hosts.extend(parsed),
-            Err(error) => tracing::warn!(
-                %error,
-                "TILO_COLLAB_HOSTS must be a JSON array of Iroh endpoint addresses"
-            ),
-        }
-    }
-    if let Some(value) = std::env::var_os("TILO_COLLAB_HOST") {
-        if let Some(addr) = host_addr(&value.to_string_lossy()) {
-            hosts.push(addr);
-        } else {
-            tracing::warn!("TILO_COLLAB_HOST is not an Iroh endpoint address or id");
-        }
-    }
-    hosts.sort_by_key(|addr| addr.id.to_string());
-    hosts.dedup_by_key(|addr| addr.id);
-    hosts
-}
-
-/// A configured host, as its JSON address or as a bare endpoint id.
-#[cfg(target_os = "linux")]
-fn host_addr(value: &str) -> Option<EndpointAddr> {
-    tilo_failure::ignored!(
-        "a host value that is not JSON names no endpoint address here",
-        serde_json::from_str(value)
-            .ok()
-            .or_else(|| value.parse::<EndpointId>().ok().map(EndpointAddr::new))
-    )
-}
-
-/// Who this device's certificate says its person is, and what the device calls itself: the id that
-/// stays the person's, and the name its other devices are told apart by. A device the person never
-/// named says no name: the stand-in its certificate carries is no word of theirs, and every reader
-/// says which device it is in its own language.
-#[cfg(target_os = "linux")]
-fn certified_as(identity: Option<&DeviceIdentity>) -> (Option<[u8; 32]>, String) {
-    identity.map_or_else(
-        || (None, String::new()),
-        |identity| {
-            (
-                Some(identity.device_cert.user_public_key),
-                tilo_user_identity::device_name(&identity.device_cert.device_label)
-                    .unwrap_or_default()
-                    .to_owned(),
-            )
-        },
-    )
-}
-
-/// This device's link onto the person's other devices before the endpoint runs, so a device that
-/// proves itself at the actor's first tick is heard: named by this device's certificate, with what
-/// lasts of the person's devices in the record of them the session follows as `devices`.
-#[cfg(target_os = "linux")]
-fn fabric_of(
-    identity: Option<&DeviceIdentity>,
-    devices: Option<PersonDevicesRecord>,
-    outgoing: HostOutbox,
-    continuity: Continuity,
-    lan: tilo_endpoint_reachability::Nearby,
-) -> Option<Arc<SessionFabric>> {
-    let identity = identity?;
-    let device = DeviceId::new(hex::encode(identity.device_cert.device_public_key)).ok()?;
-    let reach = Reach {
-        outgoing,
-        user_public_key: identity.device_cert.user_public_key,
-        continuity,
-        lan,
-    };
-    Some(SessionFabric::new(
-        device,
-        identity.device_cert.device_label.clone(),
-        devices.map(|devices| (devices, identity.device_cert.clone())),
-        reach,
-    ))
-}
-
-/// An endpoint only this machine reaches: on loopback, with nothing that finds it from elsewhere.
-#[cfg(target_os = "linux")]
-pub(super) fn loopback_endpoint() -> Result<iroh::endpoint::Builder, String> {
-    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .relay_mode(iroh::RelayMode::Disabled)
-        .portmapper_config(iroh::endpoint::PortmapperConfig::Disabled)
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .map_err(|error| format!("no loopback address: {error}"))
-}
-
-/// The endpoint the peer actor binds, and the relays held back from it until something needs this
-/// device dialable: the person's `relays` for a device with an identity, none for a session that
-/// takes part as nobody and stays on this machine's loopback.
-#[cfg(target_os = "linux")]
-fn endpoint_for(
-    identity: Option<&DeviceIdentity>,
-    relays: &tilo_endpoint_reachability::EndpointRelays,
-    lan: &tilo_endpoint_reachability::Nearby,
-    workspace_devices: &network::WorkspaceDevices,
-) -> Result<(iroh::endpoint::Builder, iroh::RelayMap), String> {
-    let Some(identity) = identity else {
-        return Ok((loopback_endpoint()?, iroh::RelayMap::empty()));
-    };
-    let key = iroh::SecretKey::from_bytes(
-        &identity
-            .signer
-            .endpoint_secret()
-            .ok_or("this device's key dials only through its ownership")?,
-    );
-    // The relays are held back ([`tilo_endpoint_reachability`]): binding with an empty relay map
-    // keeps net report, address discovery and port mapping off the network until a workspace this
-    // session shows has someone else in it. A peer's key also resolves on the local network
-    // ([`tilo_endpoint_reachability::Nearby`]), so two of the workspace's devices that share one
-    // find each other while their relays rest, and with their own relay (or none) that is what
-    // finds them. The lookup asks only for a key this device dials, in a probe only that device
-    // opens, and answers only the devices [`network::LanFleet`] admits: someone else on the
-    // network learns no key and no address.
-    let fleet = network::LanFleet {
-        identity: identity.clone(),
-        workspace_devices: workspace_devices.clone(),
-    };
-    let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .secret_key(key)
-        .address_lookup(lan.lookup(Arc::new(fleet)))
-        .portmapper_config(relays.portmapper())
-        .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()));
-    if relays.n0_dns {
-        builder = builder
-            .address_lookup(tilo_endpoint_reachability::collaborating())
-            .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns());
-    }
-    Ok((builder, relays.relays.clone()))
 }
 
 #[cfg(test)]

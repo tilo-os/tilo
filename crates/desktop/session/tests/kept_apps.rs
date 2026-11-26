@@ -38,10 +38,6 @@ const APP: &str = "org.example.Kept";
 /// in.
 const APP_DIR: &str = "TILO_TEST_KEPT_APP";
 
-/// A relay nobody answers at: an address of the block kept for documentation, which routes
-/// nowhere.
-const SILENT_RELAY: &str = "https://192.0.2.1/";
-
 /// Not a test: the keeper a kept launch starts, as `tilo-app-keeper` would run.
 #[test]
 fn keeper_process() {
@@ -153,8 +149,6 @@ struct Rig {
     x11: bool,
     /// The desktop entry the app is launched by.
     entry: String,
-    /// The relays the desktop's peer network is given, when a test gives it any.
-    relays: Option<tilo_endpoint_reachability::EndpointRelays>,
 }
 
 /// One run of the desktop: its session, its apps, and how it ends when dropped.
@@ -239,19 +233,7 @@ impl Rig {
             root,
             x11,
             entry: entry.to_owned(),
-            relays: None,
         }
-    }
-
-    /// This device's peer network given a relay that never answers: what a desktop away from its
-    /// home network, on a captive portal or offline, is given.
-    fn on_a_silent_relay(mut self) -> Self {
-        let silent: iroh::RelayUrl = SILENT_RELAY.parse().expect("a relay address");
-        self.relays = Some(tilo_endpoint_reachability::EndpointRelays {
-            relays: iroh::RelayMap::from(silent),
-            n0_dns: false,
-        });
-        self
     }
 
     /// A run of the desktop, taking up what the keepers hold as the session's `main` does:
@@ -270,7 +252,6 @@ impl Rig {
             apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
             launch: Some(Rc::clone(&apps)),
             state: Some(self.device.state.clone()),
-            relays: self.relays.clone(),
             teardown: Box::new(move || asked.get()),
             ..Options::default()
         });
@@ -516,7 +497,7 @@ fn a_kept_app_stays_through_an_in_place_restart_in_its_tabs_and_a_logout_ends_it
 #[test]
 fn kept_windows_show_without_waiting_for_a_relay_that_never_answers() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let rig = Rig::new(&["Only"]).on_a_silent_relay();
+    let rig = Rig::new(&["Only"]);
     let mut first = rig.desktop(false);
     rig.launch(&first);
     let placed = shown_and_told(&rig, &mut first, &["Only"]);

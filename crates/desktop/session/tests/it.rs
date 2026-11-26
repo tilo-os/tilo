@@ -105,8 +105,6 @@ mod display_settings;
 mod displays;
 #[path = "do_action.rs"]
 mod do_action;
-#[path = "fabric.rs"]
-mod fabric;
 #[path = "file_clipboard.rs"]
 mod file_clipboard;
 #[path = "find_off_loop.rs"]

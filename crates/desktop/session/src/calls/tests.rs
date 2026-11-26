@@ -14,7 +14,6 @@ use tilo_live::live_session::LiveSession;
 use tilo_live::presence::Own;
 use tilo_live::speaker::Speaker;
 
-use crate::platform::fabric::Continuity;
 use crate::sync::Event;
 use collab_types::Ed25519PublicKey;
 use collab_types::presence::{Availability, Payload, Presence};
@@ -24,14 +23,13 @@ use tilo_actions::remote::native_media::{Command, Issue, Request, State};
 use tilo_broker_core::collab_core::BrokerChannels;
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
-use tilo_network_actor::DeviceIdentity;
 use tilo_workspace_keys::{
     GovernanceTransport, InboundGovernance, KeyAccess, KeyDirectory, KeyProvider, KeysConfig,
     SharedKeys, WorkspaceKeys,
 };
 
 use super::*;
-use crate::sync::{Client, Entry, OwnPresence};
+use crate::sync::{Client, OwnPresence};
 use crate::{AppSocket, Options, Session};
 use tilo_live::live_session::Join;
 use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
@@ -107,31 +105,13 @@ fn private_home() -> tempfile::TempDir {
     root
 }
 
-/// One of the person's devices, on its own loopback endpoint, taking part in the collaboration
-/// live session as its certified self.
-fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
-    let key = test_server::signing_key(seed);
-    let cert = test_server::certified(
-        person,
-        &key,
-        label,
-        tilo_user_identity::DeviceCapabilities::member(),
-    );
-    Client::start(
-        Entry {
-            identity: Some(DeviceIdentity::kept(cert, key)),
-            own: OwnPresence::default(),
-            hosts: Vec::new(),
-            continuity: Continuity::default(),
-            wake: Arc::new(|| {}),
-            relays: test_server::loopback(),
-            lan: None,
-            live: None,
-            devices: None,
-        },
-        Vec::new(),
-    )
-    .expect("a loopback endpoint binds")
+/// One of the person's devices, taking part in the collaboration live session as its certified
+/// self through its daemon.
+fn device(_person: &ed25519_dalek::SigningKey, seed: u8, _label: &str) -> Client {
+    // A call's devices take part over their daemons, which hold the endpoint: here the session is
+    // the client of no transport, and the test hands it the presence and the live session a daemon
+    // would.
+    Client::offline(public(seed), OwnPresence::default()).0
 }
 
 /// The workspace as this device knows its governance: both of a call's devices may read its
@@ -397,21 +377,6 @@ struct Carrier {
     _speaker: Option<Arc<Speaker>>,
 }
 
-/// Wait until `client` 's endpoint has bound: a call runs on it.
-#[allow(
-    clippy::future_not_send,
-    reason = "a session's client is not Send, and the test runtime does not need it to be"
-)]
-async fn bound(client: &Client) {
-    // The endpoint binds on its own task and over the network, so the bound is the suite's, not a
-    // second count.
-    let deadline = tilo_test_env::hang_deadline();
-    while client.endpoint().is_none() {
-        assert!(Instant::now() < deadline, "the session's endpoint binds");
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
 /// The relay the test's live sessions meet on: in-process, with no one to admit,
 /// since a local live session is its own relay's member.
 fn relay() -> Arc<Relay> {
@@ -488,7 +453,7 @@ fn carrier(client: &Client, keys: &KeyProvider, heard_on: Option<InCall>) -> Car
     let devices = vec![*public(0x11).as_bytes(), *public(0x22).as_bytes()];
     let factory = Factory::new(Sources {
         calls: Arc::clone(&calls),
-        endpoint: Some(client.endpoint_handle()),
+        device: Some(*client.publisher().as_bytes()),
         keys: Some(keys.clone()),
         roster: Some(Arc::new(move |_workspace: &str| devices.clone())),
         questions: None,
@@ -548,8 +513,6 @@ struct Pair {
     reason = "a session's client is not Send, and the test runtime does not need it to be"
 )]
 async fn one_call(laptop: &Client, session: &Client) -> Pair {
-    laptop.connect(session.endpoint_addr());
-    session.connect(laptop.endpoint_addr());
     laptop.follow_desktop(&layout_tree());
     session.follow_desktop(&layout_tree());
     // Each session hears the other say it is in the channel's call.
@@ -558,8 +521,6 @@ async fn one_call(laptop: &Client, session: &Client) -> Pair {
         presence(here, there, collab_types::PeerPresencePayload::Arrived);
         availability(here, there, Some(call_presence()));
     }
-    bound(laptop).await;
-    bound(session).await;
     let (keys, kept) = keys(0x11, 0x11, &[0x11, 0x22]);
     founded(&keys).await;
     // Voice runs on the workspace's live session: both devices publish and hear on their own live session in one
@@ -840,16 +801,10 @@ async fn receive_pictures(
 /// nothing else, so what arrives is the size of that layer and its bitrate, not the camera's 720p
 /// source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one test's whole flow, from its setup to what it proves"
-)]
 async fn a_device_shows_anothers_camera_at_the_one_layer_it_shows() {
     let root = person_key();
     let ana = device(&root, 0x11, "Laptop");
     let ben = device(&root, 0x22, "Session");
-    ana.connect(ben.endpoint_addr());
-    ben.connect(ana.endpoint_addr());
     ana.follow_desktop(&layout_tree());
     ben.follow_desktop(&layout_tree());
     for (here, there) in [(&ana, 0x22_u8), (&ben, 0x11_u8)] {
@@ -857,8 +812,6 @@ async fn a_device_shows_anothers_camera_at_the_one_layer_it_shows() {
         presence(here, there, collab_types::PeerPresencePayload::Arrived);
         availability(here, there, Some(call_presence()));
     }
-    bound(&ana).await;
-    bound(&ben).await;
     let (keys, _kept) = keys(0x11, 0x11, &[0x11, 0x22]);
     founded(&keys).await;
     let relay = relay();
@@ -982,8 +935,6 @@ async fn a_shared_screen_reaches_the_other_device_and_a_lock_silences_it() {
     let root = person_key();
     let ana = device(&root, 0x11, "Laptop");
     let ben = device(&root, 0x22, "Session");
-    ana.connect(ben.endpoint_addr());
-    ben.connect(ana.endpoint_addr());
     ana.follow_desktop(&layout_tree());
     ben.follow_desktop(&layout_tree());
     for (here, there) in [(&ana, 0x22_u8), (&ben, 0x11_u8)] {
@@ -991,8 +942,6 @@ async fn a_shared_screen_reaches_the_other_device_and_a_lock_silences_it() {
         presence(here, there, collab_types::PeerPresencePayload::Arrived);
         availability_showing(here, there, call_presence(), false, true);
     }
-    bound(&ana).await;
-    bound(&ben).await;
     let (keys, _kept) = keys(0x11, 0x11, &[0x11, 0x22]);
     founded(&keys).await;
     let relay = relay();
@@ -1128,14 +1077,11 @@ async fn a_call_joins_while_the_workspace_keys_are_still_on_their_way() {
     // not reached it yet.
     let laptop = device(&person, 0x22, "Laptop");
     let session = device(&person, 0x11, "Session");
-    laptop.connect(session.endpoint_addr());
-    session.connect(laptop.endpoint_addr());
     laptop.follow_desktop(&layout_tree());
     session.follow_desktop(&layout_tree());
     laptop.hear(hello(0x11, "the other device"));
     presence(&laptop, 0x11, collab_types::PeerPresencePayload::Arrived);
     availability(&laptop, 0x11, Some(call_presence()));
-    bound(&laptop).await;
     let (keys, _kept) = keys(0x22, 0x11, &[0x11, 0x22]);
     let left = carrier(&laptop, &keys, None);
     let mut here = left

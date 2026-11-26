@@ -25,12 +25,8 @@ use crate::common::{PERSON, reached, until, wait_for};
 /// The app whose processes the test runs.
 const APP: &str = "so.tilo.lang.tasks";
 
-/// A relay nobody answers at: an address of the block kept for documentation, which routes
-/// nowhere.
-const SILENT_RELAY: &str = "https://192.0.2.1/";
-
 /// A person's own session in `home`, with its identity, its workspace service and its app wire in
-/// `root`, given only a relay that never answers. Answers the session once it holds the workspace
+/// `root`. Answers the session once it holds the workspace
 /// it founds, and that workspace.
 fn offline_session(
     home: &mut tilo_test_env::TestHome,
@@ -57,15 +53,10 @@ fn offline_session(
         tilo_identity::provisioning::IdentityStorage::Files,
     )
     .expect("the throwaway identity");
-    let silent = SILENT_RELAY.parse::<iroh::RelayUrl>().expect("a relay URL");
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
         collab: true,
         state: Some(home.state().to_path_buf()),
-        relays: Some(tilo_endpoint_reachability::EndpointRelays {
-            relays: iroh::RelayMap::from(silent),
-            n0_dns: false,
-        }),
         app_socket: AppSocket::At(root.join("app_wire.sock")),
         launches,
         ..Options::default()

@@ -136,7 +136,6 @@ impl Session {
         // person's devices, followed on the passes that find this device's
         // daemon. The tunnel itself is the daemon's, which holds the device's
         // endpoint; this session opens the TUNs and hands it the packets.
-        let beside = Vec::new();
         let vpn = options.vpn.take().map(crate::vpn::Vpn::start);
         // The shell link the device's daemon gave this session when it started it: the
         // session's own reads and writes go there, the workspace resources it shows itself are
@@ -741,7 +740,7 @@ impl Session {
         }
         // The person's session on their devices is followed in the record of their devices in
         // their own workspace: the one follow of it that every part of the session reads and
-        // changes it through, the peer network's included.
+        // changes it through.
         let owner_devices = crate::sync::device_identity().map(|identity| {
             crate::owner_session::OwnerDevices::follow(
                 &daemon,
@@ -749,15 +748,7 @@ impl Session {
                 options.wake.handle(),
             )
         });
-        let sync = start_collaboration(
-            &options,
-            continuity.clone(),
-            beside,
-            Rc::clone(&live_sessions),
-            owner_devices
-                .as_ref()
-                .map(|devices| devices.record().0.shared()),
-        );
+        let sync = start_collaboration(&options, Rc::clone(&live_sessions));
         if let Some(sync) = &sync {
             sync.attach_view(view.clone());
         }
@@ -799,19 +790,8 @@ impl Session {
         if let (Some(personal), Some(seed)) = (&personal, seed) {
             personal.borrow_mut().hold_seed(seed);
         }
-        // The fabric the session acts on: one handed to it — a stand-in in a
-        // test — or its own, when the person certified this device. A
-        // session that takes part as nobody keeps none.
-        let own_fabric = match &options.fabric {
-            Some(_) => None,
-            None => sync.as_ref().and_then(|sync| sync.fabric()),
-        };
-        let fabric: Option<crate::platform::fabric::SharedLink> =
-            match (&options.fabric, own_fabric) {
-                (Some(shared), _) => Some(Arc::clone(shared)),
-                (None, Some(own)) => Some(own),
-                (None, None) => None,
-            };
+        // The fabric the session acts on: a stand-in a test hands its options.
+        let fabric: Option<crate::platform::fabric::SharedLink> = options.fabric.clone();
         if let Some(devices) = &owner_devices {
             // Notifications continue on the person's other devices, through the record of them.
             let (record, _) = devices.record();

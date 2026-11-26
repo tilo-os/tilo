@@ -11,13 +11,8 @@ use tilo_session::{AppSocket, Options};
 
 use crate::common::{PERSON, wait_for};
 
-/// A relay nobody answers at: an address of the block kept for documentation, which routes
-/// nowhere.
-const SILENT_RELAY: &str = "https://192.0.2.1/";
-
-/// The session starts with an identity and its peer network on, given only a relay that never
-/// answers: its first frame, and the ready file the live update waits for, come in less time than the
-/// endpoint gives a relay before it names its address without one.
+/// The session starts with an identity and its collaboration on: its first frame, and the ready
+/// file the live update waits for, come in less time than a session waits on a network at all.
 #[test]
 fn a_desktop_with_no_reachable_relay_shows_and_says_it_is_ready_without_waiting_for_one() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -52,17 +47,11 @@ fn a_desktop_with_no_reachable_relay_shows_and_says_it_is_ready_without_waiting_
     let ready = tilo_paths::login::session_dir(Some(home.runtime().as_os_str().to_owned()))
         .expect("the login's session directory")
         .join(tilo_paths::login::DESKTOP_READY_FILE);
-    let silent = SILENT_RELAY.parse::<iroh::RelayUrl>().expect("a relay URL");
-
     let started = Instant::now();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
         collab: true,
         state: Some(home.state().to_path_buf()),
-        relays: Some(tilo_endpoint_reachability::EndpointRelays {
-            relays: iroh::RelayMap::from(silent),
-            n0_dns: false,
-        }),
         recovery: Some(recovery),
         app_socket: AppSocket::At(home.runtime().join("app_wire.sock")),
         ..Options::default()

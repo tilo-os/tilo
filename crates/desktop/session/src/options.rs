@@ -160,10 +160,6 @@ pub struct Options {
     /// presence a workspace would have carried ([`sync::Client::untethered`]), which says nothing
     /// on a network.
     pub sync: Option<Rc<sync::Client>>,
-    /// What this device's endpoint relays through. `None` : the person's setting
-    /// ([`tilo_endpoint_reachability::relays`]), which is what a session on their shell uses. `Some`
-    /// is a test's own: a server on this machine's loopback, so nothing it does leaves the machine.
-    pub relays: Option<tilo_endpoint_reachability::EndpointRelays>,
     /// The person's device fabric, when this session runs on one: what was copied here is shared
     /// with their other devices through it, and what they copied there joins the clipboard here.
     pub fabric: Option<crate::platform::fabric::SharedLink>,
@@ -263,24 +259,16 @@ pub fn no_session_actions(action: SessionAction) -> Result<(), String> {
     Ok(())
 }
 
-/// Who is here: this session's membership of each workspace, over the peer network. `None`
-/// when the session takes no part in it, or the device's endpoint did not bind: a desktop with no
-/// one else on it.
-/// `beside` is what else this device answers on its endpoint — its exit for the person's other
-/// devices. A caller that hands its own client ([`Options::sync`]) has already said what that
-/// endpoint serves.
-/// The peer network is the one `options` hands, or this device's own, which keeps what lasts of
-/// the person's devices in the record of them the session follows as `devices`.
+/// Who is here: this session's membership of each workspace, over the device's daemon, which
+/// holds the device's key and its one endpoint. A session the daemon did not start is a client of
+/// no peer network: the daemon owns the key, and two endpoints under one key push each other off
+/// the network, so none is bound here. The workspaces' live sessions the daemon gives the session
+/// carry who is here and what they say, and the daemon says this device's one word
+/// ([`crate::live::Live`]).
+/// A caller that hands its own client ([`Options::sync`]) is taken as it is.
 pub(crate) fn start_collaboration(
     options: &Options,
-    continuity: crate::platform::fabric::Continuity,
-    beside: tilo_network_actor::own_service::Protocols,
     live: Rc<std::cell::RefCell<Option<crate::live::Live>>>,
-    devices: Option<
-        crate::followed_resource::SharedFollow<
-            tilo_workspace_service::workspaces::person_workspace::devices::Devices,
-        >,
-    >,
 ) -> Option<Rc<sync::Client>> {
     if let Some(sync) = &options.sync {
         return Some(Rc::clone(sync));
@@ -288,7 +276,7 @@ pub(crate) fn start_collaboration(
     if !options.collab {
         return None;
     }
-    let identity = sync::device_identity();
+    let identity = sync::device_identity()?;
     let own = sync::OwnPresence {
         // Publish a name only when the session has one; viewers supply the unnamed label.
         label: crate::platform::person::session_name(
@@ -296,81 +284,36 @@ pub(crate) fn start_collaboration(
             &options.person,
         )
         .unwrap_or_default(),
-        user: identity
-            .as_ref()
-            .map(|identity| hex::encode(identity.device_cert.user_public_key)),
+        user: Some(hex::encode(identity.device_cert.user_public_key)),
         ..sync::OwnPresence::default()
     };
-    // This process dials as the device only when it holds the device's key. A session the
-    // device's daemon started cannot — the daemon owns the key and the endpoint — and takes part
-    // through it instead: the workspaces' live sessions carry who is here and what they say, and
-    // the daemon says this device's one word ([`crate::live::Live`]). Two endpoints under one key
-    // push each other off the network, so none is bound here.
-    if let Some(identity) = identity
-        .as_ref()
-        .filter(|identity| identity.signer.endpoint_secret().is_none())
-    {
-        let publisher =
-            iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key).ok()?;
-        let saying = live.borrow().as_ref().map(|live| {
-            tilo_session_client::Saying::Word(
-                Arc::new(live.telling()) as Arc<dyn tilo_session_client::TellWord>
-            )
-        });
-        // Nothing this session says leaves on the peer network itself: what it says of the person
-        // goes to the daemon's word, and the rest of the network is the daemon's.
-        let (outgoing, _commands): (
-            tokio::sync::mpsc::UnboundedSender<tilo_session_client::Cmd>,
-            _,
-        ) = tokio::sync::mpsc::unbounded_channel();
-        let (_heard, arrived) = std::sync::mpsc::channel();
-        return Some(Rc::new(sync::Client::over(
-            sync::Transport {
-                outgoing: Arc::new(outgoing),
-                arrived,
-                saying,
-            },
-            sync::Device {
-                publisher,
-                endpoint: iroh::EndpointAddr::new(publisher),
-                person: Some(identity.device_cert.user_public_key),
-                name: identity.device_cert.device_label.clone(),
-            },
-            own,
-            live,
-        )));
-    }
-    match sync::Client::start(
-        sync::Entry {
-            identity,
-            own,
-            hosts: sync::configured_hosts(),
-            continuity,
-            wake: options.wake.handle(),
-            // A probe recorded before a restart is not answered after it: the newest epoch each
-            // device asked at is kept with the session's state.
-            lan: Some(
-                tilo_endpoint_reachability::Nearby::from_env(options.wake.handle())
-                    .unwrap_or_else(|| {
-                        tilo_endpoint_reachability::Nearby::new(options.wake.handle())
-                    })
-                    .remembering_in(options.state.as_deref()),
-            ),
-            relays: options
-                .relays
-                .clone()
-                .unwrap_or_else(tilo_endpoint_reachability::relays),
-            live: Some(live),
-            devices,
+    let publisher = iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key).ok()?;
+    let saying = live.borrow().as_ref().map(|live| {
+        tilo_session_client::Saying::Word(Arc::new(live.telling()) as Arc<dyn tilo_session_client::TellWord>)
+    });
+    // Nothing this session says leaves on the peer network itself: what it says of the person
+    // goes to the daemon's word, and the rest of the network is the daemon's.
+    let (outgoing, _commands): (
+        tokio::sync::mpsc::UnboundedSender<tilo_session_client::Cmd>,
+        _,
+    ) = tokio::sync::mpsc::unbounded_channel();
+    let (_heard, arrived) = std::sync::mpsc::channel();
+    let sync = Rc::new(sync::Client::over(
+        sync::Transport {
+            outgoing: Arc::new(outgoing),
+            arrived,
+            saying,
         },
-        beside,
-    ) {
-        Ok(sync) => Some(Rc::new(sync)),
-        Err(error) => {
-            tracing::warn!(%error, "the peer network");
-            None
-        }
-    }
+        sync::Device {
+            publisher,
+            endpoint: iroh::EndpointAddr::new(publisher),
+            person: Some(identity.device_cert.user_public_key),
+            name: identity.device_cert.device_label,
+        },
+        own,
+        live,
+    ));
+    Some(sync)
 }
 
 /// How the person's workspaces stand, as the device's daemon publishes them, and the actions that
@@ -401,7 +344,6 @@ impl Default for Options {
             person: "person".into(),
             presentation: ComponentRunnerInputs::from_native_process,
             sync: None,
-            relays: None,
             controllers: None,
             config: SessionConfig::default(),
             accelerometer: Accelerometer::default(),

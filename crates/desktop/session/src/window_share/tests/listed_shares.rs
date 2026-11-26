@@ -32,7 +32,6 @@ fn session_of(key: &SigningKey, label: &str, state: &Path, daemon: &TestDaemon) 
             label: label.to_owned(),
             ..OwnPresence::default()
         },
-        Vec::new(),
     );
     let sync = Rc::new(sync);
     let (content, media, content_socket) = device_content();

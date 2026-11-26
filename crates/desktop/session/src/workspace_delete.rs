@@ -6,8 +6,6 @@
 //! nothing of the workspace goes until the person says yes there. Only their yes takes the
 //! workspace off the shell, which is what the person's list follows; this device's daemon then
 //! deletes it where it is kept, and it goes out of this device's record.
-//! A workspace its owner deleted somewhere else leaves this device the same way, and the person is
-//! told who deleted it ([`Shared::follow_owner_deletions`]).
 
 use std::future::Future as _;
 use std::sync::Arc;
@@ -151,71 +149,4 @@ impl Shared {
         }
     }
 
-    /// Take each workspace whose host said its owner deleted it off this session and out of this
-    /// device's record, and tell the person: someone else deleted it, so it is news to them.
-    pub(crate) fn follow_owner_deletions(&self) {
-        let Some(sync) = &self.sync else {
-            return;
-        };
-        for workspace in sync.take_deleted() {
-            tracing::info!(%workspace, "a workspace its owner deleted leaves this device");
-            let name = self.handle.read(|tree| {
-                tree.workspaces
-                    .iter()
-                    .find(|held| held.id() == workspace)
-                    .map(|held| held.name.clone())
-            });
-            // Told once: a word the host repeats finds nothing left to take away.
-            let gone = self.take_off_shell(workspace);
-            if gone && let Some(name) = name {
-                crate::directory::workspace_notice(
-                    &*self.telling(),
-                    (
-                        "session-owner-deleted-workspace",
-                        Some("session-owner-deleted-workspace-body"),
-                    ),
-                    &name,
-                );
-            }
-        }
-    }
-
-    /// Take `workspace`, which is gone already, off the shell; whether it was taken. Nobody is asked
-    /// and nobody refuses: the person goes to the workspace beside it when they were in it. The
-    /// shell is never left with none: where it was the only one, a new empty workspace takes its
-    /// place first, as it does when the person deletes their last workspace here.
-    fn take_off_shell(&self, workspace: WorkspaceId) -> bool {
-        let only = |tree: &tilo_desktop_model::Layout| matches!(tree.workspaces.as_slice(), [only] if only.id() == workspace);
-        if self.handle.read(only)
-            && let Err(error) = self.ask_of_shell("new-workspace", &Map::new())
-        {
-            tracing::warn!(%error, %workspace, "a deleted workspace stays on the shell, which has no other");
-            return false;
-        }
-        let mut tree = self.handle.read(Clone::clone);
-        let Some(at) = tree
-            .workspaces
-            .iter()
-            .position(|held| held.id() == workspace)
-        else {
-            return false;
-        };
-        if tree.workspaces.len() == 1 {
-            return false;
-        }
-        let gone = tree.workspaces.remove(at);
-        if gone.id() == tree.active
-            && let Some(next) = tree
-                .workspaces
-                .get(at.min(tree.workspaces.len().saturating_sub(1)))
-        {
-            tree.active = next.id();
-        }
-        tree.active_strip.remove(&gone.id());
-        for strip in &gone.strips {
-            tree.active_group.remove(&strip.id);
-        }
-        self.handle.replace_tree(tree);
-        true
-    }
 }

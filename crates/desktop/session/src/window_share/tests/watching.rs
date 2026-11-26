@@ -74,7 +74,6 @@ fn member_outside_the_live_session(seed: u8, shell: Layout, salt: u16) -> Member
             label: format!("Device {seed:x}"),
             ..OwnPresence::default()
         },
-        Vec::new(),
     );
     let sync = Rc::new(sync);
     let (content, media, content_socket) = device_content();

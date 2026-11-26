@@ -267,7 +267,7 @@ tilo-server-account = { path = "../../core/tilo-server-account" }
 tilo-model-client = { path = "../../sdk/model-client", features = ["runtime-client"] }
 # Who is here: the session's own membership of each workspace, on the
 # peer network's peer actor.
-tilo-network-actor = { path = "../network-actor" }
+tilo-network-actor = { path = "../network-actor", features = ["test-support"] }
 # This device's own workspace service: the one a server runs, holding the workspaces this
 # device founds.
 tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["agents", "apps", "files"] }

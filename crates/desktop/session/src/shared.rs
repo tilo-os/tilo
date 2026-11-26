@@ -487,7 +487,6 @@ impl Shared {
         self.follow_nearby_shares();
         self.follow_delete_workspace();
         self.follow_deletions();
-        self.follow_owner_deletions();
         self.follow_boot_join();
         self.follow_hosted_browser();
         // A program of this login asking to work as an agent is a question of the person's: their

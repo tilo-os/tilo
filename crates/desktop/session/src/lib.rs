@@ -305,7 +305,6 @@ mod model_steps;
 mod nearby_send;
 #[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
-mod network;
 #[cfg(target_os = "linux")]
 mod network_reach;
 #[cfg(target_os = "linux")]

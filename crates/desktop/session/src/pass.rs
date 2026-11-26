@@ -851,13 +851,6 @@ impl Session {
         self.shared.clipboard.sync_continuity();
         if let Some(fabric) = &self.shared.fabric {
             let media_enabled = fabric.require_media().is_ok();
-            // What the person's devices sent this one, before this pass's pumps: a route they asked
-            // for starts on the same pass it was asked for on.
-            if let Some(sync) = &self.shared.sync {
-                for envelope in sync.fabric_actions() {
-                    self.route_fabric_action(fabric, &envelope);
-                }
-            }
             // The person's speaker groups, remote audio and the view Settings asks of them move on
             // the same fabric, on the same pass: a device arriving, a group being created or a
             // calibration progressing is what the next snapshot shows.

@@ -31,8 +31,6 @@ use device_vpn::tunnel::dns::DnsRelay;
 use device_vpn::tunnel::{ALPN, Authority, Decision, Exit, ExitDevices, PacketDevice, client};
 use iroh::{Endpoint, EndpointAddr, EndpointId};
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::workspaces::PersonResources;
-use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
 
 /// How long the relays' names may take to resolve before the carrier leaves them out: opening the
 /// tunnel never waits on a lookup.
@@ -54,11 +52,15 @@ pub(crate) struct DeviceVpn {
 }
 
 impl DeviceVpn {
-    /// Serve the device VPN on `endpoint`, for `person`'s devices, whose record `personal` keeps.
-    pub(crate) fn new(endpoint: Endpoint, person: [u8; 32], personal: PersonResources) -> Self {
+    /// Serve the device VPN on `endpoint`, for `person`'s devices, whose record `copies` keeps.
+    pub(crate) fn new(
+        endpoint: Endpoint,
+        person: [u8; 32],
+        copies: tilo_workspace_service::workspaces::Workspaces,
+    ) -> Self {
         let allowed = Allowed(Arc::new(Who {
             person,
-            personal,
+            copies: Some(copies),
             on: AtomicBool::new(false),
         }));
         let lent = Arc::new(Mutex::new(None));
@@ -355,7 +357,9 @@ struct Allowed(Arc<Who>);
 
 struct Who {
     person: [u8; 32],
-    personal: PersonResources,
+    /// The person's own workspace, whose record of their devices is read here; `None` where this
+    /// device keeps none, and then no device of theirs is known.
+    copies: Option<tilo_workspace_service::workspaces::Workspaces>,
     on: AtomicBool,
 }
 
@@ -363,9 +367,13 @@ impl Allowed {
     /// The person's devices as their record lists them: certified by their root, not taken back,
     /// and not expired.
     fn devices(&self) -> BTreeSet<[u8; 32]> {
-        let Some(record) = self.0.personal.read::<Devices>(DEVICES) else {
+        let Some(copies) = self.0.copies.clone() else {
             return BTreeSet::new();
         };
+        let person = self.0.person;
+        let record = super::workspaces::block_on_owned(async move {
+            tilo_workspace_service::workspaces::person_workspace::devices::of(&copies, &person).await
+        });
         let now = tilo_clock::unix_now_ns();
         record
             .listed(&self.0.person)
@@ -602,7 +610,7 @@ mod tests {
         // everyone away rather than trusting a device it cannot check.
         let allowed = Allowed(Arc::new(Who {
             person,
-            personal: PersonResources::default(),
+            copies: None,
             on: AtomicBool::new(true),
         }));
         let peer = EndpointId::from_bytes(&theirs).unwrap();

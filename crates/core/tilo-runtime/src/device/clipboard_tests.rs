@@ -24,7 +24,7 @@ use tilo_actions::{ActionAddress, InvocationId};
 use tilo_device_identity::login::{ISSUE, LOG_IN, Place};
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, NoActions};
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::workspaces::PersonResources;
+use tilo_workspace_service::workspaces::person_workspace;
 use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
 
 use super::*;
@@ -167,44 +167,48 @@ async fn clipboard(
     tilo_workspace_service::workspaces::person_workspace::found(workspaces.copies())
         .await
         .expect("the person's own workspace");
-    let personal = PersonResources::default();
-    personal.attach(
-        Arc::new(workspaces.copies().clone()),
-        &tokio::runtime::Handle::current(),
-    );
+    let person = workspaces.device_cert().user_public_key;
+    let workspace = tilo_server_protocol::servers::person_workspace_id(&person);
     for (cert, addrs) in known {
-        let kept = cert.clone();
-        personal.apply(DEVICES, move || {
-            Devices::keeping(&kept).expect("a device certificate encodes")
-        });
+        person_workspace::apply_on(
+            workspaces.copies(),
+            &workspace,
+            DEVICES,
+            Devices::keeping(cert).expect("a device certificate encodes"),
+        )
+        .await
+        .expect("the person's record takes a device");
         let (key, certificate, addrs) = (
             hex::encode(cert.device_public_key),
             hex::encode(postcard::to_allocvec(cert).expect("a certificate encodes")),
             hex::encode(postcard::to_allocvec(addrs).expect("an address list encodes")),
         );
-        personal.apply(DEVICES, move || {
-            Devices::KEEP_FACT.with((
-                key.clone(),
-                certificate.clone(),
-                "endpoint".into(),
-                addrs.clone(),
-            ))
-        });
+        person_workspace::apply_on(
+            workspaces.copies(),
+            &workspace,
+            DEVICES,
+            Devices::KEEP_FACT.with((key, certificate, "endpoint".into(), addrs)),
+        )
+        .await
+        .expect("the person's record says where a device answers");
     }
+    let record = || {
+        let copies = workspaces.copies().clone();
+        crate::device::workspaces::block_on_owned(async move {
+            person_workspace::devices::of(&copies, &person).await
+        })
+    };
     until("the person's record lists every device", || {
-        (personal.kept_devices().len() == known.len()).then_some(())
+        (record().listed(&person).len() == known.len()).then_some(())
     })
     .await;
     until("the record says where every device answers", || {
-        (personal
-            .kept_devices_at()
-            .iter()
-            .all(|(_, addrs)| !addrs.is_empty())
-            && personal.kept_devices_at().len() == known.len())
-        .then_some(())
+        let devices = record().certified_at_with_endpoints(&person, tilo_clock::unix_now_ns());
+        (devices.iter().all(|(_, addrs)| !addrs.is_empty()) && devices.len() == known.len())
+            .then_some(())
     })
     .await;
-    let clipboard = Clipboard::new(workspaces, personal);
+    let clipboard = Clipboard::new(workspaces);
     clipboard.register(&workspaces.copies().providers());
     clipboard
 }
