@@ -46,7 +46,8 @@ class MergeGeneratedTest(unittest.TestCase):
                            ("commit.gpgsign", "false"), ("core.hooksPath", "/dev/null")):
             self.git("config", key, value)
         (self.root / ".githooks").mkdir()
-        shutil.copy2(DRIVER, self.root / ".githooks" / "merge-generated")
+        for name in ("merge-generated", "merge-generated.py", "python.sh"):
+            shutil.copy2(DRIVER.parent / name, self.root / ".githooks" / name)
         for driver, mode in (("generated", "whole"), ("generated-blocks", "blocks")):
             self.git("config", f"merge.{driver}.driver", f".githooks/merge-generated {mode} %O %A %B %P %L")
         (self.root / ".gitattributes").write_text(

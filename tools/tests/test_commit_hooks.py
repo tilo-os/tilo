@@ -20,7 +20,7 @@ class CommitHookTests(unittest.TestCase):
         self.git("init", "-q", "-b", "main")
         for key, value in (("user.name", "Test"), ("user.email", "test@example.org"), ("commit.gpgsign", "false")):
             self.git("config", key, value)
-        paths = ["tools/policy/check_source_content.py", "tools/policy/check_public_references.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/policy/check_wire_enums.py", "tools/policy/check_format_migrations.py", "tools/policy/check_socket_paths.py", "tools/policy/check_catalogue_coverage.py", "tools/policy/check_copy_language.py", "tools/policy/judged.py", "tools/policy/added_line_policy.py", "tools/policy/rust_source.py", "tools/ci/comparison_range.py", "tools/dev/install-git-hooks.py", ".githooks/pre-merge-commit", ".githooks/commit-msg", ".githooks/python.sh", ".githooks/merge-generated"]
+        paths = ["tools/policy/check_source_content.py", "tools/policy/check_public_references.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/policy/check_wire_enums.py", "tools/policy/check_format_migrations.py", "tools/policy/check_socket_paths.py", "tools/policy/check_catalogue_coverage.py", "tools/policy/check_copy_language.py", "tools/policy/judged.py", "tools/policy/added_line_policy.py", "tools/policy/rust_source.py", "tools/ci/comparison_range.py", "tools/dev/install-git-hooks.py", ".githooks/pre-merge-commit", ".githooks/commit-msg", ".githooks/python.sh", ".githooks/merge-generated", ".githooks/merge-generated.py"]
         for name in paths:
             dest = self.root / name
             dest.parent.mkdir(parents=True, exist_ok=True)
