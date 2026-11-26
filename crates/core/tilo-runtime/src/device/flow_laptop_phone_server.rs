@@ -62,7 +62,7 @@ async fn grant_server_controls(
 }
 
 /// Take back an administrator's control grant, as the person does, from where
-/// [`grant_server_controls`] wrote it.
+/// [`grant_server_controls`] wrote it, until the machine's own copy no longer holds it.
 async fn revoke_server_controls(
     hosted: &tilo_workspace_service::workspaces::Workspaces,
     laptop: &Arc<ServiceWorkspaces>,
@@ -78,17 +78,31 @@ async fn revoke_server_controls(
         .remove_workspace_grants(person, server, [1; 32], vec![id.clone()])
         .await
         .expect("the person takes the grant back");
-    laptop
+    // The machine's copy follows the person's workspace from the server, and may have the
+    // removal already: it is taken back there too unless it has.
+    let revoked = laptop
         .copies()
         .commit_own_change(
             person,
             tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::Member {
-                change: tilo_action_policy::Change::Revoke(id),
+                change: tilo_action_policy::Change::Revoke(id.clone()),
             },
             None,
         )
+        .await;
+    let still = laptop
+        .copies()
+        .policy_of(person)
         .await
-        .expect("the machine's copy takes it back");
+        .expect("the machine keeps the person's workspace")
+        .grants
+        .into_iter()
+        .any(|grant| grant.id == id);
+    assert!(
+        !still,
+        "the machine's copy takes the grant back: {:?}",
+        revoked.err()
+    );
 }
 
 /// One of the person's devices as its daemon runs it: its workspace service, entered through its
