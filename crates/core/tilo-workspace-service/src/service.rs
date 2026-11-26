@@ -227,13 +227,6 @@ impl ServiceSessions {
         ) -> Option<Arc<dyn AppActionServer>>,
     ) -> Result<(Self, Option<Listed>), ServiceError> {
         validate_service_device_identity(&identity)?;
-        // The evidence of the calls this host admits is signed as this device: the certificate
-        // its identity holds and the key that certificate names, whatever account the host runs
-        // as and wherever its person's identity store is kept.
-        tilo_invocation_journal::serve_as(
-            identity.device_cert.clone(),
-            Arc::new(identity.device_signing_key.clone()),
-        );
         std::fs::create_dir_all(&cfg.state_root)?;
         let workspaces = empty_registry();
         let metrics = Arc::new(Metrics::default());

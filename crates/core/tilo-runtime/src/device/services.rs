@@ -3166,6 +3166,13 @@ fn open_workspaces(
             identity.place.keys().clone(),
         )),
     );
+    // The evidence of the calls this device's apps have admitted is signed as this device: the
+    // certificate its identity holds and the key it took. Named here, so nothing it signs reads
+    // the identity store of the account the daemon happens to run as.
+    tilo_app_host::serve_receipts_as(
+        identity.cert.clone(),
+        Arc::new(identity.key.clone()) as Arc<dyn collab_types::signer::DeviceSigner>,
+    );
     let (dir, key) = (identity.place.dir().join(OWN), identity.key.clone());
     let (keeping, itself) = keeping.unzip();
     let configure = keeping.map(|keeping| {

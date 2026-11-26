@@ -38,6 +38,11 @@ pub mod window_notes;
 /// The channel engine every host runs: its groups, the governance that settles them, and the
 /// keys an endpoint reads a sealed record with.
 pub use tilo_workspace_keys as workspace_keys;
+
+/// Name the device this host signs the evidence of its admitted calls as: its certificate and
+/// the key that certificate names ([`tilo_invocation_journal::serve_as`]). A host calls it as it
+/// opens the workspaces and brokers it serves.
+pub use tilo_invocation_journal::serve_as as serve_receipts_as;
 /// When a re-check of what was already admitted is due, and the announcements it waits on.
 pub use tilo_workspace_keys::schedule as policy_schedule;
 pub mod collab_app_broker;

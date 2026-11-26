@@ -1382,6 +1382,12 @@ fn validate_server_identity(identity: &ServerIdentity) -> Result<(), ServerError
             "the certificate is not a device of the person".into(),
         ));
     }
+    // The evidence of the calls this server's apps have admitted is signed as this device: the
+    // certificate its identity holds and the key that certificate names.
+    tilo_app_host::serve_receipts_as(
+        identity.device_cert.clone(),
+        std::sync::Arc::new(identity.device_signing_key.clone()),
+    );
     Ok(())
 }
 
