@@ -1530,7 +1530,6 @@ view home(t: Tasks) {
         overview_title: title,
         overview_count: header_count,
         title: if let x = opened { meta(x).title } else { title },
-        nothing_listed: t.items.is_empty(),
         actions: [new_task, clear_done],
     ) {
         on search(q: Text): set(searched, q)
@@ -1596,14 +1595,13 @@ view home(t: Tasks) {
             }
         }
         content: {
-            // Nothing open: the list stands alone, as a window with one column does. Only an
-            // empty place says something here, in place of the columns the shell would show.
+            // Nothing open: the list stands alone, as a window with one column does. An empty
+            // Tasks keeps its list too, never folding into one state: the entry at the list's
+            // foot is where the first task is typed, and what New task brings the keyboard to.
             if let x = opened {
                 std.document_page {
                     task_body(x)
                 }
-            } else if t.items.is_empty() {
-                ui.EmptyState("No tasks here", icon: .list_checks)
             }
         }
     }
