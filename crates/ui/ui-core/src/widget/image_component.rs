@@ -9,6 +9,7 @@ crate::component::choice!(ImageFit, "ImageFit", {
     Contain => "contain",
     Cover => "cover",
     Fill => "fill",
+    Actual => "actual",
 });
 
 /// A picture: artwork, a photo, a cover, read from its address.
@@ -23,7 +24,7 @@ pub struct ImageProps {
     /// decorative.
     #[component(required)]
     pub alt: Option<String>,
-    /// How it fills its box: `contain`, `cover` or `fill`.
+    /// How it fills its box: `contain`, `cover`, `fill`, or `actual` for its own size.
     pub fit: Option<ImageFit>,
     /// The id whose destination takes its pointer and its keys, when the picture is something a
     /// person points and types into — another machine's screen, a stream it runs. Nothing when

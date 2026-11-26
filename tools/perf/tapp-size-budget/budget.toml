@@ -227,8 +227,8 @@ x86_64 = 720896
 aarch64 = 720896
 
 [apps."so.tilo.remote"]
-x86_64 = 3080192
-aarch64 = 2555904
+x86_64 = 196608
+aarch64 = 196608
 
 [apps."so.tilo.scratchpad"]
 x86_64 = 131072

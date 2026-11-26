@@ -102,7 +102,10 @@ needed_absent = ["libgst", "libglib-2.0", "libgobject-2.0", "libgio-2.0"]
 # libtilo_music_engine.so (5018456) and libtilo_youtube_engine.so (4554056) were
 # measured on x86_64 in the first app-sizes run that built them (r18da0989fd), and
 # their budget is that size to the next 4 KiB on both architectures until an
-# aarch64 run measures them there.
+# aarch64 run measures them there. libtilo_remote_engine.so (2869448 bytes),
+# Remote's SSH and VNC clients, was measured on x86_64 at its introduction; its
+# budget is the one that run printed, on both architectures until an aarch64 run
+# measures it there.
 
 # The apps of apps_without_media that use an engine library
 # (crates/engines/loadable/), by library: they load it at exec. the app release
@@ -158,6 +161,7 @@ bytes = 2490368
 "libtilo_grayjay_engine.so" = 393216
 "libtilo_highlight_engine.so" = 1245184
 "libtilo_music_engine.so" = 5021696
+"libtilo_remote_engine.so" = 2949120
 "libtilo_theme_painter_engine.so" = 65536
 "libtilo_totp_engine.so" = 524288
 "libtilo_typst_engine.so" = 34406400
@@ -176,6 +180,7 @@ bytes = 2490368
 "libtilo_grayjay_engine.so" = 458752
 "libtilo_highlight_engine.so" = 2752512
 "libtilo_music_engine.so" = 5021696
+"libtilo_remote_engine.so" = 2949120
 "libtilo_theme_painter_engine.so" = 131072
 "libtilo_totp_engine.so" = 2097152
 "libtilo_typst_engine.so" = 41418752

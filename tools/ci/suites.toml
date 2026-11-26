@@ -875,6 +875,7 @@ readers = [
   "crates/lang/tilolang-runtime/tests/e2e_pdf.rs",
   "crates/lang/tilolang-runtime/tests/e2e_photos.rs",
   "crates/lang/tilolang-runtime/tests/e2e_publisher.rs",
+  "crates/lang/tilolang-runtime/tests/e2e_remote.rs",
   "crates/lang/tilolang-runtime/tests/e2e_removals.rs",
   "crates/lang/tilolang-runtime/tests/e2e_scratchpad.rs",
   "crates/lang/tilolang-runtime/tests/e2e_sheets.rs",

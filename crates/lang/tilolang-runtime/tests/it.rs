@@ -102,6 +102,8 @@ mod e2e_publisher;
 mod e2e_record_at;
 #[path = "e2e_record_values.rs"]
 mod e2e_record_values;
+#[path = "e2e_remote.rs"]
+mod e2e_remote;
 #[path = "e2e_removals.rs"]
 mod e2e_removals;
 #[path = "e2e_scratchpad.rs"]

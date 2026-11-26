@@ -12106,61 +12106,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "remote"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "des",
- "iroh-base",
- "remote",
- "remote-model",
- "runtime-dylib",
- "russh",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-app-test-host",
- "tilo-callstream",
- "tilo-paths",
- "tilo-runtime-collab",
- "tilo-settings-model",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tokio",
- "uuid",
- "vte",
- "workspace-hack",
-]
-
-[[package]]
-name = "remote-model"
-version = "0.1.0"
-dependencies = [
- "data-encoding",
- "ed25519-dalek 3.0.0",
- "iroh-base",
- "serde",
- "serde_json",
- "tilo-resource",
- "tilo-test-env",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "remote-model-wasm"
-version = "0.1.0"
-dependencies = [
- "remote-model",
- "tilo-model-guest",
- "workspace-hack",
-]
-
-[[package]]
 name = "renderdoc-sys"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18510,7 +18455,6 @@ name = "tilo-models-wasm"
 version = "0.1.0"
 dependencies = [
  "poker-model-wasm",
- "remote-model-wasm",
  "workspace-hack",
 ]
 
@@ -19521,6 +19465,37 @@ dependencies = [
  "tilo-app-id",
  "tilo-files",
  "tilo-paths",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-remote"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "des",
+ "russh",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-paths",
+ "tilo-test-env",
+ "tokio",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-remote-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "serde",
+ "serde_json",
+ "tilo-content",
+ "tilo-engine-loader",
+ "tilo-remote",
+ "tilo-terminal",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -27341,9 +27316,6 @@ dependencies = [
  "reis",
  "reloadable-core",
  "reloadable-state",
- "remote",
- "remote-model",
- "remote-model-wasm",
  "renderdoc-sys",
  "reqwest",
  "resolv-conf",
@@ -27770,6 +27742,7 @@ dependencies = [
  "tilo-recurrence",
  "tilo-reference",
  "tilo-registry-types",
+ "tilo-remote",
  "tilo-render-protocol",
  "tilo-render-service",
  "tilo-resource",

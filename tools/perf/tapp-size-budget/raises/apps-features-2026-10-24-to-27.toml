@@ -45,9 +45,6 @@ aarch64 = 131072
 [apps."so.tilo.pdf-viewer"]
 aarch64 = 65536
 
-[apps."so.tilo.remote"]
-aarch64 = 65536
-
 [apps."so.tilo.sheets"]
 aarch64 = 65536
 

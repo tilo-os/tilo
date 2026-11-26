@@ -175,7 +175,6 @@ touch. Expanded neighbouring targets must not overlap.
 | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mail`   | Email client: MIME parse/build via mail-parser / mail-builder; live IMAP (async-imap) + SMTP (lettre) behind the `live` feature.                |
 | `chat`   | Workspace-scoped collaborative chat + calls; the workspace's own document, synced like every document; calls through the shell's native voice service. |
-| `remote` | Remote-access app: SSH terminals, VNC/RDP desktops, and Tilo-to-Tilo server sessions (SSH opens an embedded terminal grid).                      |
 | `feeds`  | RSS/Atom/JSON-feed + Gemini reader (feed-rs, reqwest, tokio-rustls TOFU); OPML import/export.                                                   |
 
 ## System & OS

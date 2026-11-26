@@ -732,5 +732,5 @@ theme should supply.
 | `video-editor/src/**` | 8 | 8 | 0 | title colours rendered into the video, stored swatches, blend helpers, test |
 | `themes/src/**` | 5 | 4 | 1 | spec conversion and tests are content; the customizer's seed colour should be the active accent |
 | `slides/src/model.rs` | 1 | 1 | 0 | the authored "Deep" slide treatment |
-| `db-client`, `remote`, `osk` | 3 | 3 | 0 | blend helper; test fixtures |
-| **Total** | **155** | **122** | **33** | |
+| `db-client`, `osk` | 2 | 2 | 0 | blend helper; test fixtures |
+| **Total** | **154** | **121** | **33** | |

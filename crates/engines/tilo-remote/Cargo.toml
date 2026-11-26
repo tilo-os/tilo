@@ -1,0 +1,36 @@
+[package]
+name = "tilo-remote"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
+description = "Remote's engine: SSH shells, VNC desktops, their host-key trust, file transfers and the input a person sends them."
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+# VNC authentication: DES-ECB over the server's challenge, as every VNC server expects.
+des = "0.9"
+# Keep compression and the workspace's audited ring transport backend, but not russh's optional
+# RustCrypto RSA signer: it stays open to the remotely observable Marvin timing attack. Modern
+# Ed25519/ECDSA keys and passwords stay supported.
+russh = { version = "0.65.1", default-features = false, features = ["ring", "flate2"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "net", "time", "sync", "io-util"] }
+# The user's home, for the `~/.ssh` identities a key sign-in uses, and the login name a saved
+# connection leaves out.
+tilo-paths = { path = "../../platform/tilo-paths" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

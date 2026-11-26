@@ -38,6 +38,9 @@ pub enum ImageFit {
     /// Scale the image to fully cover the rect while preserving aspect
     /// ratio. Overflow on the longer axis is clipped to the rect.
     Cover,
+    /// Show the image at its own size, one pixel to a point, centred in the rect. What does not
+    /// fit is cut at the rect's edge: another machine's screen read pixel for pixel.
+    Actual,
 }
 
 /// A picture as a component takes one, by where its bytes are.
@@ -381,7 +384,9 @@ impl Image {
             return;
         }
         if self.focused {
-            self.keys().map(|keys| keys.focus(false));
+            if let Some(keys) = self.keys() {
+                keys.focus(false);
+            }
             self.focused = false;
         }
         self.keys = None;
@@ -410,25 +415,29 @@ impl Image {
             f64::from(self.intrinsic_size.0),
             f64::from(self.intrinsic_size.1),
         );
-        Some(match self.fit {
-            ImageFit::Fill | ImageFit::Cover => self.rect,
-            ImageFit::Contain => {
-                let scale = (rw / iw).min(rh / ih);
-                let (dw, dh) = (iw * scale, ih * scale);
-                let (dx, dy) = (
-                    self.rect.x0 + (rw - dw) * 0.5,
-                    self.rect.y0 + (rh - dh) * 0.5,
-                );
-                Rect::new(dx, dy, dx + dw, dy + dh)
-            }
-        })
+        let scale = match self.fit {
+            ImageFit::Fill => return Some(self.rect),
+            ImageFit::Contain => (rw / iw).min(rh / ih),
+            ImageFit::Cover => (rw / iw).max(rh / ih),
+            ImageFit::Actual => 1.0,
+        };
+        let (dw, dh) = (iw * scale, ih * scale);
+        let (dx, dy) = (
+            self.rect.x0 + (rw - dw) * 0.5,
+            self.rect.y0 + (rh - dh) * 0.5,
+        );
+        Some(Rect::new(dx, dy, dx + dw, dy + dh))
     }
 
     /// The pointer `at`, as fractions of the picture where it is painted: `None` for a point
     /// outside it.
     fn picture_point(&self, at: Point) -> Option<(f64, f64)> {
         let painted = self.painted_rect()?;
-        if painted.width() <= 0.0 || painted.height() <= 0.0 || !painted.contains(at) {
+        if painted.width() <= 0.0
+            || painted.height() <= 0.0
+            || !painted.contains(at)
+            || !self.rect.contains(at)
+        {
             return None;
         }
         Some((
@@ -623,8 +632,12 @@ impl Image {
                 let dest = Rect::new(dx, dy, dx + dw, dy + dh);
                 (bt, dest)
             }
-            ImageFit::Cover => {
-                let scale = (rw / iw_f).max(rh / ih_f);
+            ImageFit::Cover | ImageFit::Actual => {
+                let scale = if self.fit == ImageFit::Actual {
+                    1.0
+                } else {
+                    (rw / iw_f).max(rh / ih_f)
+                };
                 let dw = iw_f * scale;
                 let dh = ih_f * scale;
                 let dx = self.rect.x0 + (rw - dw) * 0.5;
@@ -639,7 +652,7 @@ impl Image {
         let clip = self
             .corner_radius
             .map(|radius| RoundedRect::from_rect(fill_rect, f64::from(radius)));
-        let needs_clip = matches!(self.fit, ImageFit::Cover) || clip.is_some();
+        let needs_clip = matches!(self.fit, ImageFit::Cover | ImageFit::Actual) || clip.is_some();
         match &clip {
             Some(rounded) => scene.push_layer(
                 Fill::NonZero,
@@ -887,7 +900,7 @@ impl Widget for Image {
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if self.input.is_none() {
             return;
-        };
+        }
         let held = crate::key_input::held(&ctx.modifiers.state());
         match event {
             WindowEvent::Focused(focused) => {
@@ -1040,7 +1053,12 @@ mod tests {
             "decode failures remain visible"
         );
 
-        for fit in [ImageFit::Contain, ImageFit::Cover, ImageFit::Fill] {
+        for fit in [
+            ImageFit::Contain,
+            ImageFit::Cover,
+            ImageFit::Fill,
+            ImageFit::Actual,
+        ] {
             let image = Image::from_path(FIXTURE_PATH).filling().with_fit(fit);
             let root = Row::new().push(Box::new(
                 Container::new()
@@ -1071,7 +1089,7 @@ mod tests {
             assert!(matches!(image.source, Source::Vector(_)));
             assert!(image.cached.is_none());
             assert_eq!(image.alt(), Some("Source application"));
-            for fit in [ImageFit::Contain, ImageFit::Cover, ImageFit::Fill] {
+            for fit in [ImageFit::Contain, ImageFit::Cover, ImageFit::Fill, ImageFit::Actual] {
                 image.fit = fit;
                 let mut scene = Scene::new();
                 image.draw_for_test(&mut scene, Rect::new(0.0, 0.0, 64.0, 64.0));

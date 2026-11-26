@@ -102,9 +102,6 @@ members = [
     "apps/moderation-model",
     "apps/messages",
     "apps/imager",
-    "apps/remote",
-    "apps/remote-model",
-    "apps/remote-model-wasm",
     "apps/staging-handoff-model",
     "apps/terminal",
 
@@ -236,6 +233,7 @@ members = [
     "crates/services/vision",
 
     # Terminal
+    "crates/engines/tilo-remote",
     "crates/engines/tilo-terminal",
 
     # Media
@@ -382,6 +380,7 @@ members = [
     "crates/engines/loadable/emoji",
     "crates/engines/loadable/highlight",
     "crates/engines/loadable/music",
+    "crates/engines/loadable/remote",
     "crates/engines/loadable/theme-painter",
     "crates/engines/loadable/totp",
     "crates/engines/loadable/typst",

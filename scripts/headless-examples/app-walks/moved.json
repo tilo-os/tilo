@@ -578,5 +578,67 @@
   "so.tilo.settings settings.display-placement#arrange-displays": {
     "to": "so.tilo.settings.sections settings/display-person#place-display",
     "test": "crates/desktop/settings-sections/src/workspace_tests.rs:261"
+  },
+  "so.tilo.remote remote.connection-list#show-connections": {
+    "to": "so.tilo.remote tl.so.tilo.remote.Remote#window",
+    "description": "the window of the workspace's connections",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_remote.rs:353"
+  },
+  "so.tilo.remote remote.connection-list#new": {
+    "to": "so.tilo.remote tl.so.tilo.remote.Remote#window",
+    "description": "the window's New connection entry (`on show new`), which opens the form",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_remote.rs:353"
+  },
+  "so.tilo.remote remote.connection-list#add-connection": {
+    "to": "so.tilo.remote tl.so.tilo.remote.Remote#add_connection",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_remote.rs:361"
+  },
+  "so.tilo.remote remote.connection-list#delete-connection": {
+    "to": "so.tilo.remote tl.so.tilo.remote.Remote#delete_connection",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_remote.rs:650"
+  },
+  "so.tilo.remote remote.connection-list#mark-used": {
+    "to": "so.tilo.remote tl.so.tilo.remote.Connection#mark_used",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_remote.rs:423"
+  },
+  "so.tilo.remote remote.connection-list#type": {
+    "to": "so.tilo.remote tl.so.tilo.remote.Connection#change_connection",
+    "description": "a field typed into the form is written through it, only what changed",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_remote.rs:423"
+  },
+  "so.tilo.remote remote.connection#edit-connection": {
+    "to": "so.tilo.remote tl.so.tilo.remote.Connection#change_connection",
+    "description": "the form the row's Edit connection opens saves through it",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_remote.rs:423"
+  },
+  "so.tilo.remote remote.connection#connect": {
+    "to": "so.tilo.remote tl.so.tilo.remote.Connection#connect",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_remote.rs:491"
+  },
+  "so.tilo.remote remote.session#disconnect": {
+    "to": "so.tilo.remote tl.so.tilo.remote.Connection#disconnect",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_remote.rs:491"
+  },
+  "so.tilo.remote remote.effect#send-text": {
+    "to": "so.tilo.remote tl.so.tilo.remote.Connection#send_text",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_remote.rs:491"
+  },
+  "so.tilo.remote remote.session#put-file": {
+    "to": "so.tilo.remote tl.so.tilo.remote.Connection#put_file",
+    "description": "the copy itself is the engine's, tested in crates/engines/tilo-remote",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_remote.rs:491"
+  },
+  "so.tilo.remote remote.session#fetch-file": {
+    "to": "so.tilo.remote tl.so.tilo.remote.Connection#fetch_file",
+    "description": "the copy itself is the engine's, tested in crates/engines/tilo-remote",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_remote.rs:491"
+  },
+  "so.tilo.remote remote.session#trust-host-key": {
+    "to": "so.tilo.remote tl.so.tilo.remote.Connection#trust_host_key",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_remote.rs:541"
+  },
+  "so.tilo.remote remote.session#forget-host-key": {
+    "to": "so.tilo.remote tl.so.tilo.remote.Connection#forget_host_key",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_remote.rs:541"
   }
 }

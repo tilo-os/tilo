@@ -521,7 +521,7 @@ doc = false
 "kstring-2_0_2" = { package = "kstring", version = "^2.0.2", default-features = false, features = ["default", "std", "unsafe"] }
 "kurbo-0_13_1" = { package = "kurbo", version = "^0.13.1", default-features = false, features = ["default", "std"] }
 "landlock-0_4_5" = { package = "landlock", version = "^0.4.5", default-features = false, features = [] }
-"launcher" = { path = "../../crates/core/launcher", default-features = false, features = [] }
+"launcher" = { path = "../../crates/core/launcher", default-features = false, features = ["dev-overrides"] }
 "launcher-macos" = { path = "../../crates/core/launcher-macos", default-features = false, features = [] }
 "launcher-windows" = { path = "../../crates/core/launcher-windows", default-features = false, features = [] }
 "lazy_static-1_5_0" = { package = "lazy_static", version = "^1.5.0", default-features = false, features = ["spin", "spin_no_std"] }
@@ -811,9 +811,6 @@ doc = false
 "reis-0_7_1" = { package = "reis", version = "^0.7.1", default-features = false, features = ["calloop"] }
 "reloadable-core-0_1_0" = { package = "reloadable-core", version = "^0.1.0", default-features = false, features = [] }
 "reloadable-state-0_1_0" = { package = "reloadable-state", version = "^0.1.0", default-features = false, features = [] }
-"remote" = { path = "../../apps/remote", default-features = false, features = ["samples"] }
-"remote-model" = { path = "../../apps/remote-model", default-features = false, features = [] }
-"remote-model-wasm" = { path = "../../apps/remote-model-wasm", default-features = false, features = [] }
 "renderdoc-sys-1_1_0" = { package = "renderdoc-sys", version = "^1.1.0", default-features = false, features = [] }
 "reqwest-0_13_4" = { package = "reqwest", version = "^0.13.4", default-features = false, features = ["__rustls", "__tls", "blocking", "brotli", "form", "gzip", "json", "query", "rustls-no-provider", "stream"] }
 "resolv-conf-0_7_6" = { package = "resolv-conf", version = "^0.7.6", default-features = false, features = ["system"] }
@@ -1147,7 +1144,7 @@ doc = false
 "tilo-highlight-grammars" = { path = "../../crates/ui/highlight-grammars", default-features = false, features = ["syntax-definitions"] }
 "tilo-history" = { path = "../../crates/sdk/tilo-history", default-features = false, features = [] }
 "tilo-host-search" = { path = "../../crates/integrations/tilo-host-search", default-features = false, features = [] }
-"tilo-identity" = { path = "../../crates/core/tilo-identity", default-features = false, features = ["test-support"] }
+"tilo-identity" = { path = "../../crates/core/tilo-identity", default-features = false, features = ["test-support", "throwaway-test-identity"] }
 "tilo-identity-client" = { path = "../../crates/core/tilo-identity-client", default-features = false, features = [] }
 "tilo-image-codec" = { path = "../../crates/engines/tilo-image-codec", default-features = false, features = [] }
 "tilo-image-info" = { path = "../../crates/engines/tilo-image-info", default-features = false, features = [] }
@@ -1199,7 +1196,7 @@ doc = false
 "tilo-onboarding" = { path = "../../crates/desktop/onboarding", default-features = false, features = [] }
 "tilo-onboarding-session" = { path = "../../crates/desktop/onboarding-session", default-features = false, features = [] }
 "tilo-os-search" = { path = "../../crates/integrations/os-search", default-features = false, features = [] }
-"tilo-package-store" = { path = "../../crates/core/package-store", default-features = false, features = ["default", "lease", "store"] }
+"tilo-package-store" = { path = "../../crates/core/package-store", default-features = false, features = ["default", "dev-overrides", "lease", "store"] }
 "tilo-page-engine" = { path = "../../crates/engines/page-engine", default-features = false, features = [] }
 "tilo-paint-stream" = { path = "../../crates/engines/paint-stream", default-features = false, features = ["svg"] }
 "tilo-paint-strokes" = { path = "../../crates/engines/paint-strokes", default-features = false, features = [] }
@@ -1223,6 +1220,7 @@ doc = false
 "tilo-recurrence" = { path = "../../crates/engines/tilo-recurrence", default-features = false, features = [] }
 "tilo-reference" = { path = "../../crates/core/reference", default-features = false, features = [] }
 "tilo-registry-types" = { path = "../../crates/core/registry-types", default-features = false, features = [] }
+"tilo-remote" = { path = "../../crates/engines/tilo-remote", default-features = false, features = [] }
 "tilo-render-protocol" = { path = "../../crates/ui/tilo-render-protocol", default-features = false, features = [] }
 "tilo-render-service" = { path = "../../crates/desktop/render-service", default-features = false, features = [] }
 "tilo-resource" = { path = "../../crates/core/tilo-resource", default-features = false, features = ["test-support"] }
@@ -1232,7 +1230,7 @@ doc = false
 "tilo-rollback" = { path = "../../crates/os/tilo-rollback", default-features = false, features = [] }
 "tilo-rt" = { path = "../../crates/platform/tilo-rt", default-features = false, features = [] }
 "tilo-runner-native" = { path = "../../crates/sdk/runner-native", default-features = false, features = ["broker-transport", "default", "mpris"] }
-"tilo-runtime" = { path = "../../crates/core/tilo-runtime", default-features = false, features = ["test-support"] }
+"tilo-runtime" = { path = "../../crates/core/tilo-runtime", default-features = false, features = ["dev-overrides", "test-support"] }
 "tilo-runtime-bundle" = { path = "../../crates/core/runtime-bundle", default-features = false, features = [] }
 "tilo-runtime-collab" = { path = "../../crates/core/runtime-collab", default-features = false, features = ["client", "default", "settings-host"] }
 "tilo-runtime-fs" = { path = "../../crates/core/runtime-fs", default-features = false, features = [] }
@@ -3287,9 +3285,6 @@ doc = false
 "reis-0_7_1" = { package = "reis", version = "^0.7.1", default-features = false, features = ["calloop"] }
 "reloadable-core-0_1_0" = { package = "reloadable-core", version = "^0.1.0", default-features = false, features = [] }
 "reloadable-state-0_1_0" = { package = "reloadable-state", version = "^0.1.0", default-features = false, features = [] }
-"remote" = { path = "../../apps/remote", default-features = false, features = ["samples"] }
-"remote-model" = { path = "../../apps/remote-model", default-features = false, features = [] }
-"remote-model-wasm" = { path = "../../apps/remote-model-wasm", default-features = false, features = [] }
 "renderdoc-sys-1_1_0" = { package = "renderdoc-sys", version = "^1.1.0", default-features = false, features = [] }
 "reqwest-0_13_4" = { package = "reqwest", version = "^0.13.4", default-features = false, features = ["__rustls", "__tls", "blocking", "brotli", "form", "gzip", "json", "rustls-no-provider", "stream"] }
 "resolv-conf-0_7_6" = { package = "resolv-conf", version = "^0.7.6", default-features = false, features = ["system"] }

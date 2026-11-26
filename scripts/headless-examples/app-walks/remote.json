@@ -1,0 +1,223 @@
+{
+  "app": "remote",
+  "said": "Remote Desktop",
+  "live": "tl",
+  "tl": {
+    "id": "so.tilo.remote",
+    "package": "remote"
+  },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Remote with no saved connections: it asks for the first",
+      "ops": [
+        {
+          "theme": false
+        },
+        {
+          "launch": true
+        },
+        {
+          "wait_for": "No saved connections"
+        },
+        {
+          "targets": true
+        }
+      ]
+    },
+    {
+      "id": "invalid",
+      "said": "Saving an empty form keeps it and says what each field needs",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "New connection"
+            ]
+          },
+          {
+            "offered": [
+              "SSH",
+              "VNC",
+              "RDP",
+              "Tilo device"
+            ]
+          },
+          {
+            "press_any": [
+              "Save"
+            ]
+          },
+          {
+            "wait_for": "A connection needs a name"
+          },
+          {
+            "wait_for": "A connection needs an address"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ssh",
+      "said": "Save an SSH connection: the list says where it goes, the password stays on the device",
+      "ops": {
+        "tl": [
+          {
+            "click_any": [
+              {
+                "prefix": "Name"
+              }
+            ]
+          },
+          {
+            "type": "Build box"
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "Host"
+              }
+            ]
+          },
+          {
+            "type": "build.lan"
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "User"
+              }
+            ]
+          },
+          {
+            "type": "ada"
+          },
+          {
+            "wait_for": "Kept on this device only."
+          },
+          {
+            "press_any": [
+              "Save"
+            ]
+          },
+          {
+            "wait_for": "ada@build.lan"
+          },
+          {
+            "must_not": [
+              "No saved connections"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "connect",
+      "said": "Opening a connection asks first and names where it goes",
+      "ops": {
+        "tl": [
+          {
+            "click_any": [
+              "Build box"
+            ]
+          },
+          {
+            "wait_for": "Connect to Build box?"
+          },
+          {
+            "offered": [
+              "Connect",
+              "Cancel"
+            ]
+          },
+          {
+            "press_any": [
+              "Cancel"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "tilo",
+      "said": "A Tilo device is named by its endpoint id; another name is refused",
+      "ops": {
+        "tl": [
+          {
+            "press_any": [
+              "New connection"
+            ]
+          },
+          {
+            "press_any": [
+              "Tilo device"
+            ]
+          },
+          {
+            "wait_for": "Device"
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "Name"
+              }
+            ]
+          },
+          {
+            "type": "Studio"
+          },
+          {
+            "click_any": [
+              {
+                "prefix": "Device"
+              }
+            ]
+          },
+          {
+            "type": "studio.local"
+          },
+          {
+            "press_any": [
+              "Save"
+            ]
+          },
+          {
+            "wait_for": "A Tilo device is named by its exact endpoint id"
+          },
+          {
+            "press_any": [
+              "Back"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "dark",
+      "said": "The same window in the dark theme",
+      "ops": [
+        {
+          "theme": true
+        }
+      ],
+      "dark": true
+    },
+    {
+      "id": "search",
+      "said": "The system's search finds the connection by its name",
+      "ops": [
+        {
+          "search": {
+            "tl": "Build box"
+          }
+        },
+        {
+          "choose_result": "Build box"
+        },
+        {
+          "wait_for": "Build box"
+        }
+      ]
+    }
+  ]
+}

@@ -13,4 +13,3 @@
 //! names is not.
 
 extern crate poker_model_wasm;
-extern crate remote_model_wasm;

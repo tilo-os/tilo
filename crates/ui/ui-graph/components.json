@@ -3922,7 +3922,7 @@
         },
         {
           "name": "fit",
-          "doc": "How it fills its box: `contain`, `cover` or `fill`.",
+          "doc": "How it fills its box: `contain`, `cover`, `fill`, or `actual` for its own size.",
           "type": {
             "option": {
               "choice": {
@@ -3930,7 +3930,8 @@
                 "cases": [
                   "contain",
                   "cover",
-                  "fill"
+                  "fill",
+                  "actual"
                 ]
               }
             }
