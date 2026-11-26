@@ -672,6 +672,150 @@ tilo_test_env::scenario! {
     }
 }
 
+// A window of a tilolang app the daemon launches on Linux runs none of the app's code: its
+// instance runs in the app's tilolang process, and the window, started as that instance's, is
+// handed the link its patch connection waits on, as on macOS and Windows.
+#[cfg(target_os = "linux")]
+tilo_test_env::scenario! {
+    fn a_linux_window_of_a_tilolang_app_shows_its_hosted_instance;
+
+    phase only_a_tilolang_apps_window_is_hosted;
+    {
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        let tilolang = store.install(
+            VIEWER,
+            &manifest(VIEWER, "gui", "runtime = \"tilolang/1.0.0\"\n"),
+            &[("probe", b"binary")],
+        );
+        let native = store.install(
+            "so.tilo.native",
+            &manifest("so.tilo.native", "gui", ""),
+            &[("probe", b"binary")],
+        );
+        let tilolang = launcher::manifest::read_manifest(&tilolang.manifest_path).unwrap();
+        let native = launcher::manifest::read_manifest(&native.manifest_path).unwrap();
+        assert!(hosts_window(&tilolang, Shows::Window), "a tilolang app's window is hosted");
+        assert!(
+            !hosts_window(&tilolang, Shows::Nothing) && !hosts_window(&tilolang, Shows::Connection),
+            "a launch that shows nothing has no window to host"
+        );
+        assert!(!hosts_window(&native, Shows::Window), "a native app draws its own window");
+    }
+
+    phase the_window_is_started_as_its_instance_and_handed_its_link;
+    {
+        use std::io::Read as _;
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        store.install(
+            VIEWER,
+            &manifest(VIEWER, "gui", "runtime = \"tilolang/1.0.0\"\n"),
+            &[("probe", b"binary")],
+        );
+        let display = root.join("wayland-0");
+        std::fs::write(&display, b"").unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("WAYLAND_DISPLAY", &display);
+        let said = root.join("said");
+        // Records what it was asked and holds its launch hold unread, with what came on it.
+        let launcher = tilo_test_env::stand_in(
+            root.join("tilo-launcher"),
+            &format!(
+                "printf '%s\\n' \"$@\" > '{said}.args'\nenv > '{said}.env'\nhold\n",
+                said = said.display()
+            ),
+        )
+        .unwrap();
+        let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
+        let app = apps.launchable(VIEWER).unwrap();
+        let original = apps.original_launch(&app).unwrap();
+        let sockets = apps.sockets.clone();
+        // The instance's end of the patch connection; the window's goes on the link.
+        let (window, instance) = runtime_portal::process_link::pair().unwrap();
+        let hosted = WindowLink::carrying(instances::HostedWindow {
+            instance: 7,
+            patch: window,
+        })
+        .unwrap();
+        let mut launch = linux::spawn(
+            &apps,
+            (&app, WORKSPACE),
+            (&sockets, &original),
+            (Shows::Window, None),
+            Some(hosted),
+        )
+        .unwrap();
+        launch.release_registration().unwrap();
+        assert!(launch.window_link.is_none(), "the window's end of the link went with the release");
+
+        let handed = wait_for(&format!("{}.args", said.display()));
+        assert!(
+            handed.lines().any(|line| line == "--tilolang-process")
+                && handed.lines().any(|line| line == "--wayland-socket"),
+            "the launcher starts a window whose instance a tilolang host runs: {handed}"
+        );
+        let env = wait_for(&format!("{}.env", said.display()));
+        assert!(
+            env.lines().any(|line| line == "TILO_CONTINUITY_INSTANCE=7"),
+            "the window is started as its instance's: {env}"
+        );
+
+        // The window's end of the patch connection lives only where the link went: in the
+        // launcher's hold, handed over with its release. The instance's end stays connected while
+        // the launcher holds it, and is left alone once the launcher is gone.
+        let mut instance = std::os::unix::net::UnixStream::from(instance);
+        instance
+            .set_read_timeout(Some(std::time::Duration::from_millis(200)))
+            .unwrap();
+        let alive = instance.read(&mut [0; 16]).unwrap_err();
+        assert!(
+            matches!(
+                alive.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ),
+            "the window's end reached the launcher: {alive}"
+        );
+        launch.kill();
+        instance
+            .set_read_timeout(Some(std::time::Duration::from_secs(30)))
+            .unwrap();
+        assert_eq!(
+            instance.read(&mut [0; 16]).unwrap(),
+            0,
+            "the window's end went with the launcher"
+        );
+    }
+
+    phase any_other_window_runs_its_own_program;
+    {
+        let (_temp, root) = canonical_temp();
+        let mut store = Store::new(&root);
+        store.install(VIEWER, &manifest(VIEWER, "gui", ""), &[("probe", b"binary")]);
+        let display = root.join("wayland-0");
+        std::fs::write(&display, b"").unwrap();
+        let mut environment = tilo_test_env::ScopedEnv::new();
+        environment.set("WAYLAND_DISPLAY", &display);
+        let said = root.join("said");
+        let launcher = tilo_test_env::stand_in(
+            root.join("tilo-launcher"),
+            &format!(
+                "printf '%s\\n' \"$@\" > '{said}.args'\nhold\n",
+                said = said.display()
+            ),
+        )
+        .unwrap();
+        let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
+        let launch = apps.start(VIEWER, WORKSPACE).unwrap();
+        let handed = wait_for(&format!("{}.args", said.display()));
+        assert!(
+            !handed.lines().any(|line| line == "--tilolang-process"),
+            "a native app's window is its own program: {handed}"
+        );
+        launch.kill();
+    }
+}
+
 // A development build is a package of its own, marked with the device that built it and the app
 // it builds: it launches through the same path a window does, is attested under its own id, and
 // starts with none of the installed app's grants.

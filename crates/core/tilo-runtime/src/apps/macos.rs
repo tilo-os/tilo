@@ -22,7 +22,6 @@ use super::{Apps, Launch};
 use crate::daemon::Sockets;
 use crate::host::{ServiceConnections, ServiceSockets};
 use app_catalogue::apps::InstalledApp;
-use runtime_portal::process_link::Packet as _;
 use std::ffi::OsString;
 use std::os::fd::AsRawFd as _;
 
@@ -56,12 +55,8 @@ pub(super) fn launch(
         return Err("refusing to launch: HOME is not set, so the app has nowhere to write".into());
     }
     // A tilolang app's instance runs in its app's process; the window shows it.
-    let hosted = manifest
-        .entrypoint
-        .runtime
-        .as_deref()
-        .is_some_and(launcher::manifest::is_tilolang)
-        .then(|| hosted_window(apps, app, workspace))
+    let hosted = super::hosts_window(&manifest, shows)
+        .then(|| apps.hosted_window_link(&app.app_id, workspace))
         .transpose()?;
     let container =
         launcher_macos::policy::prepare_container(&apps.data_home, Some(workspace), &app.app_id)
@@ -106,12 +101,12 @@ pub(super) fn launch(
         ));
     }
     if let Some(hosted) = &hosted {
-        inherit_fds.push(hosted.window_link.as_raw_fd());
+        inherit_fds.push(hosted.window_end.as_raw_fd());
         env.extend(
             [
                 (
                     runtime_portal::process_link::FD_ENV,
-                    hosted.window_link.as_raw_fd().to_string(),
+                    hosted.window_end.as_raw_fd().to_string(),
                 ),
                 (runtime_portal::process_link::HOSTED_ENV, "1".to_owned()),
                 ("TILO_CONTINUITY_INSTANCE", hosted.instance.to_string()),
@@ -170,7 +165,7 @@ pub(super) fn launch(
     drop(services);
     drop(chooser.app_end);
     drop(capture.app_end);
-    let link = hosted.map(|hosted| hosted.link);
+    let link = hosted.map(|hosted| hosted.ours);
     let pid = u32::try_from(launched.pid())
         .map_err(|_| format!("{} started with an invalid pid", app.app_id))?;
     Ok(Launch {
@@ -249,35 +244,6 @@ pub(super) fn connector(
         trust: launcher_macos::TrustRequirement::DeveloperId,
     };
     launcher_macos::launch(&request).map_err(|error| error.to_string())
-}
-
-/// A tilolang window's instance, running in its app's process, and the window's link.
-struct HostedWindow {
-    /// The window's instance: the one its patch connection is for.
-    instance: u64,
-    /// This process's end of the window's link, which its patch connection went on.
-    link: runtime_portal::process_link::Descriptor,
-    /// The window's end, which it inherits.
-    window_link: runtime_portal::process_link::Descriptor,
-}
-
-/// Start the instance of a window of `app` in `workspace` in the app's tilolang process, and put
-/// its patch connection on the window's link before the window starts to read it.
-fn hosted_window(apps: &Apps, app: &InstalledApp, workspace: &str) -> Result<HostedWindow, String> {
-    let window = apps.hosted_window(&app.app_id, workspace)?;
-    let (link, window_link) = runtime_portal::process_link::pair()
-        .map_err(|error| format!("{}'s window link: {error}", app.app_id))?;
-    runtime_portal::process_link::ToProcess::Patch {
-        instance: window.instance,
-        patch: window.patch,
-    }
-    .send(&link)
-    .map_err(|error| format!("{}'s window link: {error}", app.app_id))?;
-    Ok(HostedWindow {
-        instance: window.instance,
-        link,
-        window_link,
-    })
 }
 
 /// Where the GStreamer a runtime package carries beside its binaries (`lib/gstreamer`, the tilolang

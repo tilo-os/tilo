@@ -565,10 +565,21 @@ impl Apps {
     ///
     /// # Errors
     /// As [`Self::origin_connection`] and [`instances::Instances::open_window`].
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     fn hosted_window(&self, app: &str, workspace: &str) -> Result<instances::HostedWindow, String> {
         let origin = self.origin_connection(app, workspace)?;
         self.instances.open_window(app, workspace, origin)
+    }
+
+    /// [`Self::hosted_window`], with the window's patch connection already put on the link the
+    /// window is handed, before it starts to read it.
+    ///
+    /// # Errors
+    /// As [`Self::hosted_window`], or the link could not be made or written.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn hosted_window_link(&self, app: &str, workspace: &str) -> Result<WindowLink, String> {
+        let window = self.hosted_window(app, workspace)?;
+        WindowLink::carrying(window).map_err(|error| format!("{app}'s window link: {error}"))
     }
 
     /// The connection an instance of `app` in `workspace` reaches its origin's connector over,
@@ -1245,6 +1256,50 @@ impl Apps {
     }
 }
 
+/// A tilolang window's instance, running in its app's process, and the window's link, which
+/// carries its patch connection: the window draws what that instance sends and runs none of the
+/// app's code itself.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct WindowLink {
+    /// The window's instance: the one its patch connection is for.
+    instance: u64,
+    /// This process's end of the window's link, held while the window runs.
+    ours: runtime_portal::process_link::Descriptor,
+    /// The window's end, which it is handed.
+    window_end: runtime_portal::process_link::Descriptor,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+impl WindowLink {
+    /// A link whose window end finds `window`'s patch connection waiting on it.
+    fn carrying(window: instances::HostedWindow) -> std::io::Result<Self> {
+        use runtime_portal::process_link::Packet as _;
+        let (ours, window_end) = runtime_portal::process_link::pair()?;
+        runtime_portal::process_link::ToProcess::Patch {
+            instance: window.instance,
+            patch: window.patch,
+        }
+        .send(&ours)?;
+        Ok(Self {
+            instance: window.instance,
+            ours,
+            window_end,
+        })
+    }
+}
+
+/// Whether a window of the app `manifest` declares is hosted: a tilolang app's instance runs in
+/// its app's tilolang process, and its window shows it. A launch that shows nothing has no window.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn hosts_window(manifest: &launcher::manifest::ManifestView, shows: Shows) -> bool {
+    shows == Shows::Window
+        && manifest
+            .entrypoint
+            .runtime
+            .as_deref()
+            .is_some_and(launcher::manifest::is_tilolang)
+}
+
 /// One launched app: the process the runtime started, which is the one the
 /// broker sees connect (the launcher on Linux, the app on macOS).
 pub struct Launch {
@@ -1255,10 +1310,14 @@ pub struct Launch {
     /// recorded; `None` once released.
     #[cfg(target_os = "linux")]
     registration: Option<launcher::launch_hold::LaunchHold>,
+    /// A hosted window's end of its link, handed to the launcher with its release; `None` once
+    /// handed, and for any other launch.
+    #[cfg(target_os = "linux")]
+    window_link: Option<runtime_portal::process_link::Descriptor>,
     #[cfg(target_os = "macos")]
     app: launcher_macos::LaunchedApp,
     /// A tilolang window's link, which its patch connection came on: held while the window runs.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     _link: Option<runtime_portal::process_link::Descriptor>,
     /// The tilolang window, in its app's container.
     #[cfg(windows)]
@@ -1286,7 +1345,12 @@ impl Launch {
     fn release_registration(&mut self) -> std::io::Result<()> {
         #[cfg(target_os = "linux")]
         if let Some(hold) = self.registration.take() {
-            return hold.release();
+            // A hosted window's link goes with the release: the launcher hands it to the window,
+            // whose patch connection is waiting on it.
+            return match self.window_link.take() {
+                Some(link) => hold.release_with_window_link(std::os::fd::AsFd::as_fd(&link)),
+                None => hold.release(),
+            };
         }
         Ok(())
     }

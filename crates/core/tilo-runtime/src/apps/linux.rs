@@ -33,7 +33,37 @@ pub(super) fn launch(
     shows: super::Shows,
     open: Option<&str>,
 ) -> Result<Launch, String> {
+    // A tilolang app's instance runs in its app's tilolang process, where agents and other
+    // devices call its actions; the window shows it, as on macOS and Windows.
+    let manifest = launcher::manifest::read_manifest(&app.manifest_path)
+        .map_err(|error| format!("refusing to launch {}: {error}", app.app_id))?;
+    let hosted = super::hosts_window(&manifest, shows)
+        .then(|| apps.hosted_window_link(&app.app_id, workspace))
+        .transpose()?;
+    spawn(
+        apps,
+        (app, workspace),
+        (sockets, original),
+        (shows, open),
+        hosted,
+    )
+}
+
+/// Start the launcher for [`launch`]: a `hosted` window is started as the window of the instance
+/// its link carries, holding none of the app's data, and handed that link with its release.
+pub(super) fn spawn(
+    apps: &Apps,
+    (app, workspace): (&InstalledApp, &str),
+    (sockets, original): (&Sockets, &super::original::OriginalLaunch),
+    (shows, open): (super::Shows, Option<&str>),
+    hosted: Option<super::WindowLink>,
+) -> Result<Launch, String> {
     let (mut command, launcher) = command(apps, app, workspace, sockets, original)?;
+    if let Some(hosted) = &hosted {
+        command
+            .arg("--tilolang-process")
+            .env("TILO_CONTINUITY_INSTANCE", hosted.instance.to_string());
+    }
     // The record the call named, handed to the app as its window's is: it opens it, or founds it
     // when nothing wrote it yet.
     if let Some(uri) = open {
@@ -92,11 +122,16 @@ pub(super) fn launch(
             })
             .ok();
     }
+    let (link, window_link) = hosted
+        .map(|hosted| (hosted.ours, hosted.window_end))
+        .unzip();
     Ok(Launch {
         stderr,
         pid: child.id(),
         child,
         registration: Some(registration),
+        window_link,
+        _link: link,
     })
 }
 
