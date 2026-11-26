@@ -272,8 +272,6 @@ async fn an_authenticated_dispatch_without_a_host_signer_is_refused() {
             let env = Environment::new_unserved();
             let rig = Rig::new(&env).await;
             publish_receipt_read(&rig).await;
-            let paths = tilo_identity::provisioning::collaboration_identity_paths();
-            std::fs::remove_file(paths.device_privkey).unwrap();
             let before = receipt_barriers(&rig);
             let receipt = ask_own_read(&rig, own_read("unsigned")).await;
             assert!(
@@ -481,11 +479,19 @@ async fn dispatcher_terminal_without_signer_retains_outcome_without_fabricating_
     tokio::task::LocalSet::new()
         .run_until(async {
             let env = Environment::new_unserved();
+            // The host has opened this workspace, as it does when it serves it: its device signs
+            // its receipts until it lets the workspace go.
+            tilo_invocation_journal::serve_as(
+                env.cert.clone(),
+                std::sync::Arc::new(env.key.clone()),
+            );
+            tilo_invocation_journal::opened(&env.route.cluster_id);
             let rig = Rig::new(&env).await;
             publish_receipt_read(&rig).await;
             let (wire, admitted) = dispatch_receipt_read(&rig).await;
-            let paths = tilo_identity::provisioning::collaboration_identity_paths();
-            std::fs::remove_file(paths.device_privkey).unwrap();
+            // The host lets go of the workspace while one of its dispatches is in flight: its
+            // device signs that workspace's receipts no longer.
+            tilo_invocation_journal::closed(&env.route.cluster_id);
             let before = receipt_barriers(&rig);
             rig.worker
                 .handle
