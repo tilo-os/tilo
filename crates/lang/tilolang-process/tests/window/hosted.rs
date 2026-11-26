@@ -2448,9 +2448,21 @@ fn choose(session: &mut Session, query: &str) {
 fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
     let _settled = ui::motion::testing::settled();
     let mut session = Session::tasks();
+    // A task's own commands are offered where the list shows one: the window's entry makes it,
+    // and opening it offers what acts on it.
+    choose(&mut session, "New task");
+    session.window.type_text("Water the plants");
+    session
+        .window
+        .press_key(ui::winit::keyboard::NamedKey::Enter);
+    session.settle();
+    let (x, y) = shown_at(&mut session, "Water the plants");
+    session.window.click_at(x, y);
+    session.settle();
     // What the app publishes for this window is what the window offers: the labels people
-    // read, and the keys the app gives its actions. A task is made by one action, which the
-    // list's entry fills: it asks nothing else, so its label stands without an ellipsis.
+    // read, and the keys the app gives its actions. A command the view answers every question
+    // of reads plainly: a task is made by one action, which the list's entry fills, and a task
+    // the row names is deleted by another, so neither asks for anything with an ellipsis.
     let actions = offered(&mut session);
     let labels: Vec<&str> = actions.iter().map(|(label, _)| label.as_str()).collect();
     assert!(labels.contains(&"New task"), "{labels:?}");
@@ -2458,12 +2470,12 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
         actions
             .iter()
             .find(|(offered, _)| offered == label)
-            .unwrap_or_else(|| panic!("{label} is offered"))
+            .unwrap_or_else(|| panic!("{label} is offered: {labels:?}"))
             .1
             .clone()
     };
     assert_eq!(key("New task").as_deref(), Some("Ctrl+n"));
-    assert_eq!(key("Delete…").as_deref(), Some("delete"));
+    assert_eq!(key("Delete").as_deref(), Some("delete"));
 
     // The window's own palette lists them, as a native app window's does.
     let listed: Vec<(String, Option<String>)> = session
@@ -2511,7 +2523,7 @@ fn the_windows_command_palette_offers_the_apps_actions_with_their_keys() {
         Some("Ctrl+N")
     );
     assert_eq!(
-        row("Delete…").keybinding_label(platform).as_deref(),
+        row("Delete").keybinding_label(platform).as_deref(),
         Some("Delete")
     );
     session
@@ -2587,7 +2599,8 @@ fn a_chosen_action_runs_at_the_app_and_the_task_offers_its_own() {
     choose(&mut session, "Complete");
     assert!(
         a_checked_row_box(&mut session),
-        "the task the palette ran Complete on shows checked"
+        "the task the palette ran Complete on shows checked: it is done in the workspace {}",
+        task_in_workspace(&session, "Water the plants", true)
     );
 }
 

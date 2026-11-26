@@ -156,7 +156,8 @@ fn add_task(session: &mut Session, title: &str) {
 
 /// Every command a task's menu offers acts when a tool presses it by its name: each is pressed
 /// where it stands, the menu closes on it, and what it names follows — the task is done or gone,
-/// or the surface it opens (a date, who does it, the commands behind More) stands in its place.
+/// or the surface it opens (a date, who does it, the commands behind a run) stands in its place.
+/// The commands the view gives a run of their own open from the run's row, and stand under it.
 #[test]
 fn every_command_of_a_tasks_menu_acts_by_its_name() {
     let _settled = ui::motion::testing::settled();
@@ -164,20 +165,32 @@ fn every_command_of_a_tasks_menu_acts_by_its_name() {
         .surface()
         .expect("the package has a surface");
     collab_types::app_surface::register_package(TASKS, &surface);
-    for command in [
-        "Open as page",
-        "Complete",
-        "Pick date…",
-        "Assign…",
-        "Delete",
+    for (run, command) in [
+        (None, "Open as page"),
+        (None, "Complete"),
+        (Some("Plan"), "Pick date…"),
+        (Some("Priority"), "Low"),
+        (Some("More"), "Duplicate"),
+        (Some("More"), "Delete"),
     ] {
         let mut session = live_task("Water the plants");
         let menu = row_menu(&mut session, "Water the plants");
+        let top = run.unwrap_or(command);
         assert!(
-            menu.contains(&command.to_owned()),
-            "the row's menu offers {command}: {menu:?}"
+            menu.contains(&top.to_owned()),
+            "the row's menu offers {top}: {menu:?}"
         );
+        if let Some(run) = run {
+            session.window.press_named(run);
+            session.settle();
+            let opened = controls_of(session.window.app());
+            assert!(
+                opened.iter().any(|name| name == command),
+                "{run} offers {command}: {opened:?}"
+            );
+        }
         let before = controls_of(session.window.app());
+        let tasks_before = session.titles().len();
         session.window.press_named(command);
         session.settle();
         let after = controls_of(session.window.app());
@@ -187,6 +200,7 @@ fn every_command_of_a_tasks_menu_acts_by_its_name() {
         );
         let followed = task_in_workspace(&session, "Water the plants", true)
             || !task_in_workspace(&session, "Water the plants", false)
+            || session.titles().len() != tasks_before
             || after
                 .iter()
                 .any(|name| !before.contains(name) && !menu.contains(name));

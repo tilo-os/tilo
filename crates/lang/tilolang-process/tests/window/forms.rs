@@ -1,7 +1,8 @@
 //! An action waiting for its arguments opens its form (forms-and-diagrams.md §1), in Tasks as a
-//! person uses it: a task's menu offers "Pick date…" and "Assign…", whose parameters nobody
-//! gave; choosing one shows its form over the window, a day that does not read keeps the submit
-//! disabled, what was typed survives closing the form, and submit runs the action once.
+//! person uses it: a task's menu holds the day's commands under "Plan", "Pick date…" among them,
+//! whose parameters nobody gave; choosing one shows its form over the window, a day that does not
+//! read keeps the submit disabled, what was typed survives closing the form, and submit runs the
+//! action once.
 //!
 //! With `TILO_FORMS_SHOTS=<dir>` the test `shots` writes the open form at desktop and phone
 //! sizes, light and dark.
@@ -117,12 +118,42 @@ fn click(app: &mut TestApp<TlApp>, at: ui::kurbo::Point) {
 
 /// Open the menu of the task `title` and choose `item`.
 fn choose(app: &mut TestApp<TlApp>, title: &str, item: &str) {
+    choose_in(app, title, None, item);
+}
+
+/// Open the menu of the task `title`, the run `run` of it when one is named, and choose `item`:
+/// a command the view puts in a run stands under that run's row.
+fn choose_in(app: &mut TestApp<TlApp>, title: &str, run: Option<&str>, item: &str) {
+    let row = bounds_of(app, title, None)
+        .unwrap_or_else(|| panic!("the task {title} shows: {:?}", all_names(app)));
+    right_click(app, (row.center().x, row.center().y));
+    if let Some(run) = run {
+        let items = menu_items(app);
+        let at = bounds_of(app, run, Some(ui::a11y::Role::MenuItem))
+            .unwrap_or_else(|| panic!("the menu offers the {run} run: {items:?}"));
+        click(app, at.center());
+    }
+    let items = menu_items(app);
+    let at = bounds_of(app, item, Some(ui::a11y::Role::MenuItem))
+        .unwrap_or_else(|| panic!("the menu offers {item}: {items:?}"));
+    click(app, at.center());
+}
+
+/// Opens the run `run` of the task `title`'s menu, as a person opens a group of commands, and
+/// answers the commands it holds.
+fn open_run(app: &mut TestApp<TlApp>, title: &str, run: &str) -> Vec<String> {
+    choose_open(app, title, run);
+    menu_items(app)
+}
+
+/// Opens the menu of the task `title` and the run `run` of it, without choosing a command.
+fn choose_open(app: &mut TestApp<TlApp>, title: &str, run: &str) {
     let row = bounds_of(app, title, None)
         .unwrap_or_else(|| panic!("the task {title} shows: {:?}", all_names(app)));
     right_click(app, (row.center().x, row.center().y));
     let items = menu_items(app);
-    let at = bounds_of(app, item, Some(ui::a11y::Role::MenuItem))
-        .unwrap_or_else(|| panic!("the menu offers {item}: {items:?}"));
+    let at = bounds_of(app, run, Some(ui::a11y::Role::MenuItem))
+        .unwrap_or_else(|| panic!("the menu offers the {run} run: {items:?}"));
     click(app, at.center());
 }
 
@@ -145,13 +176,19 @@ fn a_tasks_menu_offers_the_actions_that_ask_for_more() {
     let _settled = ui::motion::testing::settled();
     let mut app = staged(DESKTOP);
     open_place(&mut app, "Today");
-    let row = bounds_of(&mut app, "Book a haircut", None).expect("the task shows");
-    right_click(&mut app, (row.center().x, row.center().y));
-    let items = menu_items(&mut app);
-    // The day and the assignment both ask for what nobody gave them; what the view places
-    // stands on its own, and the commands the task's type offers wait behind "More".
-    for item in ["Pick date…", "Assign…"] {
-        assert!(items.iter().any(|shown| shown == item), "{item}: {items:?}");
+    // The commands the view gives a run of their own fold into the run's row: the day's asks
+    // until when, so the run opens to commands that say so. The assignment's questions all have
+    // a default, so it stands plainly on its own.
+    let items = open_run(&mut app, "Book a haircut", "Plan");
+    for run in ["Plan", "More"] {
+        assert!(items.iter().any(|shown| shown == run), "{run}: {items:?}");
+    }
+    assert!(items.iter().any(|shown| shown == "Assign"), "{items:?}");
+    for item in ["Pick date…", "Set time…", "Remind me…"] {
+        assert!(
+            items.iter().any(|shown| shown == item),
+            "{item} in the Plan run: {items:?}"
+        );
     }
 }
 
@@ -160,7 +197,7 @@ fn picking_a_day_asks_until_when_and_runs_once_the_day_reads() {
     let _settled = ui::motion::testing::settled();
     let mut app = staged(DESKTOP);
     open_place(&mut app, "Today");
-    choose(&mut app, "Book a haircut", "Pick date…");
+    choose_in(&mut app, "Book a haircut", Some("Plan"), "Pick date…");
     assert!(
         reads(&mut app, "Pick date…"),
         "the form is titled by its action: {:?}",
@@ -194,7 +231,7 @@ fn picking_a_day_asks_until_when_and_runs_once_the_day_reads() {
     // Closing the form keeps what was typed for next time.
     escape(&mut app);
     assert!(submit(&mut app, "Pick date").is_none(), "the form closed");
-    choose(&mut app, "Book a haircut", "Pick date…");
+    choose_in(&mut app, "Book a haircut", Some("Plan"), "Pick date…");
     let shown = accessible(&mut app)
         .into_iter()
         .find(|node| node.role == ui::a11y::Role::TextInput && node.name.as_deref() == Some("Due"))
@@ -269,14 +306,14 @@ fn shots() {
                 // The inbox's list is the window on a phone; its rows are the tasks.
                 settle(&mut app);
             }
-            choose(&mut app, "Book a haircut", "Pick date…");
+            choose_in(&mut app, "Book a haircut", Some("Plan"), "Pick date…");
             app.harness().render_png(&name("snooze"));
             field(&mut app, "Due");
             app.harness().type_text("next friday");
             settle(&mut app);
             app.harness().render_png(&name("snooze-typed"));
             escape(&mut app);
-            choose(&mut app, "Book a haircut", "Assign…");
+            choose(&mut app, "Book a haircut", "Assign");
             app.harness().render_png(&name("assign"));
         }
     }
