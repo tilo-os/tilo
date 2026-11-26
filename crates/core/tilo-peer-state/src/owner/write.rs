@@ -541,7 +541,7 @@ impl DeviceWorkspaces {
                         app_id: written.app_id.clone(),
                         cluster_id: written.cluster_id.clone(),
                         document_id: written.document_id.clone(),
-                        envelope: Box::new(written.envelope.clone()),
+                        envelope: Box::new(written.envelope),
                         readers: None,
                     },
                 )

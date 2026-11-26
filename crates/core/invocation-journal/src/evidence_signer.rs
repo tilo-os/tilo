@@ -7,10 +7,15 @@
 //! as the device it is, wherever its person's store is kept. A certificate expired at the clock,
 //! one whose root took it back, or one confined to another workspace signs nothing.
 
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
+#[cfg(not(target_family = "wasm"))]
+use std::sync::LazyLock;
 
 use collab_types::signer::DeviceSigner;
-use parking_lot::{Mutex, RwLock};
+#[cfg(any(test, feature = "test-support"))]
+use parking_lot::Mutex;
+#[cfg(not(target_family = "wasm"))]
+use parking_lot::RwLock;
 use tilo_user_identity::DeviceCert;
 
 /// One-shot fault injection. Admission signs on a blocking thread, so a test
@@ -20,7 +25,37 @@ pub static BEFORE_SIGN: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(Non
 
 /// What this process signs as: the certificate its device holds and the key it took, named by the
 /// host that serves the calls.
+#[cfg(not(target_family = "wasm"))]
 static HOST: LazyLock<RwLock<Option<Arc<HostIdentity>>>> = LazyLock::new(RwLock::default);
+
+// A page has one thread, and its signer is a JavaScript object bound to it: what it signs as is
+// that thread's.
+#[cfg(target_family = "wasm")]
+thread_local! {
+    static HOST: std::cell::RefCell<Option<Arc<HostIdentity>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Name what this process signs as, or nobody.
+fn name_host(host: Option<Arc<HostIdentity>>) {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        *HOST.write() = host;
+    }
+    #[cfg(target_family = "wasm")]
+    HOST.with(|named| *named.borrow_mut() = host);
+}
+
+/// What this process signs as, when a host named it.
+fn named_host() -> Option<Arc<HostIdentity>> {
+    #[cfg(not(target_family = "wasm"))]
+    {
+        HOST.read().clone()
+    }
+    #[cfg(target_family = "wasm")]
+    {
+        HOST.with(|named| named.borrow().clone())
+    }
+}
 
 struct HostIdentity {
     certificate: DeviceCert,
@@ -31,10 +66,10 @@ struct HostIdentity {
 /// certificate names. A host calls this as it opens the workspaces it serves; the last host to
 /// name one is the one that signs.
 pub fn serve_as(certificate: DeviceCert, signer: Arc<dyn DeviceSigner>) {
-    *HOST.write() = Some(Arc::new(HostIdentity {
+    name_host(Some(Arc::new(HostIdentity {
         certificate,
         signer,
-    }));
+    })));
 }
 
 /// Sign already domain-separated semantic receipt bytes with this host's device. The returned
@@ -52,10 +87,7 @@ pub fn sign(workspace: &str, bytes: &[u8]) -> Result<(DeviceCert, [u8; 64]), Str
         }
     }
     let now = tilo_clock::try_unix_now_ns().ok_or("receipt signing clock is unavailable")?;
-    let host = HOST
-        .read()
-        .clone()
-        .ok_or("no host names what signs this process's receipts")?;
+    let host = named_host().ok_or("no host names what signs this process's receipts")?;
     tilo_user_identity::verify_device_cert_at(&host.certificate, now)
         .map_err(|error| error.to_string())?;
     if !tilo_identity::certificates::admitted_in(
@@ -149,7 +181,7 @@ mod tests {
 
         phase a_process_no_host_named_signs_nothing;
         {
-            *HOST.write() = None;
+            name_host(None);
             assert!(sign(&uuid::Uuid::new_v4().to_string(), b"nobody").is_err());
         }
     }
