@@ -2854,6 +2854,84 @@ fn a_row_that_reads_its_space_is_told_the_slot_the_list_gave_it() {
     }
 }
 
+/// A row that is a view of several parts (a person's row, then a line under it) shows each of them,
+/// read as the row's own.
+#[test]
+fn a_row_of_several_views_shows_each_of_them() {
+    let (mut app, mut window) = window();
+    let mut list = list_node("list");
+    list.props.insert("fill".to_owned(), Value::Float(1.0));
+    let mut page = UiNode::empty("stack", "page");
+    page.children = vec![list];
+    let row = |key: &str, name: &str| {
+        let mut listed = UiNode::empty(&kind("ListRow"), &format!("{key}~row"));
+        listed.props.insert("title".to_owned(), Value::text(name));
+        let mut said = UiNode::empty(&kind("Text"), &format!("{key}~line"));
+        said.props
+            .insert("value".to_owned(), Value::text("Keeps their place private"));
+        let mut under = UiNode::empty("fragment", &format!("{key}~under"));
+        under.children = vec![said];
+        let mut call = UiNode::empty("fragment", &format!("{key}~call"));
+        call.children = vec![listed, under];
+        let mut item = UiNode::empty(&kind("ListItem"), key);
+        item.props.insert("value".to_owned(), Value::text(key));
+        item.children = vec![call];
+        item
+    };
+    send(
+        &mut app,
+        &[ToUi::Open {
+            level: Level::Root,
+            target: doc(),
+            tree: page,
+            front: None,
+            capture_protected: false,
+        }],
+    );
+    window.receive();
+    send(
+        &mut app,
+        &[ToUi::Rows {
+            level: Level::Root,
+            list: "list".to_owned(),
+            len: 2,
+            start: 0,
+            keys: vec!["rows/a".to_owned(), "rows/b".to_owned()],
+            rows: vec![row("rows/a", "Ada"), row("rows/b", "Bruno")],
+        }],
+    );
+    window.receive();
+    let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (800, 600));
+    window_of(&mut harness).flush();
+    for _ in 0..3 {
+        harness.relayout();
+    }
+    let labels: Vec<String> = harness
+        .a11y_nodes()
+        .into_iter()
+        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        .collect();
+    assert!(
+        window_of(&mut harness).failed().is_none(),
+        "the window took the page: {:?}",
+        window_of(&mut harness).failed()
+    );
+    for name in ["Ada", "Bruno"] {
+        assert!(
+            labels.iter().any(|label| label == name),
+            "each row is named by the person it lists: {labels:?}"
+        );
+    }
+    assert_eq!(
+        labels
+            .iter()
+            .filter(|label| *label == "Keeps their place private")
+            .count(),
+        2,
+        "the line under each row is read with it: {labels:?}"
+    );
+}
+
 /// A window whose own list shows an item as its page is named by the item, as its row names it (a
 /// task opened from search reads "Pay rent" in the desktop's tab), and by its page again once the
 /// list shows none.

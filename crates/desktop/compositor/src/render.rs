@@ -308,6 +308,17 @@ where
     )
 }
 
+/// Whether a layer is drawn in the pass under the windows (`under`) or the one over them: a
+/// surface's layers go where the surface stands, but for one under the windows whose layer stands
+/// over them (`SurfaceLayer::over_windows`).
+fn in_pass(surface_under: bool, layer_over: bool, under: bool) -> bool {
+    if under {
+        surface_under && !layer_over
+    } else {
+        !surface_under || layer_over
+    }
+}
+
 /// What lies below surface `index` , front first, stacked as the output draws it: the surfaces
 /// over the windows that come before it, the windows, and the surfaces under the windows. A
 /// surface under the windows (the shell's screen, whose window frames and bars bend what is
@@ -342,14 +353,14 @@ where
                      elements: &mut Vec<OutputRenderElement<R>>,
                      under: bool,
                      before: usize| {
-        for below in state
-            .surfaces
-            .iter()
-            .take(before)
-            .rev()
-            .filter(|below| below.below_windows() == under)
-        {
-            for layer in below.layers().into_iter().rev() {
+        for below in state.surfaces.iter().take(before).rev() {
+            let surface_under = below.below_windows();
+            for layer in below
+                .layers()
+                .into_iter()
+                .rev()
+                .filter(|layer| in_pass(surface_under, layer.over_windows, under))
+            {
                 let location = (Point::<i32, Logical>::from(layer.location).to_f64() - origin)
                     .to_physical(scale);
                 match surface_layer(renderer, &state.uploads, &layer, location, scale) {
@@ -644,10 +655,18 @@ where
                 // readout that answers a hardware key pressed there.
                 surface.above_lock()
             } else {
-                surface.below_windows() == below
+                // A surface under the windows still has its parts over them in the pass above.
+                surface.below_windows() == below || !below
             }
         }) {
-            for picture in surface.window_pictures().iter().rev() {
+            let surface_under = surface.below_windows();
+            let whole = locked || surface_under == below;
+            let pictures = if whole {
+                surface.window_pictures()
+            } else {
+                Vec::new()
+            };
+            for picture in pictures.iter().rev() {
                 if let Some(window) = window_of(picture.window) {
                     elements.extend(crate::effects::pictured(
                         renderer,
@@ -660,7 +679,12 @@ where
                     ));
                 }
             }
-            for layer in surface.layers().into_iter().rev() {
+            for layer in surface
+                .layers()
+                .into_iter()
+                .rev()
+                .filter(|layer| locked || in_pass(surface_under, layer.over_windows, below))
+            {
                 let location: Point<i32, Physical> =
                     (Point::from(layer.location) - geometry.loc).to_physical_precise_round(scale);
                 match surface_layer(

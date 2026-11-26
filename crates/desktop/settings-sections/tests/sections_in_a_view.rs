@@ -49,6 +49,7 @@ view widgets(w: settings.Widgets) {
     button("No people", on: settings.set_widget_enabled(w, widget: "team", enabled: false)) as off
     button("Music always", on: settings.set_widget_show(w, widget: "music", show: "always")) as always
     button("People at the edge", on: settings.place_widget(w, widget: "team", display: "output:1", x: 1.0, y: 0.5)) as corner
+    button("Keep who is here", on: settings.keep_people(w, kept: true, edge: "bottom_left")) as kept
   }
 }
 
@@ -362,6 +363,38 @@ fn power_section(
         placed,
         Some(serde_json::json!([{ "display": "output:1", "x": 1.0, "y": 0.5 }])),
         "the display it was dropped on and the fractions it rests at"
+    );
+
+    // Who is here, kept on screen at the bottom-left corner: the pin and its edge, as the shell's
+    // own button and a drag of it to another edge keep them.
+    kept.press(&anchor("kept"))
+        .expect("the button calls keep-people");
+    assert_eq!(
+        reading(services, &published)
+            .pointer("/people_overlay")
+            .cloned(),
+        Some(serde_json::json!({ "pinned": true, "edge": "bottom_left" })),
+        "the roster is kept at the corner the person dropped it in"
+    );
+    // The top edge is the bar's: an edge the shell has not is refused, and the pin stays where
+    // it was.
+    let refused = services.borrow_mut().invoke(
+        &published,
+        "keep-people",
+        &serde_json::json!({ "kept": true, "edge": "top" })
+            .as_object()
+            .cloned()
+            .expect("an object"),
+    );
+    assert!(
+        matches!(refused, Some(Err(_))),
+        "the top edge is no edge to keep it at"
+    );
+    assert_eq!(
+        reading(services, &published)
+            .pointer("/people_overlay/edge")
+            .cloned(),
+        Some(serde_json::json!("bottom_left"))
     );
 
     // A widget nothing names is refused, and the refusal says which names there are: a script

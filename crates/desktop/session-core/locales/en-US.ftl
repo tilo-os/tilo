@@ -753,13 +753,6 @@ a11y-shell-people-change-description = Open History at this change
 people-panel-follow = Follow
 people-panel-stop-following = Stop
 
-# The people overlay: the roster pinned out of the bar, floating over windows
-people-panel-unpin = Put back in the bar
-a11y-people-unpin = Put who is here back in the bar
-people-panel-screen-private = Keeps their place private
-people-panel-nothing-open = Nothing open on their screen
-people-panel-pin = Keep on screen
-a11y-people-pin = Keep who is here on screen
 a11y-people-overlay = Who is here
 a11y-people-follow = Follow { $name }
 a11y-people-stop-following = Stop following { $name }

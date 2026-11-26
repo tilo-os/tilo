@@ -335,6 +335,19 @@ pub struct FloatingPanelProps {
     /// in logical pixels. A panel with this resizes when that edge is dragged, following it.
     #[component(event(value = f64))]
     pub resized: Event,
+    /// The edge of what holds it it is kept at (`left`, `right`, `bottom`, `bottom_left` or
+    /// `bottom_right`), rather than a place: it stands in that edge's slot, the toolkit's margin in
+    /// from it, and `x` and `y` say nothing.
+    pub edge: Option<crate::edge_slots::DockEdge>,
+    /// The person dragged a panel kept at an edge by its header and let it go: carries the edge
+    /// nearest where they let it go, by its name. A panel with this moves when its header is
+    /// dragged; a press that never moves past the slop, a pointer leaving and Escape move nothing.
+    #[component(event(value = String))]
+    pub docked: Event,
+    /// Whether it is up; absent, it is. A panel that is not comes in when it is, and goes when it
+    /// is no more, on the shared motion and where it stands; while it is not up it takes no input
+    /// and names nothing.
+    pub shown: Option<bool>,
     /// A press landed off the panel, on nothing of its own: a panel with this is dismissed by it.
     #[component(event)]
     pub dismiss: Event,
@@ -347,7 +360,6 @@ fn place_of(x: Option<f64>, y: Option<f64>) -> Option<Point> {
 
 pub struct DeclaredPanel {
     panel: FloatingPanel,
-    rect: Rect,
     /// The pointer as the panel last heard it: a press off the panel is read against it.
     cursor: Point,
     /// What a press off the panel does (`dismiss`).
@@ -385,7 +397,18 @@ impl DeclaredPanel {
         if props.fill {
             panel = panel.fill_width();
         }
-        panel = panel.at(place_of(props.x, props.y));
+        panel = panel
+            .at(place_of(props.x, props.y))
+            .at_edge(props.edge)
+            .shown(props.shown.unwrap_or(true));
+        if !props.docked.is_none() {
+            let docked = props.docked.clone();
+            panel = panel.dockable(move |edge| {
+                docked.fire(Some(tilo_ui_base::component::Value::Text(
+                    crate::edge_slots::edge_name(edge).to_owned(),
+                )));
+            });
+        }
         if !props.moved.is_none() {
             let moved = props.moved.clone();
             panel = panel.movable(move |at| {
@@ -408,7 +431,6 @@ impl DeclaredPanel {
         }
         Self {
             panel,
-            rect: Rect::ZERO,
             cursor: Point::ZERO,
             dismiss: props.dismiss,
             editing: PanelPart::Header,
@@ -470,7 +492,6 @@ impl Widget for DeclaredPanel {
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.panel.apply_layout(taffy, node, origin);
     }
 
@@ -505,7 +526,7 @@ impl Widget for DeclaredPanel {
                     ..
                 }
             )
-            && !self.rect.contains(self.cursor)
+            && !self.panel.get_rect().contains(self.cursor)
         {
             self.dismiss.fire(None);
             *ctx.handled = true;
@@ -543,20 +564,26 @@ impl Widget for DeclaredPanel {
     }
 
     fn get_rect(&self) -> Rect {
-        self.rect
+        // Where the panel stands: at its edge's slot, or under the hand while it is held.
+        self.panel.get_rect()
     }
 
     fn name(&self) -> &'static str {
         "FloatingPanel"
     }
 
-    /// The panel's edges resize it, and the pointer says so as it crosses one.
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        self.panel.accessibility()
+    }
+
+    /// The panel's own: its trailing edge says it can be drawn out, and a drag of it keeps the
+    /// pointer, as for a panel built in Rust.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         self.panel.cursor_shape(point)
     }
 
-    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
-        self.panel.accessibility()
+    fn wants_pointer_capture(&self) -> bool {
+        self.panel.wants_pointer_capture()
     }
 }
 
@@ -585,11 +612,14 @@ impl Described for DeclaredPanel {
             y,
             moved,
             resized,
+            edge,
+            docked,
+            shown,
             dismiss,
         } = props;
         // Whether it moves or resizes is how it was built: a panel that starts or stops is built
         // again.
-        if moved.is_none() == self.panel.is_movable()
+        if (moved.is_none() && docked.is_none()) == self.panel.is_movable()
             || resized.is_none() == self.panel.is_resizable()
         {
             return false;
@@ -601,6 +631,8 @@ impl Described for DeclaredPanel {
         panel.set_modal(modal);
         panel.set_slide(slide);
         panel.set_place(place_of(x, y));
+        panel.set_edge(edge);
+        panel.set_shown(shown.unwrap_or(true));
         self.dismiss = dismiss;
         true
     }

@@ -277,6 +277,7 @@ impl Window {
             end,
             open: None,
             menu: None,
+            store: 1,
         }]);
     }
 

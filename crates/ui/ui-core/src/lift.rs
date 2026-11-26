@@ -74,6 +74,9 @@ pub struct Lifted {
     pub scene: Box<Scene>,
     /// Its damage parts, when the frame's were recorded ([`tilo_ui_base::scene_parts`]).
     pub parts: Option<SectionParts>,
+    /// It stands over the windows ([`over_windows`]): a host whose frame is drawn under them
+    /// composites this part above them instead.
+    pub over_windows: bool,
 }
 
 struct Active {
@@ -153,6 +156,7 @@ pub fn lifted(
             pose: pose.mapped(transform),
             scene: layer,
             parts: None,
+            over_windows: false,
         };
         RECORDING.with(|slot| {
             if let Some(active) = slot.borrow_mut().as_mut() {
@@ -178,6 +182,47 @@ pub fn lifted(
     );
     draw(scene, placed);
     scene.pop_layer();
+}
+
+/// Draw a part that stands over the windows wherever the frame stands (other people's pointers
+/// over the window each is on): `draw` paints it with the transform it is handed, inside `bounds`
+/// (in the coordinates `transform` maps from). A host whose frame is drawn under the windows (a
+/// shell's) composites the part above them; everywhere else it is drawn into the frame where it
+/// stands, over what was drawn before it.
+pub fn over_windows(
+    scene: &mut Scene,
+    transform: Affine,
+    (key, bounds): (PartKey, Rect),
+    draw: impl FnOnce(&mut Scene, Affine),
+) {
+    let address = std::ptr::from_ref(scene) as usize;
+    let lifts = RECORDING.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|active| active.root == address)
+    });
+    if !lifts {
+        draw(scene, transform);
+        return;
+    }
+    let mut layer = Box::new(Scene::new());
+    if tilo_ui_base::scene_parts::is_tracked(scene) {
+        tilo_ui_base::scene_parts::track(&layer);
+    }
+    draw(&mut layer, transform);
+    let lifted = Lifted {
+        key,
+        bounds: transform.transform_rect_bbox(bounds),
+        pose: Pose::REST,
+        scene: layer,
+        parts: None,
+        over_windows: true,
+    };
+    RECORDING.with(|slot| {
+        if let Some(active) = slot.borrow_mut().as_mut() {
+            active.lifted.push(lifted);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -278,5 +323,43 @@ mod tests {
             );
             assert!(!scene.encoding().draw_tags.is_empty());
         }
+    }
+
+    /// A part over the windows leaves the frame however much was drawn before it, so a host that
+    /// draws the frame under the windows stands it above them; with nothing to take it, it is
+    /// drawn where it stands.
+    #[test]
+    fn a_part_over_the_windows_leaves_the_frame_wherever_it_stands() {
+        let mut scene = Scene::new();
+        let recording = Recording::begin(&scene);
+        square(&mut scene, Affine::IDENTITY);
+        let before = scene.encoding().draw_tags.len();
+        over_windows(
+            &mut scene,
+            Affine::translate((20.0, 0.0)),
+            (PartKey::new(KEY, 1), Rect::new(0.0, 0.0, 10.0, 10.0)),
+            square,
+        );
+        let lifted = recording.finish();
+        assert_eq!(
+            scene.encoding().draw_tags.len(),
+            before,
+            "the frame keeps none of it"
+        );
+        let [part] = lifted.as_slice() else {
+            panic!("one part over the windows: {}", lifted.len());
+        };
+        assert!(part.over_windows);
+        assert_eq!(part.bounds, Rect::new(20.0, 0.0, 30.0, 10.0));
+        assert_eq!(part.pose, Pose::REST);
+
+        let mut plain = Scene::new();
+        over_windows(
+            &mut plain,
+            Affine::IDENTITY,
+            (PartKey::new(KEY, 1), Rect::new(0.0, 0.0, 10.0, 10.0)),
+            square,
+        );
+        assert!(!plain.encoding().draw_tags.is_empty(), "drawn in the frame");
     }
 }

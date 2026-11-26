@@ -1023,9 +1023,18 @@ impl App {
         let Ok(rect) = self.inspect_node(node, |widget| widget.get_rect()) else {
             return;
         };
-        if rect.area() > 0.0 && self.root_widget.reveal_descendant(target, rect) {
-            self.layout.layout_dirty = true;
+        if rect.area() > 0.0 {
+            tilo_ui_base::widget::reveal(target, rect);
+            let _ = self.reveal_asked();
         }
+    }
+
+    /// Show what widgets asked to be shown ([`tilo_ui_base::widget::reveal`]) of this window's tree,
+    /// laying it out again at the offsets that took. Whether any of it was this window's.
+    pub(super) fn reveal_asked(&mut self) -> bool {
+        let shown = tilo_ui_base::widget::reveal_asked(self.root_widget.as_mut());
+        self.layout.layout_dirty |= shown;
+        shown
     }
 
     /// The platform IME contract for the focused widget. A field opts in via

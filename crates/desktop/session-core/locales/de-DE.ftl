@@ -787,13 +787,6 @@ a11y-shell-people-change-description = Den Verlauf bei dieser Änderung öffnen
 people-panel-follow = Folgen
 people-panel-stop-following = Beenden
 
-# The people overlay: the roster pinned out of the bar, floating over windows
-people-panel-unpin = Zurück in die Leiste
-a11y-people-unpin = Wer hier ist, zurück in die Leiste
-people-panel-screen-private = Behält für sich, wo sie gerade sind
-people-panel-nothing-open = Auf ihrem Bildschirm ist nichts offen
-people-panel-pin = Auf dem Bildschirm halten
-a11y-people-pin = Wer hier ist, auf dem Bildschirm halten
 a11y-people-overlay = Wer hier ist
 a11y-people-follow = { $name } folgen
 a11y-people-stop-following = { $name } nicht mehr folgen

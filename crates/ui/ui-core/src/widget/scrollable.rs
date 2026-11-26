@@ -2156,9 +2156,7 @@ impl Widget for Scrollable {
         let Some(child) = &mut self.child else {
             return false;
         };
-        if !std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(child.as_ref()), target)
-            && !child.reveal_descendant(target, rect)
-        {
+        if !child.stands_for(target.cast::<()>()) && !child.reveal_descendant(target, rect) {
             return false;
         }
         let viewport = self.content_viewport_rect();

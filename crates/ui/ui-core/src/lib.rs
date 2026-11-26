@@ -179,6 +179,7 @@ pub mod device_local_api;
 /// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
 #[cfg(all(feature = "dmabuf-import", target_os = "linux"))]
 pub mod dmabuf_import;
+pub mod edge_slots;
 pub mod element_pictures;
 pub mod files;
 pub mod floating_layer;

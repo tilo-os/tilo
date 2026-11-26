@@ -115,3 +115,14 @@ them back from its style.
 
 Remove this part once upstream lets a node choose its style from the size it
 is offered within a solve.
+
+## A node that has left the tree marks nothing
+
+`TaffyTree::mark_dirty` indexed `nodes[node]`, so marking a node retired between
+the build that gave out its id and the frame that marks it (a widget that left
+while a surface was being laid out) panicked inside taffy. A node the tree no
+longer holds is skipped: it has no layout to forget, and a retired widget must
+never take a frame down.
+
+- `src/tree/taffy_tree.rs`: `mark_dirty` returns early when the node is not in
+  the tree.

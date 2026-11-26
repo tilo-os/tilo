@@ -816,9 +816,13 @@ pub use {
 pub mod window_well;
 pub use {window_well::Wells, window_well::WindowWell, window_well::WindowWellProps};
 pub mod window_preview;
-pub use {
-    window_preview::Previews, window_preview::WindowPreview, window_preview::WindowPreviewProps,
-};
+pub use window_preview::{Previews, WindowPreview, WindowPreviewProps};
+pub mod peer_pointers;
+pub use peer_pointers::{PeerPointerProps, PeerPointers, PeerPointersProps};
+pub mod follow_frame;
+pub use follow_frame::{FollowFrame, FollowFrameProps};
+pub mod screen_mirror;
+pub use screen_mirror::{ScreenMirror, ScreenMirrorProps, ScreenMirrorWindowProps};
 pub mod window_frame;
 pub use {window_frame::WindowFrame, window_frame::WindowFrameProps};
 pub mod empty_state;

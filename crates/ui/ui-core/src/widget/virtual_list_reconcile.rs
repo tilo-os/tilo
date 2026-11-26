@@ -131,6 +131,7 @@ impl VirtualRows {
     fn keep_keyboard_row(&mut self, row: &MountedRow<ListKey>) {
         if crate::widget::context_menu_area::focus_within(row.widget.as_ref()) {
             self.focused_group = None;
+            self.focus_arriving = None;
             self.focused_key = Some(row.key.clone());
         }
     }

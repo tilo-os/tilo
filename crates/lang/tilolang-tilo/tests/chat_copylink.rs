@@ -198,6 +198,7 @@ fn open_menu(
                         end: u32::try_from(len).unwrap(),
                         open: None,
                         menu: Some(row),
+                        store: 1,
                     },
                 );
                 let built = view.borrow_mut().row(&list, index).unwrap().cloned();

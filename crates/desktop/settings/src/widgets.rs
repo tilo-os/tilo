@@ -98,39 +98,7 @@ impl ShowMode {
     }
 }
 
-/// Where something kept at the screen's edges waits (the pinned people
-/// overlay). Corners and the side and bottom edges; never the top edge.
-#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DockEdge {
-    Left,
-    Right,
-    Bottom,
-    BottomLeft,
-    BottomRight,
-}
-
-impl DockEdge {
-    pub const ALL: [Self; 5] = [
-        Self::Left,
-        Self::Right,
-        Self::Bottom,
-        Self::BottomLeft,
-        Self::BottomRight,
-    ];
-
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Left => "Left edge",
-            Self::Right => "Right edge",
-            Self::Bottom => "Bottom edge",
-            Self::BottomLeft => "Bottom-left corner",
-            Self::BottomRight => "Bottom-right corner",
-        }
-    }
-}
+pub use settings_model::dock_edge::DockEdge;
 
 /// Where a widget rests on one display: its resting form's place in the
 /// display's work area, as fractions of the room it can move in there (0
@@ -244,10 +212,15 @@ pub const SYSTEM_MONITOR: Key<WidgetPrefs> = Key::new(SECTION, "system_monitor",
     WidgetPrefs::default_for(WidgetId::SystemMonitor)
 });
 
+/// Who is here, kept on screen: whether the person keeps the roster at an edge of the shell rather
+/// than in the bar, and the edge it waits at.
+#[cfg_attr(feature = "model", derive(tilo_resource::Model))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeopleOverlayPrefs {
+    /// The roster is kept on screen.
     #[serde(default)]
     pub pinned: bool,
+    /// The edge it waits at.
     #[serde(default = "people_overlay_edge")]
     pub edge: DockEdge,
 }

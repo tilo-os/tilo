@@ -49,6 +49,7 @@ impl ShellSurface for Rows {
     fn layers(&self) -> Vec<SurfaceLayer> {
         vec![SurfaceLayer {
             pose: LayerPose::SETTLED,
+            over_windows: false,
             location: (0, 0),
             size: self.size,
             frame: self.frame.clone(),
@@ -476,6 +477,7 @@ impl ShellSurface for DrawnElsewhere {
     fn layers(&self) -> Vec<SurfaceLayer> {
         vec![SurfaceLayer {
             pose: LayerPose::SETTLED,
+            over_windows: false,
             location: (0, 0),
             size: self.size,
             frame: self.frame.clone(),
@@ -545,6 +547,7 @@ impl ShellSurface for DrawsOnPress {
     fn layers(&self) -> Vec<SurfaceLayer> {
         vec![SurfaceLayer {
             pose: LayerPose::SETTLED,
+            over_windows: false,
             location: (0, 0),
             size: self.size,
             frame: self.frame.clone(),
@@ -632,6 +635,7 @@ impl ShellSurface for Bar {
     fn layers(&self) -> Vec<SurfaceLayer> {
         vec![SurfaceLayer {
             pose: self.pose,
+            over_windows: false,
             location: self.location,
             size: self.size,
             frame: self.frame.clone(),
@@ -657,6 +661,7 @@ impl ShellSurface for Blank {
     fn layers(&self) -> Vec<SurfaceLayer> {
         vec![SurfaceLayer {
             pose: LayerPose::SETTLED,
+            over_windows: false,
             location: (0, 0),
             size: self.size,
             frame: self.frame.clone(),
@@ -712,6 +717,7 @@ impl ShellSurface for Vanishes {
     fn layers(&self) -> Vec<SurfaceLayer> {
         vec![SurfaceLayer {
             pose: LayerPose::SETTLED,
+            over_windows: false,
             location: (0, 0),
             size: self.size,
             frame: self.frame.clone(),

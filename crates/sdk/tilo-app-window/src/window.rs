@@ -1912,6 +1912,7 @@ impl AppWindow {
                 end: u32::try_from(asked.range.end).unwrap_or(u32::MAX),
                 open: asked.open,
                 menu: asked.menu,
+                store: asked.store,
             });
         }
         if self.out.is_empty() {

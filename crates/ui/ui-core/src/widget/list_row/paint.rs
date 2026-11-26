@@ -427,7 +427,7 @@ impl ListRowFace<'_> {
             );
             tilo_ui_base::widget::avatar_face::AvatarFace::of(change.by).paint(ctx, face);
         }
-        if let Some(note) = self.note {
+        if let Some(note) = self.note.filter(|_| !self.note_under) {
             let secondary_line = RowMetrics::line(ctx.text, &m.secondary);
             let y = if self.has_secondary_line() {
                 y + f64::from(self.secondary_lines) * secondary_line

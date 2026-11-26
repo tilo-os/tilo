@@ -955,6 +955,11 @@ d-oyjbbzbk = Inhalt des Platzes
 
 d-43am22do = Ansicht des Platzes
 
+d-x34hg2ut = Gezeigter Platz
+
+d-5jwos7mc = Zeiger darüber
+    .w-is-in = { $who } ist in { $title }
+
 d-fziuz57n = Wechsler
     .w-of = { $at } von { $count }
     .w-switch-windows-of-this-app = Fenster dieser App wechseln
@@ -2076,6 +2081,7 @@ d-5myqhmsc = Was eine Leserin über eine Person hört
     .w-now = Jetzt: { $place }
     .w-in-a-call = In einem Anruf: { $call }
     .w-follows-you = Folgt dir
+    .w-joined = Beigetreten { $joined }
 
 d-mxfb2qdk = Wo-Zeile
     .w-working-in = Arbeitet in { $title }
@@ -2169,6 +2175,7 @@ d-xgvy7oje = Personen
 d-avkcokw5 = Personentafel
     .w-people = Personen
     .w-who-is-here-where-they-are = Wer hier ist, wo sie sind und was sie tun
+    .w-keep-on-screen = Auf dem Bildschirm behalten
     .w-close = Schließen
 
 d-vb456dpi = Liste
@@ -2229,6 +2236,12 @@ d-nf2tfrzm = Folgen-Schaltfläche
     .w-follow = Folgen
     .w-follow-2 = { $name } folgen
 
+d-b7z6kr5g = Bildschirm darunter
+    .w-nothing-open-on-their-screen = Auf dem Bildschirm ist nichts offen
+    .w-s-screen = Bildschirm von { $name }
+    .w-keeps-their-place-private = Behält für sich, wo die Person gerade ist
+    .w-someone = Jemand
+
 d-lkpaptdc = Karte einer Person
     .w-stop-following = Nicht mehr folgen
     .w-follow = Folgen
@@ -2281,6 +2294,7 @@ d-lmr4ktas = Folgen-Chip
     .w-following = Du folgst { $name }
     .w-stop = Stopp
     .w-stopped-following = Folgen beendet
+    .w-stop-following = { $name } nicht mehr folgen
 
 d-xr7n4tqa = Gesicht der gefolgten Person
 
@@ -2472,3 +2486,26 @@ d-pou22ylc = Agentenmenü
 d-zmfop5wt = Fortsetzen-Angebot
     .w-continue-from = { $running } von { $elsewhere } fortsetzen
     .w-dismiss-from = { $running } von { $elsewhere } wegwischen
+
+
+d-4sj6y354 = Behaltene Liste
+    .w-people = Personen
+    .w-who-is-here-where-they-are = { $named }. Wer hier ist, wo und was sie gerade tun
+    .w-put-back-in-the-bar = Zurück in die Leiste
+    .w-who-is-here = Wer hier ist
+    .w-agents = Agenten
+    .w-invite-people = Personen einladen
+    .w-you-can-t-invite-people-to = Du kannst niemanden in diesen Arbeitsbereich einladen. Wer beitritt, entscheidet seine Inhaberin oder sein Inhaber.
+
+d-d77soeer = Zeigen, wer hier ist
+    .doc = Was die Gesichter in der Leiste tun: zeigen, wer hier ist, oder es wieder schließen.
+
+d-npcipsge = Anwesende auf dem Bildschirm behalten
+    .doc = Behält die Anwesenden am Rand auf dem Bildschirm, an dem die Person sie zuletzt behielt, oder legt sie zurück in die Leiste.
+
+d-npcipsge-kept = Behalten
+
+d-payy22lj = Anwesende verschieben
+    .doc = Verschiebt die auf dem Bildschirm behaltenen Anwesenden an den Rand `edge`, wie ein dort losgelassenes Ziehen.
+
+d-payy22lj-edge = Rand

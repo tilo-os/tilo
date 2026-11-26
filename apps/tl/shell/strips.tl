@@ -1007,7 +1007,18 @@ view place_content(p: LayoutPlace) {
 /// The window the place shows says where it stands: a window that runs on another device shows
 /// its notice instead of an empty well, and one whose app stopped answering keeps its content
 /// under the hung card, so the person answers the app where they are working.
+///
+/// Everyone else working in the window points over it, whatever the roster shows (`pointers_over`,
+/// `people.tl`).
 view place_view(p: LayoutPlace) {
+    layers(fill) {
+        place_shown(p, fill)
+        pointers_over(p.key, place_title(p))
+    }
+}
+
+/// What a place shows, before anyone's pointer over it.
+view place_shown(p: LayoutPlace) {
     if let w = window_showing(p) {
         if w.elsewhere {
             window_elsewhere(w)

@@ -123,7 +123,8 @@ impl Driver {
         self.records.parts.as_ref()
     }
 
-    /// The parts lifted out of the frame drawn last, bottom first: they stand below it.
+    /// The parts lifted out of the frame drawn last, bottom first: they stand below it, but for
+    /// those over the windows ([`crate::lift::over_windows`]), which stand above everything.
     #[must_use]
     pub fn lifted(&self) -> &[crate::lift::Lifted] {
         &self.records.lifted

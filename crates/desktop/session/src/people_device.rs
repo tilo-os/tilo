@@ -22,7 +22,8 @@ use serde_json::{Map, Value};
 use tilo_actions::ApiError;
 use tilo_desktop_model::Layout;
 use tilo_device_surfaces::people::{
-    People, PeopleEffect, Person, PersonAction, PersonDevice, PersonLinked, PresenceColour,
+    PeerPointer, People, PeopleEffect, Person, PersonAction, PersonDevice, PersonLinked,
+    PersonScreen, PersonWindow, PresenceColour,
 };
 use tilo_service::{Service, Started, decode, offer, reading};
 
@@ -75,6 +76,17 @@ pub(crate) const DISMISS_GRACE: ui::time::Duration = ui::time::Duration::from_mi
 #[row(kind = "session", label = "People", effects = PeopleEffect)]
 pub struct PeopleRoot;
 
+/// What each window of the shell shows, by its tab: the app it runs, and the
+/// record it holds (a window whose app keeps no single record names its kind).
+pub(crate) type WindowRecords = Rc<dyn Fn() -> Vec<(u64, Option<String>, String)>>;
+
+/// This device's own screen, as the roster reads it: who is here placed into a copy of its layout,
+/// and what each of its windows shows.
+pub(crate) struct OwnScreen {
+    pub(crate) place_here: Rc<dyn Fn(&mut Layout)>,
+    pub(crate) windows: WindowRecords,
+}
+
 /// Who is here, and the verbs that change what the bar says of them.
 pub(crate) struct PeopleDevice {
     handle: tilo_session_core::desktop::state::DesktopHandle,
@@ -108,6 +120,9 @@ pub(crate) struct PeopleDevice {
     /// compared with until the reading carries them, so Enter and the field losing focus in the
     /// same frame is one change, never two.
     kept: RefCell<(String, String)>,
+    /// What each window of the shell shows, by its tab: what a window on someone's screen is
+    /// called here, where this session holds the record it shows.
+    windows: WindowRecords,
     /// What the reading said last, so a pass that changed nothing is no revision.
     published: RefCell<Option<People>>,
     /// What moved the reading last: presence, the layout, the card, the person and the notices.
@@ -153,6 +168,7 @@ type Key = (
     u64,
     u64,
     u64,
+    u64,
     String,
     String,
     String,
@@ -168,7 +184,7 @@ type Key = (
 impl PeopleDevice {
     pub(crate) fn new(
         handle: tilo_session_core::desktop::state::DesktopHandle,
-        place_here: Rc<dyn Fn(&mut Layout)>,
+        screen: OwnScreen,
         sync: Option<Rc<crate::sync::Client>>,
         asks: Rc<RefCell<Vec<crate::people::PeopleAsk>>>,
         surfaces: crate::device_lists::Surfaces,
@@ -176,6 +192,10 @@ impl PeopleDevice {
         person: String,
         chat: Rc<dyn Fn() -> bool>,
     ) -> Self {
+        let OwnScreen {
+            place_here,
+            windows,
+        } = screen;
         Self {
             handle,
             place_here,
@@ -188,6 +208,7 @@ impl PeopleDevice {
             chat,
             drafts: RefCell::default(),
             kept: RefCell::default(),
+            windows,
             published: RefCell::new(None),
             seen: RefCell::new(None),
             followed: RefCell::new(String::new()),
@@ -226,6 +247,11 @@ impl PeopleDevice {
             self.sync
                 .as_ref()
                 .map_or(0, |sync| sync.here().borrow().revision()),
+            // Where everyone here points and what they say beside it: a pointer moving moves the
+            // reading, one at rest does not.
+            self.sync
+                .as_ref()
+                .map_or(0, |sync| sync.presence_revision()),
             self.surfaces.person.borrow().clone(),
             own.as_ref()
                 .map_or_else(String::new, |own| own.label.clone()),
@@ -469,9 +495,139 @@ impl PeopleDevice {
             }
             note_following(&mut rows, &pairs, Some(&sync.publisher().to_string()));
         }
+        // Each person's screen, as they share it: its windows named by what they show where this
+        // session holds that record, else by the app.
+        let shown = self.shown(&workspace.id().to_string());
+        let titled = self.titled(&tree);
+        for row in rows.iter_mut().filter(|row| !row.agent) {
+            row.screen = shown
+                .iter()
+                .find(|member| member.publisher == row.key)
+                .and_then(|member| member.layout.as_ref())
+                .and_then(|layout| screen_of(layout, &titled));
+        }
         // People first, software after, each in the order the workspace lists them.
         rows.sort_by_key(|person| person.agent);
         rows
+    }
+
+    /// Everyone here in `workspace` as the live session reads them now: where each points and
+    /// what they say beside it.
+    fn shown(&self, workspace: &str) -> Vec<collab_types::presence::Shown> {
+        self.sync
+            .as_ref()
+            .map_or_else(Vec::new, |sync| sync.members(workspace))
+    }
+
+    /// What each window here shows, by the digest presence names it with: what a person's window
+    /// on the same record is called here, by the one rule every surface names a window by.
+    fn titled(&self, tree: &Layout) -> std::collections::BTreeMap<String, String> {
+        crate::sync::layout::bindings_of(tree, &(self.windows)())
+            .into_iter()
+            .filter_map(|(tab, _app, digest)| {
+                let title = crate::app_names::tab_title(tree.tab(tab)?);
+                (!title.trim().is_empty()).then_some((digest, title))
+            })
+            .collect()
+    }
+
+    /// Who is at each window now, for its tab: each face's name and colour, as the pointer over
+    /// it wears them, read by the shell's tab strip. A window nobody else is at clears.
+    fn show_faces_on_tabs(&self, pointers: &[PeerPointer]) {
+        let mut faces: std::collections::HashMap<u64, Vec<(String, String)>> =
+            std::collections::HashMap::new();
+        for pointer in pointers {
+            // A pointer resolved to one of this shell's windows names it by its number; one
+            // over a part of someone's screen this shell holds no window for stands at no tab.
+            if let Ok(tab) = tilo_failure::ignored!(
+                "a pointer over no window of this shell stands at no tab",
+                pointer.tab.parse::<u64>()
+            ) {
+                faces
+                    .entry(tab)
+                    .or_default()
+                    .push((pointer.name.clone(), format!("#{}", pointer.colour)));
+            }
+        }
+        self.handle.set_pointer_faces(faces);
+    }
+
+    /// Where everyone else here points in the workspace in front, over the window each is on,
+    /// with what they say beside it: each wears the name and colour their row in `rows` gives
+    /// them. A pointer whose publisher went quiet past a keepalive has left with them.
+    fn pointers(&self, rows: &[Person]) -> Vec<PeerPointer> {
+        let Some(workspace) = self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        }) else {
+            return Vec::new();
+        };
+        self.shown(&workspace)
+            .into_iter()
+            .filter_map(|member| {
+                let point = member.pointer.as_ref()?;
+                if point.age_ms > tilo_session_core::presence::POINTER_STALE_MS {
+                    return None;
+                }
+                point.tab.parse::<u64>().ok()?;
+                let row = rows.iter().find(|row| row.key == member.publisher);
+                let name = row
+                    .map(|row| row.name.clone())
+                    .filter(|name| !name.trim().is_empty())
+                    .unwrap_or_else(|| tilo_ui_base::presence::person_label(&member.label));
+                // Software says what it is doing after its name, as its pointer always has.
+                let name = match member.activity.as_deref().map(str::trim) {
+                    Some(doing) if member.agent && !doing.is_empty() => format!("{name} · {doing}"),
+                    _ => name,
+                };
+                let colour = row.map_or_else(
+                    || member.colour.trim_start_matches('#').to_ascii_lowercase(),
+                    |row| row.colour.clone(),
+                );
+                let [x, y] = point.at;
+                let (said, typing) = member
+                    .chat
+                    .as_ref()
+                    .filter(|chat| !chat.text.trim().is_empty())
+                    .map_or_else(
+                        || (String::new(), false),
+                        |chat| (chat.text.clone(), !chat.sent),
+                    );
+                let (reaction, reaction_seq) = member.reaction.as_ref().map_or_else(
+                    || (String::new(), 0),
+                    |reaction| (reaction.emoji.clone(), i64::from(reaction.seq)),
+                );
+                Some(PeerPointer {
+                    person: member.publisher.clone(),
+                    tab: point.tab.clone(),
+                    x,
+                    y,
+                    name,
+                    colour,
+                    agent: member.agent,
+                    said,
+                    typing,
+                    reaction,
+                    reaction_seq,
+                })
+            })
+            .collect()
+    }
+
+    /// How long until the next pointer that went quiet leaves the screen, so the pass that takes
+    /// it away wakes then.
+    fn pointer_leaves_in(&self) -> Option<std::time::Duration> {
+        let workspace = self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        })?;
+        self.shown(&workspace)
+            .iter()
+            .filter_map(|member| member.pointer.as_ref())
+            .map(|point| tilo_session_core::presence::POINTER_STALE_MS - point.age_ms)
+            .filter(|left| *left >= 0.0)
+            .min_by(f64::total_cmp)
+            .map(|left| std::time::Duration::from_secs_f64(left / 1000.0))
     }
 
     /// The person at this device, as their own card shows them.
@@ -619,7 +775,10 @@ impl PeopleDevice {
             .as_ref()
             .map(|(who, _)| who.clone())
             .unwrap_or_default();
+        let pointers = self.pointers(&rows);
+        self.show_faces_on_tabs(&pointers);
         People {
+            pointers,
             rows,
             me: self.me(),
             colours: Self::colours(),
@@ -658,7 +817,7 @@ impl PeopleDevice {
                         who: person.trim().to_owned(),
                         following: true,
                     });
-                self.taken_elsewhere();
+                self.followed_from_a_card();
             }
             PeopleEffect::Unfollow => {
                 self.asks
@@ -667,7 +826,7 @@ impl PeopleDevice {
                         who: String::new(),
                         following: false,
                     });
-                self.taken_elsewhere();
+                self.followed_from_a_card();
             }
             PeopleEffect::Wave { person } => {
                 let who = person.trim().to_owned();
@@ -932,6 +1091,16 @@ impl PeopleDevice {
         self.surfaces.close("people");
     }
 
+    /// Following from a person's card takes the person to the view they follow, so the card leaves
+    /// as any choice that takes them elsewhere does. Following from the roster's rows leaves the
+    /// roster where it stands: the row the person pressed says whom they follow now, offers the
+    /// way to stop and the wave beside it.
+    fn followed_from_a_card(&self) {
+        if !self.surfaces.person.borrow().is_empty() {
+            self.taken_elsewhere();
+        }
+    }
+
     /// Keep what the person's card holds, where it says something the card has not already kept:
     /// on Enter and a card closing (`all`), and once typing pauses. A card has no Save button, so
     /// what is typed in it is kept when it is submitted, when the card closes and when typing
@@ -1139,6 +1308,40 @@ fn note_following(rows: &mut [Person], pairs: &[(String, String)], own: Option<&
     }
 }
 
+/// Someone's screen as their presence lays it out, its windows named by `titled` (what a record
+/// this session holds is called here, by its digest) or else by their app: `None` for a layout
+/// that names no screen.
+fn screen_of(
+    layout: &collab_types::presence::ShownLayout,
+    titled: &std::collections::BTreeMap<String, String>,
+) -> Option<PersonScreen> {
+    let screen = tilo_session_core::desktop::here::Screen::of(layout, |app, record| {
+        titled
+            .get(record)
+            .cloned()
+            .or_else(|| Some(crate::app_names::app_name(app)))
+    })?;
+    Some(PersonScreen {
+        width: screen.size.0,
+        height: screen.size.1,
+        windows: screen
+            .windows
+            .into_iter()
+            .map(|window| PersonWindow {
+                name: window
+                    .name
+                    .unwrap_or_else(|| crate::app_names::app_name(&window.app)),
+                app: window.app,
+                left: window.rect.x0,
+                top: window.rect.y0,
+                right: window.rect.x1,
+                bottom: window.rect.y1,
+                focused: window.focused,
+            })
+            .collect(),
+    })
+}
+
 /// A colour as the reading writes it, `rrggbb`.
 fn colour_of((red, green, blue): (u8, u8, u8)) -> String {
     format!("{red:02x}{green:02x}{blue:02x}")
@@ -1196,14 +1399,15 @@ impl Service for PeopleDevice {
         true
     }
 
-    /// When a wave or an arrival stops showing, or a pause in typing keeps what was typed: the
-    /// pass that does either has to wake then.
+    /// When a wave or an arrival stops showing, a pause in typing keeps what was typed, or a quiet
+    /// pointer leaves: the pass that does any of them has to wake then.
     fn wakes_in(&self) -> Option<std::time::Duration> {
-        match (self.noticed_in(), self.typed_due()) {
-            (Some(notice), Some(typed)) => Some(notice.min(typed)),
-            (notice, typed) => notice.or(typed),
-        }
-        .map(|left| left.max(std::time::Duration::from_millis(16)))
+        self.noticed_in()
+            .into_iter()
+            .chain(self.typed_due())
+            .chain(self.pointer_leaves_in())
+            .min()
+            .map(|left| left.max(std::time::Duration::from_millis(16)))
     }
 }
 
@@ -1373,6 +1577,26 @@ mod tests {
         });
         let row = person_of(&workspace, &workspace.members[0], &workspace.present[0]);
         assert!(!row.automatic, "what they wrote is their own");
+
+        // Software's line is marked the same way: an agent's device read its line off its work,
+        // and its row says so rather than showing the words as if the agent had chosen them.
+        let fieldwork = MemberId::agent("fieldwork", "ada");
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(7), "Studio");
+        workspace.member_here(tilo_desktop_model::Member::named(
+            fieldwork.clone(),
+            "Fieldwork",
+        ));
+        let mut here = Present::of(fieldwork);
+        here.device = "agent-key".to_owned();
+        here.status = Some(Status {
+            text: "Reading the launch note".to_owned(),
+            automatic: true,
+        });
+        workspace.place_presence(here);
+        let row = person_of(&workspace, &workspace.members[0], &workspace.present[0]);
+        assert!(row.agent);
+        assert_eq!(row.doing, "Reading the launch note");
+        assert!(row.automatic, "the agent's line was read off its work");
     }
 
     /// A follower's row names whom they follow, for any pair: someone following this person says

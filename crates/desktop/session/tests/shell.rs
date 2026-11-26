@@ -54,9 +54,18 @@ fn options() -> Options {
 }
 
 fn session() -> Session {
-    let mut session =
-        Session::headless(options(), &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)])
-            .expect("session");
+    session_over(WIDTH, HEIGHT)
+}
+
+/// A session on a `width` by `height` screen, taking part in the app wire for what presence
+/// arrives over it.
+fn session_over(width: i32, height: i32) -> Session {
+    let options = Options {
+        sync: Some(crate::common::untethered(PERSON)),
+        ..options()
+    };
+    let mut session = Session::headless(options, &[OutputConfig::new("HEADLESS-1", width, height)])
+        .expect("session");
     // A tap here is a press and a release a frame apart, and a frame on a loaded machine can
     // outlast the repeat delay: held keys would repeat ("stuuudio"). No test here holds one.
     session.compositor().set_key_repeat(KeyRepeat {
@@ -1458,9 +1467,11 @@ fn alt_backtick_walks_only_the_front_apps_windows() {
     assert_eq!(lifted(&session), crossed.key);
 }
 
-/// Who is here is one button of faces — up to three, then a face counting the rest — whose name
-/// names the people, so no words take the bar's room at any width; pressing it calls the session's
-/// own `toggle-people` , and the roster opens and lists them.
+/// Who is here stands on the bar as the first three faces, each its own control opening that
+/// person's card, and a button beside them that names everyone here and counts the rest; a face
+/// joins the group and the bar widens by a face, and a crowd takes no more of the bar than four
+/// here. Pressing the button calls the session's own `toggle-people`, and the roster opens and
+/// lists them.
 #[test]
 fn a_persons_presence_shows_their_face_and_opens_the_roster() {
     let _settled = tilo_ui_base::motion::testing::settled();
@@ -1475,7 +1486,7 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
         "no face of a person who is not here"
     );
     // Someone here, as the peer network lists them: their face, named for assistive
-    // technology, on the one button that opens the roster.
+    // technology, beside the button that names everyone here.
     set_here(&session, 1);
     until(&mut session, |session| says(session, "Mia Clayton is here"));
     let one = bar_control(&session, "Mia Clayton is here").expect("one face, named");
@@ -1492,7 +1503,7 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
     // Three here stand three faces, a face's step wider each; the fourth takes the face at the
     // group's end that counts the rest, and everyone past it is counted there, so a crowd takes no
     // more of the bar than four here.
-    let mut widths = vec![one.2];
+    let mut widths = vec![presence_span(&session).expect("one face, and the way to everyone here")];
     for (count, label) in [
         (2, "Mia Clayton and Sam Okafor are here"),
         (3, "Mia Clayton and 2 others are here"),
@@ -1500,30 +1511,31 @@ fn a_persons_presence_shows_their_face_and_opens_the_roster() {
         (5, "Mia Clayton and 4 others are here"),
     ] {
         set_here(&session, count);
-        widths.push(
-            crate::common::wait_for(&mut session, label, |session| bar_control(session, label)).2,
-        );
+        crate::common::wait_for(&mut session, label, |session| bar_control(session, label));
+        widths.push(presence_span(&session).expect("who is here, and the way to everyone"));
     }
     assert!(
-        widths[2] - widths[1] > 1.0 && widths[3] - widths[2] > 1.0,
-        "a face joins the group, then the count's own face: {widths:?}"
+        widths[1] - widths[0] > 1.0 && widths[2] - widths[1] > 1.0,
+        "a face joins the group, a face's step wider the bar: {widths:?}"
     );
     assert!(
-        (widths[4] - widths[3]).abs() <= 1.0,
+        (widths[3] - widths[2]).abs() <= 1.0 && (widths[4] - widths[3]).abs() <= 1.0,
         "a crowd is counted, not drawn: {widths:?}"
+    );
+    assert!(
+        widths[4] <= 4.0 * one.2 + 1.0,
+        "no more of the bar than four faces stand here, however many are: {widths:?}, a face {}",
+        one.2
     );
     assert!(
         people.2 < 40.0,
         "nobody here: the glyph alone, {} wide",
         people.2
     );
-    // The button opens who is here, where each person has their own name.
+    // The list itself is not drawn until the button opens it: no row stands reserved on the screen.
     assert!(
-        !session
-            .accessible_labels()
-            .iter()
-            .any(|label| label == "Mia Clayton"),
-        "nobody's name stands anywhere while the roster is closed: {:?}",
+        !says(&session, "People here now"),
+        "the roster's list stands only while it is open: {:?}",
         session.accessible_labels()
     );
     press(&mut session, "Mia Clayton and 4 others are here");
@@ -1655,10 +1667,19 @@ fn people_nodes(session: &Session, label: &str) -> Vec<(f64, f64, f64, f64, Opti
             tree.nodes
                 .iter()
                 .filter(|(_, node)| {
-                    matches!(
+                    // The list's rows and its headings are what it draws. A row answers to the
+                    // name among the words it reads as; a heading is the platform's fold control,
+                    // a button that says the group's name and nothing else, so it counts only
+                    // inside the panel, below the bar where the faces are. A row's own trailing
+                    // control ("Follow Mia Clayton") is a button too, and no row.
+                    let row = matches!(
                         node.role(),
                         ui::accesskit::Role::ListItem | ui::accesskit::Role::Heading
-                    ) && node.label().is_some_and(|said| says_that(said, label))
+                    ) && node.label().is_some_and(|said| says_that(said, label));
+                    let fold = node.role() == ui::accesskit::Role::Button
+                        && node.bounds().is_some_and(|rect| rect.y0 > 64.0)
+                        && node.label() == Some(label);
+                    row || fold
                 })
                 .filter_map(|(_, node)| {
                     let rect = node.bounds()?;
@@ -1686,8 +1707,20 @@ fn people_labels(session: &Session, label: &str) -> Vec<String> {
         .flat_map(|(_, _, tree)| {
             tree.nodes
                 .iter()
-                .filter_map(|(_, node)| node.label().map(str::to_owned))
-                .filter(|said| says_that(said, label))
+                // The list's rows: a name the bar's faces and the row's own controls also say
+                // stands here only as the row says it.
+                .filter(|(_, node)| node.role() == ui::accesskit::Role::ListItem)
+                .filter(|(_, node)| node.label().is_some_and(|said| says_that(said, label)))
+                .map(|(_, node)| {
+                    // A row says its name, then what it describes itself by and what it stands
+                    // for: the lines a screen reader reads after the name.
+                    let mut whole = node.label().unwrap_or_default().to_owned();
+                    for line in node.description().into_iter().chain(node.value()) {
+                        whole.push_str(", ");
+                        whole.push_str(line);
+                    }
+                    whole
+                })
                 .collect::<Vec<_>>()
         })
         .collect()
@@ -1706,6 +1739,40 @@ fn says_that(said: &str, label: &str) -> bool {
         })
 }
 
+/// The roster's row naming `label`, as a reader finds it: the row carries the lines under its name
+/// with the name it goes by.
+fn listed_row(session: &Session, label: &str) -> ui::accesskit::Node {
+    session
+        .a11y_windows()
+        .into_iter()
+        .flat_map(|(_, _, tree)| tree.nodes.into_iter())
+        .find(|(_, node)| {
+            node.role() == ui::accesskit::Role::ListItem
+                && node.label().is_some_and(|said| says_that(said, label))
+        })
+        .map_or_else(
+            || {
+                panic!(
+                    "no row naming {label:?}; the shell says {:?}",
+                    session.accessible_labels()
+                )
+            },
+            |(_, node)| node,
+        )
+}
+
+/// The words who-is-here writes over its groups: a heading tells one group of the people here
+/// from another, and one group needs none.
+fn group_headings(session: &Session) -> Vec<String> {
+    session
+        .a11y_windows()
+        .into_iter()
+        .flat_map(|(_, _, tree)| tree.nodes.into_iter())
+        .filter(|(_, node)| node.role() == ui::accesskit::Role::Heading)
+        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        .collect()
+}
+
 /// Where the people list's single control labelled `label` stands, in the session's coordinates.
 fn people_place(session: &Session, label: &str) -> (f64, f64, f64, f64) {
     let places = people_nodes(session, label);
@@ -1719,17 +1786,19 @@ fn people_place(session: &Session, label: &str) -> (f64, f64, f64, f64) {
     (x0, y0, x1, y1)
 }
 
-/// The window the workspace in front shows: the active strip's first.
+/// The window the workspace in front shows: the focused one of its active strip.
 fn the_window_in_front(session: &Session) -> Option<tilo_desktop_model::TabId> {
     session.handle().read(|tree| {
         let workspace = tree.active_workspace()?;
         let strip = tree.active_strip_for(workspace)?;
+        let group = tree.active_group_for(strip)?;
         workspace
             .strips
             .iter()
             .find(|held| held.id == strip)?
             .window_groups
-            .first()
+            .iter()
+            .find(|held| held.id == group)
             .map(|group| group.active_tab)
     })
 }
@@ -1762,6 +1831,15 @@ fn the_people_list_header_says_the_workspace_and_groups_people_ahead_of_software
         !says(&session, "Agents"),
         "with only people here no group needs a heading: {:?}",
         session.accessible_labels()
+    );
+    // One section takes no label at all: the header already says who is here, so its rows stand
+    // where the list begins, under no heading of their own.
+    let one_section = group_headings(&session);
+    assert!(
+        !one_section
+            .iter()
+            .any(|heading| heading == "People" || heading == "Agents"),
+        "one section takes no label: {one_section:?}"
     );
     // People and software: each group under its own heading, people above software, and each kind
     // of software tagged as what it is.
@@ -1806,10 +1884,13 @@ fn the_people_list_header_says_the_workspace_and_groups_people_ahead_of_software
         "an agent and a bot are each tagged as what they are: {:?}",
         session.accessible_labels()
     );
-    // Software's row names where it works, with the way there; a person's offers none.
+    // Software's row names where it works, with the way there; a person's offers none. The row
+    // says the line it draws as a reader hears the row, after its name.
+    let fieldwork_said = people_labels(&session, "Fieldwork");
     assert!(
-        says(&session, "In Notes") && session.shell_control("Go there").is_some(),
-        "the agent's row names its app and offers the way there: {:?}",
+        fieldwork_said.iter().any(|said| said.contains("In Notes"))
+            && session.shell_control("Go there").is_some(),
+        "the agent's row names its app and offers the way there: {fieldwork_said:?}; it says {:?}",
         session.accessible_labels()
     );
     assert_eq!(
@@ -1841,22 +1922,69 @@ fn a_people_row_follows_waves_and_goes_where_software_works() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     until(&mut session, |session| says(session, &time(session).clock));
+    let mut fieldwork = someone_here(
+        2,
+        "Fieldwork",
+        Some(collab_types::MemberId::agent("fieldwork", "ada")),
+        "so.tilo.notes",
+    );
+    // What it is doing now, in its own words, under its name.
+    fieldwork.activity = Some("Editing the launch note".to_owned());
+    // Software that has published no view yet, here as its workspace admits it.
+    let draft = someone_here(
+        3,
+        "Draft",
+        Some(collab_types::MemberId::agent("draft", "ada")),
+        "",
+    );
     set_the_people(
         &session,
-        vec![
-            someone_here(1, "Mia Clayton", None, ""),
-            someone_here(
-                2,
-                "Fieldwork",
-                Some(collab_types::MemberId::agent("fieldwork", "ada")),
-                "so.tilo.notes",
-            ),
-        ],
+        vec![someone_here(1, "Mia Clayton", None, ""), fieldwork, draft],
     );
     open_who_is_here(&mut session);
     until(&mut session, |session| {
         session.shell_control("Follow Mia Clayton").is_some()
     });
+    // Software's row says what it is doing now and the window it does it in: its name alone
+    // leaves a person watching it not knowing whether it works or idles.
+    let working = listed_row(&session, "Fieldwork");
+    assert!(
+        working
+            .value()
+            .is_some_and(|value| value.contains("Editing the launch note")),
+        "the agent's row says what it is doing: {:?}",
+        working.value()
+    );
+    assert!(
+        working
+            .label()
+            .is_some_and(|name| name.contains("In Notes"))
+            || working
+                .description()
+                .is_some_and(|said| said.contains("In Notes")),
+        "the agent's row names the window it works in: {:?} / {:?}",
+        working.label(),
+        working.description()
+    );
+    // Software that has published no view yet is still followable rather than hidden until it is
+    // seen working; its row names where it works only where there is a window to go to.
+    assert!(
+        session.shell_control("Follow Draft").is_some(),
+        "a headless agent is followable: {:?}",
+        session.accessible_labels()
+    );
+    assert_eq!(
+        session.shell_controls("Go there").len(),
+        1,
+        "only software with a window this roster can reach offers the way there: {:?}",
+        session.accessible_labels()
+    );
+    let idle = listed_row(&session, "Draft");
+    assert!(
+        idle.value().is_none(),
+        "an agent with no line of its own says nothing under its name: {:?}",
+        idle.value()
+    );
     let key = people_reading(&session)
         .rows
         .iter()
@@ -1887,13 +2015,14 @@ fn a_people_row_follows_waves_and_goes_where_software_works() {
     until(&mut session, |session| {
         says(session, "You waved at Mia Clayton")
     });
+    // The shell draws what the reading says on the pass after it: the row stops saying so once its
+    // moment is over, and the reading with it.
     until(&mut session, |session| {
-        people_reading(session).waved_to.is_empty()
+        !says(session, "You waved at Mia Clayton")
     });
     assert!(
-        !says(&session, "You waved at Mia Clayton"),
-        "the sent wave goes when its moment is over: {:?}",
-        session.accessible_labels()
+        people_reading(&session).waved_to.is_empty(),
+        "the sent wave goes when its moment is over"
     );
     // Nobody waves at software.
     assert!(
@@ -1904,6 +2033,15 @@ fn a_people_row_follows_waves_and_goes_where_software_works() {
     // Where software works: pressing it brings that window forward, so what it is on stands in
     // front of this person.
     let notes = open_window(&mut session, "so.tilo.notes");
+    // The person works in another window: the agent's stands behind it.
+    let mail = open_window(&mut session, "so.tilo.mail");
+    assert!(
+        session.handle().focus_tab(mail),
+        "the mail window is focused"
+    );
+    until(&mut session, |session| {
+        the_window_in_front(session) == Some(mail)
+    });
     until(&mut session, |session| says(session, "Go there"));
     assert_ne!(
         the_window_in_front(&session),
@@ -1914,6 +2052,108 @@ fn a_people_row_follows_waves_and_goes_where_software_works() {
     until(&mut session, |session| {
         the_window_in_front(session) == Some(notes)
     });
+}
+
+/// An agent with no window to name says whole what it is doing: under its name in its row, in the
+/// room the row keeps under the name, at a desktop's width and a phone's. A line cut with an
+/// ellipsis hides the end of what the agent is at, which is the one thing its row is for.
+#[test]
+fn an_agents_doing_line_is_never_cut_short() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let doing = "Reading Launch notes in Notes";
+    for (width, height) in [(WIDTH, HEIGHT), (390, 844)] {
+        let mut session = session_over(width, height);
+        until(&mut session, |session| says(session, &time(session).clock));
+        let mut agent = someone_here(
+            1,
+            "Fieldwork",
+            Some(collab_types::MemberId::agent("fieldwork", "ada")),
+            "",
+        );
+        agent.activity = Some(doing.to_owned());
+        set_the_people(&session, vec![agent]);
+        open_who_is_here(&mut session);
+        until(&mut session, |session| {
+            session.shell_control("Follow Fieldwork").is_some()
+        });
+        // A reader is told the line whole.
+        let row = listed_row(&session, "Fieldwork");
+        assert!(
+            row.value().is_some_and(|value| value.contains(doing)),
+            "the row says what the agent is doing whole at {width}: {:?}",
+            row.value()
+        );
+        // With no window to go to, the line opens none.
+        assert!(
+            session.shell_control("Go there").is_none(),
+            "a line with no window to show opens none at {width}: {:?}",
+            session.accessible_labels()
+        );
+        // And the words fit the room the row keeps for the line, so nothing is elided: what a
+        // person sees is what the agent is doing.
+        let needs = caption_width(doing);
+        let row = people_place(&session, "Fieldwork");
+        let room = room_for_the_line(&session, "Fieldwork", "Follow Fieldwork", needs);
+        assert!(
+            needs <= room,
+            "the doing line fits its own line at {width}: {needs} in {room} of a {}-wide row",
+            row.2
+        );
+    }
+}
+
+/// How wide `words` are in the row's line style under the name, as the shell draws them.
+fn caption_width(words: &str) -> f64 {
+    let theme = tilo_ui_base::theme::Theme::dark();
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+    f64::from(
+        text.measure_style(
+            words,
+            None,
+            &theme.text(tilo_ui_base::tokens::TextRole::Caption),
+        )
+        .0,
+    )
+}
+
+/// The room an agent's row keeps for its line of `needs` wide: under its name where the words fit
+/// there, and otherwise a line of its own under the whole row, from the text's edge after the tag
+/// to the row's far edge, where nothing else stands beside it.
+fn room_for_the_line(session: &Session, name: &str, control: &str, needs: f64) -> f64 {
+    let under_the_name = room_under_the_name(session, name, control);
+    if needs <= under_the_name {
+        return under_the_name;
+    }
+    let (_, _, width, _) = people_place(session, name);
+    let theme = tilo_ui_base::theme::Theme::dark();
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+    let tag = ui::widget::badge_column_width(&mut text, &theme, &["Agent"]);
+    let bleed = tilo_ui_base::chrome::row_bleed(&theme);
+    let gap = f64::from(theme.tokens.spacing.s3);
+    width - 2.0 * bleed - tag - gap
+}
+
+/// The room an agent's row keeps for the line under its name, from after the tag at its start and
+/// its face at its end: to the control where that control stands at the row's end beside the
+/// words, and the row's own far edge where a narrow row has moved the control under them.
+fn room_under_the_name(session: &Session, name: &str, control: &str) -> f64 {
+    let (x0, _, width, _) = people_place(session, name);
+    let (end, _, _, _) = session
+        .shell_control(control)
+        .unwrap_or_else(|| panic!("{name}'s row shows {control:?}"));
+    let theme = tilo_ui_base::theme::Theme::dark();
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+    let tag = ui::widget::badge_column_width(&mut text, &theme, &["Agent"]);
+    let bleed = tilo_ui_base::chrome::row_bleed(&theme);
+    let gap = f64::from(theme.tokens.spacing.s3);
+    let face = f64::from(theme.tokens.metrics.avatar_inline);
+    if end > x0 + width / 2.0 {
+        // Beside the words: they end before the control, less the gap.
+        end - x0 - bleed - tag - face - 3.0 * gap
+    } else {
+        // Under them: the words have the row's whole width, less the face and the margins.
+        width - 2.0 * bleed - tag - face - 2.0 * gap
+    }
 }
 
 /// Someone in a call wears the arc sweeping round their face on their row, where the bar's faces
@@ -1996,32 +2236,69 @@ fn a_line_software_wrote_wears_the_mark_on_its_row() {
 }
 
 /// The invite stands on the list where the workspace lets this person invite, and nowhere else: a
-/// session on its own device's daemon, in its person's own workspace, offers it, and a session
-/// that reaches no workspace to invite into offers none.
+/// session on its own device's daemon, in its person's own workspace and taking part in the app
+/// wire, offers it, and a session outside the wire, which carries no link into a workspace, offers
+/// none.
 #[test]
 fn the_people_list_offers_the_invite_only_where_this_person_may_invite() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut theirs =
-        crate::common::on_its_daemon(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)], options());
+    // A session on its own device's daemon that takes part in the app wire: a link into the
+    // workspace is carried over it, so the reading asks the workspace's governance.
+    let mut theirs = crate::common::on_its_daemon(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        Options {
+            collab: true,
+            ..options()
+        },
+    );
     until(&mut theirs, |session| says(session, &time(session).clock));
     open_who_is_here(&mut theirs);
     until(&mut theirs, |session| says(session, "Just you"));
+    // Only you: the roster says nobody else is here, and still offers the way to invite them.
     assert!(
-        people_reading(&theirs).may_invite,
-        "the workspace this person owns lets them invite"
-    );
-    assert!(
-        theirs.shell_control("Invite someone").is_some(),
-        "the list offers the invite: {:?}",
+        says(&theirs, "Nobody else is here"),
+        "the roster says nobody else is here: {:?}",
         theirs.accessible_labels()
     );
+    assert_eq!(
+        people_reading(&theirs).rows.len(),
+        0,
+        "the roster lists nobody else"
+    );
+    // The workspace's answer is followed every pass, so the reading the roster draws by carries
+    // it once the daemon has answered.
+    until(&mut theirs, |session| people_reading(session).may_invite);
+    // The shell draws the answer on the pass after the reading carries it.
+    until(&mut theirs, |session| {
+        session.shell_control("Invite someone").is_some()
+    });
+    let invite = theirs
+        .shell_control("Invite someone")
+        .expect("the list offers the invite");
+    assert!(
+        invite.2 > 0.0 && invite.3 > 0.0,
+        "the invite stands as a control a person can press: {invite:?}"
+    );
 
-    // A session that reaches no device daemon holds no workspace whose governance could let it
-    // invite, and says so rather than offering a button whose sheet could only refuse.
-    let mut alone = session();
+    // A session outside the app wire carries no link into a workspace: it holds none whose
+    // governance could let it invite, and says so rather than offering a button whose sheet could
+    // only refuse.
+    let mut alone = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        Options {
+            collab: false,
+            ..options()
+        },
+    );
+    alone.step(Duration::from_millis(1)).unwrap();
     until(&mut alone, |session| says(session, &time(session).clock));
     open_who_is_here(&mut alone);
     until(&mut alone, |session| says(session, "Just you"));
+    assert!(
+        says(&alone, "Nobody else is here"),
+        "the roster says nobody else is here: {:?}",
+        alone.accessible_labels()
+    );
     assert!(
         !people_reading(&alone).may_invite,
         "no workspace answers for this session"
@@ -3299,6 +3576,32 @@ fn bar_control(session: &Session, words: &str) -> Option<(f64, f64, f64, f64)> {
         .into_iter()
         .filter(|label| label.contains(words))
         .find_map(|label| session.shell_control(&label))
+}
+
+/// How much of the bar who is here takes: from the first face's left edge to the right edge of the
+/// control that names everyone here, each person standing there a face's step wider. The names in
+/// [`HERE`] stand as faces of their own; the control naming them all says "… is here".
+fn presence_span(session: &Session) -> Option<f64> {
+    let mut left = f64::INFINITY;
+    let mut right = f64::NEG_INFINITY;
+    for (_, _, tree) in session.a11y_windows() {
+        for (_, node) in &tree.nodes {
+            let Some(label) = node.label() else {
+                continue;
+            };
+            let standing = HERE.contains(&label) || label.ends_with(" here");
+            // In the bar: a person's name also stands in the list when the roster is open.
+            let Some(rect) = node.bounds().filter(|rect| rect.y1 <= 64.0) else {
+                continue;
+            };
+            if !standing {
+                continue;
+            }
+            left = left.min(rect.x0);
+            right = right.max(rect.x1);
+        }
+    }
+    (right > left).then_some(right - left)
 }
 
 /// Every control the shell shows, by the name assistive technology hears, with where it stands: the

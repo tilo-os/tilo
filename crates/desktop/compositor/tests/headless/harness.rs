@@ -944,6 +944,7 @@ impl ShellSurface for DropZone {
     fn layers(&self) -> Vec<SurfaceLayer> {
         vec![SurfaceLayer {
             pose: tilo_session_core::surface::LayerPose::SETTLED,
+            over_windows: false,
             location: (500, 20),
             size: (100, 100),
             frame: SurfaceFrame::from_pixels((100, 100), self.pixels.clone()),
@@ -2021,6 +2022,7 @@ impl ShellSurface for Square {
     fn layers(&self) -> Vec<SurfaceLayer> {
         vec![SurfaceLayer {
             pose: tilo_session_core::surface::LayerPose::SETTLED,
+            over_windows: false,
             location: (self.rect.0, self.rect.1),
             size: (self.rect.2, self.rect.3),
             frame: self.frame.clone(),

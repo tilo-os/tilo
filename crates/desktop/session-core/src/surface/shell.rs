@@ -718,6 +718,10 @@ pub struct SurfaceLayer {
     /// How the shell draws the frame this time instead of as it stands: faded, scaled or moved
     /// while the surface shows the same pixels, so an animation of it is not drawn again.
     pub pose: super::LayerPose,
+    /// This layer stands over the windows even when its surface is drawn under them
+    /// ([`ShellSurface::below_windows`]): other people's pointers over the window each is on.
+    /// It takes no input there; a press on it is the window's.
+    pub over_windows: bool,
 }
 
 /// A drag a hosted surface starts: bytes per format (files as `text/uri-list` ) and, optionally, an

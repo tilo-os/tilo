@@ -35,6 +35,7 @@ fn options() -> Options {
         presentation: ui::headless::fixture_runner_inputs,
         person: PERSON.to_owned(),
         collab: true,
+        sync: Some(crate::common::untethered(PERSON)),
         ..Options::default()
     }
 }
@@ -65,12 +66,29 @@ fn set_here(session: &Session, people: &[(&str, Option<&str>, Option<&str>)]) {
             },
         )
         .collect();
+    set_members(session, here);
+}
+
+/// Who is here, as the peer network lists them, software among them.
+fn set_members(session: &Session, here: Vec<tilo_session_core::desktop::here::LiveMember>) {
     session
         .sync()
         .expect("the session takes part in the app wire")
         .here()
         .borrow_mut()
         .set_members(None, Some(here));
+}
+
+/// An agent here, as the workspace admitted it, at what it says it is doing.
+fn an_agent(at: usize, name: &str, doing: &str) -> tilo_session_core::desktop::here::LiveMember {
+    tilo_session_core::desktop::here::LiveMember {
+        publisher: format!("{:064x}", at + 1),
+        kind: "agent".to_owned(),
+        label: name.to_owned(),
+        member: Some(collab_types::MemberId::agent(name.to_lowercase(), "ada")),
+        activity: Some(doing.to_owned()),
+        ..tilo_session_core::desktop::here::LiveMember::default()
+    }
 }
 
 /// Open who is here, through the session's own action, and wait for its panel.
@@ -116,19 +134,30 @@ fn focused(session: &Session) -> Option<String> {
         .and_then(|(_, node)| node.label().map(str::to_owned))
 }
 
-/// The node named `label`, as a screen reader finds it.
-fn labelled<'t>(tree: &'t TreeUpdate, label: &str) -> &'t Node {
+/// Whether who is here says this person may invite someone: the one fact the roster's invite and
+/// the bar's are offered on.
+fn may_invite(session: &Session) -> bool {
+    session
+        .read("session:people")
+        .and_then(|reading| reading["may_invite"].as_bool())
+        .expect("who is here reads whether this person may invite")
+}
+
+/// The list row named `label`, as a screen reader finds the row itself: a person's name is also
+/// said by the face of them on the bar and the controls their row offers, which are no rows.
+fn row_named<'t>(tree: &'t TreeUpdate, label: &str) -> &'t Node {
     tree.nodes
         .iter()
-        .find(|(_, node)| node.label() == Some(label))
+        .find(|(_, node)| node.role() == Role::ListItem && node.label() == Some(label))
         .map_or_else(
             || {
                 let names: Vec<&str> = tree
                     .nodes
                     .iter()
+                    .filter(|(_, node)| node.role() == Role::ListItem)
                     .filter_map(|(_, node)| node.label())
                     .collect();
-                panic!("no node named {label:?}; the shell says {names:?}")
+                panic!("no row named {label:?}; the list says {names:?}")
             },
             |(_, node)| node,
         )
@@ -188,14 +217,14 @@ fn who_is_here_is_reachable_by_keyboard_and_says_what_each_row_shows() {
         "the panel names itself for a reader: {:?}",
         panel.description()
     );
-    let mia = labelled(&tree, "Mia Clayton");
+    let mia = row_named(&tree, "Mia Clayton");
     assert!(
         mia.description()
             .is_some_and(|said| said.contains("Editing the release plan")),
         "the row says what they are doing: {:?}",
         mia.description()
     );
-    let sam = labelled(&tree, "Sam Okafor");
+    let sam = row_named(&tree, "Sam Okafor");
     assert!(
         sam.description().is_some_and(|said| said.contains("Away")),
         "the row of someone away says so: {:?}",
@@ -214,7 +243,11 @@ fn who_is_here_is_reachable_by_keyboard_and_says_what_each_row_shows() {
     );
 
     // Tab reaches every control of the roster, and never a control of the bar behind it.
-    let panel_controls = ["Close", "Invite someone", "People here now", "You"];
+    let inviting = may_invite(&session);
+    let mut panel_controls = vec!["Close", "People here now", "You"];
+    if inviting {
+        panel_controls.push("Invite someone");
+    }
     let mut reached = Vec::new();
     for _ in 0..24 {
         key(&mut session, KEY_TAB);
@@ -236,12 +269,18 @@ fn who_is_here_is_reachable_by_keyboard_and_says_what_each_row_shows() {
             "the faces on the bar behind the roster never take the keyboard: {label:?}"
         );
     }
-    for control in ["Close", "Invite someone"] {
-        assert!(
-            reached.iter().any(|label| label.starts_with(control)),
-            "{control} is reached by Tab: {reached:?}"
-        );
-    }
+    assert!(
+        reached.iter().any(|label| label.starts_with("Close")),
+        "Close is reached by Tab: {reached:?}"
+    );
+    assert_eq!(
+        reached
+            .iter()
+            .any(|label| label.starts_with("Invite someone")),
+        inviting,
+        "the invite is reached by Tab where the workspace lets this person invite, and nowhere \
+         else: {reached:?}"
+    );
 
     // The list holds the rows: moving into it with the arrows and pressing Enter opens the person
     // the keyboard is on, as a press does.
@@ -365,6 +404,62 @@ fn a_phones_who_is_here_is_a_sheet_a_press_above_puts_away() {
     );
 }
 
+/// A phone's roster offers Follow on software's row: an agent is followed to its run like anyone
+/// else, and the control stands inside the panel the person can reach at a phone's width.
+#[test]
+fn a_phones_who_is_here_offers_follow_on_the_agents_row() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let mut session = session_over(390, 844);
+    until(&mut session, "the shell", |session| {
+        session.shell_control("Notifications").is_some()
+    });
+    set_members(&session, vec![an_agent(0, "Fieldwork", "Reading notes")]);
+    open_who_is_here(&mut session);
+    until(&mut session, "the agent's row", |session| {
+        session.shell_control("Follow Fieldwork").is_some()
+    });
+    let panel = shell_tree(&session)
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == Role::Dialog && node.label() == Some("People"))
+        .and_then(|(_, node)| node.bounds())
+        .expect("the roster is a dialog named People with bounds");
+    let follow = session
+        .shell_control("Follow Fieldwork")
+        .expect("the agent's row offers Follow");
+    // The control is inside the panel the person reads, and on the screen they hold.
+    assert!(
+        follow.0 >= panel.x0 && follow.0 + follow.2 <= panel.x1,
+        "Follow stands inside the sheet: {follow:?} in {panel:?}"
+    );
+    assert!(
+        follow.1 >= panel.y0 && follow.1 + follow.3 <= panel.y1 + 0.5,
+        "Follow stands in the sheet's list: {follow:?} in {panel:?}"
+    );
+    assert!(
+        follow.0 >= 0.0 && follow.0 + follow.2 <= 390.0 && follow.1 + follow.3 <= 844.0,
+        "Follow is on the phone's screen: {follow:?}"
+    );
+    // One section takes no label: software alone stands under no group heading, where a second
+    // group's band would say "Agents".
+    assert!(
+        session.shell_control("Agents").is_none(),
+        "one group needs no label: {:?}",
+        session.accessible_labels()
+    );
+    // It is the agent's own row: the one that says what it is doing, and what it is.
+    assert!(
+        session.shell_says("Reading notes"),
+        "the agent's row stands in the sheet: {:?}",
+        session.accessible_labels()
+    );
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
 /// A workspace of thousands opens a roster that builds only the rows it shows, and the keyboard
 /// reaches the last of them: a long list costs the screenful, not the workspace. (The list's own
 /// ten-thousand case is held in the toolkit's `a_list_held_to_its_most_height_builds_only_what_it_shows`.)
@@ -372,10 +467,11 @@ fn a_phones_who_is_here_is_a_sheet_a_press_above_puts_away() {
 fn a_workspace_of_thousands_opens_only_the_rows_who_is_here_shows() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_over(WIDTH, HEIGHT);
-    let thousands = 2_000usize;
+    let thousands = 10_000usize;
     // The first of them wears a name no row holds: what a row does with a name longer than it is
-    // part of what a workspace of thousands has to keep working.
-    let long_name = format!("Ada {}", "Assistance ".repeat(24));
+    // part of what a workspace of thousands has to keep working. A row says a name as it is
+    // written, without the spaces around it, so the name has none.
+    let long_name = format!("Ada{}", " Assistance".repeat(24));
     let here: Vec<tilo_session_core::desktop::here::LiveMember> = (0..thousands)
         .map(|at| tilo_session_core::desktop::here::LiveMember {
             publisher: format!("{:064x}", at + 1),
@@ -385,6 +481,9 @@ fn a_workspace_of_thousands_opens_only_the_rows_who_is_here_shows() {
             } else {
                 format!("Person {at}")
             },
+            // Each is a person with an account, as in a real workspace: their device is read as
+            // theirs, named and coloured as their person.
+            user: Some(format!("{:064x}", (1u128 << 100) + at as u128)),
             ..tilo_session_core::desktop::here::LiveMember::default()
         })
         .collect();
@@ -395,12 +494,30 @@ fn a_workspace_of_thousands_opens_only_the_rows_who_is_here_shows() {
         .borrow_mut()
         .set_members(None, Some(here));
     open_who_is_here(&mut session);
-    until(&mut session, "the first rows", |session| {
-        has_row(session, &long_name)
+    // Everyone here is read once and the rows on screen once: the roster opens in the moment a
+    // workspace of three takes, not in one that grows with everyone present.
+    let opening = std::time::Instant::now();
+    let opened = crate::common::steps_within(&mut session, Duration::from_secs(30), |session| {
+        has_row(session, &long_name).then_some(())
     });
     assert!(
+        opened.is_some(),
+        "a workspace of {thousands} opens its roster within 30 s, not the {:?} it took; the shell's \
+         refusals: {:?}",
+        opening.elapsed(),
+        session.shell_refusals()
+    );
+    // A name longer than its row leaves the roster's own controls where they stand: its close,
+    // and its invite where the workspace lets this person invite.
+    assert!(
+        session.shell_control("Close").is_some(),
+        "a name longer than its row leaves the roster's close where it stands"
+    );
+    assert_eq!(
         session.shell_control("Invite someone").is_some(),
-        "a name longer than its row leaves the roster's own controls where they stand"
+        may_invite(&session),
+        "a name longer than its row leaves the roster's invite where it stands, offered where \
+         this person may invite"
     );
 
     // Only the rows the roster shows are built: the rest of the workspace costs nothing until it
@@ -411,7 +528,7 @@ fn a_workspace_of_thousands_opens_only_the_rows_who_is_here_shows() {
         "a roster of {thousands} builds the rows it shows, not all of them: {built}"
     );
     assert!(
-        !has_row(&session, "Person 1999"),
+        !has_row(&session, "Person 9999"),
         "the last person is not built until the list reaches them"
     );
 
@@ -427,8 +544,48 @@ fn a_workspace_of_thousands_opens_only_the_rows_who_is_here_shows() {
     assert!(on_list, "Tab reaches the list of who is here");
     key(&mut session, KEY_END);
     until(&mut session, "the last person", |session| {
-        has_row(session, "Person 1999")
+        has_row(session, "Person 9999")
     });
+    assert!(
+        session.shell_refusals().is_empty(),
+        "{:?}",
+        session.shell_refusals()
+    );
+}
+
+/// On a session whose own workspace lets this person invite, the roster offers the invite and the
+/// keyboard reaches it inside the roster, as a press does.
+#[test]
+fn an_invite_on_who_is_here_is_reached_by_keyboard() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let mut session = crate::common::on_its_daemon(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+        Options {
+            collab: true,
+            ..options()
+        },
+    );
+    until(&mut session, "the shell", |session| {
+        session.shell_control("Notifications").is_some()
+    });
+    open_who_is_here(&mut session);
+    assert!(
+        may_invite(&session),
+        "the workspace this person owns lets them invite"
+    );
+    let mut reached = Vec::new();
+    for _ in 0..24 {
+        key(&mut session, KEY_TAB);
+        if let Some(label) = focused(&session) {
+            reached.push(label);
+        }
+    }
+    assert!(
+        reached
+            .iter()
+            .any(|label| label.starts_with("Invite someone")),
+        "the roster's invite is reached by Tab where the person may invite: {reached:?}"
+    );
     assert!(
         session.shell_refusals().is_empty(),
         "{:?}",

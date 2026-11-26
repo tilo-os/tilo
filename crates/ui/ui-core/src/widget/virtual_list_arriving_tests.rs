@@ -274,3 +274,133 @@ tilo_test_env::scenario! {
         );
     }
 }
+
+/// Ten thousand rows of which the host has sent only the ones the list asked for: a row's key is
+/// known once its page arrives, as a window's rows from an app are.
+struct SentRows {
+    sent: Rc<RefCell<Vec<Range<usize>>>>,
+    asked: Rc<RefCell<Vec<Range<usize>>>>,
+}
+
+impl SentRows {
+    fn holds(&self, index: usize) -> bool {
+        self.sent
+            .borrow()
+            .iter()
+            .any(|range| range.contains(&index))
+    }
+}
+
+impl ListModel for SentRows {
+    type Key = u64;
+
+    fn len(&self) -> usize {
+        10_000
+    }
+
+    fn key_at(&self, index: usize) -> Option<Self::Key> {
+        self.holds(index)
+            .then(|| u64::try_from(index).ok())
+            .flatten()
+    }
+
+    fn index_of(&self, key: &Self::Key) -> Option<usize> {
+        usize::try_from(*key)
+            .ok()
+            .filter(|index| self.holds(*index))
+    }
+
+    fn row_state(&self, index: usize) -> Arrival<(), &str> {
+        if self.holds(index) {
+            Arrival::Ready(())
+        } else {
+            Arrival::Pending {
+                from: tilo_ui_base::arriving::Source::Remote,
+            }
+        }
+    }
+
+    fn request_range(&mut self, range: Range<usize>, _open: Option<&Self::Key>) {
+        self.asked.borrow_mut().push(range);
+    }
+}
+
+/// End takes the keyboard to the last row though the host has not sent it: the list goes there,
+/// asks for it, and the keyboard lands on it as it arrives. A page down does the same for a page
+/// that is still on its way.
+#[test]
+fn the_keyboard_reaches_a_row_the_host_sends_after_it_was_asked_for() {
+    use winit::keyboard::{Key, NamedKey};
+    let sent = Rc::new(RefCell::new(std::iter::once(0..20).collect::<Vec<_>>()));
+    let asked = Rc::new(RefCell::new(Vec::new()));
+    let model = SentRows {
+        sent: Rc::clone(&sent),
+        asked: Rc::clone(&asked),
+    };
+    let mut list = VirtualList::new(model, 30.0, |_, _, key| {
+        Box::new(ProbeRow::new(
+            format!("row {key}"),
+            30.0,
+            false,
+            Rc::default(),
+        ))
+    })
+    .with_viewport_height(120.0);
+    let _ = lay_out(&mut list, 300.0);
+
+    assert!(
+        list.on_key(&Key::Named(NamedKey::End), false, false),
+        "End is the list's to take"
+    );
+    let _ = lay_out(&mut list, 300.0);
+    assert!(
+        asked.borrow().iter().any(|range| range.contains(&9_999)),
+        "the list asked for the last row: {:?}",
+        asked.borrow()
+    );
+    assert_eq!(
+        list.focused_key(),
+        None,
+        "no row holds the keyboard before it is there"
+    );
+
+    sent.borrow_mut().push(9_980..10_000);
+    let _ = lay_out(&mut list, 300.0);
+    assert_eq!(
+        list.focused_key(),
+        Some(&9_999),
+        "the keyboard is on the last row once it arrives"
+    );
+
+    assert!(list.on_key(&Key::Named(NamedKey::Home), false, false));
+    assert_eq!(
+        list.focused_key(),
+        Some(&0),
+        "Home the first, which is there"
+    );
+
+    // The host forgot every row but the first screenful: a page down reaches rows still to come.
+    *sent.borrow_mut() = std::iter::once(0..4).collect();
+    let _ = lay_out(&mut list, 300.0);
+    // The first page down goes to the foot of the screenful, which is there; the next one past it.
+    assert!(list.on_key(&Key::Named(NamedKey::PageDown), false, false));
+    let _ = lay_out(&mut list, 300.0);
+    let foot = list.focused_key().copied();
+    assert!(foot.is_some_and(|key| key > 0 && key < 4), "{foot:?}");
+    assert!(list.on_key(&Key::Named(NamedKey::PageDown), false, false));
+    let _ = lay_out(&mut list, 300.0);
+    assert!(
+        list.focused_key().copied() == foot,
+        "the keyboard waits for the page: {:?}",
+        list.focused_key()
+    );
+    // The host sends every row the list asked for.
+    let asked_for = asked.borrow().clone();
+    sent.borrow_mut().extend(asked_for);
+    let _ = lay_out(&mut list, 300.0);
+    assert!(
+        list.focused_key().is_some_and(|key| *key >= 4),
+        "a page down lands on the page it reached: {:?}",
+        list.focused_key()
+    );
+}

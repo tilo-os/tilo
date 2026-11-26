@@ -26,7 +26,7 @@ view people_button() {
                 .small
             } else if shell.bar_size == .large { .large } else { .regular },
         ) {
-            on press: device.show(device.people)
+            on press: show_people()
         }
     } else {
         let shown = device.people.rows.filter(p -> not p.agent).take(3)
@@ -60,7 +60,7 @@ view people_button() {
                         .small
                     } else if shell.bar_size == .large { .large } else { .regular },
                 ) {
-                    on press: device.show(device.people)
+                    on press: show_people()
                 }
             } else {
                 ui.Button(
@@ -72,7 +72,7 @@ view people_button() {
                         .small
                     } else if shell.bar_size == .large { .large } else { .regular },
                 ) {
-                    on press: device.show(device.people)
+                    on press: show_people()
                 }
             }
         }
@@ -142,7 +142,7 @@ view agent_chip(a: device.Agent) {
             ui.MenuItem(a.doing, disabled: true)
         }
         ui.MenuItem("Show who is here", icon: .users) {
-            on choose: device.show(device.people)
+            on choose: show_people()
         }
         ui.MenuItem("Stop", icon: .square, destructive: true) {
             on choose: device.stop_agent(device.agents, agent: a.key)
@@ -161,25 +161,29 @@ fn is_follower(p: device.Person) -> Bool {
 /// it says moves with the workspace.
 view people() {
     let board = device.people
+    // The height of the room the panel stands in, before the panel takes its share: each
+    // person's screen is sized from it.
+    let tall = space.height * space.rem
     if space.compact {
         // A phone has room for one thing at a time: the roster is a sheet at the shell's foot,
-        // between equal gutters, and a press above it puts it away. The layer places it there: a
-        // stack's own children go top to bottom.
+        // between equal gutters, and a press above it puts it away. The surface fills the room
+        // under the bar (`people(fill)`), so the sheet's layer runs to the foot and the sheet
+        // stands at it, whatever it holds.
         layers(fill) {
-            stack(at: .bottom, padding: .related) {
-                people_panel(board, sheet: true)
+            stack(at: .bottom, fill, padding: .related) {
+                people_panel(board, tall, sheet: true)
             }
         }
     } else {
         row(fill, distribute: .end, padding: .related) {
-            people_panel(board, sheet: false)
+            people_panel(board, tall, sheet: false)
         }
     }
 }
 
 /// The roster's panel: its header, the roster or a card, and nothing else. It holds the screen
 /// while it shows, so the keyboard stays in it, and a press off it closes it.
-view people_panel(board: device.People, sheet: Bool) {
+view people_panel(board: device.People, tall: Float, sheet: Bool) {
     ui.FloatingPanel(
         width: if not sheet { 400.0 },
         fill: sheet,
@@ -196,6 +200,19 @@ view people_panel(board: device.People, sheet: Bool) {
                     ui.Text(here_line(board.rows.len()), role: .caption, secondary: true)
                 }
                 spacer
+                // Kept on screen it waits at an edge of the shell rather than in the bar: never
+                // from a phone's sheet, where it would stand over the one window there is.
+                if not sheet {
+                    ui.Button(
+                        "Keep on screen",
+                        icon: .pin,
+                        icon_only: true,
+                        size: .small,
+                        role: .plain,
+                    ) {
+                        on press: keep_on_screen(true)
+                    }
+                }
                 ui.Button("Close", icon: .x, icon_only: true, size: .small, role: .plain) {
                     on press: device.close(device.people)
                 }
@@ -205,7 +222,7 @@ view people_panel(board: device.People, sheet: Bool) {
             if board.showing != "" {
                 person_card(board)
             } else {
-                roster(board)
+                roster(board, tall)
             }
         }
         on dismiss: device.close(device.people)
@@ -240,7 +257,7 @@ fn here_line(others: Int) -> Text {
 /// Everyone here, people first and software after: each row opening that person's card. Someone
 /// who follows this person says so on their row. Where both people and software are here, each
 /// group stands under its own heading, so software is never read as someone who came in.
-view roster(board: device.People) {
+view roster(board: device.People, tall: Float) {
     // The person at this device stands first in their own roster: their row opens their own
     // card, where what is theirs to change is.
     ui.ListRow(
@@ -271,14 +288,21 @@ view roster(board: device.People) {
         // A heading earns its line only where it tells one group from another: with one group the
         // roster's title already says who is here.
         let labelled = not everyone.is_empty() and not software.is_empty()
+        // Each person's screen stands under their row in the room the panel has for them all:
+        // half the display's height, shared among the people here (software has no screen), in
+        // the screen's own shape, and none at all where that leaves too little for a picture.
+        let room = tall * 0.5 - 48.0
+        let each = room / if everyone.len() > 0 { everyone.len() } else { 1 }.to_float()
+        let natural = mirror_height(if space.compact { space.width * space.rem } else { 400.0 })
+        let mirror = if each < 64.0 { 0.0 } else if each < natural { each } else { natural }
         // As tall as the people here, up to the room a roster takes: past it the list scrolls
         // and builds only the rows it shows.
         ui.VirtualList(name: "People here now", most: space.rem * 34.0) {
             for p in everyone {
-                person_listed(p, board, if labelled { "People" } else { "" })
+                person_listed(p, board, if labelled { "People" } else { "" }, mirror)
             }
             for p in software {
-                person_listed(p, board, if labelled { "Agents" } else { "" })
+                person_listed(p, board, if labelled { "Agents" } else { "" }, mirror)
             }
         }
     }
@@ -295,11 +319,11 @@ view roster(board: device.People) {
 
 /// One person as a row of the list who is here: what their row shows, and the actions its menu
 /// keeps reachable from the keyboard.
-view person_listed(p: device.Person, board: device.People, group: Text) {
+view person_listed(p: device.Person, board: device.People, group: Text, mirror: Float) {
     let label = if p.name != "" { p.name } else { std.say("Someone") }
     let followed = p.following or board.following == p.key
     ui.ListItem(value: p.key, group: if group != "" { group }) {
-        person_row(p, board)
+        person_row(p, board, mirror)
         menu: {
             if not p.agent {
                 ui.MenuItem("Wave at {label}", icon: .hand) {
@@ -322,9 +346,13 @@ view person_listed(p: device.Person, board: device.People, group: Text) {
 /// What a reader hears of a person beyond their name: whether they are software, where they are,
 /// what they say they are doing, how available they are, and whether they follow this person.
 fn spoken_details(p: device.Person) -> Text {
-    // Who they are as software, and when they joined, stand on the row itself: its tag and the
-    // line under its name. The details say what those lines do not.
+    // Who they are as software stands as the row's tag; when someone nobody named joined stands on
+    // the row's line under the name, and is said here too: a row's description is what a reader
+    // hears in place of the lines it draws.
     let said: List<Text> = []
+    if p.joined != "" {
+        said = said + [std.say("Joined {p.joined}")]
+    }
     // The place says where they are, never the call the line under it already says.
     if p.activity != "" or p.in_app != "" {
         let place = where_line(p)
@@ -349,8 +377,10 @@ fn spoken_details(p: device.Person) -> Text {
 
 /// One person's row: their face in the colour the workspace gives them, their name, and the one
 /// line that says where they are or what they are doing. An agent's row says the window it works
-/// in, with the way there; software is tagged as what it is, and nobody waves at it.
-view person_row(p: device.Person, board: device.People) {
+/// in, with the way there; software is tagged as what it is, and nobody waves at it. Under a
+/// person's row stands their screen, `mirror` tall, or the line that says why it does not: they
+/// keep where they are private, or nothing stands open there.
+view person_row(p: device.Person, board: device.People, mirror: Float) {
     let name = if p.name != "" { p.name } else { std.say("Someone") }
     let doing = doing_line(p)
     // Someone nobody named is told apart by when they joined: their name and face are every
@@ -417,8 +447,101 @@ view person_row(p: device.Person, board: device.People) {
                 }
             }
         }
+        below: {
+            // Their screen, or the line that says why it is not shown, is part of their row: it
+            // starts in the name's column and moves, hovers and is read with the row.
+            if not p.agent and mirror > 0.0 {
+                screen_under(p, mirror, followed)
+            }
+        }
         on activate: device.show_person(device.people, person: p.key)
     }
+}
+
+/// How tall a picture of someone's screen stands under their row in a roster `wide` across: a
+/// screen's usual shape, inside the row's margins.
+fn mirror_height(wide: Float) -> Float {
+    (wide - 32.0) / 1.6
+}
+
+/// A person's screen under their row: a picture of where they are, their windows where they stand
+/// and the one they work in ringed in their colour and named, or one quiet line saying why there
+/// is none. `followed`: the person at this device follows them, and their colour runs the picture's
+/// height.
+view screen_under(p: device.Person, mirror: Float, followed: Bool) {
+    if let screen = p.screen {
+        if screen.windows.is_empty() {
+            ui.Text("Nothing open on their screen", role: .caption, secondary: true)
+        } else {
+            let name = if p.name != "" { p.name } else { std.say("Someone") }
+            ui.ScreenMirror(
+                std.say("{name}'s screen"),
+                screen_width: screen.width,
+                screen_height: screen.height,
+                colour: p.colour,
+                height: mirror,
+                followed: followed,
+            ) {
+                for w in screen.windows {
+                    ui.ScreenMirrorWindow(
+                        w.name,
+                        app: w.app,
+                        left: w.left,
+                        top: w.top,
+                        right: w.right,
+                        bottom: w.bottom,
+                        focused: w.focused,
+                    )
+                }
+            }
+        }
+    } else {
+        ui.Text("Keeps their place private", role: .caption, secondary: true)
+    }
+}
+
+/// Everyone else's pointer over the window of place `place`, in their colour and under their
+/// name, with what they say beside it: drawn over the window whatever the roster shows. While the
+/// roster is open, each says where its person is, by the window it is over, as the roster's own
+/// words for who is here.
+view pointers_over(place: Text, title: Text) {
+    let over = device.people.pointers.filter(x -> x.tab == place)
+    let listed = device.overlays.here == "people" and device.people.showing == ""
+    if not over.is_empty() {
+        ui.PeerPointers(place, fill) {
+            for x in over {
+                let who = x.name
+                ui.PeerPointer(
+                    if not listed {
+                        ""
+                    } else if title != "" { std.say("{who} is in {title}") } else { who },
+                    person: x.person,
+                    name: x.name,
+                    colour: x.colour,
+                    x: x.x,
+                    y: x.y,
+                    agent: x.agent,
+                    said: x.said,
+                    typing: x.typing,
+                    reaction: x.reaction,
+                    reaction_seq: x.reaction_seq,
+                )
+            }
+        }
+    }
+}
+
+/// The colour of the person this device follows, as the roster lists them: what the frame round
+/// the work is drawn in. Empty while it follows nobody, or nobody here.
+fn followed_colour() -> Text {
+    let board = device.people
+    if board.following == "" {
+        return ""
+    }
+    if let found = board.rows.find(r -> r.key == board.following) {
+        return found.colour
+    }
+    return ""
 }
 
 /// What kind of software a row is: one of the workspace's bots, or an agent someone here runs.
@@ -983,7 +1106,14 @@ view follow_chip(folded: Bool) {
             let label = std.say("Following {name}")
             row(gap: .tight, align: .center) {
                 following_face(who, label, words: not folded)
-                ui.Button("Stop", icon: .square, icon_only: folded, size: .small, role: .plain) {
+                ui.Button(
+                    "Stop",
+                    icon: .square,
+                    icon_only: folded,
+                    size: .small,
+                    role: .plain,
+                    accessible_name: std.say("Stop following {name}"),
+                ) {
                     on press: device.unfollow(device.people)
                 }
             }
@@ -1179,4 +1309,127 @@ view ask_card() {
             }
         }
     }
+}
+
+/// Who is here, kept on screen: the roster waiting at the edge of the shell the person keeps it at
+/// (`settings.widgets.people_overlay`), so it comes back there after a restart. It waits away while
+/// nobody else is here, and comes in when someone arrives; it stands aside while the bar's own
+/// roster is up. Dragged by its header and let go, it moves to the edge nearest the pointer, and
+/// its button puts it back in the bar. It comes and goes on the shared motion, where it stands.
+/// Titled with the workspace it is of, it shows each person with a picture of their screen.
+view kept_people() {
+    let board = device.people
+    let kept = settings.widgets.people_overlay
+    let named = front_workspace_name()
+    // The band under the bar is the room its edges are read in: it fills the band, and stands
+    // at the edge the person keeps it at.
+    stack(fill) {
+        ui.FloatingPanel(
+            width: 400.0,
+            label: "People",
+            description: std.say("{named}. Who is here, where they are and what they are doing"),
+            edge: if kept.edge == .left {
+                .left
+            } else if kept.edge == .bottom {
+                .bottom
+            } else if kept.edge == .bottom_left {
+                .bottom_left
+            } else if kept.edge == .bottom_right { .bottom_right } else { .right },
+            shown: kept.pinned and not board.rows.is_empty() and device.overlays.here != "people",
+        ) {
+            on docked(edge): move_people(edge)
+            header: {
+                row(gap: .related, align: .center) {
+                    ui.TextStack(named, secondary: here_line(board.rows.len()))
+                    spacer
+                    ui.Button(
+                        "Put back in the bar",
+                        icon: .x,
+                        icon_only: true,
+                        size: .small,
+                        role: .plain,
+                    ) {
+                        on press: keep_on_screen(false)
+                    }
+                }
+            }
+            body: {
+                // The roster's own list: it scrolls past the room it takes and builds only the
+                // rows it shows, so a workspace of thousands costs a kept roster what it costs
+                // the bar's.
+                let everyone = board.rows.filter(p -> not p.agent)
+                let software = board.rows.filter(p -> p.agent)
+                let labelled = not everyone.is_empty() and not software.is_empty()
+                ui.VirtualList(name: "Who is here", most: space.rem * 34.0) {
+                    for p in everyone {
+                        person_listed(
+                            p,
+                            board,
+                            if labelled { "People" } else { "" },
+                            mirror_height(400.0),
+                        )
+                    }
+                    for p in software {
+                        person_listed(
+                            p,
+                            board,
+                            if labelled { "Agents" } else { "" },
+                            mirror_height(400.0),
+                        )
+                    }
+                }
+                if board.may_invite {
+                    row(gap: .related, align: .center) {
+                        ui.Button("Invite people", icon: .user_plus, size: .small) {
+                            on press: device.show_invite(device.invite)
+                        }
+                    }
+                } else {
+                    ui.Text(
+                        "You can't invite people to this workspace. Its owner decides who joins.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/// Whether who is here stands kept on screen now: kept, and someone else here to show.
+fn people_kept() -> Bool {
+    settings.widgets.people_overlay.pinned and not device.people.rows.is_empty()
+}
+
+/// What the bar's faces do: open who is here. While the roster stands kept on screen it is already
+/// where they would open it, and they have nothing to do.
+action show_people() (label: "Show who is here") {
+    if not people_kept() { device.show(device.people) }
+}
+
+/// Keep who is here on screen at the edge the person last kept it at, or put it back in the bar.
+/// Kept, the bar's own roster closes: what the person sees from then on is the roster at its edge.
+action keep_on_screen(kept: Bool) (label: "Keep who is here on screen") {
+    settings.keep_people(
+        settings.widgets,
+        kept: kept,
+        edge: edge_key(settings.widgets.people_overlay.edge),
+    )
+    if kept { device.close(device.people) }
+}
+
+/// Move who is here, kept on screen, to the edge `edge`, as a drag of it let go there.
+action move_people(edge: Text (label: "Edge")) (label: "Move who is here") {
+    settings.keep_people(settings.widgets, kept: true, edge: edge)
+}
+
+/// The name of the edge the roster is kept at, as the settings' action takes it.
+fn edge_key(edge: settings.DockEdge) -> Text {
+    if edge == .left {
+        "left"
+    } else if edge == .bottom {
+        "bottom"
+    } else if edge == .bottom_left {
+        "bottom_left"
+    } else if edge == .bottom_right { "bottom_right" } else { "right" }
 }

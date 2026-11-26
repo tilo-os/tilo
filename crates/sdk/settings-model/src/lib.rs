@@ -13,6 +13,7 @@ pub mod appearance;
 pub mod control_hints;
 pub mod day_schedule;
 mod device_class;
+pub mod dock_edge;
 pub mod personal_dictionary;
 mod schema;
 pub mod source;

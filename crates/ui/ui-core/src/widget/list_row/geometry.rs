@@ -31,7 +31,7 @@ impl ListRowFace<'_> {
             0
         };
         secondary
-            + u8::from(self.note.is_some())
+            + u8::from(self.note.is_some() && !self.note_under)
             + u8::from(self.subtitle.is_some())
             + u8::from(self.change.is_some_and(|change| !change.said.is_empty()))
             + (self.title_lines - 1)
@@ -75,7 +75,7 @@ impl ListRowFace<'_> {
         } else {
             0.0
         };
-        let note = if self.note.is_some() {
+        let note = if self.note.is_some() && !self.note_under {
             RowMetrics::line(text, &m.secondary)
         } else {
             0.0

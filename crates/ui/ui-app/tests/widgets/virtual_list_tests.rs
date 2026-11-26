@@ -211,3 +211,143 @@ fn a_closed_rows_own_controls_are_where_the_row_is() {
         .expect("the box is operated");
     assert!(done.with(|checked| *checked), "the tick reaches the box");
 }
+
+/// A row whose view wraps a person's row and the line under it is read once: the person's row
+/// is the row's node, never a row inside it, and the line under it and the control beside it are
+/// each read once, whether or not the row hands over a control.
+#[test]
+fn a_wrapped_row_and_the_line_under_it_are_each_read_once() {
+    use accesskit::Role as AkRole;
+    use tilo_ui::widget::{Button, Column, ListRow, Text};
+
+    for with_control in [true, false] {
+        let model = VecListModel::new(vec![7_u64], |key| *key).unwrap();
+        let list = VirtualList::new(model, 80.0, move |_, _, key| {
+            let mut person = Column::new().push(Box::new(
+                ListRow::new(key.to_string(), "Grace").note("Away"),
+            ));
+            if with_control {
+                person = person.push(Box::new(Button::new("wave", "Wave")));
+            }
+            Box::new(
+                Column::new()
+                    .push(Box::new(person))
+                    .push(Box::new(Text::new("Keeps their place private"))),
+            ) as Element
+        })
+        .with_viewport_height(200.0);
+        let harness = Driver::for_root(tilo_ui::State::new(), list, (300, 400), Theme::dark());
+
+        let nodes = harness.a11y_nodes();
+        let (row_id, _) = named(&nodes, AkRole::ListItem, "Grace");
+        let under = inside(&nodes, row_id);
+        assert!(
+            under
+                .iter()
+                .all(|(_, node)| !matches!(node.role(), AkRole::ListItem | AkRole::TreeItem)),
+            "the person's row is the row's node, not a row inside it (control: {with_control})"
+        );
+        let saying = |word: &str| {
+            nodes
+                .iter()
+                .filter(|(_, node)| {
+                    [node.label(), node.description(), node.value()]
+                        .into_iter()
+                        .flatten()
+                        .any(|said| said == word)
+                })
+                .count()
+        };
+        assert_eq!(
+            saying("Keeps their place private"),
+            1,
+            "the line under the row is read once (control: {with_control})"
+        );
+        assert!(
+            under
+                .iter()
+                .any(|(_, node)| node.label() == Some("Keeps their place private")),
+            "the line is read within its row (control: {with_control})"
+        );
+        if with_control {
+            assert_eq!(
+                under
+                    .iter()
+                    .filter(
+                        |(_, node)| node.role() == AkRole::Button && node.label() == Some("Wave")
+                    )
+                    .count(),
+                1,
+                "the row hands over its control once"
+            );
+        }
+    }
+}
+
+/// A row holding the line under its text as its own part is one row: the line is read once,
+/// within the row, and the row hands over the control beside its text once.
+#[test]
+fn a_rows_part_below_is_read_once_within_it() {
+    use accesskit::Role as AkRole;
+    use tilo_ui::widget::{Button, ListRow, Text};
+
+    for with_control in [true, false] {
+        let model = VecListModel::new(vec![7_u64], |key| *key).unwrap();
+        let list = VirtualList::new(model, 80.0, move |_, _, key| {
+            let row = ListRow::new(key.to_string(), "Grace")
+                .note("Away")
+                .below(Box::new(Text::new("Keeps their place private")));
+            Box::new(if with_control {
+                row.trailing(Box::new(Button::new("wave", "Wave")))
+            } else {
+                row
+            }) as Element
+        })
+        .with_viewport_height(200.0);
+        let harness = Driver::for_root(tilo_ui::State::new(), list, (300, 400), Theme::dark());
+
+        let nodes = harness.a11y_nodes();
+        let (row_id, _) = named(&nodes, AkRole::ListItem, "Grace");
+        let under = inside(&nodes, row_id);
+        assert!(
+            under
+                .iter()
+                .all(|(_, node)| !matches!(node.role(), AkRole::ListItem | AkRole::TreeItem)),
+            "the person's row is one row (control: {with_control})"
+        );
+        let saying = |word: &str| {
+            nodes
+                .iter()
+                .filter(|(_, node)| {
+                    [node.label(), node.description(), node.value()]
+                        .into_iter()
+                        .flatten()
+                        .any(|said| said == word)
+                })
+                .count()
+        };
+        assert_eq!(
+            saying("Keeps their place private"),
+            1,
+            "the line under the text is read once (control: {with_control})"
+        );
+        assert!(
+            under
+                .iter()
+                .any(|(_, node)| node.label() == Some("Keeps their place private")),
+            "the line is read within its row (control: {with_control})"
+        );
+        if with_control {
+            assert_eq!(
+                under
+                    .iter()
+                    .filter(
+                        |(_, node)| node.role() == AkRole::Button && node.label() == Some("Wave")
+                    )
+                    .count(),
+                1,
+                "the row hands over its control once"
+            );
+        }
+    }
+}

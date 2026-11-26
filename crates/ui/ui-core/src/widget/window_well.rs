@@ -43,6 +43,14 @@ pub struct Wells {
     /// The places whose own window has mapped here ([`Self::note_mapped`]): a well shows the
     /// skeleton until then, and fades it out after.
     mapped: Rc<RefCell<std::collections::BTreeSet<String>>>,
+    /// The other people's pointers each part's views drew over the window of a place
+    /// ([`crate::widget::PeerPointers`]), by the part and the place: each one's name and where
+    /// it stands across that window.
+    pointers: Rc<RefCell<BTreeMap<WellKey, Pointed>>>,
+    /// The frame each part's views drew round the work while the person follows someone
+    /// ([`crate::widget::FollowFrame`]), by the part: the followed person's colour, `rrggbb`, and
+    /// the rectangle it runs round, in the layout's logical coordinates.
+    frames: Rc<RefCell<BTreeMap<String, (String, Rect)>>>,
     /// The part this handle's wells belong to (a display's id, as the shell names its parts):
     /// empty for a handle that is not a part's.
     part: Rc<String>,
@@ -67,6 +75,8 @@ impl Wells {
             reporters: Rc::clone(&self.reporters),
             generation: Rc::clone(&self.generation),
             mapped: Rc::clone(&self.mapped),
+            pointers: Rc::clone(&self.pointers),
+            frames: Rc::clone(&self.frames),
             part: Rc::new(part.into()),
         }
     }
@@ -88,6 +98,12 @@ impl Wells {
         self.mapped.borrow().contains(place)
     }
 
+    /// Whether `other` is this same handle: the same wells, as the same part's.
+    #[must_use]
+    pub(crate) fn is(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.placed, &other.placed) && self.part == other.part
+    }
+
     /// The part this handle's wells belong to.
     #[must_use]
     pub fn part(&self) -> &str {
@@ -102,6 +118,11 @@ impl Wells {
         if !self.part.is_empty() {
             return self.well_on(&self.part, place);
         }
+        self.well_anywhere(place)
+    }
+
+    /// Where the window of place `place` stands on any part: the one laid out with no part first.
+    pub(crate) fn well_anywhere(&self, place: &str) -> Option<Rect> {
         let placed = self.placed.borrow();
         placed
             .get(&(String::new(), place.to_owned()))
@@ -211,6 +232,88 @@ impl Wells {
     }
 }
 
+/// The pointers drawn over the window of one place: each one's name and where it stands across
+/// that window, and the rectangle they stand in while the place has no well on screen.
+struct Pointed {
+    over: Rect,
+    at: Vec<(String, (f64, f64))>,
+}
+
+impl Wells {
+    /// Record the pointers drawn over the window of `place`, on this handle's part: each one's
+    /// name and where it stands across the window, `over` standing in for the window while the
+    /// place has no well. None drawn forgets the place.
+    pub fn point(&self, place: &str, over: Rect, at: Vec<(String, (f64, f64))>) {
+        let key = ((*self.part).clone(), place.to_owned());
+        let mut pointers = self.pointers.borrow_mut();
+        if at.is_empty() {
+            pointers.remove(&key);
+        } else {
+            pointers.insert(key, Pointed { over, at });
+        }
+    }
+
+    /// Every other person's pointer drawn over a window as of the last frame, by name and where
+    /// it stands on the surface: measured from where the window's well stands now, so a well
+    /// placed after the pointers were reported still carries them. This part's while the handle
+    /// is one's.
+    #[must_use]
+    pub fn pointers(&self) -> Vec<(String, (f64, f64))> {
+        self.pointers
+            .borrow()
+            .iter()
+            .filter(|((part, _), _)| self.part.is_empty() || part.as_str() == self.part.as_str())
+            .flat_map(|((part, place), pointed)| {
+                // The window's well on the part that drew the pointers, else wherever that place's
+                // window stands: a part that laid the pointers out before its display was named
+                // still draws them over the window.
+                let window = self
+                    .well_on(part, place)
+                    .or_else(|| self.well_anywhere(place))
+                    .unwrap_or(pointed.over);
+                pointed
+                    .at
+                    .iter()
+                    .map(move |(name, (x, y))| (name.clone(), (window.x0 + x, window.y0 + y)))
+            })
+            .collect()
+    }
+}
+
+impl Wells {
+    /// Record the frame drawn round the work on this handle's part: the followed person's colour
+    /// and the rectangle it runs round. None forgets it.
+    pub fn frame(&self, drawn: Option<(String, Rect)>) {
+        let mut frames = self.frames.borrow_mut();
+        match drawn {
+            Some(drawn) => {
+                frames.insert((*self.part).clone(), drawn);
+            }
+            None => {
+                frames.remove(self.part.as_str());
+            }
+        }
+    }
+
+    /// Every frame drawn round the work as of the last layout, by the followed person's colour
+    /// and the rectangle it runs round: this part's while the handle is one's.
+    #[must_use]
+    pub fn frames(&self) -> Vec<(String, Rect)> {
+        self.frames
+            .borrow()
+            .iter()
+            .filter(|(part, _)| self.part.is_empty() || part.as_str() == self.part.as_str())
+            .map(|(_, drawn)| drawn.clone())
+            .collect()
+    }
+}
+
+/// The wells installed on this thread, if any: a widget drawn over a window keeps them, to read
+/// where its window stands and report what it drew when it changes between layouts.
+pub(crate) fn current() -> Option<Wells> {
+    CURRENT.with(|current| current.borrow().clone())
+}
+
 thread_local! {
     /// The wells of the tree the host on this thread lays out ([`install`]).
     static CURRENT: RefCell<Option<Wells>> = const { RefCell::new(None) };
@@ -237,16 +340,6 @@ impl Drop for Installed {
     }
 }
 
-/// Report `rect` as the well of `place`, by the well numbered `well`, to the wells installed on
-/// this thread, if any.
-fn report(place: &str, rect: Rect, well: u64) {
-    CURRENT.with(|current| {
-        if let Some(wells) = current.borrow().as_ref() {
-            wells.place_from(place, rect, well);
-        }
-    });
-}
-
 /// Whether place `place`'s own window has mapped here, as the wells installed on this thread say.
 fn mapped_here(place: &str) -> bool {
     CURRENT.with(|current| {
@@ -255,16 +348,6 @@ fn mapped_here(place: &str) -> bool {
             .as_ref()
             .is_some_and(|wells| wells.is_mapped(place))
     })
-}
-
-/// Forget the well of `place` the well numbered `well` reported, on the wells installed on this
-/// thread, if any: it left the screen.
-fn forget(place: &str, well: u64) {
-    CURRENT.with(|current| {
-        if let Some(wells) = current.borrow().as_ref() {
-            wells.remove_from(place, well);
-        }
-    });
 }
 
 thread_local! {
@@ -300,13 +383,14 @@ pub struct WindowWell {
     /// This well's own number, which its reports carry ([`Wells`]'s reporters).
     id: u64,
     rect: Rect,
-    /// Whether the well stands on a laid-out tree: it reports on every layout while it does,
-    /// so a host that installs another handle (a new policy, a test) sees it at once, and
-    /// reports its leave when it goes.
-    on_screen: bool,
     /// What the well shows: the skeleton while the place's window has not mapped, fading out
     /// under the window once it does.
     arrival: tilo_ui_base::motion::CrossFade<bool>,
+    /// The wells it reported to at its last layout, while it stands on a laid-out tree: it
+    /// reports on every layout, so a host that installs another handle (a new policy, a test, the
+    /// part of a display named since) sees it at once, and the handle before forgets it; it
+    /// reports its leave to them when it goes, whatever is installed then.
+    reported: Option<super::Wells>,
 }
 
 impl WindowWell {
@@ -322,8 +406,8 @@ impl WindowWell {
             place: place.into(),
             id,
             rect: Rect::ZERO,
-            on_screen: false,
             arrival: tilo_ui_base::motion::CrossFade::new(false),
+            reported: None,
         }
     }
 
@@ -336,8 +420,8 @@ impl WindowWell {
 
 impl Drop for WindowWell {
     fn drop(&mut self) {
-        if self.on_screen {
-            forget(&self.place, self.id);
+        if let Some(wells) = &self.reported {
+            wells.remove_from(&self.place, self.id);
         }
     }
 }
@@ -353,8 +437,8 @@ impl Described for WindowWell {
         if self.place == props.place {
             return true;
         }
-        if self.on_screen {
-            forget(&self.place, self.id);
+        if let Some(wells) = &self.reported {
+            wells.remove_from(&self.place, self.id);
         }
         self.place = props.place;
         // The well stands for another window now: it shows what is coming for that one.
@@ -397,8 +481,18 @@ impl Widget for WindowWell {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
-        self.on_screen = true;
-        report(&self.place, self.rect, self.id);
+        let wells = current();
+        if let Some(before) = self
+            .reported
+            .as_ref()
+            .filter(|before| !wells.as_ref().is_some_and(|now| now.is(before)))
+        {
+            before.remove_from(&self.place, self.id);
+        }
+        if let Some(wells) = &wells {
+            wells.place_from(&self.place, self.rect, self.id);
+        }
+        self.reported = wells;
     }
 
     fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
@@ -480,6 +574,84 @@ mod tests {
         assert_eq!(wells.well_on("1", "place"), Some(on_second));
         assert_eq!(first.well("place"), Some(on_first));
         assert_eq!(second.well("place"), Some(on_second));
+    }
+
+    /// Pointers reported over a place stand across its window wherever the well is placed, the
+    /// well laid out after them included, and over the room they were drawn in while the place
+    /// has no well; none forgets them.
+    #[test]
+    fn pointers_stand_over_the_well_wherever_it_is_placed() {
+        let wells = super::Wells::new();
+        let part = wells.for_part("0");
+        let room = vello::kurbo::Rect::new(0.0, 88.0, 800.0, 600.0);
+        part.point("7", room, vec![("Ada".to_owned(), (12.0, 34.0))]);
+        assert_eq!(
+            wells.pointers(),
+            vec![("Ada".to_owned(), (12.0, 122.0))],
+            "no well yet: over the room drawn in"
+        );
+        part.place("7", vello::kurbo::Rect::new(0.0, 80.0, 800.0, 600.0));
+        assert_eq!(
+            wells.pointers(),
+            vec![("Ada".to_owned(), (12.0, 114.0))],
+            "over the window, placed after the pointer"
+        );
+        part.point("7", room, Vec::new());
+        assert!(wells.pointers().is_empty(), "gone with the pointer");
+    }
+
+    /// Pointers laid out before their display was named stand over the window all the same.
+    #[test]
+    fn pointers_of_a_part_with_no_well_stand_over_the_window() {
+        let wells = super::Wells::new();
+        wells
+            .for_part("0")
+            .place("7", vello::kurbo::Rect::new(0.0, 80.0, 800.0, 600.0));
+        let room = vello::kurbo::Rect::new(0.0, 88.0, 800.0, 600.0);
+        wells
+            .for_part("")
+            .point("7", room, vec![("Ada".to_owned(), (12.0, 34.0))]);
+        assert_eq!(
+            wells.pointers(),
+            vec![("Ada".to_owned(), (12.0, 114.0))],
+            "over the window, wherever its well was laid out"
+        );
+    }
+
+    /// A well laid out before its display was named, then for that display's part, stands only
+    /// where it was laid out last, and nowhere once it goes.
+    #[test]
+    fn a_well_laid_out_again_for_another_part_stands_only_there() {
+        let wells = super::Wells::new();
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn tilo_ui_base::widget::Widget> = HashMap::new();
+        let mut well = WindowWell::new("7");
+        let node = well.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: AvailableSpace::Definite(800.0),
+                    height: AvailableSpace::Definite(500.0),
+                },
+            )
+            .unwrap();
+        {
+            let _installed = super::install(wells.for_part(""));
+            well.apply_layout(&taffy, node, vello::kurbo::Point::new(0.0, 80.0));
+        }
+        {
+            let _installed = super::install(wells.for_part("0"));
+            well.apply_layout(&taffy, node, vello::kurbo::Point::new(0.0, 88.0));
+        }
+        assert_eq!(wells.well_on("", "7"), None, "the part before forgets it");
+        assert_eq!(wells.well("7").map(|rect| rect.y0), Some(88.0));
+        drop(well);
+        assert_eq!(
+            wells.well("7"),
+            None,
+            "gone with the well, whatever is installed"
+        );
     }
 
     use taffy::{AvailableSpace, FlexDirection, NodeId, Size, Style, TaffyTree};

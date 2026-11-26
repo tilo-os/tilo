@@ -2154,3 +2154,63 @@ pub fn kept(
         .read()
         .unwrap_or_else(|error| panic!("{name} is read: {error}"))
 }
+
+/// The person's settings in a directory of the test's own, so what a session keeps there outlives
+/// it for the next session of the same test, and nothing else.
+pub fn settings_home() -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
+    let root = tempfile::tempdir().expect("a directory for the settings");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", root.path().join("config"))
+        .set("XDG_DATA_HOME", root.path().join("data"))
+        .set("XDG_STATE_HOME", root.path().join("state"));
+    (root, env)
+}
+
+/// What a session before this one kept of the person's settings on this device, which the next
+/// session starts from: `keep` writes into them as that session left them
+/// ([`settings_store::outside::WAITING`] under the [`settings_home`]).
+pub fn kept_before(keep: impl FnOnce(&dyn settings_store::SettingsSource)) {
+    let file = settings_store::config_path(std::path::Path::new(settings_store::outside::WAITING))
+        .expect("the test's settings home");
+    keep(&settings_sections::workspace::WorkspaceSettings::kept_in(
+        file,
+    ));
+}
+
+/// What the session publishes of the person's widgets section: its address and the actions it
+/// offers there, for a test that asks it to keep something.
+#[must_use]
+pub fn widgets_offered(session: &Session) -> Vec<(String, Vec<String>)> {
+    fn walk(resources: &[tilo_actions::ResourceSpec], found: &mut Vec<(String, Vec<String>)>) {
+        for resource in resources {
+            if resource.id.as_str().ends_with("settings/widgets") {
+                found.push((
+                    resource.id.as_str().to_owned(),
+                    resource
+                        .actions
+                        .iter()
+                        .map(|action| action.id.clone())
+                        .collect(),
+                ));
+            }
+            walk(&resource.children, found);
+        }
+    }
+    let mut found = Vec::new();
+    walk(&session.resources(), &mut found);
+    found
+}
+
+/// A peer-network client for a session that takes part in no transport, as the person `name`: it
+/// publishes nowhere and hears only who is here as a test hands it ([`Session::sync`]).
+#[must_use]
+pub fn untethered(name: &str) -> std::rc::Rc<tilo_session::sync::Client> {
+    let device = iroh::SecretKey::from_bytes(&[0xa1; 32]).public();
+    std::rc::Rc::new(tilo_session::sync::Client::untethered(
+        device,
+        tilo_session::sync::OwnPresence {
+            label: name.to_owned(),
+            ..tilo_session::sync::OwnPresence::default()
+        },
+    ))
+}

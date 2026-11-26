@@ -1136,6 +1136,64 @@ pub fn take_layout_moved() -> bool {
     LAYOUT_MOVED.with(|moved| moved.replace(false))
 }
 
+/// One [`reveal`] asked for, and how many hosts looked for its widget and did not hold it.
+struct RevealAsked {
+    target: *const dyn Widget,
+    rect: vello::kurbo::Rect,
+    missed: u8,
+}
+
+/// How many hosts may look for an asked widget without holding it before the ask is dropped: an
+/// app hosted inside another is laid out after its host, which looks first, and a widget gone
+/// before any host laid it out is never shown.
+const REVEAL_MISSES: u8 = 32;
+
+thread_local! {
+    static REVEALS: std::cell::RefCell<Vec<RevealAsked>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Show `rect` of `target` (as laid out, in its window's coordinates): every view that scrolls
+/// around it moves the least it takes, the nearest first. Focus moving to a control asks this
+/// for the control; a widget asks it for a part of itself the person moved to (the row the
+/// keyboard reached in a list that is not its own scroller). The host lays out again before
+/// it draws, at the offsets this gave.
+pub fn reveal(target: *const dyn Widget, rect: vello::kurbo::Rect) {
+    REVEALS.with(|asked| {
+        asked.borrow_mut().push(RevealAsked {
+            target,
+            rect,
+            missed: 0,
+        });
+    });
+}
+
+/// Show what [`reveal`] asked for of what `root` holds; an ask for a widget it does not hold
+/// stays for the host that holds it. Whether any view moved, so the host lays out again.
+pub fn reveal_asked(root: &mut dyn Widget) -> bool {
+    let asked = REVEALS.with(std::cell::RefCell::take);
+    if asked.is_empty() {
+        return false;
+    }
+    let mut shown = false;
+    let mut kept = Vec::new();
+    for mut ask in asked {
+        if root.reveal_descendant(ask.target, ask.rect) {
+            shown = true;
+        } else if ask.missed < REVEAL_MISSES {
+            ask.missed += 1;
+            kept.push(ask);
+        }
+    }
+    if !kept.is_empty() {
+        REVEALS.with(|asked| {
+            let mut asked = asked.borrow_mut();
+            kept.append(&mut asked);
+            *asked = kept;
+        });
+    }
+    shown
+}
+
 /// Host services associated with one retained widget event dispatch.
 pub struct EventCtx<'a> {
     pub scale_factor: f64,

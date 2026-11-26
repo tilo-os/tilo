@@ -2023,10 +2023,17 @@ impl Instance {
                 end,
                 open,
                 menu,
+                store,
             } => {
                 self.rows_asked = self.rows_asked.saturating_add(1);
                 let range = start as usize..end as usize;
-                self.request_rows(level, &list, range, (open.as_deref(), menu.as_deref()));
+                self.request_rows(
+                    level,
+                    &list,
+                    range,
+                    (open.as_deref(), menu.as_deref()),
+                    Some(store),
+                );
                 Ok(())
             }
             // A window draws no asking of its own: the shell's one asking view answers what was
@@ -2131,6 +2138,7 @@ impl Instance {
         list: &str,
         range: std::ops::Range<usize>,
         held: (Option<&str>, Option<&str>),
+        store: Option<u64>,
     ) {
         let Some(host) = self.host() else {
             return;
@@ -2153,7 +2161,7 @@ impl Instance {
         };
         let requested = {
             let _phase = tilo_resource::profiling::Phase::start("instance.rows.request");
-            rows.request(range, held)
+            rows.request(range, held, store)
         };
         let message = {
             let _phase = tilo_resource::profiling::Phase::start("instance.rows.message");

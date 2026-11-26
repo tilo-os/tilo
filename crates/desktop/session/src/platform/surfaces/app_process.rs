@@ -397,6 +397,7 @@ impl ShellSurface for AppProcess {
             size,
             frame: self.frames.frame(),
             pose: tilo_session_core::surface::LayerPose::SETTLED,
+            over_windows: false,
         }]
     }
 

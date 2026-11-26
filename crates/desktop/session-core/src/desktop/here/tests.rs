@@ -356,7 +356,7 @@ tilo_test_env::scenario! {
                     .to_vec(),
             ),
         );
-        let colors = here.colors();
+        let colors = here.colors().clone();
         assert_eq!(colors["ada-laptop"], colors["ada-phone"]);
         let tree = Layout::default();
         let people = here.people(&tree, &[], &|_| None);

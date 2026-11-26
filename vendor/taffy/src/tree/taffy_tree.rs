@@ -1079,7 +1079,13 @@ impl<NodeContext> TaffyTree<NodeContext> {
     }
 
     /// Marks the layout of this node and its ancestors as outdated
+    ///
+    /// A node that has left the tree has nothing to mark: a widget retired between the build that
+    /// produced its id and the frame that marks it must not take the frame down.
     pub fn mark_dirty(&mut self, node: NodeId) -> TaffyResult<()> {
+        if !self.nodes.contains_key(node.into()) {
+            return Ok(());
+        }
         fn mark_dirty_recursive(
             nodes: &mut SlotMap<DefaultKey, NodeData>,
             parents: &SlotMap<DefaultKey, Option<NodeId>>,

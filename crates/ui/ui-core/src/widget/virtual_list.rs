@@ -330,6 +330,10 @@ pub struct VirtualRows {
     reading: bool,
     follow_focus: bool,
     focused_key: Option<ListKey>,
+    /// The row the keyboard went to (End, a page down) that has not arrived from the host: the
+    /// list scrolled there, which asks for it, and the keyboard lands on it as it arrives. Whether
+    /// the move extends the selection goes with it.
+    focus_arriving: Option<(usize, bool)>,
     /// The group's heading holding the keyboard, with the index of the first row under it.
     focused_group: Option<(String, usize)>,
     typing: tilo_ui_base::type_ahead::TypeAhead,
@@ -544,6 +548,7 @@ impl VirtualRows {
             reading: false,
             follow_focus: false,
             focused_key: None,
+            focus_arriving: None,
             focused_group: None,
             typing: tilo_ui_base::type_ahead::TypeAhead::default(),
             on_select: None,
@@ -711,6 +716,24 @@ impl VirtualRows {
         self.reveal_asked = Some(asked);
         self.reveal_pending = initial;
         self
+    }
+
+    /// Land the keyboard on the row it went to once that row has arrived; whether it did. A list
+    /// that no longer reaches the row lets the move go.
+    fn take_focus_arriving(&mut self) -> bool {
+        let Some((index, extend)) = self.focus_arriving else {
+            return false;
+        };
+        if index >= self.model.len() {
+            self.focus_arriving = None;
+            return false;
+        }
+        let Some(key) = self.model.key_at(index) else {
+            return false;
+        };
+        self.focus_row(key.clone());
+        self.select_focused(key, extend);
+        true
     }
 
     /// Take the row the view asked to show, and show it; whether it did.
@@ -1165,6 +1188,7 @@ impl VirtualRows {
     /// another window's step is one the person then types into, so it stands in the window
     /// however far down the list it was.
     pub fn focus_row(&mut self, key: ListKey) {
+        self.focus_arriving = None;
         self.focused_group = None;
         self.focused_key = Some(key.clone());
         self.jump_focused = false;
@@ -1220,11 +1244,63 @@ impl VirtualRows {
     }
 
     fn scroll_to_index(&mut self, index: usize) {
+        // A list as tall as its rows does not scroll: the view around it shows the row.
+        if !self.scrolls_itself() {
+            self.reveal_row(index);
+            self.visible_window_changed();
+            return;
+        }
         self.viewport
             .scroll_to_index(index, ScrollAlignment::Nearest);
         self.note_scrolled();
         self.visible_window_changed();
         self.note_end_reached();
+        // One held to its most height scrolls the row into its own view, and the view around it,
+        // which it hugs, shows where it stands there.
+        if self.fit_rows {
+            self.reveal_row(index);
+        }
+    }
+
+    /// Whether the list scrolls its own rows: one as tall as its rows leaves that to the view
+    /// around it, unless it is held to a most height.
+    fn scrolls_itself(&self) -> bool {
+        !self.fit_rows || self.most.is_some()
+    }
+
+    /// Ask the views that scroll around this list to show the row at `index`, where it is laid
+    /// out ([`tilo_ui_base::widget::reveal`]).
+    fn reveal_row(&self, index: usize) {
+        let (Some(top), Some(height)) = (
+            self.viewport.item_top(index),
+            self.viewport.item_height(index),
+        ) else {
+            return;
+        };
+        let y = self.rect.y0 + self.end_slack() + top - self.viewport.offset();
+        tilo_ui_base::widget::reveal(
+            std::ptr::from_ref::<dyn Widget>(self),
+            Rect::new(self.rect.x0, y, self.rect.x1, y + height),
+        );
+    }
+
+    /// The row a page from `current` reaches in a list as tall as its rows: as far as the view
+    /// around it shows of it, less a little to read on from.
+    fn fit_page_from(&self, current: usize, forward: bool) -> Option<usize> {
+        let count = self.model.len();
+        let top = self.viewport.item_top(current)?;
+        let page = match self.fit_shown {
+            FitShown::Band(top, bottom) => bottom - top,
+            FitShown::Unplaced | FitShown::Whole => {
+                tilo_ui_base::virtual_viewport::UNPLACED_VIEWPORT
+            }
+        } * tilo_ui_base::virtual_viewport::PAGE_FRACTION;
+        let at = if forward { top + page } else { top - page };
+        if at <= 0.0 {
+            return Some(0);
+        }
+        let reached = self.viewport.range_between(at, at).start;
+        Some(reached.min(count.saturating_sub(1)))
     }
 
     #[must_use]
@@ -1505,7 +1581,16 @@ impl VirtualRows {
 
     fn focus_index(&mut self, index: usize, extend: bool) -> bool {
         let Some(key) = self.model.key_at(index) else {
-            return false;
+            // A row the host has not sent yet: the list goes there, which asks for it, and the
+            // keyboard lands on it when it comes.
+            if index >= self.model.len() {
+                return false;
+            }
+            self.focused_group = None;
+            self.jump_focused = false;
+            self.focus_arriving = Some((index, extend));
+            self.scroll_to_index(index);
+            return true;
         };
         self.focus_row(key.clone());
         self.select_focused(key, extend);
@@ -1528,11 +1613,25 @@ impl VirtualRows {
             .as_ref()
             .and_then(|key| self.model.index_of(key))
             .unwrap_or_else(|| if forward { 0 } else { count.saturating_sub(1) });
-        let Some((index, scrolled)) = self.viewport.page_from(current, forward) else {
-            return false;
+        let (index, scrolled) = if self.scrolls_itself() {
+            let Some(paged) = self.viewport.page_from(current, forward) else {
+                return false;
+            };
+            paged
+        } else {
+            let Some(index) = self.fit_page_from(current, forward) else {
+                return false;
+            };
+            self.reveal_row(index);
+            (index, false)
         };
         let Some(key) = self.model.key_at(index) else {
-            return false;
+            // The page it reached has not arrived: the keyboard lands on its row when it comes.
+            self.focused_group = None;
+            self.jump_focused = false;
+            self.focus_arriving = Some((index, extend));
+            self.visible_window_changed();
+            return true;
         };
         self.focus_row(key.clone());
         self.select_focused(key, extend);
@@ -1815,6 +1914,7 @@ impl Widget for VirtualRows {
         // soon as the model can answer for every item it names.
         self.chosen_held();
         self.take_reveal_asked();
+        self.take_focus_arriving();
         let scrolled_only = !self.structure_dirty
             && !self.request_dirty
             && !self.mounted_covers(&self.rows_to_hold());
@@ -1838,6 +1938,7 @@ impl Widget for VirtualRows {
             });
         let mut changed = self.take_model_changes();
         changed |= self.take_reveal_asked();
+        changed |= self.take_focus_arriving();
         changed |= self.take_retry();
         let offset = self.viewport.offset();
         if self.scroll.momentum.is_active() {
@@ -1924,7 +2025,8 @@ impl Widget for VirtualRows {
         if self.keep_end() {
             self.refresh_anchor();
         }
-        if self.fit_rows {
+        // One held to a most height keeps the band its height gives it, and where it scrolled to.
+        if !self.scrolls_itself() {
             self.viewport.set_viewport(self.viewport.content_extent());
         }
         self.reconcile_mounted();
@@ -2080,9 +2182,21 @@ impl Widget for VirtualRows {
         );
         let child_origin = Point::new(self.rect.x0, self.rect.y0 + content);
         if self.fit_rows {
-            self.fit_shown = tilo_ui_base::widget::layout_clip().map_or(FitShown::Whole, |clip| {
-                FitShown::Band(clip.y0 - child_origin.y, clip.y1 - child_origin.y)
-            });
+            // In the rows' own coordinates: they stand from where the list last laid them out.
+            let shift = self.layout_offset - child_origin.y;
+            let shown =
+                tilo_ui_base::widget::layout_clip().map(|clip| (clip.y0 + shift, clip.y1 + shift));
+            self.fit_shown = if self.most.is_some() {
+                // One held to its most height shows no more than its own view of them.
+                let (top, bottom) = (
+                    self.viewport.offset(),
+                    self.viewport.offset() + self.viewport.viewport(),
+                );
+                let (above, below) = shown.unwrap_or((top, bottom));
+                FitShown::Band(above.max(top), below.min(bottom))
+            } else {
+                shown.map_or(FitShown::Whole, |(top, bottom)| FitShown::Band(top, bottom))
+            };
         }
         let near = self.mounted_near();
         let again = tilo_ui_base::widget::placing_again(taffy);

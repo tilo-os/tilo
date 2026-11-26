@@ -65,15 +65,10 @@ pub fn held(session: &Session) -> Vec<(String, String, String)> {
     })
 }
 
-/// Where the shell draws the tile of window `tab` , in the surface's coordinates, as of the last
-/// layout: `None` while it is not shown.
+/// Where the shell draws the window of tab `tab` , in the surface's coordinates, as of the last
+/// layout: the well its views put it in. `None` while it is not shown.
 pub fn tile_here(session: &Session, tab: u64) -> Option<ui::kurbo::Rect> {
-    session
-        .handle()
-        .shown_tiles()
-        .into_iter()
-        .find(|(shown, _)| *shown == tab)
-        .map(|(_, rect)| rect)
+    session.window_well(tab)
 }
 
 /// Whether the shell drew someone's pointer at `(x, y)` of the tile of `tab` .

@@ -1,74 +1,26 @@
-//! Where each thing kept at the edges of the screen waits: its edge, its place in the stack of
-//! things sharing that edge, and around the system activities (a call, a navigation card) already
-//! floating there. The Desktop widgets and the pinned people overlay both stand here, in the native
-//! shell and the browser alike: dragged and let go, each snaps to the edge nearest the drop
-//! ([`nearest_edge`]) and keeps it in the person's settings (`settings_store::widgets`).
-//! Widgets that share an edge stack along it, away from its corner or out from its middle. A system
-//! activity floating over an edge is an occupant the stack steps past, so a call card and a music
-//! widget never sit on each other: system activities and widgets share the edges, and the activity
-//! wins its place.
+//! Where each thing kept at the edges of a room waits: its edge, its place in the stack of things
+//! sharing that edge, and around what already floats there (a call, a navigation card). A panel
+//! kept at an edge (`FloatingPanel`'s `edge`) stands here, in the native shell and the browser
+//! alike: dragged and let go, it snaps to the edge nearest the drop ([`nearest_edge`]) and the
+//! view keeps that edge where the person's settings do. Things that share an edge stack along it,
+//! away from its corner or out from its middle. Something already floating over an edge is an
+//! occupant the stack steps past, so a call card and a panel kept there never sit on each other.
 
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "placement is finite logical-pixel kurbo arithmetic bounded by the display"
 )]
 
-use ui::kurbo::{Point, Rect, Size, Vec2};
+use vello::kurbo::{Point, Rect, Size, Vec2};
 
-pub use ui::widgets::DockEdge;
+pub use settings_model::dock_edge::DockEdge;
 
-/// Gap between a widget and the display edge, and between stacked widgets.
+/// Gap between a thing kept at an edge and the edge, and between things stacked there.
 pub const MARGIN: f64 = tilo_ui_base::tokens::Spacing::BASE.s3 as f64;
 /// How far around a glance form a pointer coming to rest still counts as reaching for it; behind
 /// the form the zone runs on to the display edge. Kept small: inside it, a resting pointer brings
 /// the widget, so any wider and an app control near the edge would bring it when aimed at.
 pub const REACH_PAD: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64;
-
-/// A press that moves this far becomes a drag to another edge.
-pub const DRAG_SLOP: f64 = tilo_ui_base::tokens::Metrics::BASE.icon_label_gap as f64;
-
-/// A press on something waiting at an edge, and the drag to another edge it may become. While
-/// dragged it is drawn shifted by the pointer's travel ([`Self::shift`]); let go, it snaps to the
-/// edge nearest the pointer.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct EdgeDrag<I> {
-    pub id: I,
-    pub at: Point,
-    pub dragging: bool,
-}
-
-impl<I: Copy> EdgeDrag<I> {
-    #[must_use]
-    pub const fn new(id: I, at: Point) -> Self {
-        Self {
-            id,
-            at,
-            dragging: false,
-        }
-    }
-
-    /// The pointer moved to `p` while pressed. Returns whether the press is a drag now.
-    pub fn moved(&mut self, p: Point) -> bool {
-        if !self.dragging && (p - self.at).hypot() > DRAG_SLOP {
-            self.dragging = true;
-        }
-        self.dragging
-    }
-
-    /// How far from its slot the dragged thing is drawn with the pointer at `p` ; `None` while the
-    /// press is still a click.
-    #[must_use]
-    pub fn shift(&self, p: Point) -> Option<Vec2> {
-        self.dragging.then(|| p - self.at)
-    }
-
-    /// Let go at `p` in `area` : the edge it snaps to, or `None` for a press that never became a
-    /// drag (a click on whatever it is on).
-    #[must_use]
-    pub fn release(self, area: Rect, p: Point) -> Option<DockEdge> {
-        self.dragging.then(|| nearest_edge(area, p))
-    }
-}
 
 /// One thing to place, known by `I` .
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -245,6 +197,34 @@ fn reach_zone(area: Rect, edge: DockEdge, glance: Rect) -> Rect {
     zone.intersect(area)
 }
 
+/// The name `edge` goes by, as the person's settings and a view say it.
+#[must_use]
+pub const fn edge_name(edge: DockEdge) -> &'static str {
+    match edge {
+        DockEdge::Left => "left",
+        DockEdge::Right => "right",
+        DockEdge::Bottom => "bottom",
+        DockEdge::BottomLeft => "bottom_left",
+        DockEdge::BottomRight => "bottom_right",
+    }
+}
+
+/// Where one thing of `size` kept at `edge` stands in `area`, with nothing else there.
+#[must_use]
+pub fn slot_of(area: Rect, edge: DockEdge, size: Size) -> Rect {
+    let item = Item {
+        id: (),
+        edge,
+        glance: size,
+        open: size,
+        has_content: true,
+    };
+    place(area, &[item], &[], false).first().map_or_else(
+        || Rect::from_origin_size(area.origin(), size),
+        |slot| slot.glance,
+    )
+}
+
 #[cfg(test)]
 #[allow(
     clippy::float_cmp,
@@ -252,7 +232,7 @@ fn reach_zone(area: Rect, edge: DockEdge, glance: Rect) -> Rect {
 )]
 mod tests {
     use super::*;
-    use ui::widgets::WidgetId;
+    use settings_store::widgets::WidgetId;
 
     const AREA: Rect = Rect::new(0.0, 24.0, 1600.0, 900.0);
 
@@ -340,21 +320,6 @@ mod tests {
                 DockEdge::Right
             );
             assert_eq!(nearest_edge(AREA, Point::new(100.0, 60.0)), DockEdge::Left);
-        }
-
-        phase a_press_drags_only_past_the_slop_and_a_click_moves_nothing;
-        {
-            let start = Point::new(1500.0, 400.0);
-            let mut click = EdgeDrag::new(WidgetId::Team, start);
-            assert!(!click.moved(start + Vec2::new(DRAG_SLOP * 0.5, 0.0)));
-            assert_eq!(click.shift(start), None);
-            assert_eq!(click.release(AREA, start), None, "a click keeps its edge");
-
-            let mut drag = EdgeDrag::new(WidgetId::Team, start);
-            let drop = Point::new(60.0, 880.0);
-            assert!(drag.moved(drop));
-            assert_eq!(drag.shift(drop), Some(drop - start));
-            assert_eq!(drag.release(AREA, drop), Some(DockEdge::BottomLeft));
         }
     }
 }

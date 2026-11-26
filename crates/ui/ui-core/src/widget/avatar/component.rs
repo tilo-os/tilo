@@ -41,7 +41,7 @@ pub struct AvatarProps {
     clippy::cast_possible_truncation,
     reason = "each channel is a byte of the colour word"
 )]
-fn colour_of(hex: &str) -> Option<Color> {
+pub(crate) fn colour_of(hex: &str) -> Option<Color> {
     let digits: String = hex.trim().trim_start_matches('#').chars().take(6).collect();
     let value = u32::from_str_radix(&digits, 16).ok()?;
     Some(Color::from_rgb8(

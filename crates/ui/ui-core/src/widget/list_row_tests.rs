@@ -1,4 +1,5 @@
 use super::*;
+use crate::app::driver::Driver;
 use std::cell::Cell;
 use std::rc::Rc;
 use vello::Scene;
@@ -362,6 +363,185 @@ fn accessibility_names_the_badge_and_reads_parts_and_actions() {
     let node = Widget::accessibility(&row).unwrap();
     assert_eq!(node.name.as_deref(), Some("Build server"));
     assert_eq!(node.description.as_deref(), Some("SSH"));
+}
+
+/// What stands under a row's text starts in the text's column, under the title and its lines,
+/// and runs to the row's edge; the row grows by its height, the text keeps the band it had, and
+/// a control beside the text stays beside it.
+#[test]
+fn a_part_below_stands_in_the_texts_column_under_the_text() {
+    let theme = Theme::light();
+    let m = RowMetrics::new(&theme);
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let person = || {
+        ListRow::new("ada", "Ada")
+            .secondary("In Writer")
+            .icon(Icon::User)
+    };
+    for with_control in [false, true] {
+        let wave = || {
+            Box::new(
+                crate::widget::Button::new("wave", "Wave")
+                    .control_size(crate::widget::ControlSize::Small),
+            ) as Element
+        };
+        let plain = if with_control {
+            person().trailing(wave())
+        } else {
+            person()
+        };
+        let plain = Driver::for_root(crate::State::new(), plain, (720, 200), theme.clone());
+        let plain = plain.root::<ListRow>();
+        let alone = plain.with_face(|face| face.height(&mut text, &theme));
+        let row = person().below(Box::new(crate::widget::Text::new(
+            "Keeps their place private",
+        )));
+        let row = if with_control {
+            row.trailing(wave())
+        } else {
+            row
+        };
+        let h = Driver::for_root(crate::State::new(), row, (720, 200), theme.clone());
+        let row = h.root::<ListRow>();
+        let band = row.text_band();
+        let line = row.below.as_ref().unwrap().element.get_rect();
+        let text_edge = row.with_face(|face| face.text_x(band, &m, &mut text, &theme));
+        assert!(
+            (line.x0 - text_edge).abs() < 0.5,
+            "the line starts in the text's column (control: {with_control}): {line:?}, text at \
+             {text_edge}"
+        );
+        assert!(
+            line.x1 <= row.get_rect().x1 + 0.5 && line.x1 >= row.get_rect().x1 - 0.5,
+            "the line runs to the row's edge (control: {with_control}): {line:?} in {:?}",
+            row.get_rect()
+        );
+        assert!(
+            line.y0 >= band.y1 - 0.5,
+            "the line stands under the text (control: {with_control}): {line:?} under {band:?}"
+        );
+        assert!(
+            (band.height() - alone).abs() < 0.5,
+            "the text keeps the band it has without the line (control: {with_control}): {band:?} \
+             vs {alone}"
+        );
+        assert!(
+            row.get_rect().y1 >= line.y1 - 0.5,
+            "the row holds the line (control: {with_control}): {line:?} in {:?}",
+            row.get_rect()
+        );
+        if with_control {
+            let button = row.trailing.as_ref().unwrap().element.get_rect();
+            assert!(
+                !row.trailing_wrapped() && button.y1 <= band.y1 + 0.5,
+                "the control stays beside the text: {button:?} in {band:?}"
+            );
+        }
+    }
+}
+
+/// A note too long for the text's column stands whole on a line of its own under the row, from
+/// the text's edge to the row's, and wraps there rather than being cut where even that line is
+/// too short; one that fits stays in the column. Either way the row says it.
+#[test]
+fn a_note_too_long_for_its_column_stands_whole_under_the_row() {
+    let theme = Theme::dark();
+    let m = RowMetrics::new(&theme);
+    let mut text = TextRenderer::new();
+    text.set_text_scale(theme.text_scale);
+    let doing = "Reading Launch notes in Notes";
+    let needs = f64::from(text.measure_style(doing, None, &m.secondary).0);
+    let agent = || {
+        ListRow::new("fieldwork", "Fieldwork")
+            .note(doing)
+            .icon(Icon::User)
+            .trailing(Box::new(
+                crate::widget::Button::new("follow", "Follow")
+                    .control_size(crate::widget::ControlSize::Small),
+            ))
+    };
+    // Wherever the note stands, it is because of the room the drawn face leaves it: a note that
+    // fits the column beside the control stays in it.
+    for width in (200_u32..=720).step_by(8) {
+        let h = Driver::for_root(crate::State::new(), agent(), (width, 300), theme.clone());
+        let row = h.root::<ListRow>();
+        let band = row.text_band();
+        let room = row.with_face(|face| {
+            let geo = face.geometry(band, &m, &mut text, &theme);
+            geo.second_right - face.text_x(band, &m, &mut text, &theme)
+        });
+        let under = row.note_line.as_ref().is_some_and(|line| line.under);
+        assert_eq!(
+            under,
+            needs > room + 0.5,
+            "at {width} the note needs {needs} of the {room} its column leaves"
+        );
+    }
+    for (width, under) in [(720_u32, false), (260, true), (200, true)] {
+        let h = Driver::for_root(crate::State::new(), agent(), (width, 300), theme.clone());
+        let row = h.root::<ListRow>();
+        let line = row
+            .note_line
+            .as_ref()
+            .expect("a row with a note holds its line");
+        assert_eq!(
+            line.under,
+            under,
+            "at {width} the note stands {}",
+            if under {
+                "under the row"
+            } else {
+                "in its column"
+            }
+        );
+        let node = row.accessibility().expect("the row says itself");
+        assert!(
+            node.value
+                .as_deref()
+                .is_some_and(|value| value.contains(doing)),
+            "the row says the note whole at {width}: {:?}",
+            node.value
+        );
+        if under {
+            let drawn = line.text.get_rect();
+            let band = row.text_band();
+            let line_height = RowMetrics::line(&mut text, &m.secondary);
+            if drawn.width() >= needs - 0.5 {
+                assert!(
+                    drawn.height() < 1.5 * line_height,
+                    "words that fit the line stand on one: {drawn:?}"
+                );
+            } else {
+                assert!(
+                    drawn.height() >= 2.0 * line_height - 0.5,
+                    "words longer than the line wrap onto the next, whole: {drawn:?}"
+                );
+            }
+            if width == 260 {
+                assert!(
+                    drawn.width() >= needs - 0.5,
+                    "a phone's row has the room the words need under it: {drawn:?} for {needs}"
+                );
+            }
+            assert!(
+                drawn.y0 >= band.y1 - 0.5 && row.get_rect().y1 >= drawn.y1 - 0.5,
+                "the line stands under the text, inside the row: {drawn:?} under {band:?} in {:?}",
+                row.get_rect()
+            );
+            let text_edge = row.with_face(|face| face.text_x(band, &m, &mut text, &theme));
+            assert!(
+                (drawn.x0 - text_edge).abs() < 0.5,
+                "the line starts in the text's column: {drawn:?} at {text_edge}"
+            );
+        } else {
+            assert!(
+                line.text.get_rect().height() < 0.5,
+                "a note that fits takes no line of its own: {:?}",
+                line.text.get_rect()
+            );
+        }
+    }
 }
 
 #[test]

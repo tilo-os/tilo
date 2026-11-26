@@ -43,6 +43,7 @@ fn laid_out(session: &mut Session) {
 fn session_with(applications: Vec<AppEntry>) -> Session {
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
+        sync: Some(crate::common::untethered(PERSON)),
         lists: Lists::fixed(AppLists {
             applications,
             ..AppLists::default()
@@ -231,6 +232,7 @@ fn unnamed_session() -> (tilo_test_env::TestHome, Session) {
         Options {
             state: Some(state),
             person: PERSON.to_owned(),
+            sync: Some(crate::common::untethered(PERSON)),
             ..Options::default()
         },
     );

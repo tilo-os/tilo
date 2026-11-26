@@ -535,6 +535,7 @@ impl VirtualRows {
             return false;
         };
         self.focused_key = None;
+        self.focus_arriving = None;
         self.focused_group = Some((band.heading.clone(), band.index));
         self.groups.hold(band.heading);
         true
@@ -695,6 +696,7 @@ impl VirtualRows {
                 };
                 let start = self.group_start(index);
                 self.focused_key = None;
+                self.focus_arriving = None;
                 self.focused_group = Some((group.heading, start));
                 self.scroll_to_index(start);
                 true
@@ -720,6 +722,7 @@ impl VirtualRows {
             return false;
         };
         self.focused_key = None;
+        self.focus_arriving = None;
         self.focused_group = Some((heading.to_owned(), index));
         self.jump_focused = false;
         self.scroll_to_index(index);

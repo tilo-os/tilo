@@ -64,6 +64,7 @@ fn collaborating(places: &[(i32, i32)]) -> Session {
         &outputs,
         Options {
             collab: true,
+            sync: Some(crate::common::untethered(PERSON)),
             ..options()
         },
     );
@@ -350,14 +351,23 @@ fn the_people_list_names_each_person_and_what_they_are_doing() {
     crate::common::press(&mut session, "Mia Clayton is here");
 
     // The roster is drawn in the shell's own window, and each person is a row of it with what
-    // they are doing.
+    // they are doing: her row, not the bar's face of her — both say her name, only the row is a
+    // list item — so the wait is for the row itself.
     let tree = crate::common::wait_for(&mut session, "the roster's rows", |session| {
         shell_windows(session)
             .into_iter()
             .map(|(_, tree)| tree)
-            .find(|tree| holding(tree, "Mia Clayton").is_some())
+            .find(|tree| {
+                tree.nodes.iter().any(|(_, node)| {
+                    node.role() == Role::ListItem && node.label() == Some("Mia Clayton")
+                })
+            })
     });
-    let (_, node) = labelled(&tree, "Mia Clayton");
+    let (_, node) = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Mia Clayton") && node.role() == Role::ListItem)
+        .expect("the person's row in the list");
     assert_eq!(node.role(), Role::ListItem, "the person is a row");
     assert!(
         node.description()

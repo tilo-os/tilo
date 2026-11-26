@@ -120,7 +120,7 @@ impl Bound {
 type FastMap<K, V> = HashMap<K, V, foldhash::fast::RandomState>;
 
 /// `reads` without repeats, in the order first read.
-fn distinct(mut reads: Vec<(String, String)>) -> Vec<(String, String)> {
+fn distinct<T: std::hash::Hash + Eq>(mut reads: Vec<T>) -> Vec<T> {
     let first: Vec<bool> = {
         let mut seen =
             HashSet::with_capacity_and_hasher(reads.len(), foldhash::fast::RandomState::default());
@@ -129,6 +129,24 @@ fn distinct(mut reads: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut first = first.into_iter();
     reads.retain(|_| first.next().unwrap_or(false));
     reads
+}
+
+/// What a boundary saw of each view state slot it read, each slot once where it first read it,
+/// with the value it read last.
+fn last_seen(seen: Vec<(StateKey, Value)>) -> Vec<(StateKey, Value)> {
+    let mut at: FastMap<StateKey, usize> = FastMap::default();
+    let mut out: Vec<(StateKey, Value)> = Vec::new();
+    for (key, value) in seen {
+        if let Some(&index) = at.get(&key) {
+            if let Some(slot) = out.get_mut(index) {
+                slot.1 = value;
+            }
+        } else {
+            at.insert(key.clone(), out.len());
+            out.push((key, value));
+        }
+    }
+    out
 }
 
 /// The collection an item resource (written as [`crate::value::ResourceRef::id_string`]) is
@@ -182,7 +200,6 @@ struct Index {
     /// The collections whose rows a boundary holds, per resource.
     loops: FastMap<String, Vec<(String, BoundId)>>,
     docs: FastMap<String, HashSet<BoundId>>,
-    states: HashMap<StateKey, HashSet<BoundId>>,
     space: HashSet<BoundId>,
     /// The boundaries that show something only the window knows: a name, a format, a word.
     people: HashSet<BoundId>,
@@ -230,9 +247,6 @@ impl Index {
                 }
             }
         }
-        for (key, _) in &b.state_reads {
-            self.states.entry(key.clone()).or_default().insert(id);
-        }
         if !b.space_reads.is_empty() {
             self.space.insert(id);
         }
@@ -245,18 +259,6 @@ impl Index {
     }
 
     fn remove(&mut self, id: BoundId, b: &Bound) {
-        fn drop_from<K: std::hash::Hash + Eq>(
-            map: &mut HashMap<K, HashSet<BoundId>>,
-            key: &K,
-            id: BoundId,
-        ) {
-            if let Some(set) = map.get_mut(key) {
-                set.remove(&id);
-                if set.is_empty() {
-                    map.remove(key);
-                }
-            }
-        }
         let reads = b.reads.iter().map(|(resource, _)| (resource, Read::Field));
         let colls = b.colls.iter().map(|seen| (&seen.resource, Read::Items));
         let loops = b.loops.iter().map(|rows| (&rows.resource, Read::Rows));
@@ -274,9 +276,6 @@ impl Index {
                     self.docs.remove(doc_of(resource));
                 }
             }
-        }
-        for (key, _) in &b.state_reads {
-            drop_from(&mut self.states, key, id);
         }
         self.space.remove(&id);
         self.people.remove(&id);
@@ -512,6 +511,10 @@ pub(crate) struct Live {
     to_release: Vec<Retained>,
     /// The rows of each list (by its key) rendered because the host showed them.
     shown: HashMap<String, HashSet<BoundId>>,
+    /// The keys of the rows the host shows, each with its list's key. A row's call can be made
+    /// again (its arguments changed, or the call holding its list did) while the host still
+    /// shows it: the new call renders at once, where a row the host does not show waits.
+    shown_keys: HashMap<String, String>,
     /// Where each list the host asked about was last found: checked before use, searched for
     /// again when the tree moved it.
     list_paths: RefCell<HashMap<String, Vec<usize>>>,
@@ -580,6 +583,7 @@ impl Live {
             reused: HashSet::new(),
             to_release: Vec::new(),
             shown: HashMap::new(),
+            shown_keys: HashMap::new(),
             list_paths: RefCell::default(),
             found_paths: RefCell::default(),
             state_clock: core.view_states.borrow().clock(),
@@ -960,17 +964,17 @@ impl Live {
             return;
         }
         self.state_clock = clock;
+        // Each boundary's reads are looked at once: a view over every item of another app's
+        // reading reads a slot per item, ten thousand of them for a workspace of ten thousand
+        // people, and any slot moving (the clock's minute) checks them all.
         let mut left: Vec<(BoundId, &StateKey)> = Vec::new();
-        for (key, ids) in &self.index.states {
-            let now = states.generation(key);
-            for id in ids {
-                let moved = self.bound(*id).is_some_and(|b| {
-                    b.state_reads
-                        .iter()
-                        .any(|(k, seen)| k == key && *seen != now)
-                });
-                if moved {
-                    left.push((*id, key));
+        for (id, bound) in self.bounds.iter().enumerate() {
+            let Some(bound) = bound else {
+                continue;
+            };
+            for (key, seen) in &bound.state_reads {
+                if states.generation(key) != *seen {
+                    left.push((id, key));
                 }
             }
         }
@@ -1137,6 +1141,14 @@ impl Live {
 
     // ----- rendering -------------------------------------------------------------------------
 
+    /// One more render counted, and one more of the root's own when `id` is the root.
+    fn count_render(&mut self, id: BoundId) {
+        self.renders = self.renders.saturating_add(1);
+        if id == ROOT {
+            self.root_runs = self.root_runs.saturating_add(1);
+        }
+    }
+
     /// Run boundary `id` and build its tree, re-running only the view calls inside it that
     /// changed. Returns the tree; the boundary's record is updated.
     fn render(&mut self, core: &Rc<Core>, id: BoundId) -> Result<UiNode, RuntimeError> {
@@ -1208,10 +1220,7 @@ impl Live {
             self.drop_bound(*gone);
         }
         let rendered = rendered?;
-        self.renders = self.renders.saturating_add(1);
-        if id == ROOT {
-            self.root_runs = self.root_runs.saturating_add(1);
-        }
+        self.count_render(id);
         let Rendered {
             root,
             reads,
@@ -1226,6 +1235,10 @@ impl Live {
         // A view over a list reads each item's fields once per expression that uses them (a
         // count and a filter), tens of thousands of reads: duplicates go by hash, not a sort.
         let reads = distinct(reads);
+        // So does it read the view state slot of each item of another app's reading, once per
+        // expression that reads the item: one is kept of each.
+        let state_reads = distinct(state_reads);
+        let state_seen = last_seen(state_seen);
         if let Some(mut b) = self.bounds.get_mut(id).and_then(Option::take) {
             self.index.remove(id, &b);
             self.to_release.append(&mut b.retained);
@@ -2020,6 +2033,7 @@ impl Live {
             return Err(e);
         }
         self.shown.entry(list.to_owned()).or_default().insert(id);
+        self.shown_keys.insert(key.clone(), list.to_owned());
         self.release(core);
         Ok(Some(key))
     }
@@ -2096,7 +2110,12 @@ impl Live {
             if let Some(rows) = self.shown.get_mut(list) {
                 rows.remove(&id);
             }
+            self.shown_keys.remove(&key);
         }
+        // A row the list no longer holds is shown nowhere.
+        let by_key = &self.by_key;
+        self.shown_keys
+            .retain(|key, of| of != list || by_key.contains_key(key));
         self.release(core);
         patches
     }
@@ -2172,6 +2191,11 @@ impl Boundaries for Builder<'_> {
             self.old.remove(stub.key);
             self.live.drop_bound(id);
         }
+        // A row the host shows stays shown, whatever made its call anew: it renders where the
+        // old call stood, so the row the host holds reads what it now says rather than nothing.
+        let shown_in = lazy
+            .then(|| self.live.shown_keys.get(stub.key).cloned())
+            .flatten();
         let id = self.live.add_bound(Bound::new(stub, lazy));
         // A call starts with the space its caller has, until the host says what layout gives it.
         let inherited = self.live.bound(self.id).map(|b| b.space);
@@ -2179,8 +2203,12 @@ impl Boundaries for Builder<'_> {
             b.space = space;
         }
         self.new.push(id);
-        if lazy {
-            return Ok(Vec::new());
+        match shown_in {
+            Some(list) => {
+                self.live.shown.entry(list).or_default().insert(id);
+            }
+            None if lazy => return Ok(Vec::new()),
+            None => {}
         }
         Ok(vec![self.live.render(self.core, id)?])
     }

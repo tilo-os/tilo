@@ -259,12 +259,24 @@ fn walk_below<const BOUND: bool, V: A11yVisitor>(
     parent: &mut V::Scope,
 ) {
     for (index, child) in w.children().into_iter().enumerate() {
-        let folds = stated.is_some_and(|node| child.accessibility_root().as_ref() == Some(node));
+        let folds = stated.is_some_and(|node| states(child, node));
         if folds {
             walk_below::<BOUND, V>(v, child, stated, parent);
         } else {
             walk::<BOUND, V>(v, child, Some((w, index)), parent);
         }
+    }
+}
+
+/// Whether `widget` is the one whose node `stated` is, or holds it behind widgets that publish no
+/// node of their own: the row a list names by that node is read once, however its view wraps it.
+fn states(widget: &dyn Widget, stated: &AccessNode) -> bool {
+    match widget.accessibility_root() {
+        Some(own) => own == *stated,
+        None => widget
+            .children()
+            .into_iter()
+            .any(|child| states(child, stated)),
     }
 }
 

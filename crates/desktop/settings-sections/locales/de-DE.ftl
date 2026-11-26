@@ -70,6 +70,7 @@ settings-control-hints-learn-control-hint = Bedienhinweis als gelernt merken
 settings-control-hints-note-control-hint-shown = Bedienhinweis als gezeigt zählen
 settings-control-hints-withdraw-control-hint-shown = Anzeige eines Bedienhinweises zurücknehmen
 settings-control-hints-show-control-hints-again = Bedienhinweise erneut zeigen
+settings-widgets-keep-people = Anwesende auf dem Bildschirm behalten
 settings-power-set-suspend-plugged-in = Ruhezustand am Netzteil
 settings-power-set-suspend-on-battery = Ruhezustand im Akkubetrieb
 settings-updates-record-automatic-updates = Automatische Updates

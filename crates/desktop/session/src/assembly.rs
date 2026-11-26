@@ -445,14 +445,14 @@ pub(crate) struct Shared {
     /// and the table it explains.
     #[cfg(target_os = "linux")]
     pub(crate) shortcut_guide: crate::shell::shortcut_guide::ShortcutGuide,
-    /// Who is here, as the bar's faces open it: the roster it shows and
-    /// where everyone else's pointer is.
-    #[cfg(target_os = "linux")]
-    pub(crate) people: Rc<RefCell<crate::people::People>>,
     /// What the roster's own resource asked of the session — a follow, a wave — carried out on the
     /// next pass beside what a card asked.
     #[cfg(target_os = "linux")]
     pub(crate) people_asks: Rc<RefCell<Vec<crate::people::PeopleAsk>>>,
+    /// What the shell's views report of where they draw: each window's well, and the other
+    /// people's pointers they drew over it.
+    #[cfg(target_os = "linux")]
+    pub(crate) wells: ui::widget::Wells,
     /// Whose view this device follows — its own presence word — and which of their place it
     /// already brought forward.
     pub(crate) follow: RefCell<tilo_session_core::presence::Follow>,

@@ -218,6 +218,16 @@ impl VirtualRows {
             }
             children = node.children;
         }
+        // A row that is a view of several parts publishes the rest of them after the part it is
+        // named by: a person's row, then the picture of their screen under it. A row handing over
+        // its controls has every part of it walked under its node already.
+        if !self.handing_controls(row) {
+            let mut beside = tilo_ui_base::a11y::beside_stated(row.widget.as_ref());
+            if !tilo_ui_base::a11y::is_placed(row.widget.as_ref()) {
+                beside.iter_mut().for_each(tilo_ui_base::a11y::unplace);
+            }
+            children.extend(beside);
+        }
         children.splice(0..0, field);
         // A tree row holding others offers the disclosure its chevron stands for: a control of
         // its own, where the chevron is drawn, so a reader or a page folds the notes under the
@@ -584,5 +594,42 @@ mod tests {
         );
         let untitled: Element = Box::new(Text::new("Title"));
         assert_eq!(first_page_title(untitled.as_ref()), None);
+    }
+
+    /// A row made of a list row and a line under it is named by the row and reads the line too.
+    #[test]
+    fn a_row_of_several_views_reads_each_of_them() {
+        let view = crate::widget::arrange::Stack::stack()
+            .push(Box::new(crate::widget::ListRow::new("ada", "Ada")))
+            .push(Box::new(crate::widget::Text::new(
+                "Keeps their place private",
+            )));
+        assert_eq!(
+            tilo_ui_base::a11y::stated_node(&view).and_then(|node| node.name),
+            Some("Ada".to_owned()),
+            "named by its row"
+        );
+        let beside: Vec<Option<String>> = tilo_ui_base::a11y::beside_stated(&view)
+            .into_iter()
+            .map(|node| node.name)
+            .collect();
+        assert_eq!(beside, [Some("Keeps their place private".to_owned())]);
+        let row = crate::widget::ListRow::new("ada", "Ada");
+        assert!(
+            tilo_ui_base::a11y::beside_stated(&row).is_empty(),
+            "a row alone is read whole by its own node"
+        );
+        let row = crate::widget::ListRow::new("ada", "Ada").below(Box::new(
+            crate::widget::Text::new("Keeps their place private"),
+        ));
+        let held: Vec<Option<String>> = tilo_ui_base::a11y::beside_stated(&row)
+            .into_iter()
+            .map(|node| node.name)
+            .collect();
+        assert_eq!(
+            held,
+            [Some("Keeps their place private".to_owned())],
+            "a row reads the part under its text"
+        );
     }
 }

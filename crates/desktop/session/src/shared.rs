@@ -541,19 +541,10 @@ impl Shared {
     /// One anchored surface at a time, whichever side opened it.
     /// The shell's own popovers and the shell's views are two stacks that meet here: a popover that
     /// came up over a shell surface takes that surface down — the person is looking at the menu
-    /// they just opened — and a shell surface that came up closes the roster, which the roster's
-    /// own host draws over everything.
+    /// they just opened.
     pub(crate) fn lone_surface(&self) {
         if self.surfaces.beside_up() {
             self.surfaces.clear_shell();
-        }
-        if !self.people.borrow().is_open() {
-            return;
-        }
-        let shell_up =
-            self.surfaces.overlays.here() != tilo_session_core::desktop::overlays::Overlay::Rest;
-        if shell_up || self.surfaces.beside_up() {
-            self.people.borrow().dismiss();
         }
     }
 }

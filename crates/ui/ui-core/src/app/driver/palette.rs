@@ -179,9 +179,9 @@ impl Driver {
     /// Scroll `rect` of `target` into every viewport that shows it, and run the frame that shows
     /// it there when something moved.
     fn reveal(&mut self, target: *const dyn Widget, rect: Rect) -> bool {
-        let moved = self.app.root_widget.reveal_descendant(target, rect);
+        tilo_ui_base::widget::reveal(target, rect);
+        let moved = self.app.reveal_asked();
         if moved {
-            self.app.layout.layout_dirty = true;
             self.app.needs_sync = true;
             self.app.mark_semantic_tree_stale();
             self.run_frame();

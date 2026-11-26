@@ -3390,6 +3390,24 @@
       }
     },
     {
+      "name": "FollowFrame",
+      "doc": "The frame round the work while following someone.",
+      "props": [
+        {
+          "name": "colour",
+          "doc": "The followed person's colour, `rrggbb`; empty while the person follows nobody, and the frame leaves.",
+          "type": "text",
+          "required": true,
+          "positional": true,
+          "data": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "not_in_gallery": "it frames the windows a shell lays out, which a gallery has none of"
+      }
+    },
+    {
       "name": "Fullscreen",
       "doc": "A view shown filling the audience's screen while it is presented.",
       "props": [
@@ -4513,6 +4531,11 @@
         {
           "name": "trailing",
           "doc": "A control on the trailing edge, which moves under the text when the row is narrow.",
+          "accepts": "view"
+        },
+        {
+          "name": "below",
+          "doc": "What stands under the row's text, in the text's column: a picture of the item, or the line that says why there is none. It is part of the row, read and pressed with it.",
           "accepts": "view"
         }
       ],
@@ -5776,6 +5799,35 @@
       }
     },
     {
+      "name": "PeerPointers",
+      "doc": "Other people's pointers over the window of a place.",
+      "props": [
+        {
+          "name": "place",
+          "doc": "The place whose window they are over: the tab id the shell model gives the window.",
+          "type": "text",
+          "required": true,
+          "positional": true,
+          "data": true
+        }
+      ],
+      "parts": [
+        {
+          "name": "pointers",
+          "doc": "The pointers, in the order the roster lists their people.",
+          "accepts": {
+            "component": "PeerPointer"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Group",
+        "not_in_gallery": "its pointers stand over a window a gallery has none of"
+      }
+    },
+    {
       "name": "PersonField",
       "doc": "A form's person, shown as an avatar and name and picked from the workspace's members and agents; \"Me\" is the person the view is shown to, \"No one\" clears it.",
       "props": [
@@ -6336,6 +6388,31 @@
           "type": {
             "option": "float"
           }
+        },
+        {
+          "name": "edge",
+          "doc": "The edge of what holds it it is kept at (`left`, `right`, `bottom`, `bottom_left` or `bottom_right`), rather than a place: it stands in that edge's slot, the toolkit's margin in from it, and `x` and `y` say nothing.",
+          "type": {
+            "option": {
+              "choice": {
+                "name": "DockEdge",
+                "cases": [
+                  "left",
+                  "right",
+                  "bottom",
+                  "bottom_left",
+                  "bottom_right"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "name": "shown",
+          "doc": "Whether it is up; absent, it is. A panel that is not comes in when it is, and goes when it is no more, on the shared motion and where it stands; while it is not up it takes no input and names nothing.",
+          "type": {
+            "option": "bool"
+          }
         }
       ],
       "parts": [
@@ -6369,6 +6446,11 @@
           "name": "resized",
           "doc": "The person drew its trailing edge out or in and let it go: carries the width it rests at, in logical pixels. A panel with this resizes when that edge is dragged, following it.",
           "value": "float"
+        },
+        {
+          "name": "docked",
+          "doc": "The person dragged a panel kept at an edge by its header and let it go: carries the edge nearest where they let it go, by its name. A panel with this moves when its header is dragged; a press that never moves past the slop, a pointer leaving and Escape move nothing.",
+          "value": "text"
         },
         {
           "name": "dismiss",
@@ -6979,6 +7061,60 @@
       "semantics": {
         "role": "Image",
         "label": "title"
+      }
+    },
+    {
+      "name": "ScreenMirror",
+      "doc": "Someone's screen as a picture of where they are.",
+      "props": [
+        {
+          "name": "label",
+          "doc": "What the picture says to a person who cannot see it: whose screen it is.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "screen_width",
+          "doc": "Their screen's width, logical pixels: with `screen_height`, the shape the picture keeps.",
+          "type": "float"
+        },
+        {
+          "name": "screen_height",
+          "doc": "Their screen's height, logical pixels.",
+          "type": "float"
+        },
+        {
+          "name": "colour",
+          "doc": "Their colour, `rrggbb`: the ring of the window they work in.",
+          "type": "text",
+          "data": true
+        },
+        {
+          "name": "height",
+          "doc": "How tall the picture stands, logical pixels; the screen keeps its shape inside it.",
+          "type": "float"
+        },
+        {
+          "name": "followed",
+          "doc": "The person looking follows them: their colour runs the picture's whole height, saying whose view this is.",
+          "type": "bool"
+        }
+      ],
+      "parts": [
+        {
+          "name": "windows",
+          "doc": "Their windows, in the order they paint.",
+          "accepts": {
+            "component": "ScreenMirrorWindow"
+          },
+          "many": true,
+          "default": true
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "label"
       }
     },
     {
@@ -11629,6 +11765,76 @@
       }
     },
     {
+      "name": "PeerPointer",
+      "doc": "One person's pointer over the window.",
+      "props": [
+        {
+          "name": "person",
+          "doc": "Whose it is: their presence key, which keeps what they say with them.",
+          "type": "text",
+          "data": true
+        },
+        {
+          "name": "label",
+          "doc": "What it says to a person who cannot see it: who it is and the window it is over; empty says nothing.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "name",
+          "doc": "The name beside it.",
+          "type": "text"
+        },
+        {
+          "name": "colour",
+          "doc": "Their colour, `rrggbb`.",
+          "type": "text",
+          "data": true
+        },
+        {
+          "name": "x",
+          "doc": "Where across the window, logical pixels from its left edge.",
+          "type": "float"
+        },
+        {
+          "name": "y",
+          "doc": "Where down the window, logical pixels from its top edge.",
+          "type": "float"
+        },
+        {
+          "name": "agent",
+          "doc": "It is software's: its pointer is drawn as software's.",
+          "type": "bool"
+        },
+        {
+          "name": "said",
+          "doc": "What they say beside it; empty for nothing.",
+          "type": "text"
+        },
+        {
+          "name": "typing",
+          "doc": "What they say is still being typed.",
+          "type": "bool"
+        },
+        {
+          "name": "reaction",
+          "doc": "The emoji they reacted with last; empty for none.",
+          "type": "text"
+        },
+        {
+          "name": "reaction_seq",
+          "doc": "Which of their reactions it is: a new one plays when this moves.",
+          "type": "int"
+        }
+      ],
+      "semantics": {
+        "role": "Image",
+        "label": "label",
+        "not_in_gallery": "it stands only among a window's pointers, over a window a gallery has none of"
+      }
+    },
+    {
       "name": "PictureOption",
       "doc": "One tile of a [`PictureChoice`]: its picture and its name.",
       "props": [
@@ -11807,6 +12013,54 @@
       "semantics": {
         "role": "RadioButton",
         "label": "label"
+      }
+    },
+    {
+      "name": "ScreenMirrorWindow",
+      "doc": "One window on someone's screen.",
+      "props": [
+        {
+          "name": "name",
+          "doc": "What it is called here.",
+          "type": "text",
+          "required": true,
+          "positional": true
+        },
+        {
+          "name": "app",
+          "doc": "The app it shows, by its id: its mark.",
+          "type": "text",
+          "data": true
+        },
+        {
+          "name": "left",
+          "doc": "Its left edge, as a share of the screen's width.",
+          "type": "float"
+        },
+        {
+          "name": "top",
+          "doc": "Its top edge, as a share of the screen's height.",
+          "type": "float"
+        },
+        {
+          "name": "right",
+          "doc": "Its right edge, as a share of the screen's width.",
+          "type": "float"
+        },
+        {
+          "name": "bottom",
+          "doc": "Its bottom edge, as a share of the screen's height.",
+          "type": "float"
+        },
+        {
+          "name": "focused",
+          "doc": "They work in it.",
+          "type": "bool"
+        }
+      ],
+      "semantics": {
+        "role": "Window",
+        "label": "name"
       }
     },
     {

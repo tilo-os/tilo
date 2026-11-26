@@ -232,6 +232,24 @@ pub fn followed_member(people: &[Person], id: &str) -> Option<MemberId> {
         .and_then(Person::member_id)
 }
 
+/// Who each publisher of a presence page is and which members are each person's devices, read off
+/// `HereState::members` once: what a page of three costs and a page of thousands costs the same,
+/// row by row.
+#[derive(Debug, Default)]
+struct PresenceIndex {
+    /// Each publisher, by where its presence lies in the members.
+    places: HashMap<String, usize>,
+    /// Each person's key — their user root where they named one, else their own publisher — by
+    /// the places of the devices they are here on, never software's.
+    devices: HashMap<String, Vec<usize>>,
+    /// The colour everyone here is drawn in, by live publisher ([`HereState::colors`]).
+    colors: HashMap<String, (u8, u8, u8)>,
+    /// The name and colour each person here goes by, by their user root ([`HereState::person`]).
+    people: HashMap<String, (String, (u8, u8, u8))>,
+    /// Each person here by their user root, this page's own first, then in the order they came.
+    persons: Vec<String>,
+}
+
 /// What the page told the desktop about the workspace.
 #[derive(Debug, Default)]
 pub struct HereState {
@@ -249,6 +267,10 @@ pub struct HereState {
     revision: u64,
     /// The members last registered on window presence, to forget who left.
     registered: Vec<MemberId>,
+    /// Where each publisher's presence lies in `members`, and which members are each person's
+    /// devices: built once when the members change, so a roster of thousands reads a row's person
+    /// and their devices without scanning everyone here once per row.
+    index: PresenceIndex,
     /// What this page's person lets their device say about them: only
     /// [`ui::StatusSharing::Automatic`] publishes what it read off their steps.
     sharing: ui::StatusSharing,
@@ -299,6 +321,29 @@ fn member_name(member: &LiveMember) -> Option<&str> {
     tilo_ui_base::presence::shown_name(&member.label)
 }
 
+/// Who a member counts as: their person's key where their presence named one, else the device
+/// itself, so devices of one person stand together.
+fn count_as(member: &LiveMember) -> &str {
+    member
+        .user
+        .as_deref()
+        .filter(|user| !user.is_empty() && PersonId::parse(user).is_ok())
+        .unwrap_or(&member.publisher)
+}
+
+/// One of a person's devices, as their card lists it: what it calls itself, whether it is the one
+/// this page runs on, and how available its person is there.
+fn device_of(member: &LiveMember, here: Option<&str>) -> PersonDevice {
+    PersonDevice {
+        id: member.publisher.clone(),
+        // A device that named itself none keeps it empty: its key is an id, and never stands in
+        // for the name it did not give.
+        label: member.device.trim().to_owned(),
+        this: here == Some(member.publisher.as_str()),
+        availability: availability_of(member),
+    }
+}
+
 /// The row already listed for the agent at `device`: the same publisher, or the same person's
 /// agent going by the same name (one agent heard through two publishers). One member is one row,
 /// however many sessions of it work here.
@@ -344,6 +389,7 @@ impl HereState {
         }
         self.own = own;
         self.members = members;
+        self.index_members();
         if let Some(own) = &self.own
             && let Some(user) = own.user.as_deref()
         {
@@ -564,11 +610,12 @@ impl HereState {
         {
             return Some(own);
         }
+        let place = *self.index.places.get(publisher)?;
         self.members
-            .iter()
-            .flatten()
-            .find(|member| member.publisher == publisher)
-            .and_then(|member| member.user.as_deref())
+            .as_ref()?
+            .get(place)?
+            .user
+            .as_deref()
             .filter(|user| !user.is_empty() && PersonId::parse(user).is_ok())
     }
 
@@ -600,20 +647,84 @@ impl HereState {
     pub fn devices_of(&self, publisher: &str) -> Vec<PersonDevice> {
         let person = self.person_of(publisher);
         let here = self.own_id();
-        self.members
-            .iter()
+        let members = self.members.as_deref().unwrap_or_default();
+        let mut devices: Vec<PersonDevice> = self
+            .index
+            .devices
+            .get(person)
+            .into_iter()
             .flatten()
-            .chain(self.own.as_ref())
-            .filter(|member| member.kind != "agent" && self.person_of(&member.publisher) == person)
-            .map(|member| PersonDevice {
-                id: member.publisher.clone(),
-                // A device that named itself none keeps it empty: its key is an id, and never
-                // stands in for the name it did not give.
-                label: member.device.trim().to_owned(),
-                this: here == Some(member.publisher.as_str()),
-                availability: availability_of(member),
+            .filter_map(|place| members.get(*place))
+            .map(|member| device_of(member, here))
+            .collect();
+        // This page itself is the person's device where their presence is not among the members'.
+        if let Some(own) = &self.own
+            && own.kind != "agent"
+            && count_as(own) == person
+        {
+            devices.push(device_of(own, here));
+        }
+        devices
+    }
+
+    /// Read where each publisher's presence lies, which members are each person's devices, and the
+    /// name and colour each is drawn in, once when the members change: a roster, the bar and every
+    /// window read them per row, and a scan per row reads thousands by thousands.
+    fn index_members(&mut self) {
+        self.index = PresenceIndex::default();
+        if let Some(members) = self.members.as_deref() {
+            for (place, member) in members.iter().enumerate() {
+                self.index.places.insert(member.publisher.clone(), place);
+                if member.kind != "agent" {
+                    self.index
+                        .devices
+                        .entry(count_as(member).to_owned())
+                        .or_default()
+                        .push(place);
+                }
+            }
+        }
+        let colors = self.read_colors();
+        // Each person's first device here, and the first that names itself.
+        let mut devices: HashMap<&str, (&LiveMember, Option<&LiveMember>)> = HashMap::new();
+        for member in self.members.iter().flatten().chain(self.own.as_ref()) {
+            if member.kind == "agent" {
+                continue;
+            }
+            let Some(user) = self.user_of(&member.publisher) else {
+                continue;
+            };
+            let (_, named) = devices.entry(user).or_insert((member, None));
+            if named.is_none() && member_name(member).is_some() {
+                *named = Some(member);
+            }
+        }
+        let people: HashMap<String, (String, (u8, u8, u8))> = devices
+            .into_iter()
+            .map(|(user, (first, named))| {
+                let named = named.unwrap_or(first);
+                let label =
+                    tilo_ui_base::presence::person_label(member_name(named).unwrap_or_default());
+                let rgb = colors
+                    .get(&named.publisher)
+                    .copied()
+                    .unwrap_or_else(|| tilo_ui_base::presence::user_color(user));
+                (user.to_owned(), (label, rgb))
             })
-            .collect()
+            .collect();
+        let mut listed = HashSet::new();
+        let persons = self
+            .own
+            .iter()
+            .chain(self.members.iter().flatten())
+            .filter(|member| member.kind != "agent")
+            .filter_map(|member| self.user_of(&member.publisher))
+            .filter(|user| people.contains_key(*user) && listed.insert(*user))
+            .map(str::to_owned)
+            .collect();
+        self.index.colors = colors;
+        self.index.people = people;
+        self.index.persons = persons;
     }
 
     /// Everyone here, by the device their presence comes from: the name and colour of the person
@@ -628,7 +739,7 @@ impl HereState {
                 tilo_ui_base::presence::person_label(member_name(member).unwrap_or_default());
             names.insert(
                 member.publisher.clone(),
-                (label, color_in(&colors, &member.publisher)),
+                (label, color_in(colors, &member.publisher)),
             );
         }
         names
@@ -653,26 +764,7 @@ impl HereState {
     /// The name and colour presence shows for the person `user` (their user root, hex): the name
     /// their devices here go by. `None` for someone not here now.
     pub fn person(&self, user: &str) -> Option<(String, (u8, u8, u8))> {
-        let mut devices = self
-            .members
-            .iter()
-            .flatten()
-            .chain(self.own.as_ref())
-            .filter(|member| {
-                member.kind != "agent" && self.user_of(&member.publisher) == Some(user)
-            });
-        let first = devices.next()?;
-        let named = std::iter::once(first)
-            .chain(devices)
-            .find(|member| member_name(member).is_some())
-            .unwrap_or(first);
-        let label = tilo_ui_base::presence::person_label(member_name(named).unwrap_or_default());
-        let rgb = self
-            .colors()
-            .get(&named.publisher)
-            .copied()
-            .unwrap_or_else(|| tilo_ui_base::presence::user_color(user));
-        Some((label, rgb))
+        self.index.people.get(user).cloned()
     }
 
     /// What each other person's device here is drawn as, by live publisher: their person's name
@@ -694,7 +786,7 @@ impl HereState {
                             tilo_ui_base::presence::person_label(
                                 member_name(member).unwrap_or_default(),
                             ),
-                            color_in(&colors, &member.publisher),
+                            color_in(colors, &member.publisher),
                         )
                     });
                 (member.publisher.clone(), face)
@@ -708,24 +800,20 @@ impl HereState {
     /// its own person as everyone else's does.
     #[must_use]
     pub fn persons(&self) -> Vec<(String, String, (u8, u8, u8))> {
-        let mut persons: Vec<(String, String, (u8, u8, u8))> = Vec::new();
-        for member in self.own.iter().chain(self.members.iter().flatten()) {
-            let user = self
-                .user_of(&member.publisher)
-                .filter(|_| member.kind != "agent");
-            if let Some(user) = user.filter(|user| persons.iter().all(|(held, _, _)| held != user))
-                && let Some((name, rgb)) = self.person(user)
-            {
-                persons.push((user.to_owned(), name, rgb));
-            }
-        }
-        persons
+        self.index
+            .persons
+            .iter()
+            .filter_map(|user| {
+                let (name, rgb) = self.index.people.get(user)?.clone();
+                Some((user.clone(), name, rgb))
+            })
+            .collect()
     }
 
     /// This page's own colour, as everyone here sees it.
     pub fn own_rgb(&self) -> Option<(u8, u8, u8)> {
         let own = self.own_id()?;
-        Some(color_in(&self.colors(), own))
+        Some(color_in(self.colors(), own))
     }
 
     /// What colour everyone here is drawn in, by live publisher, this page included: the colour
@@ -739,7 +827,13 @@ impl HereState {
     /// Until it does it has no entry here, so it is drawn neutral
     /// ([`tilo_ui_base::presence::UNSETTLED_RGB`]) rather than in a colour keyed by its device that changes
     /// once its person is known.
-    pub fn colors(&self) -> HashMap<String, (u8, u8, u8)> {
+    #[must_use]
+    pub fn colors(&self) -> &HashMap<String, (u8, u8, u8)> {
+        &self.index.colors
+    }
+
+    /// [`Self::colors`], read off the members as they are.
+    fn read_colors(&self) -> HashMap<String, (u8, u8, u8)> {
         self.members
             .iter()
             .flatten()
@@ -773,8 +867,9 @@ impl HereState {
     ) -> Vec<Person> {
         let colors = self.colors();
         let mut people: Vec<Person> = Vec::new();
-        // Who each listed person counts as (`person_of`), beside `people` .
-        let mut persons: Vec<&str> = Vec::new();
+        // Who each listed person counts as (`person_of`): a workspace of thousands asks it once
+        // per member, so it is looked up, not searched.
+        let mut persons: HashSet<&str> = HashSet::new();
         for member in self.members.iter().flatten() {
             // An agent is known by the session it declared, never by what it is called.
             let agent = member.kind == "agent";
@@ -801,7 +896,7 @@ impl HereState {
                 }
                 continue;
             }
-            persons.push(person);
+            persons.insert(person);
             // An agent names the record it works in; a person's page says which window they are in.
             let tab = member
                 .focus
@@ -831,7 +926,7 @@ impl HereState {
                         .unwrap_or_default(),
                 ),
                 devices: self.devices_of(&member.publisher),
-                rgb: color_in(&colors, &member.publisher),
+                rgb: color_in(colors, &member.publisher),
                 agent,
                 tab,
                 focus_app: member.focus.as_ref().map(|focus| focus.app.clone()),
@@ -1060,9 +1155,20 @@ pub fn place_here(tree: &mut Layout, people: &[Person], following: Option<&str>)
         return;
     };
     workspace.members = member_rows(workspace, people, now);
+    // Everyone here, once each: a workspace of thousands places its people in one pass, not one
+    // scan of everyone placed so far per person.
     workspace.present.clear();
+    let mut placed: HashMap<MemberId, usize> = HashMap::new();
     for person in people {
-        workspace.place_presence(present_of(person, following));
+        let here = present_of(person, following);
+        if let Some(at) = placed.get(&here.member).copied() {
+            if let Some(slot) = workspace.present.get_mut(at) {
+                *slot = here;
+            }
+        } else {
+            placed.insert(here.member.clone(), workspace.present.len());
+            workspace.present.push(here);
+        }
     }
 }
 
@@ -1086,7 +1192,13 @@ pub fn mark_followers(tree: &mut Layout, followers: &[String]) {
 /// the agents admitted in it and anyone here its policy does not list yet. A person here
 /// now wears the colour they show by here; everyone else the one who they are gives them.
 fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member> {
-    let here = |id: &MemberId| people.iter().find(|person| member_id_of(person) == *id);
+    // Who of the people here each member is, read once: a row of the workspace's policy looks up
+    // its person here, and a workspace of thousands asks as many times.
+    let mut by_member: HashMap<MemberId, &Person> = HashMap::new();
+    for person in people {
+        by_member.entry(member_id_of(person)).or_insert(person);
+    }
+    let here = |id: &MemberId| by_member.get(id).copied();
     let mut rows: Vec<Member> = workspace
         .policy
         .people()
@@ -1127,9 +1239,11 @@ fn member_rows(workspace: &Workspace, people: &[Person], now: u64) -> Vec<Member
         rows.push(row);
     }
     // Anyone here whom the workspace's policy does not list yet is still someone here.
+    let mut listed: std::collections::HashSet<MemberId> =
+        rows.iter().map(|row| row.id.clone()).collect();
     for person in people {
         let id = member_id_of(person);
-        if rows.iter().any(|row| row.id == id) {
+        if !listed.insert(id.clone()) {
             continue;
         }
         rows.push(member_of_presence(person, &id));

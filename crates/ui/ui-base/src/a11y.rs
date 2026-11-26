@@ -1018,6 +1018,46 @@ pub fn stated_widget_mut(
     None
 }
 
+/// What `widget` holds besides the node it states ([`stated_node`]), each part as it publishes
+/// itself, placed where it is drawn: a row made of several views (a person's row and the picture
+/// of their screen under it) is read whole, not as its first named part alone. A widget that
+/// states its own node reads what it holds of its own: a list row's part under its text.
+pub fn beside_stated(widget: &dyn crate::widget::Widget) -> Vec<AccessNode> {
+    /// `widget` and what it holds as the nodes they publish.
+    fn published(widget: &dyn crate::widget::Widget) -> Vec<AccessNode> {
+        if widget.accessibility_hidden() {
+            return Vec::new();
+        }
+        let below: Vec<AccessNode> = widget.children().into_iter().flat_map(published).collect();
+        let Some(node) = widget.accessibility() else {
+            return below;
+        };
+        let mut node = with_synthetic_bounds(node, widget);
+        if node.bounds.is_none() && is_placed(widget) {
+            node.bounds = Some(widget.get_rect().into());
+        }
+        node.children.extend(below);
+        vec![node]
+    }
+    if widget
+        .accessibility()
+        .is_some_and(|node| node.name.is_some())
+    {
+        return widget.children().into_iter().flat_map(published).collect();
+    }
+    let mut beside = Vec::new();
+    let mut stated = false;
+    for child in widget.children() {
+        if stated {
+            beside.extend(published(child));
+        } else if stated_node(child).is_some() {
+            stated = true;
+            beside.extend(beside_stated(child));
+        }
+    }
+    beside
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -528,7 +528,7 @@ impl Instance {
             let first = 0..first_rows(view.holds.get(&list).copied()).min(rows.len());
             // Which row a list shows open is its list's to say: the host asks for it with the
             // rows it shows, and the open a view kept arrives with that ask.
-            let requested = rows.request(first, (None, None));
+            let requested = rows.request(first, (None, None), None);
             sent.push(rows_message(
                 &host, &*names, &handle, level, &list, requested,
             ));
@@ -1150,7 +1150,7 @@ fn changed_rows(
                 changes: reset,
             });
             let holds = shown.holds.get(list).copied();
-            let first = rows.request(0..first_rows(holds).min(rows.len()), (None, None));
+            let first = rows.request(0..first_rows(holds).min(rows.len()), (None, None), None);
             messages.push(rows_message(host, &**names, &handle, level, list, first));
             continue;
         }

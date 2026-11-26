@@ -1263,6 +1263,9 @@ pub struct WidgetsPrefs {
     /// Processor, memory and temperature.
     #[serde(default = "default_system_monitor_widget")]
     pub system_monitor: settings_store::widgets::WidgetPrefs,
+    /// Who is here, kept on screen at an edge of the shell rather than in the bar.
+    #[serde(default)]
+    pub people_overlay: settings_store::widgets::PeopleOverlayPrefs,
 }
 
 fn default_music_widget() -> settings_store::widgets::WidgetPrefs {
@@ -1290,6 +1293,7 @@ impl Default for WidgetsPrefs {
             team: default_team_widget(),
             calendar: default_calendar_widget(),
             system_monitor: default_system_monitor_widget(),
+            people_overlay: settings_store::widgets::PeopleOverlayPrefs::default(),
         }
     }
 }
@@ -1375,6 +1379,33 @@ impl WidgetsPrefs {
         named
             .places
             .insert(0, settings_store::widgets::Place { display, x, y });
+        Ok(())
+    }
+
+    /// Keep who is here on screen at `edge` of the shell, or put it back in the bar: what the
+    /// roster's own button and a drag of it to another edge run. The edge is kept either way, so
+    /// the roster kept again comes back where it was.
+    #[action(id = "keep-people")]
+    pub fn keep_people(
+        &mut self,
+        #[param("Whether the roster is kept on screen rather than in the bar")] kept: bool,
+        #[param("The edge it waits at: left, right, bottom, bottom_left or bottom_right")]
+        edge: String,
+    ) -> Result<(), ui::tilo_resource::Refusal> {
+        use settings_store::widgets::DockEdge;
+        let edge = match edge.as_str() {
+            "left" => DockEdge::Left,
+            "right" => DockEdge::Right,
+            "bottom" => DockEdge::Bottom,
+            "bottom_left" => DockEdge::BottomLeft,
+            "bottom_right" => DockEdge::BottomRight,
+            other => {
+                return Err(ui::tilo_resource::Refusal::new(format!(
+                    "`{other}` is not an edge: left, right, bottom, bottom_left or bottom_right"
+                )));
+            }
+        };
+        self.people_overlay = settings_store::widgets::PeopleOverlayPrefs { pinned: kept, edge };
         Ok(())
     }
 

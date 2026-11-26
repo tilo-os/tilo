@@ -68,6 +68,20 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
                 // stays behind them, so nothing of the style is drawn here; the card itself
                 // stands over everything in `shell_around`.
                 banners_over(roomy: not (space.compact or space.width < 44.0))
+            } else if device.overlays.here == "people" {
+                // Who is here is a panel over the windows the person works in: the style's places
+                // stay where they were under it, so their windows stay in sight, and the others'
+                // pointers over them say where each person is while the roster lists them. The
+                // panel stands in the band's own scroll, as every surface of the shell's does: a
+                // press on the bar is the bar's, never one off the panel.
+                over_band {
+                    layers(fill) {
+                        content
+                        scroll(fill) {
+                            surface(fill)
+                        }
+                    }
+                }
             } else {
                 // The band's page: what rests on it, or the surface standing over it. One stage,
                 // so a surface opens and closes with the shared motion rather than appearing and
@@ -93,7 +107,7 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
                             // A surface of the shell's own over the places: the launcher, the
                             // centre, quick settings or the workspaces.
                             scroll(fill) {
-                                surface()
+                                surface(fill)
                             }
                         }
                     }
@@ -418,10 +432,18 @@ view top_bar(traditional: Bool) {
 template view over_band(body: View) {
     layers(fill) {
         body
+        // While the person follows someone, their colour runs round the room the windows stand
+        // in, over the windows: whose view this is, all the way round.
+        ui.FollowFrame(followed_colour(), fill)
         // What is live and stands as a card, over the windows and under a banner rising.
         // The band is the display's width, which the cards' own view cannot see: a phone takes
         // one card across under the bar.
         live_cards(phone: space.compact, fill)
+        // Who is here, kept on screen at an edge of the band, where the person works: never on a
+        // phone, where it would stand over the one window there is.
+        if not space.compact {
+            kept_people()
+        }
         banners_over(roomy: not (space.compact or space.width < 44.0))
     }
 }
@@ -470,23 +492,28 @@ view banners_over(roomy: Bool) {
 /// window's edge, where that window is narrow enough to have no page gutter of its own: a
 /// surface is a panel over the windows, not a band of the window.
 view surface() {
-    stack(fill, padding: if space.compact { .section } else { .none }) {
-        if device.overlays.here == "overview" {
-            overview(fill)
-        } else if device.overlays.here == "switcher" {
-            switcher(fill)
-        } else if device.overlays.here == "launcher" {
-            launcher(fill)
-        } else if device.overlays.here == "centre" {
-            notices(fill)
-        } else if device.overlays.here == "quick-settings" {
-            quick_settings(fill)
-        } else if device.overlays.here == "workspaces" {
-            workspaces(fill)
-        } else if device.overlays.here == "history" {
-            history(fill)
-        } else if device.overlays.here == "people" {
-            people()
+    // Who is here places itself: a panel at the bar's end on a desktop, a sheet at a phone's foot.
+    // It stands in the shell's own room rather than in this padding, so its layer runs to the
+    // edges the person reaches for.
+    if device.overlays.here == "people" {
+        people(fill)
+    } else {
+        stack(fill, padding: if space.compact { .section } else { .none }) {
+            if device.overlays.here == "overview" {
+                overview(fill)
+            } else if device.overlays.here == "switcher" {
+                switcher(fill)
+            } else if device.overlays.here == "launcher" {
+                launcher(fill)
+            } else if device.overlays.here == "centre" {
+                notices(fill)
+            } else if device.overlays.here == "quick-settings" {
+                quick_settings(fill)
+            } else if device.overlays.here == "workspaces" {
+                workspaces(fill)
+            } else if device.overlays.here == "history" {
+                history(fill)
+            }
         }
     }
 }

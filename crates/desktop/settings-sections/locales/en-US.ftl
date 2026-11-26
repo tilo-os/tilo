@@ -70,6 +70,7 @@ settings-control-hints-learn-control-hint = Learn a control hint
 settings-control-hints-note-control-hint-shown = Count a control hint as shown
 settings-control-hints-withdraw-control-hint-shown = Take back a control hint's showing
 settings-control-hints-show-control-hints-again = Show control hints again
+settings-widgets-keep-people = Keep who is here on screen
 settings-power-set-suspend-plugged-in = Suspend when plugged in
 settings-power-set-suspend-on-battery = Suspend on battery
 settings-updates-record-automatic-updates = Automatic updates

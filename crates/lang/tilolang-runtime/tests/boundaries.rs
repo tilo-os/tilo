@@ -241,6 +241,49 @@ view tinted(bag: Bag) {
     }
 }
 
+view tinted_listed(bag: Bag) {
+    ui.VirtualList(name: bag.name) {
+        for title in ["item 0", "item 1", "item 2"] {
+            tinted_item(title, bag.name)
+        }
+    }
+}
+
+view tinted_loops(bag: Bag) {
+    ui.VirtualList(name: bag.name) {
+        for title in ["item 0", "item 1"] {
+            tinted_item(title, bag.name)
+        }
+        for title in ["item 2"] {
+            tinted_item(title, bag.name)
+        }
+    }
+}
+
+view tinted_within(bag: Bag) {
+    tinted_list_of(bag.name)
+}
+
+view tinted_list_of(tint: Text) {
+    ui.VirtualList(name: "Tinted") {
+        for title in ["item 0", "item 1"] {
+            tinted_item(title, tint)
+        }
+        for title in ["item 2"] {
+            tinted_item(title, tint)
+        }
+    }
+}
+
+view tinted_item(title: Text, tint: Text) {
+    ui.ListItem(value: title) {
+        row {
+            text(title)
+            text(tint)
+        }
+    }
+}
+
 view tinted_row(item: Item, tint: Text) {
     row {
         text(item.title)
@@ -575,22 +618,33 @@ view deck(d: Deck) {
         {
             // The rows of the list are the same items, and the row view's other argument changed:
             // the rows shown stand for the new one, not for the one they were built with.
-            let rows = Rows::new(10);
-            let mut view = rows.view("tinted");
-            let list = list_key(&view);
-            for i in 0..3 {
-                assert!(view.row(&list, i).unwrap().is_some());
-            }
-            let shown = |view: &mut ViewInstance| texts(view.row(&list, 1).unwrap().unwrap());
-            assert_eq!(shown(&mut view), ["item 1", ""]);
+            // The host keeps the rows it was sent and reads a row again from the view's tree:
+            // the row stands there with what it now says, whether the list's rows are the items
+            // of a collection, the values of a list or of several loops, and when the call
+            // holding the list is made anew with the new argument.
+            for name in ["tinted", "tinted_listed", "tinted_loops", "tinted_within"] {
+                let rows = Rows::new(10);
+                let mut view = rows.view(name);
+                let list = list_key(&view);
+                for i in 0..3 {
+                    assert!(view.row(&list, i).unwrap().is_some(), "{name}");
+                }
+                let key = view.row_key(&list, 1).unwrap();
+                let held = |view: &ViewInstance| {
+                    texts(view.find(&key).unwrap_or_else(|| panic!("{name}: no row {key}")))
+                };
+                assert_eq!(held(&view), ["item 1", ""], "{name}");
 
-            rows.call(
-                "rename",
-                vec![Value::resource(&rows.bag), Value::text("groceries")],
-            );
-            let patches = view.poll_patches().unwrap();
-            assert!(!patches.is_empty(), "the shown rows ran again");
-            assert_eq!(shown(&mut view), ["item 1", "groceries"]);
+                rows.call(
+                    "rename",
+                    vec![Value::resource(&rows.bag), Value::text("groceries")],
+                );
+                let patches = view.poll_patches().unwrap();
+                assert!(!patches.is_empty(), "{name}: the shown rows ran again");
+                assert_eq!(held(&view), ["item 1", "groceries"], "{name}");
+                let shown = texts(view.row(&list, 1).unwrap().unwrap());
+                assert_eq!(shown, ["item 1", "groceries"], "{name}");
+            }
         }
 
         phase an_item_that_joins_reaches_the_filtered_views_it_matches;

@@ -96,6 +96,7 @@ impl VirtualRows {
             return false;
         }
         self.focused_key = None;
+        self.focus_arriving = None;
         self.focused_group = None;
         self.jump_focused = true;
         true

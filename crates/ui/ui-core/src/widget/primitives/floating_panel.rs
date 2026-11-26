@@ -237,10 +237,54 @@ pub struct FloatingPanel {
     resize: Option<(f64, f64)>,
     /// Its width changed under a drag and its layout must be solved again.
     width_changed: bool,
+    /// Where its layout put it: held by the person, it stands under the pointer instead, and
+    /// springs back here when the drag is called off.
+    laid: Rect,
+    /// The edge of what holds it it is kept at, rather than a place: it stands in that edge's
+    /// slot ([`crate::edge_slots`]), and a drag let go moves it to the edge nearest the pointer.
+    edge: Option<crate::edge_slots::DockEdge>,
+    /// What hears the edge a drag let it go at: a panel kept at an edge with one moves when its
+    /// header is dragged.
+    docked: Option<Box<dyn FnMut(crate::edge_slots::DockEdge)>>,
+    /// Whether it is up: a panel that is not comes and goes on the shared motion where it stands,
+    /// and while it is not up it takes no input and names nothing.
+    shown: bool,
 }
 
 /// How far either side of its trailing edge a press takes hold of a resizable panel's edge.
 const EDGE_GRIP: f64 = 5.0;
+/// The room a panel at `node`, laid out from `origin`, is placed and dragged in: what holds it.
+/// A container wraps each thing it holds in a node of its own that hugs it, and a panel placed at
+/// a point of its own is out of that flow, so a wrapper holding only it is empty; the room is then
+/// the container's, the wrapper's parent.
+fn room_of(taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Option<Rect> {
+    let parent = taffy.parent(node)?;
+    let held = taffy.layout(parent).ok()?;
+    let room = Rect::from_origin_size(
+        origin,
+        (f64::from(held.size.width), f64::from(held.size.height)),
+    );
+    let wraps_nothing_else = taffy.children(parent).is_ok_and(|parts| parts.len() == 1)
+        && (held.size.width < 1.0 || held.size.height < 1.0);
+    if !wraps_nothing_else {
+        return Some(room);
+    }
+    let Some(container) = taffy.parent(parent).and_then(|up| taffy.layout(up).ok()) else {
+        return Some(room);
+    };
+    let at = Point::new(
+        origin.x - f64::from(held.location.x),
+        origin.y - f64::from(held.location.y),
+    );
+    Some(Rect::from_origin_size(
+        at,
+        (
+            f64::from(container.size.width),
+            f64::from(container.size.height),
+        ),
+    ))
+}
+
 /// The narrowest and widest a person can draw a panel: room for a line of words, and no wider
 /// than a card reads.
 const RESIZE_MIN: f64 = 200.0;
@@ -312,6 +356,47 @@ impl FloatingPanel {
             resized: None,
             resize: None,
             width_changed: false,
+            laid: Rect::ZERO,
+            edge: None,
+            docked: None,
+            shown: true,
+        }
+    }
+
+    /// Stand kept at `edge` of what holds it, in that edge's slot, rather than at a place or where
+    /// the flow of its siblings puts it.
+    #[must_use]
+    pub fn at_edge(mut self, edge: Option<crate::edge_slots::DockEdge>) -> Self {
+        self.edge = edge;
+        self
+    }
+
+    /// [`Self::at_edge`] after construction.
+    pub fn set_edge(&mut self, edge: Option<crate::edge_slots::DockEdge>) {
+        self.edge = edge;
+    }
+
+    /// Move to another edge when the person drags its header, and tell `docked` the edge nearest
+    /// where they let it go.
+    #[must_use]
+    pub fn dockable(mut self, docked: impl FnMut(crate::edge_slots::DockEdge) + 'static) -> Self {
+        self.docked = Some(Box::new(docked));
+        self
+    }
+
+    /// Whether it is up: one that is not comes in when it is, and goes when it is no more, on the
+    /// shared motion, where it stands.
+    #[must_use]
+    pub fn shown(mut self, shown: bool) -> Self {
+        self.shown = shown;
+        self
+    }
+
+    /// [`Self::shown`] after construction.
+    pub fn set_shown(&mut self, shown: bool) {
+        self.shown = shown;
+        if !shown {
+            self.drag = None;
         }
     }
 
@@ -401,7 +486,7 @@ impl FloatingPanel {
     /// Whether it moves when its header is dragged.
     #[must_use]
     pub fn is_movable(&self) -> bool {
-        self.moved.is_some()
+        self.moved.is_some() || self.docked.is_some()
     }
 
     /// [`Self::at`] after construction.
@@ -702,6 +787,11 @@ impl FloatingPanel {
                 }
                 drag.moved = true;
                 drag.at = at;
+                // Held, it stands under the pointer, and what it holds goes with it: only its own
+                // slots are placed again, from the layout already solved, so it is pressed and
+                // read where it is drawn.
+                self.rect = Rect::from_origin_size(at, self.laid.size());
+                self.place_slots(ctx.taffy, ctx.node_id);
                 true
             }
             WindowEvent::MouseInput {
@@ -730,16 +820,36 @@ impl FloatingPanel {
                     return false;
                 };
                 if drag.moved {
-                    let settled = self.settled(drag.at);
-                    let place = Point::new(
-                        (settled.x - self.room.x0).round(),
-                        (settled.y - self.room.y0).round(),
-                    );
-                    if let Some(moved) = &mut self.moved {
-                        moved(place);
+                    self.rect = self.laid;
+                    self.place_slots(ctx.taffy, ctx.node_id);
+                    // It springs from where it was let go to where it settles, rather than
+                    // standing back where it was before it goes there.
+                    self.placed
+                        .carry(Rect::from_origin_size(drag.at, self.rect.size()));
+                    if let Some(docked) = &mut self.docked {
+                        docked(crate::edge_slots::nearest_edge(self.room, self.pointer));
+                    } else {
+                        let settled = self.settled(drag.at);
+                        let place = Point::new(
+                            (settled.x - self.room.x0).round(),
+                            (settled.y - self.room.y0).round(),
+                        );
+                        if let Some(moved) = &mut self.moved {
+                            moved(place);
+                        }
                     }
                 }
                 true
+            }
+            // The pointer left what holds it, or the person pressed Escape: a drag in flight is
+            // called off, and the panel springs back to where it stood.
+            WindowEvent::CursorLeft { .. } => self.call_off(ctx),
+            WindowEvent::KeyboardInput { event, .. }
+                if event.state == ElementState::Pressed
+                    && event.logical_key
+                        == winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape) =>
+            {
+                self.call_off(ctx)
             }
             _ => false,
         }
@@ -747,6 +857,52 @@ impl FloatingPanel {
 }
 
 impl FloatingPanel {
+    /// [`Self::cancel_drag`], from an event: what it holds goes back with it.
+    fn call_off(&mut self, ctx: &tilo_ui_base::widget::EventCtx<'_>) -> bool {
+        let moved = self.cancel_drag();
+        if moved {
+            self.rect = self.laid;
+            self.place_slots(ctx.taffy, ctx.node_id);
+        }
+        moved
+    }
+
+    /// Place its header, body and footer in it as it stands now, from the layout `taffy` solved
+    /// for its node `node`.
+    fn place_slots(&mut self, taffy: &TaffyTree<()>, node: NodeId) {
+        let wrappers = taffy.children(node).unwrap_or_default();
+        let has_header = self.header.is_some();
+        let origin = Point::new(self.rect.x0, self.rect.y0);
+        let mut rects = Vec::new();
+        for (slot, wrapper) in self.slots_mut().zip(wrappers) {
+            let wrap_rect = tilo_ui_base::widget::layout_rect(taffy, wrapper, origin);
+            if let Some(&child) = taffy.children(wrapper).unwrap_or_default().first() {
+                slot.apply_layout(taffy, child, Point::new(wrap_rect.x0, wrap_rect.y0));
+                rects.push(slot.get_rect());
+            }
+        }
+        let mut rects = rects.into_iter();
+        self.header_rect = if has_header {
+            rects.next().unwrap_or(Rect::ZERO)
+        } else {
+            Rect::ZERO
+        };
+        self.body_rect = rects.next().unwrap_or(Rect::ZERO);
+    }
+
+    /// Call off a drag in flight: the panel springs back from where it was drawn to where it
+    /// stands, and nothing hears of a move. Whether there was a drag to call off.
+    fn cancel_drag(&mut self) -> bool {
+        let Some(drag) = self.drag.take() else {
+            return false;
+        };
+        if drag.moved {
+            self.placed
+                .carry(Rect::from_origin_size(drag.at, self.rect.size()));
+        }
+        drag.moved
+    }
+
     /// `event` to the header, the body and the footer, in turn, until one takes it.
     fn slots_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let wrappers = ctx.taffy.children(ctx.node_id).unwrap_or_default();
@@ -830,7 +986,14 @@ impl Widget for FloatingPanel {
             },
             ..Default::default()
         };
-        let style = match self.place {
+        // Kept at an edge, it stands out of the flow, and its slot is found once its size is
+        // known ([`Widget::apply_layout`]).
+        let place = if self.edge.is_some() {
+            Some(Point::ZERO)
+        } else {
+            self.place
+        };
+        let style = match place {
             Some(place) => Style {
                 position: taffy::Position::Absolute,
                 inset: taffy::Rect {
@@ -852,33 +1015,27 @@ impl Widget for FloatingPanel {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
-        self.room = taffy
-            .parent(node)
-            .and_then(|parent| taffy.layout(parent).ok())
-            .map_or(self.rect, |held| {
-                Rect::from_origin_size(
-                    origin,
-                    (f64::from(held.size.width), f64::from(held.size.height)),
-                )
-            });
-        let wrappers = taffy.children(node).unwrap_or_default();
-        let has_header = self.header.is_some();
-        let origin = Point::new(self.rect.x0, self.rect.y0);
-        let mut rects = Vec::new();
-        for (slot, wrapper) in self.slots_mut().zip(wrappers) {
-            let wrap_rect = tilo_ui_base::widget::layout_rect(taffy, wrapper, origin);
-            if let Some(&child) = taffy.children(wrapper).unwrap_or_default().first() {
-                slot.apply_layout(taffy, child, Point::new(wrap_rect.x0, wrap_rect.y0));
-                rects.push(slot.get_rect());
-            }
+        self.room = room_of(taffy, node, origin).unwrap_or(self.rect);
+        if let Some(edge) = self.edge {
+            let size = self.rect.size();
+            let slot = crate::edge_slots::slot_of(self.room, edge, size);
+            // In a room too narrow to keep it beside the work, an edge's margin leaves it lopsided
+            // over the one window there is: it stands centred across the room, its gutters equal,
+            // at the height its edge gives it.
+            self.rect = if self.room.width() < 2.0 * size.width {
+                slot.with_origin(Point::new(self.room.center().x - size.width / 2.0, slot.y0))
+            } else {
+                slot
+            };
         }
-        let mut rects = rects.into_iter();
-        self.header_rect = if has_header {
-            rects.next().unwrap_or(Rect::ZERO)
-        } else {
-            Rect::ZERO
-        };
-        self.body_rect = rects.next().unwrap_or(Rect::ZERO);
+        self.laid = self.rect;
+        // Held by the person, it stands under the pointer, and what it holds with it.
+        if let Some(drag) = &self.drag
+            && drag.moved
+        {
+            self.rect = Rect::from_origin_size(drag.at, self.rect.size());
+        }
+        self.place_slots(taffy, node);
         if let Some(fit) = &mut self.fit
             && let Some(scroll) = self.body.primary_vertical_scroll()
         {
@@ -926,12 +1083,16 @@ impl Widget for FloatingPanel {
         };
         self.placed.follow_with(
             self.rect,
-            true,
+            self.shown,
             spec,
             theme.motion(),
             tilo_ui_base::motion::input_source(),
             now,
         );
+        // Gone, it draws nothing until it is up again.
+        if !self.placed.is_visible(now) {
+            return;
+        }
         // A panel the person drags stands under the pointer until it is let go.
         let card = match &self.drag {
             Some(drag) if drag.moved => Rect::from_origin_size(drag.at, self.rect.size()),
@@ -1010,6 +1171,10 @@ impl Widget for FloatingPanel {
                 ..
             }
         );
+        // A panel that is not up takes nothing: a press goes to what is under it.
+        if !self.shown {
+            return;
+        }
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = ctx.logical(position);
         }
@@ -1018,18 +1183,23 @@ impl Widget for FloatingPanel {
             *ctx.handled = true;
             return;
         }
-        if self.moved.is_some() && !press && self.drag_event(event, ctx) {
+        if self.is_movable() && !press && self.drag_event(event, ctx) {
             *ctx.handled = true;
             return;
         }
         self.slots_event(event, ctx);
-        if self.moved.is_some() && press && self.drag_event(event, ctx) {
+        if self.is_movable() && press && self.drag_event(event, ctx) {
             *ctx.handled = true;
         }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
         let mut out: Vec<&dyn Widget> = Vec::new();
+        // A panel that is not up names nothing and is pressed nowhere, though it is still drawn
+        // while it goes.
+        if !self.shown {
+            return out;
+        }
         if let Some(h) = &self.header {
             out.push(h.as_ref());
         }
@@ -1044,6 +1214,19 @@ impl Widget for FloatingPanel {
         for child in self.children() {
             visitor(child);
         }
+    }
+
+    /// Its slots are laid out whether it is up or not, so one that comes back stands where it went.
+    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) -> bool {
+        for slot in self
+            .header
+            .iter()
+            .chain(std::iter::once(&self.body))
+            .chain(self.footer.iter())
+        {
+            visitor(slot.as_ref());
+        }
+        true
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
@@ -1097,8 +1280,10 @@ impl Widget for FloatingPanel {
             .then_some(winit::window::CursorIcon::EwResize)
     }
 
+    /// Its edge drawn out, or its header held: the drag keeps the pointer wherever it goes, and
+    /// the keys, so Escape calls it off.
     fn wants_pointer_capture(&self) -> bool {
-        self.resize.is_some()
+        self.resize.is_some() || self.drag.is_some()
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -1122,8 +1307,8 @@ impl Widget for FloatingPanel {
     /// A panel that names itself reads as the thing it is: a modal panel is a dialog, holding the
     /// screen, and either is named with the line said after its name.
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
-        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
-        if self.label.is_none() && self.description.is_none() && !self.modal {
+        use tilo_ui_base::a11y::{AccessNode, AccessState, Role};
+        if !self.shown || (self.label.is_none() && self.description.is_none() && !self.modal) {
             return None;
         }
         let mut node = AccessNode::new(if self.modal {

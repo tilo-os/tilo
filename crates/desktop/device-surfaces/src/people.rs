@@ -7,7 +7,8 @@
 //! when this shell shows no window of it), what they say they are doing (marked where their device
 //! wrote it for them), how available they are,
 //! the call they are in, whom they follow and when they joined, whether this person follows them
-//! and whether they follow this person. Software is a member too: an agent's or a bot's row says
+//! whether they follow this person, and their screen where they share it: where their windows stand
+//! on it, for the roster kept on screen to draw. Software is a member too: an agent's or a bot's row says
 //! which it is, and an agent's says the window it works in. What the row's words are is the shell's,
 //! so each language says them its own way; the reading carries the facts.
 
@@ -15,9 +16,7 @@ use serde::{Deserialize, Serialize};
 use tilo_resource::Effect;
 
 /// Who is here, as `session:people` reads it.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct People {
     /// Everyone here in the workspace in front, people first and software after.
     pub rows: Vec<Person>,
@@ -62,6 +61,11 @@ pub struct People {
     /// it has none.
     #[serde(default)]
     pub control_hints: Option<bool>,
+    /// Where everyone else here points, over the window of this workspace each is on, whatever
+    /// the roster shows: a shell draws each over the place showing that window, and none over a
+    /// window it does not show.
+    #[serde(default)]
+    pub pointers: Vec<PeerPointer>,
 }
 
 /// One presence colour a person may wear: the id a choice names it by (`red` … `pink`), and the
@@ -119,14 +123,70 @@ pub struct PersonLinked {
     pub icon: String,
 }
 
+/// Someone's pointer over a window of the workspace in front.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct PeerPointer {
+    /// Whose it is, by their presence key, as their row in the roster names them.
+    pub person: String,
+    /// The window it is over, as the shell names a place: the tab's id.
+    pub tab: String,
+    /// Where across that window, in its own logical pixels from its top left corner.
+    pub x: f64,
+    /// Where down that window, in its own logical pixels from its top left corner.
+    pub y: f64,
+    /// The name it carries: the one the roster gives them, or what their presence says.
+    pub name: String,
+    /// Their colour, `rrggbb`.
+    pub colour: String,
+    /// It is software's pointer.
+    pub agent: bool,
+    /// What they say beside it, in their own words: empty while they say nothing.
+    pub said: String,
+    /// What they say is still being typed: it stays until they send it.
+    pub typing: bool,
+    /// The emoji they reacted with last, floating up from it a moment; empty for none.
+    pub reaction: String,
+    /// Which of their reactions that is: a new one plays when this moves.
+    pub reaction_seq: i64,
+}
+
+/// Someone's screen, as their presence describes it: its shape and their windows on it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct PersonScreen {
+    /// How wide it is, logical pixels.
+    pub width: f64,
+    /// How tall it is, logical pixels.
+    pub height: f64,
+    /// Their windows on it, in the order they paint: empty when nothing stands open there.
+    pub windows: Vec<PersonWindow>,
+}
+
+/// One window on someone's screen.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct PersonWindow {
+    /// The app it shows, by its id: what its mark is drawn from.
+    pub app: String,
+    /// What it is called here: what it shows where this device holds that record, else the app's
+    /// name.
+    pub name: String,
+    /// Its left edge, as a share of the screen's width.
+    pub left: f64,
+    /// Its top edge, as a share of the screen's height.
+    pub top: f64,
+    /// Its right edge, as a share of the screen's width.
+    pub right: f64,
+    /// Its bottom edge, as a share of the screen's height.
+    pub bottom: f64,
+    /// They work in it.
+    pub focused: bool,
+}
+
 /// Someone here in the workspace in front, a person or a piece of software.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "each flag is one fact presence says of someone, read apart by a view"
 )]
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
 pub struct Person {
     /// Their presence key, hex: what a follow, a wave or a card is asked for.
     pub key: String,
@@ -200,6 +260,10 @@ pub struct Person {
     /// copies whole, and what names the record a conversation with them is kept on.
     #[serde(default)]
     pub user_key: String,
+    /// Their screen, as they share where they are: `None` while they keep it to themselves, and
+    /// for software, which has no screen.
+    #[serde(default)]
+    pub screen: Option<PersonScreen>,
 }
 
 /// What the roster and a person's card ask of the session.

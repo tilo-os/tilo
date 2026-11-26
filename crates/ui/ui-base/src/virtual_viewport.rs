@@ -16,7 +16,7 @@ use std::hash::Hash;
 use std::ops::Range;
 use tilo_sort::CompactSort as _;
 
-const PAGE_FRACTION: f64 = 0.9;
+pub const PAGE_FRACTION: f64 = 0.9;
 const DRAG_SCROLL_THRESHOLD: f64 = 4.0;
 const MAX_DRAG_FLING_VELOCITY: f64 = 6_000.0;
 const KINETIC_WINDOW: Duration = Duration::from_millis(100);

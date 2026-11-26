@@ -5,7 +5,7 @@
 //! tilolang shell that draws it (`apps/tl/shell`): the shell's views over the
 //! whole screen, and the window policy that places each window in the well
 //! the shell leaves it ([`platform::surfaces::desktop`]); and the session's
-//! own surfaces, each on a layer of its own: the People panel, the sheets,
+//! own surfaces, each on a layer of its own: the sheets,
 //! and setup over everything while a person first uses the device. What the
 //! desktop asks of its host comes back as [`DesktopAsk`]s, carried out by the
 //! ask loop in `asks`.

@@ -44,8 +44,10 @@ view shell_view(a: Layout) window "Desktop shell" {
             ui.MenuItem("Join a workspace", icon: .users) {
                 on choose: session.join_workspace()
             }
-            ui.MenuItem("Invite someone", icon: .user_plus) {
-                on choose: device.show_invite(device.invite)
+            if device.people.may_invite {
+                ui.MenuItem("Invite someone", icon: .user_plus) {
+                    on choose: device.show_invite(device.invite)
+                }
             }
             ui.MenuItem("Workspace settings", icon: .settings) {
                 on choose: session.workspace_settings()
@@ -296,7 +298,10 @@ view bar_part(part: BarPart, narrow: Bool, compact: Bool, wide: Bool) {
                 people_button()
                 // Someone new is one press from the faces, as the Rust bar's invite was: the
                 // launchpad's invite card, which the session's own action opens.
-                if wide {
+                // Where the workspace lets this person invite: the same reading the roster
+                // offers its invite from, so the bar never offers a press the sheet can only
+                // refuse.
+                if wide and device.people.may_invite {
                     ui.Button(
                         "Invite someone",
                         icon: .user_plus,
@@ -454,8 +459,10 @@ view workspace_menu(narrow: Bool, compact: Bool, wide: Bool) {
             ui.MenuItem("Join a workspace", icon: .users) {
                 on choose: session.join_workspace()
             }
-            ui.MenuItem("Invite someone", icon: .user_plus) {
-                on choose: device.show_invite(device.invite)
+            if device.people.may_invite {
+                ui.MenuItem("Invite someone", icon: .user_plus) {
+                    on choose: device.show_invite(device.invite)
+                }
             }
             if let cur = current {
                 ui.MenuItem("Rename {cur.name}", icon: .pencil) {

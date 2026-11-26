@@ -75,6 +75,8 @@ pub struct RemoteRows {
     /// The app was asked for rows and has not answered: the list keeps taking frames until it does,
     /// so what it shows is never a frame behind what it asked for.
     awaiting: bool,
+    /// This store's identity, minted when it was made ([`Asked::store`]).
+    store: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -86,6 +88,17 @@ pub struct Asked {
     /// The row whose menu the person opened, by key: the app renders its menu, and no other
     /// row's.
     pub menu: Option<String>,
+    /// The identity of the store asking: minted when the store is made, so an app that rendered
+    /// rows for a store the window has since replaced sends them all again for this one.
+    pub store: u64,
+}
+
+/// The identity of the next row store a window makes: no two stores share one, so an app tells a
+/// store it answered before from one it has not.
+fn next_store() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static STORES: AtomicU64 = AtomicU64::new(1);
+    STORES.fetch_add(1, Ordering::Relaxed)
 }
 
 impl RemoteRows {
@@ -118,6 +131,7 @@ impl RemoteRows {
             menu: None,
             awaiting: false,
             under: None,
+            store: next_store(),
         }
     }
 
@@ -152,6 +166,17 @@ impl RemoteRows {
         self.narrowing = false;
         self.awaiting = true;
         Some((self.level, self.list.clone(), asked))
+    }
+
+    /// Whether a row the list names inside `range` is not rendered: the app renders a range, and
+    /// a row it did not render stands as a placeholder until it does.
+    fn unrendered_in(&self, range: &Range<usize>) -> bool {
+        self.keys
+            .get(range.start.min(self.keys.len())..range.end.min(self.keys.len()))
+            .unwrap_or_default()
+            .iter()
+            .flatten()
+            .any(|key| !self.rows.contains_key(&**key))
     }
 
     /// The app's rows: the list has `len`, the keys from `start` on are `keys`, and `rows` are
@@ -203,6 +228,7 @@ impl RemoteRows {
                 range: start.min(len)..start.saturating_add(sent_keys).min(len),
                 open: None,
                 menu: self.menu.clone(),
+                store: self.store,
             });
             self.sent = true;
         }
@@ -276,17 +302,10 @@ impl RemoteRows {
         }
         // An inserted row comes as little as its key: the list reads it once the app renders it, so
         // the range it shows is asked for again.
-        if let Some(asked) = self.asked.clone() {
-            let held = self
-                .keys
-                .get(asked.range.start.min(self.keys.len())..asked.range.end.min(self.keys.len()))
-                .unwrap_or_default()
-                .iter()
-                .flatten()
-                .any(|key| !self.rows.contains_key(&**key));
-            if held {
-                self.wanted = Some(asked);
-            }
+        if let Some(asked) = self.asked.clone()
+            && self.unrendered_in(&asked.range)
+        {
+            self.wanted = Some(asked);
         }
     }
 
@@ -532,6 +551,7 @@ impl RowSource for RemoteRows {
                     range: holds,
                     open: open.clone(),
                     menu: menu.clone(),
+                    store: self.store,
                 });
                 self.narrowing = true;
             }
@@ -553,6 +573,7 @@ impl RowSource for RemoteRows {
             range: start..end,
             open,
             menu,
+            store: self.store,
         });
     }
 
@@ -848,6 +869,34 @@ mod tests {
         );
     }
 
+    /// A window that builds its list anew mints a store of its own, and asks for every row it
+    /// shows: the app hears an identity no answer of it was rendered for, so it sends them all
+    /// again rather than leaving a row to a store that is gone.
+    #[test]
+    fn a_list_built_anew_asks_with_a_store_of_its_own() {
+        let mut first = rows();
+        first.request_range(0..2, None);
+        let (_, _, asked) = first.take_wanted().expect("the store asks for its range");
+        let mut again = rows();
+        again.request_range(0..2, None);
+        let (_, _, rebuilt) = again
+            .take_wanted()
+            .expect("the list built anew asks for what it shows");
+        assert_ne!(
+            asked.store, rebuilt.store,
+            "each store the window makes is its own"
+        );
+        assert_eq!(
+            rebuilt.range,
+            0..2,
+            "the new store asks for the range it shows"
+        );
+        assert!(
+            again.row("v/a").is_none(),
+            "a store the window made anew holds no row of the one before"
+        );
+    }
+
     #[test]
     fn a_range_not_sent_is_asked_for_once() {
         let mut rows = rows();
@@ -863,6 +912,7 @@ mod tests {
                     range: 0..PAGE,
                     open: None,
                     menu: None,
+                    store: rows.store,
                 }
             )),
             "the page the range is on is asked for"
@@ -968,6 +1018,7 @@ mod tests {
                 range: 0..PAGE,
                 open: None,
                 menu: None,
+                store: rows.store,
             })
         );
         rows.request_range(0..20, Some("v/4".to_owned()));

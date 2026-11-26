@@ -681,6 +681,15 @@ impl<T: PartItem> PartType for Vec<T> {
     }
 }
 
+// The edge a panel docks to, as the person's settings name it.
+choice!(settings_model::dock_edge::DockEdge, "DockEdge", {
+    Left => "left",
+    Right => "right",
+    Bottom => "bottom",
+    BottomLeft => "bottom_left",
+    BottomRight => "bottom_right",
+});
+
 choice!(crate::tokens::TextRole, "TextRole", {
     Display => "display",
     LargeTitle => "large_title",

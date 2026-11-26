@@ -697,6 +697,9 @@ fn run_layout_pass(
     // host's around it (an app hosted in a tile is laid out as its host
     // paints), whose own notes stand.
     let outer = tilo_ui_base::widget::take_layout_moved();
+    // What a widget asked to show since the last pass (the row a key reached in a list
+    // that does not scroll itself) is laid out where it shows.
+    let _ = app.reveal_asked();
     // Every edge laid out in this pass lands on one of this display's pixels.
     let _grid = tilo_ui_base::widget::layout::enter_device_scale(f64::from(scale_factor));
     let result = lay_out_window(

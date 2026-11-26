@@ -51,7 +51,7 @@
           "must": [
             {
               "rust": "people-panel",
-              "tl": "You"
+              "tl": {"prefix": "You"}
             }
           ]
         }

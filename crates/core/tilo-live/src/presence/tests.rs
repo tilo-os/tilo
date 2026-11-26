@@ -914,6 +914,55 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
+    fn a_board_hears_a_persons_device_speak_for_its_runs;
+
+    phase a_run_a_persons_device_speaks_for_is_that_persons_agent;
+    // A person's device speaks for the agents it runs, and they work for that person: elsewhere the
+    // run is that person's agent, whether the device's person was known before the run arrived
+    // or only after.
+    {
+        use collab_types::presence::{ShellPresence, stand_in};
+        let face = said(Payload::Shell(Box::new(ShellPresence {
+            seq: 1,
+            sent_at_ms: 1,
+            label: "Fieldwork".into(),
+            agent: true,
+            colour: String::new(),
+            activity: None,
+            place: None,
+            size: [0, 0],
+            windows: Vec::new(),
+            selection: None,
+            chat: None,
+            reaction: None,
+        })));
+        let member = |board: &Board, device: [u8; 32], run: &str, at: f64| {
+            super::shown(board.present(stand_in(device, run)).expect("the run is here"), at).member
+        };
+        let mut board = board();
+        let (laptop, phone) = ([5; 32], [6; 32]);
+        board.hear(laptop, &said(Payload::Arrived), 1.0);
+        board.certify(laptop, "ada".into(), "laptop");
+        assert!(board.hear(laptop, &face.clone().spoken_for("run-1", "fieldwork"), 2.0));
+        assert_eq!(
+            member(&board, laptop, "run-1", 2.0),
+            Some(collab_types::MemberId::agent("fieldwork", "ada")),
+            "the run is the agent of the person at the device that speaks for it"
+        );
+
+        board.hear(phone, &said(Payload::Arrived), 3.0);
+        assert!(board.hear(phone, &face.spoken_for("run-2", "fieldwork"), 4.0));
+        assert_eq!(member(&board, phone, "run-2", 4.0), None, "whose it is is not known yet");
+        assert!(board.certify(phone, "bea".into(), "phone"));
+        assert_eq!(
+            member(&board, phone, "run-2", 5.0),
+            Some(collab_types::MemberId::agent("fieldwork", "bea")),
+            "the run is theirs once their device is"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
     fn a_bridge_speaks_for_the_people_it_carries;
 
     phase each_carried_person_is_a_member_of_the_call_of_their_own;

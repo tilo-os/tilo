@@ -107,6 +107,8 @@ struct LiftedLayer {
     retained: RetainedFrames,
     /// Its scene in the frames' pixels.
     scene: vello::Scene,
+    /// It stands over the windows, even when the rest of the tree is drawn under them.
+    over_windows: bool,
 }
 
 impl LiftedLayer {
@@ -543,10 +545,11 @@ impl WidgetSurface {
     }
 
     /// Whether a control of the tree has the keyboard and answers it: a field the person put the
-    /// caret in, or a canvas their press put it in so the arrow keys pan it. What a part of the
-    /// shell asks before taking the keys from the window in front.
+    /// caret in, a canvas their press put it in so the arrow keys pan it, or a drag of its own in
+    /// flight (a panel taken by its header), which Escape calls off. What a part of the shell asks
+    /// before taking the keys from the window in front.
     pub fn takes_keys(&self) -> bool {
-        self.host.focused().is_some()
+        self.host.focused().is_some() || self.host.root_widget().wants_pointer_capture()
     }
 
     /// Whether something outside the tree asked for its next pass: the flag [`Self::asking`]
@@ -632,8 +635,10 @@ impl WidgetSurface {
                     frames: Frames::new(physical),
                     retained: RetainedFrames::default(),
                     scene: vello::Scene::new(),
+                    over_windows: lifted.over_windows,
                 }
             };
+            layer.over_windows = lifted.over_windows;
             if layer.frames.size() != physical {
                 layer.frames.resize(physical);
                 layer.retained.forget();
@@ -809,28 +814,35 @@ impl tilo_session_core::surfaces::Published for WidgetSurface {
 }
 
 impl ShellSurface for WidgetSurface {
-    /// The lifted parts, posed, then the rest of the tree over them.
+    /// The lifted parts, posed, then the rest of the tree over them, then the parts that stand
+    /// over the windows.
     fn layers(&self) -> Vec<SurfaceLayer> {
         let (ox, oy) = self.placement.origin;
         let side = |side: u32| i32::try_from(side).unwrap_or(i32::MAX);
-        self.lifted
-            .iter()
-            .filter(|layer| layer.shown)
-            .map(|layer| {
-                let ((x, y), (width, height)) = layer.rect;
-                SurfaceLayer {
-                    location: (ox.saturating_add(x), oy.saturating_add(y)),
-                    size: (side(width), side(height)),
-                    frame: layer.frames.frame(),
-                    pose: layer.pose,
-                }
-            })
+        let lifted = |over: bool| {
+            self.lifted
+                .iter()
+                .filter(move |layer| layer.shown && layer.over_windows == over)
+                .map(move |layer| {
+                    let ((x, y), (width, height)) = layer.rect;
+                    SurfaceLayer {
+                        location: (ox.saturating_add(x), oy.saturating_add(y)),
+                        size: (side(width), side(height)),
+                        frame: layer.frames.frame(),
+                        pose: layer.pose,
+                        over_windows: over,
+                    }
+                })
+        };
+        lifted(false)
             .chain(std::iter::once(SurfaceLayer {
                 location: self.placement.origin,
                 size: (side(self.placement.size.0), side(self.placement.size.1)),
                 frame: self.frames.frame(),
                 pose: LayerPose::SETTLED,
+                over_windows: false,
             }))
+            .chain(lifted(true))
             .collect()
     }
 

@@ -212,6 +212,8 @@ mod people_bar;
 mod people_between_devices;
 #[path = "people_cards.rs"]
 mod people_cards;
+#[path = "people_kept.rs"]
+mod people_kept;
 #[path = "person_workspace.rs"]
 mod person_workspace;
 #[path = "placed_apps.rs"]

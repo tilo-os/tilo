@@ -37,7 +37,7 @@ use tilo_session_core::desktop::verbs::{
     CHROME_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE,
 };
 
-use crate::common::{press as press_named, shot, until, wait_for};
+use crate::common::{press as press_named, settings_home, shot, until, wait_for};
 
 type Arguments = serde_json::Map<String, serde_json::Value>;
 
@@ -252,6 +252,30 @@ fn showing_on(
         },
     );
     session.handle().replace_tree(tree);
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    session
+}
+
+/// [`session`], with the person's settings served as a computer's session serves them: where the
+/// roster kept on screen keeps its edge.
+fn keeping(sync: &Rc<Client>) -> Session {
+    keeping_on(sync, &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)], 1.0)
+}
+
+/// [`keeping`], on `outputs` drawn at `scale`.
+fn keeping_on(sync: &Rc<Client>, outputs: &[OutputConfig], scale: f64) -> Session {
+    let mut session = crate::common::headless_on(
+        outputs,
+        Options {
+            sync: Some(Rc::clone(sync)),
+            scale,
+            services: vec![Box::new(settings_sections::service::SettingsService::new())],
+            ..Options::default()
+        },
+    );
+    session.handle().replace_tree(shell());
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }
@@ -486,7 +510,12 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
         session.step(Duration::from_millis(1)).expect("step");
     }
 
-    press_faces(&mut session);
+    open_who_is_here(&mut session);
+    crate::common::until(
+        &mut session,
+        "who is here lists Ada and her pointer",
+        |session| names(session, "Ada is in Notes") && session.shell_says("Away"),
+    );
     let labels = session.accessible_labels();
     let listed = |what: &str| labels.iter().any(|label| label.contains(what));
     assert!(listed("Ada"), "who is here: {labels:?}");
@@ -498,7 +527,11 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
         labels.iter().any(|label| label == "Ada is in Notes"),
         "where their pointer is: {labels:?}"
     );
-    assert!(listed("Away"), "how they said they are: {labels:?}");
+    // How they said they are is said of their row, as what it tells of them.
+    assert!(
+        session.shell_says("Away"),
+        "how they said they are: {labels:?}"
+    );
     let pointers = done_by(
         &sync,
         &[tilo_live::presence::Tile::new(
@@ -511,7 +544,10 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
     assert_eq!((*tab, *x, *y), (NOTES, 12.0, 34.0));
 
     // The faces again: the roster goes back to them.
-    press_faces(&mut session);
+    open_who_is_here(&mut session);
+    crate::common::until(&mut session, "who is here closed", |session| {
+        !names(session, "Ada is in Notes")
+    });
     let labels = session.accessible_labels();
     drop(session);
     assert!(
@@ -680,16 +716,6 @@ fn install(store: &Path, app: &str, name: &str) {
 
 /// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
-
-/// The control `names` names, where the session shows it: the bar's face of a person, a button of
-/// the roster or of a card.
-fn control(session: &Session, names: &[&str]) -> Option<(f64, f64, f64, f64)> {
-    session
-        .controls()
-        .into_iter()
-        .find(|control| names.iter().any(|wanted| control.name == *wanted))
-        .map(|control| control.rect)
-}
 
 /// A press at the centre of `rect` , through the compositor's own input.
 fn press(session: &mut Session, (x, y, width, height): (f64, f64, f64, f64)) {
@@ -1308,56 +1334,48 @@ fn screen_of(
     );
 }
 
-/// The people panel as a screen reader reads it: its window and tree.
-fn people(session: &Session) -> ui::accesskit::TreeUpdate {
-    let windows = session.a11y_windows();
-    let Some((_, _, tree)) = windows.iter().find(|(_, window, _)| window == "People") else {
-        let named: Vec<&str> = windows
-            .iter()
-            .map(|(_, window, _)| window.as_str())
-            .collect();
-        panic!("the session publishes the people panel it draws: {named:?}");
-    };
-    tree.clone()
+/// The shell's kept roster's own button, which puts it back in the bar.
+const PUT_BACK: &str = "Put back in the bar";
+/// What assistive technology hears after the shell's roster's name, past the workspace it is of.
+const WHO_IS_HERE_SAYS: &str = "Who is here, where they are and what they are doing";
+
+/// Open the shell's roster, as the bar's faces open it.
+fn open_who_is_here(session: &mut Session) {
+    session
+        .invoke("session:people", "show", &Arguments::new())
+        .expect("the bar's faces open who is here");
 }
 
-/// Every name the panel says.
-fn said_by(tree: &ui::accesskit::TreeUpdate) -> Vec<String> {
-    tree.nodes
-        .iter()
-        .filter_map(|(_, node)| node.label().map(str::to_owned))
-        .collect()
+/// Where the shell lays out the control named `name`, once it does.
+#[track_caller]
+fn shown(session: &mut Session, name: &str) -> (f64, f64, f64, f64) {
+    wait_for(session, format!("the shell's {name}"), |session| {
+        session.shell_control(name)
+    })
 }
 
-/// Where the control `label` of `tree` stands.
-fn holding(tree: &ui::accesskit::TreeUpdate, label: &str) -> (f64, f64, f64, f64) {
-    let Some((_, node)) = tree
-        .nodes
-        .iter()
-        .find(|(_, node)| node.label().is_some_and(|said| said.contains(label)))
-    else {
-        panic!(
-            "no control named {label:?}; the panel says {:?}",
-            said_by(tree)
-        );
-    };
-    let bounds = node.bounds().expect("a control names where it stands");
-    (
-        bounds.x0,
-        bounds.y0,
-        bounds.x1 - bounds.x0,
-        bounds.y1 - bounds.y0,
-    )
+/// Whether the shell says `name` as some control's or text's whole name.
+fn says_name(session: &Session, name: &str) -> bool {
+    session.accessible_labels().iter().any(|said| said == name)
 }
 
-/// A person's settings are this test's own: what it keeps there never reaches another test.
-fn settings_home() -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
-    let root = tempfile::tempdir().expect("a directory for the settings");
-    let mut env = tilo_test_env::ScopedEnv::new();
-    env.set("XDG_CONFIG_HOME", root.path().join("config"))
-        .set("XDG_DATA_HOME", root.path().join("data"))
-        .set("XDG_STATE_HOME", root.path().join("state"));
-    (root, env)
+/// Run frames until the shell says `name` as some control's or text's whole name, running `meanwhile`
+/// every second of them (someone saying they are still here); failing, say everything it does say.
+#[track_caller]
+fn heard(session: &mut Session, name: &str, meanwhile: &dyn Fn()) {
+    for frame in 0..600 {
+        if says_name(session, name) {
+            return;
+        }
+        if frame % 60 == 0 {
+            meanwhile();
+        }
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+    panic!(
+        "the shell never said {name:?}; it says {:?}",
+        session.accessible_labels()
+    );
 }
 
 /// The roster is kept on screen at an edge, with a mirror of each person's screen: pressing one
@@ -1371,7 +1389,7 @@ fn the_roster_kept_on_screen_shows_who_is_here_and_follows_them() {
         ..OwnPresence::default()
     };
     let sync = Rc::new(Client::untethered(device(0xf0), own));
-    let mut session = session(&sync);
+    let mut session = keeping(&sync);
 
     // Ada, at her own device: here, with three windows on her screen, working in Chat.
     sync.hear(hello(0xaa, "Framework 16"));
@@ -1391,73 +1409,100 @@ fn the_roster_kept_on_screen_shows_who_is_here_and_follows_them() {
     }
 
     // The bar's faces open the roster, and its own button keeps it on screen.
-    press_faces(&mut session);
-    let keep = holding(&people(&session), "Keep on screen");
+    open_who_is_here(&mut session);
+    let keep = shown(&mut session, "Keep on screen");
     press(&mut session, keep);
-    for _ in 0..6 {
-        session.step(Duration::from_millis(1)).expect("step");
-    }
+    shown(&mut session, PUT_BACK);
 
     // Kept on screen, it names who is here, and offers to follow them and to go back in the bar.
-    let panel = people(&session);
-    let names = said_by(&panel);
+    until(&mut session, "Ada in the kept roster", |session| {
+        says_name(session, "Ada") && says_name(session, "Follow Ada")
+    });
+    let names = session.accessible_labels();
     assert!(names.iter().any(|name| name == "Ada"), "{names:?}");
     assert!(
         names.iter().any(|name| name == "Follow Ada"),
         "their card is pressed to follow them: {names:?}"
     );
+    assert!(names.iter().any(|name| name == PUT_BACK), "{names:?}");
+    // Under her row, the picture of her screen: her three windows where they stand.
     assert!(
-        names.iter().any(|name| name == "Put back in the bar"),
-        "{names:?}"
+        session.shell_says("Ada's screen"),
+        "a mirror of her screen stands under her row: {names:?}"
     );
     shot(&mut session, "roster-pinned");
 
-    // Pressing her card follows her view, and pressing it again stops.
-    let follow = holding(&people(&session), "Follow Ada");
-    press(&mut session, follow);
-    for _ in 0..6 {
-        session.step(Duration::from_millis(1)).expect("step");
-    }
+    // Pressing her card follows her view, and pressing it again stops; the bar's banner says whose
+    // view this is beside the roster kept on screen, with its way to stop, in every style of the
+    // shell. Ada says she is here as her device does, every few seconds: a style coming up takes
+    // longer than a silent peer is kept.
     let ada = person(0xaa);
-    assert_eq!(
-        sync.own().following.as_deref(),
-        Some(ada.as_str()),
-        "the workspace hears whose view this is"
-    );
-    let panel = people(&session);
-    assert!(
-        said_by(&panel)
-            .iter()
-            .any(|name| name == "Stop following Ada"),
-        "{:?}",
-        said_by(&panel)
-    );
-    // The bar's banner says whose view this is beside the roster kept on screen: it is read
-    // whether the roster is up or not.
-    assert!(
-        said_by(&panel).iter().any(|name| name == "Following Ada"),
-        "the banner is read beside the kept roster: {:?}",
-        said_by(&panel)
-    );
-    shot(&mut session, "roster-following");
-    let stop = holding(&people(&session), "Stop following Ada");
-    press(&mut session, stop);
-    for _ in 0..6 {
-        session.step(Duration::from_millis(1)).expect("step");
+    let still_here = || {
+        presence(
+            &sync,
+            0xaa,
+            collab_types::PeerPresencePayload::Person {
+                name: "Ada".to_owned(),
+            },
+        );
+    };
+    for style in [crate::common::FRAMES, "so.tilo.shell:desktop"] {
+        crate::common::show_preset(&mut session, style);
+        still_here();
+        let follow = shown(&mut session, "Follow Ada");
+        press(&mut session, follow);
+        until(
+            &mut session,
+            "the workspace hears whose view this is",
+            |_| sync.own().following.as_deref() == Some(ada.as_str()),
+        );
+        assert_eq!(
+            sync.own().following.as_deref(),
+            Some(ada.as_str()),
+            "the workspace hears whose view this is"
+        );
+        heard(&mut session, "Stop following Ada", &still_here);
+        heard(&mut session, "Following Ada", &still_here);
+        let said = session.accessible_labels();
+        assert!(
+            said.iter().any(|name| name == "Stop following Ada"),
+            "{said:?}"
+        );
+        assert!(
+            said.iter().any(|name| name == "Following Ada"),
+            "the banner is read beside the kept roster in {style}: {said:?}"
+        );
+        // The bar's chip offers its own way to stop, named for whom it stops following as the
+        // kept roster's row is: one of them stands in the bar.
+        let stops = session.shell_controls("Stop following Ada");
+        assert!(
+            stops.iter().any(|(_, y, _, height)| y + height < 80.0),
+            "the banner offers to stop following in {style}: {stops:?}"
+        );
+        shot(
+            &mut session,
+            &format!(
+                "roster-following-{}",
+                style.rsplit(':').next().unwrap_or(style)
+            ),
+        );
+        still_here();
+        let stop = shown(&mut session, "Stop following Ada");
+        press(&mut session, stop);
+        until(&mut session, "following ends", |_| {
+            sync.own().following.is_none()
+        });
+        assert_eq!(sync.own().following, None, "following ends where it began");
     }
-    assert_eq!(sync.own().following, None, "following ends where it began");
 
     // Putting it back in the bar takes the panel off the shell.
-    let put = holding(&people(&session), "Put back in the bar");
+    let put = shown(&mut session, PUT_BACK);
     press(&mut session, put);
-    for _ in 0..8 {
-        session.step(Duration::from_millis(1)).expect("step");
-    }
+    until(&mut session, "the kept roster gone", |session| {
+        session.shell_control(PUT_BACK).is_none()
+    });
     assert!(
-        session
-            .a11y_windows()
-            .iter()
-            .all(|(_, window, _)| window != "People"),
+        !session.shell_says(WHO_IS_HERE_SAYS),
         "the panel is gone from the session"
     );
 }
@@ -1856,18 +1901,11 @@ fn the_roster_kept_on_screen_from_the_start_names_its_workspace() {
     let sync = Rc::new(Client::untethered(device(0xf0), own));
     // Ada shares her screen, Chat in front of Notes; Cy keeps where they are to themselves. Drawn
     // at twice the scale, so the panel is captured as a person with a dense display sees it.
-    let mut session = crate::common::headless_on(
+    let mut session = keeping_on(
+        &sync,
         &[OutputConfig::new("HEADLESS-1", WIDTH * 2, HEIGHT * 2).with_scale(2.0)],
-        Options {
-            sync: Some(Rc::clone(&sync)),
-            scale: 2.0,
-            ..Options::default()
-        },
+        2.0,
     );
-    session.handle().replace_tree(shell());
-    for _ in 0..4 {
-        session.step(Duration::from_millis(1)).expect("step");
-    }
     sync.hear(hello(0xaa, "Framework 16"));
     arrived_as(&sync, 0xaa, "Ada");
     screen_of(
@@ -1881,24 +1919,28 @@ fn the_roster_kept_on_screen_from_the_start_names_its_workspace() {
     );
     sync.hear(hello(0xcc, "Orange Pi"));
     arrived_as(&sync, 0xcc, "Cy");
-    for _ in 0..8 {
-        session.step(Duration::from_millis(1)).expect("step");
-    }
+    shown(&mut session, PUT_BACK);
+    until(&mut session, "Ada and Cy in the kept roster", |session| {
+        says_name(session, "Ada") && says_name(session, "Cy")
+    });
 
     shot(&mut session, "roster-kept-from-start");
     // The panel's title is the workspace it is of, and its header counts who is here.
-    let panel = people(&session);
-    let said: Vec<String> = panel
-        .nodes
-        .iter()
-        .filter_map(|(_, node)| node.description().map(str::to_owned))
-        .collect();
     assert!(
-        said.iter().any(|said| said.starts_with("Session. ")),
-        "{said:?}"
+        session.shell_says(&format!("Session. {WHO_IS_HERE_SAYS}")),
+        "the panel is read as the workspace's: {:?}",
+        session.accessible_labels()
     );
-    let names = said_by(&panel);
+    assert!(
+        session.shell_says("You and 2 others"),
+        "{:?}",
+        session.accessible_labels()
+    );
+    let names = session.accessible_labels();
     assert!(names.iter().any(|name| name == "Ada"), "{names:?}");
+    // Ada's screen stands under her row; Cy's row says they keep where they are.
+    assert!(session.shell_says("Ada's screen"), "{names:?}");
+    assert!(session.shell_says("Keeps their place private"), "{names:?}");
 }
 
 /// What the shell shows now.
@@ -1943,29 +1985,32 @@ fn a_pinned_roster_waits_off_the_shell_while_the_person_is_alone() {
         ..OwnPresence::default()
     };
     let sync = Rc::new(Client::untethered(device(0xf0), own));
-    let mut session = session(&sync);
+    let mut session = keeping(&sync);
 
     // Alone, the bar's faces open the roster, and its own button keeps it on screen.
-    press_faces(&mut session);
-    let keep = holding(&people(&session), "Keep on screen");
+    open_who_is_here(&mut session);
+    let keep = shown(&mut session, "Keep on screen");
     press(&mut session, keep);
+    until(&mut session, "the bar's roster closed", |session| {
+        session.shell_control("Keep on screen").is_none()
+    });
     for _ in 0..8 {
         session.step(Duration::from_millis(1)).expect("step");
     }
-    let named: Vec<String> = session
-        .a11y_windows()
-        .into_iter()
-        .map(|(_, window, _)| window)
-        .collect::<Vec<String>>();
     assert!(
-        !named.iter().any(|window| window == "People"),
-        "nothing of the roster stands over the session: {named:?}"
+        settings_store::widgets::PEOPLE_OVERLAY.get().pinned,
+        "the roster is kept on screen"
+    );
+    assert!(
+        session.shell_control(PUT_BACK).is_none() && !session.shell_says(WHO_IS_HERE_SAYS),
+        "nothing of the roster stands over the session: {:?}",
+        session.accessible_labels()
     );
     let said = session.accessible_labels();
     assert!(
         !said
             .iter()
-            .any(|name| name == "Nobody else is here right now"),
+            .any(|name| name == "Nobody else is here right now" || name == "Nobody else is here"),
         "the session holds no card saying nobody is here: {said:?}"
     );
     shot(&mut session, "roster-waiting-alone");
@@ -1974,13 +2019,14 @@ fn a_pinned_roster_waits_off_the_shell_while_the_person_is_alone() {
     // nothing is pressed again.
     sync.hear(hello(0xaa, "Framework 16"));
     arrived_as(&sync, 0xaa, "Ada");
-    for _ in 0..8 {
-        session.step(Duration::from_millis(1)).expect("step");
-    }
-    let said = said_by(&people(&session));
+    shown(&mut session, PUT_BACK);
+    until(&mut session, "Ada in the kept roster", |session| {
+        says_name(session, "Ada")
+    });
+    let said = session.accessible_labels();
     assert!(said.iter().any(|name| name == "Ada"), "{said:?}");
     assert!(
-        said.iter().any(|name| name == "Put back in the bar"),
+        said.iter().any(|name| name == PUT_BACK),
         "the roster is kept on screen without being pinned again: {said:?}"
     );
     shot(&mut session, "roster-back-for-ada");
@@ -1997,17 +2043,17 @@ fn the_rosters_first_frame_on_the_shell_is_final() {
         ..OwnPresence::default()
     };
     let sync = Rc::new(Client::untethered(device(0xf0), own));
-    let mut session = session(&sync);
+    let mut session = keeping(&sync);
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");
     }
 
     // The faces open the roster, and the frame that draws it is the one the person sees: the next
     // turn of the session draws nothing new of it.
-    session
-        .invoke(CHROME_RESOURCE, SHOW_PEOPLE, &Arguments::new())
-        .expect("the bar's faces open who is here");
-    session.step(Duration::from_millis(1)).expect("step");
+    open_who_is_here(&mut session);
+    let roster = wait_for(&mut session, "the roster on the shell", |session| {
+        session.shell_text_bounds(WHO_IS_HERE_SAYS)
+    });
     let first = frame(&mut session);
     session.step(Duration::from_millis(1)).expect("step");
     let second = frame(&mut session);
@@ -2015,7 +2061,6 @@ fn the_rosters_first_frame_on_the_shell_is_final() {
     // shell's, which redraws on turns of its own: its dock takes a mark away under its launcher
     // a few turns after the roster opens, on whichever turn the shell hears of it, and that turn
     // is not the roster's frame.
-    let roster = control(&session, &["people-panel"]).expect("the roster stands on the session");
     assert_eq!(
         differing(&first, &second, roster),
         0,
@@ -2057,5 +2102,440 @@ fn a_send_to_box_finds_a_person_here_by_name() {
             person(0xbb).as_str()
         ),
         "{recipients:?}"
+    );
+}
+
+/// Whether the shell says `words` exactly.
+fn names(session: &Session, words: &str) -> bool {
+    session
+        .accessible_labels()
+        .iter()
+        .any(|label| label == words)
+}
+
+/// The node of every tree the session offers a screen reader whose name is `name`.
+fn node_named(session: &Session, name: &str) -> Option<ui::accesskit::Node> {
+    session.a11y_windows().into_iter().find_map(|(_, _, tree)| {
+        tree.nodes
+            .into_iter()
+            .find(|(_, node)| node.label() == Some(name))
+            .map(|(_, node)| node)
+    })
+}
+
+/// A piece of software here in the workspace, as an agent a person admitted is: the device `by`,
+/// which is here, speaks for its run as the workspace member `member`, with a screen of windows it
+/// works in.
+fn software_here(sync: &Client, by: u8, member: &str, name: &str) {
+    let shell = collab_types::presence::ShellPresence {
+        seq: 3,
+        sent_at_ms: 0,
+        label: name.to_owned(),
+        agent: true,
+        colour: String::new(),
+        activity: Some("Reading the launch note".to_owned()),
+        place: None,
+        size: [WIDTH.cast_unsigned(), HEIGHT.cast_unsigned()],
+        windows: vec![collab_types::presence::ShellWindow {
+            app: "so.tilo.notes".to_owned(),
+            document: [0; 8],
+            rect: [0, 0, 10_000, 10_000],
+            focused: true,
+        }],
+        selection: None,
+        chat: None,
+        reaction: None,
+    };
+    sync.heard_presence(
+        WORKSPACE,
+        device(by),
+        &Presence::desktop(WORKSPACE, Payload::Arrived).spoken_for("run-1", member),
+    );
+    sync.heard_presence(
+        WORKSPACE,
+        device(by),
+        &Presence::desktop(WORKSPACE, Payload::Shell(Box::new(shell))).spoken_for("run-1", member),
+    );
+}
+
+/// Under each person's row in who is here stands a picture of their screen in its own shape, the
+/// window they work in ringed and named; someone who keeps where they are to themselves gets a
+/// line saying so instead, and someone with nothing open a line saying that. Software has no
+/// screen to show.
+#[test]
+fn each_persons_screen_stands_under_their_row_or_says_why_it_does_not() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let own = OwnPresence {
+        label: "Quinten".to_owned(),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), own));
+    let mut session = session(&sync);
+
+    // Ada shares her screen: Writer, where she works, beside Chat.
+    sync.hear(hello(0xaa, "Framework 16"));
+    arrived_as(&sync, 0xaa, "Ada");
+    screen_of(
+        &sync,
+        0xaa,
+        [1600, 1000],
+        vec![
+            ("so.tilo.writer", [1; 8], [0, 0, 6000, 10_000], true),
+            ("so.tilo.chat", [2; 8], [6000, 0, 10_000, 10_000], false),
+        ],
+    );
+    // Bruno keeps where he is to himself: his presence lays out no screen.
+    sync.hear(hello(0xbb, "ThinkPad"));
+    arrived_as(&sync, 0xbb, "Bruno");
+    // Cleo is here with nothing open.
+    sync.hear(hello(0xcc, "Pixel"));
+    arrived_as(&sync, 0xcc, "Cleo");
+    screen_of(&sync, 0xcc, [1600, 1000], Vec::new());
+    // Software Ada admitted works in a window of its own.
+    software_here(&sync, 0xaa, "fieldwork", "Fieldwork");
+
+    open_who_is_here(&mut session);
+    crate::common::until(&mut session, "Ada's screen under her row", |session| {
+        names(session, "Ada's screen")
+    });
+    let writer = node_named(&session, "Writer").expect("the window she works in is named");
+    assert_eq!(
+        writer.is_selected(),
+        Some(true),
+        "the window she works in is the one ringed"
+    );
+    let chat = node_named(&session, "Chat").expect("her other window is named too");
+    assert_ne!(
+        chat.is_selected(),
+        Some(true),
+        "only one window is hers to work in"
+    );
+    let picture = node_named(&session, "Ada's screen").expect("her screen's picture");
+    let bounds = picture.bounds().expect("the picture stands somewhere");
+    let screen = node_named(&session, "Writer")
+        .and_then(|node| node.bounds())
+        .expect("her window stands in the picture");
+    assert!(
+        screen.x0 >= bounds.x0 - 1.0 && screen.x1 <= bounds.x1 + 1.0,
+        "her window stands inside the picture of her screen: {screen:?} in {bounds:?}"
+    );
+    crate::common::until(&mut session, "the lines for Bruno and Cleo", |session| {
+        names(session, "Keeps their place private")
+            && names(session, "Nothing open on their screen")
+    });
+    assert!(
+        !names(&session, "Bruno's screen") && !names(&session, "Cleo's screen"),
+        "no picture of a screen nobody shares: {:?}",
+        session.accessible_labels()
+    );
+    assert!(
+        session
+            .accessible_labels()
+            .iter()
+            .any(|label| label.contains("Fieldwork")),
+        "software is listed: {:?}",
+        session.accessible_labels()
+    );
+    assert!(
+        !names(&session, "Fieldwork's screen"),
+        "software has no screen to mirror: {:?}",
+        session.accessible_labels()
+    );
+    let private = session
+        .accessible_labels()
+        .iter()
+        .filter(|label| *label == "Keeps their place private")
+        .count();
+    assert_eq!(
+        private, 1,
+        "only Bruno keeps his place private, never the software"
+    );
+    shot(&mut session, "people-screens");
+
+    // Closed, who is here shows nobody's screen.
+    open_who_is_here(&mut session);
+    crate::common::until(&mut session, "the roster closed", |session| {
+        !names(session, "Ada's screen")
+    });
+}
+
+/// Who is here kept on screen at an edge shows each person's screen under their row as the bar's
+/// roster does: a person who keeps where they are to themselves gets one quiet line under their
+/// row and no picture, someone with nothing open a line saying that, while the person beside them
+/// keeps their picture. Software has no screen: its row names the window it works in instead.
+#[test]
+fn the_kept_roster_shows_a_screen_or_one_line_and_softwares_window() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (_home, _settings) = crate::common::settings_home();
+    let own = OwnPresence {
+        label: "Quinten".to_owned(),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), own));
+    let mut session = keeping(&sync);
+
+    sync.hear(hello(0xaa, "Framework 16"));
+    arrived_as(&sync, 0xaa, "Ada");
+    screen_of(
+        &sync,
+        0xaa,
+        [1600, 1000],
+        vec![("so.tilo.writer", [1; 8], [0, 0, 10_000, 10_000], true)],
+    );
+    sync.hear(hello(0xbb, "ThinkPad"));
+    arrived_as(&sync, 0xbb, "Bruno");
+    sync.hear(hello(0xcc, "Pixel"));
+    arrived_as(&sync, 0xcc, "Cleo");
+    screen_of(&sync, 0xcc, [1600, 1000], Vec::new());
+    software_here(&sync, 0xaa, "fieldwork", "Fieldwork");
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+
+    open_who_is_here(&mut session);
+    let keep = shown(&mut session, "Keep on screen");
+    press(&mut session, keep);
+    shown(&mut session, PUT_BACK);
+    until(&mut session, "each person's screen or line", |session| {
+        session.shell_says("Ada's screen")
+            && session.shell_says("Keeps their place private")
+            && session.shell_says("Nothing open on their screen")
+    });
+    let said = session.accessible_labels();
+    assert_eq!(
+        nodes_saying(&session, "Keeps their place private"),
+        1,
+        "one line for the one who keeps their place private: {said:?}"
+    );
+    assert_eq!(
+        nodes_saying(&session, "Nothing open on their screen"),
+        1,
+        "one line for the one with nothing open: {said:?}"
+    );
+    for nobody in ["Bruno's screen", "Cleo's screen", "Fieldwork's screen"] {
+        assert!(
+            !session.shell_says(nobody),
+            "no picture where there is no screen to show: {nobody} in {said:?}"
+        );
+    }
+    // The line stands under the row of the one it speaks of, and keeps the card compact.
+    let line = session
+        .shell_text_bounds("Keeps their place private")
+        .expect("the line stands somewhere");
+    // Bruno's row in the kept roster, not his face on the bar or the buttons named for him: the
+    // row that holds the line, which is part of it.
+    let row = session
+        .shell_text_bounds_all("Bruno")
+        .into_iter()
+        .filter(|row| {
+            row.0 <= line.0 + 0.5
+                && line.0 + line.2 <= row.0 + row.2 + 0.5
+                && row.1 <= line.1 + 0.5
+                && line.1 + line.3 <= row.1 + row.3 + 0.5
+        })
+        .min_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))
+        .expect("Bruno's row holds the line under his name");
+    assert!(
+        line.1 > row.1 + line.3,
+        "the line stands under his name, not beside it: {line:?} in {row:?}"
+    );
+    // The row's name starts at the row's own edge in the kept roster's list: its face stands
+    // among its facts at the other end, so nothing leads the name, and the list's edge is where
+    // the row is read from.
+    assert!(
+        (line.0 - row.0).abs() < 1.0,
+        "the line stands in the name's column: {line:?} in {row:?}"
+    );
+    assert!(
+        line.3 < row.3 / 2.0,
+        "the card stays compact: {line:?} beside {row:?}"
+    );
+    let drawn = session
+        .shell_drawn_text_bounds("Keeps their place private")
+        .expect("the line is drawn");
+    assert!(
+        drawn.2 >= line.2 - 0.5,
+        "the line fits where it stands, never cut: {drawn:?} of {line:?}"
+    );
+    // Software's row names where it works, where a person's row would carry their screen.
+    assert!(
+        said.iter().any(|label| label.contains("Fieldwork")),
+        "software is listed: {said:?}"
+    );
+    assert!(
+        session.shell_says("In Notes") || said.iter().any(|label| label.starts_with("Working in ")),
+        "software's row names the window it works in: {said:?}"
+    );
+    shot(&mut session, "people-kept-screens");
+}
+
+/// Someone's pointer over a window of this shell is drawn over that window, where they put it,
+/// whatever the roster shows, and while the roster is open it is named by the window it is over;
+/// it follows them, and goes with them when they leave. A pointer over a window this shell does
+/// not show draws nothing.
+#[test]
+fn someone_elses_pointer_is_drawn_over_their_window_and_goes_with_them() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let own = OwnPresence {
+        label: "Quinten".to_owned(),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), own));
+    let mut session = session(&sync);
+    let tile = |session: &Session| {
+        crate::common::directory::tile_here(session, NOTES).expect("Notes is shown")
+    };
+    crate::common::until(&mut session, "the Notes window placed", |session| {
+        crate::common::directory::tile_here(session, NOTES).is_some()
+    });
+    assert!(
+        session.drawn_peer_pointers().is_empty(),
+        "nobody here points: {:?}",
+        session.drawn_peer_pointers()
+    );
+
+    sync.hear(hello(0xaa, "Framework 16"));
+    arrived_as(&sync, 0xaa, "Ada");
+    // Over a window this shell does not show: nothing is drawn.
+    let elsewhere = Presence::pointing(WORKSPACE, 99, 12.0, 34.0);
+    sync.heard_presence(WORKSPACE, device(0xaa), &elsewhere);
+    for _ in 0..6 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert!(
+        session.drawn_peer_pointers().is_empty(),
+        "a pointer over a window not shown here draws nothing: {:?}",
+        session.drawn_peer_pointers()
+    );
+    assert!(!names(&session, "Ada is in Notes"));
+
+    // Over Notes: drawn there, in the place she put it, the roster closed.
+    pointer(&sync, 0xaa, 12.0, 34.0);
+    crate::common::until(&mut session, "Ada's pointer over Notes", |session| {
+        crate::common::directory::pointer_here(session, NOTES, (12.0, 34.0))
+    });
+    let drawn = session.drawn_peer_pointers();
+    let at = tile(&session);
+    assert_eq!(drawn.len(), 1, "one pointer: {drawn:?}");
+    assert_eq!(drawn[0].0, "Ada", "named as the roster names her");
+    assert!(
+        (drawn[0].1.0 - (at.x0 + 12.0)).abs() < 0.5 && (drawn[0].1.1 - (at.y0 + 34.0)).abs() < 0.5,
+        "over the window where she put it: {drawn:?}, tile {at:?}"
+    );
+    assert!(
+        !names(&session, "Ada is in Notes"),
+        "drawn, but where she points is said by who is here, which is closed: {:?}",
+        session.accessible_labels()
+    );
+    open_who_is_here(&mut session);
+    crate::common::until(
+        &mut session,
+        "who is here says where she points",
+        |session| names(session, "Ada is in Notes"),
+    );
+
+    // It follows her.
+    pointer(&sync, 0xaa, 40.0, 55.0);
+    crate::common::until(&mut session, "Ada's pointer moved", |session| {
+        crate::common::directory::pointer_here(session, NOTES, (40.0, 55.0))
+    });
+    assert_eq!(
+        session.drawn_peer_pointers().len(),
+        1,
+        "moved, not drawn twice: {:?}",
+        session.drawn_peer_pointers()
+    );
+    shot(&mut session, "peer-pointer");
+
+    // She leaves, and her pointer goes with her.
+    presence(&sync, 0xaa, collab_types::PeerPresencePayload::Left);
+    crate::common::until(&mut session, "Ada's pointer gone", |session| {
+        session.drawn_peer_pointers().is_empty() && !names(session, "Ada is in Notes")
+    });
+}
+
+/// While this person follows someone, their colour runs round the room the windows stand in, over
+/// the windows; it goes when the following stops.
+#[test]
+fn following_someone_frames_the_work_in_their_colour_until_it_stops() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let own = OwnPresence {
+        label: "Quinten".to_owned(),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), own));
+    let mut session = session(&sync);
+    sync.hear(hello(0xaa, "Framework 16"));
+    arrived_as(&sync, 0xaa, "Ada");
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    let ada = person(0xaa);
+    let colour = wait_for(&mut session, "Ada in the roster", |session| {
+        let reading = session.read("session:people")?;
+        reading["rows"]
+            .as_array()?
+            .iter()
+            .find(|row| row["key"] == ada.as_str())
+            .and_then(|row| row["colour"].as_str())
+            .map(str::to_owned)
+    });
+    assert_eq!(
+        session.drawn_follow_frame(),
+        None,
+        "following nobody draws no frame"
+    );
+
+    follow_through_the_session(&mut session, &ada);
+    let (drawn, (x, y, width, height)) =
+        wait_for(&mut session, "the frame round the work", |session| {
+            session.drawn_follow_frame()
+        });
+    assert_eq!(drawn, colour, "the frame is drawn in Ada's colour");
+    assert!(
+        x >= 0.0
+            && y > 0.0
+            && x + width <= f64::from(WIDTH) + 0.5
+            && y + height <= f64::from(HEIGHT) + 0.5
+            && width > f64::from(WIDTH) / 2.0
+            && height > f64::from(HEIGHT) / 2.0,
+        "the frame runs round the room the windows stand in, under the bar: {x},{y} \
+         {width}x{height}"
+    );
+    // Painted, over the windows: its top rule, just above the room's top edge, is Ada's colour.
+    let shot = crate::common::shot(&mut session, "follow-frame");
+    let scale = f64::from(shot.width) / f64::from(WIDTH);
+    let wanted = [0, 2, 4].map(|at| u8::from_str_radix(&colour[at..at + 2], 16).expect("rrggbb"));
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a pixel"
+    )]
+    let column = ((x + width / 2.0) * scale) as u32;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a pixel"
+    )]
+    let rows = ((y - 4.0) * scale) as u32..=((y + 1.0) * scale) as u32;
+    let painted = rows.into_iter().any(|row| {
+        let at = ((row * shot.width + column) * 4) as usize;
+        shot.rgba[at..at + 3]
+            .iter()
+            .zip(wanted)
+            .all(|(got, want)| got.abs_diff(want) <= 24)
+    });
+    assert!(
+        painted,
+        "the frame's top rule is drawn in Ada's colour #{colour}"
+    );
+
+    session
+        .invoke("session:people", "unfollow", &serde_json::Map::new())
+        .expect("the session stops following");
+    crate::common::until(
+        &mut session,
+        "the frame goes with the following",
+        |session| session.drawn_follow_frame().is_none(),
     );
 }

@@ -26,15 +26,8 @@ fn keeps_its_face_size(control: &dyn Widget) -> bool {
 
 /// The persistent control a retained row holds at its trailing edge.
 pub(super) struct Trailing {
-    /// Stands for the text band among the row's children: the row's node
-    /// holds the band's node, then the control's, and every walk that pairs
-    /// a widget's children with its layout nodes (focus order, the
-    /// accessibility tree) must meet the control at the control's node.
-    pub(super) band_slot: crate::widget::Absent,
     pub(super) element: Element,
-    pub(super) band: Option<NodeId>,
     pub(super) node: Option<NodeId>,
-    pub(super) band_height: f32,
     pub(super) wrapped: bool,
     pub(super) natural: f32,
     /// The margins the control stands in beside the text (the gap before
@@ -66,7 +59,7 @@ impl ListRow {
         let Some(trailing) = &self.trailing else {
             return false;
         };
-        let (Some(band), Some(child)) = (trailing.band, trailing.node) else {
+        let (Some(band), Some(child)) = (self.band.node, trailing.node) else {
             return false;
         };
         let (Ok(row), Ok(band_layout), Ok(child_layout)) =
@@ -75,7 +68,7 @@ impl ListRow {
             return false;
         };
         let row_width = f64::from(row.size.width);
-        let band_height = f64::from(trailing.band_height);
+        let band_height = f64::from(self.band.height);
         let (natural, wrapped) = if trailing.fill.is_some() {
             // Filling, the control is as wide as the row and always under
             // the text: whether it would wrap at its own width is the row's
@@ -96,7 +89,7 @@ impl ListRow {
         } else {
             (
                 f64::from(taffy.unrounded_layout(child).size.width),
-                child_layout.location.y >= band_layout.location.y + trailing.band_height - 0.5,
+                child_layout.location.y >= band_layout.location.y + self.band.height - 0.5,
             )
         };
         let fill = (wrapped && !keeps_its_face_size(trailing.element.as_ref())).then(|| {

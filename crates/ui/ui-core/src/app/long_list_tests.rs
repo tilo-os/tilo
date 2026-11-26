@@ -79,6 +79,12 @@ enum Stance {
     /// As tall as its rows, in a page that scrolls, as a list in a pane of
     /// settings or under a heading does.
     InPage,
+    /// [`Self::InPage`], under a menu its rows offer, which stands in the
+    /// tree for the list it covers.
+    InPageUnderMenu,
+    /// [`Self::InPageUnderMenu`], but no taller than half the window, past
+    /// which it scrolls its own rows, as a roster's list in a panel does.
+    InPanel,
 }
 
 /// A window whose one column holds a button's worth of header and the list.
@@ -117,15 +123,31 @@ fn window(count: u64, built: &Rc<Built>, stance: Stance) -> Box<dyn Widget> {
                 .push(header)
                 .push(Box::new(list.filling())),
         ),
-        Stance::InPage => Box::new(
-            crate::widget::Scrollable::new_vertical().with_child(Box::new(
-                Column::new()
-                    .with_rhythm(tilo_ui_base::tokens::Rhythm::Group)
-                    .with_intrinsic_height()
-                    .push(header)
-                    .push(Box::new(list.fitting_rows())),
-            )),
-        ),
+        Stance::InPage | Stance::InPageUnderMenu | Stance::InPanel => {
+            let mut list = list.fitting_rows();
+            if matches!(stance, Stance::InPanel) {
+                list.set_most_height(Some(HEIGHT / 2.0));
+            }
+            let list: Box<dyn Widget> = Box::new(list);
+            let list: Box<dyn Widget> =
+                if matches!(stance, Stance::InPageUnderMenu | Stance::InPanel) {
+                    Box::new(crate::widget::ContextMenuArea::over_content(
+                        list,
+                        |_, _| Vec::new(),
+                    ))
+                } else {
+                    list
+                };
+            Box::new(
+                crate::widget::Scrollable::new_vertical().with_child(Box::new(
+                    Column::new()
+                        .with_rhythm(tilo_ui_base::tokens::Rhythm::Group)
+                        .with_intrinsic_height()
+                        .push(header)
+                        .push(list),
+                )),
+            )
+        }
     }
 }
 
@@ -290,15 +312,114 @@ fn a_long_list_builds_only_the_rows_near_its_view() {
             "a scroll frame over {count} rows ({stance:?}) built {} of them",
             run.scroll_built
         );
-        if matches!(stance, Stance::Filling) {
-            assert!(run.last_reached, "End shows the 25,000th row");
-            assert!(
-                run.end_built <= limit,
-                "going to the end built {} rows, more than the {limit} the window shows",
-                run.end_built
-            );
-        }
+        assert!(run.last_reached, "End shows the 25,000th row ({stance:?})");
+        assert!(
+            run.end_built <= limit,
+            "going to the end ({stance:?}) built {} rows, more than the {limit} the window shows",
+            run.end_built
+        );
     }
+}
+
+/// Where the row of `key` stands in the window, when it is built.
+fn row_rect(app: &App, key: u64) -> Option<vello::kurbo::Rect> {
+    tilo_ui_base::widget::find_test_id(app.root_widget.as_ref(), &format!("key:{key}"))
+        .map(|row| row.get_rect())
+}
+
+/// Whether the row of `key` is built and stands wholly inside the window and the list's own
+/// height.
+fn row_shown(app: &App, key: u64) -> bool {
+    let list = tilo_ui_base::widget::find_test_id(app.root_widget.as_ref(), "long-list")
+        .expect("the window holds the list")
+        .get_rect();
+    let top = list.y0.max(0.0);
+    let bottom = list.y1.min(HEIGHT);
+    row_rect(app, key).is_some_and(|rect| rect.y0 >= top - 0.5 && rect.y1 <= bottom + 0.5)
+}
+
+#[test]
+fn the_keyboard_reaches_both_ends_of_a_list_as_tall_as_its_rows_in_a_page_that_scrolls() {
+    tilo_ui_base::i18n::I18nManager::init("en-US");
+    for stance in [Stance::InPage, Stance::InPageUnderMenu, Stance::InPanel] {
+        keyboard_reaches_both_ends(stance);
+    }
+}
+
+fn keyboard_reaches_both_ends(stance: Stance) {
+    let count = 10_000;
+    let built = Rc::new(Built::default());
+    let mut app = App::new_with_controlled_inputs(State::new(), window(count, &built, stance));
+    app.set_theme(Theme::dark());
+    let mut damage = SurfaceDamage::copying().drawing_only_damage();
+    let mut scene = Scene::new();
+    let mut frames = |app: &mut App| {
+        for _ in 0..4 {
+            scene.reset();
+            app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
+        }
+    };
+    frames(&mut app);
+    assert!(row_shown(&app, 1), "the page opens on the list's first row");
+    // A click on a row the page shows takes the keyboard.
+    app.surface_input(
+        &Window,
+        tilo_ui_base::synthetic_input::cursor_moved(WIDTH / 2.0, HEIGHT / 2.0),
+        false,
+    );
+    app.surface_input(&Window, tilo_ui_base::synthetic_input::mouse_press(), false);
+    app.surface_input(
+        &Window,
+        tilo_ui_base::synthetic_input::mouse_release(),
+        false,
+    );
+    frames(&mut app);
+    let key = |app: &mut App, key: NamedKey| {
+        app.surface_input(
+            &Window,
+            tilo_ui_base::synthetic_input::named_key(key),
+            false,
+        );
+    };
+
+    key(&mut app, NamedKey::End);
+    frames(&mut app);
+    assert!(
+        row_shown(&app, count),
+        "End shows the last row ({stance:?}), at {:?}",
+        row_rect(&app, count)
+    );
+    assert!(!row_shown(&app, 1), "and the page moved off the first");
+
+    key(&mut app, NamedKey::Home);
+    frames(&mut app);
+    assert!(
+        row_shown(&app, 1),
+        "Home shows the first row again ({stance:?}), at {:?}",
+        row_rect(&app, 1)
+    );
+    assert!(!row_shown(&app, count), "and the page left the last");
+    // How many rows a screen of the list shows.
+    let screen = (1..=count).take_while(|row| row_shown(&app, *row)).count() as u64;
+
+    // Three pages down move about three screens on, not to the end of a list taller than them.
+    for _ in 0..3 {
+        key(&mut app, NamedKey::PageDown);
+        frames(&mut app);
+    }
+    assert!(
+        !row_shown(&app, 1),
+        "three pages down leave the first screen"
+    );
+    assert!(!row_shown(&app, count), "and stop short of the last row");
+    assert!(
+        (2 * screen..=4 * screen).any(|reached| row_shown(&app, reached)),
+        "three pages down of {screen} rows each show a row about three screens on ({stance:?}), \
+         not only {:?}",
+        (1..=count)
+            .filter(|row| row_shown(&app, *row))
+            .collect::<Vec<_>>(),
+    );
 }
 
 #[test]

@@ -25,6 +25,9 @@ pub struct ListRows {
     view: Rc<RefCell<ViewInstance>>,
     /// The key of the list node in the view.
     list: String,
+    /// The window's store these rows were last rendered for: a store the window has since made
+    /// anew is one no row of this list was rendered for, so every row the store asks for is sent.
+    store: Store,
     keys: Keys,
     /// Whether `keys` holds the key of every row. Until a change needs them, the rows' keys are
     /// read from the view as the window asks for them: a list of a hundred thousand notes opens
@@ -46,6 +49,29 @@ struct Keys {
     shown: HashSet<String>,
 }
 
+/// Which window store the rows a list rendered stand in.
+///
+/// The window mints a store's identity when it makes the store, and asks with it ([`Asked::store`]):
+/// a store the window made anew is one no row of this list was rendered for, whatever the app
+/// rendered before, so the ask is answered in full.
+#[derive(Debug, Default)]
+struct Store(Option<u64>);
+
+impl Store {
+    /// Whether the rows rendered stand for the store `asking`. Where they do not — a store no
+    /// answer of this list was rendered for — they are given up, and the ask is answered in full.
+    fn answers(&mut self, asking: Option<u64>) -> bool {
+        let Some(asking) = asking else {
+            return true;
+        };
+        if self.0 == Some(asking) {
+            return true;
+        }
+        self.0 = Some(asking);
+        false
+    }
+}
+
 impl ListRows {
     /// The rows of the list `list` of `view`, none rendered yet.
     #[must_use]
@@ -53,6 +79,7 @@ impl ListRows {
         Self {
             view: Rc::clone(view),
             list: list.to_owned(),
+            store: Store::default(),
             keys: Keys::default(),
             read: false,
         }
@@ -126,9 +153,16 @@ impl ListRows {
         &mut self,
         range: Range<usize>,
         (open, menu): (Option<&str>, Option<&str>),
+        store: Option<u64>,
     ) -> Requested {
         let mut keys = Vec::new();
         let mut rows = Vec::new();
+        if !self.store.answers(store) {
+            // The window has made its store for this list anew: no row this list rendered for the
+            // store before stands in it, so every row of the range is sent rather than left to a
+            // store that is gone.
+            self.keys.shown.clear();
+        }
         if let Ok(mut view) = self.view.try_borrow_mut() {
             // The row that opens builds its document and the row that closed drops it, and so
             // with a menu: they stand as they did in the list's rows, sent again with what now
@@ -497,5 +531,29 @@ mod tests {
             }
             assert_eq!(rows.index_of("b"), None);
         }
+    }
+
+    /// The first ask of a store has no rows to stand on, a second ask of it does, and a store the
+    /// window made anew — a new identity — is answered in full again.
+    #[test]
+    fn a_store_the_window_makes_anew_is_answered_in_full() {
+        let mut store = Store::default();
+        assert!(
+            !store.answers(Some(1)),
+            "nothing was rendered for the first store, so every row is sent"
+        );
+        assert!(store.answers(Some(1)), "the rows rendered stand for it");
+        assert!(
+            !store.answers(Some(2)),
+            "a store the window made anew has none of them"
+        );
+        assert!(
+            store.answers(Some(2)),
+            "and the rows rendered now stand for it"
+        );
+        assert!(
+            store.answers(None),
+            "a send the window did not ask for keeps what stands"
+        );
     }
 }

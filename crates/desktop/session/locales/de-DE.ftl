@@ -321,7 +321,6 @@ device-wake-failed-body = In seinem Netzwerk konnte kein Aufwecksignal gesendet 
 
 ## Was ein Screenreader über einen Zeiger sagt: wem er gehört und über
 ## welchem Fenster er steht.
-people-pointer-where = { $who } ist in { $where }
 
 
 ## Was die Statusanzeige über die Maschine in einer Zeile sagt, für einen

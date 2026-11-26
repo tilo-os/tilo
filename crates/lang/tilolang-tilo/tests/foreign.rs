@@ -1255,3 +1255,219 @@ fn walk_text(node: &tilolang_runtime::UiNode, into: &mut Vec<String>) {
         walk_text(child, into);
     }
 }
+
+/// A view over another app's player that shows how many rows its reading lists.
+const COUNTING: &str = r#"app test.counting "Counting"
+
+use sound as sound
+
+view counted(p: sound.Player) {
+  panel(p)
+}
+
+view panel(p: sound.Player) {
+  let count = p.rows.len()
+  text("{count}")
+}
+"#;
+
+/// A window of [`COUNTING`] over the app's player, its reading listing `rows`.
+fn counted(rows: &[i64]) -> (Host, ViewInstance) {
+    let host = Host::new(
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
+    let meta = service();
+    host.runtime().load_foreign(meta.clone()).unwrap();
+    let compiled =
+        tilolang::compile_package(COUNTING, &IdsLock::new(), std::slice::from_ref(&meta))
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    let package = host.load_compiled(&compiled).unwrap();
+    let view = package
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == "counted")
+        .expect("the view's declaration")
+        .id
+        .clone();
+    host.runtime()
+        .set_reading(
+            &player(),
+            &json!({ "level": 0.0, "rows": rows }).to_string(),
+        )
+        .expect("the reading is set");
+    let open = host.open_resource(&player(), Some(&view)).unwrap();
+    (host, open)
+}
+
+/// A node that reads how long a reading is follows it: the view runs again when rows grow, and
+/// says the count it reads then.
+#[test]
+fn a_node_that_reads_a_readings_length_says_it_when_rows_grow() {
+    let (host, mut view) = counted(&[1]);
+    assert_eq!(shown(&view), Value::text("1"), "the rows it opens with");
+    host.runtime()
+        .set_reading(
+            &player(),
+            &json!({ "level": 0.0, "rows": [1, 2, 3] }).to_string(),
+        )
+        .expect("the reading moves");
+    view.poll_patches().expect("the view runs again");
+    assert_eq!(
+        shown(&view),
+        Value::text("3"),
+        "the count follows the reading it read"
+    );
+}
+
+/// A view over another app's player that counts its rows in a floating panel's header, as who is
+/// here counts the people it lists.
+const PANELLED: &str = r#"app test.panelled "Panelled"
+
+use sound as sound
+
+view counted(p: sound.Player) {
+  row(fill) {
+    panel(p, sheet: false)
+  }
+}
+
+view panel(p: sound.Player, sheet: Bool) {
+  ui.FloatingPanel(width: if not sheet { 400.0 }, modal: true, label: "Rows") {
+    header: {
+      ui.Text(said(p.rows.len()))
+    }
+    body: {
+      for r in p.rows {
+        ui.Text("row {r}")
+      }
+    }
+  }
+}
+
+fn said(rows: Int) -> Text {
+  if rows == 1 {
+    return "one row"
+  }
+  return "{rows} rows"
+}
+"#;
+
+/// A part of a component says what the reading says now: a floating panel's header that counts a
+/// reading's rows follows it when they grow, as the body that lists them does.
+#[test]
+fn a_components_part_follows_the_reading_it_reads() {
+    let host = Host::new(
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
+    let meta = service();
+    host.runtime().load_foreign(meta.clone()).unwrap();
+    let compiled =
+        tilolang::compile_package(PANELLED, &IdsLock::new(), std::slice::from_ref(&meta))
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    let package = host.load_compiled(&compiled).unwrap();
+    let view = package
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == "counted")
+        .expect("the view's declaration")
+        .id
+        .clone();
+    host.runtime()
+        .set_reading(&player(), &json!({ "level": 0.0, "rows": [1] }).to_string())
+        .expect("the reading is set");
+    let mut open = host.open_resource(&player(), Some(&view)).unwrap();
+    assert_eq!(texts(&open), ["one row", "row 1"], "what it opens with");
+    host.runtime()
+        .set_reading(
+            &player(),
+            &json!({ "level": 0.0, "rows": [1, 2, 3, 4] }).to_string(),
+        )
+        .expect("the reading moves");
+    open.poll_patches().expect("the view runs again");
+    assert_eq!(
+        texts(&open),
+        ["4 rows", "row 1", "row 2", "row 3", "row 4"],
+        "the header counts the rows the body lists"
+    );
+}
+
+/// A view that counts the networks of a reading that are joined, as who is here counts the
+/// people of its reading who are not software.
+const JOINED_VIEW: &str = r#"app test.joined "Joined"
+
+use radio as radio
+
+view joined(r: radio.Radio) {
+  text("{r.networks.filter(n -> n.joined).len()} joined")
+}
+"#;
+
+/// A view that reads every item of a reading of ten thousand networks takes a change it reads
+/// nothing of in a moment: another reading, or the clock's minute, leaves it as it was, and it
+/// checks each slot it read once rather than once per slot it read.
+#[test]
+fn a_change_a_view_over_ten_thousand_items_does_not_read_costs_it_nothing() {
+    let host = Host::new(
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
+    let surfaces = catalogue::parse_surfaces(RADIO).expect("a surface file");
+    let meta = catalogue::package_of("radio", "Radio", &surfaces);
+    host.runtime().load_foreign(meta.clone()).unwrap();
+    let compiled =
+        tilolang::compile_package(JOINED_VIEW, &IdsLock::new(), std::slice::from_ref(&meta))
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    let package = host.load_compiled(&compiled).unwrap();
+    let view = package
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == "joined")
+        .expect("the view's declaration")
+        .id
+        .clone();
+    let radio = ResourceRef::parse_id("radio", "radio#Radio").unwrap();
+    let nets: Vec<serde_json::Value> = (0..10_000)
+        .map(|at| json!({ "name": format!("Net {at}"), "joined": at % 2 == 0 }))
+        .collect();
+    host.runtime()
+        .set_reading(&radio, &json!({ "networks": nets }).to_string())
+        .unwrap();
+    let mut open = host.open_resource(&radio, Some(&view)).unwrap();
+    assert_eq!(
+        texts(&open),
+        ["5000 joined"],
+        "the count of what the reading holds"
+    );
+    let ran = open.stats().renders;
+
+    // Another radio's reading, twenty times over: none of it is what the view read, and the
+    // view checks what it read once each time.
+    let other = ResourceRef::parse_id("radio-2", "radio#Radio").unwrap();
+    let mut took = std::time::Duration::ZERO;
+    for at in 0..20 {
+        host.runtime()
+            .set_reading(
+                &other,
+                &json!({ "networks": [{ "name": format!("Far {at}"), "joined": false }] })
+                    .to_string(),
+            )
+            .unwrap();
+        let started = std::time::Instant::now();
+        open.poll_patches().expect("nothing it read moved");
+        took += started.elapsed();
+    }
+    assert_eq!(open.stats().renders, ran, "the view did not run again");
+    assert_eq!(texts(&open), ["5000 joined"]);
+    assert!(
+        took < std::time::Duration::from_secs(2),
+        "twenty changes it reads nothing of take the view {took:?}, not a moment each"
+    );
+}

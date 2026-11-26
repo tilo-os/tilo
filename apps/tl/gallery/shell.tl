@@ -89,6 +89,36 @@ view shell_parts(g: Gallery) {
                 }
             }
         }
+        part(
+            "Screen mirror",
+            "Someone's screen under their row: their windows where they stand, and the one they work in ringed in their colour.",
+        ) {
+            ui.ScreenMirror(
+                "Screen of Ada",
+                screen_width: 1440.0,
+                screen_height: 900.0,
+                colour: "7c8cf8",
+                height: 120.0,
+            ) {
+                ui.ScreenMirrorWindow(
+                    "Notes",
+                    app: "so.tilo.notes",
+                    left: 0.05,
+                    top: 0.08,
+                    right: 0.55,
+                    bottom: 0.9,
+                    focused: true,
+                )
+                ui.ScreenMirrorWindow(
+                    "Mail",
+                    app: "so.tilo.mail",
+                    left: 0.5,
+                    top: 0.15,
+                    right: 0.95,
+                    bottom: 0.85,
+                )
+            }
+        }
         part("Drag run", "Items a person reorders by dragging one, across or stacked.") {
             ui.DragRun(axis: .horizontal, distribute: .start, name: "Pinned") {
                 on drop(moved: Pinned, at: Int): mark_moved(last, moved, at)

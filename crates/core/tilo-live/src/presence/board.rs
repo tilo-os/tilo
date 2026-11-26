@@ -565,9 +565,14 @@ impl Board {
             let mut member = Present::new(stand_in);
             member.spoken_by = Some(from);
             member.session = Some(session.clone());
-            // The run is said on its speaker's device: it lists as that device.
+            // The run is said on its speaker's device: it lists as that device. A person's device
+            // speaks for the runs it executes, which work for that person, as this device's own
+            // runs work for its person; the host's runs are nobody's it can tell.
             if let Some(speaker) = self.present(from) {
                 member.device.clone_from(&speaker.device);
+                if self.host != Some(from) {
+                    member.user.clone_from(&speaker.user);
+                }
             }
             self.presents.push(member);
         }
@@ -1232,20 +1237,30 @@ impl Board {
     /// The roster's word on `from`: a certificate this device verified named
     /// the person and the device. Whether what is known here changed.
     pub fn certify(&mut self, from: Device, user: String, device: &str) -> bool {
-        // The runs a device speaks for list as that device.
+        // The runs a device speaks for list as that device, and a person's device's runs work for
+        // its person.
+        let persons = self.host != Some(from);
+        let mut runs = false;
         for run in self
             .presents
             .iter_mut()
             .filter(|member| member.spoken_by == Some(from))
         {
             device.trim().clone_into(&mut run.device);
+            if persons && run.user.as_deref() != Some(user.as_str()) {
+                run.user = Some(user.clone());
+                runs = true;
+            }
+        }
+        if runs {
+            self.revision = self.revision.wrapping_add(1);
         }
         self.touch(from, |member| {
             let changed = member.user.as_deref() != Some(user.as_str()) || member.device != device;
             member.user = Some(user);
             device.trim().clone_into(&mut member.device);
             changed
-        })
+        }) || runs
     }
 
     /// They left the workspace, and the runs they spoke for.

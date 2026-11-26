@@ -229,6 +229,9 @@ pub struct ListRowFace<'a> {
     facts: &'a [Fact],
     secondary_lines: u8,
     note: Option<&'a str>,
+    /// The note stands on a line of its own under the row ([`ListRow`]'s note line), so the face
+    /// neither paints it nor makes room for it; it still says it.
+    note_under: bool,
     meta: Option<&'a str>,
     meta_spans: &'a [(&'a str, Tone)],
     value: Option<(&'a str, RowValue)>,
@@ -333,6 +336,7 @@ impl<'a> ListRowFace<'a> {
             described: false,
             facts: &[],
             note: None,
+            note_under: false,
             secondary_lines: 1,
             meta: None,
             meta_spans: &[],
@@ -496,6 +500,13 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn note(mut self, text: &'a str) -> Self {
         self.note = Some(text);
+        self
+    }
+
+    /// The note stands on a line of its own under the row rather than in the text's column.
+    #[must_use]
+    pub(super) fn note_under(mut self, under: bool) -> Self {
+        self.note_under = under;
         self
     }
 
@@ -1158,6 +1169,9 @@ pub struct ListRow {
     swipe_origin: Option<(u64, f64)>,
     swipe_offset: f64,
     trailing: Option<Trailing>,
+    below: Option<Below>,
+    note_line: Option<NoteLine>,
+    band: Band,
     activation: Activation,
     check_binding: Option<tilo_ui_base::widget::binding::BoxedBinding<bool>>,
     check_action: Option<tilo_ui_base::widget::ActionEmitter<()>>,
@@ -1247,6 +1261,9 @@ impl ListRow {
             swipe_origin: None,
             swipe_offset: 0.0,
             trailing: None,
+            below: None,
+            note_line: None,
+            band: Band::new(),
             activation: Activation::new(id),
             check_binding: None,
             check_action: None,
@@ -1854,11 +1871,8 @@ impl ListRow {
     #[must_use]
     pub fn trailing(mut self, control: Element) -> Self {
         self.trailing = Some(Trailing {
-            band_slot: crate::widget::Absent::new(),
             element: control,
-            band: None,
             node: None,
-            band_height: 0.0,
             wrapped: false,
             natural: 0.0,
             margins: 0.0,
@@ -2060,15 +2074,20 @@ impl ListRow {
 
     fn text_band(&self) -> Rect {
         let outer = self.outer();
-        match &self.trailing {
-            Some(trailing) if trailing.wrapped => Rect::new(
+        // A control wrapped under the text, a part standing there or the note on its own line
+        // leaves the text the band at the row's top.
+        if self.below.is_some()
+            || self.note_line.as_ref().is_some_and(|line| line.under)
+            || self.trailing.as_ref().is_some_and(|t| t.wrapped)
+        {
+            return Rect::new(
                 outer.x0,
                 outer.y0,
                 outer.x1,
-                outer.y0 + f64::from(trailing.band_height),
-            ),
-            _ => outer,
+                outer.y0 + f64::from(self.band.height),
+            );
         }
+        outer
     }
 
     fn trailing_reserve(&self) -> Option<f64> {
@@ -2231,7 +2250,9 @@ impl ListRow {
         }
         face.described = self.description.is_some();
         if let Some(note) = &self.note {
-            face = face.note(note);
+            face = face
+                .note(note)
+                .note_under(self.note_line.as_ref().is_some_and(|line| line.under));
         }
         if let Some(meta) = &self.meta {
             face = face.meta(meta);
@@ -2600,6 +2621,22 @@ impl CardBody for ListRow {
     }
 }
 
+/// Stand a part on a line of its own under the row's text, the row's width from the text's edge
+/// `text_edge`: its basis is the whole row, which leaves it no room beside the text, and it gives
+/// back the leading column it stands clear of.
+fn stand_under(style: &mut Style, text_edge: f64, pad_y: f64) {
+    style.flex_basis = percent(1.0_f32);
+    style.flex_grow = 0.0;
+    style.flex_shrink = 1.0;
+    style.size.width = auto();
+    style.min_size.width = length(0.0_f32);
+    style.align_self = Some(taffy::AlignSelf::FlexStart);
+    style.margin.left = length(tilo_ui_base::num::f32_of_f64(text_edge));
+    style.margin.right = length(0.0_f32);
+    style.margin.top = length(0.0_f32);
+    style.margin.bottom = length(tilo_ui_base::num::f32_of_f64(pad_y));
+}
+
 /// Grow the band the row's text stands in to the height that text takes, and say whether it
 /// changed: a row whose caption took another line is laid out again.
 fn settle_trailing(
@@ -2608,7 +2645,7 @@ fn settle_trailing(
     node: NodeId,
     text: &mut TextRenderer,
 ) -> bool {
-    if row.trailing.is_none() {
+    if !row.has_parts() {
         return false;
     }
     let filled = row.fill_under_text(taffy, node, text);
@@ -2616,15 +2653,12 @@ fn settle_trailing(
         return filled;
     };
     let height = row.with_face(|face| face.height(text, theme));
-    let Some(trailing) = &mut row.trailing else {
-        return filled;
-    };
     let height = tilo_ui_base::num::f32_of_f64(height);
-    if (height - trailing.band_height).abs() < 0.5 {
+    if (height - row.band.height).abs() < 0.5 {
         return filled;
     }
-    trailing.band_height = height;
-    let Some(band) = trailing.band else {
+    row.band.height = height;
+    let Some(band) = row.band.node else {
         return filled;
     };
     let Ok(style) = taffy.style(band) else {
@@ -2656,6 +2690,9 @@ impl Widget for ListRow {
         if let Some(trailing) = &mut self.trailing {
             trailing.element.set_interaction_environment(environment);
         }
+        if let Some(below) = &mut self.below {
+            below.element.set_interaction_environment(environment);
+        }
     }
 
     fn sync(
@@ -2685,6 +2722,9 @@ impl Widget for ListRow {
         if let Some(trailing) = &mut self.trailing {
             trailing.element.sync(state, path);
         }
+        if let Some(below) = &mut self.below {
+            below.element.sync(state, path);
+        }
     }
 
     fn update(
@@ -2692,9 +2732,15 @@ impl Widget for ListRow {
         state: &tilo_ui_base::widget::AppModel,
         path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        self.trailing
+        let trailing = self
+            .trailing
             .as_mut()
-            .is_some_and(|trailing| trailing.element.update(state, path))
+            .is_some_and(|trailing| trailing.element.update(state, path));
+        let below = self
+            .below
+            .as_mut()
+            .is_some_and(|below| below.element.update(state, path));
+        trailing || below
     }
 
     fn build_layout(
@@ -2736,24 +2782,41 @@ impl Widget for ListRow {
             flex_shrink: 0.0,
             ..Default::default()
         };
-        let Some(trailing) = &mut self.trailing else {
+        self.keep_note_line(theme.text_tertiary);
+        if !self.has_parts() {
             let node = taffy.leaf_node(row_style);
             node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
             return node;
-        };
-        if trailing.band_height <= 0.0 {
-            trailing.band_height = tilo_ui_base::num::f32_of_f64(
+        }
+        if self.band.height <= 0.0 {
+            self.band.height = tilo_ui_base::num::f32_of_f64(
                 f64::from(theme.text(TextRole::Body).line_height_px()) + 2.0 * pad_y,
             )
             .max(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s2);
         }
+        // What stands under the text starts in the text's column: the leading column and its gap
+        // stay clear, as they do for the lines under the title.
+        let text_edge = self.holds_under().then(|| {
+            let bleed = self.metrics.as_ref().map_or(0.0, |m| m.bleed);
+            let band_rect = Rect::new(
+                -bleed,
+                0.0,
+                f64::from(u16::MAX),
+                f64::from(self.band.height),
+            );
+            let m = self.metrics(theme);
+            tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
+                self.with_face(|face| face.text_x(band_rect, &m, text, theme))
+            })
+            .max(0.0)
+        });
         let band = taffy.leaf_node(Style {
             flex_grow: 1.0,
             flex_shrink: 1.0,
             flex_basis: length(0.0_f32),
             size: taffy::Size {
                 width: auto(),
-                height: length(trailing.band_height),
+                height: length(self.band.height),
             },
             min_size: taffy::Size {
                 width: length(tilo_ui_base::num::f32_of_f64(min_text)),
@@ -2761,40 +2824,74 @@ impl Widget for ListRow {
             },
             ..Default::default()
         });
-        let child = trailing.element.build_layout(taffy, theme, node_map);
-        if let Ok(style) = taffy.style(child) {
-            let mut style = style.clone();
-            if style.size.width == percent(1.0_f32) {
-                style.size.width = auto();
+        self.band.node = Some(band);
+        let mut children = vec![band];
+        if let Some(trailing) = &mut self.trailing {
+            let child = trailing.element.build_layout(taffy, theme, node_map);
+            if let Ok(style) = taffy.style(child) {
+                let mut style = style.clone();
+                if style.size.width == percent(1.0_f32) {
+                    style.size.width = auto();
+                }
+                // Never wider than the row: under the text it takes the row's
+                // width at most, and a row of controls wraps inside it.
+                style.max_size.width = percent(1.0_f32);
+                style.flex_shrink = 0.0;
+                style.align_self = Some(taffy::AlignSelf::Center);
+                let (before, after) = (
+                    tilo_ui_base::num::f32_of_f64(column_gap),
+                    tilo_ui_base::num::f32_of_f64(after_trailing),
+                );
+                style.margin.left = length(before);
+                style.margin.right = length(after);
+                style.margin.top = length(tilo_ui_base::num::f32_of_f64(pad_y));
+                style.margin.bottom = length(tilo_ui_base::num::f32_of_f64(pad_y));
+                trailing.own_min = style.min_size.width;
+                trailing.margins = before + after;
+                trailing.fill = None;
+                let _ = taffy.set_style(child, style);
             }
-            // Never wider than the row: under the text it takes the row's
-            // width at most, and a row of controls wraps inside it.
-            style.max_size.width = percent(1.0_f32);
-            style.flex_shrink = 0.0;
-            style.align_self = Some(taffy::AlignSelf::Center);
-            let (before, after) = (
-                tilo_ui_base::num::f32_of_f64(column_gap),
-                tilo_ui_base::num::f32_of_f64(after_trailing),
-            );
-            style.margin.left = length(before);
-            style.margin.right = length(after);
-            style.margin.top = length(tilo_ui_base::num::f32_of_f64(pad_y));
-            style.margin.bottom = length(tilo_ui_base::num::f32_of_f64(pad_y));
-            trailing.own_min = style.min_size.width;
-            trailing.margins = before + after;
-            trailing.fill = None;
-            let _ = taffy.set_style(child, style);
+            trailing.node = Some(child);
+            children.push(child);
         }
-        trailing.band = Some(band);
-        trailing.node = Some(child);
+        let text_edge = text_edge.unwrap_or(0.0);
+        if let Some(line) = &mut self.note_line {
+            let child = line.text.build_layout(taffy, theme, node_map);
+            if let Ok(style) = taffy.style(child) {
+                let mut style = style.clone();
+                stand_under(&mut style, text_edge, pad_y);
+                // It takes no room while the note fits beside the text, where the face shows it.
+                style.display = if line.under {
+                    taffy::Display::Block
+                } else {
+                    taffy::Display::None
+                };
+                let _ = taffy.set_style(child, style);
+            }
+            line.node = Some(child);
+            children.push(child);
+        }
+        if let Some(below) = &mut self.below {
+            let child = below.element.build_layout(taffy, theme, node_map);
+            if let Ok(style) = taffy.style(child) {
+                let mut style = style.clone();
+                stand_under(&mut style, text_edge, pad_y);
+                let _ = taffy.set_style(child, style);
+            }
+            below.node = Some(child);
+            children.push(child);
+        }
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Row,
             flex_wrap: taffy::FlexWrap::Wrap,
             align_items: Some(taffy::AlignItems::Center),
+            // The text's line keeps its height however tall the row stands: a row given more room
+            // than its lines take leaves it under them rather than spreading the lines apart.
+            align_content: Some(taffy::AlignContent::FlexStart),
             ..row_style
         };
-        taffy.widget_node(style, &[band, child], node_map, self)
+        taffy.widget_node(style, &children, node_map, self)
     }
 
     fn adjust_layout_style(
@@ -2804,8 +2901,8 @@ impl Widget for ListRow {
         text: &mut TextRenderer,
     ) -> bool {
         // A row with nothing beside its text measured these lines already: no restyle follows.
-        let band = self.trailing.as_ref().and_then(|trailing| trailing.band);
-        if let Ok(area) = taffy.layout(band.unwrap_or(node))
+        let area = taffy.layout(self.band.node.unwrap_or(node)).ok().copied();
+        if let Some(area) = area
             && let Some(lines) = self.secondary_lines_at(
                 f64::from(area.size.width),
                 f64::from(area.size.height),
@@ -2816,7 +2913,10 @@ impl Widget for ListRow {
             self.secondary_shown = Some(lines);
             self.dirty = true;
         }
-        settle_trailing(self, taffy, node, text)
+        let placed = area.is_some_and(|area| {
+            self.band.node.is_some() && self.place_note(taffy, f64::from(area.size.width), text)
+        });
+        settle_trailing(self, taffy, node, text) || placed
     }
 
     fn measure(
@@ -2838,10 +2938,10 @@ impl Widget for ListRow {
             self.card_lines = lines;
         }
         // A caption wraps at the width asked about, so the height answered is the one drawn.
-        let lines = if self.trailing.is_none() {
-            self.secondary_lines_at(f64::from(width), 0.0, text_renderer)
-        } else {
+        let lines = if self.has_parts() {
             self.secondary_shown
+        } else {
+            self.secondary_lines_at(f64::from(width), 0.0, text_renderer)
         };
         let height = self.with_face_over(self.trailing_reserve(), lines, |face| {
             face.height(text_renderer, &theme)
@@ -2865,15 +2965,31 @@ impl Widget for ListRow {
         if let Some((kept, _)) = self.hand_on.place(rect) {
             self.take_up(kept);
         }
+        if let Some(line) = &mut self.note_line
+            && let Some(child) = line.node
+        {
+            // A note shown beside the text stands nowhere of its own.
+            if line.under {
+                line.text.apply_layout(taffy, child, rect.origin());
+            } else {
+                line.text.apply_layout_external(Rect::ZERO);
+            }
+        }
+        if let Some(below) = &mut self.below
+            && let Some(child) = below.node
+        {
+            below.element.apply_layout(taffy, child, rect.origin());
+        }
+        let band_height = self.band.height;
         let Some(trailing) = &mut self.trailing else {
             return;
         };
-        let (Some(band), Some(child)) = (trailing.band, trailing.node) else {
+        let (Some(band), Some(child)) = (self.band.node, trailing.node) else {
             return;
         };
         let band_y = taffy.layout(band).map_or(0.0, |l| l.location.y);
         let child_layout = taffy.layout(child).copied().unwrap_or_default();
-        let wrapped = child_layout.location.y >= band_y + trailing.band_height - 0.5;
+        let wrapped = child_layout.location.y >= band_y + band_height - 0.5;
         if wrapped != trailing.wrapped {
             trailing.wrapped = wrapped;
             self.dirty = true;
@@ -2954,6 +3070,17 @@ impl Widget for ListRow {
                 .element
                 .draw_child(scene, transform, text_renderer, theme, &env);
         }
+        if let Some(line) = &mut self.note_line
+            && line.under
+        {
+            line.text
+                .draw_child(scene, transform, text_renderer, theme, &env);
+        }
+        if let Some(below) = &mut self.below {
+            below
+                .element
+                .draw_child(scene, transform, text_renderer, theme, &env);
+        }
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
@@ -2961,6 +3088,17 @@ impl Widget for ListRow {
             && let Some(node) = trailing.node
         {
             trailing
+                .element
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
+                self.dirty = true;
+                return;
+            }
+        }
+        if let Some(below) = &mut self.below
+            && let Some(node) = below.node
+        {
+            below
                 .element
                 .handle_event(event, &mut ctx.reborrow(ctx.path, node));
             if *ctx.handled {
@@ -3201,12 +3339,26 @@ impl Widget for ListRow {
     }
 
     fn needs_redraw(&self) -> bool {
+        // The box as drawn against the box now, as a checkbox compares them: the frame
+        // where the check comes to rest is past its motion, and still paints the last pose.
+        let now = tilo_ui_base::motion::frame_now();
         self.dirty
-            || self.check.is_moving(tilo_ui_base::motion::frame_now())
+            || self.check.is_moving(now)
+            || self
+                .check_pose
+                .is_some_and(|shown| shown != self.check.pose(now))
             || self
                 .trailing
                 .as_ref()
                 .is_some_and(|t| t.element.needs_redraw() || t.element.needs_animation_frame())
+            || self
+                .below
+                .as_ref()
+                .is_some_and(|b| b.element.needs_redraw() || b.element.needs_animation_frame())
+            || self
+                .note_line
+                .as_ref()
+                .is_some_and(|line| line.under && line.text.needs_redraw())
     }
 
     /// Frames only while its leading checkbox is on its way.
@@ -3222,6 +3374,12 @@ impl Widget for ListRow {
         if let Some(trailing) = &mut self.trailing {
             trailing.element.mark_drawn();
         }
+        if let Some(below) = &mut self.below {
+            below.element.mark_drawn();
+        }
+        if let Some(line) = &mut self.note_line {
+            line.text.mark_drawn();
+        }
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -3232,6 +3390,14 @@ impl Widget for ListRow {
                 .trailing
                 .as_ref()
                 .is_some_and(|t| t.element.is_layout_dirty())
+            || self
+                .below
+                .as_ref()
+                .is_some_and(|b| b.element.is_layout_dirty())
+            || self
+                .note_line
+                .as_ref()
+                .is_some_and(|line| line.text.is_layout_dirty())
     }
 
     fn accessibility_child_name(&self, child_index: usize) -> Option<String> {
@@ -3263,18 +3429,32 @@ impl Widget for ListRow {
         (!words.is_empty()).then(|| words.join(", "))
     }
 
+    // The band's stand-in, then the control at the trailing edge, then the note's own line, then
+    // what stands under the text: the order of the row's layout nodes.
     fn children(&self) -> Vec<&dyn Widget> {
-        self.trailing
-            .iter()
-            .flat_map(|t| [&t.band_slot as &dyn Widget, t.element.as_ref()])
-            .collect()
+        if !self.has_parts() {
+            return Vec::new();
+        }
+        let mut children: Vec<&dyn Widget> = vec![&self.band.slot];
+        children.extend(self.trailing.iter().map(|t| t.element.as_ref()));
+        children.extend(self.note_line.iter().map(|line| &line.text as &dyn Widget));
+        children.extend(self.below.iter().map(|b| b.element.as_ref()));
+        children
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        let mut children: Vec<&mut (dyn Widget + '_)> = Vec::with_capacity(2);
+        if !self.has_parts() {
+            return Vec::new();
+        }
+        let mut children: Vec<&mut (dyn Widget + '_)> = vec![&mut self.band.slot];
         if let Some(t) = &mut self.trailing {
-            children.push(&mut t.band_slot);
             children.push(t.element.as_mut());
+        }
+        if let Some(line) = &mut self.note_line {
+            children.push(&mut line.text);
+        }
+        if let Some(b) = &mut self.below {
+            children.push(b.element.as_mut());
         }
         children
     }
@@ -3285,6 +3465,10 @@ impl Widget for ListRow {
                 .trailing
                 .as_ref()
                 .is_some_and(|t| t.element.wants_pointer_capture())
+            || self
+                .below
+                .as_ref()
+                .is_some_and(|b| b.element.wants_pointer_capture())
     }
 
     fn name(&self) -> &'static str {
@@ -3423,6 +3607,9 @@ impl tilo_ui_base::widget::ResourceOperations for ListRow {
                 &*trailing.element,
             ));
         }
+        if let Some(below) = &self.below {
+            handlers.extend(crate::widget::resource_operation_handlers(&*below.element));
+        }
         handlers
     }
 
@@ -3462,6 +3649,9 @@ pub use edge::{RowAction, RowChange, SwipeAction};
 
 mod trailing;
 use trailing::Trailing;
+
+mod below;
+use below::{Band, Below, NoteLine};
 
 mod colour;
 

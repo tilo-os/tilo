@@ -74,6 +74,7 @@ mod nested {
         fn layers(&self) -> Vec<SurfaceLayer> {
             vec![SurfaceLayer {
                 pose: tilo_session_core::surface::LayerPose::SETTLED,
+                over_windows: false,
                 location: (0, 0),
                 size: (WIDTH, HEIGHT),
                 frame: SurfaceFrame::from_pixels(

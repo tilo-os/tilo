@@ -1062,8 +1062,8 @@ impl Session {
             &mut compositor,
             &mut published,
             shell(),
-            Some(wells),
-            presentation.theme.clone(),
+            Some(wells.clone()),
+            presentation.theme,
             daemon_link.is_ok(),
             Rc::clone(&shell_seat),
             Rc::clone(&sheet_up),
@@ -1093,31 +1093,6 @@ impl Session {
         };
         // The shell draws the banners itself from what it reads (`Shell.banner`).
         notices.show_banners_elsewhere();
-
-        // The roster and profile card are opened by the person. Put them above
-        // transient banners so a notice cannot cover or take a press on a field.
-        let people = crate::people::mount(
-            &mut crate::platform::surfaces::Hosted::new(
-                &mut compositor,
-                &mut published,
-                presentation.theme,
-            ),
-            crate::people::Given {
-                scale: options.scale,
-                notes: {
-                    let notes = std::sync::Arc::clone(&notes);
-                    Rc::new(move || notes.windows())
-                },
-                apps: Some(std::sync::Arc::new(options.lists.clone())
-                    as std::sync::Arc<dyn crate::platform::apps::Apps>),
-                handle: handle.clone(),
-                sync: sync.clone(),
-                // Who is here as the bar's faces are drawn from them: the app wire's.
-                here: Rc::clone(&place_here),
-                intents: Rc::clone(&intents),
-                invitable: Rc::clone(&invitable),
-            },
-        );
 
         // The sheets, over the desktop and its panels.
         let sheets = crate::sheets::mount::mount_sheets(&mut compositor, &mut published, &options);
@@ -1960,7 +1935,7 @@ impl Session {
             device_workspaces: RefCell::new(device_workspaces),
             app_stores: RefCell::default(),
             desktops,
-            notes,
+            notes: std::sync::Arc::clone(&notes),
             window_routes,
             membership_fed: std::cell::RefCell::new(None),
             landings,
@@ -1974,8 +1949,8 @@ impl Session {
             dictation,
             emoji,
             shortcut_guide,
-            people,
             people_asks: Rc::default(),
+            wells,
             follow: RefCell::default(),
             invitable,
             controller,
@@ -1995,7 +1970,13 @@ impl Session {
             .borrow_mut()
             .add(Box::new(crate::people_device::PeopleDevice::new(
                 shared.handle.clone(),
-                Rc::clone(&place_here),
+                crate::people_device::OwnScreen {
+                    place_here: Rc::clone(&place_here),
+                    windows: {
+                        let notes = std::sync::Arc::clone(&shared.notes);
+                        Rc::new(move || notes.windows())
+                    },
+                },
                 shared.sync.clone(),
                 Rc::clone(&shared.people_asks),
                 shared.surfaces.clone(),
@@ -2821,10 +2802,31 @@ impl Session {
     /// The other people whose pointers the shell drew on this session, as the
     /// last frame drew them: their name and the point, in the surface's
     /// coordinates. Drawn over the window each is on, whatever the roster
-    /// shows.
+    /// shows: what the shell's views drew ([`ui::widget::PeerPointers`]).
     #[must_use]
     pub fn drawn_peer_pointers(&self) -> Vec<(String, (f64, f64))> {
-        self.shared.people.borrow().drawn_pointers()
+        self.shared.wells.pointers()
+    }
+
+    /// Where the shell's views put the window of tab `tab`, in the surface's coordinates, as of the
+    /// last layout: the well its window is placed in ([`ui::widget::WindowWell`]). `None` while no
+    /// view shows it.
+    #[must_use]
+    pub fn window_well(&self, tab: u64) -> Option<ui::kurbo::Rect> {
+        self.shared.wells.well(&tab.to_string())
+    }
+
+    /// The frame drawn round the work while this person follows someone: the followed person's
+    /// colour, `rrggbb`, and the rectangle it runs round (x, y, width, height), as the shell's
+    /// views drew it over the windows ([`ui::widget::FollowFrame`]). `None` while none is drawn.
+    #[must_use]
+    pub fn drawn_follow_frame(&self) -> Option<(String, (f64, f64, f64, f64))> {
+        self.shared
+            .wells
+            .frames()
+            .into_iter()
+            .next()
+            .map(|(colour, rect)| (colour, (rect.x0, rect.y0, rect.width(), rect.height())))
     }
 
     /// What an assistive client reads of the session's own surfaces now: the

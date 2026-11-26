@@ -738,3 +738,4 @@ mod tests {
 
 mod component;
 pub use component::AvatarProps;
+pub(crate) use component::colour_of;

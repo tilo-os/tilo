@@ -98,10 +98,11 @@ pub(super) fn reveal_descendant(
     target: *const dyn Widget,
     rect: vello::kurbo::Rect,
 ) -> bool {
-    children.into_iter().any(|child| {
-        std::ptr::addr_eq(std::ptr::from_ref::<dyn Widget>(child), target)
-            || child.reveal_descendant(target, rect)
-    })
+    // A child that stands for the target (a decorator around it, a menu area over a list) is
+    // where the target is: the target itself is never among the children it lists.
+    children
+        .into_iter()
+        .any(|child| child.stands_for(target.cast::<()>()) || child.reveal_descendant(target, rect))
 }
 
 pub(super) fn take_action_palette_request(

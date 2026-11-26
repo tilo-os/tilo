@@ -70,6 +70,10 @@ pub struct ListRowProps {
     /// A control on the trailing edge, which moves under the text when the row is narrow.
     #[component(part)]
     pub trailing: Option<Element>,
+    /// What stands under the row's text, in the text's column: a picture of the item, or the
+    /// line that says why there is none. It is part of the row, read and pressed with it.
+    #[component(part)]
+    pub below: Option<Element>,
     /// A checkbox in the leading column, bound to whether the item is done.
     #[component(bind)]
     pub checkbox: Option<Bound<bool>>,
@@ -96,10 +100,10 @@ pub struct ListRowProps {
 
 impl ListRowProps {
     /// The props again, for a list that builds the row anew each time it scrolls into view:
-    /// `None` for a row with a trailing control, which is built once.
+    /// `None` for a row with a trailing control or a part under its text, which is built once.
     #[must_use]
     pub fn reusable(&self) -> Option<Self> {
-        if self.trailing.is_some() {
+        if self.trailing.is_some() || self.below.is_some() {
             return None;
         }
         Some(Self {
@@ -121,6 +125,7 @@ impl ListRowProps {
             selected: self.selected,
             avatar: self.avatar.clone(),
             trailing: None,
+            below: None,
             checkbox: self.checkbox.clone(),
             check: self.check.clone(),
             motion: self.motion,
@@ -142,10 +147,12 @@ impl Described for ListRow {
     }
 
     /// The texts, marks and selection change in place; a row whose leading column or
-    /// trailing control changes shape is built again.
+    /// trailing control or part under its text changes shape is built again.
     fn set_props(&mut self, props: ListRowProps) -> bool {
         if props.trailing.is_some()
             || self.trailing.is_some()
+            || props.below.is_some()
+            || self.below.is_some()
             || leading_kind(self.leading.as_ref()) != props_kind(&props)
             || props.disclosure != self.disclosure
         {
@@ -219,6 +226,7 @@ impl ListRow {
             selected,
             avatar,
             trailing,
+            below,
             checkbox,
             check,
             motion,
@@ -304,6 +312,9 @@ impl ListRow {
         };
         if let Some(control) = trailing {
             *self = std::mem::replace(self, Self::new("", "")).trailing(control);
+        }
+        if let Some(part) = below {
+            *self = std::mem::replace(self, Self::new("", "")).below(part);
         }
         self.activation.set_event(activate);
     }

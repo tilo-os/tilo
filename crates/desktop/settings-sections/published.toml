@@ -883,6 +883,9 @@ fields = [
   { path = "system_monitor.always_on_strips", type = { list = "int" } },
   { path = "system_monitor.places", type = { list = { named = "Place" } } },
   { path = "system_monitor.width", type = { option = "float" } },
+  { path = "people_overlay", type = { named = "PeopleOverlayPrefs" }, stored = "record" },
+  { path = "people_overlay.pinned", type = "bool" },
+  { path = "people_overlay.edge", type = { named = "DockEdge" } },
 ]
 
 [[resources.verbs]]
@@ -912,6 +915,14 @@ params = [
 ]
 
 [[resources.verbs]]
+id = "keep-people"
+kind = "undoable"
+params = [
+  { name = "kept", type = "bool", required = true, schema = { type = "boolean" } },
+  { name = "edge", type = "text", required = true, schema = { type = "string" } },
+]
+
+[[resources.verbs]]
 id = "resize-widget"
 kind = "undoable"
 params = [
@@ -922,6 +933,23 @@ params = [
 [[resources.verbs]]
 id = "type"
 kind = "undoable"
+
+[[resources.types]]
+name = "DockEdge"
+cases = [
+  { name = "left" },
+  { name = "right" },
+  { name = "bottom" },
+  { name = "bottom_left" },
+  { name = "bottom_right" },
+]
+
+[[resources.types]]
+name = "PeopleOverlayPrefs"
+fields = [
+  { name = "pinned", type = "bool" },
+  { name = "edge", type = { named = "DockEdge" } },
+]
 
 [[resources.types]]
 name = "Place"

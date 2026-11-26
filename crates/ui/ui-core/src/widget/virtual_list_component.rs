@@ -441,9 +441,9 @@ impl PartType for DescribedRows {
                             .to_owned(),
                     );
                 }
-                ItemRow::Row(row) if row.trailing.is_some() => {
+                ItemRow::Row(row) if row.trailing.is_some() || row.below.is_some() => {
                     return Err(
-                        "a row of a virtual list is built again each time it scrolls into view, so it takes no trailing control"
+                        "a row of a virtual list is built again each time it scrolls into view, so it takes no trailing control and no part under its text"
                             .to_owned(),
                     );
                 }

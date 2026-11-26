@@ -827,6 +827,11 @@ pub enum ToApp {
     /// The virtual list `list` shows the rows `start..end` now, the row `open` — its key —
     /// stands open into its item where it stands ([`ToUi::Rows`] answers with its document), and
     /// the person opened the menu of the row `menu`, which the app sends again with it.
+    ///
+    /// `store` is the identity of the window's store for that list, minted when the store is
+    /// made: a list the window has just built asks with one no answer of the app's was rendered
+    /// for, so every row of the range comes again rather than being left to a store that no
+    /// longer exists.
     Rows {
         level: Level,
         list: String,
@@ -834,6 +839,7 @@ pub enum ToApp {
         end: u32,
         open: Option<String>,
         menu: Option<String>,
+        store: u64,
     },
     Answer(Answer),
     /// The field `field` (a key of [`Form::fields`]) of the form `form` now holds `text`: what

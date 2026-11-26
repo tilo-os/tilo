@@ -2147,13 +2147,9 @@ impl crate::Session {
         shell.follow_displays(&mut self.compositor, &mut self.shared.published, &identify);
         // The bar's band, as the chrome the parts laid out measured it: the shell's own views draw
         // the bar, and what the session draws under it — the surfaces anchored to the display's
-        // top edge, the roster and its cards, a banner — stands at the same height.
+        // top edge, a banner — stands at the same height.
         let (bar_band, _dock_band) = shell.bands();
         self.shared.overlays.set_bar_height(bar_band);
-        self.shared
-            .people
-            .borrow()
-            .set_bar_height(f64::from(bar_band));
         // The cards their apps draw themselves stand where the shell's cards hold their place:
         // note the block each card keeps this pass, whether or not the shell asked anything of
         // the session, and one the shell shows none for has its app draw the activity itself.
