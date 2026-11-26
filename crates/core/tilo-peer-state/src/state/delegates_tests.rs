@@ -603,8 +603,8 @@ fn agent_key(
         capabilities: DeviceCapabilities::agent_grant(tilo_user_identity::AgentScope::agent_in(
             id, AGENT,
         )),
-        issued_at_ns: ns(now - Duration::from_secs(1)),
-        expires_at_ns: Some(ns(now + Duration::from_secs(3600))),
+        issued_at_ns: ns(now.checked_sub(Duration::from_secs(1)).unwrap()),
+        expires_at_ns: Some(ns(now.checked_add(Duration::from_secs(3600)).unwrap())),
         signature: [0; 64],
         issuer: None,
     };

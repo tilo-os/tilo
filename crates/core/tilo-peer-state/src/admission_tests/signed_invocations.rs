@@ -1630,7 +1630,7 @@ tilo_test_env::scenario! {
         let refused = take(&mut receiver, message, now).unwrap_err();
         assert!(refused.reason.contains("does not name"), "{}", refused.reason);
         // The host kept other content than the agent signed for.
-        let mut tampered = own.clone();
+        let mut tampered = own;
         tampered.signed.as_mut().unwrap().argument = Some(InvokeArgument::Json(
             serde_json::json!({"content": "tilo.content:ff", "name": "a.md"})
                 .as_object()
