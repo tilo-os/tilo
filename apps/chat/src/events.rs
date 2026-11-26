@@ -156,7 +156,7 @@ impl ChatApp {
                 }
                 *handled = true;
             }
-            WindowEvent::MouseWheel { delta, .. } => {
+            WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.last_mouse) => {
                 self.handle_wheel(delta, scale);
                 // The wheel moved a view (the timeline, the emoji grid) and
                 // nothing the app publishes: the timeline's

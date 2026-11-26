@@ -6,7 +6,7 @@ use tilo_server_protocol::agents::{
 };
 use ui::Arrival;
 use ui::prelude::*;
-use ui::widget::arrange::Stack;
+use ui::widget::arrange::{Grid, Length, Stack};
 
 use super::{Access, Panel};
 use crate::Chat;
@@ -59,7 +59,7 @@ impl Access {
     }
 
     fn app_picker(&self, choices: &[AgentGrantApp]) -> Element {
-        let mut options = Stack::row().wrap().fill_width();
+        let mut options = Grid::auto(Length::Rem(11.0)).gap(ui::tokens::Rhythm::Tight);
         let mut selected = Vec::new();
         for app in choices {
             let required = app.id == ui::apps::CHAT;

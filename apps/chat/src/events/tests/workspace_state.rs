@@ -686,7 +686,19 @@ tilo_test_env::scenario! {
     phase mouse_wheel_scrolls_the_timeline;
     {
         let (mut app, mut doc) = app_with_doc();
+        render_frame(&mut app, 1180.0, 800.0);
+        feed(&mut app, &mut doc, &cursor_moved(20.0, -10.0));
+        let mut handled = false;
+        app.dispatch_event(
+            &wheel(3.0),
+            1.0,
+            Modifiers::default(),
+            &mut ui::widget::Edits::lend(&mut doc),
+            &mut handled,
+        );
+        assert!(!handled, "a control outside the timeline can receive the wheel");
         assert_eq!(app.scroll, 0.0);
+        feed(&mut app, &mut doc, &cursor_moved(20.0, 100.0));
         feed(&mut app, &mut doc, &wheel(3.0));
         assert!(app.scroll > 0.0, "scrolling moves the timeline");
         let up = app.scroll;
