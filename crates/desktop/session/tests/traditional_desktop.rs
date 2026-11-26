@@ -26,7 +26,7 @@ use tilo_compositor::InputEvent;
 use tilo_session::Session;
 use tilo_session_core::surface::Scroll;
 
-use crate::common::{on_screen, until};
+use crate::common::{drag, on_screen, until, wait_for};
 
 /// The bar's control that opens the notification centre, as assistive technology names it.
 const BELL: &str = "Notifications";
@@ -138,6 +138,16 @@ fn frames(session: &Session) -> Vec<(i64, i64, i64, i64)> {
             )
         })
         .collect()
+}
+
+/// The widest box the shell names `name`: a marker on the bar shares the window's name, and the
+/// window a person drags is the large one, not the label.
+fn widest_named(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> {
+    session
+        .shell_controls(name)
+        .into_iter()
+        .filter(|(_, _, w, h)| *w > 0.0 && *h > 0.0)
+        .max_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))
 }
 
 /// Whether two canvas rectangles `(x, y, w, h)` share any area.
@@ -609,4 +619,79 @@ fn the_bells_press_opens_the_notification_centre_in_every_preset() {
             |session| crate::common::shell_here(session) == "none",
         );
     }
+}
+
+/// Dragging a frame's corner on the desktop sizes the window there: the map reports the edge the
+/// person took and the layout keeps the size, one arranging step of the person's. A map with no
+/// resize of its own follows the pointer while the drag runs and then takes the size back, so the
+/// corner has to keep what it was dragged to.
+#[test]
+fn dragging_a_frames_corner_sizes_the_window() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let root = crate::common::private_home();
+    let (mut session, notes) = session(root.path());
+    until(&mut session, "the bar", |session| {
+        on_screen(session, BELL).is_some()
+    });
+    show_style(&mut session, "Desktop");
+    place(&mut session, &notes[0], 100, 120, 480, 360);
+    until(&mut session, "the frame", |session| {
+        frames(session).len() == 1
+    });
+    let name = crate::common::drawn_name(&session, &notes[0]);
+    let (fx, fy, fw, fh) = wait_for(&mut session, "the frame on screen", |session| {
+        widest_named(session, &name)
+    });
+    // Just past the frame's own trailing and bottom edges, where the map's grab reaches.
+    let corner = (fx + fw + 3.0, fy + fh + 3.0);
+    drag(&mut session, corner, (corner.0 + 120.0, corner.1 + 80.0));
+    let sized = wait_for(&mut session, "the window's new size", |session| {
+        frames(session)
+            .first()
+            .copied()
+            .filter(|frame| (frame.2, frame.3) != (480, 360))
+    });
+    assert!(
+        (sized.2 - 600).abs() <= 8 && (sized.3 - 440).abs() <= 8,
+        "the window takes the size its corner was dragged to: {:?} from (480, 360)",
+        (sized.2, sized.3)
+    );
+    crate::common::shot(&mut session, "desktop-frame-resized");
+}
+
+/// Dragging a frame's bar on the desktop moves the window to where it is let go, as it does on
+/// the canvas: the drop reaches the desktop and the layout keeps the point. A map with no drop of
+/// its own lets the bar be carried and then puts the window back where it was.
+#[test]
+fn dragging_a_frames_bar_moves_the_window_there() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let root = crate::common::private_home();
+    let (mut session, notes) = session(root.path());
+    until(&mut session, "the bar", |session| {
+        on_screen(session, BELL).is_some()
+    });
+    show_style(&mut session, "Desktop");
+    place(&mut session, &notes[0], 100, 120, 480, 360);
+    until(&mut session, "the frame", |session| {
+        frames(session).len() == 1
+    });
+    let name = crate::common::drawn_name(&session, &notes[0]);
+    let (fx, fy, fw, _) = wait_for(&mut session, "the frame on screen", |session| {
+        widest_named(session, &name)
+    });
+    // A press on the frame's bar, clear of the name and of the controls at its end.
+    let bar = (fx + fw * 0.4, fy + 22.0);
+    let landing = (bar.0 + 160.0, bar.1 + 90.0);
+    drag(&mut session, bar, landing);
+    let (nx, ny, _, _) = wait_for(&mut session, "the frame where it was let go", |session| {
+        widest_named(session, &name)
+            .filter(|(x, y, _, _)| (x - fx).abs() > 4.0 || (y - fy).abs() > 4.0)
+    });
+    assert!(
+        (nx - landing.0).abs() <= 10.0 && (ny - landing.1).abs() <= 10.0,
+        "the window stands where it was let go: {:?} at {landing:?}, from {:?}",
+        (nx, ny),
+        (fx, fy)
+    );
+    crate::common::shot(&mut session, "desktop-frame-moved");
 }

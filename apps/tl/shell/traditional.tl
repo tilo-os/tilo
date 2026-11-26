@@ -29,6 +29,13 @@
 view traditional_desktop(a: Layout, lists: Bool) {
     let front = front_place(a)
     ui.Map(name: "Desktop", ground: true, fill) {
+        // A frame's trailing edge or corner dragged: the person sizes the window there, the
+        // camera's own edge grab. Without it the map follows the pointer and then takes the size
+        // back, so the drag teaches a gesture that never lands.
+        on resize(target: Text, at: List<Int>): size_place(target, at)
+        // A frame's bar carried and let go: the window stands where it was let go, as it does on
+        // the canvas. Without it the drop reaches nothing and the window stays where it was.
+        on drop(target: host.Resource, at: List<Int>): place_dropped(target, at)
         for s in a.strips {
             if s.placed {
                 for p in places_of(a, s.key) {
@@ -65,12 +72,15 @@ view front_window(a: Layout, lists: Bool) {
 view desktop_frame(a: Layout, s: LayoutStrip, p: LayoutPlace, focused: Bool, lists: Bool) {
     ui.MapPin(
         name: p.key,
+        item: p.key,
         x: s.canvas_x,
         y: s.canvas_y,
         width: if s.canvas_width > 0 { s.canvas_width } else { 720 },
         height: if s.canvas_height > 0 { s.canvas_height } else { 480 },
         leaving: s.leaving,
     ) {
+        // The place this frame stands for: what its edge drag reports, and what a right press
+        // points at.
         // A window whose place just left stays at its spot and plays its departure; a window that
         // stands is its frame as this desktop draws it.
         if s.leaving {
@@ -97,9 +107,11 @@ view frame_classic(a: Layout, p: LayoutPlace, focused: Bool, lists: Bool) {
         name: place_title(p),
         focused: focused,
         lists_actions: lists_the_place(p),
-        carries: p.resource,
+        carries: if p.resource != "" { p.resource } else { the_place(p.key).id() },
         fill,
     ) {
+        // The document its place shows, or the place itself when it shows none (a foreign
+        // window), so every frame's bar can be picked up and carried.
         // A press on the window's bar brings it forward, the keyboard in it.
         on press: session.activate(place: the_place(p.key))
         controls: {
