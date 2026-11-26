@@ -23,6 +23,10 @@ use tilo_device_identity::login::Place;
 /// as none: the daemon starts them on its own thread, and the view asks again.
 const SERVICES_STARTING: Duration = Duration::from_secs(2);
 
+/// How long listing the person's workspaces waits for their services to start: what a device
+/// someone signed in to shows is theirs, so it waits for them rather than show it as no one's.
+const PERSON_STARTING: Duration = Duration::from_secs(30);
+
 /// How long one of the person's own actions is waited for: each is answered at once, off a store
 /// this device reaches, and a longer wait is a host that is not answering.
 const PERSON_ACTION_WAIT_MS: u32 = 10_000;
@@ -111,6 +115,14 @@ impl Device {
     pub fn devices(&self) -> Result<Devices> {
         if !Self::claimed()? {
             return Ok(Devices::default());
+        }
+        // The daemon starts the person's services after it starts: a device someone signed in to
+        // before it last started (a phone launched again) is asked before they run, and lists
+        // their workspaces once they do.
+        if let Some(running) = self.running.as_ref() {
+            running
+                .services(PERSON_STARTING)
+                .context("the person's services did not start")?;
         }
         let listed = self
             .runtime
