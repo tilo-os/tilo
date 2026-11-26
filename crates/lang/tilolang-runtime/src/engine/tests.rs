@@ -421,3 +421,54 @@ tilo_test_env::scenario! {
         assert_eq!(peek().unwrap(), Some(Wasm::I32(0x4d)));
     }
 }
+
+/// Every runtime of a process links through the one linker of its ABI: runtimes made at once on
+/// many threads, some linking a host ABI of their own, each answer their own imports, and the
+/// process built one linker for each ABI. A linker made per runtime registered every import's
+/// type with the process's one engine, under a lock every other runtime of the process spun on.
+#[test]
+fn the_runtimes_of_a_process_share_one_linker_per_abi() {
+    let compiler = super::Compiler::new(super::wasmi_backend::Wasmi::new(Translation::Lazy));
+    let shared: &'static Shared = Box::leak(Box::new(Shared::Wasmi(compiler)));
+    let peeks = wat::parse_str(
+        r#"
+(module
+  (import "probe" "peek" (func $peek (param i32) (result i32)))
+  (memory (export "memory") 1)
+  (data (i32.const 200) "\4d")
+  (func (export "apply") (result i32) (call $peek (i32.const 200)))
+)
+"#,
+    )
+    .unwrap();
+    let adds = wat::parse_str(MODULE).unwrap();
+    std::thread::scope(|scope| {
+        for thread in 0..8 {
+            let (peeks, adds) = (&peeks, &adds);
+            scope.spawn(move || {
+                for runtime in 0..4 {
+                    let engine = Engine::on(shared, EngineKind::Wasmi, limits()).unwrap();
+                    if (thread + runtime) % 2 == 0 {
+                        engine.link(PEEK_ABI).unwrap();
+                        let module = engine.compile(peeks).unwrap();
+                        let peek = engine.call(&module, "apply", &[], Rc::new(Peek));
+                        assert_eq!(peek.unwrap(), Some(Wasm::I32(0x4d)));
+                    } else {
+                        let module = engine.compile(adds).unwrap();
+                        let sum = call(&engine, &module, "add", &[Wasm::I32(2), Wasm::I32(3)]);
+                        assert_eq!(sum.unwrap(), Some(Wasm::I32(5)));
+                    }
+                }
+            });
+        }
+    });
+    let Shared::Wasmi(compiler) = shared else {
+        unreachable!("the process was made on wasmi")
+    };
+    let linkers = compiler.linkers.lock().unwrap();
+    assert_eq!(
+        linkers.len(),
+        2,
+        "one linker for the `tl` table, one beside it for the probe's ABI"
+    );
+}

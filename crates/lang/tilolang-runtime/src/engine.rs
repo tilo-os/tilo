@@ -43,11 +43,11 @@ mod wasmtime_backend;
 #[cfg(all(feature = "wasmtime", not(target_arch = "wasm32")))]
 mod wasmtime_host;
 
-use std::cell::{Cell, Ref, RefCell};
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::sync::{Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use tilo_wasm_host::Failure;
@@ -314,8 +314,10 @@ struct Cx {
 trait Backend: Send + Sync + Sized + 'static {
     /// A compiled module, cheap to clone and shared by every runtime in the process.
     type Module: Clone + Send;
-    /// The import table bound to [`import`], one per runtime.
-    type Linker;
+    /// The import table bound to [`import`], one per ABI in the process ([`Compiler::linker`]):
+    /// defining an import registers its type with the process's one engine, under a lock every
+    /// runtime in the process takes.
+    type Linker: Send + Sync;
     /// A store holding one instance of a module, its limits, and the export functions it
     /// looked up.
     type Instance;
@@ -443,6 +445,8 @@ impl From<&Unwind> for CallError {
 struct Compiler<B: Backend> {
     backend: B,
     modules: Mutex<HashMap<ModuleHash, B::Module>>,
+    /// The linker of each host ABI beside the `tl` table, by the ABI's address.
+    linkers: Mutex<Vec<(usize, Arc<B::Linker>)>>,
 }
 
 impl<B: Backend> Compiler<B> {
@@ -450,7 +454,28 @@ impl<B: Backend> Compiler<B> {
         Self {
             backend,
             modules: Mutex::new(HashMap::new()),
+            linkers: Mutex::new(Vec::new()),
         }
+    }
+
+    /// The linker of the `tl` table and the host's ABI `abi`, made by the first runtime that
+    /// links it.
+    fn linker(&self, abi: &'static [Imports]) -> Result<Arc<B::Linker>, String> {
+        let key = if abi.is_empty() {
+            0
+        } else {
+            abi.as_ptr() as usize
+        };
+        let mut linkers = self.linkers.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, linker)) = linkers.iter().find(|(at, _)| *at == key) {
+            return Ok(Arc::clone(linker));
+        }
+        let mut imports = package_imports();
+        imports.extend_from_slice(abi);
+        let linker = Arc::new(self.backend.linker(&imports)?);
+        linkers.push((key, Arc::clone(&linker)));
+        drop(linkers);
+        Ok(linker)
     }
 
     fn known(&self, hash: &ModuleHash) -> Option<B::Module> {
@@ -632,17 +657,15 @@ struct Pools<B: Backend> {
     /// The imports of the host's own ABI, beside the `tl` table ([`Engine::link`]): empty
     /// until a host that runs modules of another ABI names it.
     abi: Cell<&'static [Imports]>,
-    /// The linker, and the ABI it was linked for: made again when [`Self::abi`] moves.
-    linker: RefCell<(&'static [Imports], B::Linker)>,
     modules: RefCell<HashMap<ModuleHash, Compiled<B>>>,
 }
 
 impl<B: Backend> Pools<B> {
     fn new(compiler: &'static Compiler<B>) -> Result<Self, String> {
         const NONE: &[Imports] = &[];
+        compiler.linker(NONE)?;
         Ok(Self {
             abi: Cell::new(NONE),
-            linker: RefCell::new((NONE, compiler.backend.linker(&package_imports())?)),
             compiler,
             modules: RefCell::new(HashMap::new()),
         })
@@ -651,33 +674,15 @@ impl<B: Backend> Pools<B> {
     /// Link the host's own ABI ([`Engine::link`]) from now on.
     fn link(&self, abi: &'static [Imports]) -> Result<(), String> {
         self.abi.set(abi);
-        // The linker is made again by the next load, for both this ABI and the `tl` table.
-        let mut imports = package_imports();
-        imports.extend_from_slice(abi);
-        let linker = self.compiler.backend.linker(&imports)?;
-        *self.linker.borrow_mut() = (abi, linker);
+        self.compiler.linker(abi)?;
         Ok(())
     }
 
-    /// The linker that links the `tl` table and the host's ABI, made now when it is not the
-    /// one that was.
-    fn linker(&self) -> Result<Ref<'_, B::Linker>, CallError> {
-        let abi = self.abi.get();
-        {
-            let linked = self.linker.borrow();
-            if std::ptr::eq(linked.0, abi) {
-                return Ok(Ref::map(linked, |(_, linker)| linker));
-            }
-        }
-        let mut imports = package_imports();
-        imports.extend_from_slice(abi);
-        let linker = self
-            .compiler
-            .backend
-            .linker(&imports)
-            .map_err(|why| CallError::from(Failure::Link(why)))?;
-        *self.linker.borrow_mut() = (abi, linker);
-        Ok(Ref::map(self.linker.borrow(), |(_, linker)| linker))
+    /// The linker that links the `tl` table and the host's ABI.
+    fn linker(&self) -> Result<Arc<B::Linker>, CallError> {
+        (self.compiler)
+            .linker(self.abi.get())
+            .map_err(|why| CallError::from(Failure::Link(why)))
     }
 
     /// Compile `parts` (one module, or a linked set's) for `hash`, each part taken from the
