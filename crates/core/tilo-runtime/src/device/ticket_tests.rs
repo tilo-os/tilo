@@ -81,6 +81,17 @@ async fn ask_issuer(
     scope: &str,
     action: &str,
 ) -> Option<Result<InvocationUpdate, ActionCallError>> {
+    ask_issuer_saying(ticket, key, scope, action, json!({})).await
+}
+
+/// [`ask_issuer`], the computer adding the fields of `more` to what it says.
+async fn ask_issuer_saying(
+    ticket: &Ticket,
+    key: &SigningKey,
+    scope: &str,
+    action: &str,
+    more: serde_json::Value,
+) -> Option<Result<InvocationUpdate, ActionCallError>> {
     let dialed = tilo_server_client::ServerAddress::at(
         tilo_api::daemon::enter::address_of(&ticket.issuer).unwrap(),
     );
@@ -94,9 +105,13 @@ async fn ask_issuer(
         label: None,
         tilo_os: false,
     };
-    let serde_json::Value::Object(argument) = serde_json::to_value(&input).unwrap() else {
+    let serde_json::Value::Object(mut argument) = serde_json::to_value(&input).unwrap() else {
         panic!("the input is an object");
     };
+    let serde_json::Value::Object(more) = more else {
+        panic!("what the computer adds is an object");
+    };
+    argument.extend(more);
     let request = InvokeRequest {
         on_behalf_of: None,
         invocation: InvocationId::new(),
@@ -347,6 +362,14 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
             ))
         ),
         "a call in the person's workspace is refused to a device it does not know: {in_workspace:?}"
+    );
+    // What the computer becomes is what the person issued the ticket for: one that says it is a
+    // server, on a ticket for a computer at hand, is refused, and the ticket is still unspent.
+    let claimed =
+        ask_issuer_saying(&ticket, &desk_key, SCOPE, CERTIFY, json!({"server": true})).await;
+    assert!(
+        matches!(claimed, Some(Err(ActionCallError::Refused { .. }))),
+        "a computer does not choose to be the person's server: {claimed:?}"
     );
 
     // `tilo login <ticket>` on the desk: its daemon's `devices#logIn` asks the laptop.
@@ -1537,6 +1560,10 @@ async fn a_server_redeeming_the_persons_ticket_is_certified() {
     assert!(
         tilo_user_identity::verify_device_cert(&filed).is_ok(),
         "the certificate is the person's root's own"
+    );
+    assert!(
+        !filed.capabilities.foreign,
+        "a server the person issued its ticket for is theirs, whatever system it runs"
     );
     entered.close();
     let _ = router.shutdown().await;

@@ -51,6 +51,18 @@ pub trait Keeping: Send + Sync {
     fn keep(&self, cert: DeviceCert) -> Kept;
 }
 
+/// What the person issued a ticket for: what the computer that redeems it becomes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Adds {
+    /// A computer at hand: one of their devices, native when it runs Tilo OS, else foreign.
+    Device,
+    /// A browser, which a pairing link adds: a member device of the person's for a browser's
+    /// lifetime, whatever system it says it runs.
+    Browser,
+    /// Their server, which keeps their workspaces: their own device, whatever system it runs.
+    Server,
+}
+
 /// The ticket a device issued, served on its action service until a computer is certified with
 /// it.
 #[derive(Clone)]
@@ -66,9 +78,8 @@ struct Inner {
     approver: Arc<dyn Approver>,
     /// What the computer becomes: a member device, or one that administers the person's others.
     capability: tilo_user_identity::DeviceCapabilities,
-    /// Whether it adds a browser, which a pairing link adds: a member device of the person's
-    /// for a browser's lifetime, whatever system it says it runs.
-    browser: bool,
+    /// What the person issued the ticket for, which the computer redeeming it does not choose.
+    adds: Adds,
     revocations: RevocationList,
     /// Each call taken, by invocation: the device that made it, and where it is.
     calls: Mutex<HashMap<InvocationId, ([u8; 32], InvocationState)>>,
@@ -112,7 +123,35 @@ impl ServedTicket {
             ticket,
             user_public_key,
             enter,
-            (capability, false),
+            (capability, Adds::Device),
+            approver,
+            revocations,
+            expires_at_ns,
+        )
+    }
+
+    /// [`Self::new`] for a server, which the person issued the ticket for: their own server,
+    /// certified with `capability` whatever system it runs, since the person said it is theirs
+    /// when they issued the ticket. A computer's own word that it runs Tilo OS is no part of it.
+    ///
+    /// # Panics
+    ///
+    /// Outside a runtime context, where the approval could not be waited for.
+    #[must_use]
+    pub fn for_server(
+        ticket: Ticket,
+        user_public_key: [u8; 32],
+        enter: Entry,
+        capability: tilo_user_identity::DeviceCapabilities,
+        approver: Arc<dyn Approver>,
+        revocations: RevocationList,
+        expires_at_ns: u64,
+    ) -> Self {
+        Self::serving(
+            ticket,
+            user_public_key,
+            enter,
+            (capability, Adds::Server),
             approver,
             revocations,
             expires_at_ns,
@@ -139,7 +178,10 @@ impl ServedTicket {
             ticket,
             user_public_key,
             enter,
-            (tilo_user_identity::DeviceCapabilities::member(), true),
+            (
+                tilo_user_identity::DeviceCapabilities::member(),
+                Adds::Browser,
+            ),
             approver,
             revocations,
             expires_at_ns,
@@ -159,7 +201,7 @@ impl ServedTicket {
         ticket: Ticket,
         user_public_key: [u8; 32],
         enter: Entry,
-        (capability, browser): (tilo_user_identity::DeviceCapabilities, bool),
+        (capability, adds): (tilo_user_identity::DeviceCapabilities, Adds),
         approver: Arc<dyn Approver>,
         revocations: RevocationList,
         expires_at_ns: u64,
@@ -172,7 +214,7 @@ impl ServedTicket {
             enter,
             approver,
             capability,
-            browser,
+            adds,
             revocations,
             calls: Mutex::default(),
             certified: watch::Sender::new(None),
@@ -262,8 +304,10 @@ impl ServedTicket {
             .secret
             .spend(&input.secret, now)
             .map_err(|why| ActionCallError::refused(why.to_string()))?;
-        // A device placed for records is that and nothing else, whatever system it runs.
-        let capability = if self.0.browser || self.0.capability.records.is_some() {
+        // A server the person issued its ticket for is theirs, whatever it runs; a computer at
+        // hand is native only on Tilo OS. A browser and a device placed for records are what
+        // they were issued as.
+        let capability = if self.0.adds != Adds::Device || self.0.capability.records.is_some() {
             self.0.capability.clone()
         } else {
             tilo_user_identity::DeviceCapabilities {
@@ -281,7 +325,7 @@ impl ServedTicket {
             now,
         )
         .map_err(|error| ActionCallError::refused(error.to_string()))?;
-        if self.0.browser {
+        if self.0.adds == Adds::Browser {
             let lifetime = tilo_user_identity::CertificationPolicy::browser().lifetime_ns;
             asked.cert.expires_at_ns = Some(asked.cert.issued_at_ns.saturating_add(lifetime));
         }

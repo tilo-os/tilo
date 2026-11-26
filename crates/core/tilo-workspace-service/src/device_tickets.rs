@@ -356,8 +356,9 @@ impl TicketServer {
     ) -> Result<ServedTicket, String> {
         let issuer = &self.0.issuer;
         let (cert, device) = issuer.device()?;
-        // Only the person's root adds a computer: a member device, native when it reports Tilo
-        // OS as it logs in, else foreign.
+        // Only the person's root adds a computer: a member device. A server they issued the
+        // ticket for is their own whatever it runs; any other computer is native when it reports
+        // Tilo OS as it logs in, else foreign.
         let Some(root) = issuer.root()? else {
             return Err(
                 "This computer does not hold your identity, so it cannot add a device: \
@@ -373,9 +374,15 @@ impl TicketServer {
             );
         }
         let enter = issuer.entry().await?;
-        let served = ServedTicket::new(
+        let serve = if role == Some(Role::Server) {
+            ServedTicket::for_server
+        } else {
+            ServedTicket::new
+        };
+        let person = cert.user_public_key;
+        let served = serve(
             ticket,
-            cert.user_public_key,
+            person,
             enter,
             DeviceCapabilities::member(),
             Arc::new(RootApprover {

@@ -566,8 +566,9 @@ pub struct CertifyInput {
     /// (`Claude Code on build-box`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// Whether the computer runs Tilo OS: the root certifies it native, else foreign, whose
-    /// actions beyond content its person's own device approves.
+    /// Whether the computer runs Tilo OS: the root certifies a computer at hand native, else
+    /// foreign, whose actions beyond content its person's own device approves. A server the
+    /// person issued its ticket for is theirs whatever it says here.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tilo_os: bool,
 }
