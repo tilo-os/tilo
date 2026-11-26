@@ -117,7 +117,6 @@ class AuditTests(unittest.TestCase):
                 "os/tests/secure.sh": "true\n",
                 "os/tests/native.py": "\n",
                 "os/tests/serial_runner.sh": "true\n",
-                "sdk/python/src/tilo/types/speed_test.py": "\n",
                 "tools/tests/cargo_shim.sh": "true\n",
                 "tools/tests/test_discovered.py": "\n",
             }

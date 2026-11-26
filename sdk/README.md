@@ -31,8 +31,10 @@ generated types, `Unreachable` when Tilo cannot be reached, and for a key
 that is turned away `KeyRevoked`, `KeyExpired` or `KeyRefused`.
 
 `tilo sdk gen` writes per-app types into
-`python/src/tilo/types/` and `typescript/src/types/`; both ship the proxies
-those types stand on.
+`python/src/tilo/types/` and `typescript/src/types/` when a package is built or
+tested; they are not committed. `bun run types` in `typescript/` writes both
+from this checkout (`tools/ci/sdk-gen.sh`). Both packages ship the types and
+the proxies they stand on.
 
 A record action that changes it and answers nothing also has a bulk form. Generated types
 expose it as `create_many` (Python) and `createMany` (TypeScript), over a typed `CreateArgs`

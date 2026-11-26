@@ -3,8 +3,8 @@
 //! out through ([`super::answers`]), and the apps' surfaces, in the form they
 //! are kept by, whose actions' parameters and results are the schemas of
 //! `runAction`'s body and answer, per app. Nothing in it is written by hand,
-//! so it cannot drift from the API; `tilo sdk gen --lang openapi --check`
-//! says whether the committed copy is current.
+//! so it cannot drift from the API; `tilo sdk gen --lang openapi` writes it to
+//! a file where one is read, and no copy is committed.
 
 use super::operations::{Answer, Body, OPERATIONS, Operation};
 use collab_types::surface::SurfaceFile;

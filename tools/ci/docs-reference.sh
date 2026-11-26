@@ -4,9 +4,10 @@
 #
 # Each generator reads the tree and writes one Markdown page, so a page says
 # what the code says now and a public item with no doc text fails the run
-# rather than appearing as a bare name. `tools/docs/reference/cli.py` builds and
-# runs the command itself; `mcp_tools.py` asks the runtime for the tool list it
-# serves.
+# rather than appearing as a bare name. The REST page reads the OpenAPI
+# description the `tilo` command writes (`tilo sdk gen --lang openapi`), which is
+# built, not committed; `tools/docs/reference/cli.py` runs the command itself;
+# `mcp_tools.py` asks the runtime for the tool list it serves.
 #
 # The generators import `page.py` beside them, which `python3 -I` does not put
 # on sys.path: they add their own directory, which is why these run as files of
@@ -19,7 +20,7 @@ out=${1:-/target/docs/generated}
 tilo=${2:-/target/debug/tilo}
 mcp=${3:-/target/debug/tilo-runtime}
 mkdir -p "$out"
-python3 -I "$root/tools/docs/reference/openapi.py" --root "$root" --spec "$root/docs/api/openapi.json" --out "$out/rest-api.md"
+TILO=$tilo python3 -I "$root/tools/docs/reference/openapi.py" --root "$root" --out "$out/rest-api.md"
 python3 -I "$root/tools/docs/reference/python_sdk.py" --root "$root" --out "$out/python-sdk.md"
 python3 -I "$root/tools/docs/reference/cli.py" --root "$root" --out "$out/cli.md" --tilo "$tilo"
 python3 -I "$root/tools/docs/reference/mcp_tools.py" --root "$root" --out "$out/mcp-tools.md" --mcp "$mcp"

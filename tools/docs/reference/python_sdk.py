@@ -30,7 +30,6 @@ import page  # noqa: E402  (beside this script, not on the isolated path)
 
 PACKAGE = "sdk/python/src/tilo"
 PYPROJECT = "sdk/python/pyproject.toml"
-TYPES = "sdk/python/src/tilo/types"
 
 
 # The order a reader meets the SDK in: a name no group holds is an error, so a
@@ -89,8 +88,6 @@ def generate(arguments: argparse.Namespace) -> str:
     package = root / PACKAGE
     if not package.is_dir():
         raise page.ReferenceError(f"{PACKAGE} is not there: {package}")
-    if not (root / TYPES).is_dir():
-        raise page.ReferenceError(f"{TYPES} is not there: run `tilo sdk gen` writes it")
     exported, version = module_exports(package / "__init__.py")
     defined = definitions(package, root)
     items = resolve(exported, defined)

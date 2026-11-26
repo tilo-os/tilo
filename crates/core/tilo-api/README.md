@@ -1,8 +1,8 @@
 # tilo-api
 
 The Tilo API server: Tilo's API, `/v1`, JSON over HTTP
-([`docs/developers/api.md`](../../../docs/developers/api.md), described by
-[`docs/api/openapi.json`](../../../docs/api/openapi.json)), and the same calls
+([`docs/developers/api.md`](../../../docs/developers/api.md), described by the
+OpenAPI document [`src/v1/openapi.rs`](src/v1/openapi.rs) writes), and the same calls
 for agents over MCP at `/mcp`. Every `/v1` route is a call of the key's run
 (`session::Session::call`), the very tool call an agent makes, answered typed
 (`v1`): one implementation, two faces.

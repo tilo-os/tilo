@@ -1,6 +1,7 @@
 """tools/docs/reference/openapi.py writes a REST reference from a description."""
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -145,12 +146,13 @@ def write_spec(root: Path, spec: dict, name: str = "openapi.json") -> Path:
     return path
 
 
-def run(*arguments: str) -> subprocess.CompletedProcess[str]:
+def run(*arguments: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-I", str(GENERATOR), *arguments],
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, **(env or {})},
     )
 
 
@@ -164,8 +166,8 @@ class OpenApiReferenceTests(unittest.TestCase):
         self.directory.cleanup()
 
     def generate(self, spec: dict | None = None, *arguments: str) -> subprocess.CompletedProcess[str]:
-        write_spec(self.root, SPEC if spec is None else spec)
-        return run("--root", str(self.root), "--out", str(self.out), *arguments)
+        path = write_spec(self.root, SPEC if spec is None else spec)
+        return run("--root", str(self.root), "--out", str(self.out), "--spec", str(path), *arguments)
 
     def page(self) -> str:
         return self.out.read_text(encoding="utf-8")
@@ -221,22 +223,24 @@ class OpenApiReferenceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("parameter 'limit' has no description", result.stderr)
 
-    def test_a_tree_with_no_description_asks_for_one(self) -> None:
-        result = run("--root", str(self.root), "--out", str(self.out))
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("no openapi*.json", result.stderr)
-
-    def test_two_descriptions_ask_which_one(self) -> None:
-        write_spec(self.root, SPEC, "api/openapi.json")
-        write_spec(self.root, SPEC, "other/openapi-extra.json")
-        result = run("--root", str(self.root), "--out", str(self.out))
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("more than one OpenAPI description", result.stderr)
-        chosen = run(
-            "--root", str(self.root), "--out", str(self.out),
-            "--spec", str(self.root / "api/openapi.json"),
+    def test_without_a_spec_it_reads_what_tilo_sdk_gen_writes(self) -> None:
+        tilo = self.root / "tilo"
+        tilo.write_text(
+            "#!/bin/sh\n"
+            "[ \"$*\" = \"sdk gen --lang openapi --out $6\" ] || exit 2\n"
+            f"cat > \"$6/openapi.json\" <<'EOF'\n{json.dumps(SPEC)}\nEOF\n",
+            encoding="utf-8",
         )
-        self.assertEqual(chosen.returncode, 0, chosen.stderr)
+        tilo.chmod(0o755)
+        result = run("--root", str(self.root), "--out", str(self.out), env={"TILO": str(tilo)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("### GET /v1/workspaces", self.page())
+
+    def test_a_generator_that_fails_stops_the_page(self) -> None:
+        result = run("--root", str(self.root), "--out", str(self.out), env={"TILO": "false"})
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("false sdk gen --lang openapi", result.stderr)
+        self.assertFalse(self.out.exists())
 
 
 if __name__ == "__main__":

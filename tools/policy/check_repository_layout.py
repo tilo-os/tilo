@@ -19,6 +19,14 @@ GENERATED_DIRECTORIES = frozenset(
     }
 )
 
+# Output a generator writes where it is read, so a committed copy is one that goes stale: the
+# SDKs' types and the API's OpenAPI description, which `tilo sdk gen` writes (tools/ci/sdk-gen.sh).
+BUILT_OUTPUTS = (
+    "docs/api/openapi.json",
+    "sdk/python/src/tilo/types/",
+    "sdk/typescript/src/types/",
+)
+
 RETIRED_SOURCE_ROOTS = {
     "apps/imager/profile-tool/": "tools/imager-profile/",
     "crates/app/": "crates/sdk/",
@@ -74,6 +82,10 @@ def generated_artifact_violations(paths: list[str]) -> list[str]:
         generated = next((part for part in parts[:-1] if part in GENERATED_DIRECTORIES), None)
         if generated is not None:
             violations.append(f"tracked file is inside generated `{generated}` directory: {path}")
+        elif path.startswith(BUILT_OUTPUTS):
+            violations.append(
+                f"tracked file is generated output, written where it is read by tools/ci/sdk-gen.sh: {path}"
+            )
     return sorted(violations)
 
 

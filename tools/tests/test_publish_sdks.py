@@ -49,8 +49,9 @@ elif args[0] == "publish":
         f.write(f"published npm {name}@{version} {sys.argv[sys.argv.index('--tag') + 1]}\n")
 '''
 
-# Stands in for uv: builds the sdist and a wheel carrying the metadata PyPI indexes and the
-# module the package installs, and publishes nothing. FAKE_WHEEL_* break the wheel on purpose.
+# Stands in for uv: builds the sdist and a wheel carrying the metadata PyPI indexes, the module
+# the package installs and the apps' types the staged copy has, as hatchling packs them, and
+# publishes nothing. FAKE_WHEEL_* break the wheel on purpose.
 FAKE_UV = r'''#!/usr/bin/env python3
 import os, pathlib, sys, tarfile, zipfile
 
@@ -74,8 +75,12 @@ if args[0] == "build":
                          f"Name: {name}\nVersion: {metadata}\n")
         if module:
             archive.writestr(module, "")
-    with tarfile.open(dist / f"tilo_sdk-{version}.tar.gz", "w:gz"):
-        pass
+        if (pathlib.Path("src/tilo/types/__init__.py").is_file()
+                and os.environ.get("FAKE_WHEEL_TYPES") != "dropped"):
+            archive.writestr("tilo/types/__init__.py", "")
+    with tarfile.open(dist / f"tilo_sdk-{version}.tar.gz", "w:gz") as sdist:
+        if pathlib.Path("src/tilo/types/__init__.py").is_file():
+            sdist.add("src/tilo/types/__init__.py", f"tilo_sdk-{version}/src/tilo/types/__init__.py")
 elif args[0] == "publish":
     if "--dry-run" not in sys.argv and not os.environ.get("UV_PUBLISH_TOKEN"):
         sys.exit("uv publish: no token")
@@ -102,6 +107,11 @@ class PublishSdksTests(unittest.TestCase):
             path = self.bin / name
             path.write_text(body)
             path.chmod(0o755)
+        # What the sdk-gen check writes and the release takes: the apps' types of both SDKs.
+        self.gen = self.dir / "sdk-gen"
+        for name in ("python/__init__.py", "typescript/index.ts"):
+            (self.gen / name).parent.mkdir(parents=True)
+            (self.gen / name).write_text("\n")
 
     def run_script(self, mode: str, ref: str | None, env: dict[str, str] | None = None, **knobs):
         """The script run as a job would run it: `ref` is T_REF, unset for a working tree."""
@@ -113,6 +123,7 @@ class PublishSdksTests(unittest.TestCase):
             "PATH": f"{self.bin}:{environment['PATH']}",
             "TMPDIR": str(self.dir / "scratch"),
             "FAKE_LOG": str(self.log),
+            "TILO_SDK_GEN": str(self.gen),
         })
         (self.dir / "scratch").mkdir(exist_ok=True)
         if ref:
@@ -162,7 +173,19 @@ class PublishSdksTests(unittest.TestCase):
     def test_a_wheel_without_the_module_fails_the_check(self):
         result = self.run_script("check", "tag:v0.4.0", FAKE_WHEEL_MODULE="")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("carries no tilo module", result.stderr)
+        self.assertIn("carries no tilo/__init__.py", result.stderr)
+
+    def test_a_release_without_the_generated_types_fails_before_it_builds(self):
+        result = self.run_script("check", "tag:v0.4.0", TILO_SDK_GEN=str(self.dir / "nothing"))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no generated types in", result.stderr)
+        self.assertNotIn("bun run build", self.calls())
+
+    def test_a_wheel_the_build_left_the_generated_types_out_of_fails_the_check(self):
+        # Git ignores the types, and a build backend that follows .gitignore drops them.
+        result = self.run_script("check", "tag:v0.4.0", FAKE_WHEEL_TYPES="dropped")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("carries no tilo/types/__init__.py", result.stderr)
 
     def test_a_typescript_build_without_its_entry_points_fails_the_check(self):
         result = self.run_script("check", "tag:v0.4.0", FAKE_TS_DIST="missing")

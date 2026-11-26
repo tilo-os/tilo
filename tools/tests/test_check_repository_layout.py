@@ -55,6 +55,23 @@ class RepositoryLayoutTests(unittest.TestCase):
                     "tracked file is inside generated `target` directory: apps/calculator/target/shots/default.png",
                 ],
             )
+        with self.subTest(phase='the SDKs\' types and the OpenAPI description are built, not tracked'):
+            self.assertEqual(
+                checker.generated_artifact_violations(
+                    [
+                        "docs/api/openapi.json",
+                        "docs/api/examples/visa.sh",
+                        "sdk/python/src/tilo/types/notes.py",
+                        "sdk/python/src/tilo/_client.py",
+                        "sdk/typescript/src/types/index.ts",
+                    ]
+                ),
+                [
+                    "tracked file is generated output, written where it is read by tools/ci/sdk-gen.sh: docs/api/openapi.json",
+                    "tracked file is generated output, written where it is read by tools/ci/sdk-gen.sh: sdk/python/src/tilo/types/notes.py",
+                    "tracked file is generated output, written where it is read by tools/ci/sdk-gen.sh: sdk/typescript/src/types/index.ts",
+                ],
+            )
         with self.subTest(phase='only directory components match'):
             self.assertEqual(
                 checker.generated_artifact_violations(

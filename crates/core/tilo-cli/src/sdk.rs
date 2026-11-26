@@ -68,7 +68,7 @@ pub enum SdkCmd {
         after_help = "Examples:\n  tilo sdk gen --lang python              tilo_types/, from this checkout's apps\n  \
                             tilo sdk gen --lang ts -w jane-doe      tilo-types/, from that workspace's apps\n  \
                             tilo sdk gen --lang python --check      Say whether the types are current\n  \
-                            tilo sdk gen --lang openapi --out docs/api   The API's description"
+                            tilo sdk gen --lang openapi --out api   The API's description"
     )]
     Gen {
         /// The language the types are written in, or `openapi` for the API's description.
@@ -1864,8 +1864,8 @@ mod tests {
 
     /// Two apps whose ids end in the same word would write one module file: the shorter id keeps
     /// the plain name, the longer one takes the segment before it, and either alone has the plain
-    /// name. What the generator writes otherwise is the checked-in files' own: `tilo sdk gen
-    /// --check` regenerates every one of them, in both languages and the `OpenAPI` document.
+    /// name. What the generator writes otherwise is what the SDK packages ship, in both
+    /// languages, and the `OpenAPI` document.
     #[test]
     fn two_apps_of_one_name_get_a_module_each() {
         let short = fleet()

@@ -24,6 +24,7 @@
     "build": "tsc -p tsconfig.build.json",
     "prepack": "tsc -p tsconfig.build.json",
     "test": "bun test",
+    "types": "bash ../../tools/ci/sdk-gen.sh write ../../target/sdk-gen && bash ../../tools/ci/sdk-gen.sh place .. ../../target/sdk-gen",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

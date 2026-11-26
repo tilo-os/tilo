@@ -1275,17 +1275,16 @@ outputs = ["/target/certify/surfaces/**"]
 on = ["schedule:0 3 * * *", "dispatch"]
 heavy = true
 
-# The SDKs' generated types and the OpenAPI document, each compared with what `tilo sdk gen`
-# writes from the tree. Every comparison runs even when one before it fails, so a failing run names
-# every stale file and reads all three outputs: t keys the check by what its run read, and `t fix
-# sdk-types` writes only files the check or its fix read. A run that stopped at stale Python types
-# never read the TypeScript or OpenAPI files, and the fix left them stale.
+# The SDKs' types and the API's OpenAPI description, written from the tree by `tilo sdk gen`
+# (tools/ci/sdk-gen.sh). They are built, never committed: the SDKs' suites, their release and the
+# reference pages read them from here, in an image with no Rust toolchain.
 [[check]]
-name = "sdk-types"
+name = "sdk-gen"
 requires = ["arch=any"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "stale=0\ncargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types --check || stale=1\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types --check || stale=1\ncargo run --locked -q -p tilo-cli -- sdk gen --lang openapi --out docs/api --check || stale=1\nexit $stale\n"
-fix = "cargo run --locked -q -p tilo-cli -- sdk gen --lang python --out sdk/python/src/tilo/types\ncargo run --locked -q -p tilo-cli -- sdk gen --lang ts --out sdk/typescript/src/types\ncargo run --locked -q -p tilo-cli -- sdk gen --lang openapi --out docs/api\n"
+run = "bash tools/ci/sdk-gen.sh write /target/sdk-gen"
+outputs = ["/target/sdk-gen/**"]
+default = false
 
 # The component catalogue, crates/ui/ui-graph/components.json: the toolkit's widgets described as
 # data, which tilo-view and tilolang's `ui` package are built from. The toolkit's own test fails
@@ -1310,6 +1309,7 @@ default = false
 name = "sdk-python"
 on = ["idle", "stable"]
 run = "bash tools/ci/sdk-python.sh"
+needs = ["sdk-gen"]
 image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
 requires = ["arch=x86_64"]
 
@@ -1317,6 +1317,7 @@ requires = ["arch=x86_64"]
 name = "sdk-typescript"
 on = ["idle", "stable"]
 run = "bash tools/ci/sdk-typescript.sh"
+needs = ["sdk-gen"]
 image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
 requires = ["arch=x86_64"]
 
@@ -1402,7 +1403,7 @@ name = "publish-sdks-dry-run"
 # Installs packages (npm, PyPI, rustup) from hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/sdks.sh check"
-needs = ["sdk-python", "sdk-typescript"]
+needs = ["sdk-gen", "sdk-python", "sdk-typescript"]
 image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
 requires = ["arch=x86_64"]
 on = ["idle", "stable", "dispatch"]
@@ -1412,7 +1413,7 @@ name = "publish-sdks"
 # Publishes with a stored token, to hosts no fixed list names.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/sdks.sh publish"
-needs = ["sdk-python", "sdk-typescript", "publish-sdks-dry-run"]
+needs = ["sdk-gen", "sdk-python", "sdk-typescript", "publish-sdks-dry-run"]
 image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
 requires = ["arch=x86_64"]
 on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]

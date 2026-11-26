@@ -1500,13 +1500,23 @@ find_tilo() {
   die 'no tilo command: set TILO_SH_TILO_BIN, or build one (os/containers/tilo-sh/cargo.sh build -p tilo-cli --bin tilo)'
 }
 
-# The Python SDK as this checkout has it: uv with its lock where uv is, else
-# the sources on the path beside a system httpx (the t check's image).
+# The Python SDK as this checkout has it, with the apps' types this stack's
+# `tilo` writes (they are built, not committed): a copy of the sources made once
+# per run, on the path, under uv with its lock where uv is, else beside a system
+# httpx (the t check's image).
 sdk_python() {
+  local sdk=$state/sdk-python
+  if [[ $(cat "$sdk/run" 2>/dev/null) != "$$" ]]; then
+    rm -rf "$sdk"
+    mkdir -p "$sdk"
+    cp -R "$repo/sdk/python/src" "$sdk/src"
+    "$(find_tilo)" sdk gen --lang python --out "$sdk/src/tilo/types" >/dev/null
+    echo "$$" > "$sdk/run"
+  fi
   if command -v uv >/dev/null; then
-    uv run --quiet --project "$repo/sdk/python" python "$@"
+    PYTHONPATH=$sdk/src${PYTHONPATH:+:$PYTHONPATH} uv run --quiet --project "$repo/sdk/python" python "$@"
   else
-    PYTHONPATH=$repo/sdk/python/src${PYTHONPATH:+:$PYTHONPATH} python3 "$@"
+    PYTHONPATH=$sdk/src${PYTHONPATH:+:$PYTHONPATH} python3 "$@"
   fi
 }
 

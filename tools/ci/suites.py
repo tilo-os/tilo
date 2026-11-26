@@ -36,12 +36,9 @@ ALWAYS_RUN_SOURCES = ("tools/policy/run.sh", "tools/policy/steps.toml")
 # Test-shaped files outside these directories must be classified. Python tests
 # in tools/tests and .codex/hooks are discovered by tools/policy/run.sh.
 DISCOVERED_PYTHON_DIRS = ("tools/tests", ".codex/hooks")
-# Test-shaped paths that are not tests: a file whose generated contents a check
-# verifies, and a runner another suite takes. They belong to no suite, so they
-# are classified here rather than given a manifest entry of their own.
+# Test-shaped paths that are not tests: a runner another suite takes. It belongs to no suite,
+# so it is classified here rather than given a manifest entry of its own.
 NOT_TESTS = frozenset({
-    # The generated SDK types of the Speed Test app, which sdk-types verifies are current.
-    "sdk/python/src/tilo/types/speed_test.py",
     # The serial-console runner os/tests/boot_assessment_rollback.sh takes.
     "os/tests/serial_runner.sh",
 })

@@ -65,7 +65,7 @@ it builds on, so its failure can name a finding in a dependency - a session's ch
 the runtime it builds on, with the file nowhere in the push. That red is main's when the board
 holds it at the base under the dependency's own check or the family's run, compared finding by
 finding; where that log is gone, the board's red at the base stands for a finding whose file
-the push does not change. A check that generates committed files (the fleet, the SDK's types)
+the push does not change. A check that generates committed files (the fleet catalogue)
 fails naming the files not current, so it is judged by what its generator writes: the generator
 runs on the base tree and on this one, and a file whose generated content differs between the
 two is the push's to commit, while one it writes the same at both ends is main's. Where that
@@ -155,13 +155,13 @@ CARGO_REMARKS = (
 # its first diagnostic, and a failure report cut to its first lines showed nothing else.
 PROGRESS = re.compile(r"^\s*(?:Checking|Compiling|Fresh|Building|Blocking|Downloading|Downloaded"
                       r"|Locking|Updating|Adding|Documenting)\s")
-# t's checks that judge generated, committed output: the fleet catalogue, the SDK's types and
-# the published crates' policy. Their failure names the files that are not current, and a check
+# t's checks that judge generated, committed output: the fleet catalogue and the published
+# crates' policy. Their failure names the files that are not current, and a check
 # that declares a `fix` is run on the base tree and on this one: a file whose generated content
 # differs between the two is the push's to commit, and one it writes the same at both ends is
 # main's. A check with no fix, or a generator t cannot run, falls back to the files main's log
 # names, and says so.
-GENERATED_CHECKS = ("app-surfaces", "sdk-policy", "sdk-types")
+GENERATED_CHECKS = ("app-surfaces", "sdk-policy")
 # How a generated-output check says a file is not current (`tilo sdk gen --check`,
 # `tilolang -- surfaces`, `generate_catalogue_fleet.py --check`).
 STALE_LINES = (re.compile(r"^\s*not current: (.+?)\s*$"),
@@ -779,14 +779,13 @@ def scoped_checks(root: Path, push: Push) -> set[str] | None:
 
 # What an app publishes as its surface: its sources, the surface file written from them, and the
 # catalogue entry it commits beside itself (`fleet.json`), which the fleet crate gathers at build
-# time. The SDK's types are generated from these and committed, so a change to one leaves them
-# stale until they are regenerated.
+# time.
 SURFACE_PREFIXES = ("apps/",)
 SURFACE_NAMES = ("surface.json",)
 SURFACE_SUFFIXES = (".tl",)
 # t's checks that judge what an app publishes: its committed surfaces and catalogue entry, and
-# the generated types.
-SURFACE_CHECKS = ("app-surfaces", "sdk-policy", "sdk-types")
+# the published crates' policy.
+SURFACE_CHECKS = ("app-surfaces", "sdk-policy")
 
 
 def surface_change(files: set[str]) -> bool:
@@ -798,17 +797,15 @@ def surface_change(files: set[str]) -> bool:
 def surface_checks(push: Push, named: set[str] | None) -> list[str]:
     """t's checks over what an app publishes, when the push reaches them.
 
-    The SDK's generated types are written from the apps' surfaces and from the action and
-    record types of every crate, so the list of what moves them is t's own: `t scope` names
-    the checks a commit's change touches. A push that reaches one and does not regenerate
-    refuses here, not on main. The surfaces' own gate builds a compiler and an app collection,
-    so it is asked only when the push changes an app's published surface; a manifest or a crate
-    elsewhere moves the SDK's types without it.
+    `t scope` names the checks a commit's change touches; a push that reaches one and leaves
+    its output stale refuses here, not on main. The surfaces' own gate builds a compiler and an
+    app collection, so it is asked only when the push changes an app's published surface; a
+    manifest or a crate elsewhere reaches the crates' policy without it.
     """
-    wanted = list(SURFACE_CHECKS) if surface_change(push.files) else ["sdk-policy", "sdk-types"]
+    wanted = list(SURFACE_CHECKS) if surface_change(push.files) else ["sdk-policy"]
     if named is not None:
         return [name for name in wanted if name in named]
-    # t could not tell: an app's surface alone still moves its catalogue entry and the types.
+    # t could not tell: an app's surface alone still moves its catalogue entry.
     return wanted if surface_change(push.files) else []
 
 
@@ -1806,8 +1803,8 @@ def earlier_pass(root: Path, push: Push, runs: list[Lint],
 def surface_only(root: Path, push: Push, options: argparse.Namespace) -> int:
     """Lint a push that changes an app's published surface and nothing Rust or Cargo.
 
-    An app's sources and surface file move its committed catalogue entry and the SDK's types
-    without a crate of the workspace changing, so the lint has no package to lint and would
+    An app's sources and surface file move its committed catalogue entry without a crate of
+    the workspace changing, so the lint has no package to lint and would
     otherwise say there is nothing to do. The checks that judge the generated files are t's; without t there
     is none to run, as no other check of this lint runs without a cargo.
     """

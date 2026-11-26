@@ -130,7 +130,7 @@ description = "Every route under /v1: paths, errors, idempotency, invocations an
 
 [[page]]
 slug = "rest-api"
-source = "docs/api/openapi.json"
+source = "crates/core/tilo-api/src/v1/openapi.rs"
 generator = "tools/docs/reference/openapi.py"
 section = "Reference"
 nav = "REST API"

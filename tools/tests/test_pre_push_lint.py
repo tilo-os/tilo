@@ -230,12 +230,6 @@ unify = "workspace-unify"
 name = "app-surfaces"
 run = "fixture"
 fix = "fixture"
-
-# The SDK's generated types, judged by the files they name.
-[[check]]
-name = "sdk-types"
-run = "fixture"
-fix = "fixture"
 """
 ARCH = {"amd64": "x86_64", "arm64": "aarch64"}.get(platform.machine().lower(), platform.machine().lower())
 # The toolchain's installed targets, which say whether the page build can be linted here.
@@ -788,27 +782,27 @@ class PrePushLintTests(unittest.TestCase):
         self.with_t()
         self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
         self.commit("feat: an app's surface file")
-        result = self.push(t_scope="app-surfaces sdk-policy sdk-types", t_scope_status=0)
+        result = self.push(t_scope="app-surfaces sdk-policy", t_scope_status=0)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.calls(), ["t test app-surfaces sdk-policy sdk-types --json"])
+        self.assertEqual(self.calls(), ["t test app-surfaces sdk-policy --json"])
 
     def test_a_crate_change_does_not_run_the_surfaces_gate(self):
-        # The surfaces' gate builds a compiler and an app collection; a crate change moves the
-        # SDK's types without it, though t's read sets name both for any change.
+        # The surfaces' gate builds a compiler and an app collection; a crate change reaches the
+        # crates' policy without it, though t's read sets name both for any change.
         self.with_t()
         self.write("native/src/lib.rs", LIB.format(answer=33))
         self.commit("feat: answer 33")
-        result = self.push(t_scope="app-surfaces sdk-types", t_scope_status=0)
+        result = self.push(t_scope="app-surfaces sdk-policy", t_scope_status=0)
         self.assertEqual(result.returncode, 0, result.stderr)
         checks = self.calls()[0].split()
-        self.assertIn("sdk-types", checks)
+        self.assertIn("sdk-policy", checks)
         self.assertNotIn("app-surfaces", checks)
 
     def test_a_stale_catalogue_entry_refuses_the_push_and_names_its_fix(self):
         self.with_t()
         self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
         self.commit("feat: an app's surface file")
-        result = self.push(t_scope="app-surfaces sdk-policy sdk-types", t_scope_status=0,
+        result = self.push(t_scope="app-surfaces sdk-policy", t_scope_status=0,
                            t_outcome="fail",
                            t_excerpt="apps/tl/fixture/fleet.json is stale")
         self.assertEqual(result.returncode, 1)
@@ -833,18 +827,18 @@ class PrePushLintTests(unittest.TestCase):
         head = self.commit("feat: an app's surface file")
         self.fix_patch(head, generated_patch("sdk/a.py", "a0", "A"))
         stale = "not current: sdk/a.py"
-        result = self.push(t_scope="sdk-types", t_scope_status=0, t_outcome="fail",
+        result = self.push(t_scope="app-surfaces", t_scope_status=0, t_outcome="fail",
                            t_excerpt=stale,
-                           t_board=self.board(self.base, check="sdk-types", owner="someone"),
+                           t_board=self.board(self.base, check="app-surfaces", owner="someone"),
                            t_log=stale)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("pushing past 1 red main already has:", result.stderr)
-        self.assertIn(f"sdk-types: main has failed it since {self.base[:12]}, claimed by someone",
+        self.assertIn(f"app-surfaces: main has failed it since {self.base[:12]}, claimed by someone",
                       result.stderr)
         # The base's generator ran once, and this tree's once: the comparison is of content.
         self.assertEqual([call for call in self.calls() if call.startswith("t fix")],
-                         [f"t fix --rev {self.base} sdk-types",
-                          f"t fix --rev {head} sdk-types"])
+                         [f"t fix --rev {self.base} app-surfaces",
+                          f"t fix --rev {head} app-surfaces"])
 
     def test_a_push_that_makes_an_already_stale_file_staler_is_refused(self):
         # Main is stale in a.py for a reason of its own, and this push changes what a.py is
@@ -856,13 +850,13 @@ class PrePushLintTests(unittest.TestCase):
         head = self.commit("feat: an app's surface file")
         self.fix_patch(head, generated_patch("sdk/a.py", "a0", "from the push"))
         stale = "not current: sdk/a.py"
-        result = self.push(t_scope="sdk-types", t_scope_status=0, t_outcome="fail",
+        result = self.push(t_scope="app-surfaces", t_scope_status=0, t_outcome="fail",
                            t_excerpt=stale,
-                           t_board=self.board(self.base, check="sdk-types", owner="someone"),
+                           t_board=self.board(self.base, check="app-surfaces", owner="someone"),
                            t_log=stale)
         self.assertEqual(result.returncode, 1)
         self.assertIn("new: sdk/a.py", result.stderr)
-        self.assertIn("write the generated files back with: t fix sdk-types", result.stderr)
+        self.assertIn("write the generated files back with: t fix app-surfaces", result.stderr)
 
     def test_a_push_that_makes_a_generated_file_stale_is_refused(self):
         self.generated_base({"sdk/a.py": "a0\n", "sdk/c.py": "c0\n"})
@@ -871,20 +865,20 @@ class PrePushLintTests(unittest.TestCase):
         head = self.commit("feat: an app's surface file")
         self.fix_patch(head, generated_patch("sdk/a.py", "a0", "A")
                        + generated_patch("sdk/c.py", "c0", "C"))
-        result = self.push(t_scope="sdk-types", t_scope_status=0, t_outcome="fail",
+        result = self.push(t_scope="app-surfaces", t_scope_status=0, t_outcome="fail",
                            t_excerpt="not current: sdk/a.py\\nnot current: sdk/c.py",
-                           t_board=self.board(self.base, check="sdk-types"),
+                           t_board=self.board(self.base, check="app-surfaces"),
                            t_log="not current: sdk/a.py")
         self.assertEqual(result.returncode, 1)
         self.assertIn("new: sdk/c.py", result.stderr)
         self.assertNotIn("new: sdk/a.py", result.stderr)
-        self.assertIn("write the generated files back with: t fix sdk-types", result.stderr)
+        self.assertIn("write the generated files back with: t fix app-surfaces", result.stderr)
 
     def test_a_generated_check_that_passes_runs_no_generator(self):
         self.generated_base({"sdk/a.py": "a0\n"})
         self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
         self.commit("feat: an app's surface file")
-        result = self.push(t_scope="sdk-types", t_scope_status=0)
+        result = self.push(t_scope="app-surfaces", t_scope_status=0)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse([call for call in self.calls() if call.startswith("t fix")])
 
@@ -909,13 +903,13 @@ class PrePushLintTests(unittest.TestCase):
         self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
         self.commit("feat: an app's surface file")
         stale = "not current: sdk/a.py"
-        result = self.push(t_scope="sdk-types", t_scope_status=0, t_outcome="fail",
+        result = self.push(t_scope="app-surfaces", t_scope_status=0, t_outcome="fail",
                            t_excerpt=stale,
-                           t_board=self.board(self.base, check="sdk-types", owner="someone"),
+                           t_board=self.board(self.base, check="app-surfaces", owner="someone"),
                            t_log=stale, t_fix_status=2,
                            t_fix_error="the server failed: no such check")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("sdk-types: judging by the files main's log names alone", result.stderr)
+        self.assertIn("app-surfaces: judging by the files main's log names alone", result.stderr)
         self.assertIn("no such check", result.stderr)
 
     def test_a_bases_generated_output_is_kept_for_the_next_push_off_it(self):
@@ -924,24 +918,24 @@ class PrePushLintTests(unittest.TestCase):
         self.generated_base({"sdk/a.py": "a0\n"})
         self.fix_patch(self.base, generated_patch("sdk/a.py", "a0", "A"))
         stale = "not current: sdk/a.py"
-        board = self.board(self.base, check="sdk-types", owner="someone")
+        board = self.board(self.base, check="app-surfaces", owner="someone")
         self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\n')
         first = self.commit("feat: an app's surface file")
         self.fix_patch(first, generated_patch("sdk/a.py", "a0", "A"))
-        result = self.push(t_scope="sdk-types", t_scope_status=0, t_outcome="fail",
+        result = self.push(t_scope="app-surfaces", t_scope_status=0, t_outcome="fail",
                            t_excerpt=stale, t_board=board, t_log=stale)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([call for call in self.calls() if call.startswith("t fix")],
-                         [f"t fix --rev {self.base} sdk-types",
-                          f"t fix --rev {first} sdk-types"])
+                         [f"t fix --rev {self.base} app-surfaces",
+                          f"t fix --rev {first} app-surfaces"])
         self.write("apps/tl/fixture/app.ids", 'id "so.tilo.fixture"\nsecond\n')
         second = self.commit("feat: the app's entry says more")
         self.fix_patch(second, generated_patch("sdk/a.py", "a0", "A"))
-        result = self.push(t_scope="sdk-types", t_scope_status=0, t_outcome="fail",
+        result = self.push(t_scope="app-surfaces", t_scope_status=0, t_outcome="fail",
                            t_excerpt=stale, t_board=board, t_log=stale)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual([call for call in self.calls() if call.startswith("t fix")],
-                         [f"t fix --rev {second} sdk-types"])
+                         [f"t fix --rev {second} app-surfaces"])
 
     def test_a_compile_failure_in_a_package_the_push_does_not_change_passes(self):
         self.with_t()
@@ -1530,29 +1524,29 @@ class SurfaceGateTests(unittest.TestCase):
         return module.surface_checks(module.Push(set(files), [], [], []), named)
 
     def test_an_app_source_names_the_surface_and_sdk_checks(self):
-        self.assertEqual(self.names({"app-surfaces", "sdk-policy", "sdk-types"},
+        self.assertEqual(self.names({"app-surfaces", "sdk-policy"},
                                     "apps/tl/shell/asking.tl"),
-                         ["app-surfaces", "sdk-policy", "sdk-types"])
+                         ["app-surfaces", "sdk-policy"])
 
     def test_a_tilolang_source_under_a_crate_names_them_too(self):
-        self.assertEqual(self.names({"app-surfaces", "sdk-policy", "sdk-types"},
+        self.assertEqual(self.names({"app-surfaces", "sdk-policy"},
                                     "crates/lang/tilolang/std/std.tl"),
-                         ["app-surfaces", "sdk-policy", "sdk-types"])
+                         ["app-surfaces", "sdk-policy"])
 
     def test_a_surface_file_names_them(self):
         self.assertEqual(self.names({"app-surfaces"}, "apps/discord/surface.json"),
                          ["app-surfaces"])
 
     def test_a_crate_change_outside_a_surface_does_not_name_the_surfaces_gate(self):
-        # sdk-types follows every crate's actions and records; the surfaces' gate builds a
-        # compiler and an app collection, so only an app's published surface asks for it.
-        self.assertEqual(self.names({"app-surfaces", "sdk-types"},
+        # sdk-policy follows every published crate; the surfaces' gate builds a compiler and
+        # an app collection, so only an app's published surface asks for it.
+        self.assertEqual(self.names({"app-surfaces", "sdk-policy"},
                                     "crates/core/tilo-actions/src/lib.rs"),
-                         ["sdk-types"])
+                         ["sdk-policy"])
 
     def test_without_ts_answer_a_surface_change_names_the_checks(self):
         self.assertEqual(self.names(None, "apps/tl/shell/asking.tl"),
-                         ["app-surfaces", "sdk-policy", "sdk-types"])
+                         ["app-surfaces", "sdk-policy"])
         self.assertEqual(self.names(None, "crates/core/tilo-actions/src/lib.rs"), [])
 
 
@@ -1726,10 +1720,10 @@ class InheritedRedTests(unittest.TestCase):
                           "crates/desktop/app-fleet/src/generated.rs"})
 
     def generated(self, module, excerpt, main_text, **board):
-        item = self.item("a" * 40, check="sdk-types")
+        item = self.item("a" * 40, check="app-surfaces")
         return self.board(module, [item], texts={"l": main_text},
                           ancestor=lambda since, of: True, **board).inherit_generated(
-            {"check": "sdk-types", "outcome": "fail", "excerpt": excerpt})
+            {"check": "app-surfaces", "outcome": "fail", "excerpt": excerpt})
 
     def test_a_generated_file_main_is_stale_in_too_is_inherited(self):
         module = pre_push_lint()
@@ -1756,7 +1750,7 @@ class InheritedRedTests(unittest.TestCase):
     def test_a_generated_file_with_no_board_red_is_named_new(self):
         module = pre_push_lint()
         board = self.board(module, [], ancestor=lambda since, of: True)
-        found, why = board.inherit_generated({"check": "sdk-types", "outcome": "fail",
+        found, why = board.inherit_generated({"check": "app-surfaces", "outcome": "fail",
                                              "excerpt": "not current: sdk/c.py"})
         self.assertIsNone(found)
         self.assertEqual(why, "new: sdk/c.py")

@@ -47,7 +47,7 @@ catalogue:
 ```sh
 tilo sdk gen --lang python -w jane-doe    # writes tilo_types/<app>.py
 tilo sdk gen --lang ts -w jane-doe        # writes tilo-types/<app>.ts
-tilo sdk gen --lang python --check        # says whether the checked-in types are current
+tilo sdk gen --lang python --check        # says whether the types in tilo_types/ are current
 ```
 
 - One module per app, and one class per resource kind in it. Fields are typed properties,
@@ -66,9 +66,9 @@ tilo sdk gen --lang python --check        # says whether the checked-in types ar
 - A class is the SDK's own resource, so a name it already answers to (a field called `path`,
   an action called `refresh`) is reached through `fields[…]` and `action("…")` instead; the
   generated file says so where it is.
-- The package ships the built-in apps' types, and `tilo sdk gen --check` is what the
-  `sdk-types` check runs, so a surface change writes them again. `gen -w` writes the apps
-  installed in that workspace, including ones added later: each app's compiled surface is what
+- The package ships the built-in apps' types, written by `tilo sdk gen` when it is built, so
+  a release carries its apps' surfaces as they are; the types are never committed. `gen -w`
+  writes the apps installed in that workspace, including ones added later: each app's compiled surface is what
   the workspace's own read of the app answers, so an app that never ran there is not among
   them. Without generated types, everything still works through `ws.do(path, **args)`.
 - Python imports an app's module directly (`from tilo.types.pdf_viewer import Document`);

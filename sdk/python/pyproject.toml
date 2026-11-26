@@ -21,6 +21,11 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.build]
+# The apps' types are written by `tilo sdk gen` at build time and Git ignores them, as hatchling
+# would too: the sdist and the wheel carry them all the same (tools/ci/sdk-gen.sh).
+artifacts = ["src/tilo/types/"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/tilo"]
 

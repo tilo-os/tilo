@@ -12,6 +12,8 @@ os/hardware/firmware/generic/*
 !os/hardware/firmware/generic/.gitkeep
 os/tilo-desktop
 **/target/
+# The API's OpenAPI description, written by `tilo sdk gen --lang openapi` where it is read.
+/docs/api/openapi.json
 # rpmbuild's _topdir for the host session package (dist/rpm/build-rpm.sh):
 # staged payload, tarball and the built RPMs.
 dist/rpm/build/

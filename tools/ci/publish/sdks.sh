@@ -58,11 +58,14 @@ work=
 trap 'rm -rf -- "${work:-}"' EXIT
 
 # Stage both SDKs in WORK, with VERSION written into their manifests: the version a tag would
-# publish. A tag run stages them here too, so the run that publishes builds what the check built.
+# publish, and the apps' types the sdk-gen check wrote, which Git does not carry
+# (tools/ci/sdk-gen.sh). A tag run stages them here too, so the run that publishes builds what
+# the check built.
 stage() {
   work=$(mktemp -d "$scratch/sdks.XXXXXX")
   cp -a sdk/typescript sdk/python "$work/"
   rm -rf "$work/typescript/node_modules"
+  bash tools/ci/sdk-gen.sh place "$work"
   python3 - "$work/typescript/package.json" "$work/python/pyproject.toml" "$1" <<'PY'
 import json, pathlib, re, sys
 
@@ -121,12 +124,12 @@ build_python() {
 }
 
 # What the built Python package says it is: the metadata PyPI would index, and that the module
-# inside stays `tilo`, the name `import tilo` uses. PEP 440 respells a version its own way
+# inside stays `tilo`, the name `import tilo` uses, with the apps' types beside it. PEP 440 respells a version its own way
 # (0.4.0-rc.1 as 0.4.0rc1) in the metadata and in the file names, so both sides are compared
 # with separators dropped: the spelling is the build backend's, the version in it is the tag's.
 check_python() {
   python3 - "$work/python/dist" "$name" "$1" <<'PY'
-import pathlib, re, sys, zipfile
+import pathlib, re, sys, tarfile, zipfile
 
 def plain(text):
     return re.sub(r"[-_.]", "", text).lower()
@@ -144,10 +147,15 @@ with zipfile.ZipFile(wheel[-1]) as archive:
     if fields.get("Name") != name or plain(fields.get("Version", "")) != plain(version):
         raise SystemExit(f"{wheel[-1].name}: METADATA names {fields.get('Name')}@"
                          f"{fields.get('Version')}, not {name}@{version}")
-    if "tilo/__init__.py" not in archive.namelist():
-        raise SystemExit(f"{wheel[-1].name}: carries no tilo module")
-if not [path for path in files if path.suffix == ".gz" and plain(path.name).startswith(expected)]:
+    for module in ("tilo/__init__.py", "tilo/types/__init__.py"):
+        if module not in archive.namelist():
+            raise SystemExit(f"{wheel[-1].name}: carries no {module}")
+sdists = [path for path in files if path.suffix == ".gz" and plain(path.name).startswith(expected)]
+if not sdists:
     raise SystemExit(f"{dist}: the build left no {name} {version} sdist")
+with tarfile.open(sdists[-1]) as archive:
+    if not any(member.endswith("/src/tilo/types/__init__.py") for member in archive.getnames()):
+        raise SystemExit(f"{sdists[-1].name}: carries no src/tilo/types/__init__.py")
 PY
   cd "$work/python"
   # Nothing here holds an identity a trusted publisher could trust (PyPI knows no Forgejo), so

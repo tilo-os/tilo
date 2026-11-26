@@ -7,3 +7,5 @@ dist/
 src/tilo/_native.*.so
 src/tilo/_native.so
 src/tilo/tilo-automerge-worker
+# The apps' types, written by `tilo sdk gen` at build time (tools/ci/sdk-gen.sh).
+src/tilo/types/

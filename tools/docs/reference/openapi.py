@@ -9,15 +9,20 @@ reference cannot quietly list a call nobody explained.
 
     openapi.py --root <repository> --out <page.md> [--spec <openapi.json>]
 
-Without `--spec`, the one `openapi*.json` under the repository is read; a tree
-with none, or with several, names them and asks for the flag.
+Without `--spec`, the description is written from the repository by `tilo sdk
+gen --lang openapi`, as the server serves it: with `$TILO` when it names a
+built `tilo`, else built from the tree. It is generated output, never committed.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
+import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -71,7 +76,13 @@ def generate(arguments: argparse.Namespace) -> str:
 
 
 def description(root: Path, named: Path | None) -> dict[str, Any]:
-    path = named if named is not None else find(root)
+    if named is None:
+        with tempfile.TemporaryDirectory() as out:
+            return read_description(written(root, Path(out)))
+    return read_description(named)
+
+
+def read_description(path: Path) -> dict[str, Any]:
     try:
         spec = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -84,21 +95,14 @@ def description(root: Path, named: Path | None) -> dict[str, Any]:
     return spec
 
 
-def find(root: Path) -> Path:
-    """The one OpenAPI description in the tree."""
-    skipped = {".git", ".claude", "node_modules", "target", "vendor"}
-    found = sorted(
-        path for path in root.rglob("openapi*.json")
-        if not any(part in skipped for part in path.relative_to(root).parts)
-    )
-    if not found:
-        raise page.ReferenceError(
-            "no openapi*.json under the repository: name the description with --spec"
-        )
-    if len(found) > 1:
-        listed = ", ".join(path.relative_to(root).as_posix() for path in found)
-        raise page.ReferenceError(f"more than one OpenAPI description ({listed}): name one with --spec")
-    return found[0]
+def written(root: Path, out: Path) -> Path:
+    """The description `tilo sdk gen` writes from the repository, in OUT."""
+    tilo = [os.environ["TILO"]] if os.environ.get("TILO") else [
+        os.environ.get("CARGO") or "cargo", "run", "--locked", "-q", "-p", "tilo-cli", "--"]
+    command = [*tilo, "sdk", "gen", "--lang", "openapi", "--out", str(out)]
+    if subprocess.run(command, cwd=root, check=False).returncode != 0:
+        raise page.ReferenceError(f"{shlex.join(command)} wrote no description")
+    return out / "openapi.json"
 
 
 def bearer(spec: dict[str, Any]) -> bool:
@@ -389,5 +393,5 @@ if __name__ == "__main__":
     sys.exit(page.main(
         generate,
         __doc__ or "Write a REST reference from an OpenAPI description.",
-        (("--spec", "the OpenAPI description to read, when the tree holds more than one"),),
+        (("--spec", "the OpenAPI description to read instead of the one `tilo sdk gen` writes"),),
     ))

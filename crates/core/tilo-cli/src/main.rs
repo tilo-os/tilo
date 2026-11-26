@@ -2213,7 +2213,7 @@ mod tests {
         );
     }
 
-    /// `sdk gen` writes the types of the apps the checkout commits unless `-w` names a
+    /// `sdk gen` writes the types of the apps this build ships unless `-w` names a
     /// workspace, so it reads no login and needs no host.
     #[test]
     fn sdk_gen_needs_no_login() {

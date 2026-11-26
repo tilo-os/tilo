@@ -119,12 +119,6 @@ class PythonSdkReferenceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("9.9.9", result.stderr)
 
-    def test_the_generated_types_package_is_expected(self) -> None:
-        shutil.rmtree(self.root / "sdk/python/src/tilo/types")
-        result = self.generate()
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("sdk/python/src/tilo/types is not there", result.stderr)
-
 
 if __name__ == "__main__":
     unittest.main()
