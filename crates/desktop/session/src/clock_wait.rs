@@ -221,15 +221,16 @@ impl ClockWait {
             }
             _ => t("identity-clock-wait-body"),
         };
-        Container::new()
-            .filling()
-            .with_background()
-            .with_centered_max_width(560.0)
-            .with_child(Box::new(
-                EmptyState::new(t("identity-clock-wait-title"))
-                    .with_message(body)
-                    .with_icon(Icon::CircleAlert),
-            ))
+        crate::setup::on_ground(Box::new(
+            Container::new()
+                .filling()
+                .with_centered_max_width(560.0)
+                .with_child(Box::new(
+                    EmptyState::new(t("identity-clock-wait-title"))
+                        .with_message(body)
+                        .with_icon(Icon::CircleAlert),
+                )),
+        ))
     }
 }
 

@@ -1860,6 +1860,46 @@ fn a_login_the_daemon_did_not_start_says_so_and_logs_out() {
         session.step(Duration::from_millis(1)).unwrap();
     }
     assert!(session.setup_up(), "nothing takes it down but the person");
+    // It stands in front of the whole desktop on the person's wallpaper: around the failure, which
+    // stands in the middle, the screen is the wallpaper's smooth ground, with none of the desktop's
+    // bar, dock or windows drawn over it (their words and icons are sharp edges).
+    let shot = session
+        .compositor()
+        .screenshot("HEADLESS-1")
+        .expect("a frame");
+    if let Some(dir) = std::env::var_os("TL_SHELL_SHOTS") {
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        image::save_buffer(
+            dir.join("login-not-started.png"),
+            &shot.rgba,
+            shot.width,
+            shot.height,
+            image::ColorType::Rgba8,
+        )
+        .unwrap();
+    }
+    let pixel = |x: u32, y: u32| {
+        let at = usize::try_from((y * shot.width + x) * 4).unwrap();
+        [shot.rgba[at], shot.rgba[at + 1], shot.rgba[at + 2]]
+    };
+    let (width, height) = (shot.width, shot.height);
+    let around = |x: u32, y: u32| {
+        y < height / 5 || y >= height * 4 / 5 || x < width / 6 || x >= width * 5 / 6
+    };
+    for y in 0..height {
+        for x in 0..width - 1 {
+            if !around(x, y) || !around(x + 1, y) {
+                continue;
+            }
+            let (here, next) = (pixel(x, y), pixel(x + 1, y));
+            assert!(
+                here.iter().zip(next).all(|(a, b)| a.abs_diff(b) <= 4),
+                "only the wallpaper's ground shows around the failure, yet ({x}, {y}) is \
+                 {here:?} beside {next:?}"
+            );
+        }
+    }
     let names: Vec<String> = session
         .controls()
         .into_iter()

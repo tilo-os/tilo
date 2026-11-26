@@ -227,27 +227,36 @@ fn ceremony(view: OnboardingView, placement: Placement) -> Surface {
 fn not_started(commands: &Rc<RefCell<Vec<SessionCommand>>>) -> ui::widget::Container {
     let log_out = Rc::clone(commands);
     let restart = Rc::clone(commands);
+    let face = ui::widget::arrival_failure(
+        t("session-not-started-title"),
+        t("session-not-started-body"),
+    )
+    .with_action(
+        ui::widget::Button::new("session-not-started-log-out", &t("session-power-log-out"))
+            .on_click(move || log_out.borrow_mut().push(SessionCommand::LogOut)),
+    )
+    .with_secondary_action(
+        ui::widget::Button::new("session-not-started-restart", &t("session-power-restart"))
+            .role(ui::widget::ButtonRole::Plain)
+            .on_click(move || {
+                restart
+                    .borrow_mut()
+                    .push(SessionCommand::Power(Effect::Restart));
+            }),
+    );
+    on_ground(Box::new(ui::widget::WindowFailure::new(face)))
+}
+
+/// `content` on the person's wallpaper, covering every output: what stands before the session is
+/// opaque, so nothing of the desktop under it shows through.
+pub(crate) fn on_ground(content: Box<dyn ui::Widget>) -> ui::widget::Container {
     ui::widget::Container::new()
         .filling()
-        .with_background()
-        .with_centered_max_width(560.0)
+        .with_no_padding()
         .with_child(Box::new(
-            ui::widget::arrival_failure(
-                t("session-not-started-title"),
-                t("session-not-started-body"),
-            )
-            .with_action(
-                ui::widget::Button::new("session-not-started-log-out", &t("session-power-log-out"))
-                    .on_click(move || log_out.borrow_mut().push(SessionCommand::LogOut)),
-            )
-            .with_secondary_action(
-                ui::widget::Button::new("session-not-started-restart", &t("session-power-restart"))
-                    .on_click(move || {
-                        restart
-                            .borrow_mut()
-                            .push(SessionCommand::Power(Effect::Restart));
-                    }),
-            ),
+            ui::widget::Stack::new()
+                .push(Box::new(ui::widget::Backdrop::new()))
+                .push(content),
         ))
 }
 
