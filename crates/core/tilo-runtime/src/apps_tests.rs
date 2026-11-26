@@ -758,6 +758,7 @@ tilo_test_env::scenario! {
             (&sockets, &original),
             (Shows::Window, None),
             Some(hosted),
+            &Runs::default(),
         )
         .unwrap();
         launch.release_registration().unwrap();
@@ -1103,7 +1104,7 @@ view value(v: Value) {
         let launch = block_on_owned({
             let (apps, app) = (Arc::clone(&apps), id.clone());
             async move {
-                let launch = apps.start_showing(&app, WORKSPACE, Shows::Nothing, None)?;
+                let launch = apps.start_showing(&app, WORKSPACE, Shows::Nothing, None, &Runs::default())?;
                 apps.started(launch, &app).await
             }
         })
@@ -1785,7 +1786,7 @@ fn a_launch_asks_the_launcher_for_the_installed_packages_own_program() {
     let launch = block_on_owned({
         let apps = Arc::clone(&apps);
         async move {
-            let launch = apps.start_showing(VIEWER, WORKSPACE, Shows::Nothing, None)?;
+            let launch = apps.start_showing(VIEWER, WORKSPACE, Shows::Nothing, None, &Runs::default())?;
             apps.started(launch, VIEWER).await
         }
     })

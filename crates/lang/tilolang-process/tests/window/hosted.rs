@@ -83,8 +83,6 @@ mod marks;
 mod members;
 #[path = "hosted/narrow.rs"]
 mod narrow;
-#[path = "hosted/origins.rs"]
-mod origins;
 #[path = "hosted/personal.rs"]
 mod personal;
 #[path = "hosted/places.rs"]

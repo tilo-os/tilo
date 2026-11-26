@@ -154,6 +154,10 @@ enum Cmd {
         /// instances attach over (`LaunchOptions::tilolang_connector`).
         #[arg(long, conflicts_with_all = ["service", "tilolang_process", "wayland_socket", "open", "open_uri"])]
         tilolang_connector: Option<String>,
+        /// The connection to the app's origin connector the device's daemon made, handed to this
+        /// process as the `tilolang-origin-reader` service (`LaunchOptions::tilolang_origin_reader`).
+        #[arg(long, conflicts_with_all = ["service", "tilolang_connector"])]
+        tilolang_origin_reader: bool,
         /// Trusted service argv, forwarded verbatim after the entrypoint.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         rest: Vec<String>,
@@ -682,6 +686,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         service,
         tilolang_process,
         tilolang_connector,
+        tilolang_origin_reader,
         rest,
     } = command
     else {
@@ -712,6 +717,7 @@ fn run_cli_args(command: Cmd) -> Option<RunCliArgs> {
         service,
         tilolang_process,
         tilolang_connector,
+        tilolang_origin_reader,
         rest,
     })
 }
@@ -931,6 +937,7 @@ struct RunCliArgs {
     service: bool,
     tilolang_process: bool,
     tilolang_connector: Option<String>,
+    tilolang_origin_reader: bool,
     rest: Vec<String>,
 }
 
@@ -995,6 +1002,7 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         headless_console: args.headless_console,
         tilolang_process: args.tilolang_process,
         tilolang_connector: args.tilolang_connector,
+        tilolang_origin_reader: args.tilolang_origin_reader,
         granted: granted_from(args.grants),
     };
     // Held from before the package is verified until the app exits, so an update meanwhile leaves the
@@ -1463,6 +1471,7 @@ fn run_installed(
         headless_console: None,
         tilolang_process: false,
         tilolang_connector: None,
+        tilolang_origin_reader: false,
         granted: Vec::new(),
     };
     match launcher::run::launch_with(&manifest, &entry.payload_root, &opts) {

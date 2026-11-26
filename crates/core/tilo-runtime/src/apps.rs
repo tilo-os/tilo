@@ -72,6 +72,18 @@ enum Shows {
     Nothing,
     /// No window, for the app's long-lived connection: it runs until the device stops it.
     Connection,
+    /// No window, for one of the app's captures: the process runs the app's own capture and
+    /// ends, and is no connection of the app's to attest or to take a call with.
+    Capture,
+}
+
+/// What a start is handed beyond the installed package: the app's own arguments (a capture names
+/// the scenario it captures) and the connection to its origin's connector, which the device made
+/// and the process running the app's code here reaches.
+#[derive(Default)]
+struct Runs {
+    args: Vec<String>,
+    origin: Option<runtime_portal::process_link::Descriptor>,
 }
 
 /// A start that has already happened: the answer a call gets when the process that takes it
@@ -843,6 +855,38 @@ impl Apps {
         .map_err(|error| format!("could not watch {app_id}: {error}"))
     }
 
+    /// Run one of the app's captures, the way a window launch runs the app: the device starts the
+    /// package it has installed, with the connector it runs for the app's origin and the app's
+    /// own capture arguments, and waits for the process to end. Answers its exit code.
+    ///
+    /// # Errors
+    /// The app is not installed, has no window, its connector cannot be started, the launcher
+    /// refuses it, or the capture ends without a status.
+    pub(crate) fn capture(
+        &self,
+        app_id: &str,
+        workspace: &str,
+        args: &[String],
+    ) -> Result<i32, String> {
+        if args.is_empty() {
+            return Err("a capture names what it captures".to_owned());
+        }
+        let origin = self.origin_connection(app_id, workspace)?;
+        let launch = self.start_showing(
+            app_id,
+            workspace,
+            Shows::Capture,
+            None,
+            &Runs {
+                args: args.to_vec(),
+                origin,
+            },
+        )?;
+        launch
+            .wait()
+            .ok_or_else(|| format!("{app_id}'s capture ended without a status"))
+    }
+
     /// The installed package `app_id`, window or none.
     pub(crate) fn installed_app(&self, app_id: &str) -> Result<InstalledApp, String> {
         self.installed()
@@ -859,7 +903,7 @@ impl Apps {
     /// The workspace is not served here, the app is not installed, no
     /// launcher can start it, or it did not come up.
     pub async fn start(&self, app_id: &str, workspace: &str) -> Result<Launch, String> {
-        let launch = self.start_showing(app_id, workspace, Shows::Window, None)?;
+        let launch = self.start_showing(app_id, workspace, Shows::Window, None, &Runs::default())?;
         self.started(launch, app_id).await
     }
 
@@ -883,6 +927,7 @@ impl Apps {
         workspace: &str,
         shows: Shows,
         open: Option<&str>,
+        runs: &Runs,
     ) -> Result<Launch, String> {
         if !self.launches_into(workspace) {
             return Err(format!(
@@ -917,10 +962,18 @@ impl Apps {
             &original,
             shows,
             open_uri.as_deref(),
+            runs,
         )?;
         #[cfg(target_os = "macos")]
-        let mut launch =
-            macos::launch(self, &app, workspace, &sockets, shows, open_uri.as_deref())?;
+        let mut launch = macos::launch(
+            self,
+            &app,
+            workspace,
+            &sockets,
+            shows,
+            open_uri.as_deref(),
+            runs,
+        )?;
         #[cfg(windows)]
         let mut launch = {
             let _ = &sockets;
@@ -931,9 +984,12 @@ impl Apps {
             let _ = (&app, &sockets, shows, open_uri);
             return Err("refusing to launch: no app sandbox on this platform".into());
         };
-        if !self
-            .launched
-            .record_showing(launch.pid, &app.app_id, workspace, shows, open)
+        // A capture ends by itself, and is no connection of the app's: nothing attests it and
+        // nothing takes a call with it.
+        if shows != Shows::Capture
+            && !self
+                .launched
+                .record_showing(launch.pid, &app.app_id, workspace, shows, open)
         {
             launch.kill();
             return Err(format!(
@@ -1072,7 +1128,7 @@ impl Apps {
         shows: Shows,
         record: Option<&str>,
     ) -> Result<Option<u64>, String> {
-        let launch = self.start_showing(app, workspace, shows, record)?;
+        let launch = self.start_showing(app, workspace, shows, record, &Runs::default())?;
         let ticket = self.launched.ticket(launch.pid);
         let launch = self.started(launch, app).await?;
         self.watch(app, launch, || {})
@@ -1091,7 +1147,7 @@ impl Apps {
         shows: Shows,
         record: Option<&str>,
     ) -> Result<Option<u64>, String> {
-        let launch = self.start_showing(app, workspace, shows, record)?;
+        let launch = self.start_showing(app, workspace, shows, record, &Runs::default())?;
         let ticket = self.launched.ticket(launch.pid);
         self.watch(app, launch, || {})
             .map_err(|error| format!("could not watch the launched app: {error}"))?;
@@ -1475,6 +1531,11 @@ pub struct Launch {
     /// handed, and for any other launch.
     #[cfg(target_os = "linux")]
     window_link: Option<runtime_portal::process_link::Descriptor>,
+    /// The connection to the app's origin connector, released with the launcher's hold so the
+    /// process running the app's instance here reaches the service over it; `None` for a launch
+    /// the device made none for. A hosted window has none: its host reaches the connector.
+    #[cfg(target_os = "linux")]
+    origin_reader: Option<std::os::fd::OwnedFd>,
     #[cfg(target_os = "macos")]
     app: launcher_macos::LaunchedApp,
     /// A tilolang window's link, which its patch connection came on: held while the window runs.
@@ -1507,8 +1568,13 @@ impl Launch {
         #[cfg(target_os = "linux")]
         if let Some(hold) = self.registration.take() {
             // A hosted window's link goes with the release: the launcher hands it to the window,
-            // whose patch connection is waiting on it.
-            return match self.window_link.take() {
+            // whose patch connection is waiting on it. A process running the app's instance here
+            // is handed the connection to its origin's connector the same way.
+            let link = self
+                .window_link
+                .take()
+                .or_else(|| self.origin_reader.take());
+            return match link {
                 Some(link) => hold.release_with_window_link(std::os::fd::AsFd::as_fd(&link)),
                 None => hold.release(),
             };

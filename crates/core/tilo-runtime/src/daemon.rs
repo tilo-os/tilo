@@ -3367,6 +3367,19 @@ fn start_requested(
             app.app_id
         )));
     }
+    if let Some(capture) = &request.capture {
+        let args = capture.args()?;
+        let code = apps
+            .capture(&app.app_id, &serving, args)
+            .map_err(io::Error::other)?;
+        if code != 0 {
+            return Err(io::Error::other(format!(
+                "{}'s capture failed with exit code {code}",
+                app.app_id
+            )));
+        }
+        return Ok(json!({"captured": true}));
+    }
     // The app's default presentation is one: a second start shows the one running, and while the
     // first has shown nothing the launch's own lock waits for it, as a launch takes it.
     let guard = if request.presentation {
@@ -3391,11 +3404,13 @@ fn start_requested(
     Ok(json!({"started": true}))
 }
 
-/// Ask the daemon at `profile` to start an app, and answer what it said.
+/// Ask the daemon at `profile` to start an app, and answer what it said: a capture answers once
+/// the app it runs has ended, so the caller waits as long as the capture takes.
 #[cfg(unix)]
-fn ask_launch(profile: &Path, request: &Value) -> io::Result<Value> {
+fn ask_launch(profile: &Path, request: &Value, capture: bool) -> io::Result<Value> {
     let stream = tilo_files::native::socket::connect(&native_socket(profile)?)?;
-    stream.set_read_timeout(Some(ANSWERING))?;
+    // A capture answers once the app it runs has ended, however long that takes.
+    stream.set_read_timeout(if capture { None } else { Some(ANSWERING) })?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
     (&stream).write_all(format!("{request}\n").as_bytes())?;
     let mut answer = String::new();
@@ -3411,7 +3426,12 @@ fn ask_launch(profile: &Path, request: &Value) -> io::Result<Value> {
 /// # Errors
 /// The daemon does not run, the app is not installed, or the launcher refuses it.
 #[cfg(unix)]
-pub fn run_app(profile: &Path, app_id: &str, workspace: Option<&str>) -> io::Result<()> {
+pub fn run_app(
+    profile: &Path,
+    app_id: &str,
+    workspace: Option<&str>,
+    capture: Option<&[String]>,
+) -> io::Result<()> {
     let status = running(profile)?;
     let workspace = workspace.unwrap_or(&status.workspace).to_owned();
     if workspace.is_empty() {
@@ -3422,10 +3442,18 @@ pub fn run_app(profile: &Path, app_id: &str, workspace: Option<&str>) -> io::Res
     // Starting the app of the workspace this computer serves is its default presentation: a
     // second start shows the window already running.
     let presentation = workspace == status.workspace;
-    let request = runtime_portal::native::LaunchRequest::new(app_id, &workspace, presentation);
+    let mut request = runtime_portal::native::LaunchRequest::new(
+        app_id,
+        &workspace,
+        presentation && capture.is_none(),
+    );
+    if let Some(args) = capture {
+        request = request.capturing(args);
+    }
     let answer = ask_launch(
         profile,
         &serde_json::to_value(request).map_err(io::Error::other)?,
+        capture.is_some(),
     )?;
     match answer.get("error").and_then(Value::as_str) {
         Some(error) => Err(io::Error::other(error.to_owned())),
@@ -3439,7 +3467,12 @@ pub fn run_app(profile: &Path, app_id: &str, workspace: Option<&str>) -> io::Res
 /// # Errors
 /// Always [`io::ErrorKind::Unsupported`].
 #[cfg(windows)]
-pub fn run_app(_profile: &Path, _app_id: &str, _workspace: Option<&str>) -> io::Result<()> {
+pub fn run_app(
+    _profile: &Path,
+    _app_id: &str,
+    _workspace: Option<&str>,
+    _capture: Option<&[String]>,
+) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "--run-app attaches a Unix app to the daemon; a Windows app is handed its services by \

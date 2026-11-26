@@ -16,10 +16,15 @@ situations names one (`scenario`), and the app refuses a capture without.
 Services (`kind = "service"` in a native app's manifest: the launcher, the
 on-screen keyboard the shell draws, compute workers) have no window and are
 skipped. A tilolang package (`kind = "tilolang"`) opens a window like a native
-app, and is driven through the same `--headless-drive` spec: its one runtime
-binary reads the package's compiled payload from `TILO_APP_MODULE`.
+app, and is driven through the same `--headless-drive` spec: the launcher starts
+it on the tilolang runtime bundle the build baked beside the apps.
 For every situation the app runs once, headless, in a fresh profile (its own
-HOME, XDG directories and runtime directory; no display, no session bus), and
+HOME, XDG directories and runtime directory; no display, no session bus): a
+daemon started there installs the build beside these apps
+(`build.sh` stages one per app) as the device's own development build and
+starts it on the capture (`tilo-runtime --run-app … --headless-drive`), with the
+connectors the device runs for the app's origins. No app binary is run by this
+script, so what a capture shows is what a person's app reaches on a device. It
 captures four pictures after the steps settle, each the whole window as a
 session shows it, the desktop's window bar above the app's frame (the harness
 draws the bar and hosts the app's slots, search and History in it): dark and
@@ -49,6 +54,7 @@ import json
 import re
 import os
 import shutil
+import socket as socket_module
 import subprocess
 import sys
 import tempfile
@@ -118,8 +124,8 @@ class Plan:
     repositories: list = field(default_factory=list)
     # Sizes beyond `VIEWPORTS` its pictures are taken at (`EXTRA_VIEWPORTS`).
     sizes: list = field(default_factory=list)
-    # A tilolang package runs on `<bin-dir>/tilolang-process`, its payload under
-    # `<bin-dir>/modules/<app>`; a native app has its own binary instead.
+    # A tilolang package is installed by the daemon from `<out>/install/<app>`; a native app has
+    # its own binary instead.
     tilolang: bool = False
 
 
@@ -285,11 +291,197 @@ def captures(app_dir: Path, situation: Situation, sizes: list) -> list[dict]:
     return shots
 
 
+def daemon_tail(log: Path, lines: int = 120) -> str:
+    """What the disposable profile's daemon said last: the app's own output lands there."""
+    try:
+        text = log.read_text(errors="replace")
+    except OSError:
+        return ""
+    return "\n".join(text.strip().splitlines()[-lines:])
+
+
+def daemon_found(socket: Path) -> tuple[str, str]:
+    """Found the person at `socket`, the call a computer's first `tilo` command makes: the daemon
+    keeps their root and their workspaces, and the connection is theirs from then on."""
+    ask = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {"name": "tilo_do", "arguments": {"path": "devices#found", "args": {}}},
+    }
+    try:
+        with socket_module.socket(socket_module.AF_UNIX) as native:
+            native.settimeout(120)
+            native.connect(str(socket))
+            native.sendall((json.dumps(ask) + "\n").encode())
+            answer = native.makefile().readline()
+    except OSError as error:
+        return f"the device did not found its person: {error}", ""
+    if '"error"' in answer or '"isError":true' in answer.replace(" ", ""):
+        if "this device is a person's already" not in answer:
+            return f"the device founded no person: {answer.strip()}", answer
+        return "", answer
+    return "", answer
+
+
+def staging_source(runtime: Path, plan: Plan) -> tuple[Path, str] | None:
+    """Where `plan`'s tilolang app is built from, and the runtime its package names: what
+    tools/screenshots/build.sh wrote for the app, which has no development build of its own
+    until the device running it names one."""
+    try:
+        rows = (runtime / "apps.tsv").read_text().splitlines()
+    except OSError:
+        return None
+    for row in rows:
+        name, _, rest = row.partition("\t")
+        if name != plan.app:
+            continue
+        directory, _, runtime_id = rest.rpartition("\t")
+        return Path(directory), runtime_id
+    return None
+
+
+def run_through_daemon(args, env: dict, tmp: Path, plan: Plan, spec: dict) -> tuple[object, str]:
+    """Run the app's situation as a device starts it: a disposable home's daemon founds its
+    person, installs the build tools/screenshots/build.sh staged for `plan` as their own
+    development build, and starts it on the capture, with the connectors it runs for the app's
+    origins. Every situation gets its own home, so no picture reads another's data."""
+    runtime = args.bin_dir.parent
+    source = staging_source(runtime, plan)
+    if source is None:
+        return "no staged build", (
+            f"{runtime}/apps.tsv names no sources for {plan.app}: rerun tools/screenshots/build.sh")
+    source_dir, runtime_id = source
+    env = dict(env)
+    # The person's own device, as a computer's first command founds it: no profile named apart,
+    # and no certificate made before it starts, so the connection to its socket is the person's
+    # own and a development build is theirs to install. Its native endpoint is the one every
+    # tool finds, under XDG_RUNTIME_DIR, short enough for a socket's path.
+    env.pop("TILO_RUNTIME_PROFILE", None)
+    env.pop("TILO_IDENTITY_ROOT", None)
+    env.pop("TILO_APPS_DATA_DIR", None)
+    # No display: a daemon started with one is a session's, and founds no person of its own.
+    env.pop("WAYLAND_DISPLAY", None)
+    env.pop("DISPLAY", None)
+    run_dir = Path(env["XDG_RUNTIME_DIR"])
+    (run_dir / "tilo").mkdir(parents=True, exist_ok=True)
+    (run_dir / "tilo").chmod(0o700)
+    (run_dir / "wayland-0").write_bytes(b"")
+    socket = run_dir / "tilo" / "native.sock"
+    env.update({
+        "TILO_RUNTIME_BUNDLE_DIR": str(runtime / "runtime"),
+        "TILO_LAUNCHER_BIN": str(args.bin_dir / "tilo-launcher"),
+        "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE": str(runtime / "runtime-publishers.txt"),
+    })
+    log = tmp / "daemon.log"
+    daemon = None
+    try:
+        with log.open("wb") as out:
+            daemon = subprocess.Popen(
+                [str(args.bin_dir / "tilo-runtime")], env=env, cwd=tmp,
+                stdin=subprocess.DEVNULL, stdout=out, stderr=out,
+                start_new_session=True,
+            )
+        deadline = time.monotonic() + 120
+        while not socket.exists():
+            if daemon.poll() is not None:
+                return "no daemon", "the daemon ended as it started\n" + daemon_tail(log)
+            if time.monotonic() >= deadline:
+                return "no daemon", f"no socket at {socket}\n" + daemon_tail(log)
+            time.sleep(0.1)
+        # The daemon's person is founded once its services are up: the call is the first one a
+        # computer's `tilo` makes, and it is asked again while the daemon is still starting.
+        deadline = time.monotonic() + 120
+        founded, said = daemon_found(socket)
+        while founded and time.monotonic() < deadline:
+            time.sleep(0.25)
+            founded, said = daemon_found(socket)
+        if founded:
+            return "no person", founded + "\n" + daemon_tail(log)
+        print(f"the device founding said: {said.strip()}", flush=True)
+        # The development build is compiled for the id this device's daemon names for it, which
+        # only that daemon answers: `tilolang build --dev` asks it, in this profile's environment.
+        built = subprocess.run(
+            [str(args.bin_dir / "tilolang"), "build", str(source_dir), "--dev",
+             "--search", str(source_dir.parent), "--out", str(tmp),
+             "--tilo-runtime", runtime_id],
+            # From the app's own directory: the tool finds this checkout, and the packages the
+            # app reads, by it.
+            env=env, cwd=source_dir, capture_output=True, text=True, timeout=900,
+        )
+        if built.returncode != 0:
+            # The build's own words last: a situation's log keeps its end, and the daemon's is long.
+            return "could not build", (
+                daemon_tail(log) + "\n— the build's own output —\n" + built.stdout + built.stderr)
+        # The staging holds the app and every package it reads, each compiled for the id this
+        # device names it: all of them are installed, as `tilolang dev` installs them, and the
+        # app is the one of its own id.
+        app_dir = plan.app_id.rsplit(".", 1)[-1]
+        staged = sorted(
+            path for path in (tmp / "dev").glob("*") if (path / "tilo-app.toml").is_file()
+        )
+        if not any(path.name == app_dir for path in staged):
+            return "no staged build", (
+                f"{(tmp / 'dev') / app_dir} is not the app's staging; the build wrote "
+                f"{[path.name for path in staged]}\n" + built.stdout + built.stderr)
+        ids = {}
+        # The person's part starts beside the daemon: the installer is asked again while it does,
+        # rather than failing a capture the daemon is ready for a moment later.
+        deadline = time.monotonic() + 180
+        for package in staged:
+            named = tmp / f"id-{package.name}"
+            done = subprocess.run(
+                [str(args.bin_dir / "tilo-install"), "install", "--dev", str(package),
+                 "--id-file", str(named)],
+                env=env, cwd=tmp, capture_output=True, text=True, timeout=300,
+            )
+            while (
+                "has no person signed in yet" in done.stdout + done.stderr
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.5)
+                done = subprocess.run(
+                    [str(args.bin_dir / "tilo-install"), "install", "--dev", str(package),
+                     "--id-file", str(named)],
+                    env=env, cwd=tmp, capture_output=True, text=True, timeout=300,
+                )
+            if done.returncode != 0 or not named.is_file() or not named.read_text().strip():
+                return done.returncode or "no installed id", (
+                    daemon_tail(log) + "\n— the installer's own output —\n"
+                    + done.stdout + done.stderr)
+            ids[package.name] = named.read_text().strip()
+        app = ids[app_dir]
+        done = subprocess.run(
+            [str(args.bin_dir / "tilo-runtime"), "--run-app", app,
+             "--headless-drive", json.dumps(spec)],
+            env=env, cwd=tmp, capture_output=True, text=True, timeout=RUN_SECONDS,
+        )
+        # The app's own words last: a situation's log keeps its end, and the daemon's is long.
+        return done.returncode, daemon_tail(log) + "\n— the app's own output —\n" + done.stdout + done.stderr
+    except subprocess.TimeoutExpired as expired:
+        log_text = (expired.stdout or b"")
+        if isinstance(log_text, bytes):
+            log_text = log_text.decode(errors="replace")
+        return "timeout", log_text + "\n" + daemon_tail(log)
+    except OSError as error:
+        return "could not start", str(error)
+    finally:
+        if daemon is not None:
+            daemon.terminate()
+            try:
+                daemon.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                daemon.kill()
+                daemon.wait()
+
+
 def run_situation(plan: Plan, situation: Situation, index: int, args) -> dict:
     app_dir = args.out / plan.app
     app_dir.mkdir(parents=True, exist_ok=True)
     shots = captures(app_dir, situation, plan.sizes)
-    with tempfile.TemporaryDirectory(prefix=f"shots-{plan.app}-") as tmp:
+    # A situation's home is where its daemon keeps its sockets, and a socket's path must fit 103
+    # bytes: the directory it lives in is as short as one can be, in the system's own temp.
+    with tempfile.TemporaryDirectory(prefix="t-", dir="/tmp") as tmp:
         tmp = Path(tmp)
         env = profile_env(tmp / "profile", args.lib_dir)
         home = Path(env["HOME"])
@@ -309,27 +501,8 @@ def run_situation(plan: Plan, situation: Situation, index: int, args) -> dict:
             spec["scenario"] = situation.scenario
         if index == 0:
             spec["resources"] = str(app_dir / "resources.json")
-        if plan.tilolang:
-            # One runtime binary runs every tilolang package; the launcher names
-            # the package it runs by its signed id and its payload.
-            env["TILO_APP_MODULE"] = str(args.bin_dir / "modules" / plan.app)
-            env["TILO_PACKAGE_ID"] = plan.app_id
-            executable = args.bin_dir / "tilolang-process"
-        else:
-            executable = args.bin_dir / plan.binary
-        command = [str(executable), "--headless-drive", json.dumps(spec)]
         started = time.monotonic()
-        try:
-            done = subprocess.run(
-                command, env=env, cwd=tmp,
-                capture_output=True, text=True, timeout=RUN_SECONDS,
-            )
-            status, log = done.returncode, done.stdout + done.stderr
-        except subprocess.TimeoutExpired as expired:
-            status = "timeout"
-            log = (expired.stdout or b"").decode(errors="replace") + (expired.stderr or b"").decode(errors="replace")
-        except OSError as error:
-            status, log = "could not start", str(error)
+        status, log = run_through_daemon(args, env, tmp, plan, spec)
         seconds = round(time.monotonic() - started, 1)
         results = tmp / "results.json"
         if results.is_file():

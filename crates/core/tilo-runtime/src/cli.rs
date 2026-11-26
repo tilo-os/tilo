@@ -165,9 +165,16 @@ fn run() -> io::Result<()> {
             args.forward.as_ref(),
             args.workspace.as_deref(),
         ),
-        daemon::Mode::RunApp { app_id, workspace } => {
-            daemon::run_app(&args.profile, &app_id, workspace.as_deref())
-        }
+        daemon::Mode::RunApp {
+            app_id,
+            workspace,
+            capture,
+        } => daemon::run_app(
+            &args.profile,
+            &app_id,
+            workspace.as_deref(),
+            capture.as_deref(),
+        ),
     }
 }
 

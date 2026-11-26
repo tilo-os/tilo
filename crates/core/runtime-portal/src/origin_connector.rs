@@ -114,6 +114,35 @@ pub fn take_socket() -> Option<Descriptor> {
     None
 }
 
+/// The service a launch hands an app the connection to its origin's connector under: the device's
+/// daemon starts the connector, and the process that runs the app's instance here reaches the
+/// service over the connection it made, as a hosted instance is handed its own.
+pub const READER: &str = "tilolang-origin-reader";
+
+/// The connection this launch handed the app to its origin's connector, taken once: `None` when
+/// the launch handed none, as a program the person started by hand has.
+///
+/// Linux hands it as the service descriptor [`READER`] names. The process link carries a window's
+/// connections on macOS and Windows, and a window there is handed no connector of its own.
+#[must_use]
+pub fn take_reader() -> Option<Descriptor> {
+    #[cfg(target_os = "linux")]
+    {
+        static TAKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        crate::service_fd(READER)?;
+        if TAKEN.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return None;
+        }
+        // SAFETY: the launcher handed this descriptor to the process for the connection alone,
+        // and the flag above lets it be owned exactly once.
+        unsafe { crate::take_service_fd(READER) }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 /// Hand the connector behind `socket` an instance's connection `connection`.
 ///
 /// # Errors

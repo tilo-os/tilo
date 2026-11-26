@@ -18,6 +18,9 @@ pub enum Mode {
         app_id: String,
         /// A workspace this profile joined; the profile's own workspace when `None`.
         workspace: Option<String>,
+        /// What the app captures, when it is started to capture rather than to show: the app's
+        /// own capture arguments, handed to the launched app as given.
+        capture: Option<Vec<String>>,
     },
 }
 #[derive(Debug, PartialEq, Eq)]
@@ -181,8 +184,10 @@ fn workspace_named(argument: Option<OsString>) -> io::Result<String> {
         .ok_or_else(|| invalid("--workspace requires a workspace id"))
 }
 
-/// `--run-app APP_ID [--workspace WORKSPACE]`, after `--run-app`: the app this computer has
-/// installed, and no program of the caller's.
+/// `--run-app APP_ID [--workspace WORKSPACE] [-- <the app's capture arguments>]`, after
+/// `--run-app`: the app this computer has installed, and no program of the caller's. The capture
+/// flags the app parses (`--headless-drive`, `--shots`, `--shots-dir`, `--scenario`, the rest)
+/// are the app's own and are handed to it as given, before or after a `--`.
 fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<Mode> {
     let app_id = arguments
         .next()
@@ -192,6 +197,7 @@ fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<M
         return Err(invalid("invalid application ID"));
     }
     let mut workspace = None;
+    let mut capture: Vec<String> = Vec::new();
     while let Some(argument) = arguments.next() {
         match argument.to_str() {
             Some("--workspace") if workspace.is_none() => {
@@ -203,13 +209,44 @@ fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<M
                         .ok_or_else(|| invalid("--workspace requires a workspace id"))?,
                 );
             }
+            // The rest is the app's own arguments: the app's parser decides what they mean.
+            Some("--") => {
+                capture.extend(
+                    arguments
+                        .by_ref()
+                        .map(|argument| {
+                            argument
+                                .into_string()
+                                .map_err(|_| invalid("an app argument is not text"))
+                        })
+                        .collect::<io::Result<Vec<_>>>()?,
+                );
+                break;
+            }
+            Some(
+                flag @ ("--headless-drive"
+                | "--shots"
+                | "--shots-dir"
+                | "--scenario"
+                | "--responsive-matrix"),
+            ) => {
+                let Some(value) = arguments.next().and_then(|arg| arg.into_string().ok()) else {
+                    return Err(invalid(format!("{flag} requires a value")));
+                };
+                capture.push(flag.to_owned());
+                capture.push(value);
+            }
             _ => {
                 return Err(invalid(
-                    "--run-app APP_ID [--workspace WORKSPACE] starts an app this computer has \
-                     installed; it takes no program",
+                    "--run-app APP_ID [--workspace WORKSPACE] [-- APP ARGUMENTS] starts an \
+                     app this computer has installed; it takes no program",
                 ));
             }
         }
     }
-    Ok(Mode::RunApp { app_id, workspace })
+    Ok(Mode::RunApp {
+        app_id,
+        workspace,
+        capture: (!capture.is_empty()).then_some(capture),
+    })
 }

@@ -2099,11 +2099,11 @@ heavy = true
 [[check]]
 name = "window-connector"
 on = ["idle", "stable"]
-# A window with no session keeping the video site's types in step with YouTube through the
-# connector the window reaches: the origin path a window outside a tilolang host takes. The test
-# installs the Tube app from apps/tl, which a cargo-keyed tree leaves out, so this reads Git: the
-# job gets the repository's files and the check is keyed by the commit. It fails when the app is
-# not there and when no test ran, so a renamed or filtered-out test is red, never green.
+# The video site's types kept in step with YouTube through the connector its daemon runs: the
+# client's play answer reaches its record and its window draws the player. The test installs the
+# Tube app from apps/tl, which a cargo-keyed tree leaves out, so this reads Git: the job gets the
+# repository's files and the check is keyed by the commit. It fails when the app is not there and
+# when no test ran, so a renamed or filtered-out test is red, never green.
 git = true
 # The fonts the window's build sets text in: every pin of this tree, laid out by its digest by the
 # font-seed check. The builder image's seed can predate a changed pin, and this check has no
@@ -2111,7 +2111,7 @@ git = true
 # prepares it, rather than trying the store.
 needs = ["font-seed"]
 env = { TILO_FONT_IMAGE_SEED = "/target/font-seed", TILO_FONT_ASSET_CACHE = "/target/font-artifacts", TILO_FONT_ASSETS_OFFLINE = "1" }
-run = "set -eu\ntest -d apps/tl/tube || { echo 'the Tube app is not in this tree'; exit 1; }\nout=$(cargo test --locked -p tilolang-process --test window hosted::origins::a_window_without_a_session_browses_and_plays_through_the_connector -- --exact --nocapture 2>&1) || { printf '%s\\n' \"$out\"; exit 1; }\nprintf '%s\\n' \"$out\"\nprintf '%s\\n' \"$out\" | grep -q 'test result: ok. 1 passed' || { echo 'the connector window test did not run'; exit 1; }"
+run = "set -eu\ntest -d apps/tl/tube || { echo 'the Tube app is not in this tree'; exit 1; }\nout=$(cargo test --locked -p tilo-session --test it origin_connector::an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record -- --exact --nocapture 2>&1) || { printf '%s\\n' \"$out\"; exit 1; }\nprintf '%s\\n' \"$out\"\nprintf '%s\\n' \"$out\" | grep -q 'test result: ok. 1 passed' || { echo 'the connector test did not run'; exit 1; }"
 
 [[check]]
 name = "apps-macos"

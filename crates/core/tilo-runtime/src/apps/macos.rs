@@ -32,6 +32,7 @@ pub(super) fn launch(
     sockets: &Sockets,
     shows: super::Shows,
     open: Option<&str>,
+    runs: &super::Runs,
 ) -> Result<Launch, String> {
     let catalog = apps
         .catalog
@@ -128,6 +129,8 @@ pub(super) fn launch(
             OsString::from(ui::process::NO_WINDOW_IDLE_ENV),
             OsString::from(crate::IDLE.as_secs().to_string()),
         ));
+    } else if shows == super::Shows::Capture {
+        // A capture draws into its own pictures: it is handed no display and opens no window.
     } else if shows == super::Shows::Connection {
         // It keeps the app's connection, with no idle end, until the device stops it.
         env.push((
@@ -149,6 +152,8 @@ pub(super) fn launch(
             .iter()
             .map(|script| app.payload_root.join(script).into_os_string())
             .chain(open.map(OsString::from))
+            // A capture names what it captures, as a person's own run of the app does.
+            .chain(runs.args.iter().map(OsString::from))
             .collect(),
         payload_dir: app.payload_root.clone(),
         runtime_dir: runtime,

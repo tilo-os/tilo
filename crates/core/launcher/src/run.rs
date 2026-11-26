@@ -259,6 +259,10 @@ pub struct LaunchOptions {
     /// The app's connector for one outside origin (`imap`), not a window: the session's instances of
     /// the app reach it over the socket the launcher hands it.
     pub tilolang_connector: Option<String>,
+    /// The connection to the app's origin connector the device's daemon made, handed to the
+    /// process that runs the app's instance here as the service
+    /// [`runtime_portal::origin_connector::READER`] names.
+    pub tilolang_origin_reader: bool,
     /// What the person gave this app a choice on, bound into its sandbox at the reference each was
     /// answered with: exactly these, read and written as each choice allows, and nothing else.
     pub granted: Vec<GrantedPath>,
@@ -308,6 +312,7 @@ impl Default for LaunchOptions {
             headless_console: None,
             tilolang_process: false,
             tilolang_connector: None,
+            tilolang_origin_reader: false,
             granted: Vec::new(),
         }
     }
@@ -3151,6 +3156,19 @@ pub(crate) fn launch_with_context(
         {
             resolved.push(crate::services::ResolvedService {
                 name: runtime_portal::origin_connector::SERVICE.to_owned(),
+                host: link,
+                child_fd: runtime_portal::origin_connector::CHILD_FD,
+            });
+        }
+        // The connection to the app's origin connector, which the device's daemon made and
+        // released with this launch: the process runs the instance here, so it reaches the
+        // service over this rather than starting a connector of its own.
+        #[cfg(target_os = "linux")]
+        if opts.tilolang_origin_reader
+            && let Some(link) = crate::launch_hold::take_window_link()
+        {
+            resolved.push(crate::services::ResolvedService {
+                name: runtime_portal::origin_connector::READER.to_owned(),
                 host: link,
                 child_fd: runtime_portal::origin_connector::CHILD_FD,
             });

@@ -183,7 +183,7 @@ fn bootstrap_child() {
         assert!(!runtime_portal::is_tilo_native());
         return;
     }
-    match runtime_portal::native::ensure_attached("dev.tilo.bootstrap-test") {
+    match runtime_portal::native::ensure_attached("dev.tilo.bootstrap-test", &[]) {
         Ok(()) => println!("RETURNED"),
         Err(error) => {
             eprintln!("BOOTSTRAP ERROR: {error}");

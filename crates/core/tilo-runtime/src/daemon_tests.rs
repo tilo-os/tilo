@@ -380,9 +380,48 @@ tilo_test_env::scenario! {
         };
         assert_eq!(id, workspace);
         assert!(run(&["--workspace", "not-a-workspace"]).is_err());
-        // A program named after the app is refused: what runs is the app this computer has
-        // installed, never one the command line names.
-        assert!(run(&["--", "/bin/true"]).is_err());
+        // A program named after the app never runs: what runs is the app this computer has
+        // installed, and what follows `--` is that app's own arguments, which its parser reads.
+        assert_eq!(
+            run(&["--", "/bin/true"]).unwrap().mode,
+            Mode::RunApp {
+                app_id: "so.tilo.photos".to_owned(),
+                workspace: None,
+                capture: Some(vec!["/bin/true".to_owned()]),
+            }
+        );
+        // Anything else after the app is refused.
+        assert!(run(&["/bin/true"]).is_err());
+    }
+
+    phase run_app_reads_the_capture_it_runs;
+    // A capture is the app's own capture arguments, which the device hands the app it starts.
+    {
+        let args = |list: &[&str]| parse_args(list.iter().map(OsString::from));
+        let run = |rest: &[&str]| {
+            args(&[&["--profile", "/tmp/profile", "--run-app", "so.tilo.tube"], rest].concat())
+        };
+        let capture = [
+            "--headless-drive",
+            r#"{"actions":[]}"#,
+            "--scenario",
+            "a subscriptions feed",
+        ];
+        let named = run(&capture).unwrap();
+        assert_eq!(
+            named.mode,
+            Mode::RunApp {
+                app_id: "so.tilo.tube".to_owned(),
+                workspace: None,
+                capture: Some(capture.iter().map(|arg| (*arg).to_owned()).collect()),
+            }
+        );
+        // The `--` tail is the app's own: what a program outside this repository passes.
+        assert_eq!(run(&[&["--"][..], &capture].concat()).unwrap().mode, named.mode);
+        // No capture flags is a launch that shows the app.
+        assert!(matches!(run(&[]).unwrap().mode, Mode::RunApp { capture: None, .. }));
+        // A flag without its value names no capture.
+        assert!(run(&["--scenario"]).is_err());
     }
 
     phase the_status_probe_answers_the_workspace_it_serves;

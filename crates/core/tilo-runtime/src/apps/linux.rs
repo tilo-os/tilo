@@ -32,6 +32,7 @@ pub(super) fn launch(
     original: &super::original::OriginalLaunch,
     shows: super::Shows,
     open: Option<&str>,
+    runs: &super::Runs,
 ) -> Result<Launch, String> {
     // A tilolang app's instance runs in its app's tilolang process, where agents and other
     // devices call its actions; the window shows it, as on macOS and Windows.
@@ -46,6 +47,7 @@ pub(super) fn launch(
         (sockets, original),
         (shows, open),
         hosted,
+        runs,
     )
 }
 
@@ -57,6 +59,7 @@ pub(super) fn spawn(
     (sockets, original): (&Sockets, &super::original::OriginalLaunch),
     (shows, open): (super::Shows, Option<&str>),
     hosted: Option<super::WindowLink>,
+    runs: &super::Runs,
 ) -> Result<Launch, String> {
     let (mut command, launcher) = command(apps, app, workspace, sockets, original)?;
     if let Some(hosted) = &hosted {
@@ -69,6 +72,17 @@ pub(super) fn spawn(
     if let Some(uri) = open {
         command.arg("--open-uri").arg(uri);
     }
+    // The connection to the app's origin connector, handed to the process running the app's code
+    // here: it reaches the service the device runs, as a hosted instance is handed its own.
+    let origin_reader = runs
+        .origin
+        .as_ref()
+        .map(|origin| {
+            origin
+                .try_clone()
+                .map_err(|error| format!("the origin connection: {error}"))
+        })
+        .transpose()?;
     if shows == super::Shows::Nothing {
         // The toolkit's loop runs the app's code even drawing nothing, and the first window the
         // shell asks of the process takes its place, so it is handed the display where this
@@ -85,8 +99,18 @@ pub(super) fn spawn(
     } else if shows == super::Shows::Connection {
         // No display and no idle end: it keeps the app's connection until the device stops it.
         command.env(ui::process::NO_WINDOW_ENV, "1");
+    } else if shows == super::Shows::Capture {
+        // A capture draws into its own pictures: it is handed no display and opens no window.
     } else {
         command.arg("--wayland-socket").arg(wayland_socket()?);
+    }
+    if origin_reader.is_some() {
+        command.arg("--tilolang-origin-reader");
+    }
+    // A capture names what it captures, exactly as a person's own run of the app does; the `--`
+    // tail is the app's own and comes after every flag the launcher reads.
+    if !runs.args.is_empty() {
+        command.arg("--").args(&runs.args);
     }
     // The launcher waits here until the caller has recorded its pid, so it
     // can never connect before the broker could attest it.
@@ -134,6 +158,7 @@ pub(super) fn spawn(
         registration: Some(registration),
         window_link,
         _link: link,
+        origin_reader,
     })
 }
 

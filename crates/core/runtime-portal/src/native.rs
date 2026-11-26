@@ -26,6 +26,51 @@ pub struct LaunchRequest {
     pub workspace: String,
     /// Whether this starts the app's default presentation, which one already shown answers.
     pub presentation: bool,
+    /// What the app captures, when this launches it to capture rather than to show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<Capture>,
+}
+
+/// The capture a launch runs: the app's own capture flags, as the app parses them
+/// (`--headless-drive`, `--shots`, `--shots-dir`, `--scenario`). The device starts the app the way
+/// a window launch starts it, with the connector it runs for the app's origin, and waits for the
+/// capture to end.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Capture {
+    /// The app's own capture arguments, handed to it as given: the app's parser decides what they
+    /// mean, and refuses those it does not have.
+    pub args: Vec<String>,
+}
+
+impl Capture {
+    /// The app's own arguments this capture runs with, checked to be an argv at all.
+    ///
+    /// # Errors
+    /// No argument, too many, or one too long to be an argument.
+    pub fn args(&self) -> io::Result<&[String]> {
+        if self.args.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a capture names what it captures",
+            ));
+        }
+        if self.args.len() > 64 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a capture names at most 64 arguments",
+            ));
+        }
+        for argument in &self.args {
+            if argument.len() > 16384 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "a capture's argument is too long",
+                ));
+            }
+        }
+        Ok(&self.args)
+    }
 }
 
 impl LaunchRequest {
@@ -38,7 +83,17 @@ impl LaunchRequest {
             app_id: app_id.to_owned(),
             workspace: workspace.to_owned(),
             presentation,
+            capture: None,
         }
+    }
+
+    /// This launch running `args`, the app's own capture arguments, rather than showing a window.
+    #[must_use]
+    pub fn capturing(mut self, args: &[String]) -> Self {
+        self.capture = Some(Capture {
+            args: args.to_vec(),
+        });
+        self
     }
 
     /// Whether `request`, a native endpoint's first line, asks this computer to start an app.
@@ -119,25 +174,33 @@ pub fn locate_host(program: &std::path::Path) -> io::Result<std::path::PathBuf> 
     unix::locate_host(program)
 }
 
+/// Whether a capture asks a daemon rather than running here: only a caller that named a profile
+/// of its own (`TILO_RUNTIME_PROFILE`, as `tools/screenshots/run.py` and a harness do) does. A
+/// capture never joins the person's own daemon, whose workspace and app data are theirs.
+#[must_use]
+pub fn capture_attaches() -> bool {
+    std::env::var_os("TILO_RUNTIME_PROFILE").is_some_and(|profile| !profile.is_empty())
+}
+
 /// Join the shared native runtime, or retain an inherited launcher connection.
 ///
 /// # Errors
 /// Invalid inherited descriptors, unavailable hosts and failed execs are
 /// reported; they never silently select a different authority.
-pub fn ensure_attached(app_id: &str) -> io::Result<()> {
+pub fn ensure_attached(app_id: &str, capture_args: &[String]) -> io::Result<()> {
     // Android has no runtime host to re-exec under: its apps run as they are.
     #[cfg(target_os = "android")]
     {
-        let _ = app_id;
+        let _ = (app_id, capture_args);
         Ok(())
     }
     #[cfg(all(unix, not(target_os = "android")))]
     {
-        unix::ensure_attached(app_id)
+        unix::ensure_attached(app_id, capture_args)
     }
     #[cfg(not(unix))]
     {
-        let _ = app_id;
+        let _ = (app_id, capture_args);
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "automatic native runtime attachment requires Unix",
@@ -250,7 +313,7 @@ mod unix {
     }
 
     #[cfg(not(target_os = "android"))]
-    pub(super) fn ensure_attached(app_id: &str) -> io::Result<()> {
+    pub(super) fn ensure_attached(app_id: &str, capture_args: &[String]) -> io::Result<()> {
         if inherited()? {
             if let Some(raw) = env::var_os("TILO_RUNTIME_LAUNCH_GUARD_FD") {
                 let fd = raw
@@ -276,8 +339,15 @@ mod unix {
         let executable = env::current_exe()?;
         let host = locate_host(&executable)?;
         // The daemon this computer runs starts the app it has installed: this process names the
-        // app and nothing else, and the host's asking ends it.
-        Err(Command::new(host).arg("--run-app").arg(app_id).exec())
+        // app, and for a capture the app's own capture arguments, and nothing else. The host's
+        // asking ends it, and the daemon starts the app with what it reached: its sandbox, its
+        // grants and the connectors the device runs for its origins.
+        let mut command = Command::new(host);
+        command.arg("--run-app").arg(app_id);
+        if !capture_args.is_empty() {
+            command.arg("--").args(capture_args);
+        }
+        Err(command.exec())
     }
 
     /// How long the exchange with the daemon may take: the daemon starts the instance through the
