@@ -307,6 +307,10 @@ run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tes
 when = { flow = "laptop-phone-server" }
 run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=pass -p tilo-runtime --lib -E 'test(flow_laptop_phone_server::)'\nbash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=pass -p tilo-session-client --test it -E 'test(flow_laptop_phone_server::)'\n"
 
+# The clippy families run when t has room on main, at every stable head and when asked, not
+# with every push: main is the integration branch and gets minimal testing, and the pre-push
+# hook already lints what each push changes through these same checks.
+#
 # Clippy over the workspace: one driver, one unit per crate, shared with `test` and `check` (t's
 # compiler cache keys a unit by what it was given, whichever family asked for it). Its selection
 # is `check`'s: a member either family leaves out is `clippy-idle`'s or a per-architecture
@@ -319,6 +323,7 @@ run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tes
 # with x86's `test` and `check` while x86 can take it.
 [[cargo]]
 name = "clippy"
+on = ["dispatch", "idle", "stable"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 requires = ["arch=any"]
 tool = "clippy"
@@ -353,6 +358,7 @@ on = ["dispatch", "idle", "stable"]
 # run asking for one package lints what the family's whole build lints.
 [[cargo]]
 name = "clippy-{arch}"
+on = ["dispatch", "idle", "stable"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "clippy"
 requires = ["arch={arch}"]
@@ -379,6 +385,7 @@ matrix = { arch = ["x86_64", "aarch64"] }
 # them with the features cargo resolves for it.
 [[cargo]]
 name = "clippy-page"
+on = ["dispatch", "idle", "stable"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "clippy"
 args = ["--locked", "--target", "wasm32-unknown-unknown"]
@@ -400,6 +407,7 @@ packages = [
 # tools/tests/test_package_sets.py fails while this list and that table disagree.
 [[cargo]]
 name = "clippy-shipped"
+on = ["dispatch", "idle", "stable"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "clippy"
 args = ["--locked", "--all-targets"]
