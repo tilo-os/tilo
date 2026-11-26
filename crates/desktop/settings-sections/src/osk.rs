@@ -30,8 +30,9 @@ pub struct Transition {
     pub before: String,
     /// The word it led to.
     pub word: String,
-    /// How often the person wrote them in a row.
-    pub count: u32,
+    /// How often the person wrote them in a row: a counter, so two devices learning at once
+    /// both count.
+    pub count: ui::tilo_resource::Counter,
 }
 
 /// One letter this person tends to hit off its middle, as their taps taught the keyboard.
@@ -234,7 +235,7 @@ impl OskSourceSettings {
             .iter_mut()
             .find(|taught| taught.before == before && taught.word == word)
         {
-            taught.count = taught.count.saturating_add(1);
+            taught.count.add(1);
             return Ok(());
         }
         if self.transitions.len() >= MOST_TRANSITIONS {
@@ -251,7 +252,7 @@ impl OskSourceSettings {
         self.transitions.push(Transition {
             before,
             word,
-            count: 1,
+            count: ui::tilo_resource::Counter::new(1),
         });
         Ok(())
     }
@@ -397,12 +398,12 @@ mod tests {
                 Transition {
                     before: String::new(),
                     word: "hi".into(),
-                    count: 1
+                    count: ui::tilo_resource::Counter::new(1)
                 },
                 Transition {
                     before: "hi".into(),
                     word: "you".into(),
-                    count: 2
+                    count: ui::tilo_resource::Counter::new(2)
                 },
             ]
         );
@@ -443,5 +444,37 @@ mod tests {
             settings.transitions.is_empty() && settings.touch.is_empty(),
             "nothing is learned while it is off"
         );
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::OskSourceSettings;
+    use ui::tilo_resource::Replica;
+
+    /// Two devices learning the same pair at once both count: the lesson is a counter, so the
+    /// two increments add up instead of one replacing the other.
+    #[test]
+    fn two_devices_learning_the_same_pair_both_count() {
+        let lesson = || OskSourceSettings::LEARN.with(("hi".to_owned(), "you".to_owned()));
+        let mut first = Replica::<OskSourceSettings>::new().in_app("so.tilo.model", "Model");
+        first.apply(lesson()).unwrap();
+        let mut second = first.fork();
+        first.apply(lesson()).unwrap();
+        second.apply(lesson()).unwrap();
+        first.sync_with(&mut second).unwrap();
+
+        let transitions = &first.state().unwrap().transitions;
+        assert_eq!(
+            transitions.len(),
+            1,
+            "one pair, learned twice: {transitions:?}"
+        );
+        assert_eq!(
+            transitions[0].count.get(),
+            3,
+            "the shared lesson and one from each device"
+        );
+        assert_eq!(second.state().unwrap(), first.state().unwrap());
     }
 }
