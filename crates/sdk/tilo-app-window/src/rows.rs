@@ -501,7 +501,7 @@ impl RowSource for RemoteRows {
         {
             return;
         }
-        let start = range.start - range.start % PAGE;
+        let start = (range.start / PAGE).saturating_mul(PAGE);
         let paged = end.div_ceil(PAGE).saturating_mul(PAGE);
         let end = if len == 0 { paged } else { paged.min(len) }.max(end);
         self.wanted = Some(Asked {
