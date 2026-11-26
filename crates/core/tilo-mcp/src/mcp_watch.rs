@@ -10,25 +10,7 @@
 //! path), the host's observation of an invocation, and the host's roster for
 //! presence.
 use super::*;
-use crate::step::DeclaredInvocation;
 use tilo_actions::remote::WatchScope;
-
-/// One invocation of this session, as `tilo_watch` follows it: what it ran,
-/// the group it is a step of, and how it stands.
-#[derive(Clone, Debug)]
-pub(crate) struct WatchedInvocation {
-    pub(crate) invocation: String,
-    /// The path the call named, when it named one.
-    pub(crate) path: String,
-    /// The group it is a step of, as people read it, and its id.
-    pub(crate) title: String,
-    pub(crate) group: String,
-    pub(crate) started_ms: u64,
-    /// Its phase as last told, and the sequence number it was told at: a
-    /// cursor before `seq` is told `phase`.
-    pub(crate) phase: String,
-    pub(crate) seq: u64,
-}
 
 /// A source a watch follows that the host refused to tell of: which, why, and whether a watch
 /// said so yet.
@@ -38,11 +20,6 @@ pub(crate) struct Unfollowed {
     reason: String,
     told: bool,
 }
-
-/// The invocations a session keeps for its watches and `tilo_status`, at most: one that runs
-/// thousands of actions (a migration does, over one connection) keeps its latest ones rather
-/// than every one it ever ran.
-const INVOCATIONS_KEPT: usize = 1024;
 
 /// How long a watch with no `wait_ms` holds before it answers with what it
 /// has.
@@ -67,9 +44,13 @@ pub(super) struct WatchArgs {
 /// path. Opaque to the caller, which hands it back as it is.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct Cursor {
-    /// The sequence number of the last invocation event answered.
+    /// The latest moment, in ms since the epoch, an invocation of the caller's started or
+    /// ended at as the invocations record told it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    invocation: Option<u64>,
+    invocation: Option<i64>,
+    /// The caller's invocations still going when last told: their end wakes the watch.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    going: Vec<String>,
     /// The roster's fingerprint when presence was last answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     here: Option<String>,
@@ -123,46 +104,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         state
     }
 
-    /// Note that `invocation` started, as a watch of this session follows it.
-    pub(super) fn watch_invocation_started(&self, invocation: &str, path: &str) {
-        let (title, group) = self.group_named();
-        let mut invocations = self.invocations.lock_recover();
-        let seq = next_seq(&invocations);
-        invocations.push(WatchedInvocation {
-            invocation: invocation.to_owned(),
-            path: path.to_owned(),
-            title,
-            group,
-            started_ms: tilo_clock::unix_now_ms(),
-            phase: "started".to_owned(),
-            seq,
-        });
-        keep_latest(&mut invocations);
-        drop(invocations);
-        self.invocations_moved();
-    }
-
-    /// Note that `invocation` reached `phase`, which is terminal.
-    pub(super) fn watch_invocation_ended(&self, invocation: &str, phase: &str) {
-        ended(&mut self.invocations.lock_recover(), invocation, phase);
-        self.invocations_moved();
-    }
-
-    /// Note that `invocation` is held for the person, who allows it or not in their tab.
-    pub(super) fn watch_invocation_held(&self, invocation: &str) {
-        held(&mut self.invocations.lock_recover(), invocation);
-        self.invocations_moved();
-    }
-
-    /// The group a watch attributes this session's calls to: the caller's
-    /// session, named as the call declared its step.
-    fn group_named(&self) -> (String, String) {
-        match self.agent_session(DeclaredInvocation::current().as_ref()) {
-            Some(group) => (group.label.unwrap_or_default(), group.id),
-            None => (String::new(), String::new()),
-        }
-    }
-
     /// [`WatchArgs`] as one answer: what happened since `cursor`, or nothing
     /// with a cursor to ask again from.
     pub(super) async fn agent_watch(&self, args: WatchArgs) -> Result<Reply, Failure> {
@@ -178,7 +119,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // Listened for before anything is read, and again each time it wakes the watch: what is
         // read after an arming is covered by it, so a source that moves between a read and the
         // wait still wakes this watch, and a source that is already armed is not asked again.
-        let mut listening = self.watch_changed();
+        let mut listening = self.watch_changed(&cursor);
         loop {
             let mut events = Vec::new();
             self.watch_unfollowed(&mut events);
@@ -200,7 +141,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 // What woke the watch is spent: listened for again before the next read. A source
                 // whose answer was abandoned tells nothing more, and the watch holds to its own
                 // deadline instead of reading again on a timer.
-                listening = self.watch_changed();
+                listening = self.watch_changed(&cursor);
             }
         }
     }
@@ -225,10 +166,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
 
     /// Every source this watch follows, listened for before anything is read so that a change
     /// between a read and the wait still wakes it: where the workspace and this device's writes
-    /// stand, the workspace's records, who is in it, each of this session's runs still going, and
-    /// the invocations of this session itself. A host that cannot tell of a source leaves it out, and
-    /// that source then costs the watch the rest of its wait.
-    fn watch_changed(&self) -> Option<tilo_actions::remote::Pending<()>> {
+    /// stand, the workspace's records, who is in it, each of the caller's invocations still going
+    /// as `cursor` last told them, and the calls of this session itself. A host that cannot tell
+    /// of a source leaves it out, and that source then costs the watch the rest of its wait.
+    fn watch_changed(&self, cursor: &Cursor) -> Option<tilo_actions::remote::Pending<()>> {
         let caller = self.caller();
         let mut changed: Vec<tilo_actions::remote::Pending<()>> = Vec::new();
         changed.extend(self.host.session_state_changed(&caller));
@@ -240,15 +181,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 changed.push(self.followed(scope, wait));
             }
         }
-        let going: Vec<String> = self
-            .invocations
-            .lock_recover()
-            .iter()
-            .filter(|invocation| !is_terminal(&invocation.phase))
-            .map(|invocation| invocation.invocation.clone())
-            .collect();
-        for invocation in going {
-            let Ok(id) = invocation_id(&invocation) else {
+        for invocation in &cursor.going {
+            let Ok(id) = invocation_id(invocation) else {
                 continue;
             };
             // The host's own signal for an invocation, which it answers when the invocation may
@@ -307,8 +241,8 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
     }
 
-    /// Resolves on the next invocation event of this session: one of it starting, being held
-    /// for its person, or ending ([`Self::invocations_moved`]).
+    /// Resolves on the next call of this session starting, being held for its person, or ending
+    /// ([`Self::invocations_moved`]).
     fn invocations_changed(&self) -> tilo_actions::remote::Pending<()> {
         let (changed, change) = tilo_actions::remote::pending();
         let mut waiting = self.invocation_waiters.lock_recover();
@@ -319,9 +253,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         change
     }
 
-    /// Wake every watch of this session: an invocation of it started, was held for
-    /// its person, or ended.
-    fn invocations_moved(&self) {
+    /// Wake every watch of this session: a call of it started, was held for its person, or
+    /// ended, which the invocations record now says.
+    pub(super) fn invocations_moved(&self) {
         let waiting = std::mem::take(&mut *self.invocation_waiters.lock_recover());
         for changed in waiting {
             changed.complete(());
@@ -355,18 +289,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// first read of a watch says who is here now, so a page that opens on a
     /// workspace draws its people and agents at once.
     async fn watch_now(&self, path: Option<&str>) -> Result<Cursor, String> {
-        let invocation = self
-            .invocations
-            .lock_recover()
-            .iter()
-            .map(|invocation| invocation.seq)
-            .max();
+        let (invocation, going) = match self.own_invocations().await {
+            Ok(own) => (
+                own.iter().map(moment).max(),
+                own.iter().filter(|item| going(item)).filter_map(|item| item.id.clone()).collect(),
+            ),
+            Err(_) => (None, Vec::new()),
+        };
         let feed = match path_named(path) {
             Some(_) => None,
             None => self.feed_page(None).await?.map(|page| page.cursor),
         };
         Ok(Cursor {
             invocation,
+            going,
             here: None,
             change: last_change(
                 self.history_page(path)
@@ -379,62 +315,60 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         })
     }
 
-    /// The invocations this session started since the cursor, as the host
-    /// says they stand now.
+    /// The caller's invocations that started or ended since the cursor, as the workspace's
+    /// invocations record tells them: the one list of calls, which every projection reads. A
+    /// call that ended well and changed nothing (a read, the watch's own among them) is no news.
     async fn watch_invocations(&self, cursor: &mut Cursor, events: &mut Vec<Value>) {
-        let seen = cursor.invocation.unwrap_or_default();
-
-        // How the invocations still going stand: one that finished after its
-        // call answered is reported finished here.
-        let going: Vec<String> = self
-            .invocations
-            .lock_recover()
-            .iter()
-            .filter(|invocation| !is_terminal(&invocation.phase))
-            .map(|invocation| invocation.invocation.clone())
-            .collect();
-        let mut moved: Vec<(String, String)> = Vec::new();
-        for invocation in going {
-            let Ok(id) = invocation_id(&invocation) else {
-                continue;
-            };
-            let Ok(value) = self.status(id).await else {
-                continue;
-            };
-            if let Some(state) = value
-                .pointer("/update/state")
-                .and_then(Value::as_str)
-                .filter(|state| is_terminal(state))
-            {
-                moved.push((invocation, state.to_owned()));
-            }
-        }
-        let announced: Vec<WatchedInvocation> = {
-            let mut invocations = self.invocations.lock_recover();
-            for (invocation, phase) in moved {
-                ended(&mut invocations, &invocation, &phase);
-            }
-            let last = invocations.iter().map(|invocation| invocation.seq).max();
-            if let Some(last) = last {
-                cursor.invocation = Some(cursor.invocation.unwrap_or_default().max(last));
-            }
-            invocations
-                .iter()
-                .filter(|invocation| invocation.seq > seen)
-                .cloned()
-                .collect()
+        use tilo_actions::remote::workspace_invocations::InvocationStatus;
+        let Ok(own) = self.own_invocations().await else {
+            return;
         };
-        for invocation in announced {
+        let told = cursor.invocation;
+        cursor.going = own
+            .iter()
+            .filter(|item| going(item))
+            .filter_map(|item| item.id.clone())
+            .collect();
+        let mut news: Vec<&tilo_actions::remote::workspace_invocations::Invocation> = own
+            .iter()
+            .filter(|item| told.is_none_or(|told| moment(item) > told))
+            .filter(|item| item.changes > 0 || item.status != InvocationStatus::Ended)
+            .collect();
+        news.sort_by_key(|item| moment(item));
+        if let Some(last) = news.last() {
+            cursor.invocation = Some(moment(last));
+        }
+        for item in news {
             events.push(json!({
                 "kind": "invocation",
-                "phase": invocation.phase,
-                "invocation_id": invocation.invocation,
-                "path": invocation.path,
-                "title": invocation.title,
-                "group": invocation.group,
-                "time_ms": invocation.started_ms,
+                "phase": phase(item.status),
+                "invocation_id": item.id,
+                "path": item.action,
+                "title": item.title.clone().unwrap_or_else(|| item.by.name.clone()),
+                "time_ms": item.started_ms,
             }));
         }
+    }
+
+    /// The invocations the caller made, newest first, as the workspace's invocations record
+    /// lists them.
+    pub(super) async fn own_invocations(
+        &self,
+    ) -> Result<Vec<tilo_actions::remote::workspace_invocations::Invocation>, String> {
+        use tilo_actions::remote::workspace_invocations::{InvocationsQuery, PAGE};
+        let acting = self.caller.acting();
+        let by = acting
+            .agent_id()
+            .or_else(|| acting.member_id().map(collab_types::MemberId::id))
+            .map(str::to_owned);
+        Ok(self
+            .listed_invocations(&InvocationsQuery {
+                limit: PAGE,
+                by,
+                ..InvocationsQuery::default()
+            })
+            .await?
+            .items)
     }
 
     /// Who is in the workspace, when that changed since the cursor.
@@ -763,60 +697,6 @@ pub(super) fn history_entries(value: &Value) -> Option<Vec<Value>> {
     )
 }
 
-/// Note that `invocation` reached the terminal `phase`, as one invocation
-/// event: one already told an end is not told it again, however many sources
-/// (its call's answer, a watch's look at the host) say so.
-fn ended(invocations: &mut [WatchedInvocation], invocation: &str, phase: &str) {
-    let seq = next_seq(invocations);
-    if let Some(watched) = invocations
-        .iter_mut()
-        .rev()
-        .find(|watched| watched.invocation == invocation)
-        && !is_terminal(&watched.phase)
-    {
-        phase.clone_into(&mut watched.phase);
-        watched.seq = seq;
-    }
-}
-
-/// Note that `invocation` is held for its person, as one invocation event: it
-/// moves on to how it ended once they answered.
-fn held(invocations: &mut [WatchedInvocation], invocation: &str) {
-    let seq = next_seq(invocations);
-    if let Some(watched) = invocations
-        .iter_mut()
-        .rev()
-        .find(|watched| watched.invocation == invocation)
-        && !is_terminal(&watched.phase)
-        && watched.phase != HELD
-    {
-        HELD.clone_into(&mut watched.phase);
-        watched.seq = seq;
-    }
-}
-
-/// The phase of an invocation held for its person.
-const HELD: &str = "held_for_person";
-
-/// Let go of the oldest of `invocations` past [`INVOCATIONS_KEPT`], those that
-/// ended first. The one told last stays: the next sequence number counts on
-/// from it, so a cursor never sees a number twice.
-fn keep_latest(invocations: &mut Vec<WatchedInvocation>) {
-    while invocations.len() > INVOCATIONS_KEPT {
-        let last = invocations.iter().map(|watched| watched.seq).max();
-        let oldest = invocations
-            .iter()
-            .position(|watched| is_terminal(&watched.phase) && Some(watched.seq) != last)
-            .or_else(|| {
-                invocations
-                    .iter()
-                    .position(|watched| Some(watched.seq) != last)
-            });
-        let Some(oldest) = oldest else { return };
-        invocations.remove(oldest);
-    }
-}
-
 /// The change id a history page ends at.
 fn last_change(page: Option<&[Value]>) -> Option<String> {
     page?
@@ -826,229 +706,27 @@ fn last_change(page: Option<&[Value]>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The sequence number the next invocation event takes.
-fn next_seq(invocations: &[WatchedInvocation]) -> u64 {
-    invocations
-        .iter()
-        .map(|invocation| invocation.seq)
-        .max()
-        .unwrap_or_default()
-        .saturating_add(1)
+
+/// The latest moment `item` started or ended at, in ms since the epoch.
+fn moment(item: &tilo_actions::remote::workspace_invocations::Invocation) -> i64 {
+    item.ended_ms.unwrap_or(item.started_ms).max(item.started_ms)
 }
 
-/// Whether `phase` is one an invocation never leaves.
-fn is_terminal(phase: &str) -> bool {
-    matches!(phase, "succeeded" | "failed" | "cancelled" | "refused")
+/// Whether `item` has not ended yet: it runs, or waits for its person.
+const fn going(item: &tilo_actions::remote::workspace_invocations::Invocation) -> bool {
+    use tilo_actions::remote::workspace_invocations::InvocationStatus;
+    matches!(item.status, InvocationStatus::Running | InvocationStatus::Waiting)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn started(invocation: &str, seq: u64) -> WatchedInvocation {
-        WatchedInvocation {
-            invocation: invocation.to_owned(),
-            path: "word-processor#append-paragraph".to_owned(),
-            title: "Write the letter".to_owned(),
-            group: "letter".to_owned(),
-            started_ms: 0,
-            phase: "started".to_owned(),
-            seq,
-        }
-    }
-
-    /// A session that runs thousands of actions keeps its latest ones: what
-    /// it holds stays bounded however long the connection lives, and the
-    /// sequence a watch reads by still counts on.
-    #[test]
-    fn a_long_session_keeps_its_latest_invocations() {
-        let mut invocations = Vec::new();
-        let mut told = 0;
-        let mut newest = String::new();
-        for n in 0..INVOCATIONS_KEPT * 4 {
-            newest = n.to_string();
-            let seq = next_seq(&invocations);
-            assert!(seq > told, "sequence {seq} after {told}");
-            invocations.push(started(&n.to_string(), seq));
-            keep_latest(&mut invocations);
-            told = seq;
-            ended(&mut invocations, &n.to_string(), "succeeded");
-            told = told.max(
-                invocations
-                    .iter()
-                    .map(|watched| watched.seq)
-                    .max()
-                    .unwrap_or_default(),
-            );
-        }
-        assert_eq!(invocations.len(), INVOCATIONS_KEPT);
-        assert_eq!(
-            invocations.last().map(|watched| &watched.invocation),
-            Some(&newest)
-        );
-        // One still running outlasts those that ended.
-        let mut invocations = vec![started("going", 1)];
-        for n in 0..INVOCATIONS_KEPT * 2 {
-            let seq = next_seq(&invocations);
-            invocations.push(started(&n.to_string(), seq));
-            ended(&mut invocations, &n.to_string(), "succeeded");
-            keep_latest(&mut invocations);
-        }
-        assert_eq!(invocations.len(), INVOCATIONS_KEPT);
-        assert_eq!(invocations[0].invocation, "going");
-    }
-
-    /// A change a watch reports says what it did to the resource beside its change id, as the
-    /// store read it from the change; a change that names none is a fault, never an edit.
-    #[test]
-    fn a_change_event_says_what_it_did_to_its_resource() {
-        let events: Vec<(Value, Value)> = ["created", "edited", "removed"]
-            .into_iter()
-            .map(|what| {
-                let entry = json!({"change": "a1", "happened": what, "resource": "note:1"});
-                let event =
-                    change_event("notes/Todo", Some("notes"), None, &entry).expect("a change");
-                (event["what"].clone(), event["resources"].clone())
-            })
-            .collect();
-        assert_eq!(events[0].0, "created");
-        assert_eq!(events[1].0, "edited");
-        assert_eq!(events[2].0, "removed");
-        assert_eq!(
-            events[0].1,
-            json!([{"path": "notes/Todo", "app": "notes", "item": "note:1"}]),
-            "the change names the resource it did it to"
-        );
-        let entry = json!({"change": "b2"});
-        let said = change_event("notes/Todo", Some("notes"), None, &entry)
-            .expect_err("a change that says nothing is no edit");
-        assert!(said.contains("b2"), "{said}");
-        assert!(said.contains("notes/Todo"), "{said}");
-    }
-
-    /// A change a watch reports names the action it was made by and the time
-    /// it happened, so a watcher reads a ban from a removal without working it
-    /// out from what it saw before.
-    #[test]
-    fn a_change_event_names_the_action_and_the_time() {
-        let entry = json!({
-            "change": "a1",
-            "happened": "removed",
-            "verb": "ban",
-            "time_ms": 1_700_000_000_000_i64,
-        });
-        let event = change_event(
-            "workspace/members",
-            Some("tilo.workspace"),
-            Some("workspace/members"),
-            &entry,
-        )
-        .expect("a change");
-        assert_eq!(event["verb"], "ban");
-        assert_eq!(event["time_ms"], 1_700_000_000_000_i64);
-    }
-
-    /// A change a watch reports names the group it is a step of, as the
-    /// resource's own history does: the group's title, its id and its kind,
-    /// so an agent that watched a change can undo exactly its own group.
-    #[test]
-    fn a_change_event_names_the_group_its_change_is_a_step_of() {
-        let entry = json!({
-            "change": "a1",
-            "happened": "edited",
-            "sentence": "Filled the form",
-            "title": "Fill Jane Doe's form",
-            "group": "agent-session:7",
-            "group_kind": "agent-session",
-            "time_ms": 5,
-        });
-        let event = change_event("forms/#fill", Some("forms"), None, &entry).expect("a change");
-        assert_eq!(event["title"], "Fill Jane Doe's form");
-        assert_eq!(event["group"], "agent-session:7");
-        assert_eq!(event["group_kind"], "agent-session");
-
-        // An entry naming its group made its change by an agent, even where
-        // it names the agent the way it names a person.
-        let entry = json!({
-            "change": "b1",
-            "happened": "edited",
-            "by": "Jane Doe's agent",
-            "group": "agent-session:9",
-            "group_kind": "agent-session",
-        });
-        let event = change_event("notes/Todo/body", Some("notes"), None, &entry).expect("a change");
-        assert_eq!(
-            event["actor"],
-            json!({"kind": "agent", "name": "Jane Doe's agent"})
-        );
-
-        // A change of a person's own names no group, and is a person's.
-        let entry = json!({"change": "c1", "happened": "edited", "sentence": "Typed", "by": "Ada"});
-        let event = change_event("notes/Todo/body", Some("notes"), None, &entry).expect("a change");
-        assert!(event.get("group").is_none());
-        assert_eq!(event["actor"], json!({"kind": "person", "name": "Ada"}));
-    }
-
-    tilo_test_env::scenario! {
-        fn a_watch_tells_an_invocations_end_once_and_reads_history_whole;
-
-        phase an_invocation_is_told_its_end_once;
-        // An invocation's end is one event however many sources report it:
-        // its call's answer and a watch's look at the host both say it
-        // succeeded, and the second moves nothing a cursor already passed.
-        {
-            let mut invocations = vec![started("a", 1)];
-            ended(&mut invocations, "a", "succeeded");
-            assert_eq!(
-                (invocations[0].phase.as_str(), invocations[0].seq),
-                ("succeeded", 2)
-            );
-            ended(&mut invocations, "a", "succeeded");
-            ended(&mut invocations, "a", "failed");
-            assert_eq!(
-                (invocations[0].phase.as_str(), invocations[0].seq),
-                ("succeeded", 2)
-            );
-        }
-
-        phase an_invocation_held_for_its_person_is_told_then_how_it_ended;
-        // An invocation the person is asked about is told as held, once;
-        // their answer moves it on to how it ended, and a refused call ends
-        // it.
-        {
-            let mut invocations = vec![started("a", 1), started("b", 2)];
-            held(&mut invocations, "a");
-            assert_eq!((invocations[0].phase.as_str(), invocations[0].seq), (HELD, 3));
-            held(&mut invocations, "a");
-            assert_eq!(invocations[0].seq, 3, "held is told once");
-            assert!(!is_terminal(HELD));
-            ended(&mut invocations, "a", "succeeded");
-            assert_eq!(invocations[0].phase, "succeeded");
-            ended(&mut invocations, "b", "refused");
-            assert!(is_terminal(&invocations[1].phase));
-            held(&mut invocations, "b");
-            assert_eq!(
-                invocations[1].phase, "refused",
-                "an ended invocation is never held again"
-            );
-        }
-
-        phase history_entries_are_read_whole;
-        // History lists a group's author once for the versions it made;
-        // a reader of one version reads it whole.
-        {
-            let answer = json!({"update": {"output": {"value": {"versions": [
-                {"change": "a", "title": "Letter", "group": "r1", "time_ms": 5},
-                {"change": "b", "invocation": "i2"},
-                {"change": "c", "by": "Ada", "time_ms": 9},
-            ]}}}});
-            let entries = history_entries(&answer).unwrap();
-            assert_eq!(entries[1]["group"], "r1");
-            assert_eq!(entries[1]["time_ms"], 5);
-            assert_eq!(entries[2]["by"], "Ada");
-            // A history answered as a bare list still reads.
-            let bare = json!({"update": {"output": {"value": [{"change": "a"}]}}});
-            assert_eq!(history_entries(&bare).unwrap().len(), 1);
-        }
+/// The phase a watch names `status` by.
+pub(super) const fn phase(status: tilo_actions::remote::workspace_invocations::InvocationStatus) -> &'static str {
+    use tilo_actions::remote::workspace_invocations::InvocationStatus;
+    match status {
+        InvocationStatus::Waiting => "held_for_person",
+        InvocationStatus::Running => "started",
+        InvocationStatus::Ended => "succeeded",
+        InvocationStatus::Failed => "failed",
+        InvocationStatus::Cancelled => "cancelled",
+        InvocationStatus::Undone => "undone",
     }
 }

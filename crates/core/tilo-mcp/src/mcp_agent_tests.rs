@@ -7,6 +7,7 @@ use tilo_actions::remote::{
     ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueResource,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
 };
+use tilo_actions::remote::workspace_invocations::{Invocation, InvocationBy, InvocationStatus};
 use tilo_actions::{
     ActionParam, Availability, InvocationUpdate, ParamType, ResourceSemanticIdentity,
 };
@@ -58,6 +59,8 @@ pub(super) struct Notes {
     searches: bool,
     /// The invocations stopped through their record.
     cancelled: Arc<Mutex<std::collections::HashSet<tilo_actions::InvocationId>>>,
+    /// The workspace's invocations record, newest last, as its host keeps it of every call.
+    runs: Arc<Mutex<Vec<Invocation>>>,
 }
 
 /// The asked record the test app says a call waits in, as a workspace's dispatch names it.
@@ -84,6 +87,7 @@ impl Notes {
             person_asked: Arc::default(),
             searches: true,
             cancelled: Arc::default(),
+            runs: Arc::default(),
         }
     }
 
@@ -510,6 +514,12 @@ impl ActionProvider for Notes {
         self.here.lock().unwrap().clone()
     }
 
+    fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        Some(Arc::new(RunsRead {
+            runs: Arc::clone(&self.runs),
+        }))
+    }
+
     fn resource_search(&self) -> Option<std::sync::Arc<dyn tilo_actions::remote::ResourceSearch>> {
         let search: Arc<dyn tilo_actions::remote::ResourceSearch> = Arc::new(self.clone());
         self.searches.then_some(search)
@@ -517,7 +527,7 @@ impl ActionProvider for Notes {
 
     fn invoke(
         &self,
-        _caller: &Caller,
+        caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
@@ -565,6 +575,7 @@ impl ActionProvider for Notes {
         if workspace {
             *self.running.lock().unwrap() = true;
         }
+        self.record(caller, &request);
         self.invoked.lock().unwrap().push(request);
         Pending::ready(Ok(InvocationState::new(
             invocation,
@@ -664,7 +675,91 @@ impl ActionProvider for Notes {
         id: &tilo_actions::InvocationId,
     ) -> tilo_actions::remote::Pending<Result<(), ActionCallError>> {
         self.cancelled.lock().unwrap().insert(*id);
+        let ended_ms = self.moment();
+        for run in self.runs.lock().unwrap().iter_mut() {
+            if run.id.as_deref() == Some(id.0.to_string().as_str()) {
+                run.status = InvocationStatus::Cancelled;
+                run.ended_ms = Some(ended_ms);
+            }
+        }
         tilo_actions::remote::Pending::ready(Ok(()))
+    }
+}
+
+impl Notes {
+    /// The next moment of the record's clock: one a call, so each is told apart.
+    fn moment(&self) -> i64 {
+        let runs = self.runs.lock().unwrap();
+        i64::try_from(runs.len()).unwrap_or(i64::MAX).saturating_add(1)
+    }
+
+    /// Keep the call `request` of `caller` in the invocations record, as the host that admits
+    /// it does: running while its action has not ended, ended once it has.
+    fn record(&self, caller: &Caller, request: &InvokeRequest) {
+        let acting = caller.acting();
+        let started_ms = self.moment();
+        let action = request.target.address.action.clone();
+        let running = action == "slow";
+        self.runs.lock().unwrap().push(Invocation {
+            id: Some(request.invocation.0.to_string()),
+            by: InvocationBy {
+                name: caller
+                    .agent_name()
+                    .or_else(|| acting.agent_id())
+                    .unwrap_or("someone")
+                    .to_owned(),
+                kind: if acting.is_agent() { "agent" } else { "person" }.to_owned(),
+                id: acting
+                    .agent_id()
+                    .or_else(|| acting.member_id().map(collab_types::MemberId::id))
+                    .map(str::to_owned),
+            },
+            status: if running {
+                InvocationStatus::Running
+            } else {
+                InvocationStatus::Ended
+            },
+            started_ms,
+            ended_ms: (!running).then_some(started_ms),
+            changes: usize::from(!matches!(action.as_str(), "read" | "history" | "slow")),
+            action: Some(format!("notes#{action}")),
+            recorded: true,
+            remembered: true,
+            ..Invocation::default()
+        });
+    }
+}
+
+/// The record reader of [`Notes`]: the workspace's invocations, newest first.
+struct RunsRead {
+    runs: Arc<Mutex<Vec<Invocation>>>,
+}
+
+impl tilo_actions::remote::ResourceReads for RunsRead {
+    // Each call is kept as it is taken, so the next read sees it without a wake.
+    fn watch<'a>(
+        &'a self,
+        _: &'a Caller,
+        _: &'a tilo_actions::remote::ResourceAddress,
+        _: &'a tilo_actions::remote::ResourceWake,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, ()> {
+        Box::pin(std::future::ready(Ok(())))
+    }
+
+    fn read<'a>(
+        &'a self,
+        _: &'a Caller,
+        address: &'a tilo_actions::remote::ResourceAddress,
+    ) -> tilo_actions::remote::ReadsAnswer<'a, tilo_actions::remote::ResourceCopy> {
+        tilo_actions::remote::reads_answer(async move {
+            let mut runs = self.runs.lock().unwrap().clone();
+            runs.sort_by_key(|run| std::cmp::Reverse(run.started_ms));
+            assert!(address.record.is_empty(), "the tools read the record whole");
+            Ok(tilo_actions::remote::ResourceCopy::reading(
+                json!({"items": runs, "total": runs.len(), "waiting": 0}),
+                None,
+            ))
+        })
     }
 }
 
@@ -1213,7 +1308,7 @@ tilo_test_env::scenario! {
                 .find(|event| event["kind"] == "invocation")
                 .unwrap_or_else(|| panic!("the invocation is told: {watched}"));
             assert_eq!(told["invocation_id"], ran["invocation_id"]);
-            assert_eq!(told["path"], "notes/Todo/body#append-paragraph");
+            assert_eq!(told["path"], "notes#append-paragraph");
             assert_eq!(told["phase"], "succeeded");
             assert_eq!(
                 told["title"], "Claude Code",
@@ -1381,9 +1476,9 @@ fn a_call_whose_person_allows_it_within_its_wait_is_answered_with_what_it_did() 
     );
 }
 
-/// `tilo_status` naming no invocation says what this session ran and how
-/// each stands, the calls that named no id of their own among them, rather
-/// than refusing the call for a missing field.
+/// `tilo_status` naming no invocation says what the caller ran and how each stands, as the
+/// workspace's invocations record lists it, the calls that named no id of their own among them,
+/// rather than refusing the call for a missing field.
 #[test]
 fn a_status_naming_no_invocation_lists_the_sessions_invocations() {
     let host = Notes::new(true);
@@ -1403,7 +1498,7 @@ fn a_status_naming_no_invocation_lists_the_sessions_invocations() {
         assert!(!failed, "{text}");
         let line = text
             .lines()
-            .find(|line| line.contains("notes/Todo/body#append-paragraph"))
+            .find(|line| line.contains("notes#append-paragraph"))
             .unwrap_or_else(|| panic!("the call is listed: {text}"));
         let id = line.split_whitespace().next().unwrap();
         assert!(line.ends_with("succeeded"), "{line}");

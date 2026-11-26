@@ -1,19 +1,19 @@
 //! `tilo_status`: how an invocation went, and the two things done to one after
 //! it answered: stopping it (`cancel`) and taking it back (`undo`).
-//! Named no invocation, it answers this session's invocations and how each
-//! stands, so an agent that lost an id, or wonders what is still running,
-//! asks the same tool.
+//! Named no invocation, it answers the caller's invocations and how each
+//! stands, as the workspace's invocations record lists them, so an agent that
+//! lost an id, or wonders what is still running, asks the same tool.
 
 use super::{ActionProvider, Failure, McpServer, Reply, answer_of, invocation_id, link, outcome};
 use serde::Deserialize;
 use std::fmt::Write as _;
-use tilo_lock::MutexRecover as _;
+use tilo_actions::remote::workspace_invocations::Invocation;
 
 /// What `tilo_status` takes.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct AgentStatusArgs {
-    /// The invocation asked about; none asks for this session's invocations.
+    /// The invocation asked about; none asks for the caller's invocations.
     #[serde(default)]
     invocation_id: Option<String>,
     #[serde(default)]
@@ -34,7 +34,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             if args.cancel || args.undo {
                 return Err("cancel and undo act on one invocation: name its invocation_id".into());
             }
-            return Ok(self.session_invocations(structured));
+            return self.own_listed(structured).await;
         };
         let invocation = invocation_id(id)?;
         if args.undo {
@@ -59,38 +59,39 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         Ok(reply)
     }
 
-    /// This session's invocations, oldest first, each with the path it ran
-    /// and how it stands as last told.
-    fn session_invocations(&self, structured: bool) -> Reply {
-        let invocations = self.invocations.lock_recover().clone();
-        let text = if invocations.is_empty() {
-            "this session ran nothing yet; tilo_do runs an action, and tilo_status \
-             {invocation_id} says how one went"
+    /// The caller's invocations, newest first, each with the action it ran and how it stands,
+    /// as the workspace's invocations record lists them.
+    async fn own_listed(&self, structured: bool) -> Result<Reply, Failure> {
+        let own = self.own_invocations().await?;
+        let state = |item: &Invocation| super::watch::phase(item.status);
+        let text = if own.is_empty() {
+            "you ran nothing yet; tilo_do runs an action, and tilo_status {invocation_id} says how \
+             one went"
                 .to_owned()
         } else {
-            let mut text = String::from("this session's invocations, oldest first:");
-            for watched in &invocations {
-                let path = if watched.path.is_empty() {
-                    "(calls)"
-                } else {
-                    &watched.path
-                };
-                let _ = write!(text, "\n{} {path} {}", watched.invocation, watched.phase);
+            let mut text = String::from("your invocations, newest first:");
+            for item in &own {
+                let _ = write!(
+                    text,
+                    "\n{} {} {}",
+                    item.id.as_deref().unwrap_or("-"),
+                    item.action.as_deref().unwrap_or("(calls)"),
+                    state(item)
+                );
             }
             text
         };
-        let typed = structured.then(|| {
-            serde_json::json!({"invocations": invocations
+        let mut reply = Reply::ok(text);
+        reply.structured = structured.then(|| {
+            serde_json::json!({"invocations": own
                 .iter()
-                .map(|watched| serde_json::json!({
-                    "invocation_id": watched.invocation,
-                    "path": watched.path,
-                    "state": watched.phase,
+                .map(|item| serde_json::json!({
+                    "invocation_id": item.id,
+                    "path": item.action,
+                    "state": state(item),
                 }))
                 .collect::<Vec<_>>()})
         });
-        let mut reply = Reply::ok(text);
-        reply.structured = typed;
-        reply
+        Ok(reply)
     }
 }

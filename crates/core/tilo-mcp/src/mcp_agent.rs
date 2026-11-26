@@ -1410,18 +1410,16 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // Asked again under the same id, a call that went unanswered is answered by what it
         // did: a typed caller is handed that id, as a pending answer hands it.
         if structured && asked.is_some() && answer::asks_again(&failure) {
-            self.watch_invocation_ended(id, "refused");
+            self.invocations_moved();
             let mut reply = Reply::failed(String::new());
             reply.structured = Some(answer::refused_under(&failure, id, true));
             return Ok(reply);
         }
         if !(path.contains('#') && super::confirm::needs_the_person(&failure)) {
-            if asked.is_some() {
-                self.watch_invocation_ended(id, "refused");
-            }
+            self.invocations_moved();
             return Err(failure);
         }
-        self.watch_invocation_held(id);
+        self.invocations_moved();
         if !structured {
             return Err(failure);
         }
@@ -1449,9 +1447,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         let invocation =
             Some(invocation.unwrap_or_else(|| tilo_actions::InvocationId::new().0.to_string()));
         let asked = invocation.clone();
-        if let Some(id) = asked.as_deref() {
-            self.watch_invocation_started(id, path);
-        }
+        self.invocations_moved();
         let answer = Box::pin(self.do_one_value(path, arguments, invocation, wait_ms)).await;
         let answer = match answer {
             Err(failure) => return self.not_done(failure, path, asked.as_deref(), structured),
@@ -1463,15 +1459,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 mut reply,
                 not_shown,
             } => {
-                if let Some(id) = asked.as_deref() {
-                    self.watch_invocation_ended(
-                        id,
-                        value
-                            .pointer("/update/state")
-                            .and_then(Value::as_str)
-                            .unwrap_or("failed"),
-                    );
-                }
+                self.invocations_moved();
                 let mut shown = self.opened_link(&value).await;
                 shown.not_shown = not_shown;
                 let typed = structured.then(|| answer_of(&value));
@@ -1490,15 +1478,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 if reply.failed && reply.text.contains("invalid_arguments") {
                     let _ = write!(reply.text, "\n{}", action_page(&path, &descriptor, None));
                 }
-                if let Some(id) = asked.as_deref() {
-                    self.watch_invocation_ended(
-                        id,
-                        value
-                            .pointer("/update/state")
-                            .and_then(Value::as_str)
-                            .unwrap_or("failed"),
-                    );
-                }
+                self.invocations_moved();
                 let shown = self
                     .invoked_link(asked.as_deref(), &value, &provider, &descriptor)
                     .await;
