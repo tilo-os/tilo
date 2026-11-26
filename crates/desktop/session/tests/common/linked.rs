@@ -457,7 +457,7 @@ impl Fixture {
                     .expect("the listing's answer reads")
                     .message
             else {
-                panic!("the listing answered another frame");
+                return Err("the listing answered another frame".to_owned());
             };
             let page = result.map_err(|why| format!("the listing is refused: {why}"))?;
             rows.extend(page.rows);

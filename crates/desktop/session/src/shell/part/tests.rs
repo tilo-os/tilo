@@ -1263,7 +1263,7 @@ fn every_letter_typed_into_the_launcher_reaches_its_search() {
     };
     let typed = "quarterly";
     let expected: Vec<Ask> = (1..=typed.len())
-        .map(|letters| search(&typed[..letters]))
+        .map(|letters| search(typed.get(..letters).unwrap_or_default()))
         .chain(std::iter::once(search(typed)))
         .collect();
     assert_eq!(searched, expected);

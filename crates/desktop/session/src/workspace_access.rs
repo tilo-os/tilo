@@ -803,7 +803,7 @@ mod tests {
 
     /// Nothing outside is declared: the reading a test of grants alone is made from.
     fn no_outside() -> std::rc::Rc<DeclaredOutside> {
-        std::rc::Rc::new(|| Vec::new())
+        std::rc::Rc::new(Vec::new)
     }
 
     /// A workspace whose policy `owner` owns, so a change of its grants is theirs to make.

@@ -281,6 +281,10 @@ thread_local! {
     static TAKEN: RefCell<Vec<tilo_session::SessionAction>> = const { RefCell::new(Vec::new()) };
 }
 
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "the session asks its recorder for a result, as it asks every app's own"
+)]
 fn record_session_action(action: tilo_session::SessionAction) -> Result<(), String> {
     TAKEN.with_borrow_mut(|taken| taken.push(action));
     Ok(())

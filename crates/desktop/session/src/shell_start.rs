@@ -89,7 +89,7 @@ pub fn founding_link() -> Option<std::os::fd::OwnedFd> {
     let socket = tilo_api::daemon::this_computer()
         .ok()
         .map(|place| place.native())?;
-    let deadline = std::time::Instant::now() + PERSON_LINK_WITHIN;
+    let deadline = std::time::Instant::now().checked_add(PERSON_LINK_WITHIN);
     loop {
         let why = match tilo_session_client::daemon_documents::link_with(&socket, None) {
             Ok(tilo_session_client::daemon_documents::ShellLinkAnswer::Shell(link)) => {
@@ -100,7 +100,7 @@ pub fn founding_link() -> Option<std::os::fd::OwnedFd> {
             }
             Err(error) => error,
         };
-        if std::time::Instant::now() >= deadline {
+        if deadline.is_none_or(|deadline| std::time::Instant::now() >= deadline) {
             eprintln!("tilo-session: this session's person's link: {why}");
             return None;
         }

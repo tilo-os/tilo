@@ -176,7 +176,7 @@ impl TestClient {
     /// Say what the field takes, as a toolkit does for a field of a kind: a password's, a
     /// terminal's, a number's.
     fn field_takes(
-        &mut self,
+        &self,
         hint: zwp_text_input_v3::ContentHint,
         purpose: zwp_text_input_v3::ContentPurpose,
     ) {

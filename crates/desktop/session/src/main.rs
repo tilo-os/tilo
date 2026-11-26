@@ -181,7 +181,7 @@ fn main() -> std::process::ExitCode {
     // daemon did not start.
     let launch_link = match launch_link {
         tilo_session::shell_start::Launch::Founding => tilo_session::shell_start::founding_link(),
-        tilo_session::shell_start::Launch::Shell(link) => Some(link),
+        tilo_session::shell_start::Launch::Shell(handed) => Some(handed),
         tilo_session::shell_start::Launch::None => None,
     };
     start(ours, command, line, host_desktop, &identity, launch_link)
