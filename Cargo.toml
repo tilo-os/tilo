@@ -242,6 +242,7 @@ members = [
     # Packaging
     "crates/core/app-catalogue",
     "crates/desktop/app-fleet",
+    "crates/core/fleet-catalogue",
     "crates/os/app-cli",
     "crates/core/package-actions",
     "crates/core/app-registry",

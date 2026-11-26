@@ -11,7 +11,7 @@ use crate::entry::{CatalogueAction, CatalogueEntry, ResourceType, Source};
 /// empty.
 #[must_use]
 pub fn entry(app: &CatalogueApp) -> CatalogueEntry {
-    let manifest = app_fleet::metadata(&app.package_id);
+    let manifest = fleet_catalogue::metadata(&app.package_id);
     let tagline = if app.tagline.trim().is_empty() {
         manifest.map_or("", |meta| meta.tagline).to_owned()
     } else {

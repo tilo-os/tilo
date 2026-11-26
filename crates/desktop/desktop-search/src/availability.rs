@@ -1,23 +1,23 @@
 //! What the manifest registry knows about each Tilo application: where it
 //! runs, its category, and the other names and words people know it by,
-//! from the fleet's compiled manifest metadata (`app-fleet`).
+//! from the fleet's compiled manifest metadata (`fleet-catalogue`).
 //!
 //! A desktop offers only the apps it can run. An app that cannot run here is
 //! not listed with a reason: offering Terminal in a browser tab, where
 //! choosing it can only fail, is noise at best and a broken promise at worst.
 
-use app_fleet::FleetApp;
+use fleet_catalogue::FleetApp;
 
 /// Every application in the manifest registry.
 #[must_use]
 pub fn catalog() -> &'static [FleetApp] {
-    app_fleet::apps()
+    fleet_catalogue::apps()
 }
 
 /// The registry's entry for the app `package_id`, if it lists it.
 fn entry_for(package_id: &str) -> Option<&'static FleetApp> {
     // A local build publishes the same apps under `dev.tilo.`.
-    app_fleet::metadata(package_id)
+    fleet_catalogue::metadata(package_id)
 }
 
 /// The app's name, as the registry knows it.

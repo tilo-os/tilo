@@ -116,7 +116,7 @@ fn every_kind_a_write_path_names_is_declared_in_the_store_a_start_builds() {
     crate::service::ServiceSessions::declare_start_surfaces(&surfaces)
         .expect("the surfaces a start declares write as the files their records are judged by");
     // What every app of a workspace ships, as a server that runs its programs names it.
-    for (app, _, surface) in app_fleet::surfaced() {
+    for (app, _, surface) in fleet_catalogue::surfaced() {
         surfaces.register_package(app, surface.as_bytes());
     }
     // The store `Workspaces::store_with_surfaces` builds: the reference kind, then every
@@ -135,7 +135,7 @@ fn every_kind_a_write_path_names_is_declared_in_the_store_a_start_builds() {
     named.extend(system_records());
     // Every kind an app's shipped surface declares: registered as the app ships it, no kind is
     // left out of the store that judges its records.
-    for (app, _, surface) in app_fleet::surfaced() {
+    for (app, _, surface) in fleet_catalogue::surfaced() {
         let file = collab_types::surface::SurfaceFile::compiled(surface.as_bytes())
             .unwrap_or_else(|error| panic!("{app}'s surface does not read: {error}"));
         for resource in file.resources {

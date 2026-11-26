@@ -15,7 +15,6 @@ platform = [
 ]
 
 core = [
-    "app-catalogue -> tilo-app-fleet",
     "app-catalogue -> tilo-default-apps",
     "install -> tilo-control",
     "launcher -> tilo-control",
@@ -53,7 +52,6 @@ core = [
     "tilo-browser-runtime -> tilo-ui",
     "tilo-cli -> install-plan",
     "tilo-cli -> install-profile-model",
-    "tilo-cli -> tilo-app-fleet",
     "tilo-cli -> tilo-control",
     "tilo-cli -> tilo-deployment-status",
     "tilo-cli -> tilo-formats",
@@ -79,14 +77,12 @@ core = [
     "tilo-identity -> tilo-desktop-model",
     "tilo-mcp -> tilo-agent-provider-config",
     "tilo-mcp -> tilo-agent-turn",
-    "tilo-mcp -> tilo-app-fleet",
     "tilo-mcp -> tilo-test-env",
     "tilo-package-store -> tilo-formats",
     "tilo-peer-state -> tilo-desktop-model",
     "tilo-peer-state -> tilo-session-core",
     "tilo-peer-state -> tilo-ui",
     "tilo-runtime -> app-cli",
-    "tilo-runtime -> tilo-app-fleet",
     "tilo-runtime -> tilo-capture",
     "tilo-runtime -> tilo-control",
     "tilo-runtime -> tilo-desktop-model",
@@ -126,7 +122,6 @@ core = [
     "tilo-workspace-service -> tilo-account-probe",
     "tilo-workspace-service -> tilo-accounts",
     "tilo-workspace-service -> tilo-agent-provider-config",
-    "tilo-workspace-service -> tilo-app-fleet",
     "tilo-workspace-service -> tilo-dav",
     "tilo-workspace-service -> tilo-desktop-model",
     "tilo-workspace-service -> tilo-environment",

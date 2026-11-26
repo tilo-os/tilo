@@ -362,7 +362,7 @@ impl PublishedActions {
     /// `None` for an app the fleet does not know or that offers nothing.
     #[must_use]
     pub fn offered_by(app: &str, name: &str, workspace: &str) -> Option<Self> {
-        let actions: Vec<_> = app_fleet::metadata(app)?
+        let actions: Vec<_> = fleet_catalogue::metadata(app)?
             .actions()
             .map(|offer| {
                 tilo_actions::published::PublishedAction::offered(&fleet_offer(offer), name)
@@ -377,26 +377,26 @@ impl PublishedActions {
         })
     }
 
-    /// The app's name, as the registry's metadata (`app-fleet`) gives it; `None` for an app the
+    /// The app's name, as the registry's metadata (`fleet-catalogue`) gives it; `None` for an app the
     /// fleet does not know.
     #[must_use]
     pub fn app_name(&self) -> Option<&'static str> {
-        app_fleet::metadata(&self.app).map(|app| app.name)
+        fleet_catalogue::metadata(&self.app).map(|app| app.name)
     }
 
     /// The other words the app is known by, from the registry's metadata
-    /// (`app-fleet`): "youtube" for Tube, "channel", "videos". A query naming
+    /// (`fleet-catalogue`): "youtube" for Tube, "channel", "videos". A query naming
     /// one names the app, so "youtube videos of mkbhd" is the video
     /// client's channel, whatever the app is titled. Empty for an app the
     /// fleet does not know.
     #[must_use]
     pub fn keywords(&self) -> &'static [&'static str] {
-        app_fleet::metadata(&self.app).map_or(&[], |app| app.keywords)
+        fleet_catalogue::metadata(&self.app).map_or(&[], |app| app.keywords)
     }
 }
 
 /// `offer` as the fleet's compiled-in manifests declare it.
-fn fleet_offer(offer: app_fleet::FleetAction) -> tilo_actions::published::Offer<'static> {
+fn fleet_offer(offer: fleet_catalogue::FleetAction) -> tilo_actions::published::Offer<'static> {
     use tilo_actions::{ActionKind, OperationKind};
     let given = |text: &'static str| (!text.is_empty()).then_some(text);
     let asks: Vec<tilo_actions::published::OfferParam<'static>> = boxed_asks(offer);
@@ -424,7 +424,9 @@ fn fleet_offer(offer: app_fleet::FleetAction) -> tilo_actions::published::Offer<
 }
 
 /// The values a fleet offer asks for, as slices of the compiled-in manifest's own text.
-fn boxed_asks(offer: app_fleet::FleetAction) -> Vec<tilo_actions::published::OfferParam<'static>> {
+fn boxed_asks(
+    offer: fleet_catalogue::FleetAction,
+) -> Vec<tilo_actions::published::OfferParam<'static>> {
     offer
         .asks()
         .map(|param| tilo_actions::published::OfferParam {

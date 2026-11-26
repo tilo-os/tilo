@@ -965,7 +965,7 @@ env = { CARGO_PROFILE_DEV_DEBUG = "0" }
 # Each app also commits its catalogue entry beside itself (`fleet.json`, for a
 # tilolang package read from its own declaration), which is what search, the
 # Store and the SDK know an app by while it is not installed; the entry is
-# compared here, so the fleet the app-fleet crate gathers from them at build
+# compared here, so the fleet the fleet-catalogue crate gathers from them at build
 # time is what the apps declare. That crate refuses two apps claiming one id.
 # Each binary is run in a network namespace of its own (`isolation`), so
 # a report cannot wait on a network: what it publishes is what its code holds.

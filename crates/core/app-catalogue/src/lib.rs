@@ -1,7 +1,7 @@
 //! The one catalogue of apps a person can get, shared by the Store and desktop search.
 //!
 //! Two sources make it up: Tilo packages from the configured registries ([`tilo`]), the `app list
-//! --json` rows joined with the signed manifest metadata of the Tilo fleet ([`app_fleet`]), so an
+//! --json` rows joined with the signed manifest metadata of the Tilo fleet ([`fleet_catalogue`]), so an
 //! app that is not on this device is still known by its tag line, other names, keywords, the
 //! documents it creates and the actions it offers (opening one downloads it if absent); and
 //! Flathub from Flatpak's cached `AppStream` metadata ([`appstream`]), the file Flatpak keeps under

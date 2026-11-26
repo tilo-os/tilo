@@ -1889,7 +1889,7 @@ async fn a_workspace_made_with_no_catalogue_starts_with_the_defaults_the_cache_h
     let config = dir.path().join("store-config");
     std::fs::create_dir_all(&store).unwrap();
     std::fs::create_dir_all(&config).unwrap();
-    let app = app_fleet::default_apps()[0];
+    let app = fleet_catalogue::default_apps()[0];
     let (root, publisher) = ("9a".repeat(32), "2b".repeat(32));
     std::fs::write(
         store.join("registry.toml"),

@@ -25,7 +25,7 @@ settings-model = { package = "tilo-settings-model", path = "../../sdk/settings-m
 tilo-accessibility-settings = { path = "../../desktop/tilo-accessibility-settings", features = ["model"] }
 tilo-app-id.workspace = true
 # Every app's commands with the keys it gives them, which the shortcuts table lists to move.
-tilo-app-fleet = { path = "../app-fleet" }
+fleet-catalogue = { package = "tilo-fleet-catalogue", version = "0.1.0", path = "../../core/fleet-catalogue" }
 tilo-locale = { path = "../../platform/tilo-locale" }
 # The shipped wallpapers a wallpaper choice is checked against.
 tilo-wallpapers = { version = "0.1.0", path = "../../desktop/tilo-wallpapers" }

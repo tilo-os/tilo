@@ -180,13 +180,13 @@ where
             if !named.insert(app.to_owned()) {
                 continue;
             }
-            let Some(surface) = app_fleet::surface(app) else {
+            let Some(surface) = fleet_catalogue::surface(app) else {
                 tracing::debug!(%app, "a task leaves out an app this build ships no surface of");
                 continue;
             };
             apps.push(App::Surface {
                 app: app.to_owned(),
-                title: app_fleet::metadata(app)
+                title: fleet_catalogue::metadata(app)
                     .map_or(app, |metadata| metadata.name)
                     .to_owned(),
                 surface: surface.to_owned(),

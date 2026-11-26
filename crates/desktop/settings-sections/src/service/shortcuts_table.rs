@@ -96,7 +96,7 @@ impl ShortcutsTable {
                 chord: action.chord.display(),
             })
             .collect();
-        let commands = commands(&config, app_fleet::apps());
+        let commands = commands(&config, fleet_catalogue::apps());
         Self {
             bindings,
             actions,
@@ -109,7 +109,7 @@ impl ShortcutsTable {
 /// then each command `config` moved that no app of `apps` declares (an app being developed).
 fn commands(
     config: &settings_store::hardware::ShortcutConfig,
-    apps: &[app_fleet::FleetApp],
+    apps: &[fleet_catalogue::FleetApp],
 ) -> Vec<AppCommand> {
     let keys = |chord: Option<&settings_store::hardware::KeyChord>| {
         chord
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn every_app_command_on_keys_is_listed_and_a_moved_one_shows_where_it_went() {
-        let (app, command) = app_fleet::apps()
+        let (app, command) = fleet_catalogue::apps()
             .iter()
             .find_map(|app| app.commands().next().map(|command| (app, command)))
             .expect("an app of the fleet runs a command on keys");

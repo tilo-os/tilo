@@ -160,9 +160,7 @@ app-cli = { path = "../../os/app-cli" }
 # The default collection's app ids, compiled in: the apps a workspace made here starts with.
 # Their compiled surfaces too, so the service judges the records of the programs a host runs
 # against what every app of its workspace publishes.
-app-fleet = { package = "tilo-app-fleet", path = "../../desktop/app-fleet", features = [
-    "surfaces",
-] }
+fleet-catalogue = { package = "tilo-fleet-catalogue", version = "0.1.0", path = "../fleet-catalogue", features = ["surfaces"] }
 # The releases this device's package cache already holds: a default app no registry answered for.
 package-store = { package = "tilo-package-store", path = "../package-store" }
 # A host's workspaces keep their content in directories.

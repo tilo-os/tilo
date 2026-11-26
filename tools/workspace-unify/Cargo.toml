@@ -1018,7 +1018,8 @@ doc = false
 "tilo-api" = { path = "../../crates/core/tilo-api", default-features = false, features = ["test-support"] }
 "tilo-app" = { path = "../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "default", "mpris", "native", "test-support"] }
 "tilo-app-builder" = { path = "../../crates/lang/tilo-app-builder", default-features = false, features = [] }
-"tilo-app-fleet" = { path = "../../crates/desktop/app-fleet", default-features = false, features = ["surfaces"] }
+"tilo-app-fleet" = { path = "../../crates/desktop/app-fleet", default-features = false }
+"tilo-fleet-catalogue" = { path = "../../crates/core/fleet-catalogue", default-features = false, features = ["surfaces"] }
 "tilo-app-host" = { path = "../../crates/core/app-host", default-features = false, features = ["agents", "files", "test-support"] }
 "tilo-app-id" = { path = "../../crates/core/tilo-app-id", default-features = false, features = [] }
 "tilo-app-keeper" = { path = "../../crates/desktop/app-keeper", default-features = false, features = ["test-support"] }
@@ -2247,7 +2248,8 @@ doc = false
 "tilo-actions" = { path = "../../crates/core/actions", default-features = false, features = ["answer-reads", "asks", "document-read", "off-worker", "test-support"] }
 "tilo-advisory-lock" = { path = "../../crates/platform/advisory-lock", default-features = false, features = [] }
 "tilo-app-builder" = { path = "../../crates/lang/tilo-app-builder", default-features = false, features = [] }
-"tilo-app-fleet" = { path = "../../crates/desktop/app-fleet", default-features = false, features = ["surfaces"] }
+"tilo-app-fleet" = { path = "../../crates/desktop/app-fleet", default-features = false }
+"tilo-fleet-catalogue" = { path = "../../crates/core/fleet-catalogue", default-features = false, features = ["surfaces"] }
 "tilo-app-id" = { path = "../../crates/core/tilo-app-id", default-features = false, features = [] }
 "tilo-app-package" = { path = "../../crates/core/tilo-app-package", default-features = false, features = [] }
 "tilo-app-registry" = { path = "../../crates/core/app-registry", default-features = false, features = [] }
@@ -3482,7 +3484,8 @@ doc = false
 "tilo-api" = { path = "../../crates/core/tilo-api", default-features = false, features = ["test-support"] }
 "tilo-app" = { path = "../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support", "webview-adblock"] }
 "tilo-app-builder" = { path = "../../crates/lang/tilo-app-builder", default-features = false, features = [] }
-"tilo-app-fleet" = { path = "../../crates/desktop/app-fleet", default-features = false, features = ["surfaces"] }
+"tilo-app-fleet" = { path = "../../crates/desktop/app-fleet", default-features = false }
+"tilo-fleet-catalogue" = { path = "../../crates/core/fleet-catalogue", default-features = false, features = ["surfaces"] }
 "tilo-app-id" = { path = "../../crates/core/tilo-app-id", default-features = false, features = [] }
 "tilo-app-keeper" = { path = "../../crates/desktop/app-keeper", default-features = false, features = ["test-support"] }
 "tilo-app-launch" = { path = "../../crates/desktop/app-launch", default-features = false, features = ["test-support"] }
@@ -4739,7 +4742,8 @@ doc = false
 "tilo-agent-turn" = { path = "../../crates/integrations/agent-turn", default-features = false, features = [] }
 "tilo-api" = { path = "../../crates/core/tilo-api", default-features = false, features = ["test-support"] }
 "tilo-app-builder" = { path = "../../crates/lang/tilo-app-builder", default-features = false, features = [] }
-"tilo-app-fleet" = { path = "../../crates/desktop/app-fleet", default-features = false, features = ["surfaces"] }
+"tilo-app-fleet" = { path = "../../crates/desktop/app-fleet", default-features = false }
+"tilo-fleet-catalogue" = { path = "../../crates/core/fleet-catalogue", default-features = false, features = ["surfaces"] }
 "tilo-app-id" = { path = "../../crates/core/tilo-app-id", default-features = false, features = [] }
 "tilo-app-package" = { path = "../../crates/core/tilo-app-package", default-features = false, features = [] }
 "tilo-app-registry" = { path = "../../crates/core/app-registry", default-features = false, features = [] }

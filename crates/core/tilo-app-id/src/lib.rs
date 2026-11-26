@@ -12,6 +12,18 @@ pub const MAX_APP_ID_BYTES: usize = 255;
 
 const _: () = assert!(MAX_APP_ID_BYTES == u8::MAX as usize);
 
+/// `package_id` as the fleet names it: a development build's `dev.tilo.` app is its `so.tilo.` one.
+/// An id an app was published under before is the policy's to resolve, from what the app's signed
+/// package declares when it loads (`tilo_action_policy::earlier`).
+#[must_use]
+pub fn fleet_id(package_id: &str) -> std::borrow::Cow<'_, str> {
+    package_id
+        .strip_prefix("dev.tilo.")
+        .map_or(std::borrow::Cow::Borrowed(package_id), |name| {
+            std::borrow::Cow::Owned(format!("so.tilo.{name}"))
+        })
+}
+
 /// Whether `segment` is one non-empty component of an application identifier:
 /// ASCII letters, digits, `-` and `_`.
 #[must_use]

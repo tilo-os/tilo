@@ -10,7 +10,7 @@
 //! Which apps' types are written: `-w` names a hosted workspace, whose own read of an app
 //! answers its surface; without it, every package this build ships that publishes a surface —
 //! native and tilolang apps, and the services whose actions are the workspace's too — from the
-//! fleet's compiled-in manifests (`app_fleet`), the list the desktop's search and the Store read,
+//! fleet's compiled-in manifests (`fleet_catalogue`), the list the desktop's search and the Store read,
 //! so the SDK, those apps and a workspace's programs agree on one surface.
 
 use std::collections::BTreeMap;
@@ -156,9 +156,9 @@ fn surfaces(reach: crate::api::Reach<'_>, workspace: Option<&str>) -> Result<Vec
 
 /// Every package this build ships that publishes a surface — native apps, tilolang packages and
 /// the services whose actions a workspace holds (the on-screen keyboard's) — from the fleet's
-/// compiled-in manifests (`app_fleet`): its id, its name and the surface its package publishes.
+/// compiled-in manifests (`fleet_catalogue`): its id, its name and the surface its package publishes.
 fn fleet() -> Result<Vec<App>> {
-    app_fleet::surfaced()
+    fleet_catalogue::surfaced()
         .map(|(id, name, file)| {
             SurfaceFile::from_json(file).map_err(|error| anyhow!("{id}: {error}"))?;
             Ok(App {
@@ -1937,7 +1937,13 @@ kind = "undoable"
             .1;
         assert!(python.contains("class Board"), "{python}");
         assert!(python.contains("def extend("), "{python}");
-        for platform in ["class Effect", "tilolang.effect", "$send", "$create", "migrate"] {
+        for platform in [
+            "class Effect",
+            "tilolang.effect",
+            "$send",
+            "$create",
+            "migrate",
+        ] {
             assert!(!python.contains(platform), "{platform} leaked:\n{python}");
         }
 
@@ -1948,7 +1954,13 @@ kind = "undoable"
             .expect("timer.ts is written")
             .1;
         assert!(ts.contains("export interface Board"), "{ts}");
-        for platform in ["interface Effect", "tilolang.effect", "$send", "$create", "migrate"] {
+        for platform in [
+            "interface Effect",
+            "tilolang.effect",
+            "$send",
+            "$create",
+            "migrate",
+        ] {
             assert!(!ts.contains(platform), "{platform} leaked:\n{ts}");
         }
 

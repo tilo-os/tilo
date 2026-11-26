@@ -16,7 +16,7 @@ path = "src/lib.rs"
 # own AppStream update); this crate only reads what they leave on disk.
 [dependencies]
 # What each Tilo app's manifest says, for apps not on this device.
-app-fleet = { package = "tilo-app-fleet", path = "../../desktop/app-fleet" }
+fleet-catalogue = { package = "tilo-fleet-catalogue", version = "0.1.0", path = "../fleet-catalogue" }
 # The installed half: the registry of installed packages, each read through
 # the signed manifest it was admitted with.
 package-store = { package = "tilo-package-store", path = "../package-store" }

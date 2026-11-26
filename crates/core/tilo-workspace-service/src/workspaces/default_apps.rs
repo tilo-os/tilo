@@ -1,7 +1,7 @@
 //! The apps a workspace made on this device starts with.
 //!
 //! A new workspace runs the default collection: the apps `dist/apps/app-collections.toml`
-//! names, compiled into [`app_fleet::default_apps`] from that one list, so a workspace made on
+//! names, compiled into [`fleet_catalogue::default_apps`] from that one list, so a workspace made on
 //! any host, in the OS image or not, starts with the same apps. Each is recorded as the release
 //! the configured registries offer now — its version, the surface its changes are decided
 //! against, the package root and the publisher — and never as a file the workspace keeps. A
@@ -54,7 +54,11 @@ pub(super) fn registry_rows(registries: &RegistriesFile) -> Vec<PackageRegistry>
 /// Private: this reads each registry's catalogue with a client that blocks, so it is only ever
 /// reached from [`on_this_device_awaited`]'s thread, never from a task of the app runtime.
 fn on_this_device(registries: &RegistriesFile) -> Vec<AppRelease> {
-    resolve(app_fleet::default_apps(), &offered(registries), &cached)
+    resolve(
+        fleet_catalogue::default_apps(),
+        &offered(registries),
+        &cached,
+    )
 }
 
 /// [`on_this_device`], with the registries asked on a thread of their own and the answer awaited.
@@ -73,7 +77,7 @@ pub(super) async fn on_this_device_awaited(registries: &RegistriesFile) -> Vec<A
         });
     let unasked = || {
         // No thread to ask on: the workspace starts with the releases this device's cache holds.
-        resolve(app_fleet::default_apps(), &[], &cached)
+        resolve(fleet_catalogue::default_apps(), &[], &cached)
     };
     match started {
         Ok(_) => heard.await.unwrap_or_else(|_| unasked()),
@@ -366,7 +370,7 @@ mod tests {
         let asked = runtime.block_on(on_this_device_awaited(&registries));
         assert_eq!(
             asked,
-            resolve(app_fleet::default_apps(), &[], &cached),
+            resolve(fleet_catalogue::default_apps(), &[], &cached),
             "with no catalogue answering, a workspace starts with the releases the cache holds"
         );
     }

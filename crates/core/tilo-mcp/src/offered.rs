@@ -58,7 +58,7 @@ where
     // An app of the fleet answers what its signed package publishes even when this computer
     // has neither started it nor kept its package: the fleet compiles each app's surface in,
     // so every installed app's types are readable on a fresh workspace.
-    if let Some(surface) = app_fleet::surface(app_id)
+    if let Some(surface) = fleet_catalogue::surface(app_id)
         && SurfaceFile::compiled(surface.as_bytes()).is_ok()
     {
         return Some(surface.as_bytes().to_vec());

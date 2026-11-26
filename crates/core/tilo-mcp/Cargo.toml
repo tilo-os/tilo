@@ -17,7 +17,7 @@ tilo-agent-turn = { path = "../../integrations/agent-turn" }
 agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }
 # What every Tilo app publishes (its surface), for the apps a hosted workspace's programs compile
 # against: data only, no app links the server that serves them.
-app-fleet = { package = "tilo-app-fleet", path = "../../desktop/app-fleet", features = ["surfaces"] }
+fleet-catalogue = { package = "tilo-fleet-catalogue", version = "0.1.0", path = "../fleet-catalogue", features = ["surfaces"] }
 base64.workspace = true
 blake3.workspace = true
 collab-types = { package = "tilo-collab-types", path = "../collab-types" }

@@ -193,7 +193,7 @@ pub fn derived_kind(record: &str) -> Option<&str> {
 /// declared ([`WORKSPACE_DOCUMENTS`], [`EARLIER_RECORDS`]).
 #[must_use]
 pub fn declared_record(app: &str, record: &str) -> Option<&'static WorkspaceDocument> {
-    let app = crate::canonical(app);
+    let app = tilo_app_id::fleet_id(app);
     WORKSPACE_DOCUMENTS
         .iter()
         .chain(EARLIER_RECORDS)
@@ -207,7 +207,7 @@ pub fn person_record<'a>(
     app: &str,
     record: &'a str,
 ) -> Option<(&'static WorkspaceDocument, &'a str)> {
-    let app = crate::canonical(app);
+    let app = tilo_app_id::fleet_id(app);
     WORKSPACE_DOCUMENTS
         .iter()
         .filter(|kept| kept.app == app.as_ref())
