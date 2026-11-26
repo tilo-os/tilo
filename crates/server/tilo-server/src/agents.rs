@@ -2133,11 +2133,14 @@ async fn start_app_server(
     let server_cert = identity.device_cert.clone();
     let catalogue = app_catalogue(options.catalogue, options.browsers.as_ref());
     let sessions = agents.as_ref().map(|agents| agents.agent_sessions());
+    let roster = sessions
+        .clone()
+        .map(|sessions| RosterProvisioning::new(sessions, &catalogue()));
     cfg.services.app_serving = true;
     let actions = WorkspaceActions::new(catalogue);
     let action_server = Arc::new(WorkspaceActionsServer {
         supervisor: agents.as_ref().map(|agents| agents.supervisor().clone()),
-        roster: sessions.clone().map(RosterProvisioning::new),
+        roster,
         pages: ActionPages::new(actions.clone()),
         actions,
         stores: content,

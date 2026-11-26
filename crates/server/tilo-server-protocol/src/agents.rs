@@ -18,6 +18,7 @@
 //! | `agent:<id>` | [`GRANT_STATUS_ACTION`] | none | [`AgentGrantStatus`] |
 //! | `agent:<id>` | [`REQUEST_CHAT_GRANT_ACTION`] | none | [`AgentGrantReceipt`] |
 //! | `agent:<id>` | [`REQUEST_ASSISTANT_WORK_GRANT_ACTION`] | none | [`AgentGrantReceipt`] |
+//! | `agent:<id>` | [`REQUEST_APP_GRANT_ACTION`] | [`AgentGrantApps`] JSON | [`AgentGrantReceipt`] |
 //!
 //! A grant is approved on a root-holding device in one step: the host queues a certification
 //! request for a fresh agent key carrying the [`crate::delegation::DelegateProposal`], and the
@@ -41,6 +42,8 @@ pub const GRANT_STATUS_ACTION: &str = "grant-status";
 pub const REQUEST_CHAT_GRANT_ACTION: &str = "request-chat-grant";
 /// Ask to allow Chat, Tasks, Assistant and Shortcuts in the keeper's workspace.
 pub const REQUEST_ASSISTANT_WORK_GRANT_ACTION: &str = "request-assistant-work-grant";
+/// Ask for the exact named apps the keeper chose from this host's catalogue.
+pub const REQUEST_APP_GRANT_ACTION: &str = "request-app-grant";
 
 /// The workspace host's operations on one personal assistant's signing permission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +51,7 @@ pub enum AgentGrantAction {
     Status,
     RequestChat,
     RequestWork,
+    RequestApps,
     Revoke,
 }
 
@@ -59,6 +63,7 @@ impl AgentGrantAction {
             Self::Status => GRANT_STATUS_ACTION,
             Self::RequestChat => REQUEST_CHAT_GRANT_ACTION,
             Self::RequestWork => REQUEST_ASSISTANT_WORK_GRANT_ACTION,
+            Self::RequestApps => REQUEST_APP_GRANT_ACTION,
             Self::Revoke => REVOKE_ACTION,
         }
     }
@@ -74,6 +79,38 @@ impl AgentGrantAction {
             ),
         }
     }
+}
+
+/// One app that can be selected in the signed action's JSON Schema.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentGrantApp {
+    #[serde(rename = "const")]
+    pub id: String,
+    pub title: String,
+}
+
+impl AgentGrantApp {
+    /// Read the grant choices the host publishes for the personal assistant's request.
+    #[must_use]
+    pub fn choices(action: &tilo_actions::ActionDescriptor) -> Vec<Self> {
+        if action.address.action != AgentGrantAction::RequestApps.id() {
+            return Vec::new();
+        }
+        action
+            .params
+            .iter()
+            .find(|param| param.name.as_ref() == "apps")
+            .and_then(|param| param.schema.as_ref()?.pointer("/items/oneOf"))
+            .and_then(|options| serde_json::from_value(options.clone()).ok())
+            .unwrap_or_default()
+    }
+}
+
+/// The complete set of named apps the keeper asks the host to put in the proposal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentGrantApps {
+    pub apps: Vec<String>,
 }
 
 /// What a grant request returns to its originating device for comparison with the approver.

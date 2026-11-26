@@ -12,10 +12,13 @@ use tilo_actions::{ActionInvoker, ActionOutput};
 use ui::framework::testing::TestApp;
 use ui::tilo_workspace_agent::{self as workspace_agent, WorkspaceAgents};
 
+mod apps;
+
 const WORKSPACE: &str = "6f0c3a52-8e1b-4d6a-9c2f-3b7e5d1a4c90";
 const REQUEST: &str = "chat-assistant-grant-request";
 const REFRESH: &str = "chat-assistant-grant-refresh";
 const WORK: &str = "chat-assistant-grant-work";
+const CHOOSE_APPS: &str = "chat-assistant-grant-choose-apps";
 const MANAGE: &str = "chat-assistant-grant-manage";
 const REVOKE: &str = "chat-assistant-grant-revoke";
 const WITHDRAW: &str = "chat-assistant-grant-withdraw";
@@ -40,9 +43,18 @@ fn open_agent(app: &mut TestApp<ChatShell>, agent: &str) {
 
 fn grants_offered(app: &mut TestApp<ChatShell>) -> bool {
     let targets = app.harness().targets();
-    [REQUEST, REFRESH, WORK, MANAGE, REVOKE, WITHDRAW, CODE]
-        .iter()
-        .any(|control| targets.contains_key(*control))
+    [
+        REQUEST,
+        REFRESH,
+        WORK,
+        CHOOSE_APPS,
+        MANAGE,
+        REVOKE,
+        WITHDRAW,
+        CODE,
+    ]
+    .iter()
+    .any(|control| targets.contains_key(*control))
 }
 
 fn shows_approval_code(app: &mut TestApp<ChatShell>) -> bool {
@@ -83,22 +95,41 @@ fn personal_agent(app: &mut TestApp<ChatShell>, keeper: &str) -> String {
 }
 
 fn grant_host(person: &Caller, status: &Arc<Mutex<(&'static str, bool)>>) -> Arc<TestProvider> {
+    grant_host_on(TestProvider::new(), person, status)
+}
+
+fn grant_host_on(
+    provider: TestProvider,
+    person: &Caller,
+    status: &Arc<Mutex<(&'static str, bool)>>,
+) -> Arc<TestProvider> {
     let host_status = Arc::clone(status);
     let signed = person.clone();
-    Arc::new(TestProvider::new().answering(move |caller, request| {
+    let allowed_apps = Mutex::new(json!([ui::apps::CHAT]));
+    Arc::new(provider.answering(move |caller, request| {
         let action = request.target.address.action.as_str();
         let value = match action {
-            "grant-status" | "request-chat-grant" | "request-assistant-work-grant" | "revoke" => {
+            "grant-status" | "request-chat-grant" | "request-assistant-work-grant"
+            | "request-app-grant" | "revoke" => {
                 assert_eq!(caller, &signed, "the host decides as this workspace's member");
                 assert_eq!(request.target.provider, "agents");
-                assert!(match &request.argument {
-                    InvokeArgument::None => true,
-                    InvokeArgument::Json(args) => args.is_empty(),
-                    InvokeArgument::Text(_) => false,
-                }, "the keeper and the requested scope come from the host");
+                if action == "request-app-grant" {
+                    let InvokeArgument::Json(args) = &request.argument else {
+                        panic!("a custom request carries its chosen apps");
+                    };
+                    assert_eq!(args.len(), 1);
+                    *allowed_apps.lock().unwrap() = args.get("apps").unwrap().clone();
+                } else {
+                    let no_arguments = match &request.argument {
+                        InvokeArgument::None => true,
+                        InvokeArgument::Json(args) => args.is_empty(),
+                        InvokeArgument::Text(_) => false,
+                    };
+                    assert!(no_arguments, "fixed grant actions take no arguments");
+                }
                 let mut current = host_status.lock().unwrap();
                 if action == "grant-status" {
-                    Some(json!({"state": current.0, "ready": current.1, "apps": ["so.tilo.chat"], "expiresAtMs": null}))
+                    Some(json!({"state": current.0, "ready": current.1, "apps": &*allowed_apps.lock().unwrap(), "expiresAtMs": null}))
                 } else if action == "revoke" {
                     *current = ("revoked", false);
                     Some(json!({}))
@@ -251,6 +282,7 @@ fn changing_from_chat_to_workspace_work_requires_revocation_and_a_new_request() 
     assert!(!app.harness().targets().contains_key(WORK));
     app.harness().click_named(MANAGE).unwrap();
     wait_for(&mut app, REVOKE);
+    assert!(!app.harness().targets().contains_key(CHOOSE_APPS));
     assert!(
         host.asked()
             .iter()

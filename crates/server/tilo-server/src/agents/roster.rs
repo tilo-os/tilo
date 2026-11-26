@@ -2,6 +2,7 @@
 
 mod catalogue;
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
@@ -12,11 +13,13 @@ use tilo_actions::remote::{
 };
 use tilo_agent_session::grants::RosterAdmissionDone;
 use tilo_agent_session::{AgentIdentity, AgentSessions, AgentSupervisor, ApprovalDone};
+use tilo_app_id::apps::{ASSISTANT, CALENDAR, CHAT, MAIL, PASSWORDS, SHORTCUTS, TASKS};
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::agents::{
-    AGENT_RESOURCE_PREFIX, AGENTS_PROVIDER, GRANT_STATUS_ACTION, GrantRequest, GrantState,
-    REQUEST_ASSISTANT_WORK_GRANT_ACTION, REQUEST_CHAT_GRANT_ACTION, REQUEST_GRANT_ACTION,
-    REVOKE_ACTION, RosterGrantRequest, SUPERVISOR_RESOURCE,
+    AGENT_RESOURCE_PREFIX, AGENTS_PROVIDER, AgentGrantApp, AgentGrantApps, GRANT_STATUS_ACTION,
+    GrantRequest, GrantState, REQUEST_APP_GRANT_ACTION, REQUEST_ASSISTANT_WORK_GRANT_ACTION,
+    REQUEST_CHAT_GRANT_ACTION, REQUEST_GRANT_ACTION, REVOKE_ACTION, RosterGrantRequest,
+    SUPERVISOR_RESOURCE,
 };
 use tilo_server_protocol::delegation::DelegateProposal;
 use tilo_user_identity::DeviceCert;
@@ -26,13 +29,53 @@ use super::ServerAgentLink;
 pub(super) struct RosterProvisioning {
     link: OnceLock<Weak<ServerAgentLink>>,
     sessions: AgentSessions,
+    apps: Arc<[AgentGrantApp]>,
+}
+
+/// The normal work preset in its existing signed order.
+const WORK_APPS: [&str; 4] = [CHAT, TASKS, ASSISTANT, SHORTCUTS];
+
+/// The apps this host serves and the personal stores its agent can reach through native actions.
+fn grant_apps(catalogue: &tilo_agent_session::AppCatalogue) -> Vec<AgentGrantApp> {
+    use tilo_actions::remote::{person_connections, person_models};
+    let mut names: BTreeMap<_, _> = catalogue
+        .iter()
+        .map(|app| (app.app_id(), app.title()))
+        .chain(catalogue.iter_placed().map(|app| (app.app_id, app.title)))
+        .collect();
+    names.extend([
+        (MAIL, "Mail"),
+        (CALENDAR, "Calendar"),
+        (PASSWORDS, "Passwords"),
+        (person_models::PROVIDER, "Model account settings"),
+        (person_connections::PROVIDER, "Connections"),
+    ]);
+    let mut choices = Vec::new();
+    for (id, label) in WORK_APPS
+        .into_iter()
+        .zip(["Chat", "Tasks", "Assistant", "Shortcuts"])
+    {
+        choices.push(AgentGrantApp {
+            id: id.to_owned(),
+            title: names.remove(id).unwrap_or(label).to_owned(),
+        });
+    }
+    choices.extend(names.into_iter().map(|(id, title)| AgentGrantApp {
+        id: id.to_owned(),
+        title: title.to_owned(),
+    }));
+    choices
 }
 
 impl RosterProvisioning {
-    pub(super) fn new(sessions: AgentSessions) -> Self {
+    pub(super) fn new(
+        sessions: AgentSessions,
+        catalogue: &tilo_agent_session::AppCatalogue,
+    ) -> Self {
         Self {
             link: OnceLock::new(),
             sessions,
+            apps: grant_apps(catalogue).into(),
         }
     }
 
@@ -80,6 +123,7 @@ impl RosterProvisioning {
             match address.action.as_str() {
                 GRANT_STATUS_ACTION
                 | REQUEST_CHAT_GRANT_ACTION
+                | REQUEST_APP_GRANT_ACTION
                 | REQUEST_ASSISTANT_WORK_GRANT_ACTION => {}
                 REVOKE_ACTION if supervisor.has_roster_grant(workspace, id) => {}
                 _ => return None,
@@ -97,6 +141,7 @@ impl RosterProvisioning {
         };
         let (done, answer) = pending();
         let sessions = self.sessions.clone();
+        let apps = self.apps.clone();
         let (caller, cert, request, supervisor) = (
             caller.clone(),
             cert.clone(),
@@ -111,6 +156,7 @@ impl RosterProvisioning {
                 Some(id) => {
                     personal_grant(
                         (&link, &sessions, &supervisor),
+                        &apps,
                         workspace,
                         &caller,
                         &cert,
@@ -134,32 +180,19 @@ impl RosterProvisioning {
 /// The keeper reads their personal assistant's current grant, or asks for a new one.
 async fn personal_grant(
     (link, sessions, supervisor): (&ServerAgentLink, &AgentSessions, &AgentSupervisor),
+    choices: &[AgentGrantApp],
     workspace: WorkspaceId,
     caller: &Caller,
     cert: &DeviceCert,
     request: &InvokeRequest,
     agent: &str,
 ) -> Result<InvocationReceipt, ActionCallError> {
-    const CHAT: &str = "so.tilo.chat";
     tilo_actions::appearance::refuse_here(request)?;
-    if !matches!(&request.argument, InvokeArgument::None)
-        && !matches!(&request.argument, InvokeArgument::Json(fields) if fields.is_empty())
-    {
-        return Err(ActionCallError::InvalidRequest {
-            reason: "this action takes no arguments".into(),
-        });
-    }
     let entry = personal_entry(link, workspace, caller, cert)
         .await?
         .filter(|entry| entry.id.0 == agent)
         .ok_or_else(keeper_required)?;
-    if request.target.address.action != GRANT_STATUS_ACTION {
-        let mut apps = vec![CHAT.to_owned()];
-        if request.target.address.action == REQUEST_ASSISTANT_WORK_GRANT_ACTION {
-            apps.extend(
-                ["so.tilo.tasks", "so.tilo.assistant", "so.tilo.shortcuts"].map(str::to_owned),
-            );
-        }
+    if let Some(apps) = requested_apps(request, choices)? {
         let grant = GrantRequest {
             label: entry.name.trim().to_owned(),
             color: None,
@@ -193,6 +226,54 @@ async fn personal_grant(
                 resources: Vec::new(),
             },
         },
+    })
+}
+
+fn requested_apps(
+    request: &InvokeRequest,
+    choices: &[AgentGrantApp],
+) -> Result<Option<Vec<String>>, ActionCallError> {
+    let invalid = |reason: &str| ActionCallError::InvalidRequest {
+        reason: reason.to_owned(),
+    };
+    let action = request.target.address.action.as_str();
+    if action == REQUEST_APP_GRANT_ACTION {
+        let InvokeArgument::Json(fields) = &request.argument else {
+            return Err(invalid("choose the apps this assistant may use"));
+        };
+        let choice: AgentGrantApps =
+            serde_json::from_value(serde_json::Value::Object(fields.clone()))
+                .map_err(|error| invalid(&error.to_string()))?;
+        let selected: std::collections::BTreeSet<&str> =
+            choice.apps.iter().map(String::as_str).collect();
+        if !selected.contains(CHAT)
+            || selected.len() != choice.apps.len()
+            || selected.len() > tilo_server_protocol::delegation::MAX_DELEGATED_APPS
+        {
+            return Err(invalid(
+                "choose Chat and a distinct list of apps offered by this host",
+            ));
+        }
+        let apps: Vec<_> = choices
+            .iter()
+            .filter(|option| selected.contains(option.id.as_str()))
+            .map(|option| option.id.clone())
+            .collect();
+        if apps.len() != selected.len() {
+            return Err(invalid("an app in the request is not offered by this host"));
+        }
+        return Ok(Some(apps));
+    }
+    if !matches!(&request.argument, InvokeArgument::None)
+        && !matches!(&request.argument, InvokeArgument::Json(fields) if fields.is_empty())
+    {
+        return Err(invalid("this action takes no arguments"));
+    }
+    Ok(match action {
+        GRANT_STATUS_ACTION => None,
+        REQUEST_CHAT_GRANT_ACTION => Some(vec![CHAT.to_owned()]),
+        REQUEST_ASSISTANT_WORK_GRANT_ACTION => Some(WORK_APPS.map(str::to_owned).to_vec()),
+        _ => return Err(ActionCallError::UnknownAction),
     })
 }
 

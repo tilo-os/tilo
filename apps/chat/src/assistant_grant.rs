@@ -12,6 +12,15 @@ use ui::{Arrival, InvocationCall, RemoteActions};
 
 use crate::Chat;
 
+mod apps;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Panel {
+    Conversation,
+    Manage,
+    ChooseApps,
+}
+
 #[derive(Clone)]
 struct Request {
     call: InvocationCall,
@@ -32,43 +41,51 @@ struct Access {
     selected: LocalState<Option<String>>,
     request: LocalState<Request>,
     notice: LocalState<String>,
-    managing: LocalState<bool>,
+    panel: LocalState<Panel>,
     comparison_code: LocalState<Option<String>>,
 }
 
-fn call(remote: &RemoteActions, agent: &str, action: AgentGrantAction) -> Request {
+fn call(
+    remote: &RemoteActions,
+    agent: &str,
+    action: AgentGrantAction,
+    argument: InvokeArgument,
+) -> Request {
     Request {
-        call: remote.invoke(action.target(agent), InvokeArgument::None, None),
+        call: remote.invoke(action.target(agent), argument, None),
         action,
     }
 }
 
 impl Access {
-    fn ask(&self, action: AgentGrantAction) {
-        if self.selected.get().as_deref() != Some(self.agent.as_str())
-            || ui::invocation_scope::delivered_invocation().is_some()
-            || ui::invocation_scope::current_invoker()
-                .is_some_and(|who| who.acting.direct_person() != self.keeper.person_id())
-            || self.request.get().action != AgentGrantAction::Status
-        {
+    fn at_own_conversation(&self) -> bool {
+        self.selected.get().as_deref() == Some(self.agent.as_str())
+            && ui::invocation_scope::delivered_invocation().is_none()
+            && ui::invocation_scope::current_invoker()
+                .is_none_or(|who| who.acting.direct_person() == self.keeper.person_id())
+    }
+
+    fn ask(&self, action: AgentGrantAction, argument: InvokeArgument) {
+        if !self.at_own_conversation() || self.request.get().action != AgentGrantAction::Status {
             return;
         }
         self.notice.set(String::new());
-        self.request.set(call(&self.remote, &self.agent, action));
+        self.request
+            .set(call(&self.remote, &self.agent, action, argument));
     }
 
     fn button(&self, id: &'static str, label: &'static str, action: AgentGrantAction) -> Element {
         let access = self.clone();
         Button::new(id, label)
-            .on_effect(move || access.ask(action))
+            .on_effect(move || access.ask(action, InvokeArgument::None))
             .into_widget()
     }
 
-    fn status(&self, status: &AgentGrantStatus, managing: bool) -> Element {
-        if status.ready && !managing {
-            let manage = self.managing.clone();
+    fn status(&self, status: &AgentGrantStatus, panel: Panel, has_choices: bool) -> Element {
+        if status.ready && panel == Panel::Conversation {
+            let manage = self.panel.clone();
             return Button::new("chat-assistant-grant-manage", "chat-assistant-grant-manage")
-                .on_view(move || manage.set(true))
+                .on_view(move || manage.set(Panel::Manage))
                 .into_widget();
         }
         let mut controls = Stack::row().wrap();
@@ -113,6 +130,21 @@ impl Access {
                         "chat-assistant-grant-work",
                         AgentGrantAction::RequestWork,
                     ));
+                if has_choices {
+                    let access = self.clone();
+                    controls = controls.push(
+                        Button::new(
+                            "chat-assistant-grant-choose-apps",
+                            "chat-assistant-grant-choose-apps",
+                        )
+                        .on_view(move || {
+                            if access.at_own_conversation() {
+                                access.panel.set(Panel::ChooseApps);
+                            }
+                        })
+                        .into_widget(),
+                    );
+                }
             }
         }
         let mut panel = Stack::stack().gap(ui::tokens::Rhythm::Tight).push(
@@ -142,7 +174,11 @@ impl Access {
                         ui::apps::TASKS => crate::i18n::t("chat-assistant-app-tasks"),
                         ui::apps::ASSISTANT => crate::i18n::t("chat-assistant-app-assistant"),
                         ui::apps::SHORTCUTS => crate::i18n::t("chat-assistant-app-shortcuts"),
-                        other => other.to_owned(),
+                        ui::apps::MAIL => crate::i18n::t("chat-assistant-app-mail"),
+                        ui::apps::CALENDAR => crate::i18n::t("chat-assistant-app-calendar"),
+                        ui::apps::PASSWORDS => crate::i18n::t("chat-assistant-app-passwords"),
+                        other => ui::apps::builtin_label_for_app_id(other)
+                            .unwrap_or_else(|| other.to_owned()),
                     })
                     .collect::<Vec<_>>()
                     .join(", ")
@@ -194,9 +230,14 @@ pub(super) fn view(cx: &ViewCx<Chat>, selected: &LocalState<Option<String>>) -> 
             keeper: keeper.clone(),
             agent: agent.clone(),
             selected: selection.clone(),
-            request: cx.local(call(&remote, agent, AgentGrantAction::Status)),
+            request: cx.local(call(
+                &remote,
+                agent,
+                AgentGrantAction::Status,
+                InvokeArgument::None,
+            )),
             notice: cx.local(String::new()),
-            managing: cx.local(false),
+            panel: cx.local(Panel::Conversation),
             comparison_code: cx.local(None),
         };
         cx.switch(&access.request.clone(), move |cx, request| {
@@ -236,11 +277,12 @@ pub(super) fn view(cx: &ViewCx<Chat>, selected: &LocalState<Option<String>>) -> 
                             );
                         }
                     }
-                    access.managing.set(false);
+                    access.panel.set(Panel::Conversation);
                     access.request.set(call(
                         &access.remote,
                         &access.agent,
                         AgentGrantAction::Status,
+                        InvokeArgument::None,
                     ));
                     return ui::widget::optional(None);
                 }
@@ -252,10 +294,7 @@ pub(super) fn view(cx: &ViewCx<Chat>, selected: &LocalState<Option<String>>) -> 
                 if status.state != GrantState::Pending {
                     access.comparison_code.set(None);
                 }
-                let access = access.clone();
-                cx.switch(&access.managing.clone(), move |_, managing| {
-                    access.status(&status, *managing)
-                })
+                access.with_app_choices(cx, status)
             })
         })
     })

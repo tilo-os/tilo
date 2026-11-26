@@ -24,7 +24,7 @@ use tilo_actions::remote::{
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::agents::{
-    AgentGrantReceipt, AgentGrantStatus, GrantRequest, GrantState,
+    AgentGrantReceipt, AgentGrantStatus, GrantRequest, GrantState, REQUEST_APP_GRANT_ACTION,
     REQUEST_ASSISTANT_WORK_GRANT_ACTION, REQUEST_CHAT_GRANT_ACTION, parse_color_hex,
 };
 use tilo_server_protocol::delegation::{
@@ -477,7 +477,9 @@ impl AgentSupervisor {
                     request,
                     matches!(
                         invocation.target.address.action.as_str(),
-                        REQUEST_CHAT_GRANT_ACTION | REQUEST_ASSISTANT_WORK_GRANT_ACTION
+                        REQUEST_CHAT_GRANT_ACTION
+                            | REQUEST_ASSISTANT_WORK_GRANT_ACTION
+                            | REQUEST_APP_GRANT_ACTION
                     ),
                     agent,
                     created_at,

@@ -254,7 +254,7 @@ async fn a_hosted_roster_turn() {
         .collect();
     assert_eq!(
         offered.len(),
-        3,
+        4,
         "an assistant with no grant has nothing to revoke"
     );
     assert!(

@@ -11,7 +11,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionKind, ExecutionLocus, OperationKind, ResultSpec, RetryPolicy};
 use tilo_agent_session::AgentSupervisor;
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::agents::{AGENTS_PROVIDER, AgentGrantAction, GrantState};
+use tilo_server_protocol::agents::{AGENTS_PROVIDER, AgentGrantAction, AgentGrantApp, GrantState};
 use tilo_user_identity::DeviceCert;
 
 use super::{RosterProvisioning, personal_entry};
@@ -51,6 +51,7 @@ impl RosterProvisioning {
             *correlation,
         );
         let (done, answer) = pending();
+        let choices = self.apps.clone();
         link.runtime.clone().spawn(async move {
             let entry = personal_entry(&link, workspace, &caller, &cert).await;
             if let Some(apps) = apps {
@@ -79,7 +80,7 @@ impl RosterProvisioning {
                         &cert.user_public_key,
                         entry.created_at,
                     );
-                    Ok(grant_page(&query, &entry, status.state))
+                    Ok(grant_page(&query, &entry, status.state, &choices))
                 }
                 Ok(None) | Err(ActionCallError::Refused { .. }) => {
                     Ok(CataloguePage::from_rows("0".into(), Vec::new(), &query))
@@ -99,6 +100,7 @@ fn grant_page(
     query: &CatalogueQuery,
     entry: &tilo_workspace_agent::Agent,
     state: GrantState,
+    choices: &[AgentGrantApp],
 ) -> CataloguePage {
     let row = |action: AgentGrantAction, label: &str, description: &str, kind: ActionKind| {
         let target = action.target(&entry.id.0);
@@ -116,6 +118,14 @@ fn grant_page(
             keywords: Vec::new(),
         };
         let mut offered = PublishedAction::offered(&offer, &entry.name);
+        if action == AgentGrantAction::RequestApps {
+            offered.params.push(tilo_actions::ActionParam::required("apps", tilo_actions::ParamType::Array,
+                "Choose Chat and the other apps the assistant may use for up to six days.").with_schema(json!({
+                    "type": "array", "minItems": 1, "maxItems": tilo_server_protocol::delegation::MAX_DELEGATED_APPS,
+                    "uniqueItems": true,
+                    "items": {"type": "string", "oneOf": choices}
+                })));
+        }
         offered.contract.retry = if kind == ActionKind::Read {
             RetryPolicy::Idempotent
         } else {
@@ -148,6 +158,12 @@ fn grant_page(
         GrantState::Missing | GrantState::Denied | GrantState::Expired | GrantState::Revoked => {
             rows.push(row(AgentGrantAction::RequestChat, "Request Chat access", "Ask your approving device to allow this assistant to reply in Chat in this workspace.", ActionKind::Outside));
             rows.push(row(AgentGrantAction::RequestWork, "Request assistant work access", "Ask your approving device to allow Chat, Tasks, Assistant and Shortcuts in this workspace.", ActionKind::Outside));
+            rows.push(row(
+                AgentGrantAction::RequestApps,
+                "Choose assistant apps",
+                "Ask your approving device to allow the selected apps in this workspace.",
+                ActionKind::Outside,
+            ));
         }
     }
     let revision = blake3::hash(&serde_json::to_vec(&rows).unwrap_or_default())
@@ -170,8 +186,10 @@ fn grant_result(action: AgentGrantAction) -> serde_json::Value {
             },
             "required": ["state", "ready", "apps", "expiresAtMs"]
         }),
-        AgentGrantAction::Revoke => json!({"type": "object", "maxProperties": 0}),
-        AgentGrantAction::RequestChat | AgentGrantAction::RequestWork => json!({
+        AgentGrantAction::Revoke => json!({"type": "object", "additionalProperties": false}),
+        AgentGrantAction::RequestChat
+        | AgentGrantAction::RequestWork
+        | AgentGrantAction::RequestApps => json!({
             "type": "object",
             "properties": {"grant": {"type": "string"}, "pairingCode": {"type": "string"}},
             "required": ["grant", "pairingCode"]

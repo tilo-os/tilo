@@ -303,15 +303,20 @@ use the device’s workspace content service when available.
 
 **Approving a hosted assistant.** In the personal assistant conversation, request Chat access
 to let the assistant reply. To let it work on tasks, proposals and schedules, choose the
-option that lists Chat, Tasks, Assistant and Shortcuts. Each request covers this workspace
-for up to six days. In the browser where you created or restored your Tilo identity, choose
+option that lists Chat, Tasks, Assistant and Shortcuts. For other workspace apps, choose
+**Choose apps…**, select the apps the assistant may use and choose **Request selected apps**.
+Chat is required for replies. All optional apps start unchecked. The workspace supplies the
+available choices. Each request covers this workspace for up to six days.
+
+In the browser where you created or restored your Tilo identity, choose
 **Open your personal workspace** from the Lounge. Review the assistant, workspace, apps and
-expiry, compare the displayed code when available, and choose **Approve** or **Decline**.
+expiry, compare the code with the one on the requesting device, and choose **Approve** or **Decline**.
 With a model connected, the assistant can reply once its approved session connects.
 
 You can request access again after a denial or expiry. To change the apps it may use, open
 **Manage assistant access** in Chat or **Assistant access** in the Swift app, revoke its
-current access, and request the new scope. The same browser approval applies.
+current access, and request the new scope. The same browser approval applies. Connecting
+an account or approving an individual task still uses that service’s usual consent controls.
 
 **A service by its address.** The person gives their assistant a service's address. Their
 server looks at it and asks them in their conversation whether to connect it: a question that
