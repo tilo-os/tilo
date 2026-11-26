@@ -362,3 +362,33 @@ tools/release/tilo-sh.sh --infra "$infra_checkout" --run "$release_run" --expect
 
 This checks the three digests together and runs the upgrade against scratch state. The
 resulting manifest edits stay in the disposable checkout for review.
+
+### Release the CLI used by agent setup
+
+After admission, open **Devices and access**, choose **Connect an agent or computer**
+and copy the prompt into the agent on the computer you want to connect. Leave the
+setup tab open while the agent runs the command in the prompt. The installer
+downloads the CLI and runtime for that computer from
+`https://tilo.sh/releases/latest/`. The ticket in the prompt names the host and
+supplies the one-time login secret.
+
+On a host with separate transport and device keys, setup requires a CLI that reads
+both identities from the ticket. The local browser checks serve their candidate CLI
+from a scratch package store. Production's web entry serves the installer and
+proxies the CLI downloads to the separate package registry. Run the installer
+rehearsal on the same candidate commit.
+
+```sh
+t test --rev "$candidate" cli-rehearsal
+```
+
+This builds the Linux x86-64 and arm64 archives, signs their checksums with a
+temporary key, and runs the installer against a local HTTPS site. For production,
+release the compatible CLI from a final `vX.Y.Z` tag before relying on the public
+setup prompt. The existing `sign-cli` and `publish-cli` jobs sign `SHA256SUMS`
+with the release key, publish the archives under the tag and advance `latest`
+for a newer final version. Check `https://tilo.sh/releases/latest/version` and
+the desired platform in `https://tilo.sh/releases/latest/SHA256SUMS`. The release
+signature is at `SHA256SUMS.sig`. An agent running on a Mac needs the matching
+`tilo-macos-*.tar.gz` to appear in that signed list. The default release requires
+both Linux architectures. The Mac cross-build checks are separate.
