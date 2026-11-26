@@ -663,6 +663,10 @@ fn complete_native_frame_content(app: &mut App, publish_accessibility: impl FnOn
     app.root_widget.mark_drawn();
     #[cfg(feature = "model")]
     if let Some(history) = &mut app.history {
+        // History's own chrome is drawn from this window's frame as the app is:
+        // a control it keeps dirty after being drawn would ask for every frame
+        // to come.
+        history.mark_drawn();
         history.paint_presented();
     }
     // The tree as this frame drew it: a rebuild or a theme made again after

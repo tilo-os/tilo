@@ -520,8 +520,12 @@ fn managed_history_visible_branches_drain_and_retained_modes_return_current() {
 
     wide.click_named("history-open").unwrap();
     assert!(wide.targets().contains_key("activity_timeline"));
-    // What History lists is the session's answer, which a frame after the one that asked takes up.
-    assert!(wide.poll_frame().unwrap());
+    // Drawn, History's chrome owes no frame: the frame that opened it listed
+    // and laid its changes out already.
+    assert!(
+        !wide.poll_frame().unwrap(),
+        "the opening frame leaves History at rest"
+    );
     assert_history_frame_idle(&mut wide, "available timeline");
 
     wide.perform_semantic_named(
