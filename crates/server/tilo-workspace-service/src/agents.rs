@@ -80,6 +80,7 @@ pub mod kept;
 pub mod telling;
 
 mod across;
+pub(crate) mod agent_record;
 mod answers;
 mod ask_chat;
 mod asking;
@@ -2603,21 +2604,24 @@ async fn list_agent(
     (agent, name): (&str, &str),
     person: &str,
 ) -> Result<(), String> {
-    let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    let checkout = agent_record::checkout()?;
     let name = tilo_resource::NonBlank::parse(name.trim()).ok_or("the agent has no name")?;
     let (agent, person) = (agent.to_owned(), person.to_owned());
     workspaces
         .author_workspace_document(
             workspace,
             workspaces.governor(),
-            (AGENTS_OWNER, &document),
+            (AGENTS_OWNER, checkout.id.as_str()),
             |doc| {
-                // A workspace whose people made no agent yet has no list of them: it starts here.
-                let agents = if doc.get_heads().is_empty() {
-                    tilo_resource::Replica::<WorkspaceAgents>::new()
-                } else {
-                    tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                };
+                if doc.get_heads().is_empty() {
+                    collaboration::resource::genesis(doc, &checkout, workspace, |doc| {
+                        WorkspaceAgents::initialize(doc).map_err(|error| error.to_string())
+                    })
+                    .map_err(|error| error.to_string())?;
+                }
+                agent_record::validate(doc, &checkout, workspace)?;
+                let agents =
+                    tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc));
                 // Named as Assistant's change: every receiver decides it against Assistant's surface.
                 let mut listing = agents.as_author(&person).in_app(AGENTS_OWNER, "Assistant");
                 let listed = listing.state().map_err(|error| error.to_string())?;

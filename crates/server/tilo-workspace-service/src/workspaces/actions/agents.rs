@@ -174,6 +174,14 @@ impl Workspaces {
         else {
             return Ok(None);
         };
+        #[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
+        if R::KIND == tilo_workspace_agent::KIND
+            && collab_types::workspace_document(app, document)
+                .is_some_and(|known| known.kind == tilo_workspace_agent::KIND)
+        {
+            let mut roster = crate::agents::agent_record::open(self, workspace, &bytes).await?;
+            return crate::agents::opened::<R>(&mut roster).map(Some);
+        }
         read_resource_bytes::<R>(&bytes).map(Some)
     }
 
