@@ -1265,8 +1265,7 @@ fn a_session_in_a_window_takes_no_power_on_its_host() {
     );
     assert!(!session.ended(), "and the session runs on");
 
-    // Shutting down ends this session and nothing else: the row asks first, and the yes ends the
-    // session rather than the machine it runs on.
+    // Shutting down asks first.
     assert!(
         matches!(
             session.invoke(menu, "power-shut-down", &serde_json::Map::new()),
@@ -1278,17 +1277,7 @@ fn a_session_in_a_window_takes_no_power_on_its_host() {
         !session.ended(),
         "and the question alone shuts nothing down"
     );
-    session
-        .invoke_confirmed(menu, "power-shut-down", &serde_json::Map::new())
-        .expect("the person confirms");
-    for _ in 0..4 {
-        session.step(Duration::from_millis(1)).unwrap();
-    }
-    assert!(session.ended(), "shutting down ends the session");
-    assert!(
-        taken_actions().is_empty(),
-        "and did not reach the host's machine"
-    );
+    // The person's yes, on the system's question, is `confirm.rs`'s.
 }
 
 /// A session that cannot check a password never locks: the lock screen could not be left again.

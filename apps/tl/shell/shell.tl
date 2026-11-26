@@ -439,7 +439,9 @@ template view over_band(body: View) {
 /// it, a phone's gutter in from either edge: `roomy` says the display keeps the corner, read
 /// from the room the caller has, never this view's own.
 view banners_over(roomy: Bool) {
-    if (device.notifications.banner ?? -1) != -1 and on_primary() {
+    // A question that waits rises as its card whether or not a notice stands beside it.
+    let rising = (device.notifications.banner ?? -1) != -1 or not asked_elsewhere().is_empty()
+    if rising and on_primary() {
         if not roomy {
             stack(at: .top, fill, padding: .sibling) {
                 banner(roomy: false)

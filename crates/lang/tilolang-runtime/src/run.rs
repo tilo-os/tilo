@@ -249,10 +249,6 @@ pub struct Journal {
     /// so the call it is happens at the time the scenario says and a resume still does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<String>,
-    /// Who proposed the run, when the person running it accepted a suggestion: recorded in the
-    /// changes its actions make, so history says who suggested it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suggested_by: Option<Actor>,
     pub entries: Vec<JournalEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending: Option<Pending>,
@@ -303,15 +299,4 @@ pub enum RunOutcome {
         run: RunId,
         call: String,
     },
-}
-
-/// A person's answer to an asked invocation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Resolution {
-    /// Do it: the choice `choice` of a question that offers choices.
-    Approve { choice: Option<usize> },
-    /// Do it, and from now on without asking: a grant of the asked action on its resource type.
-    ApproveAndGrant,
-    /// Do not do it.
-    Decline,
 }

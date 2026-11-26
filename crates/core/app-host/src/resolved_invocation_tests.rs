@@ -322,13 +322,20 @@ async fn a_revisionless_invoke_an_owner_cannot_bind_is_refused() {
 /// admitted, and so is an action asking no confirmation without one.
 #[tokio::test(flavor = "current_thread")]
 async fn confirmed_directory_action_needs_a_revision() {
-    use tilo_actions::remote::{ActionCallError, CONFIRMED_ACTION_NEEDS_REVISION, Confirmation};
+    use tilo_actions::remote::{ActionCallError, CONFIRMED_ACTION_NEEDS_REVISION};
     tokio::task::LocalSet::new()
         .run_until(async {
             let root = tempfile::tempdir().unwrap();
             let mut fixture = journaled_directory_fixture(root.path());
             fixture.set_confirmation_required(true);
-            let unbound = directory_request(&fixture, None, Some(Confirmation::Confirmed));
+            let unbound = directory_request(
+                &fixture,
+                None,
+                Some(crate::collab_app_broker::person_approved(
+                    "workspace",
+                    tilo_actions::InvocationId::new(),
+                )),
+            );
             let refused = admit_directory_invoke(&fixture, &unbound).await;
             assert!(
                 matches!(
@@ -343,7 +350,10 @@ async fn confirmed_directory_action_needs_a_revision() {
             let bound = directory_request(
                 &fixture,
                 Some("directory-r1"),
-                Some(Confirmation::Confirmed),
+                Some(crate::collab_app_broker::person_approved(
+                    "workspace",
+                    tilo_actions::InvocationId::new(),
+                )),
             );
             admit_directory_invoke(&fixture, &bound)
                 .await

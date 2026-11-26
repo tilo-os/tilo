@@ -726,7 +726,7 @@ impl Core {
         } else if n.kind == EMBED {
             self.resolve_embed(cx, &mut node, acc);
         } else if n.kind == crate::embed::PROPOSALS {
-            self.resolve_proposals(cx, &mut node, acc);
+            self.resolve_proposals(&mut node, acc);
         } else {
             // The collection a loop of the node lists, whose removed items it may stand in for.
             let listed = n.children.iter().find_map(|c| {

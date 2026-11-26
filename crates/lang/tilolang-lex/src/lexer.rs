@@ -8,7 +8,6 @@ use crate::duration::UNITS;
 pub const KEYWORDS: &[&str] = &[
     "app", "use", "as", "type", "enum", "action", "view", "fn", "let", "if", "else", "match",
     "for", "in", "return", "and", "or", "not", "true", "false", "try", "suggest", "merge",
-    "proposal",
 ];
 
 /// Words that are keywords only where a declaration starts (`state` at the start of a statement,

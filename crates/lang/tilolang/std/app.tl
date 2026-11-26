@@ -1366,9 +1366,9 @@ view linked<R>(of: R, compact: Bool = false, without: List<host.Resource> = []) 
     }
 }
 
-/// What waits to be proposed of `of`: each pending proposal as the card a person accepts or
-/// dismisses it with — the action's own `proposal` view where it declares one, else what the
-/// action would do in words — naming who proposed it. Nothing waits: nothing shows.
+/// What waits on `of` for a person's yes: each suggestion as a card naming who suggested it and
+/// what the action would do in words. The person answers it where the system asks them.
+/// Nothing waits: nothing shows.
 view suggestions<R>(of: R) {
     proposals(of)
 }

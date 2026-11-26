@@ -55,7 +55,7 @@ use crate::runtime::ids::MemberId;
 use crate::runtime::meta::{Meta, TypeMeta};
 use crate::runtime::{
     ActionRef, Actor, BindTarget, Binding, EditOutcome, InvokeOutcome, NameHost, OutsideSink,
-    Patch, RefValue, Resolution, ResourceRef, UiNode, Value, ViewInstance,
+    Patch, RefValue, ResourceRef, UiNode, Value, ViewInstance,
 };
 use crate::upgrade::Upgrade;
 use facts::Facts;
@@ -519,10 +519,8 @@ impl Instance {
         transport: Box<dyn Transport>,
     ) -> Self {
         let host: Rc<RefCell<Option<Host>>> = Rc::default();
-        let names: Rc<dyn NameHost> = Rc::new(crate::names::HostNames::new(
-            names,
-            Rc::clone(&host),
-        ));
+        let names: Rc<dyn NameHost> =
+            Rc::new(crate::names::HostNames::new(names, Rc::clone(&host)));
         Self {
             app: config.app,
             root_view: config.root,
@@ -1959,11 +1957,9 @@ impl Instance {
             | ToApp::Splice { .. }
             | ToApp::Edit { .. }
             | ToApp::EditRich { .. }) => self.edit_event(edit),
-            ToApp::Resolve {
-                level,
-                key,
-                approve,
-            } => self.resolve(level, &key, approve),
+            // Only the system's confirm answers a call that asks the person: a window's answer to a
+            // suggestion's card is none.
+            ToApp::Resolve { .. } => Err(Words::phrase("tilolang-ask-needs-approval")),
             ToApp::Open { resource } => {
                 self.show_now(&resource);
                 Ok(())
@@ -2684,30 +2680,6 @@ impl Instance {
             return Words::Phrase { id, args };
         }
         Words::Plain(error.to_string())
-    }
-
-    fn resolve(&self, level: Level, key: &str, approve: bool) -> Result<(), Words> {
-        let (Some(host), Some(view)) = (self.host(), self.view(level)) else {
-            return Ok(());
-        };
-        let target = view
-            .borrow()
-            .tree()
-            .find(key)
-            .and_then(|card| match card.props.get("invocation") {
-                Some(Value::Ref(reference)) => Some(reference.target.clone()),
-                _ => None,
-            })
-            .ok_or_else(|| Words::phrase("tilolang-open-failed"))?;
-        let resolution = if approve {
-            Resolution::Approve { choice: None }
-        } else {
-            Resolution::Decline
-        };
-        host.runtime()
-            .resolve_invocation(&target, &self.me_actor(), resolution)
-            .map(|_| ())
-            .map_err(|error| Words::Plain(error.to_string()))
     }
 
     /// What follows an action a person ran from a control: a destructive one offers Undo,

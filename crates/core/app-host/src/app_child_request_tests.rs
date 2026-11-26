@@ -336,6 +336,16 @@ async fn a_call_continuing_the_persons_press_is_theirs_and_an_app_cannot_make_on
                 note.actor, pressed.actor,
                 "decided and delivered as the person"
             );
+            // The press is the person's, but not their yes to what asks first: a confirmation
+            // the app writes into the call answers nothing, and the call waits for them.
+            let mut claimed = call(NOTES_PEER, "notes.notebook", "empty-trash", Some(press));
+            claimed.confirmation = Some(tilo_actions::remote::Confirmation::Operated);
+            let claimed = app_asks(&app, claimed).await;
+            assert!(!admitted(&claimed), "{claimed:?}");
+            assert!(
+                notes.try_recv().is_err(),
+                "nothing ran on the app's own word"
+            );
 
             // One press makes one call: the app's next call of its own action, which nobody
             // pressed for, is the app's own, and the app holds no grant to Notes.
@@ -400,7 +410,7 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
             assert!(unconfirmed(&beyond), "{beyond:?}");
             // Naming a confirmation of its own answers nothing.
             let mut claimed = notebook("create-page", read);
-            claimed.confirmation = Some(tilo_actions::remote::Confirmation::Confirmed);
+            claimed.confirmation = Some(tilo_actions::remote::Confirmation::Operated);
             let claimed = app_asks(&notes_app.handle, claimed).await;
             assert!(!admitted(&claimed), "{claimed:?}");
             assert!(notes.try_recv().is_err(), "nothing beyond reached Notes");
@@ -511,7 +521,7 @@ async fn a_persons_read_does_not_make_their_edit_unasked() {
 
             // The person may edit; their read's effect may not, even when it
             // claims their confirmation.
-            for confirmation in [None, Some(tilo_actions::remote::Confirmation::Confirmed)] {
+            for confirmation in [None, Some(tilo_actions::remote::Confirmation::Operated)] {
                 let mut edit = notebook("create-page", read.invocation);
                 edit.confirmation = confirmation;
                 let edit = app_asks(&notes_app.handle, edit).await;

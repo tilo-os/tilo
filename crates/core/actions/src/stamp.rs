@@ -204,15 +204,12 @@ impl Stamp {
     pub const RESTORE_VERB: &str = "$restore";
 
     /// The verbs the platform writes under, which no app declares: a call a device carries out
-    /// (`$invocation`), an agent's suggestion and the decision on it (`$suggest`,
-    /// `$decide-invocation`), a block that settles one (`$settle-block`), and a step taken back or
+    /// (`$invocation`), a block that settles one (`$settle-block`), and a step taken back or
     /// brought back ([`Self::UNDO_VERB`], [`Self::RESTORE_VERB`]). A store's schema declares them,
     /// and under them a change may write any field or content of a declared kind, so a surface an
     /// app ships may declare none of them.
-    pub const PLATFORM_VERBS: [&str; 6] = [
+    pub const PLATFORM_VERBS: [&str; 4] = [
         "$invocation",
-        "$suggest",
-        "$decide-invocation",
         "$settle-block",
         Self::UNDO_VERB,
         Self::RESTORE_VERB,
@@ -224,10 +221,8 @@ impl Stamp {
     /// ([`Self::MIGRATE_VERB`]), which a store admits by its derived step or by who may write the
     /// record, never by an app's write set. The `$` names are the platform's, so an app's own
     /// `undo` or `restore` action is a different verb, judged by its own surface's write set.
-    pub const RESERVED_VERBS: [&str; 7] = [
+    pub const RESERVED_VERBS: [&str; 5] = [
         "$invocation",
-        "$suggest",
-        "$decide-invocation",
         "$settle-block",
         Self::UNDO_VERB,
         Self::RESTORE_VERB,

@@ -28,35 +28,35 @@ tilo_test_env::scenario! {
         assert!(exports(&b.wasm).contains(&"b_main".to_string()));
     }
 
-    phase a_block_that_suggests_an_action_proposes_it;
+    phase a_block_that_suggests_an_action_asks_before_it_applies;
     {
         let b = block("suggest todo.add(@todo.TodoList:01J8ZK4T, \"Milk\")").expect("compiles");
         validate(&b.wasm);
         assert_eq!(b.kind, BlockKind::Action);
-        assert!(b.suggested, "the block is a proposal");
+        assert!(b.suggested, "the block asks a person first");
         assert_eq!(b.value_type, "Action");
         assert!(exports(&b.wasm).contains(&"b_main".to_string()));
     }
 
-    phase an_action_the_block_applies_is_no_proposal;
+    phase an_action_the_block_applies_asks_only_as_its_authority_does;
     {
         let b = block("todo.add(@todo.TodoList:01J8ZK4T, \"Milk\")").expect("compiles");
         assert!(!b.suggested);
     }
 
-    phase suggest_is_refused_where_no_proposal_may_be_made;
+    phase suggest_is_refused_where_no_suggestion_may_be_made;
     {
-        // A view runs as it is drawn: it cannot propose for the person looking.
+        // A view runs as it is drawn: it cannot suggest for the person looking.
         let err = block(
             "stack {\n    button(\"Add\", on: suggest todo.add(@todo.TodoList:01J8ZK4T, \"x\"))\n}",
         )
         .expect_err("fails");
         assert_eq!(err[0].code, "E044", "{}", err[0].message);
-        // A block proposes its whole value, and only when the value is the proposal itself.
+        // A block suggests only as its whole value.
         let err = block("if true { suggest todo.add(@todo.TodoList:01J8ZK4T, \"x\") } else { 1 }")
             .expect_err("fails");
         assert_eq!(err[0].code, "E044", "{}", err[0].message);
-        // Only an action is proposed.
+        // Only an action is suggested.
         let err = block("suggest 1").expect_err("fails");
         assert_eq!(err[0].code, "E044", "{}", err[0].message);
         let err = block("suggest todo.todo_list(@todo.TodoList:01J8ZK4T)").expect_err("fails");

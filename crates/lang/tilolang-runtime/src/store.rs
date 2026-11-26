@@ -501,10 +501,6 @@ pub struct ChangeNote {
     pub module: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub approved_by: Option<Actor>,
-    /// Who proposed the action, when the person invoking it accepted a suggestion: what makes
-    /// the change theirs while it says who proposed it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suggested_by: Option<Actor>,
     /// When it was made: the invocation's time, recorded like an argument (convergence.md,
     /// "Actions"); a scenario's `invoke(..., at: time)` sets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -633,8 +629,8 @@ pub struct Version {
     /// ran in was made from that resource (a message a task was made from). `None` for a change
     /// that made none, and for a resource made from nothing.
     pub from: Option<ResourceRef>,
-    /// Who proposed the action, for a change made by accepting a suggestion, so history says
-    /// who proposed it; `None` for a change made on its own.
+    /// Who proposed the change its maker made, where the workspace's own change names them (the
+    /// member who invited the person a join admits); `None` for a change made on its own.
     pub suggested_by: Option<Actor>,
     /// How many items the change was made over ([`ChangeNote::count`]): more than one for one
     /// action applied to many items at once.
@@ -946,7 +942,7 @@ pub fn versions_in<'c>(
                 placed: Vec::new(),
                 // What it was made from is a fact of the change that made it.
                 from: made.then(|| note.from.clone()).flatten(),
-                suggested_by: note.suggested_by.clone(),
+                suggested_by: None,
                 count: note.count.max(1),
                 gesture: None,
                 invocation: note.invocation,

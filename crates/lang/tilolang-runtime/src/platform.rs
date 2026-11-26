@@ -45,7 +45,7 @@ pub const INVOKED_WINDOW: &str = "$invoked";
 /// host as each runs and answers, read by `lines_run(r)`.
 pub const LINES_WINDOW: &str = "$lines";
 
-/// One line of what proposing an action with some arguments says: the words a change to the
+/// One line of what suggesting an action with some arguments says: the words a change to the
 /// field reads with, and the value they speak of as its type shows it, when they speak of one.
 pub(crate) struct Says {
     /// The words, without the value ("set the due date to").
@@ -843,7 +843,7 @@ impl Core {
         }
     }
 
-    /// What proposing `action` with `args` would change, in the words history says a change
+    /// What suggesting `action` with `args` would change, in the words history says a change
     /// with ([`crate::did`]): one line per argument it names, over the field of its type
     /// ("set the due date to Saturday", "assigned it to Bo"), holding the value the type
     /// shows it as when the words speak of one. A parameter that names no value says nothing.
@@ -870,7 +870,7 @@ impl Core {
                 continue;
             };
             // The resource an action is about is where the change goes, not what it changes:
-            // the sentences say the values proposed for it.
+            // the sentences say the values suggested for it.
             if holds_resource(&ty) {
                 continue;
             }
@@ -882,7 +882,7 @@ impl Core {
                 default: None,
             };
             let named = field_of_sentence(&param.name);
-            // A proposal is read against nothing: as a change that sets the value.
+            // A suggestion is read against nothing: as a change that sets the value.
             let nothing = self
                 .change_shown(&ty, &Value::none(), looking.as_ref())
                 .unwrap_or_else(|_| Value::none());
@@ -909,8 +909,8 @@ impl Core {
         out
     }
 
-    /// `proposal_note(r)`: what waits to be proposed of `r`, as one line of text — who
-    /// proposed it and each proposal's arguments in the words a change to them reads with,
+    /// `proposal_note(r)`: what waits on `r` for a person's yes, as one line of text — who
+    /// suggested it and each suggestion's arguments in the words a change to them reads with,
     /// their values as the person reads them, or the action's name when they say nothing; empty
     /// when nothing waits.
     pub(crate) fn proposal_note(&self, r: i32) -> HResult<Value> {

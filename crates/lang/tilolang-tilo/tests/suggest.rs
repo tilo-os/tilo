@@ -1,11 +1,10 @@
-//! An agent proposes an action on a task instead of applying it: the proposal waits on the task
-//! for whoever sees it, changes nothing, and once a person accepts it the change is theirs and
-//! says who proposed it.
+//! An agent suggests an action on a task: the call asks Ada even where the agent could run it,
+//! and waits as its asked record until she answers it on the system's confirm. The task shows
+//! what waits on it and who suggested it; her yes runs it once, her no changes nothing.
 
 use crate::fixtures::Workspace;
-use tilolang_runtime::store::Version;
 use tilolang_runtime::{
-    Actor, AgentBlock, InvocationEntry, Resolution, ResourceRef, Store as _, Value,
+    Actor, AgentBlock, InvocationEntry, InvokeOutcome, ResourceRef, Store as _, Value,
 };
 use tilolang_tilo::publish::Caller;
 
@@ -34,9 +33,13 @@ fn workspace() -> (Replica, Value) {
     (ada, task)
 }
 
+fn agent_actor(who: &str) -> Actor {
+    tilolang_tilo::runtime::ids::MemberId::agent(who, "ada").into()
+}
+
 fn agent(who: &str) -> Caller {
     Caller {
-        actor: tilolang_tilo::runtime::ids::MemberId::agent(who, "ada").into(),
+        actor: agent_actor(who),
         agent: true,
         on_behalf_of: Some("ada".to_owned()),
         handed: false,
@@ -48,7 +51,7 @@ fn read(r: &Replica, item: &Value, field: &str) -> Value {
     r.host.runtime().read(&target(item), field).unwrap()
 }
 
-/// The agent's block proposing that the task be scheduled for the Saturday after next.
+/// The agent's block suggesting that the task be scheduled for the Saturday after next.
 fn schedule_source(task: &Value) -> String {
     format!(
         "suggest tasks.schedule(@tasks.Task:{}, due: .some(2026-10-31))",
@@ -56,42 +59,55 @@ fn schedule_source(task: &Value) -> String {
     )
 }
 
-/// Run `source` as the agent `who` in the workspace, answering the recorded proposal.
+/// Run `source` as the agent `who` in the workspace: the invocation record it left.
 fn suggest(ada: &Replica, who: &str, source: &str) -> (ResourceRef, InvocationEntry) {
     ada.host.admit_agent(&agent(who));
     match ada
         .host
         .runtime()
-        .run_agent_block(
-            &tilolang_tilo::runtime::ids::MemberId::agent(who, "ada").into(),
-            source,
-        )
+        .run_agent_block(&agent_actor(who), source)
         .unwrap()
     {
         AgentBlock::Invocation { record, resource } => (resource, *record),
-        other => panic!("not a proposal: {other:?}"),
+        other => panic!("not an invocation: {other:?}"),
     }
 }
 
-/// Who proposed the versions of the task.
-fn proposed(ada: &Replica, task: &Value) -> Vec<tilolang_tilo::runtime::Actor> {
+/// Ada approves the call `record` names on the system's confirm: the dispatch hands it back for
+/// the agent that made it, and its answer comes back to the call.
+fn approve(ada: &Replica, record: &InvocationEntry, task: &Value) {
+    let ran = ada
+        .host
+        .runtime()
+        .invoke_approved_through(
+            &record.author,
+            None,
+            (record.action.as_str(), record.arguments().unwrap()),
+            None,
+        )
+        .unwrap();
+    assert!(matches!(ran, InvokeOutcome::Done(_)), "{ran:?}");
+    answered(ada, record, task, "done");
+}
+
+fn answered(ada: &Replica, record: &InvocationEntry, task: &Value, state: &str) {
     ada.host
-        .store()
-        .versions(&target(task))
-        .unwrap()
-        .into_iter()
-        .filter_map(|v: Version| v.suggested_by)
-        .collect()
+        .runtime()
+        .call_answered(&record.run, &[target(task)], state)
+        .unwrap();
+    ada.commit();
 }
 
 tilo_test_env::scenario! {
-    fn a_proposed_change_waits_for_its_own_decision;
+    fn a_suggestion_waits_for_its_person;
 
-    phase a_proposed_change_waits_until_a_person_accepts_it;
+    phase a_suggestion_asks_its_person_and_runs_once_on_their_yes;
     {
         let (ada, task) = workspace();
-        let (inv, record) = suggest(&ada, "scout", &schedule_source(&task));
+        let (_, record) = suggest(&ada, "scout", &schedule_source(&task));
+        // The call went to the dispatch asking Ada, which keeps it: the record names it.
         assert_eq!(record.state, "asked");
+        assert_eq!(record.run, "call-1");
         assert_eq!(
             record.target.as_ref().map(ResourceRef::id_string),
             Some(target(&task).id_string())
@@ -99,51 +115,23 @@ tilo_test_env::scenario! {
         ada.commit();
         // Nothing has changed: the task still has no day.
         assert_eq!(read(&ada, &task, "due"), Value::none());
-        assert!(proposed(&ada, &task).is_empty());
-        // Accepting it applies the change as Ada's, saying who proposed it.
-        assert_eq!(
-            ada.host
-                .runtime()
-                .resolve_invocation(&inv, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve { choice: None })
-                .unwrap(),
-            "done"
-        );
-        ada.commit();
+        approve(&ada, &record, &task);
         assert_eq!(
             read(&ada, &task, "due"),
             Value::some(Value::text("2026-10-31"))
         );
-        assert_eq!(
-            proposed(&ada, &task),
-            [tilolang_tilo::runtime::ids::MemberId::agent("scout", "ada").into()]
-        );
-        let due = ada
-            .host
-            .store()
-            .versions(&target(&task))
-            .unwrap()
-            .into_iter()
-            .rfind(|v| v.suggested_by.is_some())
-            .unwrap();
-        assert_eq!(due.who, Some(tilolang_tilo::personal::actor("ada")));
+        assert!(ada.host.runtime().proposals_of(&target(&task)).is_empty());
     }
 
-    phase a_dismissed_proposal_changes_nothing_and_asks_once;
+    phase a_declined_suggestion_changes_nothing;
     {
         let (ada, task) = workspace();
-        let (inv, _) = suggest(&ada, "scout", &schedule_source(&task));
+        let (inv, record) = suggest(&ada, "scout", &schedule_source(&task));
         ada.commit();
         let before = ada.host.store().versions(&target(&task)).unwrap().len();
-        assert_eq!(
-            ada.host
-                .runtime()
-                .resolve_invocation(&inv, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Decline)
-                .unwrap(),
-            "declined"
-        );
-        ada.commit();
+        answered(&ada, &record, &task, "declined");
         assert_eq!(read(&ada, &task, "due"), Value::none());
-        // The refusal is a document of its own, not a change of the task.
+        // The refusal is the record's, not a change of the task.
         assert_eq!(
             ada.host.store().versions(&target(&task)).unwrap().len(),
             before
@@ -152,22 +140,15 @@ tilo_test_env::scenario! {
             ada.host.runtime().read_invocation(&inv).unwrap().state,
             "declined"
         );
-        assert!(proposed(&ada, &task).is_empty());
-        // Decided already: a second decision is refused.
-        assert!(
-            ada.host
-                .runtime()
-                .resolve_invocation(&inv, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve { choice: None })
-                .is_err()
-        );
+        assert!(ada.host.runtime().proposals_of(&target(&task)).is_empty());
     }
 
-    phase two_agents_propose_on_one_task_and_each_card_waits_for_its_own_decision;
+    phase two_agents_suggest_on_one_task_and_each_waits_for_its_own_answer;
     {
         let (ada, task) = workspace();
         let priority = read(&ada, &task, "priority");
-        let due = suggest(&ada, "scout", &schedule_source(&task));
-        let assign = suggest(
+        let (_, due) = suggest(&ada, "scout", &schedule_source(&task));
+        let (_, high) = suggest(
             &ada,
             "helper",
             &format!(
@@ -176,79 +157,53 @@ tilo_test_env::scenario! {
             ),
         );
         ada.commit();
-        // Both wait on the task, each naming who proposed it.
-        let waiting = ada.host.runtime().proposals_of(&target(&task));
-        let mut who: Vec<String> = waiting
+        assert_ne!(due.run, high.run, "each is a call of its own");
+        // Both wait on the task, each naming who suggested it.
+        let mut who: Vec<String> = ada
+            .host
+            .runtime()
+            .proposals_of(&target(&task))
             .iter()
             .map(|(_, rec)| rec.author.id().to_owned())
             .collect();
         who.sort();
         assert_eq!(who, ["helper".to_owned(), "scout".to_owned()]);
-        // Accepting one applies only it; the other still waits.
-        assert_eq!(
-            ada.host
-                .runtime()
-                .resolve_invocation(&due.0, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve { choice: None })
-                .unwrap(),
-            "done"
-        );
-        ada.commit();
+        // Approving one runs only it; the other still waits.
+        approve(&ada, &due, &task);
         assert_eq!(
             read(&ada, &task, "due"),
             Value::some(Value::text("2026-10-31"))
         );
-        assert_eq!(
-            ada.host.runtime().proposals_of(&target(&task)).len(),
-            1,
-            "the other proposal still waits"
-        );
-        // A proposal of nobody changes nothing when dismissed.
-        assert_eq!(
-            ada.host
-                .runtime()
-                .resolve_invocation(&assign.0, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Decline)
-                .unwrap(),
-            "declined"
-        );
-        ada.commit();
+        assert_eq!(ada.host.runtime().proposals_of(&target(&task)).len(), 1);
+        answered(&ada, &high, &task, "declined");
         assert_eq!(
             read(&ada, &task, "priority"),
             priority,
-            "the dismissed proposal changed nothing"
+            "the declined suggestion changed nothing"
         );
         assert!(ada.host.runtime().proposals_of(&target(&task)).is_empty());
-        assert_eq!(
-            proposed(&ada, &task),
-            [tilolang_tilo::runtime::ids::MemberId::agent("scout", "ada").into()]
-        );
     }
 
-    phase the_task_shows_what_waits_on_it_and_who_proposed_it;
+    phase the_task_shows_what_waits_on_it_and_who_suggested_it;
     {
         let (ada, task) = workspace();
         // The task page and the row draw nothing while nothing waits.
         let page = ada.host.open_resource(&target(&task), None).unwrap();
         assert!(cards(page.tree()).is_empty(), "{:?}", texts(page.tree()));
         assert!(rows_with_note(card_view(&ada, &task).tree()).is_empty());
-        let (inv, _) = suggest(&ada, "scout", &schedule_source(&task));
+        let (inv, record) = suggest(&ada, "scout", &schedule_source(&task));
         ada.commit();
         let page = ada.host.open_resource(&target(&task), None).unwrap();
         let shown = cards(page.tree());
         assert_eq!(shown.len(), 1, "{:?}", texts(page.tree()));
         let card = shown[0];
-        assert_eq!(card.props.get("proposed"), Some(&Value::Bool(true)));
-        assert_eq!(
-            card.props.get("state"),
-            Some(&Value::text("asked")),
-            "the card asks"
-        );
-        // The card says which record deciding it resolves, and that Ada may decide: what the
-        // window's accept and dismiss buttons answer with.
+        assert_eq!(card.props.get("state"), Some(&Value::text("asked")));
         assert_eq!(card.props.get("invocation"), Some(&Value::resource(&inv)));
-        assert_eq!(card.props.get("can_resolve"), Some(&Value::Bool(true)));
-        // The card says what the change would be, and who proposed it: the words a change to the
-        // field reads with, the value as its type shows it, and the proposer the host draws the
-        // face and the name from.
+        // The card offers no answer of its own: Ada answers on the system's confirm.
+        assert_eq!(card.props.get("can_resolve"), None);
+        // The card says what the change would be, and who suggested it: the words a change to
+        // the field reads with, the value as its type shows it, and the agent the host draws
+        // the face and the name from.
         let said = texts(page.tree());
         assert!(
             said.iter().any(|text| text == "set the due date to"),
@@ -260,8 +215,8 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             card.props.get("author"),
-            Some(&Value::Actor(Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("scout", "ada")))),
-            "who proposes it"
+            Some(&Value::Actor(agent_actor("scout"))),
+            "who suggests it"
         );
         // The row of the task says it quietly, on a line of its own, in the same sentence.
         let rows = rows_with_note(card_view(&ada, &task).tree());
@@ -272,19 +227,42 @@ tilo_test_env::scenario! {
             rows[0]
         );
         assert!(!rows[0].contains("schedule"), "{}", rows[0]);
-        // Decided, the card and the row's line go away.
-        ada.host
-            .runtime()
-            .resolve_invocation(&inv, &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")), Resolution::Approve { choice: None })
-            .unwrap();
-        ada.commit();
+        // Answered, the card and the row's line go away.
+        approve(&ada, &record, &task);
         let page = ada.host.open_resource(&target(&task), None).unwrap();
         assert!(cards(page.tree()).is_empty());
         assert!(rows_with_note(card_view(&ada, &task).tree()).is_empty());
-        assert_eq!(
-            read(&ada, &task, "due"),
-            Value::some(Value::text("2026-10-31"))
-        );
+    }
+
+    phase the_scenario_of_an_agents_suggestion_stages_one_waiting;
+    {
+        // A suggestion inside an action asks once the action has committed, as the agent the
+        // scenario names.
+        let (ada, loaded) = Replica::new("ada", Workspace::new(), TASKS_SET);
+        ada.host.root_of(APP).unwrap();
+        ada.commit();
+        let scenario = loaded
+            .last()
+            .unwrap()
+            .meta
+            .scenarios
+            .iter()
+            .find(|scenario| scenario.name == "an agent's suggestion")
+            .expect("Tasks stages an agent's suggestion")
+            .action
+            .clone();
+        let Ok(InvokeOutcome::Done(task)) = ada.host.runtime().invoke_action(
+            &Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+            (scenario.as_str(), vec![]),
+        ) else {
+            panic!("the scenario stages a task");
+        };
+        ada.commit();
+        let waiting = ada.host.runtime().proposals_of(&target(&task));
+        assert_eq!(waiting.len(), 1, "{waiting:?}");
+        assert_eq!(waiting[0].1.author.id(), "scenario:Scout");
+        assert_eq!(waiting[0].1.run, "call-1", "it asked through the dispatch");
+        assert_eq!(read(&ada, &task, "due"), Value::none(), "nothing changed yet");
     }
 }
 

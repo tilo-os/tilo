@@ -710,14 +710,6 @@ pub struct Reach {
     pub own: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProposalMeta {
-    /// Id of the proposal view.
-    pub view: String,
-    pub name: String,
-    pub args: Vec<String>,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -736,7 +728,6 @@ pub struct ActionMeta {
     pub params: Vec<ParamMeta>,
     pub result: Option<String>,
     pub class: EffectClass,
-    pub proposal: Option<ProposalMeta>,
     pub reaches: Vec<Reach>,
     /// What the platform calls the action: `label:`, else its doc's first line when shorter than its
     /// name in sentence case, else that.

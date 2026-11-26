@@ -253,17 +253,22 @@ impl Asked<'_> {
             collaboration::permissions::Answer::Deny => {
                 return Err(Box::new(rejected(ActionCallError::NotPermitted)));
             }
-            collaboration::permissions::Answer::Ask if self.request.confirmation.is_none() => {
+            // Only the person's approve of the asked record this call was kept as answers an ask:
+            // a confirmation the call writes itself is none.
+            collaboration::permissions::Answer::Ask if self.request.approval().is_none() => {
                 return Err(Box::new(rejected(ActionCallError::confirmation_required())));
             }
             _ => {}
         }
-        api::invoke_json_confirmed(
+        api::invoke_json(
             doc,
             std::slice::from_ref(&tree),
             address,
             self.arguments,
-            InvocationProvenance::caller(self.actor).within(self.ambient),
+            (
+                InvocationProvenance::caller(self.actor).within(self.ambient),
+                self.request.approval().is_some(),
+            ),
             self.registry,
             &mut LocalTransport::new(),
         )

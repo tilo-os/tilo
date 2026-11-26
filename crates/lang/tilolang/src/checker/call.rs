@@ -923,8 +923,8 @@ impl Checker<'_> {
             }
             (CKind::Action, Ctx::Action | Ctx::Program) => {
                 // A call runs the action at its own action API, as a change of its own, and goes on from
-                // its journaled result. `suggest act(args)` is the same call, recorded as a
-                // proposal instead of applied.
+                // its journaled result. `suggest act(args)` is the same call, asking a person
+                // first.
                 let bound = Self::applied_args(c, bound);
                 let from = self
                     .st
@@ -1029,8 +1029,7 @@ impl Checker<'_> {
         // What the call answers, for a handler that binds it: `let id = add_box(b)`.
         self.st.last_action = Some(c.result.clone());
         let list = self.arg_list(bound);
-        // A block's whole expression is the proposal: the host records it as one instead of
-        // applying it.
+        // A block's whole expression is the call the host applies, asking first for a `suggest`.
         self.st.suggest = None;
         Ex::host(Imp::ActRef, vec![Ex::str(&c.id), list], Ty::Action)
     }

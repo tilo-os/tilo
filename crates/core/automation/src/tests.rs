@@ -147,6 +147,8 @@ pub(crate) struct FakeHost {
 struct HostState {
     log: InvocationLog<InvocationUpdate>,
     started: Vec<InvokeRequest>,
+    /// Per started step, whether its caller said the shortcut consents to it in advance.
+    consented: Vec<bool>,
 }
 
 impl FakeHost {
@@ -267,6 +269,10 @@ impl FakeHost {
         self.state.lock().unwrap().started.clone()
     }
 
+    pub(crate) fn consented(&self) -> Vec<bool> {
+        self.state.lock().unwrap().consented.clone()
+    }
+
     fn output(request: &InvokeRequest) -> ActionOutput {
         // The shape a step declared for its answer, when it declared one. The
         // agent validates the answer against it as it stands.
@@ -347,10 +353,15 @@ impl ActionProvider for FakeHost {
             }));
         }
         let mut state = self.state.lock().unwrap();
-        let HostState { log, started } = &mut *state;
+        let HostState {
+            log,
+            started,
+            consented,
+        } = &mut *state;
         let receipt = log
             .admit(caller, &request, || {
                 started.push(request.clone());
+                consented.push(caller.is_consented_in_advance());
                 Ok(InvocationUpdate::Succeeded {
                     invocation: request.invocation,
                     output: Self::output(&request),
@@ -1965,7 +1976,15 @@ tilo_test_env::scenario! {
         assert_eq!(report.outcome, InvocationOutcome::Completed, "{report:?}");
         let started = host.started();
         assert_eq!(started.len(), 1);
-        assert_eq!(started[0].confirmation, Some(Confirmation::Confirmed));
+        assert_eq!(
+            started[0].confirmation, None,
+            "the step writes no confirmation of its own"
+        );
+        assert_eq!(
+            host.consented(),
+            [true],
+            "the host hears the saved consent from the runner, beside the step"
+        );
     }
 
     phase an_attended_action_is_never_consented_to_in_advance;

@@ -20,9 +20,8 @@ use ui::widget::arrange::{
     Stack,
 };
 use ui::widget::{
-    Avatar, AvatarSize, Button, ButtonRole, Checkbox, Container, ControlSize, Divider, Dropdown,
-    Element, EmptyState, Field, FormSection, Scrollable, Section, Segment, Spacer, Text, Toggle,
-    ToggleGroup, labeled_check,
+    Avatar, AvatarSize, Button, Checkbox, Container, Divider, Dropdown, Element, EmptyState, Field,
+    FormSection, Scrollable, Section, Segment, Spacer, Text, Toggle, ToggleGroup, labeled_check,
 };
 
 use crate::adapter::{Adapter, NodeSource};
@@ -39,7 +38,6 @@ pub enum UiEvent {
         Option<String>,
     ),
     Toggle(String, bool),
-    Resolve(String, bool),
     /// An event of the node `key`, named, with the value it carries and the gesture it is one
     /// part of (`None` for an event that is an act of its own).
     Fire(String, String, Option<Value>, Option<String>),
@@ -1423,7 +1421,7 @@ impl Reconciler {
     }
 
     /// What became of an action block when it was posted, drawn from the invocation record: a
-    /// proposal waiting on a person is its own block ([`Self::suggestion`]).
+    /// suggestion waiting on a person is its own block ([`Self::suggestion`]).
     fn invocation_card(&mut self, node: &UiNode) -> Element {
         if flag(node, "proposed") {
             return self.suggestion(node);
@@ -1451,35 +1449,13 @@ impl Reconciler {
         for part in self.parts(node) {
             card = card.push_part(part);
         }
-        if state == "suggested" && flag(node, "can_resolve") {
-            // An ask the authority raised answers as a confirmation, one answer per line when the
-            // card is too narrow for both.
-            let choices = Row::row()
-                .wrap()
-                .gap(Rhythm::Related)
-                .push_part(self.answer(
-                    node,
-                    "allow",
-                    &crate::i18n::t("tilolang-ask-confirm"),
-                    true,
-                    false,
-                ))
-                .push_part(self.answer(
-                    node,
-                    "decline",
-                    &crate::i18n::t("tilolang-ask-decline"),
-                    false,
-                    false,
-                ));
-            card = card.push_part(Part::new(Box::new(choices)));
-        }
         Box::new(card)
     }
 
-    /// A proposal waiting on the person: one calm block on the inset surface — who proposes it,
-    /// what it would do, and the answer to it — so it is noticed among what the view draws. What it
-    /// would do is the action's own proposal view when it declares one, and otherwise the words it
-    /// would say, each value as its type shows it (a day as the day fact).
+    /// A call waiting on the person's yes, drawn where they see what it is about: one calm block
+    /// on the inset surface saying who suggests it and what it would do, in the words it would
+    /// say, each value as its type shows it (a day as the day fact). The person answers it where
+    /// the system asks them, never in the app.
     fn suggestion(&mut self, node: &UiNode) -> Element {
         let author = match prop(node, "author") {
             Some(Value::Actor(who)) => ui::component::Person::new(who.id.clone(), who.name.clone()),
@@ -1496,96 +1472,20 @@ impl Reconciler {
             .with_id(format!("{}~says", node.key))
             .push(Box::new(Avatar::of(author).size(AvatarSize::Small)))
             .push_part(self.fixed_text(&format!("{}~by", node.key), &says, TextRole::Body));
-        let choices = Row::row()
-            .wrap()
-            .gap(Rhythm::Related)
-            .push_part(self.answer(
-                node,
-                "allow",
-                &crate::i18n::t("tilolang-suggestion-accept"),
-                true,
-                true,
-            ))
-            .push_part(self.answer(
-                node,
-                "decline",
-                &crate::i18n::t("tilolang-suggestion-dismiss"),
-                false,
-                true,
-            ));
-        let mut rows: Vec<Element> = Vec::new();
-        if flag(node, "view") {
-            // The action shows what it would do itself: the sentence says who proposes it, the view
-            // is under it, and the answer beneath.
-            rows.push(Box::new(sentence));
-            for child in &node.children {
-                rows.push(self.build(child));
-            }
-            rows.push(Box::new(choices));
-        } else {
-            // The words the action would say are in the sentence, after who proposes it.
-            for child in &node.children {
-                sentence = sentence.push(self.build(child));
-            }
-            // The answer is at the end of the sentence's line when it fits there, and below it when
-            // the room is too narrow.
-            rows.push(Box::new(
-                Row::row()
-                    .fill_width()
-                    .wrap()
-                    .gap(Rhythm::Related)
-                    .distribute(Distribute::Between)
-                    .push(Box::new(sentence))
-                    .push(Box::new(choices)),
-            ));
-        }
-        let mut block = Stack::stack()
-            .fill_width()
-            .gap(Rhythm::Tight)
-            .with_id(node.key.clone());
-        for row in rows {
-            block = block.push(row);
+        for child in &node.children {
+            sentence = sentence.push(self.build(child));
         }
         Box::new(
             Container::new()
                 .with_background()
                 .with_inset(Rhythm::Related)
-                .with_child(Box::new(block)),
+                .with_child(Box::new(
+                    Stack::stack()
+                        .fill_width()
+                        .with_id(node.key.clone())
+                        .push(Box::new(sentence)),
+                )),
         )
-    }
-
-    /// The button answering the invocation card `node`: allowing it or declining it. The answer to
-    /// a suggestion is compact, so it is at the end of the sentence's line.
-    fn answer(
-        &self,
-        node: &UiNode,
-        suffix: &str,
-        label: &str,
-        approve: bool,
-        compact: bool,
-    ) -> Part {
-        let sink = Rc::clone(&self.sink);
-        let key = node.key.clone();
-        let role = if approve {
-            ButtonRole::Primary
-        } else if compact {
-            ButtonRole::Plain
-        } else {
-            ButtonRole::Secondary
-        };
-        let size = if compact {
-            ControlSize::Small
-        } else {
-            ControlSize::Regular
-        };
-        Part::new(Box::new(
-            Button::new(&format!("{}~{suffix}", node.key), label)
-                .role(role)
-                .control_size(size)
-                .on_open(move || {
-                    sink.push(UiEvent::Resolve(key.clone(), approve));
-                }),
-        ))
     }
 
     fn error_block(&mut self, node: &UiNode) -> Element {

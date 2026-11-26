@@ -13,8 +13,7 @@
 //! * `invocation`: the block was an action application. Nothing runs here: the child is an
 //!   `invocation` node drawn from the recorded resource (`state` of `pending` before the host
 //!   has recorded one, then `done`, `asked`, `declined`, `failed` or `denied`, plus
-//!   `action`, `app`, `result`, the `invocation` reference and `can_resolve`), holding the
-//!   action's proposal view while it is proposed and the action has one.
+//!   `action`, `app`, `result` and the `invocation` reference).
 //! * `data`: the block was a value; the child is its default rendering.
 //! * `error`: the source did not compile or the block failed; the child is an `error` node
 //!   with one `text` child per diagnostic.
@@ -82,8 +81,8 @@ fn node(kind: &str, key: String, props: &[(&str, Value)], children: Vec<UiNode>)
 /// The kind of a text: the toolkit's `Text` component.
 const TEXT: &str = "ui.Text";
 
-/// `proposals(of)`: the proposals waiting on a resource, each as the card a person accepts or
-/// dismisses it with.
+/// `proposals(of)`: the calls waiting on a resource for a person's yes, each as a card saying
+/// who suggested what.
 pub(crate) const PROPOSALS: &str = "proposals";
 
 fn text_node(key: String, value: &str) -> UiNode {
@@ -258,7 +257,7 @@ impl Core {
                 Ok(("view", vec![scope(key, root)]))
             }
             BlockKind::Action => {
-                let child = self.invocation_card(cx, key, invocation, acc)?;
+                let child = self.invocation_card(key, invocation, acc)?;
                 Ok(("invocation", vec![child]))
             }
             BlockKind::Data => {
@@ -341,7 +340,6 @@ impl Core {
     /// ran, or was asked, when the message was posted.
     fn invocation_card(
         &self,
-        cx: &Build<'_>,
         key: &str,
         invocation: Option<&ResourceRef>,
         acc: &mut Acc,
@@ -368,30 +366,13 @@ impl Core {
         if !rec.result.is_empty() {
             props.push(("result", Value::text(&rec.result)));
         }
-        let mut children = Vec::new();
-        if rec.state == "asked" && rec.proposed {
-            props.push(("run", Value::text(&rec.run)));
-            props.push((
-                "can_resolve",
-                Value::Bool(self.may_decide(cx.offer.viewer, &rec.action)),
-            ));
-            if let (_, _, Some((view, view_args))) =
-                self.action_facts(&rec.action, &rec.arguments().unwrap_or_default())
-            {
-                let target = self.view_target(&view)?;
-                let nested = self.render_at(&target, &view_args, cx.offer.deeper(), None)?;
-                let root = acc.absorb(nested);
-                props.push(("view", Value::Bool(true)));
-                children.push(scope(&card_key, root));
-            }
-        }
-        Ok(node("invocation", card_key, &props, children))
+        Ok(node("invocation", card_key, &props, Vec::new()))
     }
 
-    /// The suggestions waiting on `of`: invocation records nobody has accepted or dismissed
-    /// yet — what someone proposed, and what the authority asked a person about as an action
-    /// ran — with what each says, in the order the store keeps what links to `of`. Reading them reads what links to `of`, so a view that draws them runs again when
-    /// one arrives.
+    /// The suggestions waiting on `of`: invocation records of calls that asked a person and wait
+    /// on `of` for their answer, with what each says, in the order the store keeps what links to
+    /// `of`. Reading them reads what links to `of`, so a view that draws them runs again when one
+    /// arrives.
     pub(crate) fn proposals_of(
         &self,
         of: &ResourceRef,
@@ -404,50 +385,47 @@ impl Core {
             .into_iter()
             .map(|link| link.of)
             .filter_map(|at| match self.read_invocation(&at) {
-                Ok(rec) if rec.state == "asked" && rec.proposed => Some((at, rec)),
+                Ok(rec) if rec.state == "asked" => Some((at, rec)),
                 _ => None,
             })
             .collect()
     }
 
-    /// A proposal's card: the invocation card the host draws for a waiting action, and what the
-    /// action would do in words, when it declares no view of it.
+    /// A suggestion's card: the invocation card the host draws for a waiting action, and what
+    /// the action would do in words.
     fn proposal_card(
         &self,
-        cx: &Build<'_>,
         key: &str,
         (inv, rec): &(ResourceRef, crate::InvocationEntry),
         acc: &mut Acc,
     ) -> Result<UiNode, RuntimeError> {
-        let mut card = self.invocation_card(cx, key, Some(inv), acc)?;
+        let mut card = self.invocation_card(key, Some(inv), acc)?;
         card.props.insert("proposed".to_owned(), Value::Bool(true));
         let args = rec.arguments().unwrap_or_default();
-        // When the action declares no view of what it would do, its arguments say it: the
-        // words a change to them reads with, and each value as its type shows it (a day in
-        // the person's format), so a sentence carries no identifier and no stored text.
-        if self.action_facts(&rec.action, &args).2.is_none() {
-            let lines = self.proposal_lines(&rec.action, &args);
-            if lines.is_empty() {
-                card.children.push(text_node(
-                    format!("{key}/says"),
-                    &self.action_label(&rec.action),
-                ));
-            }
-            let phrase = |id: &str| self.word_args(id, &[], id);
-            for (i, line) in lines.iter().enumerate() {
+        // Its arguments say what it would do: the words a change to them reads with, and each
+        // value as its type shows it (a day in the person's format), so a sentence carries no
+        // identifier and no stored text.
+        let lines = self.proposal_lines(&rec.action, &args);
+        if lines.is_empty() {
+            card.children.push(text_node(
+                format!("{key}/says"),
+                &self.action_label(&rec.action),
+            ));
+        }
+        let phrase = |id: &str| self.word_args(id, &[], id);
+        for (i, line) in lines.iter().enumerate() {
+            card.children
+                .push(text_node(format!("{key}/says{i}/w"), &line.words));
+            if let Some(value) = &line.value {
                 card.children
-                    .push(text_node(format!("{key}/says{i}/w"), &line.words));
-                if let Some(value) = &line.value {
-                    card.children
-                        .push(shown_node(&format!("{key}/says{i}/v"), value, &phrase));
-                }
+                    .push(shown_node(&format!("{key}/says{i}/v"), value, &phrase));
             }
         }
         Ok(card)
     }
 
     /// `proposals(of)` as the fragment of one card per proposal waiting on the resource.
-    pub(crate) fn resolve_proposals(&self, cx: &Build<'_>, node: &mut UiNode, acc: &mut Acc) {
+    pub(crate) fn resolve_proposals(&self, node: &mut UiNode, acc: &mut Acc) {
         let Some(Value::Ref(of)) = node.props.get("of").cloned() else {
             node.kind = String::from("fragment");
             node.children = Vec::new();
@@ -456,7 +434,7 @@ impl Core {
         let mut cards = Vec::new();
         for (i, waiting) in self.proposals_of(&of.target).iter().enumerate() {
             let key = format!("{}/{i}", node.key);
-            if let Ok(card) = self.proposal_card(cx, &key, waiting, acc) {
+            if let Ok(card) = self.proposal_card(&key, waiting, acc) {
                 cards.push(card);
             }
         }
@@ -464,27 +442,14 @@ impl Core {
         node.children = cards;
     }
 
-    /// The app and name of an action by id, and the proposal view with the arguments it takes.
-    pub(crate) fn action_facts(
-        &self,
-        action: &str,
-        args: &[Value],
-    ) -> (String, String, Option<(String, Vec<Value>)>) {
+    /// The app and name of an action by id.
+    pub(crate) fn action_facts(&self, action: &str) -> (String, String) {
         let reg = self.registry.borrow();
         if let Some(pkg) = reg.action_package(action)
             && let Some(meta) = pkg.action(action)
         {
-            let proposal = meta.proposal.as_ref().map(|p| {
-                let shown = p
-                    .args
-                    .iter()
-                    .filter_map(|n| meta.params.iter().position(|x| &x.name == n))
-                    .filter_map(|i| args.get(i).cloned())
-                    .collect();
-                (p.view.clone(), shown)
-            });
-            return (pkg.meta.app.clone(), meta.name.clone(), proposal);
+            return (pkg.meta.app.clone(), meta.name.clone());
         }
-        (String::new(), action.to_owned(), None)
+        (String::new(), action.to_owned())
     }
 }

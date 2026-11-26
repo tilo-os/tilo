@@ -71,7 +71,7 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
 - **The `host` package** (`tilo.host`, `tilolang::host_meta()`) is imported implicitly by
   every module and block as `host`. It declares `Invocation` with the register fields
   `action`, `name`, `app`, `args` (JSON text), `author` (Actor), `state`
-  (`done|suggested|declined|failed|denied`), `result` and `run`. Only the host writes them.
+  (`done|asked|declined|failed|denied`), `result` and `run`. Only the host writes them.
 - **New imports:** `invoker() -> h`, `actor_eq(a, b) -> i32`, `actor_name(p) -> h`,
   `queue_block(part, field, source)`.
 - **Nested resource references.** A reference literal may carry the steps of a nested
@@ -134,19 +134,21 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   invocation was denied, declined or trapped. It compiles to one import, `try_invoke(act) -> h`,
   which invokes like `invoke` and builds the `Result` value in the host. Without `try`, a failed
   invocation yields an error value that traps when its scalar is unwrapped.
-- `suggest act(args)` records the action as a proposal on the resource it is about instead of
-  applying it: an agent's block whose whole expression it is, and a statement in an action
-  (E044 elsewhere). An action records it once its own change has committed, so the proposal
-  is never part of that transaction. It compiles to one import, `suggest(act)`, and
-  `proposals(of)` draws what waits on `of`, each card naming who proposed it; accepting one runs
-  it as the person accepting, and the change it makes records who proposed it.
+- `suggest act(args)` applies the action only once a person says yes: the call is admitted at
+  Ask, so it asks them even where it could run without, and a denial still denies. It is an
+  agent's block whose whole expression it is, or a statement in an action (E044 elsewhere). An
+  action asks once its own change has committed, so the call is never part of that transaction.
+  It compiles to one import, `suggest(act)`. The call waits as its asked record, which only the
+  person answers on the system's confirm; an `Invocation` resource on the resource it is about
+  names that call, and `proposals(of)` draws what waits on `of`, each card naming who suggested
+  it.
 - Sets and maps of Int and Float take their elements and values boxed with `some_i`/`some_f`
   through the existing `set_add`, `set_remove` and `map_put`. Set elements of Int or Float are
   stored under their text form, so a set iterates in text order.
 - A record-typed field must be `Option<T>` unless every value is always set: reading an unset
   reference traps (there is no value to return). A removed target stays a readable reference
   (it compares equal); reading its fields fails.
-- **`uses web, random, time` is written after the signature, before `proposal` and the options**
+- **`uses web, random, time` is written after the signature, before the options**
   (`action snooze(t: Thread, until: Time) uses time (icon: .clock) { ... }`). It reads as part of
   what the declaration is, and the canonical form keeps it there. The words are ordinary names,
   not keywords, as `require` is: `web` and `time` stay usable as identifiers.
@@ -188,7 +190,6 @@ mirrors the ABI additions; `tilolang-runtime/tests/abi_parity.rs` checks that th
   (`hi - lo + 1` past `i64`).
 - Pinned references (`@kind:id@version`) parse but compile to E070: `ref_lit` has no version.
 - Integer division and remainder trap on zero, as in wasm.
-- `proposal view` may also be written `proposal view(a, b)`, naming action parameters.
 - **A role says what an action is; only a `scenario` keeps it from being listed.**
   `primary`, `destructive` and `migration` are the three words. `offered_actions()` skips the
   `scenario` actions (the bodies scenarios run) and the migrations, which the platform runs

@@ -614,7 +614,7 @@ impl AppBrokerState {
             )
             .map_err(abandon)?;
         // One answer covers both checks of this exact invocation.
-        let approved = super::approval::approved_by_person(request.confirmation.as_ref());
+        let approved = super::approval::approved_by_person(caller, request.confirmation.as_ref());
         // An agent takes a step as any of its steps: on the workspace's grants, in an agent
         // session that still goes. A step of the session's own, or of an agent session's, is no
         // agent's outside one.
@@ -1601,7 +1601,7 @@ mod identity_admin_tests {
                 } else {
                     super::signed_test_support::Fixture::new_certified(services)
                 };
-                let mut asked = request(device_tickets::REMOVE_IDENTITY, Some(Confirmation::Confirmed));
+                let mut asked = request(device_tickets::REMOVE_IDENTITY, Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new())));
                 assert_eq!(
                     f.query(&asked.target.provider).rows.is_empty(),
                     foreign,
@@ -1675,7 +1675,7 @@ mod identity_admin_tests {
                         super::signed_test_support::Fixture::new(services)
                     };
                     f.caller = f.caller.clone().in_new_execution();
-                    let asked = request(device_tickets::REMOVE_IDENTITY, Some(Confirmation::Confirmed));
+                    let asked = request(device_tickets::REMOVE_IDENTITY, Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new())));
                     let (entered, blocked) = mpsc::sync_channel(0);
                     let (release, resume) = mpsc::sync_channel(0);
                     f.state
@@ -1796,7 +1796,7 @@ mod identity_admin_tests {
                 providers: Some(providers(host.clone())),
                 ..Default::default()
             });
-            let asked = request(device_tickets::REMOVE_IDENTITY, Some(Confirmation::Confirmed));
+            let asked = request(device_tickets::REMOVE_IDENTITY, Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new())));
             *host.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
             let receipt = f.invoke(&asked).unwrap();
             let accepted = f.assert_signed(&asked, false);
@@ -1836,7 +1836,7 @@ mod identity_admin_tests {
                     providers: Some(providers(host.clone())),
                     ..Default::default()
                 });
-                let asked = request(device_tickets::REMOVE_IDENTITY, Some(Confirmation::Confirmed));
+                let asked = request(device_tickets::REMOVE_IDENTITY, Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new())));
                 f.invoke(&asked).unwrap();
                 // The service has accepted the effect; losing its answer does not
                 // prove that the effect failed or make it safe to repeat.
@@ -1880,7 +1880,7 @@ mod identity_admin_tests {
                     providers: Some(providers(host.clone())),
                     ..Default::default()
                 });
-                let asked = request(device_tickets::REMOVE_IDENTITY, Some(Confirmation::Confirmed));
+                let asked = request(device_tickets::REMOVE_IDENTITY, Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new())));
                 if admission_failure {
                     f.fail_next_barrier();
                     assert!(f.invoke(&asked).is_err());
@@ -1927,7 +1927,7 @@ mod identity_admin_tests {
                     )
                     .unwrap();
                 }
-                let asked = request(device_tickets::REMOVE_IDENTITY, Some(Confirmation::Confirmed));
+                let asked = request(device_tickets::REMOVE_IDENTITY, Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new())));
                 assert!(f.invoke(&asked).is_err());
                 assert!(host.started.lock().unwrap().is_empty());
                 assert!(f.state.remote_job(&f.caller, &asked.invocation).is_none());
@@ -1995,7 +1995,7 @@ mod identity_admin_tests {
             let receipt = invoked(
                 &state,
                 &person,
-                &request(device_tickets::REMOVE_IDENTITY, Some(Confirmation::Confirmed)),
+                &request(device_tickets::REMOVE_IDENTITY, Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new()))),
             )
             .expect("admitted");
             assert_eq!(
@@ -2054,7 +2054,7 @@ mod identity_admin_tests {
                     invoked(
                         &state,
                         &stranger,
-                        &request(step, Some(Confirmation::Confirmed))
+                        &request(step, Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new())))
                     )
                     .is_err(),
                     "{step} is refused to a stranger"
@@ -2298,14 +2298,20 @@ mod settings_documents_tests {
         invoked(
             &state,
             &person,
-            &lock_after(10, Some(Confirmation::Confirmed)),
+            &lock_after(
+                10,
+                Some(crate::collab_app_broker::person_approved(
+                    "workspace",
+                    tilo_actions::InvocationId::new(),
+                )),
+            ),
         )
         .expect("the person confirmed it");
         assert_eq!(minutes(), 10);
 
         invoked(&state, &agent, &lock_after(5, None)).expect("the agent locks sooner");
         assert_eq!(minutes(), 5);
-        for confirmation in [None, Some(Confirmation::Confirmed)] {
+        for confirmation in [None, Some(Confirmation::Operated)] {
             assert!(
                 invoked(&state, &agent, &lock_after(0, confirmation)).is_err(),
                 "an agent's own confirmation is no answer of the person's"

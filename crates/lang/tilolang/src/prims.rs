@@ -130,8 +130,8 @@ pub const PRIMS: &[Prim] = &[
     // A block's source rendered inline. `source` is `Text`, `author` an `Actor`, `invocation`
     // the `host.Invocation` recorded for an action block.
     prim_of("embed", &["source"], &["author", "invocation"]),
-    // What waits to be proposed of a resource (`suggest`), each as the card a person accepts or
-    // dismisses it with.
+    // What waits on a resource for a person's yes (`suggest`), each as a card saying who suggested
+    // what.
     prim_of("proposals", &["of"], &[]),
     // A resource drawn through its type's default view, whatever its type (`show(r)`); its type
     // must have a default view (`meta(r).opens`).

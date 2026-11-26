@@ -109,7 +109,7 @@ pub use meta::Meta;
 pub use pdf::PdfHost;
 pub use project::ProjectOptions;
 pub use render::ViewTarget;
-pub use run::{Journal, JournalEntry, Pending, Resolution, RunOutcome};
+pub use run::{Journal, JournalEntry, Pending, RunOutcome};
 pub use runtime::{
     BlockOutput, Bridged, CallInput, CallMember, Invoked, LineRun, MemorySink, Reading, Runtime,
     SettleReport,

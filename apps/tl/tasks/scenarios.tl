@@ -306,7 +306,7 @@ scenario "a task made from another" -> Task {
 }
 
 /// What an agent suggested about a task, before anyone decided it: its page says what the change
-/// would be and who proposed it, and its row carries the same in a line. Nothing has changed yet.
+/// would be and who suggested it, and its row carries the same in a line. Nothing has changed yet.
 scenario "an agent's suggestion" -> Task {
     tasks.numbers += 1
     let scout = agent("Scout")

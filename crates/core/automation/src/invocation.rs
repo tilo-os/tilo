@@ -1987,7 +1987,7 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
         };
         let invocation = prepared.request.invocation;
         let result = self
-            .complete(prepared.request, path)
+            .complete(prepared.request, prepared.consented, path)
             .await
             .and_then(|output| {
                 prepared
@@ -2128,7 +2128,7 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
             } => Some(self.appearance(binding)?),
             _ => None,
         };
-        let confirmation = self.confirmation(descriptor, &bound, &granted)?;
+        let (confirmation, consented) = self.confirmation(descriptor, &bound, &granted)?;
         let context = self.context(app_id, &row, descriptor, path);
         let mut arguments = bound.to_json();
         if let Some(from) = bound.from() {
@@ -2161,6 +2161,7 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
                 signed: None,
             },
             result: descriptor.contract.result.clone(),
+            consented,
         })
     }
 
@@ -2210,35 +2211,36 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
         }
     }
 
+    /// What answers the step's ask, where it asks: the person's approve of the call this
+    /// invocation runs for, or the rules they saved with the shortcut consenting to this very
+    /// action in advance (`true`), which only the host this run invokes through reads, from the
+    /// caller it hands that step ([`Caller::consented_in_advance`]). Nothing the step writes
+    /// says it was confirmed.
     fn confirmation(
         &self,
         descriptor: &ActionDescriptor,
         bound: &ActionArgs,
         granted: &StepGrant,
-    ) -> Result<Option<Confirmation>, StepFailure> {
+    ) -> Result<(Option<Confirmation>, bool), StepFailure> {
         let argument = format!(
             "{}{}",
             tilo_actions::ARGUMENTS_JSON_PREFIX,
             serde_json::Value::Object(bound.to_json())
         );
-        let policy = needed_confirmation(descriptor, Some(&argument), granted);
-        if policy == ConfirmationPolicy::None {
-            return Ok(None);
+        if needed_confirmation(descriptor, Some(&argument), granted) == ConfirmationPolicy::None {
+            return Ok((None, false));
         }
         // The person approved the call this invocation runs for, having been shown each step
         // that needs their yes: the step carries their approve.
         if let Some(approval) = &self.approval {
-            return Ok(Some(Confirmation::Asked(approval.clone())));
+            return Ok((Some(Confirmation::Asked(approval.clone())), false));
         }
         // Only a rule that names this exact action consents in advance, and nothing does for
         // one that needs its person attending.
         if !granted.names_action || descriptor.contract.is_attended() {
             return Err(StepFailure::ConfirmationRequired);
         }
-        Ok(Some(match policy {
-            ConfirmationPolicy::Phrase { phrase } => Confirmation::Phrase(phrase),
-            ConfirmationPolicy::Confirm | ConfirmationPolicy::None => Confirmation::Confirmed,
-        }))
+        Ok((None, true))
     }
 
     fn context(
@@ -2363,15 +2365,22 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
     async fn complete(
         &self,
         request: InvokeRequest,
+        consented: bool,
         path: &StepPath,
     ) -> Result<ActionOutput, StepFailure> {
         let deadline = tilo_clock::now().checked_add(self.timeout);
         let id = request.invocation;
-        let mut status = match self.host.observe(&self.caller, &id) {
+        // The same caller for each call about the step, so the host finds what it admitted.
+        let caller = if consented {
+            self.caller.clone().consented_in_advance()
+        } else {
+            self.caller.clone()
+        };
+        let mut status = match self.host.observe(&caller, &id) {
             Some(state) => state.receipt().status,
             None => {
                 self.host
-                    .invoke(&self.caller, request)
+                    .invoke(&caller, request)
                     .await
                     .ok_or(StepFailure::Abandoned)?
                     .map_err(|error| StepFailure::Host {
@@ -2406,7 +2415,7 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
                     // only a host that cannot tell falls back to the hooks'
                     // poll interval. A stop or a timeout ends the wait; the
                     // invocation itself is left to the host.
-                    let change = self.host.next_change(&self.caller, &id);
+                    let change = self.host.next_change(&caller, &id);
                     let refreshing = change.is_none();
                     let moved = async {
                         match change {
@@ -2425,7 +2434,7 @@ impl<'a, H: ActionProvider + Sync, K: InvocationHooks> Runner<'a, H, K> {
                         Wait::TimedOut => return Err(self.timed_out()),
                     }
                     self.host
-                        .observe(&self.caller, &id)
+                        .observe(&caller, &id)
                         .ok_or_else(|| StepFailure::Host {
                             error: Box::new(ActionCallError::UnknownInvocation),
                         })?
@@ -2645,6 +2654,9 @@ fn redacted(step: &Step, value: &Value) -> Value {
 struct Prepared {
     request: InvokeRequest,
     result: ResultSpec,
+    /// The shortcut's saved rules consent to this step in advance
+    /// ([`Caller::consented_in_advance`]).
+    consented: bool,
 }
 
 /// The value a later step refers to: the JSON result, or the address of the

@@ -150,10 +150,6 @@ pub struct Authorship {
     /// it created were made from ([`tilolang_runtime::store::Version::from`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from: Option<tilolang_runtime::value::ResourceRef>,
-    /// Who proposed the action, when the person invoking it accepted their suggestion: what
-    /// history says while the change is theirs ([`tilolang_runtime::store::Version::suggested_by`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suggested_by: Option<Actor>,
     /// How many items the change was made over ([`ChangeNote::count`]): one for an action
     /// applied to its target, as many as the items for one applied to many at once
     /// ([`tilolang_runtime::store::ChangeNote::count`]).

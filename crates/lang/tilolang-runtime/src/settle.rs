@@ -3,9 +3,10 @@
 //!
 //! Rendering never runs an action. An action asks the host, with `run_block`, to evaluate a
 //! block after it commits; the host does that under the poster's actor, applies the block's
-//! action through the authority (so it runs, or becomes a suggestion), and stores the outcome
+//! action through the authority (so it runs, or waits for a person's yes), and stores the outcome
 //! as an `Invocation` resource that syncs like any other. The embed only draws that resource.
-//! A suggestion is decided later, by any replica, with [`Core::resolve_invocation`].
+//! A call that waits for a person is asked through the dispatch, which keeps it as its own asked
+//! record until they answer; the `Invocation` resource names that call.
 
 use tilolang::{BlockKind, INVOCATION_TYPE};
 
@@ -13,12 +14,11 @@ use crate::authority::{ActionInfo, Decision};
 use crate::core::Core;
 use crate::embed::EmbedBlock;
 use crate::error::RuntimeError;
-use crate::exec::{ActionOutcome, ExecCtx, InvokeOutcome};
+use crate::exec::InvokeOutcome;
 use crate::handles::QueuedBlock;
 use crate::host_res::to_scalar;
 use crate::ids::{Actor, AppId, ModuleHash};
 use crate::project::{ProjectOptions, project};
-use crate::run::Resolution;
 use crate::store::{ChangeNote, Mutation};
 use crate::value::{ActionRef, ResourceRef, Value, from_json, to_json};
 
@@ -37,7 +37,7 @@ pub enum AgentBlock {
     },
     /// The block is a value: what an agent sees of it.
     Data(serde_json::Value),
-    /// The block applies an action. The host ran it, or suggested it to a person, and recorded
+    /// The block applies an action. The host ran it, or asked a person about it, and recorded
     /// the outcome as an `Invocation` resource that syncs like any other.
     Invocation {
         record: Box<InvocationEntry>,
@@ -59,13 +59,9 @@ pub struct InvocationEntry {
     pub state: String,
     pub result: String,
     pub run: String,
-    /// The resource a suggestion waits on: the one its action names first. `None` for an
+    /// The resource a call that asks waits on: the one its action names first. `None` for an
     /// action that names no resource, and for one that waits on nobody.
     pub target: Option<ResourceRef>,
-    /// Whether this is a proposal a person decides, rather than one the authority asked about
-    /// as the action was applied: accepting one runs it as the accepting person, attributed to
-    /// whoever proposed it.
-    pub proposed: bool,
 }
 
 impl InvocationEntry {
@@ -88,19 +84,13 @@ fn field_id(name: &str) -> String {
     format!("inv-{name}")
 }
 
-fn note(
-    who: &Actor,
-    identity: &ModuleHash,
-    action: &str,
-    approved_by: Option<&Actor>,
-) -> ChangeNote {
+fn note(who: &Actor, identity: &ModuleHash, action: &str) -> ChangeNote {
     ChangeNote {
         action: action.to_owned(),
         args: serde_json::Value::Null,
         invoker: Some(who.clone()),
         chain: vec![identity.0.clone()],
         module: "host".to_owned(),
-        approved_by: approved_by.cloned(),
         ..ChangeNote::default()
     }
 }
@@ -131,37 +121,30 @@ impl Core {
             return Ok(());
         }
         let identity = ModuleHash::written_by(invoker);
-        let (record, made) = self.run_posted_block(invoker, &identity, &block);
-        let inv = match made {
-            Some(inv) => inv,
-            None => {
-                self.create_invocation(&record, &note(invoker, &identity, "$invocation", None))?
-            }
-        };
+        let record = self.run_posted_block(invoker, &identity, &block);
+        let inv = self.create_invocation(&record, &note(invoker, &identity, "$invocation"))?;
         self.write_fields(
             &q.part,
             vec![(q.field.clone(), Value::some(Value::resource(&inv)))],
-            &note(invoker, &identity, "$settle-block", None),
+            &note(invoker, &identity, "$settle-block"),
         )
     }
 
-    /// Record `aref` as a proposal of `proposer`: an action that waits on the resource it is
-    /// about instead of being applied, attached to that resource as an ordinary change anyone
-    /// who sees the resource sees, until a person accepts or dismisses it.
+    /// `suggest aref` by `who` where an action or a program runs: the call asks a person
+    /// ([`Core::invoke_asking`]), and its outcome is recorded as an `Invocation` resource on the
+    /// resource it is about, where whoever sees that resource sees what waits on it.
     ///
     /// # Errors
     ///
     /// A store failure while recording it.
-    pub(crate) fn propose(
+    pub(crate) fn suggest(
         &self,
-        proposer: &Actor,
+        who: &Actor,
         aref: &ActionRef,
     ) -> Result<ResourceRef, RuntimeError> {
-        let aref = &self.completed(aref)?;
-        let mut record = self.record_of(proposer, Some(aref), "asked", "", "");
-        record.proposed = true;
-        let identity = ModuleHash::written_by(proposer);
-        self.create_invocation(&record, &note(proposer, &identity, "$suggest", None))
+        let record = self.applied(who, aref, true);
+        let identity = ModuleHash::written_by(who);
+        self.create_invocation(&record, &note(who, &identity, "$invocation"))
     }
 
     /// Evaluate the source of a block an agent wrote, as `agent`.
@@ -225,12 +208,9 @@ impl Core {
                 Ok(AgentBlock::View(Box::new(view.tree().clone())))
             }
             BlockKind::Action => {
-                let (record, made) = self.run_posted_block(agent, &identity, &block);
-                let resource = match made {
-                    Some(made) => made,
-                    None => self
-                        .create_invocation(&record, &note(agent, &identity, "$invocation", None))?,
-                };
+                let record = self.run_posted_block(agent, &identity, &block);
+                let resource =
+                    self.create_invocation(&record, &note(agent, &identity, "$invocation"))?;
                 Ok(AgentBlock::Invocation {
                     record: Box::new(record),
                     resource,
@@ -248,67 +228,50 @@ impl Core {
         }
     }
 
-    /// What a posted action block came to, and the record the host already wrote for it when
-    /// that is the block's own (`None` for an outcome the caller records).
+    /// What a posted action block came to: a `suggest` asks a person even where it may run
+    /// without.
     fn run_posted_block(
         &self,
         invoker: &Actor,
         identity: &ModuleHash,
         block: &EmbedBlock,
-    ) -> (InvocationEntry, Option<ResourceRef>) {
-        let value = self.eval_block(&block.pkg, &block.block.value_type, Some(identity));
-        let aref = match value {
-            Ok(Value::Action(aref)) => aref,
-            Ok(_) => {
-                return (
-                    self.record_of(
-                        invoker,
-                        None,
-                        "failed",
-                        "the block did not produce an action",
-                        "",
-                    ),
-                    None,
-                );
-            }
-            Err(e) => {
-                return (
-                    self.record_of(invoker, None, "failed", &e.to_string(), ""),
-                    None,
-                );
-            }
-        };
-        // A proposal is recorded as it stands: the record the message card draws is the one a
-        // person decides, so accepting it there applies it.
-        if block.block.suggested {
-            let proposed = self
-                .propose(invoker, &aref)
-                .and_then(|inv| Ok((self.read_invocation(&inv)?, inv)));
-            return match proposed {
-                Ok((record, inv)) => (record, Some(inv)),
-                Err(e) => (
-                    self.record_of(invoker, Some(&aref), "failed", &e.to_string(), ""),
-                    None,
-                ),
-            };
+    ) -> InvocationEntry {
+        match self.eval_block(&block.pkg, &block.block.value_type, Some(identity)) {
+            Ok(Value::Action(aref)) => self.applied(invoker, &aref, block.block.suggested),
+            Ok(_) => self.record_of(
+                invoker,
+                None,
+                "failed",
+                "the block did not produce an action",
+                "",
+            ),
+            Err(e) => self.record_of(invoker, None, "failed", &e.to_string(), ""),
         }
-        let record = match self.invoke_direct(invoker, &aref) {
+    }
+
+    /// The record of `invoker` applying `aref`, asking a person first when `asks`.
+    fn applied(&self, invoker: &Actor, aref: &ActionRef, asks: bool) -> InvocationEntry {
+        let outcome = if asks {
+            self.invoke_asking(invoker, aref)
+        } else {
+            self.invoke_direct(invoker, aref)
+        };
+        match outcome {
             Ok(InvokeOutcome::Done(v)) => {
                 let shown = self.result_text(&v);
-                self.record_of(invoker, Some(&aref), "done", &shown, "")
+                self.record_of(invoker, Some(aref), "done", &shown, "")
             }
             // The call's own invocation record asks the person: this one names it.
             Ok(InvokeOutcome::Asked(call)) => {
-                self.record_of(invoker, Some(&aref), "asked", "", &call)
+                self.record_of(invoker, Some(aref), "asked", "", &call)
             }
             // It went to its app, which answers it there.
             Ok(InvokeOutcome::Waits { call, .. }) => {
-                self.record_of(invoker, Some(&aref), "done", "", &call)
+                self.record_of(invoker, Some(aref), "done", "", &call)
             }
-            Ok(InvokeOutcome::Denied) => self.record_of(invoker, Some(&aref), "denied", "", ""),
-            Err(e) => self.record_of(invoker, Some(&aref), "failed", &e.to_string(), ""),
-        };
-        (record, None)
+            Ok(InvokeOutcome::Denied) => self.record_of(invoker, Some(aref), "denied", "", ""),
+            Err(e) => self.record_of(invoker, Some(aref), "failed", &e.to_string(), ""),
+        }
     }
 
     fn result_text(&self, v: &Value) -> String {
@@ -329,7 +292,7 @@ impl Core {
     ) -> InvocationEntry {
         let (action, app, name, args) = match aref {
             Some(a) => {
-                let (app, name, _) = self.action_facts(&a.action, &a.args);
+                let (app, name) = self.action_facts(&a.action);
                 let args = to_json(&Value::List(a.args.clone())).unwrap_or_default();
                 (a.action.clone(), app, name, args.to_string())
             }
@@ -344,15 +307,14 @@ impl Core {
             state: state.to_owned(),
             result: result.to_owned(),
             run: run.to_owned(),
-            // A suggestion waits on the resource its action names first, where a person finds
-            // it and decides it, whether someone proposed it or the authority asked about it.
+            // A call that asks waits on the resource its action names first, where whoever sees
+            // that resource sees it waiting.
             target: aref.filter(|_| state == "asked").and_then(|a| {
                 a.args.iter().find_map(|v| match v {
                     Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
                     _ => None,
                 })
             }),
-            proposed: false,
         }
     }
 
@@ -383,7 +345,6 @@ impl Core {
                     field_id("target"),
                     Value::Opt(record.target.as_ref().map(Value::resource).map(Box::new)),
                 ),
-                (field_id("proposed"), Value::Bool(record.proposed)),
             ],
             note,
         )?;
@@ -473,7 +434,6 @@ impl Core {
             result: text("result")?,
             run: text("run")?,
             target,
-            proposed: matches!(get("proposed")?, Value::Bool(true)),
         })
     }
 
@@ -503,104 +463,42 @@ impl Core {
         })
     }
 
-    /// Whether `who` may decide a suggestion of this action: the authority does not deny them.
-    /// An `ask` is the very decision they are making, so only a denial refuses. It is what a view
-    /// offers them too: an action their state denies stands disabled. Their state is theirs
-    /// alone, so a view that asked runs again when it changes.
+    /// Whether `who` may run this action at all: the authority does not deny them, though it may
+    /// ask them first. It is what a view offers them: an action their state denies stands
+    /// disabled. Their state is theirs alone, so a view that asked runs again when it changes.
     pub(crate) fn may_decide(&self, who: &Actor, action: &str) -> bool {
         self.read_person();
         self.info_of(action)
             .is_none_or(|info| self.authority.decide(who, &[], &info) != Decision::Deny)
     }
 
-    /// Decide the suggestion an invocation resource holds, as `approver`, on this replica.
-    /// Approving runs the action once with `approver` as its invoker: a proposal runs with the
-    /// authority of the person accepting it and records in its change who proposed it, while
-    /// an ask the authority raised runs for the person who asked. The outcome is written back
-    /// to the resource, so every replica shows it after sync. Declining only records the
-    /// refusal.
+    /// Record what became of the call `call` that asked a person, now that it was answered: each
+    /// `Invocation` resource on a resource of `about` that names it while it waits says `state`
+    /// from then on, so what waits on a resource leaves it once answered.
     ///
     /// # Errors
     ///
-    /// `NotPending` when the invocation is not a suggestion; `Denied` when the authority
-    /// gives `approver` no say; otherwise as running the action.
-    pub fn resolve_invocation(
+    /// A store failure while reading or writing one.
+    pub(crate) fn call_answered(
         &self,
-        inv: &ResourceRef,
-        approver: &Actor,
-        resolution: Resolution,
-    ) -> Result<String, RuntimeError> {
-        let rec = self.read_invocation(inv)?;
-        // Only a proposal is decided here: a call that asked waits on its own invocation record,
-        // which the dispatch answers.
-        if rec.state != "asked" || !rec.proposed {
-            return Err(RuntimeError::NotPending(inv.id_string()));
-        }
-        if !self.may_decide(approver, &rec.action) {
-            return Err(RuntimeError::Denied(format!(
-                "{approver} may not decide `{}`",
-                rec.name
-            )));
-        }
-        let identity = ModuleHash::written_by(&rec.author);
-        let (state, result, run) = match resolution {
-            Resolution::Decline => (
-                "declined".to_owned(),
-                format!("declined by {approver}"),
-                String::new(),
-            ),
-            Resolution::Approve { .. } | Resolution::ApproveAndGrant => {
-                self.approve_invocation(&inv.id_string(), &rec, &identity, approver)?
+        call: &str,
+        about: &[ResourceRef],
+        state: &str,
+    ) -> Result<(), RuntimeError> {
+        for of in about {
+            let links = self.store.borrow().linked_by(of, INVOCATION_TYPE)?;
+            for at in links.into_iter().map(|link| link.of) {
+                let rec = self.read_invocation(&at)?;
+                if rec.state == "asked" && rec.run == call {
+                    let identity = ModuleHash::written_by(&rec.author);
+                    self.write_fields(
+                        &at,
+                        vec![(field_id("state"), Value::text(state))],
+                        &note(&rec.author, &identity, "$invocation"),
+                    )?;
+                }
             }
-        };
-        let nt = note(approver, &identity, "$decide-invocation", Some(approver));
-        self.write_fields(
-            inv,
-            vec![
-                (field_id("state"), Value::text(&state)),
-                (field_id("result"), Value::text(result)),
-                (field_id("run"), Value::text(run)),
-            ],
-            &nt,
-        )?;
-        Ok(state)
-    }
-
-    fn approve_invocation(
-        &self,
-        origin: &str,
-        rec: &InvocationEntry,
-        identity: &ModuleHash,
-        approver: &Actor,
-    ) -> Result<(String, String, String), RuntimeError> {
-        // The effects the accepted proposal queues are keyed by the decision, which every
-        // replica reads.
-        let run = format!("invocation:{origin}");
-        let args = rec.arguments()?;
-        // A proposal runs as the person accepting it, and its change says who proposed it.
-        let (invoker, suggested_by) = (approver.clone(), Some(rec.author.clone()));
-        let ctx = ExecCtx {
-            invoker,
-            app: None,
-            chain: vec![identity.clone()],
-            approved_by: Some(approver.clone()),
-            suggested_by,
-            identity: Some(run),
-            from: None,
-            at: None,
-            gesture: None,
-        };
-        let aref = ActionRef {
-            action: rec.action.clone(),
-            args,
-            author: Some(identity.clone()),
-            from: None,
-        };
-        // The person accepting it answered this run: it is the one they were asked about.
-        Ok(match self.run_answered(&ctx, &aref)? {
-            ActionOutcome::Done(v) => ("done".to_owned(), self.result_text(&v), String::new()),
-            ActionOutcome::Waits(_) => ("approved".to_owned(), String::new(), String::new()),
-            ActionOutcome::Failed(why) => ("failed".to_owned(), why, String::new()),
-        })
+        }
+        Ok(())
     }
 }

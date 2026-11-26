@@ -211,7 +211,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(service.calls.lock().unwrap().len(), 1);
         request.invocation = tilo_actions::InvocationId::new();
-        request.confirmation = Some(Confirmation::Confirmed);
+        request.confirmation = Some(approval(&request));
         invoke(&state, &owner, &request).unwrap();
         assert_eq!(service.calls.lock().unwrap().len(), 2);
     }
@@ -233,7 +233,7 @@ tilo_test_env::scenario! {
         let other = Caller::local_person("other").in_workspace(owner.workspace().unwrap());
         assert!(invoke(&state, &other, &request).is_err());
         request.target.address.resource = "not-published".into();
-        request.confirmation = Some(Confirmation::Confirmed);
+        request.confirmation = Some(approval(&request));
         assert_eq!(
             invoke(&state, &owner, &request),
             Err(ActionCallError::UnknownAction)
@@ -256,7 +256,7 @@ tilo_test_env::scenario! {
                 .resource(RESOURCE)
                 .action(ACTION);
             tree.write().workspaces[0].allow(Grantee::person("guest"), &path, KindSet::ALL);
-            request.confirmation = Some(Confirmation::Confirmed);
+            request.confirmation = Some(approval(&request));
             invoke(&state, &person, &request).unwrap();
             service.calls.lock().unwrap().clear();
             request.invocation = tilo_actions::InvocationId::new();
@@ -273,8 +273,8 @@ tilo_test_env::scenario! {
 
             // An earlier approval can answer Ask, but cannot override a new Deny; a confirmation
             // the caller wrote itself answers neither.
-            for confirmation in [issued_before_change, Confirmation::Confirmed] {
-                let written = matches!(confirmation, Confirmation::Confirmed);
+            for confirmation in [issued_before_change, Confirmation::Operated] {
+                let written = matches!(confirmation, Confirmation::Operated);
                 if written {
                     request.invocation = tilo_actions::InvocationId::new();
                 }

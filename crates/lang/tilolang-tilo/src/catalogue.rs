@@ -842,7 +842,6 @@ impl Reader<'_> {
                 opens: Vec::new(),
                 shows: Vec::new(),
                 takes: Vec::new(),
-                proposal: None,
                 reaches: Vec::new(),
             });
         }
@@ -1067,7 +1066,6 @@ impl Reader<'_> {
             params,
             result,
             class: effect_class(verb.kind),
-            proposal: None,
             reaches: Vec::new(),
             label: verb.label.clone(),
             icon: None,

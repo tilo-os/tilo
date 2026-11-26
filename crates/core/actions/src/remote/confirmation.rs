@@ -11,7 +11,11 @@ use serde::{Deserialize, Serialize};
 /// Explicit confirmation carried with an invocation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Confirmation {
-    Confirmed,
+    /// The host that placed a browser window hands it a call of a key its person let operate
+    /// web pages: their standing permission, not an answer to an ask. Only
+    /// [`super::browser::host_answered`] reads it, from that host's link alone; nothing else
+    /// takes it as a confirmation, so a caller that writes it is asked like one that wrote none.
+    Operated,
     /// The caller typed the phrase the contract asks for.
     Phrase(String),
     /// The person approved the asked invocation record this call was kept as

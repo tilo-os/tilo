@@ -2809,9 +2809,8 @@ mod store {
     }
 
     /// The verbs the platform writes under name no app. A store that declares any verb refused
-    /// their changes as undeclared, so a device could not keep the call it carried out, the
-    /// suggestion it made or the decision on it, and a step could be taken neither back nor
-    /// brought back. Every schema declares them, as it declares the move and the creation: each
+    /// their changes as undeclared, so a device could not keep the call it carried out or the
+    /// block that settled it, and a step could be taken neither back nor brought back. Every schema declares them, as it declares the move and the creation: each
     /// writes any field of a declared kind and no kind the store does not declare.
     #[test]
     fn the_platforms_verbs_are_declared_in_every_schema_and_write_a_declared_kind() {

@@ -262,9 +262,9 @@ impl Checker<'_> {
         ex
     }
 
-    /// `suggest act(args)`: records the action as a proposal that waits on the resource it is about,
-    /// instead of applying it. An action records one where it runs; a block is the proposal itself, and
-    /// records it when the host runs it.
+    /// `suggest act(args)`: applies the action only once a person says yes to it: the call asks them
+    /// even where it may run without, and waits as its asked record until they answer. An action
+    /// asks once it has committed; a block is the call itself, and asks when the host runs it.
     fn suggest_expr(&mut self, inner: &ast::Expr, span: Span) -> Ex {
         let value = if self.st.ctx == Ctx::Block && self.st.proposes {
             true
@@ -275,7 +275,7 @@ impl Checker<'_> {
             self.err(
                 "E044",
                 span,
-                format!("`suggest` proposes an action, and only an action or an agent's block may do that; {who} cannot"),
+                format!("`suggest` asks a person to apply an action, and only an action or an agent's block may do that; {who} cannot"),
             );
             return Ex::error();
         };

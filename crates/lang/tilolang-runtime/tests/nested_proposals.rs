@@ -32,7 +32,7 @@ action write(b: Box, to: Text) -> Letter {
 }
 
 /// Posts the letter: it leaves the system, so it asks first, showing whom it goes to.
-action send(l: Letter) proposal compose(l) (
+action send(l: Letter) (
     shows: [(l.to, .addresses)],
 ) {
     require not l.sent "This letter went already"
@@ -41,7 +41,7 @@ action send(l: Letter) proposal compose(l) (
 }
 
 /// Posts a long message, showing the person asked its subject and the start of its words.
-action send_long(l: Letter, subject: Text, body: Text) proposal compose(l) (
+action send_long(l: Letter, subject: Text, body: Text) (
     shows: [subject, (body, .long)],
 ) {
     outside("post", subject)

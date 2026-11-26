@@ -15,8 +15,6 @@ tilolang-gone = This was removed.
 tilolang-ask-action = Allow “{ $action }”?
 tilolang-ask-confirm = Allow
 tilolang-ask-decline = Decline
-tilolang-suggestion-accept = Accept
-tilolang-suggestion-dismiss = Dismiss
 # Who proposes what waits on an item, said in the line that carries what it would do
 # ("Scout suggests: set the due date to Sat").
 tilolang-suggestion-says = { $name } suggests:
@@ -75,7 +73,7 @@ tilolang-names-more = { $first }, { $second } and { $count } others
 
 tilolang-invocation-pending = Waiting
 tilolang-invocation-done = Done
-tilolang-invocation-suggested = Waiting for approval
+tilolang-invocation-asked = Waiting for approval
 tilolang-invocation-declined = Declined
 tilolang-invocation-failed = Failed
 tilolang-invocation-denied = Not allowed

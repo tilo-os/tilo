@@ -163,7 +163,7 @@ impl AppBrokerState {
         action: (&str, &ActionDescriptor),
         input: (&InvokeRequest, Option<&str>),
     ) -> Result<(AdmittedHostAction, bool), ActionCallError> {
-        let approved = self.authorize_framework_descriptor(authority, action, input)?;
+        let approved = self.authorize_framework_descriptor(caller, authority, action, input)?;
         let admitted = self.admit_host_action(
             caller,
             origin,
@@ -181,13 +181,14 @@ impl AppBrokerState {
 
     fn authorize_framework_descriptor(
         &self,
+        caller: &Caller,
         authority: (&Workspace, &BrokerActor, u64),
         action: (&str, &ActionDescriptor),
         input: (&InvokeRequest, Option<&str>),
     ) -> Result<bool, ActionCallError> {
         let (_, actor, _) = authority;
         let (request, argument) = input;
-        let approved = super::approval::approved_by_person(request.confirmation.as_ref());
+        let approved = super::approval::approved_by_person(caller, request.confirmation.as_ref());
         if !Self::confirmed_as_asked(
             actor,
             action.1,
@@ -372,6 +373,7 @@ impl AppBrokerState {
         let descriptor = crate::automation::library_descriptor(&request.target.address.action)
             .ok_or(ActionCallError::UnknownAction)?;
         let approved = self.authorize_framework_descriptor(
+            caller,
             authority,
             (tilo_automation::SHORTCUTS_APP_ID, &descriptor),
             (request, argument),
@@ -614,22 +616,16 @@ impl AppBrokerState {
         if owner_action && !authority.1.direct() {
             return Err(ActionCallError::NotPermitted);
         }
-        let approved =
-            owner_action && super::approval::approved_by_person(request.confirmation.as_ref());
-        if owner_action && !approved && request.confirmation != Some(Confirmation::Confirmed) {
+        // Only the person's answer to the asked record this call was kept as is their yes.
+        let approved = super::approval::approved_by_person(caller, request.confirmation.as_ref());
+        if owner_action && !approved {
             return Err(asking(&descriptor));
         }
-        // Convert only the exact consumed owner approval; ordinary governance
-        // retains its legacy phrase/confirmation semantics at the service.
-        let mut checked = request.clone();
-        if approved {
-            checked.confirmation = Some(Confirmation::Confirmed);
-        }
-        // Admission records the original approval-bearing request, not a rewrite.
+        let approved = owner_action && approved;
         self.framework_policy(
             authority,
             (service.app_id(), &descriptor),
-            checked.confirmation.as_ref(),
+            request.confirmation.as_ref(),
             approved,
             false,
         )
@@ -639,7 +635,7 @@ impl AppBrokerState {
                 authority.1,
                 &descriptor,
                 argument,
-                checked.confirmation.as_ref(),
+                request.confirmation.as_ref(),
                 approved,
             )
         {
@@ -657,8 +653,8 @@ impl AppBrokerState {
         )?;
         #[cfg(test)]
         tests::at_effect_barrier();
-        let confirmation = match checked.confirmation.as_ref() {
-            Some(Confirmation::Confirmed) => serde_json::json!({"confirm": true}),
+        let confirmation = match request.confirmation.as_ref() {
+            Some(Confirmation::Asked(_)) => serde_json::json!({"confirm": true}),
             Some(Confirmation::Phrase(phrase)) => {
                 serde_json::json!({"confirmation_phrase": phrase})
             }
@@ -682,7 +678,7 @@ impl AppBrokerState {
             self.framework_policy(
                 (&current_workspace, &actor, now),
                 (service.app_id(), &fresh),
-                checked.confirmation.as_ref(),
+                request.confirmation.as_ref(),
                 approved,
                 true,
             )

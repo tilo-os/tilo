@@ -98,9 +98,9 @@ pub struct ExecCtx {
     pub app: Option<String>,
     pub chain: Vec<ModuleHash>,
     pub approved_by: Option<Actor>,
-    /// The run this invocation already is, when something every replica reads names it: the
-    /// record of a suggestion names the run that waits on a person (`InvocationEntry::run`),
-    /// and a device that holds no journal of it runs its action under that run. Every effect the
+    /// The run this invocation already is, when something every replica reads names it (a
+    /// trigger, run for a record at an instant), and a device that holds no journal of it runs
+    /// its action under that run. Every effect the
     /// run queues is keyed by the id it starts with, so a device that runs the same invocation
     /// queues each effect once. Without one, the run gets an id of its own.
     pub identity: Option<RunId>,
@@ -109,9 +109,6 @@ pub struct ExecCtx {
     pub from: Option<ResourceRef>,
     /// The moment the invocation acts at, when a scenario named one: what its clock reads.
     pub at: Option<String>,
-    /// Who proposed the action, when the person invoking it accepted a suggestion: recorded in
-    /// its change, so history says who suggested it.
-    pub suggested_by: Option<Actor>,
     /// The gesture every change of the invocation is one of, when the person's act made more than
     /// one change (a picture pasted into a document, and the app naming it): undo takes them back
     /// as one step ([`crate::store::ChangeNote::gesture`]).
@@ -130,7 +127,6 @@ impl ExecCtx {
             chain: self.chain.clone(),
             from: self.from.clone(),
             at: self.at.clone(),
-            suggested_by: self.suggested_by.clone(),
             entries: Vec::new(),
             pending: None,
             finished: false,
@@ -211,7 +207,7 @@ enum Delegated {
 struct Change {
     txn: Txn,
     queued: Vec<QueuedBlock>,
-    proposed: Vec<(Actor, ActionRef)>,
+    suggested: Vec<(Actor, ActionRef)>,
     note: ChangeNote,
 }
 
@@ -864,7 +860,6 @@ impl Core {
                 chain: Vec::new(),
                 from: None,
                 at: None,
-                suggested_by: None,
                 entries: Vec::new(),
                 pending: None,
                 finished: false,
@@ -881,7 +876,6 @@ impl Core {
                 action: initial.id.clone(),
                 primary: Some(made.clone()),
                 invoker: app.clone(),
-                suggested_by: None,
                 suggestions: Vec::new(),
                 queued: Vec::new(),
                 scenario: false,
@@ -893,7 +887,6 @@ impl Core {
                     journal,
                     cursor: 0,
                     invoker: app,
-                    suggested_by: None,
                     clock: None,
                     journaled: false,
                 }),
@@ -1047,7 +1040,6 @@ impl Core {
             chain: ctx.chain.iter().map(|m| m.0.clone()).collect(),
             module: pkg.hash.0.clone(),
             approved_by: ctx.approved_by.clone(),
-            suggested_by: ctx.suggested_by.clone(),
             from: ctx.from.clone(),
             at: ctx.at.clone(),
             gesture: ctx.gesture.clone(),
@@ -1068,21 +1060,6 @@ impl Core {
         aref: &ActionRef,
     ) -> Result<ActionOutcome, RuntimeError> {
         self.run_as(ctx, aref, (false, None))
-    }
-
-    /// Run an action a person was just asked about and allowed, as the run they answered: what
-    /// it calls from the action's own package goes on without asking them again. Only the device
-    /// taking their answer starts this run; any other run of the action asks again.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::run_action`].
-    pub(crate) fn run_answered(
-        &self,
-        ctx: &ExecCtx,
-        aref: &ActionRef,
-    ) -> Result<ActionOutcome, RuntimeError> {
-        self.run_as(ctx, aref, (true, None))
     }
 
     fn run_as(
@@ -1168,7 +1145,6 @@ impl Core {
             approved_by: None,
             identity: None,
             from: from.cloned(),
-            suggested_by: None,
             at: None,
             gesture: None,
         };
@@ -1197,7 +1173,6 @@ impl Core {
             run,
             cursor: 0,
             invoker: ctx.invoker.clone(),
-            suggested_by: ctx.suggested_by.clone(),
             clock: None,
             journaled: false,
         }
@@ -1239,7 +1214,6 @@ impl Core {
                 action: first.action.clone(),
                 primary,
                 invoker: ctx.invoker.clone(),
-                suggested_by: ctx.suggested_by.clone(),
                 suggestions: Vec::new(),
                 queued: Vec::new(),
                 scenario: meta.scenario,
@@ -1264,7 +1238,7 @@ impl Core {
         }
         let at = self.change_time();
         let frame = self.frames.borrow_mut().pop();
-        let (queued, proposed, txn, note) = match frame.map(|f| f.kind) {
+        let (queued, suggested, txn, note) = match frame.map(|f| f.kind) {
             Some(FrameKind::Action(a)) => {
                 let mut note = *a.note;
                 note.at = Some(at);
@@ -1287,8 +1261,8 @@ impl Core {
             None => {
                 self.store.borrow_mut().commit(txn, &note)?;
                 self.settle_blocks(&ctx.invoker, queued)?;
-                for (who, suggested) in proposed {
-                    self.propose(&who, &suggested)?;
+                for (who, aref) in suggested {
+                    self.suggest(&who, &aref)?;
                 }
                 Ok(())
             }
@@ -1363,7 +1337,7 @@ impl Core {
     ///
     /// `admission` says how it was admitted. When the person approved it on the system's confirm
     /// ([`Admission::Approved`]), the run is the one they answered: what the app's own code goes
-    /// on to call runs on that yes ([`Core::run_answered`]). When they made it themselves with a
+    /// on to call runs on that yes. When they made it themselves with a
     /// press the dispatch attested on the system's own surfaces ([`Admission::Pressed`]), it is
     /// their act, as a press in the app's window is. A call delivered with neither (an agent's,
     /// an automation's, another app's process, the person's with no press behind it) still asks
@@ -1446,7 +1420,6 @@ impl Core {
             app: app.map(str::to_owned),
             chain,
             approved_by: None,
-            suggested_by: None,
             identity: identity.cloned(),
             from: from.cloned(),
             at: None,
@@ -1464,7 +1437,7 @@ impl Core {
         };
         // A person's own press, attested where it was made, or their yes on the system's confirm
         // to the call as it was shown: what the app's code calls on the way runs under it, as an
-        // answer they gave runs on ([`Core::run_answered`]). A call the dispatch delivered as the
+        // answer they gave runs on. A call the dispatch delivered as the
         // person with neither was admitted for itself alone, so what its code goes on to call
         // that asks still asks.
         let person = admitted
@@ -1498,6 +1471,40 @@ impl Core {
                 ran(self.run_as(&ctx, aref, (person, pressed))?)
             }
             Decision::Ask => self.wait_on_person(aref),
+        }
+    }
+
+    /// `aref` as `invoker` suggests it (`suggest act(args)`): admitted at Ask, so where the
+    /// authority would let it run, it asks the person first all the same, and waits as its asked
+    /// record until they answer; what it denies stays denied. A runtime with no dispatch to keep
+    /// the call (a scenario's world, one of its own) has nobody to ask, and nothing answers the
+    /// suggestion there: it waits, naming no call.
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::invoke_direct`].
+    pub(crate) fn invoke_asking(
+        &self,
+        invoker: &Actor,
+        aref: &ActionRef,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        let aref = &self.completed(aref)?;
+        let mut chain = Vec::new();
+        push_chain(&mut chain, aref.author.as_ref());
+        let ctx = ExecCtx {
+            invoker: invoker.clone(),
+            app: None,
+            chain,
+            approved_by: None,
+            identity: None,
+            from: aref.from.clone(),
+            at: None,
+            gesture: None,
+        };
+        match self.decide(&ctx, aref)? {
+            Decision::Deny => Ok(InvokeOutcome::Denied),
+            _ if self.invoker.borrow().is_none() => Ok(InvokeOutcome::Asked(String::new())),
+            Decision::Allow | Decision::Ask => self.wait_on_person(aref),
         }
     }
 
@@ -1672,7 +1679,6 @@ impl Core {
             app: None,
             chain,
             approved_by: None,
-            suggested_by: None,
             identity: None,
             from: None,
             at: None,
@@ -1874,7 +1880,6 @@ impl Core {
                 run: run.clone(),
                 cursor: 0,
                 invoker: journal.invoker.clone(),
-                suggested_by: journal.suggested_by.clone(),
                 clock: clock.clone(),
                 journaled,
                 journal,
@@ -1936,7 +1941,6 @@ impl Core {
             app: journal.app.clone(),
             chain: journal.chain.clone(),
             approved_by: journal.approved_by.clone(),
-            suggested_by: journal.suggested_by.clone(),
             identity: Some(run.clone()),
             from: journal.from.clone(),
             at: journal.at.clone(),
@@ -1977,7 +1981,6 @@ impl Core {
                 action: action.clone(),
                 primary,
                 invoker: ctx.invoker.clone(),
-                suggested_by: ctx.suggested_by,
                 suggestions: Vec::new(),
                 queued: Vec::new(),
                 scenario: meta.scenario,
@@ -2021,7 +2024,7 @@ impl Core {
                 let change = Change {
                     txn: a.txn,
                     queued: a.queued,
-                    proposed: a.suggestions,
+                    suggested: a.suggestions,
                     note,
                 };
                 (a.run.journal, Some(Box::new(change)))
@@ -2057,12 +2060,12 @@ impl Core {
     }
 
     /// Commit `change` as a change of `invoker`'s run, and do what it left for others: settle the
-    /// blocks it settled and record what it proposed.
+    /// blocks it settled and ask what it suggested.
     fn commit_segment(&self, invoker: &Actor, change: Change) -> Result<(), RuntimeError> {
         self.store.borrow_mut().commit(change.txn, &change.note)?;
         self.settle_blocks(invoker, change.queued)?;
-        for (who, suggested) in change.proposed {
-            self.propose(&who, &suggested)?;
+        for (who, aref) in change.suggested {
+            self.suggest(&who, &aref)?;
         }
         Ok(())
     }
@@ -2097,7 +2100,6 @@ impl Core {
             },
             chain,
             approved_by: None,
-            suggested_by: journal.suggested_by.clone(),
             identity: None,
             from: step.from.clone().or_else(|| journal.from.clone()),
             at: step.at.clone(),
@@ -3418,11 +3420,10 @@ impl Core {
         Ok(())
     }
 
-    /// `suggest act(args)`: records the action as a proposal attached to the resource it is
-    /// about, instead of applying it. An action records it once it has committed, so the
-    /// proposal is never part of its transaction; a program holds no transaction of its own, so
-    /// it records it now.
-    fn propose_in_frame(&self, act: i32) -> HResult<Option<Wasm>> {
+    /// `suggest act(args)`: the call asks a person even where it may run without
+    /// ([`Core::suggest`]). An action asks once it has committed, so the call is never part of
+    /// its transaction; a program holds no transaction of its own, so it asks now.
+    fn suggest_in_frame(&self, act: i32) -> HResult<Option<Wasm>> {
         let aref = match self.val(act)? {
             Value::Action(aref) => aref,
             other => return trap(format!("expected an action, got {}", other.kind_name())),
@@ -3443,7 +3444,7 @@ impl Core {
             }
         };
         if let Some(who) = now {
-            self.propose(&who, &aref)
+            self.suggest(&who, &aref)
                 .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
         }
         ret_void()
@@ -3749,7 +3750,7 @@ impl Core {
             Imp::ActRef => self.act_ref(a.h(0)?, a.h(1)?),
             Imp::Invoke => self.invoke(a.h(0)?),
             Imp::TryInvoke => self.try_invoke(a.h(0)?),
-            Imp::Suggest => self.propose_in_frame(a.h(0)?),
+            Imp::Suggest => self.suggest_in_frame(a.h(0)?),
             Imp::ProposalNote => {
                 let note = self.proposal_note(a.h(0)?)?;
                 self.ret_h(note)

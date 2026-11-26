@@ -1706,7 +1706,7 @@ async fn a_confirmation_the_caller_brings_runs_no_page_action() {
             &key,
             InvocationId::new(),
             "click-page",
-            Some(Confirmation::Confirmed),
+            Some(Confirmation::Operated),
         ),
     )
     .await
@@ -1738,7 +1738,7 @@ async fn only_the_placing_hosts_word_answers_for_the_person_at_its_window() {
             &key,
             InvocationId::new(),
             "click-page",
-            Some(Confirmation::Confirmed),
+            Some(Confirmation::Operated),
         ))
     };
 

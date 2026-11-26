@@ -2709,30 +2709,6 @@ impl Session {
         Ok(started)
     }
 
-    /// Invoke a service's action the person confirmed (restart, power
-    /// off): one [`Session::invoke`] refused with
-    /// [`ApiError::ConfirmationRequired`].
-    ///
-    /// # Errors
-    /// The API's refusal: no such resource or action, bad arguments, or
-    /// one the device cannot do now.
-    pub fn invoke_confirmed(
-        &mut self,
-        resource: &str,
-        action: &str,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<ResourceOperationStart, ApiError> {
-        match self
-            .shared
-            .services
-            .borrow_mut()
-            .invoke_confirmed(resource, action, arguments)
-        {
-            Some(started) => started.map(crate::services::app_wire::answered),
-            None => Err(ApiError::Unknown(ActionAddress::new(resource, action))),
-        }
-    }
-
     /// The labels of what the session shows to assistive technology: the
     /// shell's, the chrome's and every open surface app's.
     #[must_use]

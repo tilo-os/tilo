@@ -301,8 +301,8 @@ impl Checker<'_> {
         Ex::host(Imp::Links, vec![r], Ty::List(Box::new(host_ty("Link"))))
     }
 
-    /// `proposal_note(r)`: what waits to be proposed of `r`, as one line of text; empty when nothing
-    /// waits.
+    /// `proposal_note(r)`: what waits on `r` for a person's yes (`suggest`), as one line of text;
+    /// empty when nothing waits.
     pub(super) fn builtin_proposal_note(&mut self, args: &[ast::Arg], span: Span) -> Ex {
         let Some(r) = self.resource_arg("proposal_note", args, span) else {
             return Ex::error();

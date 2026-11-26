@@ -1285,7 +1285,6 @@ impl ResourceStore {
             && note.effects.is_empty()
             && note.count <= 1
             && note.approved_by.is_none()
-            && note.suggested_by.is_none()
             && matches!(note.args.get(1), Some(Json::String(_) | Json::Object(_)));
         let field = note.args.get(0).and_then(Json::as_str);
         let (true, Some(field), [resource]) = (typed, field, note.touched.as_slice()) else {
@@ -3920,11 +3919,7 @@ impl ResourceStore {
                     id: run.id,
                     label: run.title,
                 }),
-            suggested_by: note
-                .suggested_by
-                .as_ref()
-                .map(actor_text)
-                .unwrap_or_default(),
+            suggested_by: String::new(),
             // The arguments of an action someone invoked, never a bound control's edit or the
             // platform's own write: those carry what the document already holds, or a mark.
             args: if note.action.starts_with('$') {

@@ -1375,7 +1375,7 @@ mod tests {
                     &agent,
                     "5",
                     "new-window",
-                    Some(Confirmation::Confirmed)
+                    Some(Confirmation::Operated)
                 )
                 .err(),
                 Some(card(scribe(), "new-window", false)),
@@ -1421,7 +1421,7 @@ mod tests {
             request.invocation = tilo_actions::InvocationId::new();
             // A confirmation another device forwarded here answers for nobody: no host placed a
             // window on this device to answer for its person.
-            request.confirmation = Some(Confirmation::Confirmed);
+            request.confirmation = Some(Confirmation::Operated);
             assert_eq!(
                 state
                     .action_invoke(&agent.clone().forwarded_by([9; 32]), None, None, &request)
@@ -2680,9 +2680,12 @@ mod tests {
                 &owner,
                 &provider,
                 "empty-trash",
-                Some(Confirmation::Confirmed),
+                Some(crate::collab_app_broker::person_approved(
+                    &workspace,
+                    tilo_actions::InvocationId::new(),
+                )),
             )
-            .expect("confirmed evidence is bound to the relaunched app");
+            .expect("the person's approve is bound to the relaunched app");
         }
 
         phase an_app_that_never_offers_the_action_times_out_with_a_clear_error;

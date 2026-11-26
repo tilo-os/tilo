@@ -14,7 +14,6 @@ use crate::exec::{Admission, InvokeOutcome};
 use crate::ids::{Actor, DocId, ModuleHash, PackageId, RunId};
 use crate::meta::Meta;
 use crate::project::{ProjectOptions, project};
-use crate::run::Resolution;
 use crate::settle::{AgentBlock, InvocationEntry};
 use crate::store::{ChangeNote, EffectEntry, Store, StoreError, Version};
 use crate::value::{ActionRef, ResourceRef, Value};
@@ -691,7 +690,7 @@ impl Runtime {
     }
 
     /// Evaluate an agent block as `actor`. A view renders and
-    /// can be pressed; an action application is invoked, or suggested when the authority asks
+    /// can be pressed; an action application is invoked, asking a person when the authority asks
     /// (the block's module is the author, so the chain starts with it); data is returned.
     ///
     /// # Errors
@@ -738,8 +737,8 @@ impl Runtime {
     }
 
     /// Evaluate the source of a block an agent wrote, as `agent`: a view renders, a value is
-    /// projected, and an action application runs or is suggested to a person, recorded as an
-    /// `Invocation` resource.
+    /// projected, and an action application runs or asks a person, recorded as an `Invocation`
+    /// resource.
     ///
     /// # Errors
     ///
@@ -775,27 +774,25 @@ impl Runtime {
         self.core.open_written_view(viewer, source, author, args)
     }
 
-    /// Decide the question an asked `Invocation` resource holds (see `Core::resolve_invocation`):
-    /// approving runs the action once, on this replica, and records the outcome in the
-    /// resource so every replica shows it after sync. Returns the invocation's new state.
+    /// Record what became of the call `call` that asked a person, now that its answer came back
+    /// (`done`, `declined` or `failed`): the `Invocation` resources on the resources of `about`
+    /// that name it while it waits say so from then on.
     ///
     /// # Errors
     ///
-    /// `NotPending` when it is not a suggestion, `Denied` when the authority gives `approver`
-    /// no say, otherwise as running the action.
-    pub fn resolve_invocation(
+    /// A store failure while reading or writing one.
+    pub fn call_answered(
         &self,
-        invocation: &ResourceRef,
-        approver: &Actor,
-        resolution: Resolution,
-    ) -> Result<String, RuntimeError> {
-        self.core
-            .resolve_invocation(invocation, approver, resolution)
+        call: &str,
+        about: &[ResourceRef],
+        state: &str,
+    ) -> Result<(), RuntimeError> {
+        self.core.call_answered(call, about, state)
     }
 
-    /// The suggestions waiting on `resource`: each the `Invocation` it waits in and what it
-    /// says, with the person or agent who proposed or asked it. Empty when nothing that waits on
-    /// it is still undecided.
+    /// The suggestions waiting on `resource`: each the `Invocation` that names the call asking a
+    /// person, and what it says, with the person or agent who suggested it. Empty when nothing
+    /// waits on it.
     ///
     /// # Errors
     ///

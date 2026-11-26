@@ -14,8 +14,6 @@ tilolang-gone = Das wurde entfernt.
 tilolang-ask-action = „{ $action }“ erlauben?
 tilolang-ask-confirm = Erlauben
 tilolang-ask-decline = Ablehnen
-tilolang-suggestion-accept = Übernehmen
-tilolang-suggestion-dismiss = Verwerfen
 tilolang-suggestion-says = { $name } schlägt vor:
 tilolang-suggested-by = vorgeschlagen von { $name }
 tilolang-ask-always = Immer erlauben
@@ -59,7 +57,7 @@ tilolang-names-more = { $first }, { $second } und { $count } weitere
 
 tilolang-invocation-pending = Wartet
 tilolang-invocation-done = Erledigt
-tilolang-invocation-suggested = Wartet auf Bestätigung
+tilolang-invocation-asked = Wartet auf Bestätigung
 tilolang-invocation-declined = Abgelehnt
 tilolang-invocation-failed = Fehlgeschlagen
 tilolang-invocation-denied = Nicht erlaubt

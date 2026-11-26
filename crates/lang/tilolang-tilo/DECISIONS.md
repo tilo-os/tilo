@@ -55,8 +55,7 @@ Each entry is the closest working design to `docs/designs/app-language`.
   where the change is committed (the API refuses a viewer's `commit`). The boundary is
   `TiloAuthority::new(invoker_verdict)` for a host that wants the verdict earlier.
 - A foreign author in the chain asks (the runtime's rule); the Ask bar offers Allow, Decline and
-  Always allow (trust the code that asked). The bar shows the action and who asked. A proposal
-  view in the bar is follow-up.
+  Always allow (trust the code that asked). The bar shows the action and who asked.
 
 ## Outside effects
 
@@ -66,11 +65,9 @@ Each entry is the closest working design to `docs/designs/app-language`.
   (`Host::settle_effects`): it delivers to the runtime's sink and records the outcome. The sink
   of the app is a log, one JSON line per effect, under
   `$XDG_STATE_HOME/tilolang-dev/outside.log`.
-- **Approving the same suggestion twice queues it once.** An approval of a recorded `Invocation`
-  keys the entry by that invocation (`ExecCtx::origin`), so two devices approving concurrently
-  write one key; after the document converges one entry has one owner and it is delivered once.
-  Settling before the document converged can deliver twice, so the window settles after it synced.
-  A press's own effect has no origin and is an entry of its own.
+- **An effect is delivered once.** The entry has one owner, the device that queued it, and only
+  that device settles it, so replicas that synced it deliver it once. A suggestion's call is
+  approved once: its asked record admits one answer, and a second finds nothing to answer.
 
 ## The API and who invokes
 
@@ -86,8 +83,8 @@ Each entry is the closest working design to `docs/designs/app-language`.
   `Target::App`; a block's is its writer). Installed and built-in packages are trusted, an
   admitted agent's code as far as its access goes. Without an access the person's own part is
   the API's to decide, as for a native window's detached dispatcher; the bounds still apply.
-  What asks is a suggestion: a recorded `Invocation` (a block, a verb) or a run that stopped at
-  a call, decided by a person, through the Ask bar or the API's `resolve`, never by an agent.
+  What asks waits as its asked record in `tilo.invocations` (a block's call, a `suggest`, a run
+  that stopped at a call), answered by the person on the system's confirm, never by an agent.
 - **Item verbs are published.** Items of collections are child resources
   (`doc/field:item`) carrying the verbs whose target is their type, and every resource offers
   `open`, a view action search hits invoke.
@@ -141,8 +138,8 @@ Each entry is the closest working design to `docs/designs/app-language`.
   class re-runs on the next frame, one frame after the layout that crossed it, and only the root
   boundary is fed (the runtime inlines nested views). Re-running inside the layout solver would
   change topology there, which the toolkit forbids.
-- **Not yet drawn or honoured:** `lines:`/`truncate`, `image` (its alt text shows), a proposal
-  view in the Ask bar, the `embed` block and the hover disclosure of provenance. Keyed position
+- **Not yet drawn or honoured:** `lines:`/`truncate`, `image` (its alt text shows), the `embed`
+  block and the hover disclosure of provenance. Keyed position
   and size changes jump instead of animating on the motion springs: the toolkit has no retained
   transition for a re-parented widget, so that is follow-up work.
 - **Presses are published view actions** (`Button::on_view`), so an agent or a screen reader

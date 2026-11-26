@@ -264,11 +264,13 @@ impl TestHost {
         let confirmation = confirmed
             .then(|| ui::tilo_actions::api::resolve(&resources, &address))
             .flatten()
-            .map(|spec| match spec.confirmation_for_json(arguments) {
+            .and_then(|spec| match spec.confirmation_for_json(arguments) {
+                // The phrase the person types where the action asks for one; nothing else here
+                // stands for a yes, which only the system's confirm view gives.
                 ui::tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
-                    ui::tilo_actions::remote::Confirmation::Phrase(phrase)
+                    Some(ui::tilo_actions::remote::Confirmation::Phrase(phrase))
                 }
-                _ => ui::tilo_actions::remote::Confirmation::Confirmed,
+                _ => None,
             });
         let encoded =
             ui::tilo_actions::api::admit(&resources, &address, arguments, confirmation.as_ref())?;

@@ -242,9 +242,8 @@ impl AppSheets {
         }
     }
 
-    /// Invoke one of the registry's actions on `resource` : the same route
-    /// [`crate::Session::invoke`] and [`crate::Session::invoke_confirmed`] take, because the person
-    /// answered the question the action's contract asks to confirm.
+    /// Invoke one of the registry's actions on `resource` : the route [`crate::Session::invoke`]
+    /// takes, `confirmed` where the person answered the question this sheet asked them.
     fn invoke(
         &self,
         resource: &str,

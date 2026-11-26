@@ -870,7 +870,6 @@ impl Store for AmStore {
                 chain: Vec::new(),
                 module: String::new(),
                 approved_by: None,
-                suggested_by: None,
                 touched: vec![id.clone()],
                 ..ChangeNote::default()
             },

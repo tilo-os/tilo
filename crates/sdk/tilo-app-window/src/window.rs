@@ -2092,14 +2092,6 @@ impl AppWindow {
                     checked,
                 }
             }
-            UiEvent::Resolve(key, approve) => {
-                let (level, key) = level_of(&key);
-                ToApp::Resolve {
-                    level,
-                    key,
-                    approve,
-                }
-            }
             UiEvent::Open(resource) => ToApp::Open { resource },
             UiEvent::OpenReference(reference) => ToApp::OpenReference { reference },
         };

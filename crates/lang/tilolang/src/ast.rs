@@ -445,12 +445,6 @@ pub struct Param {
     pub secret: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Proposal {
-    pub view: Ident,
-    pub args: Option<Vec<Ident>>,
-}
-
 /// `primary`, `destructive`, `migration`, `initial` or `opened` before `action`: how the action is,
 /// not where a surface shows it. A surface decides placement from what the action offers a person,
 /// never from its role; only the ones the platform applies (a migration, an initial and an opened
@@ -503,7 +497,6 @@ pub struct ActionDecl {
     /// `uses web, time`: the effects the body has, which it records and replays. A body that reads
     /// one it does not declare is refused.
     pub uses: Vec<Ident>,
-    pub proposal: Option<Proposal>,
     pub opts: Vec<ActionOpt>,
     /// The `require` lines heading the body: when the action is available on its target.
     pub requires: Vec<Require>,
@@ -813,7 +806,8 @@ pub enum ExprKind {
     /// `try act(args)`: invokes in an action; a `Result` of the action's result and the reason it
     /// failed.
     Try(Box<Expr>),
-    /// `suggest act(args)`: proposes the action instead of applying it; an agent block's value.
+    /// `suggest act(args)`: applies the action only once a person says yes to it, asking them even
+    /// where it may run without; an agent block's value.
     Suggest(Box<Expr>),
     Root(TypeExpr),
 }

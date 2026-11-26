@@ -3253,7 +3253,9 @@ impl Hosted {
         self.store.serve(Some(invocation.0.to_string()));
         // Each change keeps the call its caller signed, as a change made for a caller must: every
         // device reading the record checks that caller asked for it, and with which key.
-        let signed = context.as_deref().and_then(|context| context.signed.clone());
+        let signed = context
+            .as_deref()
+            .and_then(|context| context.signed.clone());
         self.store.serve_signed(signed.clone());
         let serving = Serving {
             invocation,
@@ -3558,6 +3560,24 @@ impl Hosted {
         }
         let call = receipt.invocation.0.to_string();
         let invocation = self.waiting_calls.borrow_mut().remove(&call);
+        // A call that asked a person waits on what it is about as an `Invocation` resource:
+        // answered, it waits no more.
+        if let (Some(asked), Some(host)) = (&invocation, self.instance.host()) {
+            let state = match &receipt.status {
+                ReceiptStatus::Completed { .. } => "done",
+                ReceiptStatus::Failed { .. } => "failed",
+                _ => "declined",
+            };
+            match host
+                .runtime()
+                .call_answered(&call, &asked.resources(), state)
+            {
+                Ok(()) => self.instance.commit_planned(),
+                Err(error) => {
+                    tracing::warn!(%call, %error, "an answered call's record kept waiting")
+                }
+            }
+        }
         let Some(child) = self.children.borrow_mut().remove(&call) else {
             // A call made outside a run (a press, whose answer the dispatch read when it ran
             // the action), or one this instance has already answered.
@@ -3776,8 +3796,9 @@ impl Hosted {
             },
             argument,
             context: None,
-            // The press is the person's own word for it.
-            confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
+            // A press says nothing of a yes: where its action asks, the dispatch keeps it as its
+            // asked record, which only the person's answer on the system's confirm view approves.
+            confirmation: None,
             revision: None,
             on_behalf_of: None,
             wait_ms: None,

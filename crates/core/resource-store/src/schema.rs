@@ -43,17 +43,17 @@ pub const BRANCH_VERB: &str = tilo_actions::stamp::Stamp::BRANCH_VERB;
 pub const ORIGIN_VERB: &str = collab_types::Stamp::ORIGIN_VERB;
 
 /// The verbs the platform writes under, which no app declares
-/// ([`collab_types::Stamp::PLATFORM_VERBS`]): a call a device carries out, an agent's suggestion
-/// and the decision on it, a block that settles one, and a step taken back or brought back. Each
+/// ([`collab_types::Stamp::PLATFORM_VERBS`]): a call a device carries out, a block that settles
+/// one, and a step taken back or brought back. Each
 /// writes what any field or content of a declared kind holds, as the move places one of any kind.
 /// Every schema has them, as it has the move, so a store with declared verbs judges the platform's
 /// own writes by their kind and not by a verb no app names.
-pub const PLATFORM_VERBS: [&str; 6] = collab_types::Stamp::PLATFORM_VERBS;
+pub const PLATFORM_VERBS: [&str; 4] = collab_types::Stamp::PLATFORM_VERBS;
 
 /// The verbs no surface an app ships may declare ([`collab_types::Stamp::RESERVED_VERBS`]): the
 /// platform's own, and the migration, which a store admits by its derived step or by who may write
 /// the record.
-pub const RESERVED_VERBS: [&str; 7] = collab_types::Stamp::RESERVED_VERBS;
+pub const RESERVED_VERBS: [&str; 5] = collab_types::Stamp::RESERVED_VERBS;
 
 /// The verb that brings a record to a storage version of its type: the step its kind and id
 /// derive for that version ([`collab_types::document::founding::migrate`]), and no other change.

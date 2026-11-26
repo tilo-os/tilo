@@ -114,6 +114,9 @@ pub struct Caller {
     // The person and records a placed device's certificate names (`Self::placed`): set only by
     // the transport that read them from the verified certificate.
     placed: Option<PlacedCaller>,
+    // The step of a Shortcut run whose action the Shortcut's saved rules consent to in advance
+    // (`Self::consented_in_advance`): set only by the runner, in process, never from a frame.
+    consented: bool,
 }
 
 /// The key one of a person's calls came in on, beside the person it acts as
@@ -209,6 +212,7 @@ impl Caller {
             granted: Vec::new(),
             launched_app: None,
             placed: None,
+            consented: false,
         }
     }
 
@@ -853,6 +857,23 @@ impl Caller {
         self
     }
 
+    /// The step of a Shortcut run ([`Self::running_shortcut`]) whose action the rules the person
+    /// saved with the Shortcut consent to in advance: the yes they gave when they saved it, which
+    /// answers this step's ask. Set only by the runner, after it checked those rules name this
+    /// very action; a caller that runs no Shortcut is left as it was.
+    #[must_use]
+    pub fn consented_in_advance(mut self) -> Self {
+        self.consented = matches!(self.acting.by, tilo_action_policy::Actor::Automation(_));
+        self
+    }
+
+    /// Whether the person's saved Shortcut consents to this step in advance
+    /// ([`Self::consented_in_advance`]).
+    #[must_use]
+    pub const fn is_consented_in_advance(&self) -> bool {
+        self.consented
+    }
+
     /// Who an action this caller invokes is decided for, as the transport
     /// admitted it ([`tilo_action_policy::Acting`]).
     #[must_use]
@@ -1098,6 +1119,8 @@ impl KeptCaller {
             // app itself; a kept or carried caller is never that.
             launched_app: None,
             placed: None,
+            // A kept call is asked again for what it was made for.
+            consented: false,
         }
     }
 }

@@ -127,11 +127,8 @@ fn sig(
 
 /// An action's declaration line.
 fn action_text(app: &str, a: &ActionMeta) -> String {
-    let proposal = a.proposal.as_ref().map_or_else(String::new, |p| {
-        format!(" proposal {}({})", p.name, p.args.join(", "))
-    });
     format!(
-        "action {app}.{}({}){}{proposal}",
+        "action {app}.{}({}){}",
         a.name,
         params(&a.params),
         result(a.result.as_ref())

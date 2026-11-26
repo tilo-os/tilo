@@ -409,15 +409,24 @@ fn disk_unlock_from_other_devices_is_admitted_by_its_declaration_and_keeps_its_s
         "device-unlock-enrol",
         json!({"passphrase": SECRET, "unknown": SECRET}),
     );
-    malformed.confirmation = Some(Confirmation::Confirmed);
+    malformed.confirmation = Some(approved(&malformed));
     let refused = invoke(&device.control, malformed).unwrap_err();
     assert!(!format!("{refused:?}").contains(SECRET), "{refused:?}");
     assert!(device.started.lock().expect("started").is_empty());
 
     let mut confirmed = request("device-unlock-enrol", json!({"passphrase": SECRET}));
-    confirmed.confirmation = Some(Confirmation::Confirmed);
+    let mut written = request("device-unlock-enrol", json!({"passphrase": SECRET}));
+    written.confirmation = Some(Confirmation::Operated);
+    assert!(
+        matches!(
+            invoke(&device.control, written).unwrap_err(),
+            ActionCallError::ConfirmationRequired { .. }
+        ),
+        "a yes the call writes itself answers nothing"
+    );
+    confirmed.confirmation = Some(approved(&confirmed));
     let id = confirmed.invocation;
-    invoke(&device.control, confirmed).expect("admitted once confirmed");
+    invoke(&device.control, confirmed).expect("admitted once the person approved it");
     let settled = settle(&device.control, &id);
     assert!(matches!(settled, InvocationUpdate::Succeeded { .. }));
     assert!(!format!("{settled:?}").contains(SECRET), "{settled:?}");
@@ -433,4 +442,16 @@ fn disk_unlock_from_other_devices_is_admitted_by_its_declaration_and_keeps_its_s
         !device.steps.join(id.0.simple().to_string()).exists(),
         "the staged passphrase is gone once the step settled"
     );
+}
+
+/// The person's approve of `request`, kept as its asked record, as the dispatch hands it back.
+fn approved(request: &InvokeRequest) -> Confirmation {
+    Confirmation::Asked(tilo_actions::remote::asked::Approval::new(
+        tilo_actions::remote::asked::RecordRef {
+            workspace: "workspace".to_owned(),
+            record: request.invocation.0.to_string(),
+            device: None,
+        },
+        None,
+    ))
 }

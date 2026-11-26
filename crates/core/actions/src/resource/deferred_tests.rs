@@ -92,7 +92,7 @@ fn invoke_deferred_document(
             &resources,
             &address,
             &serde_json::Map::new(),
-            crate::api::InvocationProvenance::caller(b"owner"),
+            (crate::api::InvocationProvenance::caller(b"owner"), false),
             &registry,
             &mut transport,
         )
@@ -102,7 +102,7 @@ fn invoke_deferred_document(
             &resources,
             &address,
             None,
-            crate::api::InvocationProvenance::caller(b"owner"),
+            (crate::api::InvocationProvenance::caller(b"owner"), false),
             &registry,
             &mut transport,
         )

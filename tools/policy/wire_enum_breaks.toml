@@ -410,7 +410,7 @@ reason = "renames UndoRecord to UndoEntry in place: stored formats change with t
 [[break]]
 file = "crates/core/actions/src/remote/confirmation.rs"
 enum = "Confirmation"
-reason = "renames Witnessed to Approved in place: stored formats change with the code and nothing written before is read"
+reason = "renames Witnessed to Approved, and Confirmed to Operated, in place: stored formats change with the code and nothing written before is read; the one sender that meant Operated by Confirmed was the host placing a browser window, and nothing else honors it"
 
 [[break]]
 file = "crates/core/actions/src/remote/content_put.rs"

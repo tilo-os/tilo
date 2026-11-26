@@ -6,7 +6,7 @@
 use crate::ast::{
     ActionDecl, ActionOpt, ActionRole, AliasDecl, AppHeader, Arg, AssignOp, BinOp, Block,
     DefaultViewDecl, EnumDecl, Expr, ExprKind, FieldDecl, FnDecl, Ident, Item, LetBind, LiveDecl,
-    MatchArm, MergeSpec, Module, NodeId, Param, Pattern, Place, Proposal, ReadersDecl, RootDecl,
+    MatchArm, MergeSpec, Module, NodeId, Param, Pattern, Place, ReadersDecl, RootDecl,
     ScenarioDecl, SearchBlock, SearchEntry, SearchEntryKind, StateDecl, Stmt, StmtKind, StrPart,
     TitleDecl, TypeDecl, TypeExpr, TypeExprKind, UiArm, UiCall, UiKind, UiStmt, UnOp, UntitledDecl,
     UseDecl, VariantDecl, ViewDecl, ViewsDecl, WindowDocument,
@@ -1994,27 +1994,6 @@ impl<'a> Parser<'a> {
             None
         };
         let uses = self.uses()?;
-        let proposal = if self.eat_kw("proposal") {
-            let view = self.ident("the name of the proposal view")?;
-            // `(icon: ...)` after the view is the action's options, not the view's arguments.
-            let options_follow = matches!(self.peek_at(2), Tok::Colon);
-            let args = if !options_follow && self.eat(&Tok::LParen) {
-                let mut names = Vec::new();
-                while !self.is(&Tok::RParen) {
-                    names.push(self.ident("an action parameter")?);
-                    if !self.eat(&Tok::Comma) {
-                        break;
-                    }
-                }
-                self.expect(&Tok::RParen)?;
-                Some(names)
-            } else {
-                None
-            };
-            Some(Proposal { view, args })
-        } else {
-            None
-        };
         let opts = self.action_opts()?;
         let (requires, applies, body) = self.action_body()?;
         Ok(ActionDecl {
@@ -2025,7 +2004,6 @@ impl<'a> Parser<'a> {
             params,
             result,
             uses,
-            proposal,
             opts,
             requires,
             applies,

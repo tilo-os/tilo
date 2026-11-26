@@ -377,27 +377,15 @@ impl<R: Resource, A> Replica<R, A> {
                 Some(ambient) => InvocationProvenance::caller(&actor).within(ambient),
                 None => InvocationProvenance::caller(&actor),
             };
-            if confirmed {
-                api::invoke_json_confirmed(
-                    doc,
-                    resources,
-                    &address,
-                    &arguments,
-                    provenance,
-                    registry,
-                    &mut transport,
-                )
-            } else {
-                api::invoke_json(
-                    doc,
-                    resources,
-                    &address,
-                    &arguments,
-                    provenance,
-                    registry,
-                    &mut transport,
-                )
-            }
+            api::invoke_json(
+                doc,
+                resources,
+                &address,
+                &arguments,
+                (provenance, confirmed),
+                registry,
+                &mut transport,
+            )
         })?;
         self.log.push(dispatched.envelope().clone());
         self.log

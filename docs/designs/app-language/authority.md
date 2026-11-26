@@ -62,11 +62,11 @@ where they would stand without it removes that grant instead of writing another.
 The compiler computes which actions a piece of code can reach. Granting, keeping and updating
 are decided against that list, shown in plain words, so nobody has to read code to decide.
 
-**Agents may propose.** An agent can `suggest` any action it could name, whether or not it may
-run it: the proposal is recorded on the resource the action is about, as ordinary workspace state
-that everyone who sees the resource sees, with the agent named. It changes nothing until a person
-accepts it; accepting runs the action as that person, with their authority, and the change records
-who proposed it. Dismissing records the refusal and changes nothing.
+**Agents may suggest.** `suggest act(args)` is the call itself, admitted at Ask: where the
+authority would let it run, it asks the person all the same, and what it denies stays denied. The
+call waits as its own asked record, answered only by the person on the system's confirm, never by
+the agent that made it; the resource it is about shows that it waits and who suggested it.
+Approving runs it once, as the call it was; declining changes nothing.
 
 ## Versions
 

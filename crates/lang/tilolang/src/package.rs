@@ -10,8 +10,7 @@ use crate::ids::{Entropy, IdsLock, OsEntropy, SeededEntropy, declared_names};
 use crate::ir;
 use crate::meta::{
     ActionMeta, AnchorMeta, DefaultViewMeta, EnumMeta, FieldMeta, FnMeta, Line, PackageMeta,
-    ParamMeta, PlaceMeta, ProposalMeta, ScenarioMeta, ShowMeta, StateMeta, TypeMeta, VariantMeta,
-    ViewMeta,
+    ParamMeta, PlaceMeta, ScenarioMeta, ShowMeta, StateMeta, TypeMeta, VariantMeta, ViewMeta,
 };
 use crate::parser::{ParsedFile, parse_expr_source, parse_file_at, parse_module, parse_ui_source};
 use crate::prims;
@@ -844,7 +843,6 @@ fn build_meta(
                     params: Vec::new(),
                     result: result_meta(&c.result, app),
                     class: class_of(idx),
-                    proposal: None,
                     reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
                     invokes: fx.invokes.get(idx).copied().unwrap_or(false),
                     label: c.present.label.clone(),
@@ -924,18 +922,6 @@ fn build_meta(
                     continue;
                 };
                 let Some(idx) = c.func else { continue };
-                let proposal = a.proposal.as_ref().and_then(|p| {
-                    let v = env.own_callable(&p.view.name)?;
-                    let args = match &p.args {
-                        Some(names) => names.iter().map(|n| n.name.clone()).collect(),
-                        None => c.params.iter().map(|x| x.name.clone()).collect(),
-                    };
-                    Some(ProposalMeta {
-                        view: v.id.clone(),
-                        name: v.name.clone(),
-                        args,
-                    })
-                });
                 meta.actions.push(ActionMeta {
                     id: c.id.clone(),
                     name: c.name.clone(),
@@ -944,7 +930,6 @@ fn build_meta(
                     params: params_meta(&c.params, app),
                     result: result_meta(&c.result, app),
                     class: class_of(idx),
-                    proposal,
                     reaches: fx.reaches.get(idx).cloned().unwrap_or_default(),
                     invokes: fx.invokes.get(idx).copied().unwrap_or(false),
                     label: c.present.label.clone(),
@@ -1238,7 +1223,6 @@ pub fn compile_program_reading(
             params: params_meta(&params, &app),
             result: None,
             class: crate::types::EffectClass::Undoable,
-            proposal: None,
             reaches: Vec::new(),
             label: String::new(),
             icon: None,

@@ -153,7 +153,7 @@ mod https_completion {
             },
             argument: tilo_actions::remote::InvokeArgument::Json(argument),
             context: None,
-            confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
+            confirmation: Some(tilo_actions::remote::Confirmation::Operated),
             revision: revision.map(Into::into),
             on_behalf_of: None,
             wait_ms: None,

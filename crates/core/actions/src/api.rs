@@ -873,9 +873,10 @@ pub fn encode_json(
 
 /// Admit one invocation of `address` with `arguments` against the tree `resources` publishes, as
 /// a provider serving that tree answers a caller: resolved, available, confirmed as its contract
-/// asks of these arguments by `confirmation` (the caller's own word or the phrase it names; a
-/// token naming a person's answer is not this provider's to spend), and bound strictly into the
-/// action's own encoded form.
+/// asks of these arguments by `confirmation` (the phrase the caller typed, or the person's
+/// approve of the asked record the call was kept as, which only the dispatch hands back and every
+/// frame entry refuses otherwise, [`asked::admit_frame`](crate::remote::asked::admit_frame)), and
+/// bound strictly into the action's own encoded form. Nothing a caller writes is a yes.
 ///
 /// # Errors
 ///
@@ -891,13 +892,14 @@ pub fn admit(
     use crate::remote::Confirmation;
     let spec = resolve(resources, address).ok_or_else(|| ApiError::Unknown(address.clone()))?;
     ensure_available(spec)?;
-    let confirmed = match spec.confirmation_for_json(arguments) {
-        crate::ConfirmationPolicy::None => true,
-        crate::ConfirmationPolicy::Phrase { phrase } => {
-            matches!(confirmation, Some(Confirmation::Phrase(given)) if *given == phrase)
-        }
-        crate::ConfirmationPolicy::Confirm => matches!(confirmation, Some(Confirmation::Confirmed)),
-    };
+    let confirmed = matches!(confirmation, Some(Confirmation::Asked(_)))
+        || match spec.confirmation_for_json(arguments) {
+            crate::ConfirmationPolicy::None => true,
+            crate::ConfirmationPolicy::Phrase { phrase } => {
+                matches!(confirmation, Some(Confirmation::Phrase(given)) if *given == phrase)
+            }
+            crate::ConfirmationPolicy::Confirm => false,
+        };
     if !confirmed {
         return Err(ApiError::ConfirmationRequired);
     }
@@ -970,7 +972,8 @@ impl<'a> InvocationProvenance<'a> {
 ///
 /// Returns any error [`encode`] documents; [`ApiError::ConfirmationRequired`]
 /// when the action's effective confirmation for this argument is not
-/// [`None`](crate::ConfirmationPolicy::None) (see [`invoke_confirmed`]);
+/// [`None`](crate::ConfirmationPolicy::None) and the caller does not say the person's answer for
+/// this call came through the system's own question (`confirmed`);
 /// [`ApiError::UnregisteredType`] if `registry` has no decoder for the
 /// encoded action's type; or [`ApiError::Failed`] if [`dispatch_by`](crate::executor::dispatch_by) fails
 /// once decoded.
@@ -979,41 +982,9 @@ pub fn invoke(
     resources: &[ResourceSpec],
     address: &ActionAddress,
     argument: Option<&str>,
-    provenance: InvocationProvenance<'_>,
+    (provenance, confirmed): (InvocationProvenance<'_>, bool),
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
-) -> Result<Dispatched, ApiError> {
-    invoke_with_consent(
-        doc, resources, address, argument, provenance, registry, transport, false,
-    )
-}
-
-/// [`invoke`] after an outer policy boundary has completed the action
-/// contract's confirmation step. This is intentionally separate from
-/// [`invoke`], whose default is fail-closed for consequential actions.
-pub fn invoke_confirmed(
-    doc: &mut crate::action::Doc,
-    resources: &[ResourceSpec],
-    address: &ActionAddress,
-    argument: Option<&str>,
-    provenance: InvocationProvenance<'_>,
-    registry: &ActionRegistry,
-    transport: &mut dyn ActionTransport,
-) -> Result<Dispatched, ApiError> {
-    invoke_with_consent(
-        doc, resources, address, argument, provenance, registry, transport, true,
-    )
-}
-
-fn invoke_with_consent(
-    doc: &mut crate::action::Doc,
-    resources: &[ResourceSpec],
-    address: &ActionAddress,
-    argument: Option<&str>,
-    provenance: InvocationProvenance<'_>,
-    registry: &ActionRegistry,
-    transport: &mut dyn ActionTransport,
-    confirmed: bool,
 ) -> Result<Dispatched, ApiError> {
     ensure_confirmation(resources, address, confirmed, |spec| {
         spec.confirmation_for_argument(argument)
@@ -1026,45 +997,18 @@ fn invoke_with_consent(
 }
 
 /// Typed-argument counterpart to [`invoke`].
+///
+/// # Errors
+///
+/// As [`invoke`].
 pub fn invoke_json(
     doc: &mut crate::action::Doc,
     resources: &[ResourceSpec],
     address: &ActionAddress,
     arguments: &serde_json::Map<String, serde_json::Value>,
-    provenance: InvocationProvenance<'_>,
+    (provenance, confirmed): (InvocationProvenance<'_>, bool),
     registry: &ActionRegistry,
     transport: &mut dyn ActionTransport,
-) -> Result<Dispatched, ApiError> {
-    invoke_json_with_consent(
-        doc, resources, address, arguments, provenance, registry, transport, false,
-    )
-}
-
-/// Typed-argument invocation after an outer policy boundary has completed the
-/// action contract's confirmation step.
-pub fn invoke_json_confirmed(
-    doc: &mut crate::action::Doc,
-    resources: &[ResourceSpec],
-    address: &ActionAddress,
-    arguments: &serde_json::Map<String, serde_json::Value>,
-    provenance: InvocationProvenance<'_>,
-    registry: &ActionRegistry,
-    transport: &mut dyn ActionTransport,
-) -> Result<Dispatched, ApiError> {
-    invoke_json_with_consent(
-        doc, resources, address, arguments, provenance, registry, transport, true,
-    )
-}
-
-fn invoke_json_with_consent(
-    doc: &mut crate::action::Doc,
-    resources: &[ResourceSpec],
-    address: &ActionAddress,
-    arguments: &serde_json::Map<String, serde_json::Value>,
-    provenance: InvocationProvenance<'_>,
-    registry: &ActionRegistry,
-    transport: &mut dyn ActionTransport,
-    confirmed: bool,
 ) -> Result<Dispatched, ApiError> {
     ensure_confirmation(resources, address, confirmed, |spec| {
         spec.confirmation_for_json(arguments)
@@ -1267,7 +1211,7 @@ mod tests {
             tree,
             address,
             argument,
-            InvocationProvenance::caller(b"caller-key"),
+            (InvocationProvenance::caller(b"caller-key"), false),
             &registry(),
             &mut LocalTransport::new(),
         )
@@ -1475,7 +1419,7 @@ mod tests {
             &tree,
             &star(),
             None,
-            InvocationProvenance::caller(b"caller-key"),
+            (InvocationProvenance::caller(b"caller-key"), false),
             &ActionRegistry::new(),
             &mut LocalTransport::new(),
         )
@@ -1512,7 +1456,7 @@ mod tests {
             &tree,
             &star(),
             None,
-            InvocationProvenance::caller(b"caller-key"),
+            (InvocationProvenance::caller(b"caller-key"), false),
             &other,
             &mut LocalTransport::new(),
         )
@@ -1589,7 +1533,7 @@ mod tests {
             &open(),
             &star(),
             None,
-            InvocationProvenance::caller(caller).within(&notes),
+            (InvocationProvenance::caller(caller).within(&notes), false),
             &registry(),
             &mut transport,
         )
@@ -1646,10 +1590,13 @@ mod tests {
             &open(),
             &star(),
             None,
-            InvocationProvenance {
-                actor: b"agent:ada",
-                ambient: Some(&ambient),
-            },
+            (
+                InvocationProvenance {
+                    actor: b"agent:ada",
+                    ambient: Some(&ambient),
+                },
+                false,
+            ),
             &registry(),
             &mut transport,
         )
@@ -1690,7 +1637,7 @@ mod tests {
             &resources,
             &star(),
             None,
-            InvocationProvenance::caller(b"caller-key"),
+            (InvocationProvenance::caller(b"caller-key"), false),
             &registry(),
             &mut transport,
         )
@@ -1698,12 +1645,12 @@ mod tests {
         assert_eq!(refusal, ApiError::ConfirmationRequired);
         assert!(doc.get(&ROOT, "starred").unwrap().is_none());
 
-        invoke_confirmed(
+        invoke(
             &mut doc,
             &resources,
             &star(),
             None,
-            InvocationProvenance::caller(b"caller-key"),
+            (InvocationProvenance::caller(b"caller-key"), true),
             &registry(),
             &mut transport,
         )
@@ -1763,17 +1710,12 @@ mod tests {
         let mut transport = LocalTransport::new();
         let registry = registry();
         let mut run = |doc: &mut AutoCommit, value: &str, confirmed: bool| {
-            let api = if confirmed {
-                invoke_json_confirmed
-            } else {
-                invoke_json
-            };
-            api(
+            invoke_json(
                 doc,
                 &resources,
                 &edit(),
                 &title(value),
-                InvocationProvenance::caller(b"caller-key"),
+                (InvocationProvenance::caller(b"caller-key"), confirmed),
                 &registry,
                 &mut transport,
             )
@@ -1800,7 +1742,7 @@ mod tests {
                 &resources,
                 &edit(),
                 Some(""),
-                InvocationProvenance::caller(b"caller-key"),
+                (InvocationProvenance::caller(b"caller-key"), false),
                 &registry,
                 &mut transport,
             )
@@ -1971,19 +1913,19 @@ mod tests {
                     &resources,
                     &star(),
                     None,
-                    provenance,
+                    (provenance, false),
                     &registry(),
                     &mut transport,
                 )
                 .unwrap_err(),
                 ApiError::ConfirmationRequired
             );
-            let dispatched = invoke_confirmed(
+            let dispatched = invoke(
                 &mut doc,
                 &resources,
                 &star(),
                 None,
-                provenance,
+                (provenance, true),
                 &registry(),
                 &mut transport,
             )
@@ -2003,9 +1945,9 @@ mod tests {
         }
 
         phase typed_invocations_inside_a_run_are_recorded_with_its_group;
-        // Both typed-argument entry points record the run's context: the
+        // Both typed-argument calls record the run's context: the
         // ordinary value through [`invoke_json`] and the destructive one through
-        // [`invoke_json_confirmed`].
+        // [`invoke_json`], confirmed.
         {
             let resources = edit_by_value();
             let run = agent_session();
@@ -2018,19 +1960,19 @@ mod tests {
                 &resources,
                 &edit(),
                 &title("Harbour"),
-                provenance,
+                (provenance, false),
                 &registry(),
                 &mut transport,
             )
             .expect("an ordinary value runs");
             assert_recorded_within_run(&mut doc, "edit");
 
-            invoke_json_confirmed(
+            invoke_json(
                 &mut doc,
                 &resources,
                 &edit(),
                 &title(""),
-                provenance,
+                (provenance, true),
                 &registry(),
                 &mut transport,
             )
@@ -2250,13 +2192,19 @@ mod tests {
         for wrong in [
             None,
             Some(Confirmation::Phrase("/dev/vda".into())),
-            Some(Confirmation::Confirmed),
+            Some(Confirmation::Operated),
         ] {
             assert!(matches!(erase(wrong), Err(ApiError::ConfirmationRequired)));
         }
         assert!(erase(Some(Confirmation::Phrase("/dev/vdb".into()))).is_ok());
+        // A yes only the person gives: nothing the caller writes answers it.
         let off = |confirmation| admitted("power", "off", serde_json::json!({}), confirmation);
-        assert!(matches!(off(None), Err(ApiError::ConfirmationRequired)));
-        assert!(off(Some(Confirmation::Confirmed)).is_ok());
+        for claimed in [
+            None,
+            Some(Confirmation::Operated),
+            Some(Confirmation::Phrase("off".into())),
+        ] {
+            assert!(matches!(off(claimed), Err(ApiError::ConfirmationRequired)));
+        }
     }
 }

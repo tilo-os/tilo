@@ -53,17 +53,21 @@ pub(super) fn store_disclosure(
     .map_err(|reason| ActionCallError::InvalidRequest { reason })
 }
 
-/// Whether `confirmation` is the person's approve of the asked record this call was kept as.
-/// Only the dispatch that admits the call again on their answer carries one, and where a frame
-/// enters the device it is refused unless the store that kept the record handed it back
-/// ([`tilo_actions::remote::asked::admit_frame`]).
+/// Whether the person answered `caller`'s call already: `confirmation` is their approve of the
+/// asked record it was kept as, which only the dispatch that admits it again on their answer
+/// carries (where a frame enters the device it is refused unless the store that kept the record
+/// handed it back, [`tilo_actions::remote::asked::admit_frame`]), or the call is a step of their
+/// Shortcut whose saved rules consent to it in advance
+/// ([`Caller::is_consented_in_advance`]).
 pub(super) fn approved_by_person(
+    caller: &Caller,
     confirmation: Option<&tilo_actions::remote::Confirmation>,
 ) -> bool {
-    matches!(
-        confirmation,
-        Some(tilo_actions::remote::Confirmation::Asked(_))
-    )
+    caller.is_consented_in_advance()
+        || matches!(
+            confirmation,
+            Some(tilo_actions::remote::Confirmation::Asked(_))
+        )
 }
 
 /// The person's approve of the call `invocation`, kept as its asked record in `workspace`, as the
@@ -96,7 +100,7 @@ impl AppBrokerState {
         caller: &Caller,
         evidence: Option<&tilo_actions::remote::Confirmation>,
     ) -> Result<bool, ActionCallError> {
-        if approved_by_person(evidence) {
+        if approved_by_person(caller, evidence) {
             return Ok(true);
         }
         tilo_actions::remote::browser::host_answered(self.placement.get(), caller, evidence)

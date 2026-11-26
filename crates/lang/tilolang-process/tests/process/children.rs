@@ -198,12 +198,9 @@ tilo_test_env::scenario! {
         let bump = published_at(host.instances().next().unwrap(), "bump");
         let call = the_press(&sent);
         assert_eq!(call.target.address, bump, "the call is of the pressed action");
-        assert!(
-            matches!(
-                call.confirmation,
-                Some(tilo_actions::remote::Confirmation::Confirmed)
-            ),
-            "the press is the person's own word for it"
+        assert_eq!(
+            call.confirmation, None,
+            "a press writes no yes of its own: only the system's confirm view answers an ask"
         );
         assert!(answered(&sent, 21).is_none(), "nothing to answer before it is handed back");
 

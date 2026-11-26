@@ -115,16 +115,11 @@ impl Driver {
         // A call that asks first and comes without the person's approve is refused for it before
         // anything else is said of it; the approve answers whatever the action asks, as the
         // broker takes the call sent again with it.
-        let confirmation = match (policy, approval) {
-            (None | Some(tilo_actions::ConfirmationPolicy::None), _) => None,
-            (Some(tilo_actions::ConfirmationPolicy::Confirm), Some(_)) => {
-                Some(tilo_actions::remote::Confirmation::Confirmed)
-            }
-            (Some(tilo_actions::ConfirmationPolicy::Phrase { phrase }), Some(_)) => {
-                Some(tilo_actions::remote::Confirmation::Phrase(phrase))
-            }
-            (Some(_), None) => return Err(ApiError::ConfirmationRequired),
-        };
+        if approval.is_none()
+            && policy.is_some_and(|policy| policy != tilo_actions::ConfirmationPolicy::None)
+        {
+            return Err(ApiError::ConfirmationRequired);
+        }
         let (actor, context) = match invoker {
             Some(invoker) => (
                 invoker.acting.by.clone(),
@@ -183,8 +178,10 @@ impl Driver {
             )?;
             return Ok((invocation, started));
         }
-        let admitted =
-            tilo_actions::api::admit(&resources, address, arguments, confirmation.as_ref());
+        let approved = approval
+            .cloned()
+            .map(tilo_actions::remote::Confirmation::Asked);
+        let admitted = tilo_actions::api::admit(&resources, address, arguments, approved.as_ref());
         // An action the window's member may not take is left out of what it publishes, or listed
         // to it as not allowed; either way the caller is told their permissions refuse it, saying
         // why, as the workspace's API says it, and an action nothing publishes stays unknown.

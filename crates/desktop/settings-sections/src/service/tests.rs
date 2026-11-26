@@ -148,14 +148,6 @@ fn turning_off_a_switch_that_guards_the_lock_asks_first() {
         services.invoke(&resource, &switch.id, &off),
         Some(Err(ApiError::ConfirmationRequired))
     );
-    services
-        .invoke_confirmed(&resource, &switch.id, &off)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        services.read(&section("power")).unwrap()["lock_on_sleep"],
-        json!(false)
-    );
 }
 
 #[test]
@@ -213,14 +205,6 @@ fn a_timer_takes_a_value_and_a_longer_lock_asks_first() {
         services.invoke(&resource, &timer.id, &never),
         Some(Err(ApiError::ConfirmationRequired)),
         "never locking weakens the lock"
-    );
-    services
-        .invoke_confirmed(&resource, &timer.id, &never)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        services.read(&section("power")).unwrap()["lock_minutes"],
-        json!(0)
     );
 }
 

@@ -1219,7 +1219,7 @@ async fn a_workspace_ask_is_answered_only_by_the_persons_approve_of_its_record()
     let answer = |caller: &Caller| answer_with(caller, None);
 
     let here = Caller::own_person(&person).in_workspace(&workspace_id);
-    let written = tilo_actions::remote::Confirmation::Confirmed;
+    let written = tilo_actions::remote::Confirmation::Operated;
     let approved = crate::collab_app_broker::approval::person_approved(
         &workspace_id,
         tilo_actions::InvocationId::new(),
@@ -1683,16 +1683,19 @@ async fn a_saved_approval_admits_only_the_steps_it_approved() {
 async fn a_saved_approval_stops_admitting_once_edited_revoked_or_its_saver_left() {
     type Change = fn(&mut crate::test_support::WorkspaceTree);
     let changes: [(&str, Change); 3] = [
-        ("was changed or removed after its saver approved it", |tree| {
-            let saved = tree.desktop.workspaces[0]
-                .shortcuts
-                .iter_mut()
-                .find(|saved| saved.id() == "relay")
-                .unwrap();
-            let mut edited = saved.decode().unwrap();
-            edited.name = "Relay everything".into();
-            *saved = tilo_automation::SavedShortcut::encode(&edited);
-        }),
+        (
+            "was changed or removed after its saver approved it",
+            |tree| {
+                let saved = tree.desktop.workspaces[0]
+                    .shortcuts
+                    .iter_mut()
+                    .find(|saved| saved.id() == "relay")
+                    .unwrap();
+                let mut edited = saved.decode().unwrap();
+                edited.name = "Relay everything".into();
+                *saved = tilo_automation::SavedShortcut::encode(&edited);
+            },
+        ),
         ("the device that signed it was revoked", |tree| {
             tree.revoked.insert(Saver::new().revoked()).unwrap();
         }),

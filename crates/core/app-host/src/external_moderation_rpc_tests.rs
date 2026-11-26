@@ -477,7 +477,7 @@ mod external_moderation_rpc_tests {
                             &offered,
                             Some(&exact),
                             &actor,
-                            (Some(&tilo_actions::remote::Confirmation::Confirmed), false),
+                            (Some(&tilo_actions::remote::Confirmation::Operated), false),
                         ),
                         // No token: its admission asks the person.
                         Ok(None)
@@ -576,7 +576,7 @@ mod external_moderation_rpc_tests {
                             &offered,
                             Some(&exact),
                             &actor,
-                            (Some(&tilo_actions::remote::Confirmation::Confirmed), false),
+                            (Some(&tilo_actions::remote::Confirmation::Operated), false),
                         ),
                         // No token: its admission asks the person.
                         Ok(None)

@@ -106,11 +106,12 @@ fn admit_declared(
             reason: reason.clone(),
         });
     }
-    let confirmed = match policy {
-        None | Some(ConfirmationPolicy::None) => true,
-        Some(ConfirmationPolicy::Confirm) => matches!(confirmation, Some(Confirmation::Confirmed)),
-        Some(ConfirmationPolicy::Phrase { phrase }) => {
-            matches!(confirmation, Some(Confirmation::Phrase(given)) if given == phrase)
+    // The person's approve answers whatever the action asks; nothing else gives a yes.
+    let confirmed = match (policy, confirmation) {
+        (None | Some(ConfirmationPolicy::None), _) | (_, Some(Confirmation::Asked(_))) => true,
+        (Some(ConfirmationPolicy::Confirm), _) => false,
+        (Some(ConfirmationPolicy::Phrase { phrase }), given) => {
+            matches!(given, Some(Confirmation::Phrase(given)) if given == phrase)
         }
     };
     if confirmed {
@@ -222,8 +223,7 @@ impl Peer {
     ) {
         use tilo_actions::ConfirmationPolicy;
         use tilo_actions::remote::{
-            ActionCallError, Confirmation, InvocationReceipt, InvokeArgument, ReceiptStatus,
-            RemoteActionMessage,
+            ActionCallError, InvocationReceipt, InvokeArgument, ReceiptStatus, RemoteActionMessage,
         };
         let address = &request.target.address;
         let spec = tilo_actions::api::resolve(resources, address);
@@ -251,14 +251,7 @@ impl Peer {
             InvokeArgument::Json(arguments) => spec.confirmation_for_json(arguments),
             argument => spec.confirmation_for_argument(argument.to_slot().as_deref()),
         });
-        let confirmation = match (request.approval(), &policy) {
-            (Some(_), Some(ConfirmationPolicy::Confirm)) => Some(Confirmation::Confirmed),
-            (Some(_), Some(ConfirmationPolicy::Phrase { phrase })) => {
-                Some(Confirmation::Phrase(phrase.clone()))
-            }
-            (Some(_), _) => None,
-            (None, _) => request.confirmation.clone(),
-        };
+        let confirmation = request.confirmation.clone();
         // What the caller's grants say of the call, as the workspace decides it: one they leave to
         // the person waits for them, one they refuse goes no further.
         let granted = match (request.approval(), &continued, grants) {

@@ -64,7 +64,7 @@ action f(l: todo.TodoList) -> Result<(), Text> {
     try todo.rename(l, "n")
 }
 
-action a(l: T) -> Int proposal v(l) {
+action a(l: T) -> Int {
     for i in [1, 2, 3] {
         l.a += i
     }
@@ -347,7 +347,7 @@ destructive action delete(nb: Notebook, n: Note) (icon: .trash_2, label: "Delete
     nb.notes.remove(n)
 }
 
-action pin(n: Note) -> Bool proposal note_row (icon: .pin) {
+action pin(n: Note) -> Bool (icon: .pin) {
     n.pinned = true
     return true
 }

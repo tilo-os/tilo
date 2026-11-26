@@ -1000,7 +1000,6 @@ impl HostInner {
                 module: package.id.0.clone(),
                 at: None,
                 from: request.from.cloned(),
-                suggested_by: None,
                 count: 1,
                 invocation: None,
                 gesture: None,

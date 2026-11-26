@@ -982,7 +982,6 @@ fn record_action(id: &str, label: &str, doc: &str, rest: Vec<ParamMeta>) -> Acti
         params,
         result: Some("Text".to_string()),
         class: EffectClass::Outside,
-        proposal: None,
         reaches: Vec::new(),
         label: label.to_string(),
         icon: None,
@@ -1089,12 +1088,7 @@ pub fn host_meta() -> PackageMeta {
                 field(
                     "target",
                     "Option<Resource>",
-                    "The resource the action is about, when a person proposed it: the resource it waits on.",
-                ),
-                field(
-                    "proposed",
-                    "Bool",
-                    "Whether a person proposed the action, to accept or dismiss, rather than the authority asking about one as it was applied.",
+                    "The resource the action is about, for a call that asks a person: the resource it waits on.",
                 ),
             ],
             ..TypeMeta::default()

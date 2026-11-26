@@ -183,10 +183,6 @@ fn an_action_runs_and_is_refused_before_anything_happens() {
         services.invoke("lamp", "smash", &Map::new()),
         Some(Err(ApiError::ConfirmationRequired))
     );
-    assert!(matches!(
-        services.invoke_confirmed("lamp", "smash", &Map::new()),
-        Some(Ok(Started::Done(_)))
-    ));
 }
 
 /// A service in another process is the same service: its readings arrive

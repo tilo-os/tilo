@@ -51,8 +51,8 @@ use serde_json::{Value, json};
 use test_http::{Reply, Responder};
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
-    CatalogueQuery, CatalogueRow, Confirmation, ReceiptStatus, RemoteActionFrame,
-    RemoteActionMessage, RemoteActionTarget,
+    CatalogueQuery, CatalogueRow, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+    RemoteActionTarget,
 };
 use tilo_device_identity::IdentityPaths;
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
@@ -2476,29 +2476,50 @@ impl Device {
     /// Invoke `target` on this device, as a program of the person's does, answered once it is
     /// admitted: `{"update": …}` with where it stands, or `{"err": {"code", "message"}}`.
     pub fn act(&self, target: &RemoteActionTarget, args: &Value) -> Value {
-        self.invoke(target, args, None, false)
+        self.invoke(target, args, false, false)
     }
 
     /// [`Self::act`] followed until the invocation settles: the update it ended with carries the
     /// value it returned when it returns one.
     pub fn act_wait(&self, target: &RemoteActionTarget, args: &Value) -> Value {
-        self.invoke(target, args, None, true)
+        self.invoke(target, args, false, true)
     }
 
-    /// [`Self::act_wait`], with the person's own confirmation of an action that asked first: what
-    /// pressing Allow in its prompt answers.
+    /// [`Self::act_wait`], where the person says yes to what it asks: the call waits in its asked
+    /// record, and they answer it on this connection, which is theirs, as `tilo`'s own prompt
+    /// answers it. The call never says yes itself.
     pub fn act_confirming(&self, target: &RemoteActionTarget, args: &Value) -> Value {
-        self.invoke(target, args, Some(Confirmation::Confirmed), true)
+        self.invoke(target, args, true, true)
+    }
+
+    /// Approve the asked record `record` (`<workspace>/<record>`, as the call's progress names
+    /// it), as the person's own connection does.
+    fn approve(&self, record: &str) {
+        let record = record.split_once('/').map_or(record, |(_, record)| record);
+        let target = RemoteActionTarget {
+            provider: tilo_actions::remote::workspace_invocations::PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(record, tilo_actions::remote::asked::RESOLVE),
+        };
+        let request = super::invocation(&target, &json!({"resolution": "approve"}), None, None);
+        let answer = self.frame(RemoteActionMessage::Invoke(request));
+        assert!(
+            matches!(&answer, RemoteActionMessage::Receipt(receipt) if !matches!(
+                receipt.status,
+                ReceiptStatus::Rejected { .. } | ReceiptStatus::Failed { .. }
+            )),
+            "{} approves {record}: {answer:?}",
+            self.label
+        );
     }
 
     fn invoke(
         &self,
         target: &RemoteActionTarget,
         args: &Value,
-        confirmation: Option<Confirmation>,
+        mut approving: bool,
         follow: bool,
     ) -> Value {
-        let request = super::invocation(target, args, confirmation, follow.then_some(10_000));
+        let request = super::invocation(target, args, None, follow.then_some(10_000));
         let invocation = request.invocation;
         let RemoteActionMessage::Receipt(receipt) =
             self.frame(RemoteActionMessage::Invoke(request))
@@ -2536,6 +2557,17 @@ impl Device {
             state = now.update;
             if read {
                 break;
+            }
+            if approving
+                && let InvocationUpdate::Progress {
+                    phase,
+                    message: Some(record),
+                    ..
+                } = &state
+                && phase == tilo_actions::remote::asked::ASKED_PHASE
+            {
+                approving = false;
+                self.approve(record);
             }
         }
         json!({"update": state})

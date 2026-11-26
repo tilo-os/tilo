@@ -1233,13 +1233,6 @@ impl Printer<'_> {
                     tail.push_str(&format!(" -> {}", print_type(r)));
                 }
                 tail.push_str(&uses_text(&a.uses));
-                if let Some(p) = &a.proposal {
-                    tail.push_str(&format!(" proposal {}", p.view.name));
-                    if let Some(args) = &p.args {
-                        let names: Vec<&str> = args.iter().map(|i| i.name.as_str()).collect();
-                        tail.push_str(&format!("({})", names.join(", ")));
-                    }
-                }
                 let opts = self.opts(&a.opts);
                 let lead = format!("{role}action {}", a.name.name);
                 self.head(&lead, &a.params, &tail, &opts, " {", param_text);

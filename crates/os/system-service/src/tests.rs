@@ -722,10 +722,6 @@ fn the_power_actions_switch_ask_and_refuse() {
         Some(Ok(_))
     ));
     assert!(matches!(
-        services.invoke_confirmed(POWER, "restart", &Map::new()),
-        Some(Ok(_))
-    ));
-    assert!(matches!(
         services.invoke(POWER, "lock", &Map::new()),
         Some(Ok(_))
     ));
@@ -742,7 +738,6 @@ fn the_power_actions_switch_ask_and_refuse() {
         [
             Change::PowerMode(PowerMode::Saver),
             Change::Suspend,
-            Change::Restart,
             Change::Lock,
         ]
     );

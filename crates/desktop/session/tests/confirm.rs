@@ -234,8 +234,8 @@ fn forgetting_a_saved_network_asks_first_and_declining_runs_nothing() {
     // Asked again, the person's yes runs the call the press made.
     press(&mut session, "This network");
     press(&mut session, "Forget this network");
-    until_control(&mut session, "Don't allow");
-    press(&mut session, "Forget this network");
+    // The yes is named for what the call does, as the service declares the action.
+    press(&mut session, "Forget the network");
     until_called(&mut session, &calls, "saved-network:uuid-home", "forget");
     assert_eq!(
         calls.borrow().as_slice(),
@@ -268,12 +268,63 @@ fn forgetting_a_bluetooth_accessory_asks_first_and_declining_runs_nothing() {
 
     // Asked again, the person's yes runs it.
     press(&mut session, "Forget this device");
-    until_control(&mut session, "Don't allow");
-    press(&mut session, "Forget this device");
+    press(&mut session, "Forget the device");
     until_called(&mut session, &calls, "bluetooth-accessory:AA-BB", "forget");
     assert_eq!(
         calls.borrow().as_slice(),
         &[("bluetooth-accessory:AA-BB".to_owned(), "forget".to_owned())],
         "the accessory the press named is the one forgotten"
+    );
+}
+
+thread_local! {
+    static TAKEN: RefCell<Vec<tilo_session::SessionAction>> = const { RefCell::new(Vec::new()) };
+}
+
+fn record_session_action(action: tilo_session::SessionAction) -> Result<(), String> {
+    TAKEN.with_borrow_mut(|taken| taken.push(action));
+    Ok(())
+}
+
+/// A session in a window of another desktop asks before it shuts down, and the person's yes on
+/// the system's question ends that session and nothing else: no power action reaches the machine
+/// the window runs on.
+#[test]
+fn shutting_down_a_session_in_a_window_asks_and_ends_only_the_session() {
+    let _home = tilo_test_env::TestHome::new().expect("a home of the test's own");
+    let _settled = ui::motion::testing::settled();
+    let mut session = crate::common::on_its_daemon(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, TALL)],
+        Options {
+            machine: tilo_session::Machine::Window,
+            session_actions: record_session_action,
+            collab: false,
+            ..Options::default()
+        },
+    );
+    session
+        .invoke(tilo_session::SESSION_RESOURCE, "power-menu", &Map::new())
+        .expect("the power menu opens");
+    until_control(&mut session, "Shut down");
+    let row = crate::common::on_screen_at(&session, "Shut down", WIDTH, TALL).expect("the row");
+    press(&mut session, "Shut down");
+    until_control(&mut session, "Don't allow");
+    assert!(!session.ended(), "the question alone shuts nothing down");
+
+    // The yes stands in the question, named for the action as the session declares it.
+    crate::common::press_where(&mut session, "the question's Shut down", |session| {
+        session
+            .shell_controls("Shut down")
+            .into_iter()
+            .find(|&rect| rect != row)
+    });
+    crate::common::wait_for(&mut session, "the session to end", |session| {
+        session.settle_services();
+        session.step(REFRESH).expect("step");
+        session.ended().then_some(())
+    });
+    assert!(
+        TAKEN.with_borrow(Vec::is_empty),
+        "shutting down did not reach the host's machine"
     );
 }

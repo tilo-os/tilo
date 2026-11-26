@@ -34,24 +34,23 @@ impl AppBrokerState {
         actor: &BrokerActor,
         (evidence, approved): (Option<&tilo_actions::remote::Confirmation>, bool),
     ) -> Result<Option<String>, tilo_actions::remote::ActionCallError> {
-        use tilo_actions::remote::{ActionCallError, Confirmation};
+        use tilo_actions::remote::ActionCallError;
         // Store disclosures must be answered on a trusted host sheet, even
         // when the publisher's connection is admitted as the person themself:
         // admission asks them.
         if requires_store_approval(app, &offered.action) && !approved {
             return Ok(None);
         }
-        // Only a person acting themselves confirms by their own word; anyone
-        // acting for them carries the answer the person gave (`approved`,
-        // [`Self::answered_for_person`]).
+        // Only a person acting themselves types a phrase by their own hand; a yes is only ever
+        // the answer the person gave (`approved`, [`Self::answered_for_person`]).
         let own = actor.direct().then_some(evidence).flatten();
         // Decided from the arguments, without the app's code: a field edit
         // asks only when it removes what a person may want back.
         let policy = offered.contract.confirmation_for_argument(argument);
         if matches!(policy, tilo_actions::ConfirmationPolicy::None) {
-            // A confirmation given anyway answers the workspace's ask, if the
-            // grants ask; admission decides whether they do.
-            if !approved && !matches!(own, Some(Confirmation::Confirmed)) {
+            // The person's answer, given anyway, answers the workspace's ask, if the grants ask;
+            // admission decides whether they do.
+            if !approved {
                 return Ok(None);
             }
         } else if !approved && !confirmation_satisfied(&policy, own) {

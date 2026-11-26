@@ -283,50 +283,23 @@ fn applies_now_without_asking(now: Now) {
     );
 }
 
-/// The person's own gesture applies the verb at once, as any undoable
-/// change does.
+/// An undoable removal applies at once and Undo takes it back, by whichever path it comes: the
+/// person's own gesture, a gesture under an invocation, a verb, a removal, a group, a typed
+/// removal, and the queued API's field edit.
 #[test]
-fn a_destructive_verb_of_the_persons_own_gesture_applies_without_asking() {
-    let mut app = TestApp::<RemoverApp>::new().unwrap();
-    app.invoke(Notes::ADD.with("Milk")).unwrap();
-    app.invoke(Notes::ADD.with("Eggs")).unwrap();
-    NOW.set(Some(Now::Gesture));
-    app.settle();
-    assert_eq!(app.asking(), None, "nothing is asked");
-    assert_eq!(app.state().notes.len(), 1, "removed at once");
-    assert!(!app.state().notes.values().any(|note| note.text == "Milk"));
-}
-
-#[test]
-fn an_undoable_gesture_under_an_invocation_applies_at_once() {
-    applies_now_without_asking(Now::InvokedGesture);
-}
-
-#[test]
-fn an_undoable_destructive_verb_applied_now_applies_at_once() {
-    applies_now_without_asking(Now::Verb);
-}
-
-#[test]
-fn an_undoable_removal_applied_now_applies_at_once() {
-    applies_now_without_asking(Now::Removal);
-}
-
-#[test]
-fn a_group_holding_an_undoable_removal_applies_at_once() {
-    applies_now_without_asking(Now::Group);
-}
-
-#[test]
-fn a_typed_undoable_removal_applied_now_applies_at_once() {
-    applies_now_without_asking(Now::Typed);
-}
-
-/// The queued API applies a removal by field edit at once too: Undo takes
-/// it back.
-#[test]
-fn a_queued_undoable_removal_applies_at_once() {
-    applies_now_without_asking(Now::Queued);
+fn an_undoable_removal_applies_at_once_by_every_path() {
+    for now in [
+        Now::Gesture,
+        Now::InvokedGesture,
+        Now::Verb,
+        Now::Removal,
+        Now::Group,
+        Now::Typed,
+        Now::Queued,
+    ] {
+        APPLIED.with(|applied| applied.borrow_mut().clear());
+        applies_now_without_asking(now);
+    }
 }
 
 /// Applying `now` an irreversible destructive verb asks the person first

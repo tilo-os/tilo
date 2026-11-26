@@ -137,7 +137,7 @@ tilo_test_env::scenario! {
     {
         let src = "app so.tilo.demo \"Demo\"\n\n\
                type Mail {\n    at: Time\n}\n\n\
-               primary action send(m: Mail) -> Mail uses web, time proposal compose(m) (icon: .send) {\n    m.at = now\n    return m\n}\n\n\
+               primary action send(m: Mail) -> Mail uses web, time (icon: .send) {\n    m.at = now\n    return m\n}\n\n\
                action tick(m: Mail) uses time {\n    m.at = now\n}\n\n\
                view compose(m: Mail) {\n    ui.Text(\"{m.at}\")\n}\n";
         let module = parse(src).unwrap_or_else(|d| panic!("{d:#?}"));

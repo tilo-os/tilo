@@ -134,29 +134,26 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   too. The node's `state` prop is `view` (the block's tree, keys prefixed with the embed's
   key), `invocation`, `data` or `error`. Nothing an embed does fails the surrounding view.
   View and data blocks are pure and evaluate at render, under the author's identity; nested
-  foreign and proposal views are their own package's code.
+  foreign views are their own package's code.
 - **Action blocks run when posted, never when rendered.** `run_block` queues a step in the
   action frame. After the action commits (`run_action`, so also when it runs as an approved
-  suggestion or as one call of a run) the host compiles the block, and when it applies an action runs
+  call or as one call of a run) the host compiles the block, and when it applies an action runs
   it through the authority as the invoker with `[ModuleHash::written_by(invoker)]` as the authorship
-  chain: it runs, or becomes a suggestion, or is denied. The outcome is created as an
+  chain: it runs, or asks a person through the dispatch, or is denied. A `suggest` block is
+  admitted at Ask, so it asks where it could run without (`Core::invoke_asking`). The outcome is created as an
   `Invocation` resource (a host-registered type, `tilo.host`) and stored in the part's
   `invocation` field as two further changes attributed to the poster. A block that does not
   compile, or is not an action, records nothing; the embed shows the diagnostics or renders it.
   The runtime keeps no run-once memo: the invocation resource is the memory, and it syncs.
 - **Invocation cards.** An `embed` of an action part only reads the resource: an `invocation`
-  child with `state` (`pending` before the host recorded one, then `done`, `suggested`,
-  `declined`, `failed`, `denied`), `action`, `app`, `author`, `result`, the `invocation`
-  reference, and for a suggestion `run`, `can_resolve` and the action's proposal view. Its
-  reads join the view's, so a change to the resource, local or synced, refreshes the card.
-  `Core::resolutions` is gone.
-- **Deciding a suggestion** is `Runtime::resolve_invocation(invocation, approver, resolution)`.
-  It needs no journal, so it works on any replica that has the documents. The authority must
-  not deny the approver (`decide(approver, [], action)`; an Ask is the decision being made);
-  `Denied` otherwise. Approving runs the action once, on that replica, with the poster as its
-  invoker, `[ModuleHash::written_by(poster)]` as chain and the approver recorded as `approved_by`, then
-  writes `state`, `result` and `run` back. Declining writes `declined`. A call whose run
-  suspends again keeps `suggested` with the new local `run`.
+  child with `state` (`pending` before the host recorded one, then `done`, `asked`,
+  `declined`, `failed`, `denied`), `action`, `app`, `author`, `result` and the `invocation`
+  reference. Its reads join the view's, so a change to the resource, local or synced, refreshes
+  the card.
+- **A call that asks is answered at its asked record.** The dispatch keeps it as its own record
+  in `tilo.invocations` and hands it back once the person approved it on the system's confirm;
+  the `Invocation` resource names that call in `run`. Nothing in the runtime decides it, so an
+  agent never answers its own suggestion, and a second answer finds nothing to answer.
 - **`outside` payloads are plain JSON** (lists and tuples as arrays, a resource as
   `{ref, type}`), not the tagged form registers use; a sink reads them as is.
 - **Keys of nested trees are scoped.** A view call (`fragment`) and an embed prefix the keys
@@ -169,15 +166,12 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   filter, todo's `Show`, letters' `Shelf`); which note row shows its actions is view state too.
   Chat's `post(c, text, block)` records `author = invoker`; a message is a
   `Collection<Part>` (`kind` `text` or `block`, plus the part's `invocation`). Letters' `send`
-  has a proposal view and asks as an Outside action. Board holds `Option` references to the
+  asks as an Outside action. Board holds `Option` references to the
   other apps' root resources and an action, `morning_cleanup`, that calls foreign actions.
 
 ## Gaps in the design
 
 - Compiled modules and blocks stay in the process's module cache: no eviction.
-- Two replicas can approve the same suggestion at once: each runs the action before the
-  other's state change arrives, so it runs twice. Exactly-once needs a claim that merges
-  (for example a register the approver sets before running, resolved deterministically).
 - An actor is the shared typed `Actor` the runtime's caller gives. Binding it to a verified
   identity (device keys, the platform's authenticated session) is the platform's job.
 - A block that applies an action records one invocation; later suspensions inside the run are

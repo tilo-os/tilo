@@ -839,7 +839,8 @@ fn style_sizes() -> List<Float> {
     [10.0, 11.0, 12.0, 14.0, 16.0, 18.0, 24.0, 32.0]
 }
 
-/// What others proposed for the document, each proposal a card a person accepts or dismisses.
+/// What others suggested for the document: tracked changes a person accepts or rejects, and the
+/// suggestions waiting for their yes.
 view review_panel(
     d: Document,
     format_ask: State<Option<Text>>,
@@ -882,7 +883,7 @@ view review_panel(
         }
         std.suggestions(d)
         text(
-            "A person or agent that suggests a change to the words leaves it here for you to accept.",
+            "A person or agent that suggests a change to the words leaves it here until you answer it.",
             role: .caption,
             secondary: true,
         )

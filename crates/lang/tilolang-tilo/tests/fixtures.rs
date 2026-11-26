@@ -266,13 +266,18 @@ impl Clone for Workspace {
 }
 
 /// The host's dispatch in these tests: a call that needs a person's yes waits as its own
-/// record, and no other call is sent here, since every package is loaded as the host's own.
-struct Dispatch;
+/// record, named in the order it was asked (`call-1`, `call-2`, ...), and no other call is sent
+/// here, since every package is loaded as the host's own.
+#[derive(Default)]
+struct Dispatch(std::cell::Cell<usize>);
 
 impl Invoker for Dispatch {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
         match invocation {
-            Invocation::Action { asks: true, .. } => Invoked::Pending("call".to_owned()),
+            Invocation::Action { asks: true, .. } => {
+                self.0.set(self.0.get() + 1);
+                Invoked::Pending(format!("call-{}", self.0.get()))
+            }
             _ => Invoked::Refused("this test host runs no call unasked".to_owned()),
         }
     }
@@ -324,7 +329,7 @@ impl Replica {
             || None,
         )
         .unwrap();
-        host.runtime().set_foreign_invoker(Dispatch);
+        host.runtime().set_foreign_invoker(Dispatch::default());
         let loaded = packages
             .iter()
             .map(|(source, ids)| host.load_builtin(source, ids).unwrap())
@@ -363,7 +368,7 @@ impl Replica {
         if let Some(policy) = policy {
             stage_people(&host, &policy);
         }
-        host.runtime().set_foreign_invoker(Dispatch);
+        host.runtime().set_foreign_invoker(Dispatch::default());
         let loaded = packages
             .iter()
             .map(|(source, ids)| host.load_builtin(source, ids).unwrap())

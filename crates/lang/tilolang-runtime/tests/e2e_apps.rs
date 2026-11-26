@@ -10,9 +10,8 @@ mod cases {
     use serde_json::json;
     use tilolang::IdsLock;
     use tilolang_runtime::{
-        Actor, AmStore, EditOutcome, InvokeOutcome, MemorySink, ModuleHash, PackageId, Resolution,
-        ResourceRef, RunOutcome, Runtime, RuntimeError, Space, UiNode, Value, ViewEvent,
-        ViewInstance,
+        Actor, AmStore, EditOutcome, InvokeOutcome, MemorySink, ModuleHash, PackageId, ResourceRef,
+        RunOutcome, Runtime, RuntimeError, Space, UiNode, Value, ViewEvent, ViewInstance,
     };
 
     /// An app's directory (for messages), source and committed lock, all from one path.
@@ -316,15 +315,6 @@ mod cases {
             .collect()
     }
 
-    /// The values of the texts with the title role.
-    fn title_texts(tree: &UiNode) -> Vec<String> {
-        of_kind(tree, "ui.Text")
-            .into_iter()
-            .filter(|t| t.props.get("role") == Some(&Value::text("title")))
-            .map(|t| text_prop(t, "value"))
-            .collect()
-    }
-
     /// The resource of the list item whose row has this title: what activating the row opens.
     fn item_titled(tree: &UiNode, title: &str) -> ResourceRef {
         of_kind(tree, "ui.ListItem")
@@ -519,31 +509,33 @@ mod cases {
             let Some(Value::Ref(card)) = inv.props.get("invocation") else {
                 panic!("the card names its invocation resource: {}", dump(inv));
             };
-            let record = card.target.clone();
+            let record = w.rt.read_invocation(&card.target).unwrap();
             assert_eq!(text_prop(inv, "state"), "asked");
-            assert_eq!(inv.props.get("can_resolve"), Some(&Value::Bool(true)));
             assert_eq!(text_prop(inv, "action"), "send");
             assert_eq!(text_prop(inv, "app"), "test.letters");
-            let run = text_prop(inv, "run");
-            assert_eq!(
-                title_texts(inv),
-                ["Send to bo@example.org"],
-                "the proposal view shows the letter: {}",
-                dump(inv)
-            );
+            // The suggestion is the call itself, asking the person through the dispatch, which
+            // keeps it as its asked record: the card's record names that call.
+            let calls = w.dispatch.len();
+            assert_eq!(record.run, format!("call-{calls}"));
+            let (action, args) = w.dispatch.asked();
+            assert_eq!(action, apps.letters.action("send"));
             assert!(w.rt.pending_effects().is_empty(), "asking sends nothing");
 
-            // A re-render shows the same proposal rather than making another.
+            // A re-render shows the same suggestion rather than asking again.
             post(&w, &apps, &conv, &person("ada"), "Looks right", "");
             assert!(view.is_stale(), "a new message re-renders the thread");
             view.poll_patches().unwrap();
-            let again = of_kind(view.tree(), "invocation")[0];
-            assert_eq!(text_prop(again, "run"), run);
+            assert_eq!(w.dispatch.len(), calls, "drawing it asks nothing");
+            assert_eq!(text_prop(of_kind(view.tree(), "invocation")[0], "state"), "asked");
 
-            let state =
-                w.rt.resolve_invocation(&record, &me(), Resolution::Approve { choice: None })
-                    .unwrap();
-            assert_eq!(state, "done");
+            // The person approves it on the system's confirm: the dispatch hands the call back
+            // for the agent that made it, and its answer comes back to the call.
+            let ran = w
+                .rt
+                .invoke_approved_through(&agent("helper"), None, (action.as_str(), args), None)
+                .unwrap();
+            assert!(matches!(ran, InvokeOutcome::Done(_)), "{ran:?}");
+            w.rt.call_answered(&record.run, &[draft.clone()], "done").unwrap();
             assert!(
                 view.is_stale(),
                 "the invocation resource changed, so the message refreshes"
@@ -552,12 +544,6 @@ mod cases {
             assert_eq!(
                 text_prop(of_kind(view.tree(), "invocation")[0], "state"),
                 "done"
-            );
-            assert!(
-                title_texts(view.tree())
-                    .iter()
-                    .all(|h| h != "Send to bo@example.org"),
-                "a decided proposal no longer shows its view"
             );
 
             let pending = w.rt.pending_effects();
@@ -1151,12 +1137,10 @@ mod cases {
             let src = format!("suggest letters.send(@letters.Draft:{})", draft.id_string());
             let message = post(&w, &apps, &conv, &agent("helper"), "", &src);
             let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
-            let record = invocation_of(&w, &apps, &message);
-            assert_eq!(
-                w.rt.resolve_invocation(&record, &me(), Resolution::Decline)
-                    .unwrap(),
-                "declined"
-            );
+            let record = w.rt.read_invocation(&invocation_of(&w, &apps, &message)).unwrap();
+            // The person declines it on the system's confirm: its call is refused, and the card
+            // says so.
+            w.rt.call_answered(&record.run, &[draft.clone()], "declined").unwrap();
             view.poll_patches().unwrap();
             assert_eq!(
                 text_prop(of_kind(view.tree(), "invocation")[0], "state"),
@@ -1365,7 +1349,7 @@ mod cases {
     tilo_test_env::scenario! {
         fn e2e_apps_2;
 
-        phase approving_a_proposal_on_another_device_runs_it_once_and_both_show_done;
+        phase a_suggestion_approved_on_another_device_runs_there_once_and_both_show_done;
         {
             let apps = apps();
             let (mut a, mut b) = (AmStore::new(), AmStore::new());
@@ -1381,48 +1365,19 @@ mod cases {
             let src = format!("suggest letters.send(@letters.Draft:{})", draft.id_string());
             let message = post(&wa, &apps, &conv, &agent("helper"), "Shall I?", &src);
             let record = invocation_of(&wa, &apps, &message);
+            let call = wa.rt.read_invocation(&record).unwrap().run;
+            let (action, args) = wa.dispatch.asked();
             let mut view_a = wa.view(&apps.chat, "thread", vec![res(&conv)]);
             a.sync_with(&mut b).unwrap();
-
-            // On B, a viewer the authority gives no say sees the suggestion but cannot run it.
-            let (bo, guest) = (person("bo"), person("guest"));
-            wb.auth.deny_invoker(&guest);
-            let card_for = |who: &Actor| {
-                let mut view = wb
-                    .rt
-                    .open_view(who, &apps.chat.view("thread"), vec![res(&conv)])
-                    .unwrap();
-                // The messages are rows of the thread's list: read whole, as a host that draws
-                // every row does.
-                view.set_lazy_rows(false).unwrap();
-                let card = of_kind(view.tree(), "invocation")[0];
-                (
-                    text_prop(card, "state"),
-                    card.props.get("can_resolve").cloned(),
-                )
-            };
-            assert_eq!(
-                card_for(&guest),
-                ("asked".to_owned(), Some(Value::Bool(false)))
-            );
-            assert_eq!(card_for(&bo), ("asked".to_owned(), Some(Value::Bool(true))));
-            let err = wb
-                .rt
-                .resolve_invocation(&record, &guest, Resolution::Approve { choice: None })
-                .unwrap_err();
-            assert!(matches!(err, RuntimeError::Denied(_)), "{err}");
             assert_eq!(wb.rt.read_invocation(&record).unwrap().state, "asked");
-            assert!(wb.rt.pending_effects().is_empty());
 
-            // Someone with authority confirms on B: it runs there, once.
-            assert_eq!(
-                wb.rt
-                    .resolve_invocation(&record, &bo, Resolution::Approve { choice: None })
-                    .unwrap(),
-                "done"
-            );
+            // The person approves it on B's confirm: the dispatch hands the call back there, and
+            // it runs there, once.
+            wb.rt
+                .invoke_approved_through(&agent("helper"), None, (action.as_str(), args), None)
+                .unwrap();
+            wb.rt.call_answered(&call, &[draft.clone()], "done").unwrap();
             assert_eq!(wb.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
-            assert_eq!(wb.rt.pending_effects().len(), 1);
             assert_eq!(wa.rt.read_invocation(&record).unwrap().state, "asked");
             assert!(wa.rt.pending_effects().is_empty(), "A has not heard yet");
 
@@ -1455,12 +1410,6 @@ mod cases {
             assert_eq!(wa.rt.settle().unwrap().marked, 1);
             assert_eq!(wa.rt.settle().unwrap().delivered, 1);
             assert_eq!(wa.sink.delivered().len(), 1);
-
-            let again = wa
-                .rt
-                .resolve_invocation(&record, &bo, Resolution::Approve { choice: None })
-                .unwrap_err();
-            assert!(matches!(again, RuntimeError::NotPending(_)), "{again}");
         }
 
         phase the_composer_posts_as_the_person_looking_not_as_a_name_in_the_view;

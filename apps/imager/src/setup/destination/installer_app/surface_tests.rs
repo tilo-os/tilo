@@ -167,12 +167,13 @@ fn public(app: &mut InstallerApp, doc: &mut AutoCommit) -> String {
 
 /// Invoke `action@resource` with `args`: `{"answer": ..}` with what it answered, or
 /// `{"err": {"code", "message"}}` with why it was refused or failed. A test spells the
-/// confirmation it gives in `args`: `confirmation_phrase` types the phrase, `confirm` says yes.
+/// confirmation it gives in `args`: `confirmation_phrase` types the phrase. `confirm` claims a yes
+/// the call writes itself, which answers nothing: only the system's confirm view gives one.
 fn invoke(app: &mut InstallerApp, _doc: &mut AutoCommit, id: &str, args: &Value) -> Value {
     let (action, resource) = id.split_once('@').expect("action@resource");
     let mut arguments = args.as_object().cloned().unwrap_or_default();
     let phrase = arguments.remove("confirmation_phrase");
-    let confirmed = arguments.remove("confirm");
+    arguments.remove("confirm");
     let published: Vec<_> = app
         .published()
         .iter()
@@ -187,9 +188,8 @@ fn invoke(app: &mut InstallerApp, _doc: &mut AutoCommit, id: &str, args: &Value)
         },
         arguments,
     );
-    request.confirmation = match (phrase, confirmed) {
-        (Some(Value::String(phrase)), _) => Some(Confirmation::Phrase(phrase)),
-        (_, Some(Value::Bool(true))) => Some(Confirmation::Confirmed),
+    request.confirmation = match phrase {
+        Some(Value::String(phrase)) => Some(Confirmation::Phrase(phrase)),
         _ => None,
     };
     let answer = exchange(app, &frame_line(RemoteActionMessage::Invoke(request)));

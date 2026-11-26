@@ -608,7 +608,7 @@ impl Staged {
 
     /// Show `resource` with the view `view` (an id) in the window's detail
     /// level: a view the system shows on a surface of its own (a row view as
-    /// a search result, a proposal view in its card), laid out as a window
+    /// a search result), laid out as a window
     /// is.
     pub fn open_with(&mut self, resource: &ResourceRef, view: &str) {
         self.window.instance.open_with(resource, view);

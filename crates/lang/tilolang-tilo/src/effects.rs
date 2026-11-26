@@ -11,7 +11,7 @@ use tilo_actions::ActionOutput;
 use tilo_resource::Effect;
 use tilolang_runtime::program::ReadRequest;
 use tilolang_runtime::value::{ResourceRef, to_json};
-use tilolang_runtime::{Actor, AgentBlock, Resolution, UiNode};
+use tilolang_runtime::{AgentBlock, UiNode};
 
 use crate::host::Host;
 use crate::publish::Caller;
@@ -24,7 +24,9 @@ pub enum HostEffect {
     ///
     /// Evaluate a tilolang expression against every app of the workspace: a view block renders, a
     /// value block is shown as data, and an action block runs or, when it needs a person's
-    /// approval, is recorded as a suggested invocation.
+    /// approval, waits as an asked invocation until they answer it where the system asks them.
+    /// `suggest act(args)` always asks the person first, even where the action could run without:
+    /// an agent cannot answer its own suggestion.
     ///
     /// The block itself changes only the workspace's document: each action it applies is decided as
     /// the caller's code, and what it commits carries that action's own need (an outside effect
@@ -53,19 +55,6 @@ pub enum HostEffect {
     /// included.
     #[effect(kind = "read", returns)]
     Catalogue,
-    /// Decide a proposal.
-    ///
-    /// Approve or decline an invocation an agent proposed, waiting as its own record on the
-    /// resource it is about. Approving runs the action once, whoever asks and however many
-    /// devices answer. Only a person decides: an agent cannot approve what it proposed.
-    #[effect(kind = "outside")]
-    #[effect(returns, destructive)]
-    Resolve {
-        #[param("The proposed invocation's id")]
-        target: String,
-        #[param("`approve` or `decline`")]
-        decision: String,
-    },
 }
 
 /// Showing what a search hit names. Each published resource offers it, bound to itself; the window
@@ -374,12 +363,6 @@ impl Host {
                 let request: ReadRequest = serde_json::from_str(&request)
                     .map_err(|error| format!("the request is not one a program makes: {error}"))?;
                 self.runtime().answer_read(&request).map(output)
-            }
-            HostEffect::Resolve { target, decision } => {
-                if caller.is_some_and(|caller| caller.agent) {
-                    return Err("only a person decides what an agent suggested".to_owned());
-                }
-                self.resolve_suggestion(agent, &target, &decision)
             }
             HostEffect::Catalogue => Ok(output(Json::Array(
                 self.runtime()
@@ -952,30 +935,6 @@ impl Host {
     ) -> impl Fn(&ResourceRef) -> bool + 'a {
         let known = self.runtime().knows_members();
         move |at| !known || self.runtime().may_read(reader, at)
-    }
-
-    fn resolve_suggestion(
-        &self,
-        approver: &Actor,
-        target: &str,
-        decision: &str,
-    ) -> Result<ActionOutput, String> {
-        let resolution = match decision.trim() {
-            "approve" => Resolution::Approve { choice: None },
-            "decline" => Resolution::Decline,
-            other => return Err(format!("`{other}` is not approve or decline")),
-        };
-        // Only a proposal is decided here: a call that asked waits on its own record, which the
-        // dispatch answers.
-        let invocation = self
-            .invocation_ref(target)
-            .filter(|invocation| self.store().contains(invocation))
-            .ok_or_else(|| format!("`{target}` is no proposed invocation"))?;
-        let state = self
-            .runtime()
-            .resolve_invocation(&invocation, approver, resolution)
-            .map_err(|error| error.to_string())?;
-        Ok(output(json!({"kind": "invocation", "state": state})))
     }
 
     /// The resource a recorded invocation named by `id` is, for a caller that holds its id.

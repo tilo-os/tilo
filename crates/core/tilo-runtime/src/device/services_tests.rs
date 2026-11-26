@@ -3105,7 +3105,7 @@ fn an_own_device_actions_ask_is_answered_by_the_persons_prompt() {
 
     // A call that writes its own confirmation is no answer to the question that waits.
     let mut written = own_device_call();
-    written.confirmation = Some(Confirmation::Confirmed);
+    written.confirmation = Some(Confirmation::Operated);
     let waiting = answered(tree.invoke(&caller, written)).expect("the call is admitted");
     assert!(
         matches!(waiting.status, ReceiptStatus::Accepted),

@@ -93,24 +93,6 @@ impl Published for ServiceSurface {
         }
     }
 
-    /// The person answered the question this action's contract asks: the service's own confirmed
-    /// path runs it, once.
-    fn invoke_confirmed(
-        &mut self,
-        address: &ActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-        _look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ResourceOperationStart, ApiError> {
-        match self.services.borrow_mut().invoke_confirmed(
-            &address.resource,
-            &address.action,
-            arguments,
-        ) {
-            Some(started) => started.map(answered),
-            None => Err(ApiError::Unknown(address.clone())),
-        }
-    }
-
     /// An agent's or a script's invocation reaches the service as theirs, so the change a record's
     /// model makes is attributed to them, not to the person the service runs for.
     fn invoke_as(

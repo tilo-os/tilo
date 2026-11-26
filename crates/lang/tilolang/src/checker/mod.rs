@@ -121,10 +121,10 @@ struct FnState {
     /// What the `invoke` call being checked is: the operand of `try`, which reports failure rather
     /// than trapping.
     invoked: Invoked,
-    /// Set while checking the operand of `suggest`: `Some(true)` when it is the value an agent block
-    /// proposes, `Some(false)` for a statement recording a proposal.
+    /// Set while checking the operand of `suggest`: `Some(true)` when it is the value of an agent's
+    /// block, `Some(false)` for a statement asking where an action runs.
     suggest: Option<bool>,
-    /// Where a `suggest` stood: a block proposes only as its whole expression, and says so where it
+    /// Where a `suggest` stood: a block suggests only as its whole expression, and says so where it
     /// stood elsewhere.
     suggested_at: Option<crate::diag::Span>,
     proposes: bool,
@@ -615,7 +615,6 @@ fn lower(
     }
     initial_cycle(c.diags, &initials);
     c.check_held_roots(module);
-    c.check_proposals(module);
     c.check_one_command();
     let mut views = Vec::new();
     let mut at_event = Vec::new();
@@ -2290,58 +2289,6 @@ impl Checker<'_> {
                 let t = self.show(&f.ty);
                 self.err("E034", span, format!("`{}` on a {t} field is not defined; `+=` and `-=` add to an Int or a Float. Assign the whole value with `=`", op.text()));
                 let _ = self.expr(value, None);
-            }
-        }
-    }
-
-    fn check_proposals(&mut self, module: &ast::Module) {
-        for item in &module.items {
-            let Item::Action(a) = item else { continue };
-            let Some(p) = &a.proposal else { continue };
-            let env = self.env;
-            let Some(view) = env
-                .own_callable(&p.view.name)
-                .filter(|c| c.kind == CKind::View)
-            else {
-                let views: Vec<&str> = env
-                    .callables
-                    .iter()
-                    .filter(|c| c.own && c.kind == CKind::View && !c.hidden())
-                    .map(|c| c.name.as_str())
-                    .collect();
-                self.err(
-                    "E014",
-                    p.view.span,
-                    format!(
-                        "the proposal view `{}` does not exist; views: {}",
-                        p.view.name,
-                        views.join(", ")
-                    ),
-                );
-                continue;
-            };
-            let Some(action) = env.own_action(a) else {
-                continue;
-            };
-            let args: Vec<String> = match &p.args {
-                Some(names) => names.iter().map(|n| n.name.clone()).collect(),
-                None => action.params.iter().map(|x| x.name.clone()).collect(),
-            };
-            let mut types = Vec::new();
-            for name in &args {
-                match action.params.iter().find(|x| &x.name == name) {
-                    Some(x) => types.push(x.ty.clone()),
-                    None => self.err(
-                        "E014",
-                        p.view.span,
-                        format!("`{name}` is not a parameter of action `{}`", a.name.name),
-                    ),
-                }
-            }
-            let ok = types.len() == view.params.len()
-                && types.iter().zip(&view.params).all(|(t, v)| t.same(&v.ty));
-            if !ok {
-                self.err("E020", p.view.span, format!("the proposal view must take the action's arguments; `{}` is {}, the action passes ({})", p.view.name, view.signature(&env.app), args.join(", ")));
             }
         }
     }

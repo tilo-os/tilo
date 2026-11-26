@@ -187,9 +187,10 @@ fn the_shell_and_the_daemon_call_each_other_through_the_one_dispatch() {
             .await;
         assert_eq!(answered, Ok(json!("round trip")));
 
-        // The person's yes to a call travels with the call, on the frame the provider is handed.
+        // The phrase the person typed for a call travels with the call, on the frame the provider is
+        // handed.
         let mut approved = request(ASKS, "asks/one", "answer", "approved");
-        approved.confirmation = Some(Confirmation::Confirmed);
+        approved.confirmation = Some(Confirmation::Phrase("approved".into()));
         let receipt = host
             .dispatch()
             .invoke(&host.caller(), approved.clone())
@@ -206,7 +207,10 @@ fn the_shell_and_the_daemon_call_each_other_through_the_one_dispatch() {
             .iter()
             .find(|asked| asked.invocation == approved.invocation)
             .expect("the provider was handed the approved call");
-        assert_eq!(reached.confirmation, Some(Confirmation::Confirmed));
+        assert_eq!(
+            reached.confirmation,
+            Some(Confirmation::Phrase("approved".into()))
+        );
         // The shell is told who the dispatch admitted the call for.
         assert!(
             asks.callers().iter().all(|caller| {

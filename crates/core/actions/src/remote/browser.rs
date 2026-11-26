@@ -152,7 +152,7 @@ pub struct Placement {
 /// Whether `confirmation`, forwarded with `caller`'s call to a window `placed` by its host, is
 /// the person's answer for the call. A key its person let operate web pages is answered for by the host that
 /// placed the window: that host hands the key's own signed call over its link with
-/// [`Confirmation::Confirmed`](super::Confirmation::Confirmed), and only that host, for only
+/// [`Confirmation::Operated`](super::Confirmation::Operated), and only that host, for only
 /// the workspace it placed the window in, answers so. `Ok(false)` where the caller carries its
 /// own word, which the action's policy decides on.
 ///
@@ -165,8 +165,7 @@ pub fn host_answered(
     caller: &super::Caller,
     confirmation: Option<&super::Confirmation>,
 ) -> Result<bool, super::ActionCallError> {
-    let (Some(super::Confirmation::Confirmed), Some(forwarder)) =
-        (confirmation, caller.forwarder())
+    let (Some(super::Confirmation::Operated), Some(forwarder)) = (confirmation, caller.forwarder())
     else {
         return Ok(false);
     };
@@ -207,7 +206,7 @@ mod tests {
             workspace: "ws".into(),
         };
         let agent = Caller::authenticated([7; 32], [8; 32]).in_workspace("ws");
-        let confirmed = Some(&Confirmation::Confirmed);
+        let confirmed = Some(&Confirmation::Operated);
         assert_eq!(
             host_answered(Some(&placed), &agent.clone().forwarded_by(host), confirmed),
             Ok(true)

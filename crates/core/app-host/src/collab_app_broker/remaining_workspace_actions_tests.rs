@@ -115,7 +115,7 @@ tilo_test_env::scenario! {
         ));
         request.target.address =
             tilo_actions::ActionAddress::new(crate::automation::LIBRARY_RESOURCE, "delete");
-        request.confirmation = Some(Confirmation::Confirmed);
+        request.confirmation = Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new()));
         request.argument =
             InvokeArgument::Json(serde_json::from_value(serde_json::json!({"id": "saved"})).unwrap());
         let argument = request.argument.to_slot();
@@ -185,7 +185,7 @@ tilo_test_env::scenario! {
                 let argument = request.argument.to_slot();
                 request.target.address = tilo_actions::ActionAddress::new(resource, action);
                 if !keyboard {
-                    request.confirmation = Some(Confirmation::Confirmed);
+                    request.confirmation = Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new()));
                 }
                 let actor = BrokerActor::for_caller(&caller);
                 let result = state

@@ -242,7 +242,7 @@ mod tests {
                 target: target(),
                 argument: InvokeArgument::None,
                 context: None,
-                confirmation: Some(Confirmation::Confirmed),
+                confirmation: Some(Confirmation::Phrase("forget".into())),
                 revision: None,
                 wait_ms: Some(1),
                 appearance: None,
@@ -258,8 +258,8 @@ mod tests {
             assert!(matches!(forwarded.argument, InvokeArgument::Json(_)));
             assert_eq!(
                 forwarded.confirmation,
-                Some(Confirmation::Confirmed),
-                "the person's own word travels with their call"
+                Some(Confirmation::Phrase("forget".into())),
+                "the phrase the person typed travels with their call"
             );
         }
     }

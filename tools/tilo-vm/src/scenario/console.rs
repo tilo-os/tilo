@@ -34,11 +34,10 @@ impl std::fmt::Display for ConsoleError {
     }
 }
 
-/// The confirmation an invocation carries, as its action's contract asks.
+/// The confirmation an invocation carries, as its action's contract asks: a yes is never the
+/// caller's to write, only the person's answer on the system's confirm view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Confirmation {
-    /// The caller's own yes.
-    Confirmed,
     /// The phrase the contract names, typed exactly.
     Phrase(String),
 }
@@ -66,14 +65,8 @@ pub fn invoke_frame(
         json!({ "provider": provider, "address": { "resource": resource, "action": action } }),
     );
     request.insert("argument".into(), argument);
-    match confirmation {
-        Some(Confirmation::Confirmed) => {
-            request.insert("confirmation".into(), json!("Confirmed"));
-        }
-        Some(Confirmation::Phrase(phrase)) => {
-            request.insert("confirmation".into(), json!({ "Phrase": phrase }));
-        }
-        None => {}
+    if let Some(Confirmation::Phrase(phrase)) = confirmation {
+        request.insert("confirmation".into(), json!({ "Phrase": phrase }));
     }
     (
         json!({ "version": FRAME_VERSION, "message": { "Invoke": request } }),

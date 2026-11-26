@@ -34,11 +34,8 @@ pub struct ActionState {
     pub primary: Option<ResourceRef>,
     /// The actor the runtime authenticated for this invocation: what `invoker` reads.
     pub invoker: Actor,
-    /// What the person a suggestion was accepted from proposed, if this run is one: recorded in
-    /// its change so history says who suggested it ([`crate::store::Version::suggested_by`]).
-    pub suggested_by: Option<Actor>,
-    /// The actions the action proposed (`suggest act(args)`), recorded once it has committed:
-    /// a proposal is workspace state of its own, never part of this action's transaction.
+    /// The actions the action suggested (`suggest act(args)`), asked once it has committed: the
+    /// call that asks a person is its own, never part of this action's transaction.
     pub suggestions: Vec<(Actor, ActionRef)>,
     /// Blocks to evaluate once the action has committed (`run_block`).
     pub queued: Vec<QueuedBlock>,
@@ -84,8 +81,6 @@ pub struct RunState {
     pub journal: Journal,
     pub cursor: usize,
     pub invoker: Actor,
-    /// Who proposed the run, when the person running it accepted a suggestion.
-    pub suggested_by: Option<Actor>,
     /// The clock and the person's zone, read once per run: a run resumed tomorrow reads the
     /// moment it started ([`JournalEntry::Clock`]).
     pub clock: Option<Clock>,

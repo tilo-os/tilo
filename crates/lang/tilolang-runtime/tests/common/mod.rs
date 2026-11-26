@@ -270,9 +270,6 @@ fn fill(v: &mut Json) {
             if list != "views" {
                 item["result"] = item.get("result").cloned().unwrap_or(Json::Null);
             }
-            if list == "actions" {
-                item["proposal"] = item.get("proposal").cloned().unwrap_or(Json::Null);
-            }
             if list == "views" {
                 item["anchors"] = item.get("anchors").cloned().unwrap_or_else(|| json!([]));
             }

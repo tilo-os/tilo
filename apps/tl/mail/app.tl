@@ -1726,7 +1726,7 @@ fn send_refusal(m: Mail) -> Text {
 /// take it back. The effect is an argument the action records, so the wait survives a window
 /// closing and an agent takes it back the same way. Whoever is asked to let it go reads who it
 /// goes to and what it says.
-primary action send(d: Draft) uses time proposal compose(d) (
+primary action send(d: Draft) uses time (
     icon: .send,
     key: "Ctrl+Enter",
     shows: [(d.to, .addresses), (d.cc, .addresses), (d.bcc, .addresses), d.subject, (d.body, .long)],

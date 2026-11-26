@@ -298,8 +298,8 @@ fn verb_admits(
     writes: &[(String, String, Option<ScalarValue>)],
 ) -> Result<(), String> {
     // A move founds, fills and removes a resource of whatever kind the store declares, and a verb
-    // the platform writes under (an invocation, a suggestion and its decision, a settling block, a
-    // step taken back or brought back) writes any field and content of a declared kind: whether
+    // the platform writes under (an invocation, a settling block, a step taken back or brought
+    // back) writes any field and content of a declared kind: whether
     // the caller may is the workspace's to decide, and the kind is the store's.
     if verb.moves || verb.platform {
         return schema

@@ -802,7 +802,9 @@ pub enum ToApp {
         /// ([`ToApp::Fire`]'s `gesture`): both changes are one step of theirs.
         gesture: Option<String>,
     },
-    /// The suggestion in the invocation card `key` was allowed or declined.
+    /// The suggestion in the invocation card `key` was allowed or declined, as a window that drew
+    /// answers on the card sends it. Only the system's confirm answers a call that asks a person,
+    /// so an app refuses it; it keeps its place so an older window's messages still read.
     Resolve {
         level: Level,
         key: String,
