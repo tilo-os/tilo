@@ -1065,7 +1065,11 @@ view value(v: Value) {
             store.catalog().find(of).unwrap().is_none(),
             "the app it builds is not the app it ran as"
         );
-        let launcher = tilo_test_env::stand_in(root.join("tilo-launcher"), "sleep 600\n").unwrap();
+        // The build is a tilolang app: a window of it runs its instance in the app's own process,
+        // which needs this device's person and its tilolang host, and this fixture has neither.
+        // What starts here is the installed package's own program with no window, as a device
+        // with no display starts it.
+        let launcher = tilo_test_env::stand_in(root.join("tilo-launcher"), "hold\n").unwrap();
         let apps = installed(&store, &root, vec![launcher.path().to_owned()]);
         // What the workspace granted the app this is a build of.
         let to_the_app = CapOverride::grant(
@@ -1079,7 +1083,7 @@ view value(v: Value) {
             .launchable(&id)
             .expect("the device launches the build it installed");
         let launch = apps
-            .start(&id, WORKSPACE)
+            .start_showing(&id, WORKSPACE, Shows::Nothing, None)
             .expect("the staged build starts");
         assert_eq!(
             apps.attested(launch.pid),
@@ -1090,6 +1094,7 @@ view value(v: Value) {
             apps.app_grants(&dev, WORKSPACE).sandbox.is_empty(),
             "it starts with no grants of its own, and none of the app it builds reach it"
         );
+        launch.kill();
     }
 }
 
