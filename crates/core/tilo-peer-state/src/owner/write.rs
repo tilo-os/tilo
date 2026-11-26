@@ -229,6 +229,28 @@ fn message_of(workspace: WorkspaceId, write: &WorkspaceDocumentWrite) -> Neighbo
     }
 }
 
+/// Keep the workspace changes `live` made since `heads`, this device's own, in `record` as the
+/// frame a link carries them in: they go to the workspace's host as a record write does.
+fn keep_changes_since(
+    live: &crate::StatePeer,
+    heads: &[automerge::ChangeHash],
+    record: &mut stored::StoredWorkspace,
+) -> Result<(), String> {
+    let changes = live.workspace_changes_since(heads);
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let message = NeighbourMsg::SyncResp {
+        changes,
+        workspace: live.workspace_id().to_owned(),
+    };
+    let bytes = postcard::to_stdvec(&message).map_err(|error| error.to_string())?;
+    record.frames.push(stored::FrameToSend {
+        bytes: bytes.into(),
+    });
+    Ok(())
+}
+
 /// How long a frame a link carried stays in the record at most once nothing else publishes it.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) const SENT_WITHIN: std::time::Duration = std::time::Duration::from_millis(250);
@@ -569,6 +591,7 @@ impl DeviceWorkspaces {
             let candidate = self.view(workspace)?;
             let (changed, record) =
                 candidate.change(|live, record| -> Result<bool, WriteRefusal> {
+                    let heads = live.workspace_heads().unwrap_or_default();
                     live.governance_mut()
                         .drop_names_of_nobody(key, now)
                         .map_err(WriteRefusal::from)?;
@@ -581,6 +604,7 @@ impl DeviceWorkspaces {
                         record.generation = record.generation.checked_add(1).ok_or_else(|| {
                             WriteRefusal::Refused("native owner generation exhausted".into())
                         })?;
+                        keep_changes_since(live, &heads, record)?;
                     }
                     Ok(changed)
                 })?;

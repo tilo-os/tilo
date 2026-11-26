@@ -520,6 +520,23 @@ async fn a_company_node_hosts_and_seals_the_workspace_people_join() {
         (!server.is_subscribed(acme.workspace_id, &cy_device).await).then_some(())
     })
     .await;
+    // A rename reaches the node the same way.
+    membership
+        .rename("Acme Corp")
+        .await
+        .expect("Ada renames Acme");
+    membership.settled(&ada).await.expect("the host holds it");
+    wait_for("the node to name Acme anew", || async {
+        let WorkspacesReply::Workspaces(listed) = workspaces(&ada, WorkspacesRequest::List).await
+        else {
+            return None;
+        };
+        listed
+            .iter()
+            .any(|listed| listed.workspace_id == acme.workspace_id && listed.name == "Acme Corp")
+            .then_some(())
+    })
+    .await;
 
     drop(root);
     let status = tilo_test_env::within("the browser to close", browser.wait())

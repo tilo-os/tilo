@@ -202,7 +202,6 @@ pub(crate) struct SharedOwner {
     pub(crate) authority: RwLock<NativeAuthorityStorage>,
     pub(crate) mutation: Mutex<()>,
     pub(crate) current: RwLock<Current>,
-    listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
     /// The channel keys that keep this device's sealed record histories within
     /// their bound ([`DeviceWorkspaces::keep_sealed_histories`]).
     history_keys: Mutex<Option<Arc<dyn SealedHistoryKeys>>>,
@@ -436,41 +435,13 @@ fn security_digest(peer: &StatePeer, device: &DeviceCert) -> Result<[u8; 32], St
     Ok(*blake3::hash(&bytes).as_bytes())
 }
 
-/// Callbacks synchronously revoke live client/capture fences; no owner reread or I/O.
-pub trait NativeFenceObserver: Send + Sync {
-    fn fence(&self, workspace: WorkspaceId, continuity: u64);
-}
-impl<F: Fn(WorkspaceId, u64) + Send + Sync> NativeFenceObserver for F {
-    fn fence(&self, workspace: WorkspaceId, continuity: u64) {
-        self(workspace, continuity);
-    }
-}
-/// Retaining this token retains the callback; owner stores only a weak reference.
-pub struct NativeFenceSubscription {
-    _observer: Arc<dyn NativeFenceObserver>,
-}
-
 impl SharedOwner {
-    fn notify(&self, workspace: WorkspaceId, continuity: u64) {
-        let observers: Vec<_> = {
-            let mut listeners = self.listeners.lock();
-            let live = listeners.iter().filter_map(Weak::upgrade).collect();
-            listeners.retain(|listener| listener.strong_count() != 0);
-            live
-        };
-        for observer in observers {
-            observer.fence(workspace, continuity);
-        }
-    }
     fn fence_all(&self) {
         let mut current = self.current.write();
         if current.fenced {
             return;
         }
         current.fenced = true;
-        for (workspace, view) in &current.workspaces {
-            self.notify(*workspace, view.continuity());
-        }
         drop(current);
         policy_changed();
     }
@@ -525,7 +496,6 @@ impl DeviceWorkspaces {
             authority: RwLock::new(NativeAuthorityStorage::default()),
             mutation: Mutex::new(()),
             current: RwLock::new(Current::default()),
-            listeners: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
             due: Mutex::default(),
         }))
@@ -557,7 +527,6 @@ impl DeviceWorkspaces {
             authority: RwLock::new(authority),
             mutation: Mutex::new(()),
             current: RwLock::new(current),
-            listeners: Mutex::new(Vec::new()),
             history_keys: Mutex::new(None),
             due: Mutex::default(),
         })))
@@ -586,23 +555,16 @@ impl DeviceWorkspaces {
             .revision
             .checked_add(1)
             .ok_or("native storage generation exhausted")?;
-        let mut continuity = 0;
         self.0
             .publish(&next, Change::Released { workspace }, true, &mut || {
                 {
                     let mut current = self.0.current.write();
-                    continuity = current
-                        .workspaces
-                        .remove(&workspace)
-                        .map_or(0, |view| view.continuity());
+                    current.workspaces.remove(&workspace);
                     current.required.remove(&workspace);
                     current.denied.remove(&workspace);
                 }
                 *self.0.authority.write() = next.clone();
             })?;
-        // Every session of the workspace ends: its replica is gone. Told once the
-        // publication is over, with no lock of the host's held.
-        self.0.notify(workspace, continuity);
         Ok(true)
     }
     /// The record as last published.
@@ -733,26 +695,10 @@ impl DeviceWorkspaces {
         .unwrap_or_default()
     }
 
-    pub fn observe_fences(
-        &self,
-        observer: Arc<dyn NativeFenceObserver>,
-    ) -> NativeFenceSubscription {
-        self.0.listeners.lock().push(Arc::downgrade(&observer));
-        NativeFenceSubscription {
-            _observer: observer,
-        }
-    }
     pub fn invalidate_identity(&self, workspace: WorkspaceId) {
-        let mut current = self.0.current.write();
-        if !current.denied.insert(workspace) {
+        if !self.0.current.write().denied.insert(workspace) {
             return;
         }
-        let continuity = current
-            .workspaces
-            .get(&workspace)
-            .map_or(0, |view| view.continuity());
-        self.0.notify(workspace, continuity);
-        drop(current);
         policy_changed();
     }
     /// Admits genuine server provenance; pending document prerequisites are also durable.
@@ -962,7 +908,7 @@ impl DeviceWorkspaces {
     /// Caller holds the serialized turn, but readers keep the preceding committed view during I/O.
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "fence observers are notified in order under the continuity write lock"
+        reason = "the layout and the snapshot are taken under one lock of the replica"
     )]
     fn publish(
         &self,
@@ -990,7 +936,7 @@ impl DeviceWorkspaces {
     /// Make `record` and the replica `snapshot` took durable and current.
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "fence observers are notified in order under the continuity write lock"
+        reason = "the committed view and the record are installed under one write lock"
     )]
     fn install_snapshot(
         &self,
@@ -1056,7 +1002,6 @@ impl DeviceWorkspaces {
             holders: Arc::default(),
             security,
         });
-        let continuity = candidate.continuity();
         self.0.publish(
             &next,
             Change::Workspace {
@@ -1066,9 +1011,6 @@ impl DeviceWorkspaces {
             policy,
             &mut || {
                 let mut current = self.0.current.write();
-                if changed {
-                    self.0.notify(workspace, continuity);
-                }
                 current.required.insert(workspace);
                 current.workspaces.insert(workspace, Arc::clone(&candidate));
                 *self.0.authority.write() = next.clone();
