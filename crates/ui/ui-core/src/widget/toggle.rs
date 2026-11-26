@@ -1456,4 +1456,82 @@ mod tests {
         assert!(!states[6].get(), "a tap flips");
         assert_eq!(offset(&frame), scrolled);
     }
+
+    #[test]
+    fn a_click_slides_the_knob_and_a_second_click_reverses_it_mid_flight() {
+        use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+        use crate::testing::dispatch;
+        use crate::time::testing::with_monotonic_time;
+        use crate::tokens::MotionSource;
+        let theme = Theme::dark();
+        let state = crate::LocalState::new(false);
+        let mut t = Toggle::from_state(&state);
+        switch_at_origin(&mut t);
+        let t0 = crate::time::now();
+        with_monotonic_time(t0, || present(&mut t, &theme));
+        assert!(!t.needs_animation_frame(), "the first paint rests");
+        assert_eq!(t.switch.knob(t0), 0.0);
+        with_monotonic_time(t0, || {
+            crate::motion::note_source(MotionSource::Pointer);
+            dispatch(&mut t, &cursor_moved(30.0, 16.0));
+            dispatch(&mut t, &mouse_press());
+            dispatch(&mut t, &mouse_release());
+            assert!(state.get(), "the value changes once the click lets go");
+            present(&mut t, &theme);
+            assert!(t.needs_animation_frame(), "the knob slides");
+        });
+        let drawn = with_monotonic_time(ms(t0, 40), || {
+            assert!(t.needs_redraw(), "a sliding knob repaints each frame");
+            present(&mut t, &theme);
+            let pose = t.switch.pose(theme.motion(), ms(t0, 40));
+            assert!(pose.knob > 0.0 && pose.knob < 1.0, "on its way: {pose:?}");
+            assert!(
+                pose.tint > 0.0 && pose.tint < 1.0,
+                "the track turns with it"
+            );
+            pose.knob
+        });
+        with_monotonic_time(ms(t0, 40), || {
+            crate::motion::note_source(MotionSource::Pointer);
+            dispatch(&mut t, &mouse_press());
+            dispatch(&mut t, &mouse_release());
+            assert!(!state.get());
+            present(&mut t, &theme);
+            let now = ms(t0, 40);
+            assert!((t.switch.knob(now) - drawn).abs() < 1e-9, "no jump");
+        });
+        with_monotonic_time(ms(t0, 600), || {
+            assert_eq!(t.switch.knob(ms(t0, 600)), 0.0, "back off");
+            assert!(!t.needs_animation_frame(), "settled: no frames");
+            present(&mut t, &theme);
+            assert!(!t.needs_redraw(), "settled: no repaint");
+        });
+    }
+
+    #[test]
+    fn reduced_motion_lands_the_knob_and_cross_fades_the_tint() {
+        use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+        use crate::testing::dispatch;
+        use crate::time::testing::with_monotonic_time;
+        let theme = Theme::dark().with_reduce_motion(true);
+        let state = crate::LocalState::new(false);
+        let mut t = Toggle::from_state(&state);
+        switch_at_origin(&mut t);
+        let t0 = crate::time::now();
+        with_monotonic_time(t0, || {
+            present(&mut t, &theme);
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            dispatch(&mut t, &cursor_moved(30.0, 16.0));
+            dispatch(&mut t, &mouse_press());
+            dispatch(&mut t, &mouse_release());
+            present(&mut t, &theme);
+        });
+        let pose = t.switch.pose(theme.motion(), ms(t0, 40));
+        assert_eq!(pose.knob, 1.0, "the knob lands");
+        assert!(
+            pose.tint > 0.0 && pose.tint < 1.0,
+            "the tint fades: {pose:?}"
+        );
+        assert!(!t.switch.is_moving(ms(t0, 400)));
+    }
 }

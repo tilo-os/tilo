@@ -2283,3 +2283,153 @@ fn relayout_row(row: &mut GroupRow) {
         .expect("taffy compute_layout");
     row.apply_layout(&taffy, root, Point::ORIGIN);
 }
+
+tilo_test_env::scenario! {
+    fn a_held_window_lands_back_at_once_under_reduced_motion;
+
+    phase a_held_window_lands_back_at_once_under_reduced_motion;
+    {
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        row.reduce_motion = true;
+        row.groups[0].set_tab_holder(
+            1,
+            Some(crate::widget::TabHolder {
+                name: "Ben".into(),
+                rgb: (200, 80, 40),
+                keeps: true,
+            }),
+        );
+        let grab = group_grab_point(&row, 0);
+        press_at(&mut row, &taffy, root, grab);
+        let past = Point::new(row.groups[2].get_rect().center().x + 60.0, grab.y);
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(past.x, past.y),
+            },
+        );
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &WindowEvent::MouseInput {
+                device_id: winit::event::DeviceId::dummy(),
+                state: ElementState::Released,
+                button: MouseButton::Left,
+            },
+        );
+        assert_eq!(row.group_pull(100), None, "no spring-back");
+        assert!(!row.needs_animation_frame());
+    }
+}
+
+#[test]
+fn a_dragged_window_tracks_the_pointer_one_to_one() {
+    let theme = Theme::dark();
+    let mut now = crate::time::now();
+    crate::time::testing::with_monotonic_time(now, || {
+        let (mut row, taffy, root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        let grab = group_grab_point(&row, 0);
+        press_at(&mut row, &taffy, root, grab);
+        let mut at = grab;
+        for step in 1..=24 {
+            now += Duration::from_millis(16);
+            at = Point::new(
+                grab.x + 15.0 * f64::from(step),
+                grab.y + 6.0 * f64::from(step),
+            );
+            crate::time::testing::with_monotonic_time(now, || {
+                dispatch_at(&mut row, &taffy, root, &move_to(at));
+                let lift = row.group_drag_lift(&theme).expect("the window is carried");
+                let drawn = lift * grab;
+                assert!(
+                    (drawn - at).hypot() < 1e-9,
+                    "frame {step}: grabbed point drawn at {drawn:?}, pointer at {at:?}"
+                );
+            });
+        }
+        assert!(at.x - grab.x >= 350.0 && at.y - grab.y >= 140.0);
+    });
+}
+
+#[test]
+fn wheel_over_strip_never_moves_it() {
+    use winit::dpi::PhysicalPosition;
+
+    for (mut row, taffy, root) in [
+        make_overflow_row(8, 1200.0),
+        make_row_with_groups_with_taffy(&[&[1], &[10]]),
+    ] {
+        let pre_rect_0 = row.groups[0].get_rect();
+        let cy = f64::midpoint(row.rect.y0, row.rect.y1);
+        let cx = f64::midpoint(row.rect.x0, row.rect.x1);
+        let dev = winit::event::DeviceId::dummy();
+        let mut handled = dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &WindowEvent::CursorMoved {
+                device_id: dev,
+                position: PhysicalPosition::new(cx, cy),
+            },
+        );
+        handled |= dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &WindowEvent::MouseWheel {
+                device_id: dev,
+                delta: MouseScrollDelta::LineDelta(0.0, -3.0),
+                phase: winit::event::TouchPhase::Moved,
+            },
+        );
+        assert!(!handled, "a bare wheel must be left unclaimed by the strip");
+        row.tick_snap_at(crate::motion::frame_now() + Duration::from_millis(400));
+        assert_eq!(row.scroll_x(), 0.0, "a bare wheel must not move the strip");
+        row.apply_layout(&taffy, root, Point::ORIGIN);
+        assert_eq!(
+            row.groups[0].get_rect().x0,
+            pre_rect_0.x0,
+            "group rects must not shift after a bare wheel"
+        );
+    }
+}
+
+/// Maximizing a window fades its neighbours out rather than snapping them away, each keeping
+/// its tiled width while it fades; under reduced motion they are gone on the first frame and
+/// nothing asks for frames.
+#[test]
+fn maximize_fades_the_neighbours_and_reduced_motion_hides_them_at_once() {
+    crate::time::testing::with_monotonic_time(crate::time::now(), || {
+        for (theme, fades) in [
+            (Theme::dark(), true),
+            (Theme::dark().with_reduce_motion(true), false),
+        ] {
+            let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+            let before = row.groups[0].get_rect().width();
+            row.groups[1].maximized = true;
+            let (row, ..) = relayout_row_owned_with(row, 2000.0, &theme);
+            let now = crate::motion::frame_now();
+            assert_eq!(
+                row.sibling_fade.is_moving(now),
+                fades,
+                "reduced: {}",
+                !fades
+            );
+            if fades {
+                assert!(
+                    (row.groups[0].get_rect().width() - before).abs() < 1.0,
+                    "the fading neighbour keeps its tiled width"
+                );
+            } else {
+                assert!(
+                    row.sibling_fade.progress(now) < 0.02,
+                    "the neighbours are gone at once"
+                );
+            }
+        }
+    });
+}

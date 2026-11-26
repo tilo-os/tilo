@@ -853,3 +853,24 @@ tilo_test_env::scenario! {
         assert!(vp.captions().is_empty(), "off shows no words");
     }
 }
+
+/// Over the picture the letterbox stays black and the controls' ink reads on their panel, in
+/// the light theme and the dark.
+#[test]
+fn over_media_chrome_is_legible_and_dark_in_every_theme() {
+    use crate::a11y::{contrast_ratio, relative_luminance};
+    for theme in [Theme::dark(), Theme::light()] {
+        let letterbox = theme.tokens.colors.media.letterbox;
+        assert!(
+            relative_luminance(letterbox) < 0.02,
+            "{}: the letterbox turned grey",
+            theme.name
+        );
+        let panel = crate::chrome::panel_ground(&theme);
+        assert!(
+            contrast_ratio(theme.on_ground(panel).text_primary, panel) >= 4.5,
+            "{}: the controls' ink reads on the media panel",
+            theme.name
+        );
+    }
+}

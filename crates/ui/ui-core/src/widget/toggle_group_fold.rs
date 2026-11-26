@@ -429,5 +429,15 @@ mod tests {
             assert_eq!(*chosen.borrow(), [3, 0, 4]);
         }
 
+        phase a_folded_strip_shows_keyboard_focus;
+        {
+            let mut narrow = chooser(160.0, Rc::new(RefCell::new(Vec::new())));
+            assert!(narrow.is_folded());
+            let unfocused = frame(&mut narrow);
+            Widget::set_focus(&mut narrow, true);
+            assert!(narrow.focus_visible(), "keyboard focus shows the ring");
+            assert_ne!(frame(&mut narrow), unfocused, "focus rings the picker");
+        }
+
     }
 }

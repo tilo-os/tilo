@@ -582,3 +582,95 @@ fn both_actions_keep_their_faces_whether_beside_or_under_the_message() {
     d.relayout_at((360, 400)).expect("lays out narrow");
     assert_eq!(roles(&d), wide, "under the message, the same faces");
 }
+
+#[test]
+fn under_reduced_motion_a_banner_lands_and_its_contents_fade_in() {
+    let state = crate::LocalState::new(None::<BannerNotice>);
+    let mut d = driver(Box::new(sync_column(&state, false)));
+    d.set_theme(Theme::dark().with_reduce_motion(true));
+    let empty_y = d.targets()["below"].y0;
+    let _frame = crate::motion::pin_frame();
+    state.set(Some(sync_failed()));
+    d.relayout();
+    assert!(
+        d.targets()["below"].y0 > empty_y + 30.0,
+        "the height lands at once"
+    );
+    assert!(band(&d).is_none(), "nothing below moves");
+    assert!(
+        d.root_widget().needs_animation_frame(),
+        "its contents fade in"
+    );
+}
+
+#[test]
+fn a_banner_leaving_lands_by_key_and_fades_under_reduced_motion() {
+    use crate::time::testing::with_monotonic_time;
+    let start = crate::time::now();
+    let mut d = with_monotonic_time(start, || rooted(offline_view()));
+    with_monotonic_time(start, || {
+        crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
+        rebuild(&mut d, None);
+        assert!(
+            d.root::<Column>().drawn_offsets().is_none(),
+            "a key's result lands"
+        );
+    });
+
+    let mut d = with_monotonic_time(start, || rooted(offline_view()));
+    d.set_theme(Theme::dark().with_reduce_motion(true));
+    with_monotonic_time(start, || {
+        d.relayout();
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        rebuild(&mut d, None);
+        assert!(first_offset(&d).abs() < 0.01, "the height lands");
+        assert!(
+            d.root_widget().needs_animation_frame(),
+            "and the paint fades"
+        );
+    });
+}
+
+/// How far the column's child `index` is drawn below its place.
+fn offset_of(d: &Driver, index: usize) -> f64 {
+    d.root::<Column>()
+        .drawn_offsets()
+        .and_then(|offsets| offsets.get(index).copied())
+        .unwrap_or(0.0)
+}
+
+#[test]
+fn a_banner_dropped_while_opening_leaves_from_where_it_is_drawn() {
+    use crate::time::testing::with_monotonic_time;
+    let start = crate::time::now();
+    let mut d = with_monotonic_time(start, || rooted(Column::new()));
+    with_monotonic_time(start, || rebuild(&mut d, None));
+    let empty_y = d.targets()["below"].y0;
+    with_monotonic_time(start, || {
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        rebuild(&mut d, Some(Banner::warning("Reconnecting")));
+    });
+    let midway = start + crate::time::Duration::from_millis(90);
+    let opened = with_monotonic_time(midway, || {
+        d.relayout();
+        offset_of(&d, 1)
+    });
+    assert!(opened > 1.0, "it is on its way in: {opened}");
+
+    // Its view drops it mid-way: it leaves from there, with its paint.
+    with_monotonic_time(midway, || rebuild(&mut d, None));
+    assert!((d.targets()["below"].y0 - empty_y).abs() < 0.5);
+    let leaving = with_monotonic_time(midway, || first_offset(&d));
+    assert!(
+        (leaving - opened).abs() < 1.0,
+        "what follows goes on from where it was drawn: {leaving} against {opened}"
+    );
+    let later = with_monotonic_time(midway + crate::time::Duration::from_millis(60), || {
+        first_offset(&d)
+    });
+    assert!(later < leaving, "and moves up");
+    with_monotonic_time(start + crate::time::Duration::from_secs(2), || {
+        d.relayout();
+        assert!(!d.root_widget().needs_animation_frame());
+    });
+}
