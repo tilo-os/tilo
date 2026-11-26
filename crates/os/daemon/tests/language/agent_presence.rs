@@ -503,10 +503,25 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
             after.grants[0].sessions.is_empty(),
             "its run is ended: {after:?}"
         );
-        // It comes back: a new run of the same agent is listed.
+        // The person lets their agent go on, and the run they held ends: the agent comes back
+        // as a run of its own, listed once.
+        let resumed = host
+            .dispatch()
+            .invoke(&host.caller(), stop(mcp_server::GO_ON))
+            .await
+            .expect("the dispatch answers")
+            .expect("the person lets their agent go on");
+        assert!(
+            matches!(
+                resumed.status,
+                tilo_actions::remote::ReceiptStatus::Completed { .. }
+            ),
+            "{resumed:?}"
+        );
+        drop(agent);
         let again = host.agent();
-        let (_, failed) = ls(&again, None).await;
-        assert!(!failed, "the agent comes back");
+        let (said, failed) = ls(&again, None).await;
+        assert!(!failed, "the agent comes back: {said}");
         let back = mcp_server(&host, &host.workspace()).await;
         assert_eq!(back.grants.len(), 1, "one agent, not two: {back:?}");
         assert_eq!(back.grants[0].sessions.len(), 1, "{back:?}");
@@ -527,20 +542,13 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
         // The person revokes the key their agent runs under: its run ends, it leaves the
         // listing, and its key is refused from then on.
         let grant = still.grants[0].id.clone();
-        let device: [u8; 32] = hex::decode(&grant)
-            .expect("a grant names its key")
-            .try_into()
-            .expect("a key is 32 bytes");
-        let entry = host.revoke(device).await;
-        let revocation = hex::encode(postcard::to_allocvec(&entry).expect("the entry encodes"));
         let request = tilo_actions::remote::InvokeRequest {
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
-            target: tilo_actions::remote::RemoteActionTarget {
-                provider: tilo_actions::remote::workspace_provider(&host.workspace()),
-                address: tilo_actions::ActionAddress::new("devices", "revoke_device"),
-            },
-            argument: mcp_server::argument(&(grant, revocation)),
+            target: tilo_actions::remote::device_tickets::target(
+                tilo_actions::remote::device_tickets::REVOKE,
+            ),
+            argument: tilo_actions::remote::device_tickets::Revoke::retired(&grant).argument(),
             context: None,
             confirmation: None,
             revision: None,

@@ -5615,8 +5615,9 @@ impl RuntimeActionProvider {
     }
 
     /// Stop the agent session `request` names on this device, or let a stopped one go on, as
-    /// the person asks of the MCP server: their own ask, never an agent's. `None` when the
-    /// request is not such a stop, or names no session this device serves.
+    /// the person asks of the MCP server: the person here's own ask, never an agent's and never
+    /// a local caller of another person's. `None` when the request is not such a stop, or names
+    /// no session this device serves.
     fn stop_or_go_on(
         &self,
         caller: &Caller,
@@ -5626,7 +5627,7 @@ impl RuntimeActionProvider {
         let action = request.target.address.action.as_str();
         if request.target.provider != mcp_server::PROVIDER
             || ![mcp_server::STOP, mcp_server::GO_ON].contains(&action)
-            || !caller.acting().is_person()
+            || !self.is_the_person(caller)
         {
             return None;
         }

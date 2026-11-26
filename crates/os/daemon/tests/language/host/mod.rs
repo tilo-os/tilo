@@ -583,22 +583,6 @@ impl Host {
         Key { direct }
     }
 
-    /// The entry the person's root signs to revoke `device`: what every host of theirs refuses
-    /// the key with from then on.
-    pub async fn revoke(&self, device: [u8; 32]) -> tilo_user_identity::RevocationEntry {
-        let mut entry = tilo_user_identity::RevocationEntry {
-            user_public_key: self.root.group_public_key(),
-            revoked_device_public_key: device,
-            revoked_at_ns: tilo_clock::unix_now_ns(),
-            reason: tilo_user_identity::RevocationReason::Retired,
-            signature: [0; 64],
-        };
-        tilo_user_identity::sign_revocation_entry_async(&mut entry, &self.root)
-            .await
-            .expect("the person's root signs a revocation");
-        entry
-    }
-
     /// A server key of the person's reaching all their workspaces, named `label`: the key an
     /// SDK or a backend keeps, calling `/v1` and MCP as they do.
     #[must_use]
