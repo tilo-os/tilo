@@ -1,7 +1,11 @@
 //! What the relay tests share: the workspace, its keys, and the endpoints and grants a
 //! session dials and joins with.
 
-#![allow(dead_code, reason = "each test binary uses some of these")]
+#![allow(
+    dead_code,
+    clippy::unwrap_used,
+    reason = "each test binary uses some of these, and a failed step is the test failing"
+)]
 
 use std::net::{Ipv4Addr, SocketAddr};
 

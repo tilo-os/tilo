@@ -4,6 +4,9 @@
 #![allow(
     clippy::missing_panics_doc,
     clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
     reason = "test fixtures: a failed step is the test failing"
 )]
 
@@ -263,7 +266,7 @@ pub fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
 /// device the first it holds.
 pub fn restored(peer: &StatePeer, now: SystemTime) -> Result<StatePeer, String> {
     StatePeer::restore(
-        &peer.durable().map_err(|error| error.to_string())?,
+        &peer.durable()?,
         peer.workspace_id(),
         peer.owner_certificates()[0].clone(),
         vec![],
@@ -314,8 +317,7 @@ pub fn try_redeem(
         Some(cert.user_public_key),
         &revocations,
         now,
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     let challenge = crate::join::JoinChallenge::new(
         &join,
         cert,
@@ -323,12 +325,9 @@ pub fn try_redeem(
         [seed.wrapping_add(1); 32],
         now + 1_000_000_000,
         now,
-    )
-    .map_err(|error| error.to_string())?;
-    let proof =
-        crate::join::sign_join_proof(challenge.clone(), key).map_err(|error| error.to_string())?;
+    )?;
+    let proof = crate::join::sign_join_proof(challenge.clone(), key)?;
     crate::join::verify_join_proof(&proof, &challenge, cert, &revocations, now)
-        .map_err(|error| error.to_string())
 }
 
 /// [`try_redeem`] that succeeds.
