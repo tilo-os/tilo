@@ -1113,14 +1113,16 @@ impl Person {
         let paths = IdentityPaths::under(root.join("identity"));
         let cert = self.certify(&paths, label);
         // The device takes up the person its certificate names, as a device enrolled without the
-        // root does: their public record, its account's active identity.
+        // root does: their public record, its account's active identity. The record carries the
+        // name they go by here, as a person's does once they have given one: a device that took
+        // up an unnamed person says so on everyone's bar, and nobody names them.
         let identity_dir =
             tilo_identity::store::account_identity_dir(&root.join("config/tilo/identity"));
         let took_up = tilo_identity::provisioning::take_up_device_person(
             &identity_dir,
             &paths,
             tilo_clock::unix_now_ns(),
-            "",
+            &self.name,
         )
         .expect("the device takes up its person");
         assert!(took_up, "the device's certificate names its person");
@@ -1755,7 +1757,11 @@ impl Device {
     /// starting, the session's boot and the join it was handed — runs in their own processes, so a
     /// test that starts several devices together ([`start_together`], [`join_together`]) spends
     /// that once rather than once per device.
-    fn begin(&mut self, invitation: Option<&str>) {
+    ///
+    /// This returns at once, and [`Self::ready`] waits for it: a test that has to watch a device
+    /// that is already here while another boots — the arrival its bar says of the newcomer —
+    /// starts the newcomer with this and watches from before its session could have said anything.
+    pub fn begin(&mut self, invitation: Option<&str>) {
         let root = self.home.path().to_path_buf();
         let control = self.control.clone();
         let logs = self.logs_dir();
@@ -1972,8 +1978,9 @@ impl Device {
     }
 
     /// Wait until the session [`Self::begin`] started opens its control socket, failing with what
-    /// the device logged if it never does.
-    fn ready(&mut self) {
+    /// the device logged if it never does. [`Self::join`] and [`Self::start`] are this after their
+    /// begin; a test that watched another device while this one booted asks for it here.
+    pub fn ready(&mut self) {
         let Some(told) = self.announced.take() else {
             return;
         };
