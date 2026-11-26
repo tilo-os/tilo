@@ -2008,38 +2008,121 @@ impl PersonalAssistant {
         use ui::tilo_workspace_agent::{KIND, OWNER};
 
         let (member, _) = tilo_user_identity::UserIdentity::generate("Bob", 1);
-        let device = enrol(&member, "members-browser", DeviceCapabilities::member());
-        let workspace = server.workspaces().unwrap().create("Team").await.unwrap();
+        let mut device = enrol(&member, "members-browser", DeviceCapabilities::member());
+        device.cert.issued_at_ns = tilo_clock::unix_now_ns();
+        tilo_user_identity::sign_device_cert(&mut device.cert, &member).unwrap();
+
+        let workspaces = server.workspaces().unwrap();
+        assert!(
+            workspaces
+                .offer_own_workspaces(tilo_server::workspaces::OwnWorkspaceOffer::free(
+                    "tilo.test"
+                ))
+                .unwrap()
+        );
+        let lounge = workspaces.create("Lounge").await.unwrap();
+        assert!(workspaces.admit_own_through(&lounge.workspace));
         super::resource_support::admit_person(
             server,
             host,
-            &workspace.workspace,
+            &lounge.workspace,
             &device,
-            Role::Editor,
+            Role::Viewer,
         )
         .await;
-        let mut page = super::resource_support::open_admitted_peer(
-            server,
-            &device,
-            host,
-            &workspace.workspace,
-        )
-        .await;
-        let open = tilo_actions::remote::application_open_target(&workspace.workspace, OWNER);
-        let opened = page
-            .invoke_on(&open.provider, open.address, InvokeArgument::None)
+        let peer = Browser::session(&server.server, &device, host);
+        let events = peer.events();
+        crate::support::ready(&[&peer]).await;
+        let asking = tilo_session_client::device::Device::of(
+            peer.clone(),
+            device.cert.clone(),
+            host.cert.clone(),
+            "members-browser",
+        );
+        asking.join(&lounge.workspace).await.unwrap();
+        crate::support::admitted_to(&peer, lounge.workspace_id).await;
+        let workspace = asking
+            .enter_own_workspace("en-US", None, "Bob", |_| false, None)
+            .await
+            .unwrap();
+        assert!(workspaces.owns(&member.verifying_key().to_bytes(), &workspace.workspace));
+        assert_ne!(workspace.workspace_id, lounge.workspace_id);
+        asking.join(&workspace.workspace).await.unwrap();
+        crate::support::admitted_to(&peer, workspace.workspace_id).await;
+        let mut page = Browser::joined((peer, events), &device, host, &workspace.workspace);
+        let listing = page
+            .catalogue(CatalogueQuery {
+                app_id: Some(OWNER.into()),
+                max_results: 0,
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let provider = if let Some(found) = listing
+            .providers
+            .into_iter()
+            .find(|row| row.app_id == OWNER && row.browsable && row.document_id.is_empty())
+        {
+            found.provider
+        } else {
+            let open = tilo_actions::remote::application_open_target(&workspace.workspace, OWNER);
+            let opened = page
+                .invoke_on(&open.provider, open.address, InvokeArgument::None)
+                .await
+                .unwrap()
+                .value
+                .unwrap();
+            assert_eq!(opened["record"], "");
+            opened["provider"].as_str().unwrap().to_owned()
+        };
+        // Swift waits for the roster's read to be published on the holder, then asks it before
+        // creating anything: the host first learns whether this workspace has a roster already.
+        let read = ActionAddress::new(KIND, "read");
+        let until = crate::harness::page::write_deadline();
+        loop {
+            let offers = page
+                .catalogue(CatalogueQuery {
+                    provider: Some(provider.clone()),
+                    target: Some(read.clone()),
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            if offers.rows.iter().any(|row| {
+                row.provider == provider
+                    && row
+                        .action
+                        .as_ref()
+                        .is_some_and(|action| action.address == read)
+            }) {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "the host did not publish {read:?} on {provider}: {:?}",
+                offers.rows
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let cold = page
+            .invoke_on(&provider, read, InvokeArgument::None)
             .await
             .unwrap()
             .value
             .unwrap();
-        let provider = opened["provider"].as_str().unwrap().to_owned();
+        let agents = &cold["agents"];
+        assert!(
+            agents.as_object().is_some_and(serde_json::Map::is_empty)
+                || agents.as_array().is_some_and(Vec::is_empty),
+            "a new keeper starts with an empty roster"
+        );
         page.invoke_on(
             &provider,
             ActionAddress::new(KIND, "ensure-personal-assistant"),
             InvokeArgument::None,
         )
         .await
-        .unwrap();
+        .expect("the member sets up their own Assistant");
         let agent = format!(
             "assistant-{}",
             hex::encode(member.verifying_key().to_bytes())
