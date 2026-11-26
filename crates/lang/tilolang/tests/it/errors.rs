@@ -17,27 +17,13 @@ fn expect(code: &str, body: &str) {
     );
 }
 
-fn expect_with(code: &str, body: &str) {
-    let got = codes_with(body, &[todo_meta()]);
-    assert!(
-        got.iter().any(|c| c == code),
-        "expected {code} for:\n{body}\ngot {got:?}"
-    );
+fn with_todo(body: &str) -> Vec<String> {
+    codes_with(body, &[todo_meta()])
 }
 
 tilo_test_env::scenario! {
     /// E001 to E005: what the lexer and the parser refuse.
     fn lexing_and_syntax_errors_e001_to_e005;
-
-    phase e001_unexpected_character;
-    {
-        expect("E001", "fn f() -> Int {\n    return 1 $ 2\n}");
-    }
-
-    phase e002_unterminated_string;
-    {
-        expect("E002", "fn f() -> Text {\n    return \"abc\n}");
-    }
 
     phase e003_syntax_error;
     {
@@ -81,80 +67,11 @@ tilo_test_env::scenario! {
             .expect_err("fails");
         assert_eq!(err.first().map(|d| d.code.as_str()), Some("E010"));
     }
-
-    phase e011_duplicate_declaration;
-    {
-        expect(
-            "E011",
-            "fn f() -> Int {\n    return 1\n}\nfn f() -> Int {\n    return 2\n}",
-        );
-    }
-
-    phase e012_duplicate_parameter;
-    {
-        expect("E012", "fn f(a: Int, a: Int) -> Int {\n    return a\n}");
-    }
-
-    phase e013_unknown_type;
-    {
-        expect("E013", "fn f(a: Nope) -> Int {\n    return 1\n}");
-    }
-
-    phase e014_unknown_name;
-    {
-        expect("E014", "fn f() -> Int {\n    return zzz\n}");
-    }
-
-    phase e015_unknown_package;
-    {
-        expect("E015", "use so.nothing.here as n");
-    }
-
-    phase e016_name_case;
-    {
-        expect("E016", "type lower {\n}");
-    }
-
-    phase e019_default_must_be_literal;
-    {
-        expect("E019", "type T {\n    a: Int = 1 + 2\n}");
-    }
-
-    phase e018_root_and_default_view;
-    {
-        // A root needs a default view: it is what opening it shows.
-        expect("E018", "type T {\n    n: Int\n}\nroot T");
-        // A default view shows the resource and nothing else.
-        expect(
-            "E018",
-            "type T {\n    n: Int\n}\nview v(t: T, n: Int) {\n    text(n)\n}\ndefault view v for T",
-        );
-        // A root is a record type of the package.
-        expect("E018", "enum E {\n    a\n}\nroot E");
-    }
 }
 
 tilo_test_env::scenario! {
     /// E020 to E029: types, fields, arguments and returns.
     fn type_errors_e020_to_e029;
-
-    phase e020_type_mismatch;
-    {
-        expect("E020", "fn f() -> Int {\n    return \"x\"\n}");
-    }
-
-    phase e021_unknown_field;
-    {
-        expect("E021", &with_c("fn f(c: C) -> Int {\n    return c.nope\n}"));
-    }
-
-    phase e022_wrong_arguments;
-    {
-        expect(
-            "E022",
-            "fn g(a: Int) -> Int {\n    return a\n}\nfn f() -> Int {\n    return g()\n}",
-        );
-    }
 
     phase e022_names_a_parameter_no_form_can_ask_for;
     // A parameter no form can ask for says so where the action is run short, naming the action,
@@ -168,59 +85,6 @@ tilo_test_env::scenario! {
         assert!(
             message.contains("remind") && message.contains("headers") && message.contains("Bytes"),
             "{message}"
-        );
-    }
-
-    phase e023_container_outside_field;
-    {
-        expect("E023", "fn f(a: Set<Text>) -> Int {\n    return 1\n}");
-    }
-
-    phase e024_operator_operands;
-    {
-        expect("E024", "fn f() -> Int {\n    return 1 + 2.0\n}");
-    }
-
-    phase e025_cannot_infer;
-    {
-        expect("E025", "fn f() -> Int {\n    let x = []\n    return 1\n}");
-    }
-
-    phase e026_not_a_value;
-    {
-        expect(
-            "E026",
-            "fn g() -> Int {\n    return 1\n}\nfn f() -> Int {\n    return g\n}",
-        );
-    }
-
-    phase e027_unknown_method;
-    {
-        expect(
-            "E027",
-            "fn f() -> Int {\n    let a = 1\n    return a.nope()\n}",
-        );
-    }
-
-    phase e029_missing_return;
-    {
-        expect("E029", "fn f() -> Int {\n}");
-    }
-
-    phase e020_an_if_without_else_is_the_option_of_its_branch;
-    {
-        // `let x = if b { 1 }` is an Option: where an Int is expected, an Option of one is not one.
-        expect(
-            "E020",
-            "fn f(b: Bool) -> Int {\n    let x = if b { 1 }\n    return x\n}",
-        );
-    }
-
-    phase e020_invoke_from_takes_a_resource;
-    {
-        expect(
-            "E020",
-            "type C {\n    t: Text\n}\nroot C\naction a(c: C) {\n    c.t = \"x\"\n}\nscenario \"a thing\" -> C {\n    invoke(a(root C), from: 1)\n}\n",
         );
     }
 }
@@ -243,26 +107,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase e031_assign_to_a_counter;
-    {
-        expect("E031", &with_c("action a(c: C) {\n    c.n = 1\n}"));
-    }
-
-    phase e032_invalid_merge_kind;
-    {
-        expect("E032", "type T {\n    b: Bool merge counter\n}");
-    }
-
-    phase e033_assign_to_a_container;
-    {
-        expect("E033", &with_c("action a(c: C) {\n    c.items = 1\n}"));
-    }
-
-    phase e034_arithmetic_assignment_on_text;
-    {
-        expect("E034", &with_c("action a(c: C) {\n    c.t += \"x\"\n}"));
-    }
-
     phase e035_match_is_exhaustive_and_names_the_missing_variants;
     // USER REQUIREMENT (2026-10-20): "Exhaustive `match e { .a => expr_or_block, .b(x, y) => ...,
     // }` as an expression (error with the missing variants listed)."
@@ -276,98 +120,6 @@ tilo_test_env::scenario! {
             msg.iter()
                 .any(|d| d.code == "E035" && d.message.contains(".line") && d.message.contains(".box")),
             "{msg:?}"
-        );
-    }
-
-    phase e036_unknown_variant_or_payload;
-    {
-        expect("E036", &format!("{E}fn f() -> Shape {{\n    .circle\n}}"));
-        expect(
-            "E036",
-            &format!(
-                "{E}fn f(s: Shape) -> Int {{\n    match s {{\n        .dot => 0,\n        .line(a, b) => a,\n        .box(w, h) => w,\n    }}\n}}"
-            ),
-        );
-    }
-
-    phase e037_a_variant_needs_a_known_type;
-    {
-        expect(
-            "E037",
-            &format!("{E}fn f() -> Int {{\n    let s = .dot\n    return 1\n}}"),
-        );
-    }
-}
-
-tilo_test_env::scenario! {
-    /// E040 to E051 and E094: what may mutate, call, try, invoke and take a lambda.
-    fn effect_and_lambda_errors_e040_to_e051_and_e094;
-
-    phase e040_mutation_outside_an_action;
-    {
-        expect(
-            "E040",
-            &with_c("fn f(c: C) -> Int {\n    c.r = 1\n    return 1\n}"),
-        );
-    }
-
-    phase e043_fn_calls_an_action;
-    {
-        expect(
-            "E043",
-            &with_c("action a(c: C) {\n}\nfn f(c: C) -> Int {\n    a(c)\n    return 1\n}"),
-        );
-    }
-
-    phase e044_try_outside_an_action;
-    {
-        expect(
-            "E044",
-            &with_c("action a(c: C) {\n}\nfn f(c: C) -> Int {\n    let r = try a(c)\n    return 1\n}"),
-        );
-    }
-
-    phase e045_mutating_a_foreign_type;
-    {
-        expect_with(
-            "E045",
-            "use so.tilo.todo as todo\naction a(l: todo.TodoList) {\n    l.name = \"x\"\n}",
-        );
-    }
-
-    phase e047_builtin_in_the_wrong_form;
-    {
-        expect(
-            "E047",
-            "fn f() -> Text {\n    return model_call(\"k\", \"x\")\n}",
-        );
-        expect(
-            "E047",
-            "type C {\n    items: Collection<C>\n}\n/// Adds one.\nprimary action add(c: C) (icon: .plus) {\n    c.items.insert(C())\n}\nview list(c: C) {\n    let offered = actions(c)\n    text(\"{offered.len()}\")\n}",
-        );
-    }
-
-    phase e050_lambda_outside_a_builtin;
-    {
-        expect(
-            "E050",
-            "fn f() -> Int {\n    let g = x -> x\n    return 1\n}",
-        );
-    }
-
-    phase e051_lambda_expected;
-    {
-        expect(
-            "E051",
-            "fn f(l: List<Int>) -> Int {\n    return l.count(1)\n}",
-        );
-    }
-
-    phase e094_invoke_runs_only_in_a_scenario;
-    {
-        expect(
-            "E094",
-            "type C {\n    t: Text\n}\naction a(c: C) {\n    c.t = \"x\"\n}\nfn f(c: C) -> Int {\n    invoke(a(c), by: invoker)\n    1\n}\n",
         );
     }
 }
@@ -392,25 +144,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase e066_view_state_misuse;
-    {
-        // `set` names view state the view declares.
-        expect(
-            "E066",
-            "view v() {\n    state n: Int = 0\n    button(\"x\", on: set(m, 1))\n}",
-        );
-        // Only views have state.
-        expect(
-            "E066",
-            "action a() {\n}\nfn f() -> Int {\n    return 1\n}\naction g() {\n    set(x, 1)\n}",
-        );
-        // State is declared at the top of the view body.
-        expect(
-            "E066",
-            "view v() {\n    stack {\n        state n: Int = 0\n        text(\"x\")\n    }\n}",
-        );
-    }
-
     phase e067_open_takes_a_resource_from_a_view;
     {
         expect("E067", "view v() {\n    button(\"x\", on: open(1))\n}");
@@ -419,71 +152,6 @@ tilo_test_env::scenario! {
             &with_c(
                 "view w(c: C, n: Int) {\n    text(n)\n}\nview v(c: C) {\n    button(\"x\", on: open(c, view: w))\n}",
             ),
-        );
-    }
-
-    phase e067_a_file_is_chosen_from_a_view;
-    // A file is the person's own, asked for at their window: no action, fn or agent asks them.
-    {
-        expect(
-            "E067",
-            &with_c("action a(c: C) {\n    file.save(f, name: \"c.md\")\n}"),
-        );
-        expect(
-            "E067",
-            &with_c("fn f(c: C) -> Action {\n    file.choose(a(c))\n}"),
-        );
-        // What `file` takes, and what it does not.
-        expect(
-            "E026",
-            &with_c("view e(c: C) {\n    button(\"x\", on: file.copy(\"a\"))\n}"),
-        );
-    }
-
-    phase e060_unknown_ui_name;
-    {
-        expect("E060", "view v() {\n    nothing_here\n}");
-    }
-
-    phase e061_not_a_view;
-    {
-        expect(
-            "E061",
-            "fn g() -> Int {\n    return 1\n}\nview v() {\n    g()\n}",
-        );
-    }
-
-    phase e062_bind_target;
-    {
-        expect(
-            "E062",
-            &with_c("view v(c: C) {\n    input(bind: c.items)\n}"),
-        );
-    }
-
-    phase e063_unknown_property;
-    {
-        expect("E063", "view v() {\n    text(\"x\", nope: 2)\n}");
-        // A case field offers the enum's own cases: listing them again is refused.
-        expect(
-            "E063",
-            "enum Size {\n    small\n    large\n}\ntype S {\n    size: Size\n}\nview v(s: S) {\n    ui.EnumField(bind: s.size) {\n        ui.EnumOption(\"Small\", name: \"small\")\n    }\n}",
-        );
-    }
-
-    phase e070_pinned_references;
-    {
-        expect(
-            "E070",
-            &with_c("fn f() -> C {\n    return @t.x.C:abc@v1\n}"),
-        );
-    }
-
-    phase e071_unknown_reference_type;
-    {
-        expect(
-            "E071",
-            "fn f() -> Int {\n    let a = @nope.Zed:1\n    return 1\n}",
         );
     }
 
@@ -1213,4 +881,92 @@ tilo_test_env::scenario! {
         let got = codes(&wrong);
         assert!(got.iter().any(|c| c == "E020"), "{got:?}\n{wrong}");
     }
+}
+
+/// Each error code, reported for a source that makes it.
+#[test]
+fn each_error_code_is_reported_for_a_source_that_makes_it() {
+    let cases: Vec<(&str, &str, String)> = vec![
+        ("e001_unexpected_character", "E001", "fn f() -> Int {\n    return 1 $ 2\n}".to_owned()),
+        ("e002_unterminated_string", "E002", "fn f() -> Text {\n    return \"abc\n}".to_owned()),
+        ("e011_duplicate_declaration", "E011", "fn f() -> Int {\n    return 1\n}\nfn f() -> Int {\n    return 2\n}".to_owned()),
+        ("e012_duplicate_parameter", "E012", "fn f(a: Int, a: Int) -> Int {\n    return a\n}".to_owned()),
+        ("e013_unknown_type", "E013", "fn f(a: Nope) -> Int {\n    return 1\n}".to_owned()),
+        ("e014_unknown_name", "E014", "fn f() -> Int {\n    return zzz\n}".to_owned()),
+        ("e015_unknown_package", "E015", "use so.nothing.here as n".to_owned()),
+        ("e016_name_case", "E016", "type lower {\n}".to_owned()),
+        ("e019_default_must_be_literal", "E019", "type T {\n    a: Int = 1 + 2\n}".to_owned()),
+        ("e018_root_and_default_view_1", "E018", "type T {\n    n: Int\n}\nroot T".to_owned()),
+        ("e018_root_and_default_view_2", "E018", "type T {\n    n: Int\n}\nview v(t: T, n: Int) {\n    text(n)\n}\ndefault view v for T".to_owned()),
+        ("e018_root_and_default_view_3", "E018", "enum E {\n    a\n}\nroot E".to_owned()),
+        ("e020_type_mismatch", "E020", "fn f() -> Int {\n    return \"x\"\n}".to_owned()),
+        ("e021_unknown_field", "E021", with_c("fn f(c: C) -> Int {\n    return c.nope\n}")),
+        ("e022_wrong_arguments", "E022", "fn g(a: Int) -> Int {\n    return a\n}\nfn f() -> Int {\n    return g()\n}".to_owned()),
+        ("e023_container_outside_field", "E023", "fn f(a: Set<Text>) -> Int {\n    return 1\n}".to_owned()),
+        ("e024_operator_operands", "E024", "fn f() -> Int {\n    return 1 + 2.0\n}".to_owned()),
+        ("e025_cannot_infer", "E025", "fn f() -> Int {\n    let x = []\n    return 1\n}".to_owned()),
+        ("e026_not_a_value", "E026", "fn g() -> Int {\n    return 1\n}\nfn f() -> Int {\n    return g\n}".to_owned()),
+        ("e027_unknown_method", "E027", "fn f() -> Int {\n    let a = 1\n    return a.nope()\n}".to_owned()),
+        ("e029_missing_return", "E029", "fn f() -> Int {\n}".to_owned()),
+        ("e020_an_if_without_else_is_the_option_of_its_branch", "E020", "fn f(b: Bool) -> Int {\n    let x = if b { 1 }\n    return x\n}".to_owned()),
+        ("e020_invoke_from_takes_a_resource", "E020", "type C {\n    t: Text\n}\nroot C\naction a(c: C) {\n    c.t = \"x\"\n}\nscenario \"a thing\" -> C {\n    invoke(a(root C), from: 1)\n}\n".to_owned()),
+        ("e031_assign_to_a_counter", "E031", with_c("action a(c: C) {\n    c.n = 1\n}")),
+        ("e032_invalid_merge_kind", "E032", "type T {\n    b: Bool merge counter\n}".to_owned()),
+        ("e033_assign_to_a_container", "E033", with_c("action a(c: C) {\n    c.items = 1\n}")),
+        ("e034_arithmetic_assignment_on_text", "E034", with_c("action a(c: C) {\n    c.t += \"x\"\n}")),
+        ("e036_unknown_variant_or_payload_1", "E036", format!("{E}fn f() -> Shape {{\n    .circle\n}}")),
+        ("e036_unknown_variant_or_payload_2", "E036", format!(
+                "{E}fn f(s: Shape) -> Int {{\n    match s {{\n        .dot => 0,\n        .line(a, b) => a,\n        .box(w, h) => w,\n    }}\n}}"
+            )),
+        ("e037_a_variant_needs_a_known_type", "E037", format!("{E}fn f() -> Int {{\n    let s = .dot\n    return 1\n}}")),
+        ("e040_mutation_outside_an_action", "E040", with_c("fn f(c: C) -> Int {\n    c.r = 1\n    return 1\n}")),
+        ("e043_fn_calls_an_action", "E043", with_c("action a(c: C) {\n}\nfn f(c: C) -> Int {\n    a(c)\n    return 1\n}")),
+        ("e044_try_outside_an_action", "E044", with_c("action a(c: C) {\n}\nfn f(c: C) -> Int {\n    let r = try a(c)\n    return 1\n}")),
+        ("e047_builtin_in_the_wrong_form_1", "E047", "fn f() -> Text {\n    return model_call(\"k\", \"x\")\n}".to_owned()),
+        ("e047_builtin_in_the_wrong_form_2", "E047", "type C {\n    items: Collection<C>\n}\n/// Adds one.\nprimary action add(c: C) (icon: .plus) {\n    c.items.insert(C())\n}\nview list(c: C) {\n    let offered = actions(c)\n    text(\"{offered.len()}\")\n}".to_owned()),
+        ("e050_lambda_outside_a_builtin", "E050", "fn f() -> Int {\n    let g = x -> x\n    return 1\n}".to_owned()),
+        ("e051_lambda_expected", "E051", "fn f(l: List<Int>) -> Int {\n    return l.count(1)\n}".to_owned()),
+        ("e094_invoke_runs_only_in_a_scenario", "E094", "type C {\n    t: Text\n}\naction a(c: C) {\n    c.t = \"x\"\n}\nfn f(c: C) -> Int {\n    invoke(a(c), by: invoker)\n    1\n}\n".to_owned()),
+        ("e066_view_state_misuse_1", "E066", "view v() {\n    state n: Int = 0\n    button(\"x\", on: set(m, 1))\n}".to_owned()),
+        ("e066_view_state_misuse_2", "E066", "action a() {\n}\nfn f() -> Int {\n    return 1\n}\naction g() {\n    set(x, 1)\n}".to_owned()),
+        ("e066_view_state_misuse_3", "E066", "view v() {\n    stack {\n        state n: Int = 0\n        text(\"x\")\n    }\n}".to_owned()),
+        ("e067_a_file_is_chosen_from_a_view_1", "E067", with_c("action a(c: C) {\n    file.save(f, name: \"c.md\")\n}")),
+        ("e067_a_file_is_chosen_from_a_view_2", "E067", with_c("fn f(c: C) -> Action {\n    file.choose(a(c))\n}")),
+        ("e067_a_file_is_chosen_from_a_view_3", "E026", with_c("view e(c: C) {\n    button(\"x\", on: file.copy(\"a\"))\n}")),
+        ("e060_unknown_ui_name", "E060", "view v() {\n    nothing_here\n}".to_owned()),
+        ("e061_not_a_view", "E061", "fn g() -> Int {\n    return 1\n}\nview v() {\n    g()\n}".to_owned()),
+        ("e062_bind_target", "E062", with_c("view v(c: C) {\n    input(bind: c.items)\n}")),
+        ("e063_unknown_property_1", "E063", "view v() {\n    text(\"x\", nope: 2)\n}".to_owned()),
+        ("e063_unknown_property_2", "E063", "enum Size {\n    small\n    large\n}\ntype S {\n    size: Size\n}\nview v(s: S) {\n    ui.EnumField(bind: s.size) {\n        ui.EnumOption(\"Small\", name: \"small\")\n    }\n}".to_owned()),
+        ("e070_pinned_references", "E070", with_c("fn f() -> C {\n    return @t.x.C:abc@v1\n}")),
+        ("e071_unknown_reference_type", "E071", "fn f() -> Int {\n    let a = @nope.Zed:1\n    return 1\n}".to_owned()),
+    ];
+    let missed: Vec<String> = cases
+        .iter()
+        .filter_map(|(case, code, body)| {
+            let got = codes(body);
+            (!got.iter().any(|c| c == code))
+                .then(|| format!("{case}: expected {code} for:\n{body}\ngot {got:?}"))
+        })
+        .collect();
+    assert!(missed.is_empty(), "{}", missed.join("\n\n"));
+}
+
+/// Each error code a package that imports Todo makes.
+#[test]
+fn each_error_code_is_reported_against_an_imported_package() {
+    let cases: Vec<(&str, &str, String)> = vec![(
+        "e045_mutating_a_foreign_type",
+        "E045",
+        "use so.tilo.todo as todo\naction a(l: todo.TodoList) {\n    l.name = \"x\"\n}".to_owned(),
+    )];
+    let missed: Vec<String> = cases
+        .iter()
+        .filter_map(|(case, code, body)| {
+            let got = with_todo(body);
+            (!got.iter().any(|c| c == code))
+                .then(|| format!("{case}: expected {code} for:\n{body}\ngot {got:?}"))
+        })
+        .collect();
+    assert!(missed.is_empty(), "{}", missed.join("\n\n"));
 }
