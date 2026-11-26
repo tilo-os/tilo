@@ -309,7 +309,28 @@ impl StatePeer {
                 now,
             )
             .map_err(|error| error.to_string())?;
-        Ok(outcome.changed || outcome.metadata_changed)
+        let wrote = outcome.changed || outcome.metadata_changed;
+        // The owner's or an administrator's device takes the rows of expired page devices out
+        // as it writes: a page certifies a fresh device on every load, and its row would
+        // otherwise stay for every visit. Access already leaves an expired device out, so nothing
+        // anyone may do changes; the rows go under a writer who may take them out, never under a
+        // host's, which holds no role. Its own write finds none left and stops.
+        if wrote && self.governs(key, now) {
+            self.governance_mut().forget_expired_devices(key, now)?;
+        }
+        Ok(wrote)
+    }
+
+    /// Whether `key`'s device is the owner's or an administrator's, as the member list holds it.
+    fn governs(&self, key: &dyn DeviceSigner, now: SystemTime) -> bool {
+        let Ok(cert) = self.certificate(&key.device_public_key(), now) else {
+            return false;
+        };
+        let person = hex::encode(cert.user_public_key);
+        self.core.workspace_doc.as_ref().is_some_and(|doc| {
+            let policy = doc.workspace_policy(&self.core.workspace);
+            policy.is_owner(&person) || policy.is_administrator(&person)
+        })
     }
 
     /// Write into `doc`, the governance a change of `key`'s device leaves, the

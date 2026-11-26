@@ -997,9 +997,10 @@ with `collab_types::WorkspaceGrant`, the API server's own grant file;
 `apps/workspace_memberships`, a path for agents; and `PersonalStore`, which
 is not governed at all.
 
-No device governs a workspace. A host still prunes expired page devices'
-rows and detaches servers as an administrator (`governance.rs`
-`forget_expired_devices`, 160 lines; `hosts.rs` detach, 16).
+No device governs a workspace. A host signs no member changes of its own
+initiative: a device of the owner's or an administrator's prunes expired page
+devices' rows with the next governance change it signs, and takes a server out
+with a signed change of the workspace's hosts.
 
 Per-person stores still on `main`:
 
@@ -1052,8 +1053,8 @@ workspace vault, despite their names.
   of anyone else stores its sealed frames and writes nothing. Starting a server's
   keeping for the owner is a membership change in the workspace's operation log that
   only the owner signs, unless the server's person already administers; it makes that
-  person an administrator for as long as the keeping lasts, and any administrator may
-  end it. The device that writes a record
+  person an administrator for as long as the keeping lasts. Ending a keeping is a signed
+  change by a device of the owner or an administrator. The device that writes a record
   pushes the blobs it references to the workspace's hosts with the record, sealed
   like it, and the hosts keep them: no host walks a record for references, and no
   blob address is listed outside the sealed frame. The push never holds up the
@@ -1064,7 +1065,7 @@ workspace vault, despite their names.
 
 | Delete | Size |
 |---|---|
-| The host's role in workspaces it keeps for others: its pruning of expired page devices' rows and its detach of a server, which become the owner's signed changes, and `WorkspaceRuntime`'s copy of the member list (`settle_members`, `admits_person`, `lists`), which reads the replica as `LinkFacts` does. A host is named among the workspace's hosts and holds no role there | ~250 |
+| The host's role in workspaces it keeps for others: the administrator row a hand-over leaves it, and what it signs under that row (the invitations it mints for a person's own workspace, owner links and server keys; grants, revocations, profile import and page role changes), which become self-written rows and changes signed by the members' own devices. A host is named among the workspace's hosts and holds no role there. `WorkspaceRuntime`'s copy of the member list (`settle_members`, `admits_person`, `lists`), which reads the replica as `LinkFacts` does | to be measured |
 | `WorkspaceRoles.custom_roles` | to be measured |
 | `WorkspaceRuntime`'s live relay path (subscriber routing, presence, the live session, invocation replay), deleted in the push that carries live traffic over `tilo-peer-state` links | ~10,000–20,000 with `peer/` |
 | `tilo-api` grant file, `WorkspaceGrant`, `apps/workspace_memberships` | ~3,000 |

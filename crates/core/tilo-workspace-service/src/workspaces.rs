@@ -3058,26 +3058,6 @@ impl Workspaces {
         settled
     }
 
-    /// Take every device row of `workspace` whose certificate has expired out
-    /// of its governance: a page's certificate lasts an hour, and this is what
-    /// keeps a workspace many people visit from keeping a row per visit.
-    /// Returns whether the workspace changed.
-    fn forget_expired_devices(&self, workspace: &mut HostedWorkspace) -> Result<bool, String> {
-        let host = &self.inner.host;
-        let now = tilo_clock::wall();
-        let mut candidate = workspace.peer().clone();
-        if !candidate
-            .governance_mut()
-            .forget_expired_devices(&host.key, now)?
-        {
-            return Ok(false);
-        }
-        workspace.keep(candidate, &host.key, now, |record, _| {
-            Ok(record.collaboration.clone())
-        })?;
-        Ok(true)
-    }
-
     /// Take `message`, `author`'s write to the record `(app, record)` the
     /// host keeps, into its copy, compact the workspace's sealed histories
     /// before one is full (past its bound the copy would stop following
@@ -3241,11 +3221,6 @@ impl Workspaces {
         // This host opened the workspace: the receipts of the calls it admits there are signed
         // as its device from now on, and no other workspace's are unless it opened that one too.
         tilo_invocation_journal::opened(&workspace.workspace_id().to_string());
-        // A page's device certificate lasts an hour: the row it left goes with
-        // it, so a workspace many people visit keeps no row per visit.
-        if self.forget_expired_devices(workspace)? {
-            tracing::debug!(workspace = %workspace.workspace(), "workspace settled without the devices whose certificates expired");
-        }
         let now = tilo_clock::wall();
         let access: MemberListAccess = workspace.peer().governance().member_list_access(now)?;
         let (device_access, _) = workspace

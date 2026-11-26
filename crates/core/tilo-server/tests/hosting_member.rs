@@ -721,13 +721,39 @@ async fn another_persons_host_holds_a_workspace_its_host_grants_it() {
         "the laptop reads the change as the phone's"
     );
 
-    // Detached, the holder lets the workspace go: it answers them no link at all.
+    // Named among the hosts, the holder holds no role: it takes no host out, neither itself nor
+    // the device the workspace was made on.
+    for (host, what) in [(&server, "itself"), (&laptop, "another host")] {
+        let refused = holder
+            .host
+            .workspaces()
+            .detach_host(&workspace.workspace, host.device_pubkey(), None)
+            .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.contains("owner or one of its administrators")),
+            "the holder may not take {what} out: {refused:?}"
+        );
+    }
+
+    // The owner's device takes it out, signed as hers: the holder leaves the workspace's hosts
+    // and lets the workspace go, answering them no link at all.
     assert!(
         workspaces
             .detach_host(&workspace.workspace, server.device_pubkey(), None)
             .await
             .unwrap(),
         "the holder confirms it stopped"
+    );
+    assert!(
+        !workspaces
+            .hosts(&workspace.workspace)
+            .await
+            .unwrap()
+            .iter()
+            .any(|hint| hint.host.device_public_key == server.device_pubkey()),
+        "the holder is no host of the workspace"
     );
     refused_soon(&holder, &phone, workspace.workspace_id).await;
 

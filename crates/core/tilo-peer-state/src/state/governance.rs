@@ -1410,13 +1410,14 @@ impl PeerGovernanceMut<'_> {
     /// what keeps a workspace that many people visit from keeping a row per
     /// visit. Rows that record an admission, a delegation or a revocation
     /// stay: a person's member devices are the workspace's for as long as the
-    /// person is. Whether the workspace changed.
+    /// person is. The owner's or an administrator's device does it after each governance change
+    /// it writes. Whether the workspace changed.
     ///
     /// # Errors
     ///
     /// Returns an error if the change is not `key`'s device's to make, a row does not
     /// read back, or governance cannot be updated.
-    pub fn forget_expired_devices(
+    pub(super) fn forget_expired_devices(
         self,
         key: &dyn DeviceSigner,
         now: SystemTime,

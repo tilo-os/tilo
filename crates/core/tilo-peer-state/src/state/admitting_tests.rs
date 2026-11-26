@@ -165,10 +165,10 @@ tilo_test_env::scenario! {
         assert_ne!(user, stranger.user_public_key);
     }
 
-    phase a_workspace_forgets_an_expired_page_devices_row_and_keeps_admitted_ones;
+    phase the_owners_next_change_forgets_an_expired_page_devices_row_and_keeps_admitted_ones;
     // A page's device certificate lasts an hour and a page certifies a fresh one
-    // on every load: the workspace forgets an expired row nothing keeps, and keeps
-    // every row that records an admission.
+    // on every load: the owner's next change forgets an expired row nothing keeps,
+    // and keeps every row that records an admission.
     {
         let (mut peer, owner_key, _, _, now) = crate::admission_tests::seeded();
         let owner = peer.owner_certificates()[0].clone();
@@ -202,24 +202,31 @@ tilo_test_env::scenario! {
             .unwrap();
 
         let rows = |peer: &StatePeer| received(peer).identities;
-        let before = rows(&peer);
-        assert!(
-            !peer
-                .governance_mut()
-                .forget_expired_devices(&owner_key, now)
-                .unwrap()
-        );
-        assert_eq!(rows(&peer).len(), before.len(), "live rows stay");
+        let page_row = hex::encode(page.device_public_key);
+        assert!(rows(&peer).contains_key(&page_row));
 
+        // Expired, the page's device is in nobody's access at once, while its row waits for
+        // the next change a device of the owner's or an administrator's signs.
         let later = now + std::time::Duration::from_secs(2 * 60 * 60);
+        let access = peer.governance().member_list_access(later).unwrap();
+        assert!(
+            !access.member_devices.contains(&page.device_public_key),
+            "access leaves the expired page device out"
+        );
+        assert!(
+            rows(&peer).contains_key(&page_row),
+            "no device prunes on its own"
+        );
+
+        // The owner's next change takes the expired row out with it.
         assert!(
             peer.governance_mut()
-                .forget_expired_devices(&owner_key, later)
+                .set_member_role(member.1.user_public_key, Role::Editor, &owner_key, later)
                 .unwrap()
         );
         let after = rows(&peer);
         assert!(
-            !after.contains_key(&hex::encode(page.device_public_key)),
+            !after.contains_key(&page_row),
             "an expired page device's row is gone"
         );
         for kept in [
@@ -231,7 +238,7 @@ tilo_test_env::scenario! {
         }
         assert_eq!(
             peer.role(&member.1.device_public_key, later).unwrap(),
-            Role::Viewer
+            Role::Editor
         );
     }
 }

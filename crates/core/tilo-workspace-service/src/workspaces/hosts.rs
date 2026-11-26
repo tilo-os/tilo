@@ -1149,7 +1149,8 @@ impl Workspaces {
         reached.ask(HOST_WORKSPACE, arguments).await
     }
 
-    /// Stop having the holder `device` hold `workspace`, as its owners chose:
+    /// Stop having the holder `device` hold `workspace`, as its owner or an administrator chose,
+    /// signed by this device, which must be one of theirs:
     /// its address leaves the workspace's holders, and the holder is asked to
     /// stop ([`UNHOST_WORKSPACE`]) at `addr` when given. A device the workspace
     /// held only to serve it leaves its roster too, so nothing it writes
@@ -1169,7 +1170,8 @@ impl Workspaces {
     ///
     /// # Errors
     ///
-    /// The workspace is not held here, its hosts could not be recorded, or
+    /// This device is not one of the owner's or an administrator's, the
+    /// workspace is not held here, its hosts could not be recorded, or
     /// the changes a device reached keeps, or this device's, were not taken
     /// in: that device keeps the workspace then.
     pub async fn detach_host(
@@ -1184,6 +1186,17 @@ impl Workspaces {
                 .await
                 .map_err(|error| error.to_string())?;
             let hosted = hosted.lock().await;
+            // Taking a host out is a signed change of the workspace's hosts, and only a device of
+            // its owner or of one of its administrators signs it: being named among the hosts
+            // gives a host no role, over itself or any other host.
+            let me = hex::encode(self.inner.host.cert.user_public_key);
+            let policy = hosted.peer().governance().member_policy()?;
+            if !policy.is_owner(&me) && !policy.is_administrator(&me) {
+                return Err(
+                    "only a device of the workspace's owner or one of its administrators takes a host out"
+                        .to_owned(),
+                );
+            }
             let known = hosted
                 .peer()
                 .governance()

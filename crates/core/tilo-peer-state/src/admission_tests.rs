@@ -1566,6 +1566,9 @@ tilo_test_env::scenario! {
     phase expired_known_identity_does_not_block_listed_join;
     {
         let (mut owner_copy, a, _, _, now) = seeded();
+        // The device that joins later is an editor's: one of the owner's or an administrator's
+        // would take the expired row out with its own, and the row is what this phase reads.
+        let (editor, _) = add_editor(&mut owner_copy, &a, now);
         let root = SigningKey::from_bytes(&[1; 32]);
         let mut cert = owner_copy.owner_certificates()[0].clone();
         cert.device_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
@@ -1594,13 +1597,10 @@ tilo_test_env::scenario! {
             ),
             "a warm policy cache must not cache certificate validity"
         );
-        let mut next = owner_copy
-            .owner_certificates()
-            .into_iter()
-            .find(|cert| cert.device_public_key == a.verifying_key().to_bytes())
-            .unwrap();
+        let mut next = editor;
         next.device_public_key = SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes();
-        sign_device_cert(&mut next, &root).unwrap();
+        next.device_label = "the editor's further device".into();
+        sign_device_cert(&mut next, &SigningKey::from_bytes(&[5; 32])).unwrap();
         assert!(
             owner_copy
                 .governance_mut()
