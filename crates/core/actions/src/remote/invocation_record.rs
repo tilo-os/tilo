@@ -15,9 +15,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use super::secret_arguments::{SecretAnswers, SecretParameters, secret_arguments, without_secrets};
 use super::workspace_invocations::{CANCEL, Origin, PROVIDER, RETRY, Spend, UNDO};
 use super::{
-    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
-    InvocationState, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending, ReceiptStatus,
-    RemoteActionTarget, ResourceWake, RunningTool, pending,
+    ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
+    InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE,
+    MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionTarget, ResourceWake, RunningTool,
+    pending, settle_with,
 };
 use crate::InvocationId;
 
@@ -598,6 +599,11 @@ impl Invocations {
     /// A call is stopped, run again or taken back by its caller, by the person its agent works
     /// for, or by whoever `may_write_origin` says may write the resource it was made from.
     /// Anyone else is refused in words a person reads.
+    ///
+    /// Taking it back is the person's own act, not a run's: it rewrites the records under their
+    /// name, where stopping a call or running it again only ends or starts one of theirs. So the
+    /// person answers for a take-back as themselves, never through another live run of theirs,
+    /// which borrows none of what this one wrote ([`Caller::continues`]).
     #[must_use]
     pub fn answer(
         self: &Arc<Self>,
@@ -619,7 +625,7 @@ impl Invocations {
         let Some(recorded) = self.find(&id) else {
             return Some(Pending::ready(Err(ActionCallError::UnknownInvocation)));
         };
-        if !Self::may_manage(caller, &recorded, may_write_origin) {
+        if !Self::may_manage(caller, &recorded, may_write_origin, action == UNDO) {
             let verb = match action {
                 RETRY => "run it again",
                 UNDO => "take it back",
@@ -770,19 +776,27 @@ impl Invocations {
         self.kept().by_id.get(id).cloned()
     }
 
-    /// Whether `caller` may stop `recorded` or run it again: it is its caller
+    /// Whether `caller` may stop `recorded`, run it again or take it back: it is its caller
     /// ([`Caller::continues`]), the person the agent that made it works for, or someone who may
     /// write the resource it was made from, as `may_write_origin` reads it now.
+    ///
+    /// `takes_back` says the record's content is taken back, not only the call ended or started
+    /// again: that is the person's own act, so their answer is never given through another live
+    /// run of theirs than the one that made the call ([`another_run`]).
     fn may_manage(
         caller: &Caller,
         recorded: &Recorded,
         may_write_origin: &OriginWrites<'_>,
+        takes_back: bool,
     ) -> bool {
+        let person = |owner: &Caller| {
+            agent_person_is(caller, owner) && !(takes_back && another_run(caller, recorded))
+        };
         caller.continues(&recorded.caller)
-            || agent_person_is(caller, &recorded.caller)
+            || person(&recorded.caller)
             // A session's call is made by its person's connection and asked as the agent the
             // session runs: the person it works for may stop it either way.
-            || agent_person_is(caller, &recorded.asked)
+            || person(&recorded.asked)
             || recorded
                 .origin
                 .as_ref()
@@ -832,7 +846,7 @@ impl Invocations {
         may_write_origin: &OriginWrites<'_>,
     ) -> Option<Pending<Result<(), ActionCallError>>> {
         let recorded = self.find(id)?;
-        if !Self::may_manage(caller, &recorded, may_write_origin) {
+        if !Self::may_manage(caller, &recorded, may_write_origin, false) {
             return Some(Pending::ready(Err(refused(
                 "stop it",
                 recorded.origin.as_ref(),
@@ -851,7 +865,9 @@ impl Invocations {
 ///
 /// The store's change history knows which changes a run made, so nothing is rebuilt here: the
 /// record publishes the history verb `undo` with an `invocation` argument, and this runs it as
-/// the route's caller. `#undo` and a decline both ask it, keyed by the invocation.
+/// the route's caller. `#undo` and a decline both ask it, keyed by the invocation. The answer
+/// says how taking it back went, not only that the verb was admitted: a host that runs it apart
+/// is followed until it ends.
 pub fn take_back_run(
     route: &Route,
     at: &str,
@@ -909,17 +925,49 @@ pub fn take_back_run(
             appearance: None,
             signed: None,
         };
+        let following = Arc::clone(&provider);
+        let across = runs_as.clone();
         provider.invoke(&runs_as, request).then(move |answered| {
-            complete.complete(match answered {
-                None => Err(ActionCallError::Unavailable {
+            match answered {
+                None => complete.complete(Err(ActionCallError::Unavailable {
                     reason: "the record did not answer".into(),
-                }),
-                Some(Ok(receipt)) => taken(receipt.status),
-                Some(Err(error)) => Err(error),
-            });
+                })),
+                Some(Err(error)) => complete.complete(Err(error)),
+                // A record whose host keeps its history apart admits the verb before it runs it:
+                // the caller hears how taking it back went once the changes are gone.
+                Some(Ok(receipt)) => followed(following, across, receipt, complete),
+            }
         });
     });
     answer
+}
+
+/// Complete `done` with how taking back `receipt` went, once what it admitted ended: a host that
+/// only accepted the record's `undo` is followed at `provider`, for as long as it runs, until it
+/// says how it went ([`super::settle_with`]). A provider that cannot say how it stands leaves it
+/// running.
+fn followed(
+    provider: Arc<dyn ActionProvider + Send + Sync>,
+    runs_as: Caller,
+    receipt: InvocationReceipt,
+    done: Completer<Result<(), ActionCallError>>,
+) {
+    if !matches!(receipt.status, ReceiptStatus::Accepted) || done.is_abandoned() {
+        done.complete(taken(receipt.status));
+        return;
+    }
+    let now = tilo_clock::now();
+    let until = now.checked_add(MAX_REMOTE_WAIT).unwrap_or(now);
+    settle_with(&provider, &runs_as, receipt.invocation, None, until).then(move |state| {
+        match state.flatten() {
+            // Still running when a wait ran out: follow it again, as long as it runs.
+            Some(state) if !state.is_terminal() && tilo_clock::now() >= until => {
+                followed(provider, runs_as, state.receipt(), done);
+            }
+            Some(state) => done.complete(taken(state.receipt().status)),
+            None => done.complete(taken(ReceiptStatus::Accepted)),
+        }
+    });
 }
 
 /// The `undo` action `rows` offer that takes an invocation back, its provider and address:
@@ -998,6 +1046,16 @@ fn agent_person_is(caller: &Caller, owner: &Caller) -> bool {
         && !acting.is_agent()
         && !acting.is_bot()
         && acting.app().is_none()
+}
+
+/// Whether `caller` is a live run of the person's other than the live run that made `recorded`'s
+/// call: a second connection of theirs borrows none of what the first wrote, as it borrows none
+/// of the invocations it made ([`Caller::continues`]). A call an agent's own caller made ran in
+/// no run of theirs, so any of them answers for it.
+fn another_run(caller: &Caller, recorded: &Recorded) -> bool {
+    caller.execution_is_live()
+        && recorded.caller.execution_is_live()
+        && caller.execution_id() != recorded.caller.execution_id()
 }
 
 /// Why `caller` may not `verb` an invocation: who may, and the resource that decides it.
@@ -1585,6 +1643,62 @@ mod tests {
             runs.writes(&id).is_empty(),
             "both of the agent's writes went"
         );
+    }
+
+    /// A call one live run of a person made for its agent is taken back by the person as
+    /// themselves, never through another live run of theirs: that run is a connection of its own.
+    /// Stopping the call is not the person's own act, so it stays theirs from anywhere.
+    #[test]
+    fn another_live_run_of_the_person_does_not_take_its_agents_call_back() {
+        let invocations = Arc::new(Invocations::default());
+        let never = |_: &Caller, _: &Origin| false;
+        let agent = Caller::local_agent("scout", "ada");
+        let run = Caller::local_person("ada")
+            .in_workspace("w1")
+            .in_new_execution();
+        let request = request();
+        let id = request.invocation;
+        let runs = Arc::new(Runs::default());
+        invocations.record(
+            &run,
+            &agent,
+            &request,
+            Some("w1"),
+            (runs.clone(), agent.clone()),
+        );
+        made(&runs, &id, "Shipping notes.", " Sent.");
+
+        let other = Caller::local_person("ada")
+            .in_workspace("w1")
+            .in_new_execution();
+        assert!(
+            !other.continues(&run),
+            "another execution is not its caller"
+        );
+        let refused = answered(&invocations, &other, &record_action(&id, UNDO), &never)
+            .expect_err("another run of the person is refused");
+        let ActionCallError::Refused { reason } = &refused else {
+            panic!("another run of the person is refused in words, not {refused:?}");
+        };
+        assert!(
+            reason.starts_with("only the caller who made this invocation"),
+            "{reason}"
+        );
+        assert_eq!(runs.writes(&id).len(), 2, "nothing was taken back");
+
+        let mut stopping = invocations
+            .cancel(&other, &id, &never)
+            .expect("the call is recorded");
+        assert!(
+            matches!(stopping.poll_ready(), PendingPoll::Ready(Ok(()))),
+            "stopping it is not taken back, so another run may ask"
+        );
+
+        // The person themselves takes it back: their own caller, in no run of its own.
+        let person = Caller::local_person("ada").in_workspace("w1");
+        answered(&invocations, &person, &record_action(&id, UNDO), &never)
+            .expect("the person takes it back");
+        assert!(runs.writes(&id).is_empty(), "both writes went");
     }
 
     #[test]

@@ -579,7 +579,7 @@ fn a_caller_neither_its_own_nor_a_writer_of_its_origin_is_refused() {
 /// refused, and asking again is refused in words a person reads.
 #[test]
 fn an_agents_run_is_taken_back_whole_through_its_record() {
-    use crate::language::chat::{chat_holds, opens};
+    use crate::language::chat::{chat_holds, chat_stands_with, opens};
 
     host::run_with(&[CHAT_PACKAGE], |host| async move {
         opens(host.as_ref())
@@ -608,6 +608,13 @@ fn an_agents_run_is_taken_back_whole_through_its_record() {
                 .await
                 .unwrap_or_else(|error| panic!("{error}")),
             "the run wrote {posted:?}"
+        );
+        assert_eq!(
+            chat_stands_with(host.as_ref(), posted)
+                .await
+                .unwrap_or_else(|error| panic!("{error}")),
+            Some(true),
+            "the record stands holding {posted:?}"
         );
 
         let dispatch = host.dispatch();
@@ -650,10 +657,13 @@ fn an_agents_run_is_taken_back_whole_through_its_record() {
             .expect("the person takes it back"),
         );
         assert!(undone.is_null(), "the undo answers nothing of its own");
-        assert!(
-            !chat_holds(host.as_ref(), posted)
+        // The record stands without the write: what it holds now, not the history the write was
+        // taken back out of, which keeps its bytes.
+        assert_eq!(
+            chat_stands_with(host.as_ref(), posted)
                 .await
                 .unwrap_or_else(|error| panic!("{error}")),
+            Some(false),
             "the run's write {posted:?} is gone"
         );
         let taken = one(dispatch.as_ref(), &person, &run).await;

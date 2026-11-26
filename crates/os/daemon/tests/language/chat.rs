@@ -95,6 +95,39 @@ pub(crate) async fn chat_holds_soon(host: &host::Host, needle: &str) -> bool {
     }
 }
 
+/// Whether what the app's records of `workspace` *stand at* now holds `needle`: each record's
+/// document as it stands, not the bytes of the history it was written in, which a take-back
+/// leaves as they were. [`None`] when the app keeps no record that reads, so a caller cannot
+/// mistake a record that was never read for one holding nothing.
+pub(crate) async fn chat_stands_with(
+    host: &host::Host,
+    needle: &str,
+) -> Result<Option<bool>, String> {
+    let daemon = host.daemon();
+    let workspaces = daemon.workspaces();
+    let workspace = host.workspace();
+    let routes = workspaces
+        .document_routes(workspace)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut read = false;
+    for (app, record) in routes.into_iter().filter(|(app, _)| app == CHAT) {
+        let Some(bytes) = workspaces
+            .resource_document(workspace, &app, &record)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
+            continue;
+        };
+        let doc = automerge::Automerge::load(&bytes).map_err(|error| error.to_string())?;
+        read = true;
+        if format!("{:?}", doc.hydrate(None)).contains(needle) {
+            return Ok(Some(true));
+        }
+    }
+    Ok(read.then_some(false))
+}
+
 /// [`chat_holds`] asked again until the record stops holding `needle`: an undo the API
 /// answered for reaches the daemon's record as the app's changes do.
 pub(crate) async fn chat_stops_holding(host: &host::Host, needle: &str) -> bool {
