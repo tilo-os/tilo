@@ -697,7 +697,6 @@ impl ServerAgents {
         }
         let reply = scope.reply(turn);
         let item = Id::from_raw(&turn.agent.id.0);
-        let resource = tilo_resource::items::item_resource_id::<WorkspaceAgents>("agents", &item);
         let route = DocumentRoute {
             app_id: tilo_workspace_agent::OWNER.to_owned(),
             cluster_id: scope.workspace.clone(),
@@ -706,6 +705,18 @@ impl ServerAgents {
         let action = WorkspaceAgents::SUB_AGENT_STANDS;
         let line = cut(line.trim(), sub::MAX_LINE.saturating_mul(2));
         let written = async {
+            // Assistant publishes the workspace roster beside its own primary record. Open
+            // that record with the child's signed caller, including on its first turn here.
+            super::invoke_at(
+                &reply.provider,
+                &reply.caller,
+                tilo_actions::remote::application_open_target(
+                    workspace,
+                    tilo_workspace_agent::OWNER,
+                ),
+                tilo_actions::remote::InvokeArgument::None,
+            )
+            .await?;
             let arguments =
                 action.arguments(&tilo_workspace_agent::workspace_agents::SubAgentStands {
                     agent: item,
@@ -716,7 +727,7 @@ impl ServerAgents {
                 &reply.provider,
                 &reply.caller,
                 &route,
-                &resource,
+                tilo_workspace_agent::KIND,
                 action.id(),
                 arguments,
             )

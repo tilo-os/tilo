@@ -1267,43 +1267,112 @@ async fn its_person_asks_for_a_sub_agent_and_the_server_starts_it() {
         |list: &WorkspaceAgents| list.agents.iter().filter(|agent| agent.is_sub()).count();
     assert_eq!(sub_agents(&roster(&workspaces, &workspace).await), 1);
 
-    // An agent's ask under that kind starts nothing: the sub-agent asks in its starter's thread.
-    // Outside a turn nothing is taken in a sub-agent's name but what its own rules let it, and
-    // asking an agent is none of that.
-    let outside = ada.clone().delegated_to(id.clone()).named("Find the deck");
-    let refused = asks_for_one(
-        &actions,
+    // The lead may ask its child through Chat. Its own signed cause never counts as the
+    // keeper asking Assistant to start another child.
+    let news = caused(
+        &workspaces,
         &workspace,
-        &outside,
-        &thread,
-        ("Another", "Do more.", "more-0"),
-    )
-    .await
-    .expect_err("outside a turn a sub-agent's name asks nobody");
-    assert!(refused.contains("may not invoke"), "{refused}");
-    // What the server writes for a sub-agent it writes on the turn it worked, with the bound its
-    // keeper set: an ask made that way is taken, and starts nothing either.
-    let beside = outside.on_turn(
-        tilo_action_policy::turn::Turn::new(
-            chat::summons::conversation_address(&own),
-            jobs[0].0.to_string(),
-        ),
-        Vec::new(),
-    );
-    asks_for_one(
-        &actions,
-        &workspace,
-        &beside,
-        &thread,
-        ("Another", "Do more.", "more-1"),
-    )
-    .await
-    .expect("the ask itself is taken");
-    agents.look(&workspace).await.unwrap();
-    assert_eq!(
-        sub_agents(&roster(&workspaces, &workspace).await),
+        (thread.as_str(), chat::cause::NEWS),
         1,
-        "what an agent asks starts none"
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    reply_of(&workspaces, &workspace, &news[0].0, SCOUT).await;
+    assert!(agents.draining().finish(Duration::from_secs(30)).await);
+    let attempted = Arc::new(Mutex::new(Vec::new()));
+    let args = said(
+        own.as_str(),
+        "Do more.",
+        Some(serde_json::json!({"kind": "sub-agent", "label": "Another", "key": "more-1"})),
+    );
+    let agents = served
+        .approving_for(
+            &workspace,
+            &[SCOUT],
+            &[CHAT, ui::tilo_workspace_agent::OWNER],
+        )
+        .await
+        .scripted(plays(&attempted, move |request| {
+            if of_sub_agent(request) {
+                says("I received the request.")
+            } else if !answered_a_tool(request) {
+                does(1, "chat/Messages#ask-agent", &args)
+            } else {
+                says("I asked the child.")
+            }
+        }));
+    let post = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        (&root, &browser),
+        "Ask the child to do more.",
+    )
+    .await;
+    let lead = agents
+        .turns(&workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|turn| turn.cause == post.as_str())
+        .expect("the person's message asks the lead");
+    agents.answer(&workspace, &lead).await.unwrap();
+    let answers = tool_answers(
+        attempted
+            .lock()
+            .unwrap()
+            .last()
+            .expect("the lead used its model"),
+    );
+    assert!(matches!(answers.as_slice(), [(_, false)]), "{answers:?}");
+    let from_lead = chat::cause::message_id(&MemberId::person(person.clone()), "more-1");
+    let report = conversation_part(&workspaces, &workspace).await;
+    let message = report
+        .messages
+        .get(&from_lead)
+        .expect("the lead's signed ask is in Chat");
+    assert_eq!(
+        (conversation_id(message), &message.author),
+        (&own, &MemberId::agent(SCOUT))
+    );
+    let cause = message.cause.as_ref().unwrap();
+    assert_eq!(
+        (cause.kind.0.as_str(), &cause.person),
+        ("sub-agent", &MemberId::person(person))
+    );
+    assert!(
+        !agents
+            .turns(&workspace)
+            .await
+            .unwrap()
+            .iter()
+            .any(|turn| turn.cause == from_lead.as_str()),
+        "the agent's reserved request never becomes a turn"
+    );
+    let calls = attempted.lock().unwrap().len();
+    let lead_spent = |list: &WorkspaceAgents| list.get(&Id::from_raw(SCOUT)).unwrap().spent.clone();
+    let before = lead_spent(&roster(&workspaces, &workspace).await);
+    agents.look(&workspace).await.unwrap();
+    assert!(agents.draining().finish(Duration::from_secs(30)).await);
+    assert_eq!(
+        attempted.lock().unwrap().len(),
+        calls,
+        "the child was never asked"
+    );
+    let list = roster(&workspaces, &workspace).await;
+    assert_eq!(
+        lead_spent(&list),
+        before,
+        "the reserved request spent nothing"
+    );
+    assert_eq!(sub_agents(&list), 1, "what an agent asks starts none");
+    assert!(
+        conversation_part(&workspaces, &workspace)
+            .await
+            .messages
+            .get(&reply_id(&from_lead, &MemberId::agent(id)))
+            .is_none(),
+        "no reply was begun for the agent's reserved request"
     );
     page.peer.close();
 }

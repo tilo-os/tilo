@@ -175,6 +175,13 @@ fn mentioned_agents(message: &Message) -> Vec<String> {
 #[must_use]
 pub fn asks_for(message: &Message) -> Option<String> {
     match &message.cause {
+        // A request to start a team member is its keeper's. A stored request from software
+        // starts neither a child nor an ordinary model turn, on any device.
+        Some(cause)
+            if cause.kind.0 == crate::cause::TEAM_START && message.author != cause.person =>
+        {
+            None
+        }
         Some(cause) => person_of(&cause.person),
         None => person_of(&message.author),
     }
@@ -782,6 +789,37 @@ mod tests {
             AgentWorkState::Done { did: String::new() },
         );
         assert_eq!(turn(&part), second);
+    }
+
+    #[test]
+    fn only_its_persons_request_to_start_a_child_summons_an_agent() {
+        let chat = Chat::default();
+        let direct = Chat::direct_id([MemberId::person(ADA), MemberId::agent("scout")]);
+        let mut part = ChatMessages::default();
+        let (id, message) = caused(
+            &direct,
+            MemberId::agent("lead"),
+            ADA,
+            (crate::cause::TEAM_START, "from-lead"),
+            1,
+        );
+        part.messages.push(id, message);
+        assert!(pending_summonses(&chat, &part).flatten().next().is_none());
+
+        let (request, message) = caused(
+            &direct,
+            MemberId::person(ADA),
+            ADA,
+            (crate::cause::TEAM_START, "from-keeper"),
+            2,
+        );
+        part.messages.push(request.clone(), message);
+        let turns = summonses(&chat, &part);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(
+            (&turns[0].message, turns[0].agent.as_str()),
+            (&request, "scout")
+        );
     }
 
     #[test]
