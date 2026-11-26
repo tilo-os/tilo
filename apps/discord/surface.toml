@@ -5,7 +5,7 @@ format = 2
 [[resources]]
 kind = "discord.guild"
 label = "Discord server"
-version = 4
+version = 1
 fields = [
   { path = "guild_id", type = "text", readonly = true },
   { path = "name", type = "text", label = true },
@@ -561,6 +561,7 @@ fields = [
 
 [[resources.types]]
 name = "DiscordResult"
+tag = "result"
 cases = [
   { name = "message", fields = [{ name = "message_id", type = "text" }, { name = "tilo", type = "text" }, { name = "webhook_id", type = { option = "text" } }] },
   { name = "thread", fields = [{ name = "thread_id", type = "text" }, { name = "tilo", type = "text" }] },
@@ -610,6 +611,7 @@ fields = [
 
 [[resources.types]]
 name = "InAttachment"
+tag = "kind"
 cases = [
   { name = "image", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "w", type = "int" }, { name = "h", type = "int" }] },
   { name = "video", fields = [{ name = "name", type = "text" }, { name = "blob", type = "text" }, { name = "w", type = "int" }, { name = "h", type = "int" }, { name = "size", type = "int" }] },
