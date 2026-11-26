@@ -254,6 +254,16 @@ pub trait Here: Send + Sync {
         Box::pin(async { Err(ServerError::NoAccountHere.to_string()) })
     }
 
+    /// Join `workspace` through its open entry at `host`, and keep it here: its id. The device
+    /// signs its own admission with its own key; the host signs nothing for it.
+    fn join_entry(
+        &self,
+        _workspace: &str,
+        _host: tilo_server_protocol::web::PageHost,
+    ) -> Asked<'_, String> {
+        Box::pin(async { Err(ServerError::NoAccountHere.to_string()) })
+    }
+
     /// Answered the next time the workspaces this host keeps change; `None` when it cannot tell.
     fn workspaces_changed(&self) -> Option<tilo_actions::remote::Pending<()>> {
         None

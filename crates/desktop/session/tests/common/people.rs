@@ -17,9 +17,10 @@
 //! while they are away. The site is one person's own, as a home peer is: its
 //! device is a device of theirs, the workspace's owner, and the invitations
 //! it issues for someone are theirs to issue. A device joins by redeeming an
-//! invitation issued for its person, over the collaboration endpoint, as the
-//! person's own join does ([`Device::join`]): nothing here bypasses the
-//! admission a workspace decides.
+//! invitation issued for its person, or through the workspace's open entry by
+//! its link, as the person's own join does ([`Device::join`]): its daemon signs
+//! the admission with the device's key, and nothing here bypasses the admission
+//! a workspace decides.
 //!
 //! What a session shows and does is read and driven through the control socket
 //! it opens ([`Device::ask`]): [`Device::state`] is the shell as it is now,
@@ -222,7 +223,18 @@ impl Site {
                 .expect("the site's device is in its workspace");
             (server, workspaces, workspace)
         });
-        let responder = entry_responder(&workspace, name);
+        // The directory publishes who the site's host is and where it is dialled, as a site's
+        // does: a device entering through the entry reaches the host from that.
+        let published_host = tilo_server_protocol::web::PageHost {
+            server_cert: host.clone(),
+            address: Some(tilo_server_protocol::web::PageHostAddress {
+                endpoint_addr: server.node_addr(),
+                relay_url: None,
+                web: None,
+            }),
+            origin: None,
+        };
+        let responder = entry_responder(&workspace, name, &published_host);
         let entry = format!("{}/", responder.url());
         Self {
             runtime,
@@ -280,14 +292,13 @@ impl Site {
     }
 
     /// Admit `person` at the site's entry, as their own entry through it asks
-    /// it, and answer the invitation their session joins by: one only they
-    /// can redeem.
+    /// it, and answer what their session joins by: the workspace's link, where
+    /// the entry takes anyone who asks, or the invitation only they can redeem.
     ///
     /// A device that asks an open entry signs its own admission under the entry
-    /// the workspace records, in the process that holds its key. A session does
-    /// not sign that way: it joins by redeeming an invitation, and its device is
-    /// the only writer of its key, so the site's owner invites it at the role
-    /// the entry admits people at.
+    /// the workspace records, in its daemon, the process that holds its key: the
+    /// session hands the link to the daemon's join, which enters through the
+    /// entry at the host the site's directory publishes.
     ///
     /// # Panics
     ///
@@ -322,7 +333,7 @@ impl Site {
             Ok(Listed::Invited(issued)) => Ok(tilo_workspace_join::encode_invitation_text(
                 &issued.signed_invitation,
             )),
-            Ok(Listed::Open) => Ok(self.invite(person, role())),
+            Ok(Listed::Open) => Ok(self.link()),
             // The entry tells a person it already has in to add the device from a device of
             // theirs that is in: the site's owner invites it, and the entry still refuses it.
             Err(EntryRefusal::Refused(said))
@@ -332,6 +343,28 @@ impl Site {
             }
             Err(refusal) => Err(refusal.to_string()),
         }
+    }
+
+    /// The workspace's link, carrying no invitation, under the site's entry: what someone hands a
+    /// person to a public workspace, joined through its open entry.
+    pub fn link(&self) -> String {
+        use tilo_reference::link::{
+            HostOrigin, Link, LinkSecrets, LinkTarget, Mode, Scope, WebEntry,
+        };
+        let entry = WebEntry::new(&self.entry).expect("the site's entry is a web entry");
+        let host = HostOrigin::new(self.entry.trim_end_matches('/')).expect("the site's origin");
+        let id = uuid::Uuid::parse_str(&self.workspace).expect("the workspace's id is a UUID");
+        Link {
+            mode: Mode::Desktop,
+            target: LinkTarget::new(Scope::Workspace {
+                host,
+                id,
+                slug: None,
+            }),
+            secrets: LinkSecrets::default(),
+        }
+        .to_url(&entry)
+        .expect("the workspace's link")
     }
 
     /// Make `person` one of the workspace's `role` , as its owner does: a moderator invites and
@@ -870,7 +903,12 @@ pub fn join_together(devices: &mut [&mut Device], invitations: &[&str]) {
 /// What a site serves: its entry and the directory of what it lists. The entry itself is the
 /// workspace's host's, which a device enters through on its session with the host
 /// ([`Site::admit`] asks it as that entry does).
-fn entry_responder(workspace: &str, name: &str) -> Responder {
+fn entry_responder(
+    workspace: &str,
+    name: &str,
+    host: &tilo_server_protocol::web::PageHost,
+) -> Responder {
+    let host = serde_json::to_value(host).expect("the site's host as its directory publishes it");
     let origin = Arc::new(Mutex::new(String::new()));
     let served_origin = Arc::clone(&origin);
     let workspace_answered = workspace.to_owned();
@@ -899,7 +937,7 @@ fn entry_responder(workspace: &str, name: &str) -> Responder {
             ("POST", "/directory") => {
                 let listed = listed.clone();
                 json(
-                    json!({ "workspaces": [{
+                    json!({ "host": host, "workspaces": [{
                         "workspace": listed,
                         "name": page_name,
                         "description": "",

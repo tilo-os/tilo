@@ -1221,11 +1221,28 @@ impl crate::Shared {
             self.open_joined_workspace(&joined.granted.workspace, &joined.name, Arrival::Joined);
             return;
         };
-        let invite = match &joined.granted.way {
-            tilo_workspace_directory::Way::Invitation(invitation) => Some(invitation.clone()),
-            tilo_workspace_directory::Way::Native(locator) => locator.to_link(),
+        // An invitation is redeemed, and an open entry entered, by the device's daemon: the
+        // process that holds the device's key signs its admission.
+        let arguments = match &joined.granted.way {
+            tilo_workspace_directory::Way::Invitation(invitation) => Some(
+                serde_json::Map::from_iter([("invite".to_owned(), invitation.clone().into())]),
+            ),
+            tilo_workspace_directory::Way::Native(locator) => locator
+                .to_link()
+                .map(|invite| serde_json::Map::from_iter([("invite".to_owned(), invite.into())])),
+            tilo_workspace_directory::Way::Entry(host) => {
+                serde_json::to_value(host).ok().map(|host| {
+                    serde_json::Map::from_iter([
+                        (
+                            "workspace".to_owned(),
+                            joined.granted.workspace.clone().into(),
+                        ),
+                        ("host".to_owned(), host),
+                    ])
+                })
+            }
         };
-        let Some(invite) = invite else {
+        let Some(arguments) = arguments else {
             tracing::info!(
                 target: JOIN_FLOW_TARGET,
                 workspace = %joined.granted.workspace,
@@ -1239,12 +1256,12 @@ impl crate::Shared {
         tracing::info!(
             target: JOIN_FLOW_TARGET,
             workspace = %joined.granted.workspace,
-            "join: the invitation is presented to the device's daemon"
+            "join: the join is presented to the device's daemon"
         );
         let asked = view.ask_account(
             tilo_peer_state::workspace_view::LIST,
             tilo_peer_state::workspace_view::JOIN,
-            serde_json::Map::from_iter([("invite".to_owned(), invite.into())]),
+            arguments,
         );
         self.directory_store
             .expect_enrollment(&joined.granted.workspace);

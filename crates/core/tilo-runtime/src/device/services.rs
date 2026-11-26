@@ -4599,6 +4599,18 @@ impl tilo_api::session::Here for DaemonHere {
         })
     }
 
+    fn join_entry(
+        &self,
+        workspace: &str,
+        host: tilo_server_protocol::web::PageHost,
+    ) -> tilo_api::session::Asked<'_, String> {
+        let (daemon, workspace) = (self.daemon(), workspace.to_owned());
+        Box::pin(async move {
+            let daemon = daemon?;
+            tilo_api::session::Here::join_entry(&*daemon, &workspace, host).await
+        })
+    }
+
     fn workspaces_changed(&self) -> Option<Pending<()>> {
         tilo_api::session::Here::workspaces_changed(&*self.daemon().ok()?)
     }
@@ -4751,6 +4763,27 @@ impl tilo_api::session::Here for Daemon {
                 self.workspaces
                     .copies()
                     .join_member_as(&invite, person_name().as_deref()),
+            )
+            .await
+            .map(|workspace| workspace.to_string())
+        })
+    }
+
+    /// This computer's own key signs the admission the entry takes it in by: the join happens
+    /// here, in the process that holds that key.
+    fn join_entry(
+        &self,
+        workspace: &str,
+        host: tilo_server_protocol::web::PageHost,
+    ) -> tilo_api::session::Asked<'_, String> {
+        let workspace = workspace.trim().to_owned();
+        Box::pin(async move {
+            let id = WorkspaceId::parse(&workspace)
+                .ok_or_else(|| format!("{workspace} names no workspace"))?;
+            Box::pin(
+                self.workspaces
+                    .copies()
+                    .join_entry(id, &host, person_name().as_deref()),
             )
             .await
             .map(|workspace| workspace.to_string())

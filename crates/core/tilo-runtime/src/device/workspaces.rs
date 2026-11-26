@@ -1471,6 +1471,10 @@ where
 #[path = "workspaces_tests.rs"]
 mod tests;
 
+#[cfg(test)]
+#[path = "entry_join_tests.rs"]
+mod entry_join_tests;
+
 /// The device service's member copies, as the login's session reads and writes them.
 struct MemberLinks(Arc<WorkspaceService>);
 

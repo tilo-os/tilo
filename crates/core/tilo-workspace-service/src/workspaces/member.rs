@@ -2593,6 +2593,9 @@ impl Workspaces {
     }
 }
 
+#[path = "member_entry.rs"]
+mod entry;
+
 #[cfg(test)]
 #[path = "member_tests.rs"]
 mod tests;

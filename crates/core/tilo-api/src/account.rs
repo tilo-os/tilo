@@ -245,15 +245,29 @@ const VERBS: [Verb; 17] = [
     verb(
         WORKSPACES,
         "join",
-        "Join the workspace an invitation brings you into, and keep it on this device",
+        "Join a workspace, by the invitation that brings you in or through its open entry, and \
+         keep it on this device",
         ActionKind::Outside,
         Op::JoinWorkspace,
         || {
-            vec![ActionParam::required(
-                "invite",
-                ParamType::Text,
-                "The invitation, as its link or text was handed to you.",
-            )]
+            vec![
+                ActionParam::optional(
+                    "invite",
+                    ParamType::Text,
+                    "The invitation, as its link or text was handed to you.",
+                ),
+                ActionParam::optional(
+                    "workspace",
+                    ParamType::Text,
+                    "The workspace to join through its open entry, by id; with `host`.",
+                ),
+                ActionParam::optional(
+                    "host",
+                    ParamType::Object,
+                    "Who the workspace's host is and where it is dialled, as its directory \
+                     publishes it ({hostCert, address}).",
+                ),
+            ]
         },
     ),
     verb(
@@ -2564,6 +2578,36 @@ async fn create_where_founded(here: &dyn Here, args: &Value) -> Outcome {
 /// person's word, and everything else but making one as the person's account at their server
 /// answers it. A workspace branched there is kept here too, and one deleted there is kept here
 /// no more.
+/// Join `workspace` through its open entry at `host`, as its directory publishes the host: the
+/// device signs its own admission, and the entry's refusal is said in its own words.
+async fn join_entry(here: &dyn Here, workspace: &str, host: Option<&Value>) -> Outcome {
+    let Some(host) = host else {
+        return failed(
+            "invalid_arguments",
+            "`host` is required with `workspace`",
+            "pass the host the workspace's directory publishes: {hostCert, address}",
+        );
+    };
+    let host = match serde_json::from_value::<tilo_server_protocol::web::PageHost>(host.clone()) {
+        Ok(host) => host,
+        Err(error) => {
+            return failed(
+                "invalid_arguments",
+                format!("`host` is not a host as a directory publishes one: {error}"),
+                "pass the host the workspace's directory publishes: {hostCert, address}",
+            );
+        }
+    };
+    match here.join_entry(workspace, host).await {
+        Ok(workspace) => Outcome::Ok(json!({"workspace": workspace, "kept_here": true})),
+        Err(why) => failed(
+            "refused",
+            why,
+            "ask someone in the workspace for an invitation",
+        ),
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one arm per action a desktop answers for its person, each a few lines"
@@ -2600,11 +2644,15 @@ async fn here_answers(
             };
         }
         Op::JoinWorkspace => {
+            if let Some(workspace) = field(args, "workspace") {
+                return join_entry(here, workspace, args.get("host")).await;
+            }
             let Some(invite) = field(args, "invite") else {
                 return failed(
                     "invalid_arguments",
-                    "`invite` is required",
-                    "pass {invite: \"<the invitation>\"}",
+                    "`invite` or `workspace` is required",
+                    "pass {invite: \"<the invitation>\"}, or {workspace, host} for a workspace \
+                     whose entry is open",
                 );
             };
             return match here.join(invite).await {
