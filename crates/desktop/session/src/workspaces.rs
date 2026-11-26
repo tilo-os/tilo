@@ -218,16 +218,17 @@ pub(crate) fn on_hosts(
         .collect()
 }
 
-/// Every workspace of the person's the device's daemon holds, as `view` reads its list; `None`
-/// while it lists none, when what the person has is not known yet: the daemon enters the
-/// workspaces their server lists as soon as it hears the list.
+/// Every workspace of the person's the device's daemon lists, as `view` reads its list; `None`
+/// until the daemon answered with the list at all, when what the person has is not known yet: the
+/// daemon enters the workspaces their server lists as soon as it hears the list. An answer that
+/// lists none is a person with no workspaces, which is what the shell's own workspace settles as.
 fn listed_by_daemon(view: &crate::workspace_view::WorkspaceView) -> Option<BTreeSet<WorkspaceId>> {
-    let listed: BTreeSet<WorkspaceId> = view
-        .listed()
-        .iter()
-        .filter_map(|listed| WorkspaceId::parse(&listed.id))
-        .collect();
-    (!listed.is_empty()).then_some(listed)
+    view.listed_read().then(|| {
+        view.listed()
+            .iter()
+            .filter_map(|listed| WorkspaceId::parse(&listed.id))
+            .collect()
+    })
 }
 
 /// The shell's workspaces, by id with their names, in its order.
@@ -1847,6 +1848,52 @@ mod tests {
         listed(personal)
             .iter()
             .any(|(listed, _, _)| *listed == workspace)
+    }
+
+    /// A daemon no test asks anything of: the view under test only reads its readings.
+    struct NoAsks;
+
+    impl crate::workspace_view::ShellAsks for NoAsks {
+        fn account(
+            &self,
+            _: &str,
+            _: &str,
+            _: serde_json::Map<String, serde_json::Value>,
+        ) -> crate::engine::ServiceAnswer {
+            Box::pin(std::future::ready(Ok(serde_json::Value::Null)))
+        }
+
+        fn invoke(
+            &self,
+            _: Option<String>,
+            _: tilo_actions::remote::InvokeRequest,
+        ) -> crate::engine::ServiceAnswer {
+            Box::pin(std::future::ready(Ok(serde_json::Value::Null)))
+        }
+    }
+
+    /// The daemon's list read as empty is a person with no workspaces of their own, so the shell's
+    /// own workspace settles as their first and the daemon founds it; a list the daemon has not
+    /// answered yet says nothing, so nothing settles on a guess.
+    #[test]
+    fn the_seed_settles_once_the_daemons_list_is_read_even_when_it_names_none() {
+        let view = std::sync::Arc::new(crate::workspace_view::WorkspaceView::new(
+            [0; 32],
+            [0; 32],
+            std::sync::Arc::new(NoAsks),
+        ));
+        assert_eq!(
+            listed_by_daemon(&view),
+            None,
+            "a list the daemon has not read yet says nothing"
+        );
+        view.apply(tilo_peer_state::workspace_view::LIST, None)
+            .expect("an empty list reads");
+        assert_eq!(
+            listed_by_daemon(&view),
+            Some(BTreeSet::new()),
+            "a daemon that lists no workspaces has answered"
+        );
     }
 
     /// A person's laptop with two workspaces of its own, which their desktop then enters at the

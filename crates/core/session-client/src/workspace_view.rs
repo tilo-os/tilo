@@ -11,6 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tilo_action_policy::WorkspacePolicy;
 use tilo_desktop_model::WorkspaceId;
@@ -55,6 +56,9 @@ pub struct WorkspaceView {
     person: [u8; 32],
     device: [u8; 32],
     listed: std::sync::Mutex<Vec<Listed>>,
+    /// Whether the daemon answered with the person's workspace list at all: an empty list is a
+    /// person with no workspaces, which a list not read yet is not.
+    listed_read: AtomicBool,
     readings: std::sync::Mutex<BTreeMap<WorkspaceId, WorkspaceReading>>,
     /// The workspaces the desktop is founding now, and those whose founding failed until the
     /// next one ends.
@@ -84,6 +88,7 @@ impl WorkspaceView {
             person,
             device,
             listed: std::sync::Mutex::default(),
+            listed_read: AtomicBool::default(),
             readings: std::sync::Mutex::default(),
             founding: std::sync::Mutex::default(),
             failed: std::sync::Mutex::default(),
@@ -138,6 +143,9 @@ impl WorkspaceView {
                 None => Vec::new(),
             };
             let previous = std::mem::replace(&mut *self.listed.lock_recover(), listed.clone());
+            // An answer of no list is still an answer: the person has no workspaces, rather than
+            // one whose list has not been read yet.
+            self.listed_read.store(true, Ordering::Release);
             return Ok(previous != listed);
         }
         if let Some((workspace, part)) = part_of(resource) {
@@ -241,6 +249,13 @@ impl WorkspaceView {
     #[must_use]
     pub fn listed(&self) -> Vec<Listed> {
         self.listed.lock_recover().clone()
+    }
+
+    /// Whether the daemon has answered with the person's workspace list, even an empty one: what
+    /// tells a person who has no workspaces of their own from one whose list is not read yet.
+    #[must_use]
+    pub fn listed_read(&self) -> bool {
+        self.listed_read.load(Ordering::Acquire)
     }
 
     /// The workspaces this device holds.
