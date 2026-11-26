@@ -2270,3 +2270,74 @@ async fn a_declared_owners_key_lists_the_workspace_and_invites_before_any_device
     assert!(issued["invitation"].is_string(), "{issued}");
     server.shutdown().await;
 }
+/// The operator a deployment's owner adds by key — as `tilo workspace people
+/// add` does — is let in by the workspace's entry, and the workspace's page
+/// hands their browser the host's own actions: their search offers them
+/// "Set your name".
+#[tokio::test]
+async fn a_member_let_in_at_the_entry_is_offered_the_hosts_own_actions_on_a_page() {
+    use tilo_server_protocol::entering::{Entered, Entering, Entry, Through};
+
+    let (host, workspaces, lounge, _stranger, _dir) = held_host().await;
+    let id = tilo_server_protocol::WorkspaceId::parse(&lounge).unwrap();
+    let owner = workspaces.serving_certificate();
+
+    // The operator is made an administrator by their key, before any device of
+    // theirs has been here.
+    let operator = SigningKey::from_bytes(&rand::random());
+    let added = settled(host.in_workspace(id).invoke(
+        &caller(owner),
+        super::super::tests::request(
+            &lounge,
+            super::super::ADD_MEMBER,
+            json!({
+                "person": hex::encode(operator.verifying_key().to_bytes()),
+                "role": "administrator",
+                "name": "Maya",
+            }),
+        ),
+    ))
+    .await
+    .unwrap();
+    assert!(
+        matches!(added.status, ReceiptStatus::Completed { .. }),
+        "the owner adds the operator by their key: {added:?}"
+    );
+
+    // Their browser's tab enters through the entry, as the page's session does.
+    let tab = tab_of(&operator, "Chrome");
+    let entered = crate::handshake::Admit::enter(
+        &workspaces,
+        &tab,
+        Entry {
+            entering: Entering {
+                workspace: lounge.clone(),
+                name: "Maya".into(),
+                request_id: rand::random(),
+                through: Through::Entry,
+            },
+            access: None,
+            proof: [0; 64],
+        },
+    )
+    .await;
+    assert!(
+        matches!(entered, Entered::Admitted { .. }),
+        "the operator's tab enters through the workspace's entry: {entered:?}"
+    );
+
+    // What the page's search asks: the host's own actions, by the words the
+    // person typed.
+    let page = workspaces
+        .page_actions(id, &caller(&tab), "set your name")
+        .await;
+    let labels: Vec<String> = page
+        .rows
+        .into_iter()
+        .filter_map(|row| row.action.map(|action| action.action_label))
+        .collect();
+    assert!(
+        labels.iter().any(|label| label == "Set your name"),
+        "the page offers the host's own actions: {labels:?}"
+    );
+}

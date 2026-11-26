@@ -88,7 +88,10 @@ pub struct CatalogueQuery {
     /// Read-only view discovery, separate from the document action catalogue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub view_resource: Option<ViewResourceQuery>,
-    /// Only the direct children of this resource; `None` is the top level.
+    /// Only the direct children of this resource; `None` is the top level
+    /// for a listing, and every level for a query that names words
+    /// ([`Self::needle`]): a search finds a row wherever in the tree it
+    /// stands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_resource: Option<String>,
     /// Only rows whose labels, ids or parameters contain this text
@@ -697,12 +700,17 @@ impl CataloguePage {
 impl CatalogueQuery {
     /// Whether `row` is one this query lists: under the parent asked for,
     /// of the app, view, words, name and action it names. An exact action
-    /// is found wherever it stands, since its address names it alone.
+    /// is found wherever it stands, since its address names it alone, and so
+    /// is a row whose words hold a needle asked for with no parent named: a
+    /// search ranges over the whole tree, where a browse names one place.
     #[must_use]
     pub fn admits(&self, row: &CatalogueRow) -> bool {
+        let named_parent = self.parent_resource.as_deref().unwrap_or("");
+        let searched = self.parent_resource.is_none() && !self.needle.is_empty();
         (self.target.is_some()
             || self.action.is_some()
-            || row.parent_resource == self.parent_resource.as_deref().unwrap_or(""))
+            || searched
+            || row.parent_resource == named_parent)
             && self.app_id.as_deref().is_none_or(|app| row.app_id == app)
             && self.view_resource.as_ref().is_none_or(|wanted| {
                 row.resource.id == wanted.id
@@ -1084,6 +1092,52 @@ mod tests {
                     .collect();
                 assert_eq!(actions, ["format-cells"], "{needle}");
             }
+        }
+
+        phase a_needle_searches_every_level_of_the_tree_and_a_listing_names_one;
+        {
+            // A row standing under a parent, as a workspace's people name
+            // themselves on the tree's own members path.
+            let nested = row("workspace/members", Some("name"), "workspace");
+            let root = row("workspace", Some("publish"), "");
+            let rows = vec![root, nested];
+            let listed = |query: CatalogueQuery| {
+                CataloguePage::from_rows("r1".into(), rows.clone(), &query)
+                    .rows
+                    .iter()
+                    .filter_map(|row| row.action.as_ref().map(|a| a.address.action.clone()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                listed(CatalogueQuery::default()),
+                ["publish"],
+                "a listing with nothing named is the top level"
+            );
+            assert_eq!(
+                listed(CatalogueQuery {
+                    parent_resource: Some("workspace".into()),
+                    ..CatalogueQuery::default()
+                }),
+                ["name"],
+                "a listing that names a place is that place's children"
+            );
+            assert_eq!(
+                listed(CatalogueQuery {
+                    needle: "nam".into(),
+                    ..CatalogueQuery::default()
+                }),
+                ["name"],
+                "a search finds a row under a parent with no parent named"
+            );
+            assert_eq!(
+                listed(CatalogueQuery {
+                    needle: "publish".into(),
+                    parent_resource: Some("workspace".into()),
+                    ..CatalogueQuery::default()
+                }),
+                Vec::<String>::new(),
+                "a needle asked inside a named place keeps to that place"
+            );
         }
 
         phase a_listing_by_resource_sends_each_resource_once_and_counts_its_rows;
