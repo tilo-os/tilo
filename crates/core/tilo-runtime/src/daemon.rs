@@ -3048,9 +3048,6 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
     let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
     let input = spawn_reader(input)?;
     let status = serde_json::to_value(status).map_err(io::Error::other)?;
-    // An agent whose person revoked its key acts no further: its next request is answered why,
-    // and the connection ends there.
-    let ending = tilo_mcp::lines::Ending::default();
     // The session this connection reaches, admitted by the first request that needs one: what
     // this device is is answered without it, so asking founds no workspace and waits for none.
     let mut session: Option<Arc<McpServer<H>>> = None;
@@ -3086,7 +3083,7 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
                 Err(error) => {
                     // Told why, as an agent whose person revoked its key is.
                     tracing::debug!(%error, "native MCP session admission unavailable");
-                    return ending.refusing(&value, error.to_string());
+                    return refusing(&value, &error.to_string());
                 }
             }
         };
@@ -3101,9 +3098,6 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
                 }))
             }),
             _ => {
-                if let Some(refused) = ending.answer(&server, &value) {
-                    return refused;
-                }
                 return match &agent {
                     Some(agents) => agents
                         .answer_first(value)
@@ -3125,12 +3119,25 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
         stream,
         handed: seated.map(|seated| &*seated.handed),
     });
-    let mut ends = || ending.check();
-    let ended = serve_lines(runtime, input, &mut writer, answer, Some(&mut ends));
+    let ended = serve_lines(runtime, input, &mut writer, answer, None);
     // The reader thread holds a clone of the socket: shut it, so the reader
     // sees its end and the client its connection close.
     let _ = stream.shutdown(std::net::Shutdown::Both);
     ended
+}
+
+/// The answer to `request` its session could not be admitted for, saying `why`: a call's own
+/// refusal for a tool call, an error for any other request.
+fn refusing(request: &Value, why: &str) -> Answer<'static> {
+    let reply = request.get("id").cloned().map(|id| {
+        if request.get("method").and_then(Value::as_str) == Some("tools/call") {
+            json!({"jsonrpc": "2.0", "id": id, "result": {
+                "content": [{"type": "text", "text": why}], "isError": true}})
+        } else {
+            json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": why}})
+        }
+    });
+    Answer::InOrder(Box::pin(async move { Ok(reply) }))
 }
 
 /// A native activation request's answer: the newest live instance of the
