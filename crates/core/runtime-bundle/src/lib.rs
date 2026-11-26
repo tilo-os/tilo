@@ -1640,9 +1640,10 @@ fn hash_payload_files<'a>(
 const MAX_HASH_WORKERS: usize = 8;
 
 /// The largest program a bundle carries. A bound, not a budget: the tilolang
-/// runtime host links the whole runtime and a release build with line tables
-/// passes 64 MiB, so the bound leaves it room to grow.
-const MAX_INCLUDED_BINARY_BYTES: u64 = 256 << 20;
+/// runtime host links the whole runtime, a release build with line tables
+/// passes 64 MiB and a debug build with full debug info passes 256 MiB, so the
+/// bound leaves both room to grow.
+const MAX_INCLUDED_BINARY_BYTES: u64 = 1 << 30;
 
 fn digest_file(path: &Path, with_verity: bool) -> Result<FileDigests, BundleError> {
     let mut f = fs::File::open(path)?;
