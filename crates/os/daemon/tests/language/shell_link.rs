@@ -575,7 +575,7 @@ fn tilo_do_without_a_desktop_is_answered_by_the_daemon() {
         // The seat's: not listed to the command, and refused when called by name.
         let (code, _, _) = typed("reveal-token", &["echo=the token"]);
         assert_ne!(code, 0, "tilo do finds no account token to reveal");
-        let program = tilo_action_services::LineClient::of_stream(
+        let program = tilo_action_line::LineClient::of_stream(
             std::os::unix::net::UnixStream::connect(&socket).unwrap(),
         )
         .unwrap();

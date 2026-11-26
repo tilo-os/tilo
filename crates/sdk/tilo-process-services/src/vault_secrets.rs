@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
-use tilo_action_services::LineClient;
+use tilo_action_line::LineClient;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeRequest, ItemRef, ReceiptStatus,
     VAULT_FIND, VAULT_KEEP, VAULT_RELEASE, vault_target,
@@ -37,7 +37,7 @@ impl VaultStore {
     /// The store of a process the launcher handed a connection to its daemon, on that one
     /// connection: `None` for a host process, which has none.
     pub(crate) fn handed() -> Option<Self> {
-        let handed = tilo_action_services::handed::connection()?;
+        let handed = tilo_action_line::handed::connection()?;
         Some(Self {
             line: handed.line,
             workspace: handed.workspace,
@@ -171,7 +171,7 @@ mod tests {
     use std::sync::Mutex;
 
     use serde::Deserialize;
-    use tilo_action_services::serve_lines;
+    use tilo_action_line::serve_lines;
     use tilo_actions::ActionOutput;
     use tilo_actions::remote::{
         ActionProvider, CataloguePage, CatalogueQuery, HostedContentPuts, InvocationReceipt,

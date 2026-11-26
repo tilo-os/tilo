@@ -518,7 +518,8 @@ fn store_line(correlation: u64, result: Result<serde_json::Value, ActionCallErro
 #[cfg(unix)]
 mod tests {
     use super::*;
-    use crate::{LineClient, TestProvider};
+    use crate::LineClient;
+    use tilo_action_services::TestProvider;
     use std::collections::HashMap;
     use std::io::BufReader;
     use std::os::unix::net::UnixStream;

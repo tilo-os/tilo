@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use tilo_action_services::{CallLanes as _, Take};
+use tilo_action_line::{CallLanes as _, Take};
 use tilo_actions::remote::RemoteActionMessage;
 use tilo_actions::remote::call::{
     BridgedCall, CallAudio, CallLink, CallReport, OutsideCall, OutsidePerson,
@@ -720,10 +720,7 @@ fn dana_is_carried_into_the_call(
 
 /// The connection the daemon serves an app it started at `at`, as the line wire's client the
 /// app's SDK holds.
-fn app_connection(
-    daemon: &Arc<Daemon>,
-    at: &crate::seats::AppAt,
-) -> tilo_action_services::LineClient {
+fn app_connection(daemon: &Arc<Daemon>, at: &crate::seats::AppAt) -> tilo_action_line::LineClient {
     use std::io::{BufRead as _, Read as _};
     let (served, held) = std::os::unix::net::UnixStream::pair().unwrap();
     let frames = crate::device::local::Frames::of_an_app(daemon, at);
@@ -737,7 +734,7 @@ fn app_connection(
         let line = first.strip_suffix(b"\n").unwrap_or(&first).to_vec();
         frames.serve(served, &line, reader, None);
     });
-    tilo_action_services::LineClient::of_stream(held).unwrap()
+    tilo_action_line::LineClient::of_stream(held).unwrap()
 }
 
 /// The person's shell ends the way a desktop quits: the word it said and the call it was in

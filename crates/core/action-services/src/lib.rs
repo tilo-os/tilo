@@ -2,8 +2,8 @@
 //!
 //! The actions of the services a device and a workspace run: the apps and files a
 //! device keeps, the environments it holds and the terminals, machines and windows
-//! in them, the line its sockets answer on, the tools and tasks it hands an agent,
-//! and the records of its own device.
+//! in them, the tools and tasks it hands an agent, and the records of its own
+//! device.
 //!
 //! Each module names one service's actions and the provider they are answered
 //! under. They sit beside [`tilo_actions`], which keeps the action model itself:
@@ -31,11 +31,6 @@ pub mod environment_terminals;
 pub mod environment_window;
 
 pub mod formats;
-
-#[cfg(not(target_arch = "wasm32"))]
-pub mod handed;
-
-pub mod line;
 
 pub mod linux_apps;
 /// Machines a person prepared to install: the plan and its waiting entry in
@@ -72,13 +67,6 @@ pub mod migrations;
 pub mod offload_place;
 pub mod workspace_invocations;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub use line::{
-    CallLanes, Ending, LineClient, LinePut, ShellHeard, Take, serve_lines, serve_lines_with,
-};
-#[cfg(not(target_arch = "wasm32"))]
-pub use line::{Carry, CarryAnswer, carry_answer_line, carry_line, carry_request};
-pub use line::{answer_line, answer_message, frame_line, line_refusal};
 pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };

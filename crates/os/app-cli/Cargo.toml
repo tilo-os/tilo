@@ -22,7 +22,7 @@ path = "src/main.rs"
 dev-overrides = ["package-store/dev-overrides"]
 
 [dependencies]
-tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
+tilo-action-line = { version = "0.1.0", path = "../../core/action-line" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 tilo-files = { path = "../../platform/tilo-files" }

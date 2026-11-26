@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use serde_json::{Map, Value, json};
-use tilo_action_services::LineClient;
+use tilo_action_line::LineClient;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, ContentPut as _, InvokeArgument, InvokeRequest,
     MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionTarget, UpdateMark,
@@ -226,16 +226,16 @@ fn stream_at(socket: &Path) -> Result<tilo_files::native::socket::Stream, String
 ///
 /// # Errors
 /// No daemon answers on `socket`.
-pub fn line_at(socket: &Path) -> Result<tilo_action_services::LineClient, String> {
+pub fn line_at(socket: &Path) -> Result<tilo_action_line::LineClient, String> {
     let stream = stream_at(socket)?;
-    tilo_action_services::LineClient::of_stream(stream).map_err(|error| error.to_string())
+    tilo_action_line::LineClient::of_stream(stream).map_err(|error| error.to_string())
 }
 
 /// The action wire to this computer's daemon ([`line_at`] at its socket).
 ///
 /// # Errors
 /// No daemon answers on this computer.
-pub fn line() -> Result<tilo_action_services::LineClient, String> {
+pub fn line() -> Result<tilo_action_line::LineClient, String> {
     line_at(&tilo_machine::daemon_native()?)
 }
 

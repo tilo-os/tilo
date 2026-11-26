@@ -1625,7 +1625,7 @@ mod tests {
                 dump["state"]["unattended"]["error"],
                 "the actual TPM2 did not answer"
             );
-            let asked = tilo_action_services::frame_line(
+            let asked = tilo_action_line::frame_line(
                 ui::tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
                     correlation: 1,
                     query: ui::tilo_actions::remote::CatalogueQuery::default(),

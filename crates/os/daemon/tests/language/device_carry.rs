@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use ed25519_dalek::SigningKey;
 use serde_json::json;
-use tilo_action_services::{Carry, LineClient};
+use tilo_action_line::{Carry, LineClient};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ContentPut,
     ContentPuts, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,

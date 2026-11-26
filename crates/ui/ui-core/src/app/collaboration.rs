@@ -307,7 +307,7 @@ impl App {
     ) {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let Some(handed) = tilo_action_services::handed::connection() else {
+            let Some(handed) = tilo_action_line::handed::connection() else {
                 return;
             };
             let Some(payload) = payload.to_live() else {
@@ -342,7 +342,7 @@ impl App {
     fn drain_line_presence(&mut self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let Some(handed) = tilo_action_services::handed::connection() else {
+            let Some(handed) = tilo_action_line::handed::connection() else {
                 return false;
             };
             let mut shown = false;

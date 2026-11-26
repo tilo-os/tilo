@@ -1,4 +1,4 @@
-//! The shells an app's own connection carries ([`tilo_action_services::line::shells`]), where
+//! The shells an app's own connection carries ([`tilo_action_line::shells`]), where
 //! the shell runtime runs them: the daemon opens each on its one connection to the runtime
 //! ([`crate::control_line`]) in the workspace the app was started in, and keeps the terminal and
 //! the session lease the runtime hands back.
@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use runtime_portal::pending_connection::{LeaseState, ReaderLifetime, SessionLifetime};
 use serde_json::{Value, json};
-use tilo_action_services::line::shells::{OpenedShell, ShellSource};
+use tilo_action_line::shells::{OpenedShell, ShellSource};
 use tilo_actions::remote::ActionCallError;
 use tilo_actions::remote::shell::ShellOpen;
 

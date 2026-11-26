@@ -2277,7 +2277,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
         let line = first.strip_suffix(b"\n").unwrap_or(&first);
         // A first line that names another of the person's devices asks for the connection to be
         // carried there: its action frames go to that device from this daemon's one endpoint.
-        if let Some(carry) = tilo_action_services::carry_request(line) {
+        if let Some(carry) = tilo_action_line::carry_request(line) {
             let input = BufReader::new(io::Cursor::new(rest).chain(follow));
             return self.frames.carry(stream, &carry, input);
         }
@@ -2286,7 +2286,7 @@ impl<H: tilo_actions::remote::ActionProvider + Clone + Send + Sync + 'static> En
             let ending = self
                 .connections
                 .as_deref()
-                .map(|connections| connections as &dyn tilo_action_services::Ending);
+                .map(|connections| connections as &dyn tilo_action_line::Ending);
             return self.frames.serve(stream, line, input, ending);
         }
         if line == tilo_api::daemon::AGENT_LINE.as_bytes() {
@@ -2570,7 +2570,7 @@ impl Connections {
     }
 }
 
-impl tilo_action_services::Ending for Connections {
+impl tilo_action_line::Ending for Connections {
     fn ending(&self) -> Option<tilo_actions::remote::ActionCallError> {
         self.ending.lock_recover().clone()
     }
@@ -2986,8 +2986,7 @@ fn serve_connection<H: tilo_actions::remote::ActionProvider + Send + Sync + 'sta
 
 /// What a connection of a key that is no agent's is told as it ends, its person having revoked
 /// the key it acts as.
-const KEY_REVOKED: &str =
-    "key_revoked: this key was revoked, so its connection ended: approve this device again to \
+const KEY_REVOKED: &str = "key_revoked: this key was revoked, so its connection ended: approve this device again to \
      connect once more";
 
 /// The answer to `request` its session could not be admitted for, saying `why`: a call's own

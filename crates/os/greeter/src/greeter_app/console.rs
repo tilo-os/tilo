@@ -1243,7 +1243,7 @@ mod authentication_tests {
         // operation, as every typed effect's secret does.
         let catalogue = super::console_tests::line(
             &mut app,
-            &tilo_action_services::frame_line(
+            &tilo_action_line::frame_line(
                 ui::tilo_actions::remote::RemoteActionMessage::CatalogueRequest {
                     correlation: 1,
                     query: ui::tilo_actions::remote::CatalogueQuery::default(),
@@ -1296,7 +1296,7 @@ pub(super) mod console_tests {
     use super::{Console, GreeterApp, PROVIDER};
     use automerge::AutoCommit;
     use serde_json::{Map, Value, json};
-    use tilo_action_services::frame_line;
+    use tilo_action_line::frame_line;
     use ui::tilo_actions::remote::{
         CatalogueQuery, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
         RemoteActionTarget,

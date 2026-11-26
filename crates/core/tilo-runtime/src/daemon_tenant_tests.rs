@@ -14,7 +14,7 @@ use crate::device::services::Daemon;
 use crate::device::services::tests::isolated_root;
 use std::io::{BufRead as _, BufReader};
 use std::sync::Arc;
-use tilo_action_services::LineClient;
+use tilo_action_line::LineClient;
 use tilo_actions::remote::{ActionProvider as _, Caller, CatalogueQuery, device_agent_id};
 
 /// The tenant a test serves, in a directory of its own under `root`.

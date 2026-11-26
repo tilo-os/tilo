@@ -54,18 +54,18 @@ pub(crate) fn native_endpoint(daemon: &Arc<Daemon>, root: &Path) -> PathBuf {
 }
 
 /// A client of the daemon's frames on a connection of its own, as `uid`.
-pub(crate) fn line_client(socket: &Path, uid: u32) -> Arc<tilo_action_services::LineClient> {
+pub(crate) fn line_client(socket: &Path, uid: u32) -> Arc<tilo_action_line::LineClient> {
     PEER.store(uid, Ordering::SeqCst);
     PEER_PID.store(0, Ordering::SeqCst);
     let stream = UnixStream::connect(socket).unwrap();
-    let client = Arc::new(tilo_action_services::LineClient::of_stream(stream).unwrap());
+    let client = Arc::new(tilo_action_line::LineClient::of_stream(stream).unwrap());
     // The daemon reads the account as it takes the connection: a catalogue answered says it did.
     let _ = listed_to(&client);
     client
 }
 
 /// The providers the catalogue lists to `client`.
-fn listed_to(client: &tilo_action_services::LineClient) -> Vec<String> {
+fn listed_to(client: &tilo_action_line::LineClient) -> Vec<String> {
     client
         .query(&Caller::local_system(), CatalogueQuery::default())
         .wait_timeout(tilo_test_env::hang_bound())
@@ -339,7 +339,7 @@ const FOLDER_TEST: &str = "device::local::tests::a_folder_put_again_sends_none_o
 fn watched(
     socket: &Path,
     sent: &Arc<std::sync::Mutex<Vec<RemoteActionMessage>>>,
-) -> Arc<tilo_action_services::LineClient> {
+) -> Arc<tilo_action_line::LineClient> {
     PEER.store(OWN, Ordering::SeqCst);
     let daemon = UnixStream::connect(socket).unwrap();
     let (ours, theirs) = UnixStream::pair().unwrap();
@@ -366,7 +366,7 @@ fn watched(
         }
         let _ = daemon.shutdown(std::net::Shutdown::Write);
     });
-    Arc::new(tilo_action_services::LineClient::of_stream(ours).unwrap())
+    Arc::new(tilo_action_line::LineClient::of_stream(ours).unwrap())
 }
 
 /// The content put steps among `sent`, in the order the daemon received them.
@@ -996,7 +996,7 @@ fn a_process_an_app_started_is_judged_as_that_app_and_never_its_person() {
     PEER.store(OWN, Ordering::SeqCst);
     PEER_PID.store(helper, Ordering::SeqCst);
     let stream = UnixStream::connect(&socket).unwrap();
-    let helpers = tilo_action_services::LineClient::of_stream(stream).unwrap();
+    let helpers = tilo_action_line::LineClient::of_stream(stream).unwrap();
     let refusal = match answered(helpers.invoke(&in_workspace, publish())) {
         Err(error)
         | Ok(tilo_actions::remote::InvocationReceipt {
@@ -1081,7 +1081,7 @@ fn a_shell_the_runtime_tells_of_acts_as_terminal_and_a_forged_record_is_refused(
     let from = |pid: u32| {
         PEER.store(OWN, Ordering::SeqCst);
         PEER_PID.store(pid, Ordering::SeqCst);
-        tilo_action_services::LineClient::of_stream(UnixStream::connect(&socket).unwrap()).unwrap()
+        tilo_action_line::LineClient::of_stream(UnixStream::connect(&socket).unwrap()).unwrap()
     };
     let refusal = |answer: Result<InvocationReceipt, ActionCallError>| match answer {
         Err(error)
@@ -1305,7 +1305,7 @@ fn a_shells_endpoint_acts_as_terminal_where_the_daemon_sees_no_process_of_the_pe
     PEER.store(OWN, Ordering::SeqCst);
     PEER_PID.store(UNSEEN, Ordering::SeqCst);
     let in_shell =
-        tilo_action_services::LineClient::of_stream(UnixStream::connect(endpoint.path()).unwrap())
+        tilo_action_line::LineClient::of_stream(UnixStream::connect(endpoint.path()).unwrap())
             .unwrap();
     assert!(
         matches!(
@@ -1369,7 +1369,7 @@ fn a_process() -> std::process::Child {
 
 /// `client`'s call of `target` with `argument`: the value answered, or the reason refused.
 fn called(
-    client: &tilo_action_services::LineClient,
+    client: &tilo_action_line::LineClient,
     target: tilo_actions::remote::RemoteActionTarget,
     argument: Value,
 ) -> Result<Value, String> {
@@ -1404,9 +1404,9 @@ fn called(
 fn own_line(
     daemon: &Arc<Daemon>,
     (pid, app, workspace): (u32, &str, &str),
-) -> tilo_action_services::LineClient {
+) -> tilo_action_line::LineClient {
     let line = crate::daemon::own_lines(daemon)(pid, app, workspace).unwrap();
-    tilo_action_services::LineClient::of_stream(UnixStream::from(line)).unwrap()
+    tilo_action_line::LineClient::of_stream(UnixStream::from(line)).unwrap()
 }
 
 /// The tilolang process the daemon started to run an app's own instances is answered on the line
@@ -1455,7 +1455,7 @@ fn an_apps_own_process_keeps_reads_back_and_is_keyed_on_its_daemon_line() {
     assert_eq!(released.secret, TOKEN);
 
     // One key per purpose, the same on every ask.
-    let key = |client: &tilo_action_services::LineClient, purpose: &str| {
+    let key = |client: &tilo_action_line::LineClient, purpose: &str| {
         called(
             client,
             workspace_vault::target(workspace_vault::DEVICE_KEY),

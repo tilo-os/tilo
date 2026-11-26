@@ -25,7 +25,7 @@ use std::time::Duration;
 use accounts::{Account, AccountId, SyncHealth};
 use cloud_source::{Credential, CredentialSource};
 use serde_json::{Map, Value};
-use tilo_action_services::LineClient;
+use tilo_action_line::LineClient;
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeRequest, ReceiptStatus, RemoteActionTarget,

@@ -9,7 +9,7 @@ use std::io::{Read, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use tilo_action_services::{Carry, LineClient};
+use tilo_action_line::{Carry, LineClient};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, ContentPut, ContentPuts as _, InvokeArgument,
     InvokeRequest, MAX_CONTENT_FRAME_BYTES, Pending, ReceiptStatus, RemoteActionTarget,

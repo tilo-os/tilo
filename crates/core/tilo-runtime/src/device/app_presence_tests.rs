@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use collab_types::MemberId;
 use collab_types::presence::{Heard, Payload, Presence, PresenceKey, Said};
-use tilo_action_services::LineClient;
+use tilo_action_line::LineClient;
 
 use crate::RuntimeServices as _;
 use crate::device::live_speaking::Watch;

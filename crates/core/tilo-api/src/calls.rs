@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow, bail};
 use serde_json::{Value, json};
-use tilo_action_services::LineClient;
+use tilo_action_line::LineClient;
 use tilo_mcp::McpServer;
 
 mod model_ask;
@@ -48,10 +48,10 @@ pub const KEY_FILE_ENV: &str = "TILO_KEY_FILE";
 
 /// Names the descriptor of the connection to the daemon's native endpoint the launcher opened for
 /// an app it started, which the daemon admits as that app.
-pub const NATIVE_FD_ENV: &str = tilo_action_services::handed::NATIVE_FD_ENV;
+pub const NATIVE_FD_ENV: &str = tilo_action_line::handed::NATIVE_FD_ENV;
 
 /// Names the workspace an app the launcher started acts in.
-pub const WORKSPACE_ENV: &str = tilo_action_services::handed::WORKSPACE_ENV;
+pub const WORKSPACE_ENV: &str = tilo_action_line::handed::WORKSPACE_ENV;
 
 /// How long a call the workspace was not ready for is asked again: a workspace that does not
 /// serve this computer yet is on its way.
@@ -307,9 +307,9 @@ impl Calls {
     /// # Errors
     /// No daemon answers, or it serves this account no workspace.
     pub async fn connect(socket: Option<&Path>, workspace: Option<&str>) -> Result<Self> {
-        let handed = (socket.is_none() && tilo_action_services::handed::was_handed())
+        let handed = (socket.is_none() && tilo_action_line::handed::was_handed())
             .then(|| {
-                tilo_action_services::handed::connection().ok_or_else(|| {
+                tilo_action_line::handed::connection().ok_or_else(|| {
                     anyhow!(
                         "this app's connection to the daemon could not be opened, or names no \
                      workspace in {WORKSPACE_ENV}"

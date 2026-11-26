@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use collab_types::MemberId;
 use collab_types::presence::{Heard, PresenceKey, PresencePayload, Said};
-use tilo_action_services::{CallLanes, Take, frame_line};
+use tilo_action_line::{CallLanes, Take, frame_line};
 use tilo_actions::remote::{ActionCallError, RemoteActionMessage};
 use tilo_lock::MutexRecover as _;
 

@@ -113,6 +113,9 @@ pub fn line_refusal(code: &str, message: &str) -> String {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+pub mod handed;
+
+#[cfg(not(target_arch = "wasm32"))]
 mod carry;
 #[cfg(not(target_arch = "wasm32"))]
 mod client;
@@ -134,7 +137,7 @@ mod tests {
     use std::sync::Arc;
     use tilo_actions::api::ActionAddress;
     use tilo_actions::remote::{InvokeRequest, RemoteActionTarget};
-    use {crate::TestProvider, tilo_actions::remote::ReceiptStatus};
+    use {tilo_action_services::TestProvider, tilo_actions::remote::ReceiptStatus};
 
     #[test]
     fn a_line_is_answered_by_the_provider_or_refused() {

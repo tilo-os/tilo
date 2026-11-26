@@ -49,10 +49,10 @@ fn ask(socket: &Path, uid: u32, request: &Value) -> Value {
 }
 
 /// An action frame client on a connection of `uid`'s.
-fn line_client(socket: &Path, uid: u32) -> tilo_action_services::LineClient {
+fn line_client(socket: &Path, uid: u32) -> tilo_action_line::LineClient {
     PEER.store(uid, Ordering::SeqCst);
     let stream = UnixStream::connect(socket).unwrap();
-    tilo_action_services::LineClient::of_stream(stream).unwrap()
+    tilo_action_line::LineClient::of_stream(stream).unwrap()
 }
 
 const SECOND_PERSON_TEST: &str = "device::services::second_person_tests::a_second_person_signs_in_certifies_their_key_and_works_in_the_workspace_as_it";

@@ -10,7 +10,7 @@ homepage.workspace = true
 description = "A tilolang app's window in the toolkit: the generic adapter, the shell composition and the toolkit's widgets, built from the component patches an app instance sends and reporting what the person did."
 
 [dependencies]
-tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
+tilo-action-line = { version = "0.1.0", path = "../../core/action-line" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }

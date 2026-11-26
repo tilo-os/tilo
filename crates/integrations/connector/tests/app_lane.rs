@@ -25,7 +25,8 @@ use std::time::Duration;
 
 use collab_types::presence::CallPresence;
 use key_group::{ContentKeys, KeyGroup, MemberKey};
-use tilo_action_services::{LineClient, TestProvider};
+use tilo_action_services::{TestProvider};
+use tilo_action_line::{LineClient};
 use tilo_actions::remote::call::{
     BridgedCall, CallAudio, CallLink as SaidLink, CallReport as SaidReport, CallStatus,
     OutsideCall, OutsidePerson,
@@ -150,7 +151,7 @@ fn serve(stream: UnixStream, lane: Arc<AppLane>, written: Arc<Mutex<UnixStream>>
         let _entered = runtime.enter();
         let provider = Arc::new(TestProvider::new());
         let uploads = tilo_actions::remote::HostedContentPuts::default();
-        tilo_action_services::serve_lines_with(
+        tilo_action_line::serve_lines_with(
             |_: &RemoteActionFrame| {
                 Ok((
                     Arc::clone(&provider),
@@ -162,7 +163,7 @@ fn serve(stream: UnixStream, lane: Arc<AppLane>, written: Arc<Mutex<UnixStream>>
             BufReader::new(stream),
             output,
             None,
-            Some(lane.as_ref() as &dyn tilo_action_services::CallLanes),
+            Some(lane.as_ref() as &dyn tilo_action_line::CallLanes),
         );
     });
 }

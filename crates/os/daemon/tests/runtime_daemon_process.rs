@@ -984,7 +984,7 @@ fn start_app(profile: &Path, app: &str) -> Result<()> {
 /// The app instances the daemon's action registry lists, once: each as its `app_id` and the
 /// provider of its own connection.
 fn apps_once(profile: &Path) -> Result<Vec<Value>> {
-    use tilo_action_services::LineClient;
+    use tilo_action_line::LineClient;
     use tilo_actions::remote::{ActionProvider as _, Caller, CatalogueQuery};
     let line = LineClient::connect(&native_socket(profile)?)?;
     let page = line
@@ -1116,7 +1116,7 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() -> Result
 /// action reads it, and never in the workspace's store every member's device carries.
 #[test]
 fn a_put_for_a_device_action_is_kept_on_the_device() -> Result<()> {
-    use tilo_action_services::LineClient;
+    use tilo_action_line::LineClient;
     use tilo_actions::remote::{Caller, ContentGets as _, ContentPut as _};
     let profile = DaemonProfile::new()?;
     let line = LineClient::connect(&native_socket(profile.path())?)?;

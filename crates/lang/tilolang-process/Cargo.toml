@@ -53,6 +53,7 @@ test-support = []
 
 [dependencies]
 tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
+tilo-action-line = { version = "0.1.0", path = "../../core/action-line" }
 # What `web.get` and `web.post` reach through, on every device: the general network client.
 tilo-network-client = { version = "0.1.0", path = "../../platform/tilo-network-client" }
 tilolang-tilo = { path = "../tilolang-tilo" }

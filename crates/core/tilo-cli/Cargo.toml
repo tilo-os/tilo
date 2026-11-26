@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 tilo-action-services = { version = "0.1.0", path = "../action-services" }
+tilo-action-line = { version = "0.1.0", path = "../action-line" }
 # The host keychain its secrets and device proofs live in: a process with no app connection.
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets", features = ["host-keyring"] }
 # Everything here drives tools the image already carries — bootc, bootctl,

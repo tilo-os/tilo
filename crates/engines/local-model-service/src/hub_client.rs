@@ -16,7 +16,7 @@ use account_credentials::hugging_face;
 use agent_provider_config::local::hub::HUB_ORIGIN;
 use local_model_service::hub::HubApi;
 use local_model_service::{HttpsTransport, ServiceError};
-use tilo_action_services::LineClient;
+use tilo_action_line::LineClient;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };

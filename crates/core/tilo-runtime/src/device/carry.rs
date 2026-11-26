@@ -14,7 +14,7 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use iroh::{EndpointAddr, EndpointId};
-use tilo_action_services::{Carry, CarryAnswer};
+use tilo_action_line::{Carry, CarryAnswer};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
     self, ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ContentPut,
@@ -76,7 +76,7 @@ impl Carrying {
         if writeln!(
             stream,
             "{}",
-            tilo_action_services::carry_answer_line(&CarryAnswer::Open)
+            tilo_action_line::carry_answer_line(&CarryAnswer::Open)
         )
         .is_err()
         {
@@ -95,7 +95,7 @@ impl Carrying {
             }
             Ok((carried.clone(), caller.clone()))
         };
-        tilo_action_services::serve_lines(tree, &uploads, None, input, stream);
+        tilo_action_line::serve_lines(tree, &uploads, None, input, stream);
     }
 }
 
@@ -141,11 +141,7 @@ fn refuse(mut stream: Stream, why: &str) {
     let answer = CarryAnswer::Refused {
         reason: why.to_owned(),
     };
-    let _ = writeln!(
-        stream,
-        "{}",
-        tilo_action_services::carry_answer_line(&answer)
-    );
+    let _ = writeln!(stream, "{}", tilo_action_line::carry_answer_line(&answer));
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 

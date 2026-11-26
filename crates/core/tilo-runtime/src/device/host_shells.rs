@@ -1,11 +1,11 @@
 //! Where the shells an app's connection carries come from on this device
-//! ([`tilo_action_services::line::shells`]): Linux's shell runtime, which runs the workspace's
+//! ([`tilo_action_line::shells`]): Linux's shell runtime, which runs the workspace's
 //! environments and this computer's own shell alike; elsewhere this computer's own login shell
 //! on a pty (`ConPTY` on Windows), the one target a computer without that runtime has.
 
 use std::sync::Arc;
 
-use tilo_action_services::line::shells::ShellSource;
+use tilo_action_line::shells::ShellSource;
 
 /// This device's shells.
 #[cfg(target_os = "linux")]
@@ -22,7 +22,7 @@ pub(crate) fn source() -> Arc<dyn ShellSource> {
 #[cfg(not(target_os = "linux"))]
 mod platform {
     use serde_json::Value;
-    use tilo_action_services::line::shells::{OpenedShell, ShellSource};
+    use tilo_action_line::shells::{OpenedShell, ShellSource};
     use tilo_actions::remote::ActionCallError;
     use tilo_actions::remote::shell::ShellOpen;
 

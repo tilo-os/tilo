@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use runtime_portal::process_link::Descriptor;
 use serde_json::{Map, Value};
-use tilo_action_services::LineClient;
+use tilo_action_line::LineClient;
 use tilo_actions::remote::native_media::{Request as CallMediaRequest, Snapshot as CallSnapshot};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeRequest, ReceiptStatus, RemoteActionTarget,
@@ -268,7 +268,7 @@ impl std::io::Write for Typed {
 /// stops, so a lost one is never taken for a shell that exited.
 #[cfg(feature = "app-launch")]
 struct Printed {
-    heard: std::sync::mpsc::Receiver<tilo_action_services::ShellHeard>,
+    heard: std::sync::mpsc::Receiver<tilo_action_line::ShellHeard>,
     ended: std::sync::Arc<std::sync::Mutex<Option<tilo_terminal::SessionEnd>>>,
     pending: Vec<u8>,
     at: usize,
@@ -277,7 +277,7 @@ struct Printed {
 #[cfg(feature = "app-launch")]
 impl std::io::Read for Printed {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        use tilo_action_services::ShellHeard;
+        use tilo_action_line::ShellHeard;
         while self.at >= self.pending.len() {
             match self.heard.recv() {
                 Ok(ShellHeard::Output(bytes)) => {

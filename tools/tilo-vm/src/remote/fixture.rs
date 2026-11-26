@@ -253,7 +253,7 @@ impl Device {
                         };
                         Ok::<_, ActionCallError>((provider.clone(), caller))
                     };
-                    tilo_action_services::serve_lines(tree, &uploads, None, input, stream);
+                    tilo_action_line::serve_lines(tree, &uploads, None, input, stream);
                 });
             }
         });

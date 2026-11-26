@@ -44,7 +44,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, anyhow, bail};
 use clap::Subcommand;
 use serde_json::{Map, Value, json};
-use tilo_action_services::LineClient;
+use tilo_action_line::LineClient;
 use tilo_actions::ActionFailure;
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::asked::Asked;
