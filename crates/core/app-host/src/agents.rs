@@ -1263,7 +1263,10 @@ impl ServerAgents {
             ask: Ask::Triggered(place.clone()),
             history: Vec::new(),
             invocation: Some(invocation.to_string()),
-            typed: true,
+            // Whose words these are: the person's own reach a turn of theirs that is going, and
+            // what a cause asks (a reminder, an event, software acting for them) waits its turn
+            // ([`going::Going::hand`]).
+            typed: triggered::typed(&event),
             saved_by,
             private: triggered::alone_with(&event, &member, &person),
             line,

@@ -8,11 +8,60 @@
     reason = "in a test these are the assertion"
 )]
 
-use super::{CHAT, turn_caller};
-use tilo_action_policy::{ActionKind, Answer, PersonId};
+use super::{CHAT, turn_caller, typed};
+use serde_json::{Map, json};
+use tilo_action_policy::{Acting, ActionKind, Answer, PersonId};
+use tilo_actions::ActionKey;
+use tilo_actions::entry::{Did, VerbCall};
 use tilo_actions::remote::Caller;
+use tilo_automation::dispatch::DocumentEvent;
 use tilo_workspace_service::agent_shortcuts::MESSAGE;
 use tilo_workspace_service::work::Where;
+
+/// The change `actor` made to a message in Chat.
+fn posted(actor: Acting) -> DocumentEvent {
+    DocumentEvent {
+        workspace: "ws-1".into(),
+        record: "general".into(),
+        app: CHAT.to_owned(),
+        kind: MESSAGE.to_owned(),
+        change: "c1".into(),
+        actor,
+        did: Did::Verb(VerbCall::new(ActionKey::new(CHAT, MESSAGE, "send"), [])),
+        arguments: Map::from_iter([("body".to_owned(), json!("hi"))]),
+        item: None,
+        before: None,
+        after: Some(json!({"body": "hi"})),
+        caused_by: None,
+        origin: None,
+        incoming_message: false,
+        housekeeping: false,
+        shortcut: None,
+        invocation: None,
+    }
+}
+
+/// The person's own words reach a turn of theirs that is going; a reminder, an event or software
+/// acting for them asks a turn of its own, which waits for the one going.
+#[test]
+fn a_persons_words_are_typed_and_a_causes_are_not() {
+    assert!(
+        typed(&posted(Acting::person("ada"))),
+        "the person wrote it themselves"
+    );
+    assert!(
+        !typed(&posted(
+            Acting::automation("reminder").acting_for(Acting::person("ada"))
+        )),
+        "a reminder asks for them, so it waits its turn"
+    );
+    assert!(
+        !typed(&posted(
+            Acting::agent("scout", "ada").acting_for(Acting::person("ada"))
+        )),
+        "an agent acting for them asks too, so it waits"
+    );
+}
 
 /// A workspace `id` owned by `person`, as the governance keeps it: the owner's role's grants,
 /// and no grant naming any agent.

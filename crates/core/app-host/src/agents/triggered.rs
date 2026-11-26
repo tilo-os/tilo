@@ -147,6 +147,14 @@ pub fn asker(event: &DocumentEvent) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Whether `event` is the person's own words, rather than a cause asking for them: their own
+/// reach a turn of theirs that is going, and what a cause asks — a reminder, an event, software
+/// acting for them — waits its turn (`Going::hand`).
+#[must_use]
+pub fn typed(event: &DocumentEvent) -> bool {
+    event.actor.person_id().is_some()
+}
+
 /// Whether the message `event` made is in a direct conversation of `person` and `agent` alone:
 /// one whose people are those two.
 #[must_use]
