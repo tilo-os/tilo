@@ -54,6 +54,7 @@ mod cases {
         App { compiled, platform }
     }
 
+    #[derive(Clone)]
     struct Apps {
         discussion: App,
         notes: App,
@@ -72,7 +73,15 @@ mod cases {
         views: App,
     }
 
+    /// Every app the tests here run, compiled once for the test process that asks first.
     fn apps() -> Apps {
+        thread_local! {
+            static COMPILED: Apps = compile_apps();
+        }
+        COMPILED.with(Apps::clone)
+    }
+
+    fn compile_apps() -> Apps {
         let discussion = build(app_source!("discussion"), &[]);
         let notes = build(app_source!("notes"), &[&discussion]);
         let contacts = app("contacts");
@@ -431,233 +440,7 @@ mod cases {
 
     // ----- the apps compile -----------------------------------------------------------------
 
-    #[test]
-    fn every_app_compiles_with_its_committed_ids_and_loads_together() {
-        let a = apps();
-        let w = world(&a, &AmStore::new());
-        assert_eq!(w.ids.len(), 11);
-        for app in [
-            &a.discussion,
-            &a.notes,
-            &a.contacts,
-            &a.todo,
-            &a.chat,
-            &a.letters,
-            &a.counter,
-            &a.today,
-            &a.channels,
-            &a.board,
-            &a.views,
-        ] {
-            let meta = app.meta();
-            let root = meta
-                .roots
-                .first()
-                .unwrap_or_else(|| panic!("{} has no root", meta.app));
-            assert!(
-                meta.default_view(root).is_some(),
-                "{}'s root has no default view",
-                meta.app
-            );
-            assert!(
-                meta.views.iter().all(|v| v.name != "main"),
-                "{} still has a `main` view",
-                meta.app
-            );
-        }
-    }
-
     // ----- chat -------------------------------------------------------------------------------
-
-    #[test]
-    fn two_chat_replicas_posting_concurrently_converge_in_order_with_authors() {
-        let apps = apps();
-        let (mut a, mut b) = (AmStore::new(), AmStore::new());
-        let (wa, wb) = (world(&apps, &a), world(&apps, &b));
-        let (_, conv) = start_chat(&wa, &apps);
-        a.sync_with(&mut b).unwrap();
-
-        post(&wa, &apps, &conv, &person("ada"), "first", "");
-        post(&wa, &apps, &conv, &agent("helper"), "second", "1 + 2");
-        post(&wb, &apps, &conv, &person("bo"), "concurrent", "");
-        a.sync_with(&mut b).unwrap();
-
-        let (ta, tb) = (thread(&wa, &conv), thread(&wb, &conv));
-        assert_eq!(ta, tb, "both replicas read the same thread");
-        assert_eq!(ta.len(), 3);
-        let authors: Vec<&Actor> = ta.iter().map(|(a, _)| a).collect();
-        let at = |who: Actor| authors.iter().position(|a| **a == who).unwrap();
-        assert!(
-            at(person("ada")) < at(agent("helper")),
-            "one replica's posts keep their order: {authors:?}"
-        );
-        assert!(authors.contains(&&person("bo")));
-        let helper = &ta[at(agent("helper"))].1;
-        assert_eq!(
-            helper,
-            &[
-                ("text".to_owned(), "second".to_owned()),
-                ("block".to_owned(), "1 + 2".to_owned())
-            ],
-            "a message keeps its parts, in order"
-        );
-
-        let view = wb.view(&apps.chat, "thread", vec![res(&conv)]);
-        assert_eq!(
-            authors_of(view.tree()).iter().collect::<Vec<_>>(),
-            authors,
-            "the view shows the messages in the converged order, with their authors"
-        );
-    }
-
-    #[test]
-    fn typing_in_the_composer_and_sending_posts_a_message_and_clears_the_entry() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let (_, conv) = start_chat(&w, &apps);
-        let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        let inputs = of_kind(view.tree(), "ui.TextInput");
-        assert_eq!(
-            inputs.len(),
-            1,
-            "the title is the header's; the one entry is the composer"
-        );
-        let draft = inputs[0].key.clone();
-        assert_eq!(
-            view.edit(&draft, &Value::text("hello")).unwrap(),
-            EditOutcome::Applied
-        );
-        // The draft is the person's own state; the Send it shows carries what they typed.
-        view.poll_patches().unwrap();
-        let send = button_labelled(view.tree(), "Send").key.clone();
-        assert!(matches!(view.press(&send).unwrap(), InvokeOutcome::Done(_)));
-        assert_eq!(thread(&w, &conv).len(), 1);
-        view.poll_patches().unwrap();
-        assert_eq!(
-            view.bound_value(&draft),
-            Some(Value::text("")),
-            "the entry is cleared once the message went"
-        );
-        assert_eq!(
-            authors_of(view.tree()),
-            [person("me")],
-            "the composer posts as whoever is looking, as the runtime knows them"
-        );
-    }
-
-    #[test]
-    fn a_press_right_after_a_keystroke_sends_the_keystroke_too() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let (_, conv) = start_chat(&w, &apps);
-        let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        let draft = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
-        let send = button_labelled(view.tree(), "Send").key.clone();
-        view.edit(&draft, &Value::text("on my wa")).unwrap();
-        view.poll_patches().unwrap();
-        // The last keystroke and the press arrive together: the view has not drawn since.
-        view.edit(&draft, &Value::text("on my way")).unwrap();
-        assert!(matches!(view.press(&send).unwrap(), InvokeOutcome::Done(_)));
-        assert_eq!(
-            thread(&w, &conv)
-                .last()
-                .map(|(_, parts)| parts[0].1.clone()),
-            Some("on my way".to_owned()),
-            "the action reads the draft when it is pressed"
-        );
-        view.poll_patches().unwrap();
-        assert_eq!(view.bound_value(&draft), Some(Value::text("")));
-    }
-
-    #[test]
-    fn an_agents_block_that_is_a_notes_view_renders_that_view_inline_and_stays_live() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let (_, conv) = start_chat(&w, &apps);
-        let notebook = w.create("Notebook");
-        let note = returned_ref(w.call(&apps.notes, "new_note", vec![res(&notebook)]));
-        w.call(
-            &apps.notes,
-            "retitle",
-            vec![res(&note), Value::text("Groceries")],
-        );
-        let src = format!("notes.note_editor(@notes.Note:{})", note.id_string());
-        post(
-            &w,
-            &apps,
-            &conv,
-            &agent("helper"),
-            "Here is your note",
-            &src,
-        );
-
-        let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        let found = embeds(view.tree());
-        assert_eq!(found.len(), 1, "{}", dump(view.tree()));
-        assert_eq!(state(found[0]), "view", "{}", dump(view.tree()));
-        let title = of_kind(found[0], "ui.TextInput")[0];
-        let binding = title.binding.clone().expect("the title input is bound");
-        assert_eq!(
-            binding.field(),
-            Some((&note, &field_id(&apps.notes, "Note", "title"))),
-            "the first input edits the note's title"
-        );
-        assert_eq!(
-            &binding.author,
-            w.id_of(&apps.notes),
-            "the nested view is the notes package's code, not the agent's"
-        );
-        // A new note's title starts empty: what its type calls it while untitled is only what
-        // the field prompts with.
-        assert_eq!(text_prop(title, "placeholder"), "Untitled");
-
-        let key = title.key.clone();
-        assert_eq!(
-            view.edit(&key, &Value::text("Shopping")).unwrap(),
-            EditOutcome::Applied,
-            "the notes view's own input edits even inside an agent's message"
-        );
-        assert_eq!(w.rt.read(&note, "title").unwrap(), Value::text("Shopping"));
-        view.poll_patches().unwrap();
-        assert_eq!(
-            view.bound_value(&of_kind(embeds(view.tree())[0], "ui.TextInput")[0].key),
-            Some(Value::text("Shopping"))
-        );
-    }
-
-    #[test]
-    fn a_block_that_is_a_value_renders_through_the_default_view() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let (_, conv) = start_chat(&w, &apps);
-        let list = w.rt.create_root("Tasks").unwrap();
-        let project = returned_ref(w.call(&apps.todo, "new_project", vec![res(&list)]));
-        w.call(
-            &apps.todo,
-            "rename",
-            vec![res(&project), Value::text("Groceries")],
-        );
-        post(&w, &apps, &conv, &agent("helper"), "", "1 + 2");
-        post(
-            &w,
-            &apps,
-            &conv,
-            &agent("helper"),
-            "",
-            &format!("@tasks.Project:{}", project.id_string()),
-        );
-        let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        let found = embeds(view.tree());
-        assert_eq!(
-            found.iter().map(|e| state(e)).collect::<Vec<_>>(),
-            ["data", "data"]
-        );
-        assert_eq!(text_prop(of_kind(found[0], "ui.Text")[0], "value"), "3");
-        assert_eq!(
-            text_prop(of_kind(found[1], "ui.Text")[0], "value"),
-            "Groceries"
-        );
-    }
 
     tilo_test_env::scenario! {
         fn a_chat_block_that_fails_or_asks_is_shown_in_the_thread;
@@ -800,146 +583,6 @@ mod cases {
         }
     }
 
-    #[test]
-    fn the_same_block_source_is_compiled_once() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let (_, conv) = start_chat(&w, &apps);
-        let before = w.rt.compiled_modules();
-        for who in [agent("a"), agent("b"), person("c")] {
-            post(&w, &apps, &conv, &who, "", "40 + 2");
-        }
-        let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        assert_eq!(embeds(view.tree()).len(), 3);
-        assert_eq!(
-            w.rt.compiled_modules(),
-            before + 1,
-            "three embeds of one source are one module"
-        );
-        drop(view);
-        let _again = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        assert_eq!(
-            w.rt.compiled_modules(),
-            before + 1,
-            "and re-rendering adds none"
-        );
-    }
-
-    #[test]
-    fn declining_a_suggested_block_shows_declined_and_sends_nothing() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let (_, conv) = start_chat(&w, &apps);
-        let letters = w.create("Letters");
-        let draft = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&letters)]));
-        let src = format!("suggest letters.send(@letters.Draft:{})", draft.id_string());
-        let message = post(&w, &apps, &conv, &agent("helper"), "", &src);
-        let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        let record = invocation_of(&w, &apps, &message);
-        assert_eq!(
-            w.rt.resolve_invocation(&record, &me(), Resolution::Decline)
-                .unwrap(),
-            "declined"
-        );
-        view.poll_patches().unwrap();
-        assert_eq!(
-            text_prop(of_kind(view.tree(), "invocation")[0], "state"),
-            "declined"
-        );
-        assert!(w.rt.pending_effects().is_empty());
-    }
-
-    #[test]
-    fn a_strangers_block_asks_for_a_foreign_action_that_the_apps_own_view_may_run() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let (_, conv) = start_chat(&w, &apps);
-        let list = w.rt.create_root("Tasks").unwrap();
-        let first = returned_ref(w.call(
-            &apps.todo,
-            "new_task",
-            vec![
-                res(&list),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::text("milk"),
-            ],
-        ));
-        let second = returned_ref(w.call(
-            &apps.todo,
-            "new_task",
-            vec![
-                res(&list),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::text("eggs"),
-            ],
-        ));
-        let remove = |item: &ResourceRef| {
-            format!(
-                "button(\"Remove\", on: tasks.remove(@tasks.Task:{}))",
-                item.id_string()
-            )
-        };
-        post(&w, &apps, &conv, &person("stranger"), "", &remove(&first));
-        let chat_view = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        let found = embeds(chat_view.tree());
-        assert_eq!(state(found[0]), "view");
-        let button = of_kind(found[0], "ui.Button")[0].key.clone();
-        asked(chat_view.press(&button).unwrap());
-        assert_eq!(w.dispatch.asked().0, apps.todo.action("remove"));
-        let tilolang_runtime::delegate::Invocation::Action { author, asks, .. } =
-            w.dispatch.waiting()
-        else {
-            panic!("the ask is an action");
-        };
-        assert!(asks);
-        assert_eq!(
-            author,
-            Some(ModuleHash::written_by(&person("stranger"))),
-            "the dispatch names the actor who wrote the block"
-        );
-        assert_eq!(items(&w, &list, "items").len(), 2, "asking changed nothing");
-
-        // The same action from the todo app's own surface (a row's menu, which the platform
-        // applies as the person) runs without asking.
-        let out = w.call(&apps.todo, "remove", vec![res(&first)]);
-        assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
-        assert_eq!(items(&w, &list, "items"), vec![second.clone()]);
-
-        // Trusting the actor covers every block it writes, from the next one on.
-        w.auth.trust_actor(&person("stranger"));
-        let third = returned_ref(w.call(
-            &apps.todo,
-            "new_task",
-            vec![
-                res(&list),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::text("bread"),
-            ],
-        ));
-        post(&w, &apps, &conv, &person("stranger"), "", &remove(&third));
-        let chat_view = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        let found = embeds(chat_view.tree());
-        let button = of_kind(found[1], "ui.Button")[0].key.clone();
-        assert!(matches!(
-            chat_view.press(&button).unwrap(),
-            InvokeOutcome::Done(_)
-        ));
-        assert_eq!(items(&w, &list, "items"), vec![second]);
-        w.auth.revoke_actor(&person("stranger"));
-    }
-
     fn adds(w: &World, apps: &Apps, list: &ResourceRef) -> usize {
         w.rt.history(&list.doc)
             .unwrap()
@@ -948,368 +591,15 @@ mod cases {
             .count()
     }
 
-    #[test]
-    fn a_trusted_agents_action_block_runs_when_posted_and_never_again_on_render() {
-        let apps = apps();
-        let (mut a, mut b) = (AmStore::new(), AmStore::new());
-        let (wa, wb) = (world(&apps, &a), world(&apps, &b));
-        let (_, conv) = start_chat(&wa, &apps);
-        let list = wa.rt.create_root("Tasks").unwrap();
-        wa.auth.trust_actor(&agent("helper"));
-        let src = format!(
-            "tasks.new_task(@tasks.Tasks:{}, title: \"bread\")",
-            list.id_string()
-        );
-        let message = post(&wa, &apps, &conv, &agent("helper"), "", &src);
-
-        assert_eq!(
-            items(&wa, &list, "items").len(),
-            1,
-            "it ran when the message was posted, before anything rendered it"
-        );
-        let record = wa
-            .rt
-            .read_invocation(&invocation_of(&wa, &apps, &message))
-            .unwrap();
-        assert_eq!(record.state, "done");
-        assert_eq!(record.name, "new_task");
-        assert_eq!(record.author, agent("helper"));
-
-        let card_state = |w: &World| {
-            let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
-            text_prop(of_kind(view.tree(), "invocation")[0], "state")
-        };
-        let mut view = wa.view(&apps.chat, "thread", vec![res(&conv)]);
-        for width in [20.0, 90.0, 20.0] {
-            view.set_space("", Space::from_rem(width, 40.0));
-            view.poll_patches().unwrap();
-        }
-        assert_eq!(card_state(&wa), "done");
-
-        // A restart: a new runtime over the same documents.
-        let restarted = world(&apps, &a);
-        assert_eq!(card_state(&restarted), "done");
-
-        // Another replica renders what the first one recorded.
-        a.sync_with(&mut b).unwrap();
-        assert_eq!(card_state(&wb), "done");
-        assert_eq!(items(&wb, &list, "items").len(), 1);
-        for w in [&wa, &restarted, &wb] {
-            assert_eq!(adds(w, &apps, &list), 1, "rendering never runs the action");
-        }
-    }
-
-    #[test]
-    fn a_caller_cannot_post_as_an_agent_so_it_cannot_borrow_the_agents_authority() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let (_, conv) = start_chat(&w, &apps);
-        let list = w.rt.create_root("Tasks").unwrap();
-        w.auth.trust_actor(&agent("helper"));
-        let src = format!(
-            "tasks.new_task(@tasks.Tasks:{}, title: \"spam\")",
-            list.id_string()
-        );
-
-        let mallory = person("mallory");
-        let message = post(&w, &apps, &conv, &person("mallory"), "", &src);
-        assert_eq!(author_of(&w, &message), person("mallory"));
-        let record =
-            w.rt.read_invocation(&invocation_of(&w, &apps, &message))
-                .unwrap();
-        assert_eq!(record.author, mallory);
-        assert_eq!(record.state, "asked", "her code has no grants");
-        assert!(items(&w, &list, "items").is_empty());
-
-        // The action has no author to fill in, and an actor is not something a caller
-        // can pass in place of text either.
-        let id = apps.chat.action("post");
-        let forged = Value::Actor(agent("helper"));
-        let attempts = [
-            vec![
-                res(&conv),
-                forged.clone(),
-                Value::text(""),
-                Value::text(&src),
-            ],
-            vec![res(&conv), forged, Value::text(&src)],
-        ];
-        for args in attempts {
-            let err =
-                w.rt.invoke_action(&mallory, (id.as_str(), args))
-                    .unwrap_err();
-            assert!(matches!(err, RuntimeError::BadArgs(_)), "{err}");
-        }
-        assert_eq!(thread(&w, &conv).len(), 1, "no forged message was posted");
-
-        // The agent's own post carries the agent's authority.
-        let real = post(&w, &apps, &conv, &agent("helper"), "", &src);
-        assert_eq!(
-            w.rt.read_invocation(&invocation_of(&w, &apps, &real))
-                .unwrap()
-                .state,
-            "done"
-        );
-        assert_eq!(items(&w, &list, "items").len(), 1);
-    }
-
-    #[test]
-    fn approving_a_proposal_on_another_device_runs_it_once_and_both_show_done() {
-        let apps = apps();
-        let (mut a, mut b) = (AmStore::new(), AmStore::new());
-        let (wa, wb) = (world(&apps, &a), world(&apps, &b));
-        let (_, conv) = start_chat(&wa, &apps);
-        let letters = wa.create("Letters");
-        let draft = returned_ref(wa.call(&apps.letters, "new_draft", vec![res(&letters)]));
-        let editor = wa.view(&apps.letters, "editor", vec![res(&draft)]);
-        let inputs = letter_fields(&editor);
-        for (key, text) in inputs.iter().zip(["bo@example.org", "Plans", "Nine."]) {
-            editor.edit(key, &Value::text(text)).unwrap();
-        }
-        let src = format!("suggest letters.send(@letters.Draft:{})", draft.id_string());
-        let message = post(&wa, &apps, &conv, &agent("helper"), "Shall I?", &src);
-        let record = invocation_of(&wa, &apps, &message);
-        let mut view_a = wa.view(&apps.chat, "thread", vec![res(&conv)]);
-        a.sync_with(&mut b).unwrap();
-
-        // On B, a viewer the authority gives no say sees the suggestion but cannot run it.
-        let (bo, guest) = (person("bo"), person("guest"));
-        wb.auth.deny_invoker(&guest);
-        let card_for = |who: &Actor| {
-            let mut view = wb
-                .rt
-                .open_view(who, &apps.chat.view("thread"), vec![res(&conv)])
-                .unwrap();
-            // The messages are rows of the thread's list: read whole, as a host that draws
-            // every row does.
-            view.set_lazy_rows(false).unwrap();
-            let card = of_kind(view.tree(), "invocation")[0];
-            (
-                text_prop(card, "state"),
-                card.props.get("can_resolve").cloned(),
-            )
-        };
-        assert_eq!(
-            card_for(&guest),
-            ("asked".to_owned(), Some(Value::Bool(false)))
-        );
-        assert_eq!(card_for(&bo), ("asked".to_owned(), Some(Value::Bool(true))));
-        let err = wb
-            .rt
-            .resolve_invocation(&record, &guest, Resolution::Approve { choice: None })
-            .unwrap_err();
-        assert!(matches!(err, RuntimeError::Denied(_)), "{err}");
-        assert_eq!(wb.rt.read_invocation(&record).unwrap().state, "asked");
-        assert!(wb.rt.pending_effects().is_empty());
-
-        // Someone with authority confirms on B: it runs there, once.
-        assert_eq!(
-            wb.rt
-                .resolve_invocation(&record, &bo, Resolution::Approve { choice: None })
-                .unwrap(),
-            "done"
-        );
-        assert_eq!(wb.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
-        assert_eq!(wb.rt.pending_effects().len(), 1);
-        assert_eq!(wa.rt.read_invocation(&record).unwrap().state, "asked");
-        assert!(wa.rt.pending_effects().is_empty(), "A has not heard yet");
-
-        a.sync_with(&mut b).unwrap();
-        assert_eq!(wa.rt.read_invocation(&record).unwrap().state, "done");
-        assert_eq!(wa.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
-        assert!(
-            view_a.is_stale(),
-            "the synced invocation refreshes the card"
-        );
-        view_a.poll_patches().unwrap();
-        assert_eq!(
-            text_prop(of_kind(view_a.tree(), "invocation")[0], "state"),
-            "done"
-        );
-        for w in [&wa, &wb] {
-            assert_eq!(
-                w.rt.pending_effects().len(),
-                1,
-                "the letter was queued once"
-            );
-            let sends =
-                w.rt.history(&draft.doc)
-                    .unwrap()
-                    .iter()
-                    .filter(|n| n.action == apps.letters.action("send"))
-                    .count();
-            assert_eq!(sends, 1);
-        }
-        assert_eq!(wa.rt.settle().unwrap().marked, 1);
-        assert_eq!(wa.rt.settle().unwrap().delivered, 1);
-        assert_eq!(wa.sink.delivered().len(), 1);
-
-        let again = wa
-            .rt
-            .resolve_invocation(&record, &bo, Resolution::Approve { choice: None })
-            .unwrap_err();
-        assert!(matches!(again, RuntimeError::NotPending(_)), "{again}");
-    }
-
-    #[test]
-    fn the_composer_posts_as_the_person_looking_not_as_a_name_in_the_view() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let (_, conv) = start_chat(&w, &apps);
-        let ada = person("ada");
-        let mut view =
-            w.rt.open_view(&ada, &apps.chat.view("thread"), vec![res(&conv)])
-                .unwrap();
-        let draft = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
-        view.edit(&draft, &Value::text("hello")).unwrap();
-        view.poll_patches().unwrap();
-        let send = button_labelled(view.tree(), "Send").key.clone();
-        assert!(matches!(view.press(&send).unwrap(), InvokeOutcome::Done(_)));
-        assert_eq!(thread(&w, &conv)[0].0, person("ada"));
-    }
-
     // ----- windows: open(r), view state ------------------------------------------
 
     // USER REQUIREMENT (2026-10-20): "notes = a notebook list view (`root Notebook`, rows that
     // `open(n)`) plus a `default view note_editor for Note`; no `open` field in Notebook
     // anymore". The notebook's window is a tree of its notes with the chosen one beside it, and
     // a note still has a window of its own (`note_editor`) wherever one is opened on its own.
-    #[test]
-    fn a_notebook_row_opens_its_note_beside_the_tree() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let nb = w.create("Notebook");
-        let titled = |title: &str| {
-            let note = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
-            w.call(&apps.notes, "retitle", vec![res(&note), Value::text(title)]);
-            note
-        };
-        let note = titled("Plans");
-        let later = titled("Later");
-        assert!(
-            apps.notes
-                .meta()
-                .types
-                .iter()
-                .all(|t| t.fields.iter().all(|f| f.name != "open")),
-            "the notebook keeps no open note"
-        );
-        let mut list = w.view(&apps.notes, "notebook", vec![res(&nb)]);
-        assert_eq!(list.window(), nb.id_string(), "a window is its resource's");
-        let (_, shows) = tree_item_labelled(list.tree(), "Plans");
-        assert_eq!(shows, note, "the row stands for this note");
-        assert_eq!(
-            opened_note(&list),
-            note,
-            "the window opens the first note of the tree beside it"
-        );
-
-        // Choosing a row brings that note forward beside the tree, in the window's own column.
-        let tree = the_tree(&list).key.clone();
-        let (_, shows) = tree_item_labelled(list.tree(), "Later");
-        assert_eq!(shows, later);
-        list.fire_with(&tree, "select", Some(&Value::resource(&shows)))
-            .unwrap();
-        assert!(list.is_stale(), "the window read the note it shows");
-        list.poll_patches().unwrap();
-        assert_eq!(
-            opened_note(&list),
-            later,
-            "the row's note stands beside the tree"
-        );
-
-        let editor = w.rt.open_resource(&me(), &note, None).unwrap();
-        assert_eq!(editor.window(), note.id_string());
-        let title = of_kind(editor.tree(), "ui.TextInput")[0];
-        assert_eq!(
-            title
-                .binding
-                .as_ref()
-                .and_then(tilolang_runtime::Binding::field),
-            Some((&note, &field_id(&apps.notes, "Note", "title"))),
-            "the note's editor edits its title"
-        );
-        // A new note's title starts empty: what its type calls it while untitled is only what
-        // the field prompts with.
-        assert_eq!(text_prop(title, "placeholder"), "Untitled");
-        assert_eq!(
-            w.rt.default_view(&note.ty).as_deref(),
-            Some(apps.notes.view("note_editor").as_str())
-        );
-    }
-
     // View state is how one person's window shows its resource (workspace-model.md, "The
     // pieces"): two people with the same window open each read it where they left it — the note
     // one of them brought forward stands forward for them alone.
-    #[test]
-    fn two_people_in_one_window_each_see_it_as_they_left_it() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let nb = w.create("Notebook");
-        let mut notes = Vec::new();
-        for title in ["b", "a"] {
-            let n = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
-            w.call(&apps.notes, "retitle", vec![res(&n), Value::text(title)]);
-            notes.push(n);
-        }
-        let (b, a) = (notes[0].clone(), notes[1].clone());
-        let (ada, bo) = (person("ada"), person("bo"));
-        let open = |who: &Actor| {
-            let mut view =
-                w.rt.open_window(
-                    who,
-                    "window-1",
-                    &apps.notes.view("notebook"),
-                    vec![res(&nb)],
-                )
-                .unwrap();
-            // The rows are read here as a host that draws every row does.
-            view.set_lazy_rows(false).unwrap();
-            view
-        };
-        let (mut va, mut vb) = (open(&ada), open(&bo));
-        assert_eq!(
-            opened_note(&va),
-            b,
-            "the window opens the first of the tree"
-        );
-        assert_eq!(opened_note(&vb), b);
-
-        // Ada brings the other note forward, and Bo's view of the window stays where he left it.
-        let tree = the_tree(&va).key.clone();
-        va.fire_with(&tree, "select", Some(&Value::resource(&a)))
-            .unwrap();
-        assert!(va.is_stale(), "Ada's window read the note she chose");
-        assert!(
-            !vb.is_stale(),
-            "Bo's window never read Ada's choice, so it does not run again"
-        );
-        va.poll_patches().unwrap();
-        vb.poll_patches().unwrap();
-        assert_eq!(opened_note(&va), a);
-        assert_eq!(opened_note(&vb), b, "Bo is where he was");
-
-        // Bo brings the same note forward in his own window: each keeps the note it chose.
-        let tree = the_tree(&vb).key.clone();
-        vb.fire_with(&tree, "select", Some(&Value::resource(&a)))
-            .unwrap();
-        vb.poll_patches().unwrap();
-        assert_eq!(opened_note(&vb), a);
-        assert_eq!(opened_note(&va), a);
-
-        // Another window over the same notebook has state of its own.
-        let mut elsewhere =
-            w.rt.open_window(
-                &ada,
-                "window-2",
-                &apps.notes.view("notebook"),
-                vec![res(&nb)],
-            )
-            .unwrap();
-        elsewhere.set_lazy_rows(false).unwrap();
-        assert_eq!(opened_note(&elsewhere), b);
-    }
-
     tilo_test_env::scenario! {
         fn a_window_opens_on_the_view_state_its_app_chose;
 
@@ -1418,87 +708,6 @@ mod cases {
             .to_owned()
     }
 
-    #[test]
-    fn an_answer_draws_its_written_view_live_over_other_apps_as_its_task_wrote_it() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let list = w.rt.create_root("Tasks").unwrap();
-        let add = |title: &str| {
-            returned_ref(w.call(
-                &apps.todo,
-                "new_task",
-                vec![
-                    res(&list),
-                    Value::none(),
-                    Value::none(),
-                    Value::none(),
-                    Value::none(),
-                    Value::none(),
-                    Value::text(title),
-                ],
-            ))
-        };
-        add("Record the demo video");
-        add("Update the changelog");
-        let frozen = add("Freeze the strings for translation");
-        w.call(&apps.todo, "check", vec![res(&frozen)]);
-        let answers = w.rt.create_root("Views").unwrap();
-        // The agent's task answers; the answer records it as the block's author.
-        let task = agent("task:release");
-        let id = apps.views.action("answer");
-        let answer = returned_ref(
-            w.rt.invoke_action(
-                &task,
-                (
-                    id.as_str(),
-                    vec![
-                        res(&answers),
-                        Value::text("Left for the release"),
-                        Value::text("what's left for the release?"),
-                        Value::text(release_view()),
-                        Value::text(""),
-                    ],
-                ),
-            )
-            .unwrap(),
-        );
-        assert_eq!(author_of(&w, &answer), task);
-        let mut view = w.view(&apps.views, "view_page", vec![res(&answer)]);
-        let found = embeds(view.tree());
-        assert_eq!(found.len(), 1, "{}", dump(view.tree()));
-        assert_eq!(state(found[0]), "view", "{}", dump(view.tree()));
-        let shown = row_titles(found[0]);
-        assert!(
-            shown.contains(&"Record the demo video".to_owned())
-                && shown.contains(&"Update the changelog".to_owned()),
-            "{shown:?}\n{}",
-            dump(view.tree())
-        );
-        assert!(
-            !shown.contains(&"Freeze the strings for translation".to_owned()),
-            "{shown:?}"
-        );
-        // Live: a task added later is in the answer on its next frame.
-        add("Screenshots for the docs");
-        view.poll_patches().unwrap();
-        assert!(
-            row_titles(embeds(view.tree())[0]).contains(&"Screenshots for the docs".to_owned()),
-            "{}",
-            dump(view.tree())
-        );
-        // As a window draws it, with rows built as they are shown: the answer's rows are there.
-        let lazy =
-            w.rt.open_view(&me(), &apps.views.view("view_page"), vec![res(&answer)])
-                .unwrap();
-        let lazy_rows = of_kind(embeds(lazy.tree())[0], "ui.ListRow").len();
-        assert_eq!(
-            lazy_rows,
-            3,
-            "the open tasks' rows are built: {}",
-            dump(lazy.tree())
-        );
-    }
-
     // ----- today ------------------------------------------------------------------------------
 
     struct Morning {
@@ -1575,116 +784,6 @@ mod cases {
         .unwrap();
     }
 
-    #[test]
-    fn the_morning_cards_are_each_apps_own_place() {
-        let apps = apps();
-        let m = morning(&apps);
-        // Tasks' Today place: due today, or hers to do whenever. A task with no date is Tasks'
-        // own business and not hers this morning.
-        // Today is the day the clock says: the task due then, and the one that is hers to do.
-        m.w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
-        let task = |due: Option<&str>, by: Option<Value>, title: &str| {
-            m.w.call(
-                &apps.todo,
-                "new_task",
-                vec![
-                    res(&m.list),
-                    Value::none(),
-                    Value::none(),
-                    due.map_or_else(Value::none, |day| Value::some(Value::text(day))),
-                    Value::none(),
-                    by.unwrap_or_else(Value::none),
-                    Value::text(title),
-                ],
-            );
-        };
-        task(Some("2026-10-29"), None, "call the landlord");
-        task(
-            None,
-            Some(Value::some(Value::Actor(me()))),
-            "review the plan",
-        );
-        add_todo(&m, &apps, "sort the paper mail", false);
-        add_todo(&m, &apps, "bins", true);
-        let pinned = returned_ref(m.w.call(&apps.notes, "new_note", vec![res(&m.notebook)]));
-        m.w.call(&apps.notes, "pin", vec![res(&pinned), Value::Bool(true)]);
-        m.w.call(&apps.notes, "new_note", vec![res(&m.notebook)]);
-
-        let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
-        let tree = view.tree();
-        assert_eq!(tree.kind, "ui.NavShell", "{}", dump(tree));
-        assert_eq!(
-            of_kind(tree, "page")[0].props["full"],
-            Value::Bool(true),
-            "Today is a canvas the window's width: {}",
-            dump(tree)
-        );
-        let cards = of_kind(tree, "ui.Card");
-        let shown: Vec<&ResourceRef> = cards
-            .iter()
-            .map(|c| match &c.props["item"] {
-                Value::Ref(r) => &*r.target,
-                other => panic!("a card shows a resource, not {other:?}"),
-            })
-            .collect();
-        assert_eq!(
-            shown,
-            [&m.list, &m.notebook, &m.chat],
-            "a card per resource Today points at"
-        );
-        let titles: Vec<String> = cards.iter().map(|c| text_prop(c, "title")).collect();
-        assert_eq!(
-            titles,
-            ["Today", "Pinned", "Unread"],
-            "each card names the place as its app does: {}",
-            dump(tree)
-        );
-        assert_eq!(
-            count_of(cards[0]),
-            Some(2),
-            "the todo card counts Tasks' Today place: {}",
-            dump(tree)
-        );
-        let rows: Vec<String> = of_kind(cards[0], "ui.ListRow")
-            .iter()
-            .map(|r| text_prop(r, "title"))
-            .collect();
-        assert_eq!(
-            rows,
-            ["call the landlord", "review the plan"],
-            "the rows are Tasks' Today place's: {}",
-            dump(tree)
-        );
-        assert_eq!(
-            count_of(cards[1]),
-            Some(1),
-            "the notes card counts Pinned: {}",
-            dump(tree)
-        );
-        // Nothing in Chat needs her, so its card takes no room: no count, no rows, one quiet
-        // line saying there is nothing to read.
-        assert_eq!(
-            count_of(cards[2]),
-            None,
-            "a place with nothing in it has no count: {}",
-            dump(tree)
-        );
-        assert!(of_kind(cards[2], "ui.ListRow").is_empty(), "{}", dump(tree));
-        let quiet = of_kind(cards[2], "ui.Text");
-        assert_eq!(quiet.len(), 1, "one quiet line: {}", dump(tree));
-        assert_eq!(
-            quiet[0].props.get("secondary"),
-            Some(&Value::Bool(true)),
-            "quiet ink, not the page's own words: {}",
-            dump(tree)
-        );
-        let said = text_prop(quiet[0], "value");
-        assert!(
-            said == "All caught up" || said == "tilolang-all-caught-up",
-            "the empty place says it is caught up, not {said:?}"
-        );
-    }
-
     tilo_test_env::scenario! {
         fn the_morning_board_finds_the_unread_and_cleans_up_when_trusted;
 
@@ -1747,173 +846,6 @@ mod cases {
         }
     }
 
-    #[test]
-    fn a_place_longer_than_a_cards_rows_says_how_many_it_holds() {
-        let apps = apps();
-        let m = morning(&apps);
-        m.w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
-        for day in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] {
-            m.w.call(
-                &apps.todo,
-                "new_task",
-                vec![
-                    res(&m.list),
-                    Value::none(),
-                    Value::none(),
-                    Value::some(Value::text("2026-10-29")),
-                    Value::none(),
-                    Value::none(),
-                    Value::text(day),
-                ],
-            );
-        }
-        let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
-        let tree = view.tree();
-        let cards = of_kind(tree, "ui.Card");
-        assert_eq!(
-            count_of(cards[0]),
-            Some(7),
-            "the card counts the place, not the rows it shows: {}",
-            dump(tree)
-        );
-        assert_eq!(
-            of_kind(cards[0], "ui.ListRow").len(),
-            5,
-            "a card shows a place's first rows: {}",
-            dump(tree)
-        );
-        let show_all: Vec<&UiNode> = of_kind(cards[0], "ui.Button")
-            .into_iter()
-            .filter(|b| {
-                matches!(b.props.get("label"), Some(Value::Text(label)) if label.starts_with("Show all"))
-            })
-            .collect();
-        assert_eq!(show_all.len(), 1, "{}", dump(tree));
-        assert_eq!(text_prop(show_all[0], "label"), "Show all 7");
-    }
-
-    #[test]
-    fn the_morning_cleanup_asks_for_every_foreign_change_and_replays_without_repeating() {
-        let apps = apps();
-        let m = morning(&apps);
-        add_todo(&m, &apps, "a", true);
-        add_todo(&m, &apps, "b", false);
-        add_todo(&m, &apps, "c", true);
-
-        let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
-        let button = button_labelled(view.tree(), "Morning cleanup").key.clone();
-        let InvokeOutcome::Waits { run, .. } = view.press(&button).unwrap() else {
-            panic!("the cleanup asks for the foreign changes");
-        };
-        let mut asked = Vec::new();
-        let finished = loop {
-            let tilolang_runtime::delegate::Invocation::Action { action, author, .. } =
-                m.w.dispatch.waiting()
-            else {
-                panic!("the cleanup waits on no action");
-            };
-            assert_eq!(
-                author,
-                Some(m.w.id_of(&apps.today).clone()),
-                "Today wrote these invocations"
-            );
-            asked.push(action);
-            match m.w.dispatch.allow(&m.w.rt, &run) {
-                RunOutcome::Waits { .. } => {}
-                RunOutcome::Done(v) => break v,
-            }
-        };
-        assert_eq!(finished, Value::Int(2));
-        assert_eq!(
-            asked,
-            [
-                apps.todo.action("clear_done"),
-                apps.notes.action("file_note"),
-            ],
-            "one question for the clear, then one for the note, in the order Today wrote them"
-        );
-        assert_eq!(items(&m.w, &m.list, "items").len(), 1);
-        let notes = items(&m.w, &m.notebook, "notes");
-        assert_eq!(notes.len(), 1, "replays did not file a second note");
-        assert_eq!(text_of(&m.w, &notes[0], "title"), "Morning: 2 done");
-        assert_eq!(
-            m.w.rt.read(&notes[0], "tags").unwrap(),
-            Value::List(vec![Value::text("morning")])
-        );
-        let clears =
-            m.w.rt
-                .history(&m.list.doc)
-                .unwrap()
-                .iter()
-                .filter(|n| n.action == apps.todo.action("clear_done"))
-                .count();
-        assert_eq!(clears, 1, "the clear ran once for the whole list");
-    }
-
-    #[test]
-    fn the_morning_cleanup_with_nothing_finished_files_a_zero_and_does_not_ask_for_a_clear() {
-        let apps = apps();
-        let m = morning(&apps);
-        add_todo(&m, &apps, "a", false);
-        add_todo(&m, &apps, "b", false);
-        // A step put under a done task opens it again: there is work under it now.
-        let parent = returned_ref(m.w.call(
-            &apps.todo,
-            "new_task",
-            vec![
-                res(&m.list),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::text("c"),
-            ],
-        ));
-        m.w.call(&apps.todo, "check", vec![res(&parent)]);
-        m.w.call(
-            &apps.todo,
-            "add_subtask",
-            vec![res(&parent), Value::text("c.1")],
-        );
-        assert_eq!(
-            m.w.rt.read(&parent, "done").unwrap(),
-            Value::Bool(false),
-            "the task opened again for its step"
-        );
-
-        let cleanup = apps.today.action("morning_cleanup");
-        let InvokeOutcome::Waits { run, .. } =
-            m.w.rt
-                .invoke_action(&me(), (cleanup, vec![res(&m.list), res(&m.notebook)]))
-                .unwrap()
-        else {
-            panic!("the cleanup asks for the foreign note");
-        };
-        let mut asked = Vec::new();
-        let finished = loop {
-            asked.push(m.w.dispatch.asked().0);
-            match m.w.dispatch.allow(&m.w.rt, &run) {
-                RunOutcome::Waits { .. } => {}
-                RunOutcome::Done(v) => break v,
-            }
-        };
-        assert_eq!(finished, Value::Int(0), "nothing was finished");
-        assert_eq!(
-            asked,
-            [apps.notes.action("file_note")],
-            "no question for a clear that would do nothing"
-        );
-        assert_eq!(
-            items(&m.w, &m.list, "items").len(),
-            4,
-            "nothing went: the task opened again for its step"
-        );
-        let notes = items(&m.w, &m.notebook, "notes");
-        assert_eq!(notes.len(), 1, "the note still says how the morning went");
-        assert_eq!(text_of(&m.w, &notes[0], "title"), "Morning: 0 done");
-    }
-
     // ----- every app at every width -------------------------------------------------------------
 
     fn at(v: &mut ViewInstance, width: f64) -> UiNode {
@@ -1925,80 +857,6 @@ mod cases {
     const COMPACT: f64 = 24.0;
     const WIDE: f64 = 90.0;
 
-    #[test]
-    fn counter_shows_its_value_and_the_buttons_that_change_it_at_every_width() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let c = w.create("Counter");
-        let mut v = w.view(&apps.counter, "counter", vec![res(&c)]);
-        let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
-        for tree in [&compact, &wide] {
-            assert_eq!(tree.kind, "ui.NavShell");
-            let tree = content(tree);
-            let shown = of_kind(tree, "ui.Text")[0];
-            // A number that changes: a title in tabular figures.
-            assert_eq!(shown.props["role"], Value::text("title"));
-            assert_eq!(shown.props["numeric"], Value::Bool(true));
-            let plus = button_labelled(tree, "Increment");
-            assert_eq!(plus.props["role"], Value::text("primary"));
-            assert_eq!(plus.props["icon"], Value::text("plus"));
-            assert_eq!(
-                button_labelled(tree, "Decrement").props["icon"],
-                Value::text("minus")
-            );
-        }
-        let plus = button_labelled(content(&wide), "Increment").key.clone();
-        v.press(&plus).unwrap();
-        v.poll_patches().unwrap();
-        assert_eq!(w.rt.read(&c, "value").unwrap(), Value::Int(1));
-        assert_eq!(
-            text_prop(of_kind(content(v.tree()), "ui.Text")[0], "value"),
-            "1"
-        );
-    }
-
-    #[test]
-    fn todo_is_one_row_per_item_at_every_width() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let list = w.rt.create_root("Tasks").unwrap();
-        for t in ["a", "b"] {
-            w.call(
-                &apps.todo,
-                "new_task",
-                vec![
-                    res(&list),
-                    Value::none(),
-                    Value::none(),
-                    Value::none(),
-                    Value::none(),
-                    Value::none(),
-                    Value::text(t),
-                ],
-            );
-        }
-        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
-        // The window opens on today, and neither task has a day: the person picks the inbox,
-        // where both wait to be sorted.
-        choose(&v, "inbox");
-        v.poll_patches().unwrap();
-        let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
-        for tree in [&compact, &wide] {
-            assert!(of_kind(tree, "grid").is_empty());
-            let entries = of_kind(tree, "ui.TextInput")
-                .into_iter()
-                .filter(|field| on(field, "entry"))
-                .count();
-            assert_eq!(entries, 1, "one quick add for the list, not one per row");
-            let rows = of_kind(tree, "ui.ListRow");
-            assert_eq!(rows.len(), 2);
-            assert!(
-                rows.iter().all(|r| r.binding.is_some()),
-                "each row's checkbox is bound"
-            );
-        }
-    }
-
     /// Whether the control's flag `name` is on: a view sets it `true`, and what an action's own
     /// state gives the tree arrives as the number its offer carries.
     fn on(node: &UiNode, name: &str) -> bool {
@@ -2007,236 +865,6 @@ mod cases {
             Some(Value::Int(on)) => *on != 0,
             _ => false,
         }
-    }
-
-    /// What the words before the entry type say fills the create action's parameters: a day
-    /// and a time, who it is for, the project it is of. Each shows as a chip while the person
-    /// types, and a chip's removal takes its words away.
-    #[test]
-    fn what_the_entry_says_of_a_task_fills_it_and_shows_as_chips() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        // Thursday, noon in UTC: "fri 10am" is the Friday after it, at ten.
-        w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
-        w.rt.set_name_host(Names);
-        stage_members(
-            &w.rt,
-            vec![
-                tilolang_runtime::members::Member::person("me", tilo_actions::policy::Role::Owner),
-                tilolang_runtime::members::Member::person("bo", tilo_actions::policy::Role::Editor),
-            ],
-            None,
-        );
-        let list = w.rt.create_root("Tasks").unwrap();
-        let project = returned_ref(w.call(&apps.todo, "new_project", vec![res(&list)]));
-        w.call(
-            &apps.todo,
-            "rename",
-            vec![res(&project), Value::text("Move flat")],
-        );
-        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
-        // The window opens on today, whose entry makes a task that names no day today's: the
-        // person picks the inbox, whose entry reads a day, a moment, who the task is for and
-        // the project it is of, and leaves the day to the words.
-        choose(&v, "inbox");
-        v.poll_patches().unwrap();
-        let entry = of_kind(v.tree(), "ui.TextInput")
-            .into_iter()
-            .find(|field| on(field, "entry"))
-            .unwrap_or_else(|| panic!("the list ends in its entry: {}", dump(v.tree())))
-            .key
-            .clone();
-
-        v.edit(
-            &entry,
-            &Value::text("call landlord fri 10am @bo #Move flat"),
-        )
-        .unwrap();
-        v.poll_patches().unwrap();
-        let chips: Vec<(&str, String)> = of_kind(v.tree(), "ui.Chip")
-            .into_iter()
-            .map(|chip| (chip.key.as_str(), text_prop(chip, "label")))
-            .collect();
-        let labels: Vec<&str> = chips.iter().map(|(_, label)| label.as_str()).collect();
-        assert_eq!(
-            labels,
-            ["Tomorrow", "10:00", "@Bo", "#Move flat"],
-            "the entry shows what it read while it is typed: {}",
-            dump(v.tree())
-        );
-
-        // A chip's removal takes its words out of the entry and leaves the rest.
-        let bo = chips[2].0.to_owned();
-        v.fire(&bo, "remove").unwrap();
-        v.poll_patches().unwrap();
-        assert_eq!(
-            v.bound_value(&entry),
-            Some(Value::text("call landlord fri 10am #Move flat")),
-            "the chip takes its own words away: {}",
-            dump(v.tree())
-        );
-
-        // Typed whole and committed, it is one task: the words nothing else took title it, and
-        // the rest are its day, its moment, who it is for and the project it is of.
-        v.edit(
-            &entry,
-            &Value::text("call landlord fri 10am @bo #Move flat"),
-        )
-        .unwrap();
-        v.poll_patches().unwrap();
-        v.fire_with(
-            &entry,
-            "submit",
-            Some(&Value::text("call landlord fri 10am @bo #Move flat")),
-        )
-        .unwrap();
-        v.poll_patches().unwrap();
-        let made = items(&w, &list, "items");
-        assert_eq!(made.len(), 1, "{}", dump(v.tree()));
-        assert_eq!(text_of(&w, &made[0], "title"), "call landlord");
-        assert_eq!(
-            w.rt.read(&made[0], "due").unwrap(),
-            Value::Opt(Some(Box::new(Value::text("2026-10-30")))),
-            "Friday, the day after the Thursday it was typed"
-        );
-        match w.rt.read(&made[0], "at").unwrap() {
-            Value::Opt(Some(inner)) => assert!(
-                inner
-                    .as_text()
-                    .is_some_and(|at| at.starts_with("2026-10-30T10:00")),
-                "ten that morning: {inner:?}"
-            ),
-            other => panic!("the task is due at a moment: {other:?}"),
-        }
-        match w.rt.read(&made[0], "assignee").unwrap() {
-            Value::Opt(Some(inner)) => {
-                assert_eq!(*inner, Value::Actor(person("bo")));
-            }
-            other => panic!("the task is Bo's: {other:?}"),
-        }
-        match w.rt.read(&made[0], "project").unwrap() {
-            Value::Opt(Some(inner)) => assert_eq!(*inner, res(&project), "in Move flat"),
-            other => panic!("the task is of its project: {other:?}"),
-        }
-        assert_eq!(
-            v.bound_value(&entry),
-            Some(Value::text("")),
-            "the entry is cleared once the task was made"
-        );
-    }
-
-    /// An entry whose text is nothing but space, or only what other parameters take, names no
-    /// item: Enter makes nothing, writes nothing, and leaves what is typed where it is.
-    #[test]
-    fn an_entry_with_no_words_of_its_own_fires_nothing() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
-        w.rt.set_name_host(Names);
-        stage_members(
-            &w.rt,
-            vec![
-                tilolang_runtime::members::Member::person("me", tilo_actions::policy::Role::Owner),
-                tilolang_runtime::members::Member::person("bo", tilo_actions::policy::Role::Editor),
-            ],
-            None,
-        );
-        let list = w.rt.create_root("Tasks").unwrap();
-        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
-        // The person picks the inbox, where an entry that would only name a day, a moment and
-        // who the task is for names nothing: no words of its own, no task.
-        choose(&v, "inbox");
-        v.poll_patches().unwrap();
-        let entry = of_kind(v.tree(), "ui.TextInput")
-            .into_iter()
-            .find(|field| on(field, "entry"))
-            .unwrap_or_else(|| panic!("the list ends in its entry: {}", dump(v.tree())))
-            .key
-            .clone();
-        let before = w.rt.history(&list.doc).unwrap().len();
-        for text in ["", "   ", "@bo", "fri", "fri 10am @bo"] {
-            v.edit(&entry, &Value::text(text)).unwrap();
-            v.poll_patches().unwrap();
-            v.fire_with(&entry, "submit", Some(&Value::text(text)))
-                .unwrap_or_else(|e| panic!("`{text}` is no refusal, just nothing: {e}"));
-            v.poll_patches().unwrap();
-            assert_eq!(
-                v.bound_value(&entry),
-                Some(Value::text(text)),
-                "`{text}` leaves what is typed where it is"
-            );
-        }
-        assert!(
-            items(&w, &list, "items").is_empty(),
-            "nothing of the entry's own, no task: {}",
-            dump(v.tree())
-        );
-        assert_eq!(
-            w.rt.history(&list.doc).unwrap().len(),
-            before,
-            "and nothing written"
-        );
-
-        // A word of its own makes the task, with the parts beside it.
-        v.edit(&entry, &Value::text("milk @bo")).unwrap();
-        v.poll_patches().unwrap();
-        v.fire_with(&entry, "submit", Some(&Value::text("milk @bo")))
-            .unwrap();
-        v.poll_patches().unwrap();
-        let made = items(&w, &list, "items");
-        assert_eq!(made.len(), 1, "{}", dump(v.tree()));
-        assert_eq!(text_of(&w, &made[0], "title"), "milk");
-        assert_eq!(
-            v.bound_value(&entry),
-            Some(Value::text("")),
-            "the entry is cleared once the task it made is listed"
-        );
-    }
-
-    /// An agent calling the create action itself gets the record it made: the entry's
-    /// emptiness is the entry's, not the action's.
-    #[test]
-    fn an_agent_calling_a_create_action_gets_its_record() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
-        let list = w.rt.create_root("Tasks").unwrap();
-        let made = returned_ref(w.call(
-            &apps.todo,
-            "new_task",
-            vec![
-                res(&list),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::text("Water the plants"),
-            ],
-        ));
-        assert_eq!(text_of(&w, &made, "title"), "Water the plants");
-        assert_eq!(
-            items(&w, &list, "items"),
-            vec![made],
-            "the record it returned is the one the list holds"
-        );
-        // The same through the entry: the task the person typed.
-        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
-        let entry = of_kind(v.tree(), "ui.TextInput")
-            .into_iter()
-            .find(|field| on(field, "entry"))
-            .unwrap()
-            .key
-            .clone();
-        v.fire_with(&entry, "submit", Some(&Value::text("Buy oat milk")))
-            .unwrap();
-        v.poll_patches().unwrap();
-        assert_eq!(
-            items(&w, &list, "items").len(),
-            2,
-            "the entry's task joins the agent's: {}",
-            dump(v.tree())
-        );
     }
 
     /// The names people go by, as the workspace's host gives them.
@@ -2259,225 +887,1517 @@ mod cases {
             .unwrap_or_else(|| panic!("no header row `{label}` in\n{}", dump(tree)))
     }
 
-    /// The window's bar offers its primary action once, as the button its key presses, and the
-    /// entry at the list's end declares that same key: the key and the bar's button bring the
-    /// person to the entry to type the item, which is a draft of its own rather than a record.
-    /// What is committed makes one task; an entry left empty makes nothing and writes nothing.
-    #[test]
-    fn the_new_task_button_is_the_bar_s_primary_and_the_entry_declares_its_key() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let list = w.rt.create_root("Tasks").unwrap();
-        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
-        assert_eq!(
-            text_prop(of_kind(v.tree(), "ui.EmptyState")[0], "title"),
-            "No tasks here"
-        );
-        // One New task, the window's primary button: the host places it from the declaration,
-        // the view draws no button of it, and it carries the key the action declares.
-        let new_task = header_row(v.tree(), "New task");
-        assert!(
-            !on(new_task, "in_menu"),
-            "the primary is the bar's button, not a row of its menu: {}",
-            dump(v.tree())
-        );
-        assert_eq!(
-            new_task.props.get("role"),
-            Some(&Value::text("primary")),
-            "it is the window's primary: {}",
-            dump(v.tree())
-        );
-        assert_eq!(
-            text_prop(new_task, "key"),
-            "Ctrl+n",
-            "as the keyboard spells the key the app declares"
-        );
+    tilo_test_env::scenario! {
+        fn e2e_apps_1;
 
-        // The entry at the list's end is the list's own add, not a field of a record, and it
-        // declares the primary's key: the key and the bar's button lead the person there.
-        let entry = of_kind(v.tree(), "ui.TextInput")
-            .into_iter()
-            .find(|field| on(field, "entry"))
-            .unwrap_or_else(|| panic!("the list ends in its entry: {}", dump(v.tree())));
-        assert_eq!(
-            text_prop(entry, "key"),
-            "Ctrl+n",
-            "the entry is where the primary brings the person: {}",
-            dump(v.tree())
-        );
-        let entry = entry.key.clone();
-
-        // An entry committed empty makes no task, and writes nothing at all.
-        let before = w.rt.history(&list.doc).unwrap().len();
-        v.fire_with(&entry, "submit", Some(&Value::text("")))
-            .unwrap();
-        v.poll_patches().unwrap();
-        assert_eq!(
-            items(&w, &list, "items").len(),
-            0,
-            "nothing typed, nothing made: {}",
-            dump(v.tree())
-        );
-        assert_eq!(
-            w.rt.history(&list.doc).unwrap().len(),
-            before,
-            "and nothing written"
-        );
-
-        // What is typed and committed is one task, named, and its row is that record.
-        v.edit(&entry, &Value::text("milk")).unwrap();
-        v.poll_patches().unwrap();
-        v.fire_with(&entry, "submit", Some(&Value::text("milk")))
-            .unwrap();
-        v.poll_patches().unwrap();
-        let made = items(&w, &list, "items");
-        assert_eq!(made.len(), 1, "{}", dump(v.tree()));
-        assert_eq!(text_of(&w, &made[0], "title"), "milk");
-        assert_eq!(row_titles(v.tree()), ["milk"]);
-        assert_eq!(
-            w.rt.history(&list.doc).unwrap().len(),
-            before + 1,
-            "the commit is one change, and the entry's draft was none"
-        );
-        assert_eq!(
-            item_titled(v.tree(), "milk"),
-            made[0],
-            "the row stands for the task it made"
-        );
-        // It joins the list where it was typed: no window opens over it.
-        assert!(
-            v.poll_events().is_empty(),
-            "adding shows the row; it opens nothing"
-        );
-
-        // A person who activates the row goes to its page, where its title is the field it was
-        // named in: what they change there is the row.
-        let rows = of_kind(v.tree(), "ui.VirtualList")[0].key.clone();
-        v.fire_with(&rows, "activate", Some(&res(&made[0])))
-            .unwrap();
-        match v.poll_events().as_slice() {
-            [ViewEvent::Open { target, .. }] => {
-                assert_eq!(target, &made[0], "the row opens the task it stands for");
+        phase every_app_compiles_with_its_committed_ids_and_loads_together;
+        {
+            let a = apps();
+            let w = world(&a, &AmStore::new());
+            assert_eq!(w.ids.len(), 11);
+            for app in [
+                &a.discussion,
+                &a.notes,
+                &a.contacts,
+                &a.todo,
+                &a.chat,
+                &a.letters,
+                &a.counter,
+                &a.today,
+                &a.channels,
+                &a.board,
+                &a.views,
+            ] {
+                let meta = app.meta();
+                let root = meta
+                    .roots
+                    .first()
+                    .unwrap_or_else(|| panic!("{} has no root", meta.app));
+                assert!(
+                    meta.default_view(root).is_some(),
+                    "{}'s root has no default view",
+                    meta.app
+                );
+                assert!(
+                    meta.views.iter().all(|v| v.name != "main"),
+                    "{} still has a `main` view",
+                    meta.app
+                );
             }
-            other => panic!("activating the row opens its page, not {other:?}"),
         }
-        let editor = w.rt.open_resource(&me(), &made[0], None).unwrap();
-        assert_eq!(text_prop(editor.tree(), "content_kind"), "document");
-        let title = of_kind(editor.tree(), "ui.TextInput")[0].key.clone();
-        editor.edit(&title, &Value::text("sourdough")).unwrap();
-        v.poll_patches().unwrap();
-        assert_eq!(row_titles(v.tree()), ["sourdough"]);
-    }
 
-    /// An action whose requirement its target does not meet is offered all the same, its
-    /// control disabled with the requirement's reason as its description, and running it is
-    /// refused with that reason: what a header's button says before a person presses it.
-    #[test]
-    fn an_action_whose_requirement_fails_is_offered_disabled_with_its_reason() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        // The workspace's one Tasks root: a check reads its tasks from it, as the app does.
-        let list = w.rt.create_root("Tasks").unwrap();
-        let item = returned_ref(w.call(
-            &apps.todo,
-            "new_task",
-            vec![
-                res(&list),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::none(),
-                Value::text("milk"),
-            ],
-        ));
-        // Delete finished tasks stands in the header's one menu, as every command that is
-        // not the window's main thing does: a control that names it, and says whether it can
-        // run now.
-        let can_run = |v: &ViewInstance| -> bool {
-            node_with(v.tree(), "ui.Button", "label", "Delete finished tasks")
-                .props
-                .get("enabled")
-                == Some(&Value::Bool(true))
-        };
-        let why = |v: &ViewInstance| -> String {
-            match node_with(v.tree(), "ui.Button", "label", "Delete finished tasks")
-                .props
-                .get("description")
-            {
-                Some(Value::Text(why)) => why.clone(),
-                other => panic!("no description on Delete finished tasks: {other:?}"),
+        phase two_chat_replicas_posting_concurrently_converge_in_order_with_authors;
+        {
+            let apps = apps();
+            let (mut a, mut b) = (AmStore::new(), AmStore::new());
+            let (wa, wb) = (world(&apps, &a), world(&apps, &b));
+            let (_, conv) = start_chat(&wa, &apps);
+            a.sync_with(&mut b).unwrap();
+
+            post(&wa, &apps, &conv, &person("ada"), "first", "");
+            post(&wa, &apps, &conv, &agent("helper"), "second", "1 + 2");
+            post(&wb, &apps, &conv, &person("bo"), "concurrent", "");
+            a.sync_with(&mut b).unwrap();
+
+            let (ta, tb) = (thread(&wa, &conv), thread(&wb, &conv));
+            assert_eq!(ta, tb, "both replicas read the same thread");
+            assert_eq!(ta.len(), 3);
+            let authors: Vec<&Actor> = ta.iter().map(|(a, _)| a).collect();
+            let at = |who: Actor| authors.iter().position(|a| **a == who).unwrap();
+            assert!(
+                at(person("ada")) < at(agent("helper")),
+                "one replica's posts keep their order: {authors:?}"
+            );
+            assert!(authors.contains(&&person("bo")));
+            let helper = &ta[at(agent("helper"))].1;
+            assert_eq!(
+                helper,
+                &[
+                    ("text".to_owned(), "second".to_owned()),
+                    ("block".to_owned(), "1 + 2".to_owned())
+                ],
+                "a message keeps its parts, in order"
+            );
+
+            let view = wb.view(&apps.chat, "thread", vec![res(&conv)]);
+            assert_eq!(
+                authors_of(view.tree()).iter().collect::<Vec<_>>(),
+                authors,
+                "the view shows the messages in the converged order, with their authors"
+            );
+        }
+
+        phase typing_in_the_composer_and_sending_posts_a_message_and_clears_the_entry;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let (_, conv) = start_chat(&w, &apps);
+            let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
+            let inputs = of_kind(view.tree(), "ui.TextInput");
+            assert_eq!(
+                inputs.len(),
+                1,
+                "the title is the header's; the one entry is the composer"
+            );
+            let draft = inputs[0].key.clone();
+            assert_eq!(
+                view.edit(&draft, &Value::text("hello")).unwrap(),
+                EditOutcome::Applied
+            );
+            // The draft is the person's own state; the Send it shows carries what they typed.
+            view.poll_patches().unwrap();
+            let send = button_labelled(view.tree(), "Send").key.clone();
+            assert!(matches!(view.press(&send).unwrap(), InvokeOutcome::Done(_)));
+            assert_eq!(thread(&w, &conv).len(), 1);
+            view.poll_patches().unwrap();
+            assert_eq!(
+                view.bound_value(&draft),
+                Some(Value::text("")),
+                "the entry is cleared once the message went"
+            );
+            assert_eq!(
+                authors_of(view.tree()),
+                [person("me")],
+                "the composer posts as whoever is looking, as the runtime knows them"
+            );
+        }
+
+        phase a_press_right_after_a_keystroke_sends_the_keystroke_too;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let (_, conv) = start_chat(&w, &apps);
+            let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
+            let draft = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
+            let send = button_labelled(view.tree(), "Send").key.clone();
+            view.edit(&draft, &Value::text("on my wa")).unwrap();
+            view.poll_patches().unwrap();
+            // The last keystroke and the press arrive together: the view has not drawn since.
+            view.edit(&draft, &Value::text("on my way")).unwrap();
+            assert!(matches!(view.press(&send).unwrap(), InvokeOutcome::Done(_)));
+            assert_eq!(
+                thread(&w, &conv)
+                    .last()
+                    .map(|(_, parts)| parts[0].1.clone()),
+                Some("on my way".to_owned()),
+                "the action reads the draft when it is pressed"
+            );
+            view.poll_patches().unwrap();
+            assert_eq!(view.bound_value(&draft), Some(Value::text("")));
+        }
+
+        phase an_agents_block_that_is_a_notes_view_renders_that_view_inline_and_stays_live;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let (_, conv) = start_chat(&w, &apps);
+            let notebook = w.create("Notebook");
+            let note = returned_ref(w.call(&apps.notes, "new_note", vec![res(&notebook)]));
+            w.call(
+                &apps.notes,
+                "retitle",
+                vec![res(&note), Value::text("Groceries")],
+            );
+            let src = format!("notes.note_editor(@notes.Note:{})", note.id_string());
+            post(
+                &w,
+                &apps,
+                &conv,
+                &agent("helper"),
+                "Here is your note",
+                &src,
+            );
+
+            let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
+            let found = embeds(view.tree());
+            assert_eq!(found.len(), 1, "{}", dump(view.tree()));
+            assert_eq!(state(found[0]), "view", "{}", dump(view.tree()));
+            let title = of_kind(found[0], "ui.TextInput")[0];
+            let binding = title.binding.clone().expect("the title input is bound");
+            assert_eq!(
+                binding.field(),
+                Some((&note, &field_id(&apps.notes, "Note", "title"))),
+                "the first input edits the note's title"
+            );
+            assert_eq!(
+                &binding.author,
+                w.id_of(&apps.notes),
+                "the nested view is the notes package's code, not the agent's"
+            );
+            // A new note's title starts empty: what its type calls it while untitled is only what
+            // the field prompts with.
+            assert_eq!(text_prop(title, "placeholder"), "Untitled");
+
+            let key = title.key.clone();
+            assert_eq!(
+                view.edit(&key, &Value::text("Shopping")).unwrap(),
+                EditOutcome::Applied,
+                "the notes view's own input edits even inside an agent's message"
+            );
+            assert_eq!(w.rt.read(&note, "title").unwrap(), Value::text("Shopping"));
+            view.poll_patches().unwrap();
+            assert_eq!(
+                view.bound_value(&of_kind(embeds(view.tree())[0], "ui.TextInput")[0].key),
+                Some(Value::text("Shopping"))
+            );
+        }
+
+        phase a_block_that_is_a_value_renders_through_the_default_view;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let (_, conv) = start_chat(&w, &apps);
+            let list = w.rt.create_root("Tasks").unwrap();
+            let project = returned_ref(w.call(&apps.todo, "new_project", vec![res(&list)]));
+            w.call(
+                &apps.todo,
+                "rename",
+                vec![res(&project), Value::text("Groceries")],
+            );
+            post(&w, &apps, &conv, &agent("helper"), "", "1 + 2");
+            post(
+                &w,
+                &apps,
+                &conv,
+                &agent("helper"),
+                "",
+                &format!("@tasks.Project:{}", project.id_string()),
+            );
+            let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
+            let found = embeds(view.tree());
+            assert_eq!(
+                found.iter().map(|e| state(e)).collect::<Vec<_>>(),
+                ["data", "data"]
+            );
+            assert_eq!(text_prop(of_kind(found[0], "ui.Text")[0], "value"), "3");
+            assert_eq!(
+                text_prop(of_kind(found[1], "ui.Text")[0], "value"),
+                "Groceries"
+            );
+        }
+
+        phase the_same_block_source_is_compiled_once;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let (_, conv) = start_chat(&w, &apps);
+            let before = w.rt.compiled_modules();
+            for who in [agent("a"), agent("b"), person("c")] {
+                post(&w, &apps, &conv, &who, "", "40 + 2");
             }
-        };
-        let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
-        assert!(
-            !can_run(&v),
-            "nothing is finished, so Delete finished tasks cannot run: {}",
-            dump(v.tree())
-        );
-        assert_eq!(why(&v), "Nothing is finished yet", "and it says why");
-        let refused =
-            w.rt.invoke_action(
-                &me(),
-                (apps.todo.action("clear_done").as_str(), vec![res(&list)]),
-            )
-            .expect_err("clear_done is refused while nothing is finished");
-        assert!(
-            refused.to_string().contains("Nothing is finished yet"),
-            "{refused}"
-        );
-        // A task's step goes under it while it is open: nothing is finished still.
-        w.call(
-            &apps.todo,
-            "add_subtask",
-            vec![res(&item), Value::text("milk the cow")],
-        );
-        v.poll_patches().unwrap();
-        assert!(
-            !can_run(&v),
-            "an open step under an open task is nothing finished: {}",
-            dump(v.tree())
-        );
-        // Checking the task off takes the step with it, so Delete finished tasks can run
-        // exactly when a clear takes something.
-        w.call(&apps.todo, "check", vec![res(&item)]);
-        v.poll_patches().unwrap();
-        assert!(
-            can_run(&v),
-            "once an item is finished, Delete finished tasks can run: {}",
-            dump(v.tree())
-        );
-        let cleared = w.call(&apps.todo, "clear_done", vec![res(&list)]);
-        assert!(
-            matches!(cleared, InvokeOutcome::Done(Value::Int(2))),
-            "the task and its step went: {cleared:?}"
-        );
-        assert!(items(&w, &list, "items").is_empty());
-        v.poll_patches().unwrap();
-        assert!(
-            !can_run(&v),
-            "with nothing left to clear it cannot run: {}",
-            dump(v.tree())
-        );
-        assert_eq!(why(&v), "Nothing is finished yet", "and it says why again");
-        let refused =
-            w.rt.invoke_action(
-                &me(),
-                (apps.todo.action("clear_done").as_str(), vec![res(&list)]),
-            )
-            .expect_err("clear_done is refused again once nothing is finished");
-        assert!(
-            refused.to_string().contains("Nothing is finished yet"),
-            "{refused}"
-        );
+            let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
+            assert_eq!(embeds(view.tree()).len(), 3);
+            assert_eq!(
+                w.rt.compiled_modules(),
+                before + 1,
+                "three embeds of one source are one module"
+            );
+            drop(view);
+            let _again = w.view(&apps.chat, "thread", vec![res(&conv)]);
+            assert_eq!(
+                w.rt.compiled_modules(),
+                before + 1,
+                "and re-rendering adds none"
+            );
+        }
+
+        phase declining_a_suggested_block_shows_declined_and_sends_nothing;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let (_, conv) = start_chat(&w, &apps);
+            let letters = w.create("Letters");
+            let draft = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&letters)]));
+            let src = format!("suggest letters.send(@letters.Draft:{})", draft.id_string());
+            let message = post(&w, &apps, &conv, &agent("helper"), "", &src);
+            let mut view = w.view(&apps.chat, "thread", vec![res(&conv)]);
+            let record = invocation_of(&w, &apps, &message);
+            assert_eq!(
+                w.rt.resolve_invocation(&record, &me(), Resolution::Decline)
+                    .unwrap(),
+                "declined"
+            );
+            view.poll_patches().unwrap();
+            assert_eq!(
+                text_prop(of_kind(view.tree(), "invocation")[0], "state"),
+                "declined"
+            );
+            assert!(w.rt.pending_effects().is_empty());
+        }
+
+        phase a_strangers_block_asks_for_a_foreign_action_that_the_apps_own_view_may_run;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let (_, conv) = start_chat(&w, &apps);
+            let list = w.rt.create_root("Tasks").unwrap();
+            let first = returned_ref(w.call(
+                &apps.todo,
+                "new_task",
+                vec![
+                    res(&list),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::text("milk"),
+                ],
+            ));
+            let second = returned_ref(w.call(
+                &apps.todo,
+                "new_task",
+                vec![
+                    res(&list),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::text("eggs"),
+                ],
+            ));
+            let remove = |item: &ResourceRef| {
+                format!(
+                    "button(\"Remove\", on: tasks.remove(@tasks.Task:{}))",
+                    item.id_string()
+                )
+            };
+            post(&w, &apps, &conv, &person("stranger"), "", &remove(&first));
+            let chat_view = w.view(&apps.chat, "thread", vec![res(&conv)]);
+            let found = embeds(chat_view.tree());
+            assert_eq!(state(found[0]), "view");
+            let button = of_kind(found[0], "ui.Button")[0].key.clone();
+            asked(chat_view.press(&button).unwrap());
+            assert_eq!(w.dispatch.asked().0, apps.todo.action("remove"));
+            let tilolang_runtime::delegate::Invocation::Action { author, asks, .. } =
+                w.dispatch.waiting()
+            else {
+                panic!("the ask is an action");
+            };
+            assert!(asks);
+            assert_eq!(
+                author,
+                Some(ModuleHash::written_by(&person("stranger"))),
+                "the dispatch names the actor who wrote the block"
+            );
+            assert_eq!(items(&w, &list, "items").len(), 2, "asking changed nothing");
+
+            // The same action from the todo app's own surface (a row's menu, which the platform
+            // applies as the person) runs without asking.
+            let out = w.call(&apps.todo, "remove", vec![res(&first)]);
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(items(&w, &list, "items"), vec![second.clone()]);
+
+            // Trusting the actor covers every block it writes, from the next one on.
+            w.auth.trust_actor(&person("stranger"));
+            let third = returned_ref(w.call(
+                &apps.todo,
+                "new_task",
+                vec![
+                    res(&list),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::text("bread"),
+                ],
+            ));
+            post(&w, &apps, &conv, &person("stranger"), "", &remove(&third));
+            let chat_view = w.view(&apps.chat, "thread", vec![res(&conv)]);
+            let found = embeds(chat_view.tree());
+            let button = of_kind(found[1], "ui.Button")[0].key.clone();
+            assert!(matches!(
+                chat_view.press(&button).unwrap(),
+                InvokeOutcome::Done(_)
+            ));
+            assert_eq!(items(&w, &list, "items"), vec![second]);
+            w.auth.revoke_actor(&person("stranger"));
+        }
+
+        phase a_trusted_agents_action_block_runs_when_posted_and_never_again_on_render;
+        {
+            let apps = apps();
+            let (mut a, mut b) = (AmStore::new(), AmStore::new());
+            let (wa, wb) = (world(&apps, &a), world(&apps, &b));
+            let (_, conv) = start_chat(&wa, &apps);
+            let list = wa.rt.create_root("Tasks").unwrap();
+            wa.auth.trust_actor(&agent("helper"));
+            let src = format!(
+                "tasks.new_task(@tasks.Tasks:{}, title: \"bread\")",
+                list.id_string()
+            );
+            let message = post(&wa, &apps, &conv, &agent("helper"), "", &src);
+
+            assert_eq!(
+                items(&wa, &list, "items").len(),
+                1,
+                "it ran when the message was posted, before anything rendered it"
+            );
+            let record = wa
+                .rt
+                .read_invocation(&invocation_of(&wa, &apps, &message))
+                .unwrap();
+            assert_eq!(record.state, "done");
+            assert_eq!(record.name, "new_task");
+            assert_eq!(record.author, agent("helper"));
+
+            let card_state = |w: &World| {
+                let view = w.view(&apps.chat, "thread", vec![res(&conv)]);
+                text_prop(of_kind(view.tree(), "invocation")[0], "state")
+            };
+            let mut view = wa.view(&apps.chat, "thread", vec![res(&conv)]);
+            for width in [20.0, 90.0, 20.0] {
+                view.set_space("", Space::from_rem(width, 40.0));
+                view.poll_patches().unwrap();
+            }
+            assert_eq!(card_state(&wa), "done");
+
+            // A restart: a new runtime over the same documents.
+            let restarted = world(&apps, &a);
+            assert_eq!(card_state(&restarted), "done");
+
+            // Another replica renders what the first one recorded.
+            a.sync_with(&mut b).unwrap();
+            assert_eq!(card_state(&wb), "done");
+            assert_eq!(items(&wb, &list, "items").len(), 1);
+            for w in [&wa, &restarted, &wb] {
+                assert_eq!(adds(w, &apps, &list), 1, "rendering never runs the action");
+            }
+        }
+
+        phase a_caller_cannot_post_as_an_agent_so_it_cannot_borrow_the_agents_authority;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let (_, conv) = start_chat(&w, &apps);
+            let list = w.rt.create_root("Tasks").unwrap();
+            w.auth.trust_actor(&agent("helper"));
+            let src = format!(
+                "tasks.new_task(@tasks.Tasks:{}, title: \"spam\")",
+                list.id_string()
+            );
+
+            let mallory = person("mallory");
+            let message = post(&w, &apps, &conv, &person("mallory"), "", &src);
+            assert_eq!(author_of(&w, &message), person("mallory"));
+            let record =
+                w.rt.read_invocation(&invocation_of(&w, &apps, &message))
+                    .unwrap();
+            assert_eq!(record.author, mallory);
+            assert_eq!(record.state, "asked", "her code has no grants");
+            assert!(items(&w, &list, "items").is_empty());
+
+            // The action has no author to fill in, and an actor is not something a caller
+            // can pass in place of text either.
+            let id = apps.chat.action("post");
+            let forged = Value::Actor(agent("helper"));
+            let attempts = [
+                vec![
+                    res(&conv),
+                    forged.clone(),
+                    Value::text(""),
+                    Value::text(&src),
+                ],
+                vec![res(&conv), forged, Value::text(&src)],
+            ];
+            for args in attempts {
+                let err =
+                    w.rt.invoke_action(&mallory, (id.as_str(), args))
+                        .unwrap_err();
+                assert!(matches!(err, RuntimeError::BadArgs(_)), "{err}");
+            }
+            assert_eq!(thread(&w, &conv).len(), 1, "no forged message was posted");
+
+            // The agent's own post carries the agent's authority.
+            let real = post(&w, &apps, &conv, &agent("helper"), "", &src);
+            assert_eq!(
+                w.rt.read_invocation(&invocation_of(&w, &apps, &real))
+                    .unwrap()
+                    .state,
+                "done"
+            );
+            assert_eq!(items(&w, &list, "items").len(), 1);
+        }
     }
 
-    #[test]
-    fn clearing_done_removes_only_the_finished_items() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let list = w.rt.create_root("Tasks").unwrap();
-        for (t, done) in [("milk", true), ("eggs", false), ("rice", true)] {
+    tilo_test_env::scenario! {
+        fn e2e_apps_2;
+
+        phase approving_a_proposal_on_another_device_runs_it_once_and_both_show_done;
+        {
+            let apps = apps();
+            let (mut a, mut b) = (AmStore::new(), AmStore::new());
+            let (wa, wb) = (world(&apps, &a), world(&apps, &b));
+            let (_, conv) = start_chat(&wa, &apps);
+            let letters = wa.create("Letters");
+            let draft = returned_ref(wa.call(&apps.letters, "new_draft", vec![res(&letters)]));
+            let editor = wa.view(&apps.letters, "editor", vec![res(&draft)]);
+            let inputs = letter_fields(&editor);
+            for (key, text) in inputs.iter().zip(["bo@example.org", "Plans", "Nine."]) {
+                editor.edit(key, &Value::text(text)).unwrap();
+            }
+            let src = format!("suggest letters.send(@letters.Draft:{})", draft.id_string());
+            let message = post(&wa, &apps, &conv, &agent("helper"), "Shall I?", &src);
+            let record = invocation_of(&wa, &apps, &message);
+            let mut view_a = wa.view(&apps.chat, "thread", vec![res(&conv)]);
+            a.sync_with(&mut b).unwrap();
+
+            // On B, a viewer the authority gives no say sees the suggestion but cannot run it.
+            let (bo, guest) = (person("bo"), person("guest"));
+            wb.auth.deny_invoker(&guest);
+            let card_for = |who: &Actor| {
+                let mut view = wb
+                    .rt
+                    .open_view(who, &apps.chat.view("thread"), vec![res(&conv)])
+                    .unwrap();
+                // The messages are rows of the thread's list: read whole, as a host that draws
+                // every row does.
+                view.set_lazy_rows(false).unwrap();
+                let card = of_kind(view.tree(), "invocation")[0];
+                (
+                    text_prop(card, "state"),
+                    card.props.get("can_resolve").cloned(),
+                )
+            };
+            assert_eq!(
+                card_for(&guest),
+                ("asked".to_owned(), Some(Value::Bool(false)))
+            );
+            assert_eq!(card_for(&bo), ("asked".to_owned(), Some(Value::Bool(true))));
+            let err = wb
+                .rt
+                .resolve_invocation(&record, &guest, Resolution::Approve { choice: None })
+                .unwrap_err();
+            assert!(matches!(err, RuntimeError::Denied(_)), "{err}");
+            assert_eq!(wb.rt.read_invocation(&record).unwrap().state, "asked");
+            assert!(wb.rt.pending_effects().is_empty());
+
+            // Someone with authority confirms on B: it runs there, once.
+            assert_eq!(
+                wb.rt
+                    .resolve_invocation(&record, &bo, Resolution::Approve { choice: None })
+                    .unwrap(),
+                "done"
+            );
+            assert_eq!(wb.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
+            assert_eq!(wb.rt.pending_effects().len(), 1);
+            assert_eq!(wa.rt.read_invocation(&record).unwrap().state, "asked");
+            assert!(wa.rt.pending_effects().is_empty(), "A has not heard yet");
+
+            a.sync_with(&mut b).unwrap();
+            assert_eq!(wa.rt.read_invocation(&record).unwrap().state, "done");
+            assert_eq!(wa.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
+            assert!(
+                view_a.is_stale(),
+                "the synced invocation refreshes the card"
+            );
+            view_a.poll_patches().unwrap();
+            assert_eq!(
+                text_prop(of_kind(view_a.tree(), "invocation")[0], "state"),
+                "done"
+            );
+            for w in [&wa, &wb] {
+                assert_eq!(
+                    w.rt.pending_effects().len(),
+                    1,
+                    "the letter was queued once"
+                );
+                let sends =
+                    w.rt.history(&draft.doc)
+                        .unwrap()
+                        .iter()
+                        .filter(|n| n.action == apps.letters.action("send"))
+                        .count();
+                assert_eq!(sends, 1);
+            }
+            assert_eq!(wa.rt.settle().unwrap().marked, 1);
+            assert_eq!(wa.rt.settle().unwrap().delivered, 1);
+            assert_eq!(wa.sink.delivered().len(), 1);
+
+            let again = wa
+                .rt
+                .resolve_invocation(&record, &bo, Resolution::Approve { choice: None })
+                .unwrap_err();
+            assert!(matches!(again, RuntimeError::NotPending(_)), "{again}");
+        }
+
+        phase the_composer_posts_as_the_person_looking_not_as_a_name_in_the_view;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let (_, conv) = start_chat(&w, &apps);
+            let ada = person("ada");
+            let mut view =
+                w.rt.open_view(&ada, &apps.chat.view("thread"), vec![res(&conv)])
+                    .unwrap();
+            let draft = of_kind(view.tree(), "ui.TextInput")[0].key.clone();
+            view.edit(&draft, &Value::text("hello")).unwrap();
+            view.poll_patches().unwrap();
+            let send = button_labelled(view.tree(), "Send").key.clone();
+            assert!(matches!(view.press(&send).unwrap(), InvokeOutcome::Done(_)));
+            assert_eq!(thread(&w, &conv)[0].0, person("ada"));
+        }
+
+        phase a_notebook_row_opens_its_note_beside_the_tree;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let nb = w.create("Notebook");
+            let titled = |title: &str| {
+                let note = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
+                w.call(&apps.notes, "retitle", vec![res(&note), Value::text(title)]);
+                note
+            };
+            let note = titled("Plans");
+            let later = titled("Later");
+            assert!(
+                apps.notes
+                    .meta()
+                    .types
+                    .iter()
+                    .all(|t| t.fields.iter().all(|f| f.name != "open")),
+                "the notebook keeps no open note"
+            );
+            let mut list = w.view(&apps.notes, "notebook", vec![res(&nb)]);
+            assert_eq!(list.window(), nb.id_string(), "a window is its resource's");
+            let (_, shows) = tree_item_labelled(list.tree(), "Plans");
+            assert_eq!(shows, note, "the row stands for this note");
+            assert_eq!(
+                opened_note(&list),
+                note,
+                "the window opens the first note of the tree beside it"
+            );
+
+            // Choosing a row brings that note forward beside the tree, in the window's own column.
+            let tree = the_tree(&list).key.clone();
+            let (_, shows) = tree_item_labelled(list.tree(), "Later");
+            assert_eq!(shows, later);
+            list.fire_with(&tree, "select", Some(&Value::resource(&shows)))
+                .unwrap();
+            assert!(list.is_stale(), "the window read the note it shows");
+            list.poll_patches().unwrap();
+            assert_eq!(
+                opened_note(&list),
+                later,
+                "the row's note stands beside the tree"
+            );
+
+            let editor = w.rt.open_resource(&me(), &note, None).unwrap();
+            assert_eq!(editor.window(), note.id_string());
+            let title = of_kind(editor.tree(), "ui.TextInput")[0];
+            assert_eq!(
+                title
+                    .binding
+                    .as_ref()
+                    .and_then(tilolang_runtime::Binding::field),
+                Some((&note, &field_id(&apps.notes, "Note", "title"))),
+                "the note's editor edits its title"
+            );
+            // A new note's title starts empty: what its type calls it while untitled is only what
+            // the field prompts with.
+            assert_eq!(text_prop(title, "placeholder"), "Untitled");
+            assert_eq!(
+                w.rt.default_view(&note.ty).as_deref(),
+                Some(apps.notes.view("note_editor").as_str())
+            );
+        }
+
+        phase two_people_in_one_window_each_see_it_as_they_left_it;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let nb = w.create("Notebook");
+            let mut notes = Vec::new();
+            for title in ["b", "a"] {
+                let n = returned_ref(w.call(&apps.notes, "new_note", vec![res(&nb)]));
+                w.call(&apps.notes, "retitle", vec![res(&n), Value::text(title)]);
+                notes.push(n);
+            }
+            let (b, a) = (notes[0].clone(), notes[1].clone());
+            let (ada, bo) = (person("ada"), person("bo"));
+            let open = |who: &Actor| {
+                let mut view =
+                    w.rt.open_window(
+                        who,
+                        "window-1",
+                        &apps.notes.view("notebook"),
+                        vec![res(&nb)],
+                    )
+                    .unwrap();
+                // The rows are read here as a host that draws every row does.
+                view.set_lazy_rows(false).unwrap();
+                view
+            };
+            let (mut va, mut vb) = (open(&ada), open(&bo));
+            assert_eq!(
+                opened_note(&va),
+                b,
+                "the window opens the first of the tree"
+            );
+            assert_eq!(opened_note(&vb), b);
+
+            // Ada brings the other note forward, and Bo's view of the window stays where he left it.
+            let tree = the_tree(&va).key.clone();
+            va.fire_with(&tree, "select", Some(&Value::resource(&a)))
+                .unwrap();
+            assert!(va.is_stale(), "Ada's window read the note she chose");
+            assert!(
+                !vb.is_stale(),
+                "Bo's window never read Ada's choice, so it does not run again"
+            );
+            va.poll_patches().unwrap();
+            vb.poll_patches().unwrap();
+            assert_eq!(opened_note(&va), a);
+            assert_eq!(opened_note(&vb), b, "Bo is where he was");
+
+            // Bo brings the same note forward in his own window: each keeps the note it chose.
+            let tree = the_tree(&vb).key.clone();
+            vb.fire_with(&tree, "select", Some(&Value::resource(&a)))
+                .unwrap();
+            vb.poll_patches().unwrap();
+            assert_eq!(opened_note(&vb), a);
+            assert_eq!(opened_note(&va), a);
+
+            // Another window over the same notebook has state of its own.
+            let mut elsewhere =
+                w.rt.open_window(
+                    &ada,
+                    "window-2",
+                    &apps.notes.view("notebook"),
+                    vec![res(&nb)],
+                )
+                .unwrap();
+            elsewhere.set_lazy_rows(false).unwrap();
+            assert_eq!(opened_note(&elsewhere), b);
+        }
+
+        phase an_answer_draws_its_written_view_live_over_other_apps_as_its_task_wrote_it;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let list = w.rt.create_root("Tasks").unwrap();
+            let add = |title: &str| {
+                returned_ref(w.call(
+                    &apps.todo,
+                    "new_task",
+                    vec![
+                        res(&list),
+                        Value::none(),
+                        Value::none(),
+                        Value::none(),
+                        Value::none(),
+                        Value::none(),
+                        Value::text(title),
+                    ],
+                ))
+            };
+            add("Record the demo video");
+            add("Update the changelog");
+            let frozen = add("Freeze the strings for translation");
+            w.call(&apps.todo, "check", vec![res(&frozen)]);
+            let answers = w.rt.create_root("Views").unwrap();
+            // The agent's task answers; the answer records it as the block's author.
+            let task = agent("task:release");
+            let id = apps.views.action("answer");
+            let answer = returned_ref(
+                w.rt.invoke_action(
+                    &task,
+                    (
+                        id.as_str(),
+                        vec![
+                            res(&answers),
+                            Value::text("Left for the release"),
+                            Value::text("what's left for the release?"),
+                            Value::text(release_view()),
+                            Value::text(""),
+                        ],
+                    ),
+                )
+                .unwrap(),
+            );
+            assert_eq!(author_of(&w, &answer), task);
+            let mut view = w.view(&apps.views, "view_page", vec![res(&answer)]);
+            let found = embeds(view.tree());
+            assert_eq!(found.len(), 1, "{}", dump(view.tree()));
+            assert_eq!(state(found[0]), "view", "{}", dump(view.tree()));
+            let shown = row_titles(found[0]);
+            assert!(
+                shown.contains(&"Record the demo video".to_owned())
+                    && shown.contains(&"Update the changelog".to_owned()),
+                "{shown:?}\n{}",
+                dump(view.tree())
+            );
+            assert!(
+                !shown.contains(&"Freeze the strings for translation".to_owned()),
+                "{shown:?}"
+            );
+            // Live: a task added later is in the answer on its next frame.
+            add("Screenshots for the docs");
+            view.poll_patches().unwrap();
+            assert!(
+                row_titles(embeds(view.tree())[0]).contains(&"Screenshots for the docs".to_owned()),
+                "{}",
+                dump(view.tree())
+            );
+            // As a window draws it, with rows built as they are shown: the answer's rows are there.
+            let lazy =
+                w.rt.open_view(&me(), &apps.views.view("view_page"), vec![res(&answer)])
+                    .unwrap();
+            let lazy_rows = of_kind(embeds(lazy.tree())[0], "ui.ListRow").len();
+            assert_eq!(
+                lazy_rows,
+                3,
+                "the open tasks' rows are built: {}",
+                dump(lazy.tree())
+            );
+        }
+
+        phase the_morning_cards_are_each_apps_own_place;
+        {
+            let apps = apps();
+            let m = morning(&apps);
+            // Tasks' Today place: due today, or hers to do whenever. A task with no date is Tasks'
+            // own business and not hers this morning.
+            // Today is the day the clock says: the task due then, and the one that is hers to do.
+            m.w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
+            let task = |due: Option<&str>, by: Option<Value>, title: &str| {
+                m.w.call(
+                    &apps.todo,
+                    "new_task",
+                    vec![
+                        res(&m.list),
+                        Value::none(),
+                        Value::none(),
+                        due.map_or_else(Value::none, |day| Value::some(Value::text(day))),
+                        Value::none(),
+                        by.unwrap_or_else(Value::none),
+                        Value::text(title),
+                    ],
+                );
+            };
+            task(Some("2026-10-29"), None, "call the landlord");
+            task(
+                None,
+                Some(Value::some(Value::Actor(me()))),
+                "review the plan",
+            );
+            add_todo(&m, &apps, "sort the paper mail", false);
+            add_todo(&m, &apps, "bins", true);
+            let pinned = returned_ref(m.w.call(&apps.notes, "new_note", vec![res(&m.notebook)]));
+            m.w.call(&apps.notes, "pin", vec![res(&pinned), Value::Bool(true)]);
+            m.w.call(&apps.notes, "new_note", vec![res(&m.notebook)]);
+
+            let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
+            let tree = view.tree();
+            assert_eq!(tree.kind, "ui.NavShell", "{}", dump(tree));
+            assert_eq!(
+                of_kind(tree, "page")[0].props["full"],
+                Value::Bool(true),
+                "Today is a canvas the window's width: {}",
+                dump(tree)
+            );
+            let cards = of_kind(tree, "ui.Card");
+            let shown: Vec<&ResourceRef> = cards
+                .iter()
+                .map(|c| match &c.props["item"] {
+                    Value::Ref(r) => &*r.target,
+                    other => panic!("a card shows a resource, not {other:?}"),
+                })
+                .collect();
+            assert_eq!(
+                shown,
+                [&m.list, &m.notebook, &m.chat],
+                "a card per resource Today points at"
+            );
+            let titles: Vec<String> = cards.iter().map(|c| text_prop(c, "title")).collect();
+            assert_eq!(
+                titles,
+                ["Today", "Pinned", "Unread"],
+                "each card names the place as its app does: {}",
+                dump(tree)
+            );
+            assert_eq!(
+                count_of(cards[0]),
+                Some(2),
+                "the todo card counts Tasks' Today place: {}",
+                dump(tree)
+            );
+            let rows: Vec<String> = of_kind(cards[0], "ui.ListRow")
+                .iter()
+                .map(|r| text_prop(r, "title"))
+                .collect();
+            assert_eq!(
+                rows,
+                ["call the landlord", "review the plan"],
+                "the rows are Tasks' Today place's: {}",
+                dump(tree)
+            );
+            assert_eq!(
+                count_of(cards[1]),
+                Some(1),
+                "the notes card counts Pinned: {}",
+                dump(tree)
+            );
+            // Nothing in Chat needs her, so its card takes no room: no count, no rows, one quiet
+            // line saying there is nothing to read.
+            assert_eq!(
+                count_of(cards[2]),
+                None,
+                "a place with nothing in it has no count: {}",
+                dump(tree)
+            );
+            assert!(of_kind(cards[2], "ui.ListRow").is_empty(), "{}", dump(tree));
+            let quiet = of_kind(cards[2], "ui.Text");
+            assert_eq!(quiet.len(), 1, "one quiet line: {}", dump(tree));
+            assert_eq!(
+                quiet[0].props.get("secondary"),
+                Some(&Value::Bool(true)),
+                "quiet ink, not the page's own words: {}",
+                dump(tree)
+            );
+            let said = text_prop(quiet[0], "value");
+            assert!(
+                said == "All caught up" || said == "tilolang-all-caught-up",
+                "the empty place says it is caught up, not {said:?}"
+            );
+        }
+
+        phase a_place_longer_than_a_cards_rows_says_how_many_it_holds;
+        {
+            let apps = apps();
+            let m = morning(&apps);
+            m.w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
+            for day in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] {
+                m.w.call(
+                    &apps.todo,
+                    "new_task",
+                    vec![
+                        res(&m.list),
+                        Value::none(),
+                        Value::none(),
+                        Value::some(Value::text("2026-10-29")),
+                        Value::none(),
+                        Value::none(),
+                        Value::text(day),
+                    ],
+                );
+            }
+            let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
+            let tree = view.tree();
+            let cards = of_kind(tree, "ui.Card");
+            assert_eq!(
+                count_of(cards[0]),
+                Some(7),
+                "the card counts the place, not the rows it shows: {}",
+                dump(tree)
+            );
+            assert_eq!(
+                of_kind(cards[0], "ui.ListRow").len(),
+                5,
+                "a card shows a place's first rows: {}",
+                dump(tree)
+            );
+            let show_all: Vec<&UiNode> = of_kind(cards[0], "ui.Button")
+                .into_iter()
+                .filter(|b| {
+                    matches!(b.props.get("label"), Some(Value::Text(label)) if label.starts_with("Show all"))
+                })
+                .collect();
+            assert_eq!(show_all.len(), 1, "{}", dump(tree));
+            assert_eq!(text_prop(show_all[0], "label"), "Show all 7");
+        }
+
+        phase the_morning_cleanup_asks_for_every_foreign_change_and_replays_without_repeating;
+        {
+            let apps = apps();
+            let m = morning(&apps);
+            add_todo(&m, &apps, "a", true);
+            add_todo(&m, &apps, "b", false);
+            add_todo(&m, &apps, "c", true);
+
+            let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
+            let button = button_labelled(view.tree(), "Morning cleanup").key.clone();
+            let InvokeOutcome::Waits { run, .. } = view.press(&button).unwrap() else {
+                panic!("the cleanup asks for the foreign changes");
+            };
+            let mut asked = Vec::new();
+            let finished = loop {
+                let tilolang_runtime::delegate::Invocation::Action { action, author, .. } =
+                    m.w.dispatch.waiting()
+                else {
+                    panic!("the cleanup waits on no action");
+                };
+                assert_eq!(
+                    author,
+                    Some(m.w.id_of(&apps.today).clone()),
+                    "Today wrote these invocations"
+                );
+                asked.push(action);
+                match m.w.dispatch.allow(&m.w.rt, &run) {
+                    RunOutcome::Waits { .. } => {}
+                    RunOutcome::Done(v) => break v,
+                }
+            };
+            assert_eq!(finished, Value::Int(2));
+            assert_eq!(
+                asked,
+                [
+                    apps.todo.action("clear_done"),
+                    apps.notes.action("file_note"),
+                ],
+                "one question for the clear, then one for the note, in the order Today wrote them"
+            );
+            assert_eq!(items(&m.w, &m.list, "items").len(), 1);
+            let notes = items(&m.w, &m.notebook, "notes");
+            assert_eq!(notes.len(), 1, "replays did not file a second note");
+            assert_eq!(text_of(&m.w, &notes[0], "title"), "Morning: 2 done");
+            assert_eq!(
+                m.w.rt.read(&notes[0], "tags").unwrap(),
+                Value::List(vec![Value::text("morning")])
+            );
+            let clears =
+                m.w.rt
+                    .history(&m.list.doc)
+                    .unwrap()
+                    .iter()
+                    .filter(|n| n.action == apps.todo.action("clear_done"))
+                    .count();
+            assert_eq!(clears, 1, "the clear ran once for the whole list");
+        }
+
+        phase the_morning_cleanup_with_nothing_finished_files_a_zero_and_does_not_ask_for_a_clear;
+        {
+            let apps = apps();
+            let m = morning(&apps);
+            add_todo(&m, &apps, "a", false);
+            add_todo(&m, &apps, "b", false);
+            // A step put under a done task opens it again: there is work under it now.
+            let parent = returned_ref(m.w.call(
+                &apps.todo,
+                "new_task",
+                vec![
+                    res(&m.list),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::text("c"),
+                ],
+            ));
+            m.w.call(&apps.todo, "check", vec![res(&parent)]);
+            m.w.call(
+                &apps.todo,
+                "add_subtask",
+                vec![res(&parent), Value::text("c.1")],
+            );
+            assert_eq!(
+                m.w.rt.read(&parent, "done").unwrap(),
+                Value::Bool(false),
+                "the task opened again for its step"
+            );
+
+            let cleanup = apps.today.action("morning_cleanup");
+            let InvokeOutcome::Waits { run, .. } =
+                m.w.rt
+                    .invoke_action(&me(), (cleanup, vec![res(&m.list), res(&m.notebook)]))
+                    .unwrap()
+            else {
+                panic!("the cleanup asks for the foreign note");
+            };
+            let mut asked = Vec::new();
+            let finished = loop {
+                asked.push(m.w.dispatch.asked().0);
+                match m.w.dispatch.allow(&m.w.rt, &run) {
+                    RunOutcome::Waits { .. } => {}
+                    RunOutcome::Done(v) => break v,
+                }
+            };
+            assert_eq!(finished, Value::Int(0), "nothing was finished");
+            assert_eq!(
+                asked,
+                [apps.notes.action("file_note")],
+                "no question for a clear that would do nothing"
+            );
+            assert_eq!(
+                items(&m.w, &m.list, "items").len(),
+                4,
+                "nothing went: the task opened again for its step"
+            );
+            let notes = items(&m.w, &m.notebook, "notes");
+            assert_eq!(notes.len(), 1, "the note still says how the morning went");
+            assert_eq!(text_of(&m.w, &notes[0], "title"), "Morning: 0 done");
+        }
+
+        phase counter_shows_its_value_and_the_buttons_that_change_it_at_every_width;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let c = w.create("Counter");
+            let mut v = w.view(&apps.counter, "counter", vec![res(&c)]);
+            let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
+            for tree in [&compact, &wide] {
+                assert_eq!(tree.kind, "ui.NavShell");
+                let tree = content(tree);
+                let shown = of_kind(tree, "ui.Text")[0];
+                // A number that changes: a title in tabular figures.
+                assert_eq!(shown.props["role"], Value::text("title"));
+                assert_eq!(shown.props["numeric"], Value::Bool(true));
+                let plus = button_labelled(tree, "Increment");
+                assert_eq!(plus.props["role"], Value::text("primary"));
+                assert_eq!(plus.props["icon"], Value::text("plus"));
+                assert_eq!(
+                    button_labelled(tree, "Decrement").props["icon"],
+                    Value::text("minus")
+                );
+            }
+            let plus = button_labelled(content(&wide), "Increment").key.clone();
+            v.press(&plus).unwrap();
+            v.poll_patches().unwrap();
+            assert_eq!(w.rt.read(&c, "value").unwrap(), Value::Int(1));
+            assert_eq!(
+                text_prop(of_kind(content(v.tree()), "ui.Text")[0], "value"),
+                "1"
+            );
+        }
+
+        phase todo_is_one_row_per_item_at_every_width;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let list = w.rt.create_root("Tasks").unwrap();
+            for t in ["a", "b"] {
+                w.call(
+                    &apps.todo,
+                    "new_task",
+                    vec![
+                        res(&list),
+                        Value::none(),
+                        Value::none(),
+                        Value::none(),
+                        Value::none(),
+                        Value::none(),
+                        Value::text(t),
+                    ],
+                );
+            }
+            let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
+            // The window opens on today, and neither task has a day: the person picks the inbox,
+            // where both wait to be sorted.
+            choose(&v, "inbox");
+            v.poll_patches().unwrap();
+            let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
+            for tree in [&compact, &wide] {
+                assert!(of_kind(tree, "grid").is_empty());
+                let entries = of_kind(tree, "ui.TextInput")
+                    .into_iter()
+                    .filter(|field| on(field, "entry"))
+                    .count();
+                assert_eq!(entries, 1, "one quick add for the list, not one per row");
+                let rows = of_kind(tree, "ui.ListRow");
+                assert_eq!(rows.len(), 2);
+                assert!(
+                    rows.iter().all(|r| r.binding.is_some()),
+                    "each row's checkbox is bound"
+                );
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn e2e_apps_3;
+
+        phase what_the_entry_says_of_a_task_fills_it_and_shows_as_chips;
+        // What the words before the entry type say fills the create action's parameters: a day
+        // and a time, who it is for, the project it is of. Each shows as a chip while the person
+        // types, and a chip's removal takes its words away.
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            // Thursday, noon in UTC: "fri 10am" is the Friday after it, at ten.
+            w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
+            w.rt.set_name_host(Names);
+            stage_members(
+                &w.rt,
+                vec![
+                    tilolang_runtime::members::Member::person("me", tilo_actions::policy::Role::Owner),
+                    tilolang_runtime::members::Member::person("bo", tilo_actions::policy::Role::Editor),
+                ],
+                None,
+            );
+            let list = w.rt.create_root("Tasks").unwrap();
+            let project = returned_ref(w.call(&apps.todo, "new_project", vec![res(&list)]));
+            w.call(
+                &apps.todo,
+                "rename",
+                vec![res(&project), Value::text("Move flat")],
+            );
+            let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
+            // The window opens on today, whose entry makes a task that names no day today's: the
+            // person picks the inbox, whose entry reads a day, a moment, who the task is for and
+            // the project it is of, and leaves the day to the words.
+            choose(&v, "inbox");
+            v.poll_patches().unwrap();
+            let entry = of_kind(v.tree(), "ui.TextInput")
+                .into_iter()
+                .find(|field| on(field, "entry"))
+                .unwrap_or_else(|| panic!("the list ends in its entry: {}", dump(v.tree())))
+                .key
+                .clone();
+
+            v.edit(
+                &entry,
+                &Value::text("call landlord fri 10am @bo #Move flat"),
+            )
+            .unwrap();
+            v.poll_patches().unwrap();
+            let chips: Vec<(&str, String)> = of_kind(v.tree(), "ui.Chip")
+                .into_iter()
+                .map(|chip| (chip.key.as_str(), text_prop(chip, "label")))
+                .collect();
+            let labels: Vec<&str> = chips.iter().map(|(_, label)| label.as_str()).collect();
+            assert_eq!(
+                labels,
+                ["Tomorrow", "10:00", "@Bo", "#Move flat"],
+                "the entry shows what it read while it is typed: {}",
+                dump(v.tree())
+            );
+
+            // A chip's removal takes its words out of the entry and leaves the rest.
+            let bo = chips[2].0.to_owned();
+            v.fire(&bo, "remove").unwrap();
+            v.poll_patches().unwrap();
+            assert_eq!(
+                v.bound_value(&entry),
+                Some(Value::text("call landlord fri 10am #Move flat")),
+                "the chip takes its own words away: {}",
+                dump(v.tree())
+            );
+
+            // Typed whole and committed, it is one task: the words nothing else took title it, and
+            // the rest are its day, its moment, who it is for and the project it is of.
+            v.edit(
+                &entry,
+                &Value::text("call landlord fri 10am @bo #Move flat"),
+            )
+            .unwrap();
+            v.poll_patches().unwrap();
+            v.fire_with(
+                &entry,
+                "submit",
+                Some(&Value::text("call landlord fri 10am @bo #Move flat")),
+            )
+            .unwrap();
+            v.poll_patches().unwrap();
+            let made = items(&w, &list, "items");
+            assert_eq!(made.len(), 1, "{}", dump(v.tree()));
+            assert_eq!(text_of(&w, &made[0], "title"), "call landlord");
+            assert_eq!(
+                w.rt.read(&made[0], "due").unwrap(),
+                Value::Opt(Some(Box::new(Value::text("2026-10-30")))),
+                "Friday, the day after the Thursday it was typed"
+            );
+            match w.rt.read(&made[0], "at").unwrap() {
+                Value::Opt(Some(inner)) => assert!(
+                    inner
+                        .as_text()
+                        .is_some_and(|at| at.starts_with("2026-10-30T10:00")),
+                    "ten that morning: {inner:?}"
+                ),
+                other => panic!("the task is due at a moment: {other:?}"),
+            }
+            match w.rt.read(&made[0], "assignee").unwrap() {
+                Value::Opt(Some(inner)) => {
+                    assert_eq!(*inner, Value::Actor(person("bo")));
+                }
+                other => panic!("the task is Bo's: {other:?}"),
+            }
+            match w.rt.read(&made[0], "project").unwrap() {
+                Value::Opt(Some(inner)) => assert_eq!(*inner, res(&project), "in Move flat"),
+                other => panic!("the task is of its project: {other:?}"),
+            }
+            assert_eq!(
+                v.bound_value(&entry),
+                Some(Value::text("")),
+                "the entry is cleared once the task was made"
+            );
+        }
+
+        phase an_entry_with_no_words_of_its_own_fires_nothing;
+        // An entry whose text is nothing but space, or only what other parameters take, names no
+        // item: Enter makes nothing, writes nothing, and leaves what is typed where it is.
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
+            w.rt.set_name_host(Names);
+            stage_members(
+                &w.rt,
+                vec![
+                    tilolang_runtime::members::Member::person("me", tilo_actions::policy::Role::Owner),
+                    tilolang_runtime::members::Member::person("bo", tilo_actions::policy::Role::Editor),
+                ],
+                None,
+            );
+            let list = w.rt.create_root("Tasks").unwrap();
+            let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
+            // The person picks the inbox, where an entry that would only name a day, a moment and
+            // who the task is for names nothing: no words of its own, no task.
+            choose(&v, "inbox");
+            v.poll_patches().unwrap();
+            let entry = of_kind(v.tree(), "ui.TextInput")
+                .into_iter()
+                .find(|field| on(field, "entry"))
+                .unwrap_or_else(|| panic!("the list ends in its entry: {}", dump(v.tree())))
+                .key
+                .clone();
+            let before = w.rt.history(&list.doc).unwrap().len();
+            for text in ["", "   ", "@bo", "fri", "fri 10am @bo"] {
+                v.edit(&entry, &Value::text(text)).unwrap();
+                v.poll_patches().unwrap();
+                v.fire_with(&entry, "submit", Some(&Value::text(text)))
+                    .unwrap_or_else(|e| panic!("`{text}` is no refusal, just nothing: {e}"));
+                v.poll_patches().unwrap();
+                assert_eq!(
+                    v.bound_value(&entry),
+                    Some(Value::text(text)),
+                    "`{text}` leaves what is typed where it is"
+                );
+            }
+            assert!(
+                items(&w, &list, "items").is_empty(),
+                "nothing of the entry's own, no task: {}",
+                dump(v.tree())
+            );
+            assert_eq!(
+                w.rt.history(&list.doc).unwrap().len(),
+                before,
+                "and nothing written"
+            );
+
+            // A word of its own makes the task, with the parts beside it.
+            v.edit(&entry, &Value::text("milk @bo")).unwrap();
+            v.poll_patches().unwrap();
+            v.fire_with(&entry, "submit", Some(&Value::text("milk @bo")))
+                .unwrap();
+            v.poll_patches().unwrap();
+            let made = items(&w, &list, "items");
+            assert_eq!(made.len(), 1, "{}", dump(v.tree()));
+            assert_eq!(text_of(&w, &made[0], "title"), "milk");
+            assert_eq!(
+                v.bound_value(&entry),
+                Some(Value::text("")),
+                "the entry is cleared once the task it made is listed"
+            );
+        }
+
+        phase an_agent_calling_a_create_action_gets_its_record;
+        // An agent calling the create action itself gets the record it made: the entry's
+        // emptiness is the entry's, not the action's.
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            w.rt.set_clock(|| "2026-10-29T12:00:00Z".to_owned());
+            let list = w.rt.create_root("Tasks").unwrap();
+            let made = returned_ref(w.call(
+                &apps.todo,
+                "new_task",
+                vec![
+                    res(&list),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::none(),
+                    Value::text("Water the plants"),
+                ],
+            ));
+            assert_eq!(text_of(&w, &made, "title"), "Water the plants");
+            assert_eq!(
+                items(&w, &list, "items"),
+                vec![made],
+                "the record it returned is the one the list holds"
+            );
+            // The same through the entry: the task the person typed.
+            let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
+            let entry = of_kind(v.tree(), "ui.TextInput")
+                .into_iter()
+                .find(|field| on(field, "entry"))
+                .unwrap()
+                .key
+                .clone();
+            v.fire_with(&entry, "submit", Some(&Value::text("Buy oat milk")))
+                .unwrap();
+            v.poll_patches().unwrap();
+            assert_eq!(
+                items(&w, &list, "items").len(),
+                2,
+                "the entry's task joins the agent's: {}",
+                dump(v.tree())
+            );
+        }
+
+        phase the_new_task_button_is_the_bar_s_primary_and_the_entry_declares_its_key;
+        // The window's bar offers its primary action once, as the button its key presses, and the
+        // entry at the list's end declares that same key: the key and the bar's button bring the
+        // person to the entry to type the item, which is a draft of its own rather than a record.
+        // What is committed makes one task; an entry left empty makes nothing and writes nothing.
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let list = w.rt.create_root("Tasks").unwrap();
+            let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
+            assert_eq!(
+                text_prop(of_kind(v.tree(), "ui.EmptyState")[0], "title"),
+                "No tasks here"
+            );
+            // One New task, the window's primary button: the host places it from the declaration,
+            // the view draws no button of it, and it carries the key the action declares.
+            let new_task = header_row(v.tree(), "New task");
+            assert!(
+                !on(new_task, "in_menu"),
+                "the primary is the bar's button, not a row of its menu: {}",
+                dump(v.tree())
+            );
+            assert_eq!(
+                new_task.props.get("role"),
+                Some(&Value::text("primary")),
+                "it is the window's primary: {}",
+                dump(v.tree())
+            );
+            assert_eq!(
+                text_prop(new_task, "key"),
+                "Ctrl+n",
+                "as the keyboard spells the key the app declares"
+            );
+
+            // The entry at the list's end is the list's own add, not a field of a record, and it
+            // declares the primary's key: the key and the bar's button lead the person there.
+            let entry = of_kind(v.tree(), "ui.TextInput")
+                .into_iter()
+                .find(|field| on(field, "entry"))
+                .unwrap_or_else(|| panic!("the list ends in its entry: {}", dump(v.tree())));
+            assert_eq!(
+                text_prop(entry, "key"),
+                "Ctrl+n",
+                "the entry is where the primary brings the person: {}",
+                dump(v.tree())
+            );
+            let entry = entry.key.clone();
+
+            // An entry committed empty makes no task, and writes nothing at all.
+            let before = w.rt.history(&list.doc).unwrap().len();
+            v.fire_with(&entry, "submit", Some(&Value::text("")))
+                .unwrap();
+            v.poll_patches().unwrap();
+            assert_eq!(
+                items(&w, &list, "items").len(),
+                0,
+                "nothing typed, nothing made: {}",
+                dump(v.tree())
+            );
+            assert_eq!(
+                w.rt.history(&list.doc).unwrap().len(),
+                before,
+                "and nothing written"
+            );
+
+            // What is typed and committed is one task, named, and its row is that record.
+            v.edit(&entry, &Value::text("milk")).unwrap();
+            v.poll_patches().unwrap();
+            v.fire_with(&entry, "submit", Some(&Value::text("milk")))
+                .unwrap();
+            v.poll_patches().unwrap();
+            let made = items(&w, &list, "items");
+            assert_eq!(made.len(), 1, "{}", dump(v.tree()));
+            assert_eq!(text_of(&w, &made[0], "title"), "milk");
+            assert_eq!(row_titles(v.tree()), ["milk"]);
+            assert_eq!(
+                w.rt.history(&list.doc).unwrap().len(),
+                before + 1,
+                "the commit is one change, and the entry's draft was none"
+            );
+            assert_eq!(
+                item_titled(v.tree(), "milk"),
+                made[0],
+                "the row stands for the task it made"
+            );
+            // It joins the list where it was typed: no window opens over it.
+            assert!(
+                v.poll_events().is_empty(),
+                "adding shows the row; it opens nothing"
+            );
+
+            // A person who activates the row goes to its page, where its title is the field it was
+            // named in: what they change there is the row.
+            let rows = of_kind(v.tree(), "ui.VirtualList")[0].key.clone();
+            v.fire_with(&rows, "activate", Some(&res(&made[0])))
+                .unwrap();
+            match v.poll_events().as_slice() {
+                [ViewEvent::Open { target, .. }] => {
+                    assert_eq!(target, &made[0], "the row opens the task it stands for");
+                }
+                other => panic!("activating the row opens its page, not {other:?}"),
+            }
+            let editor = w.rt.open_resource(&me(), &made[0], None).unwrap();
+            assert_eq!(text_prop(editor.tree(), "content_kind"), "document");
+            let title = of_kind(editor.tree(), "ui.TextInput")[0].key.clone();
+            editor.edit(&title, &Value::text("sourdough")).unwrap();
+            v.poll_patches().unwrap();
+            assert_eq!(row_titles(v.tree()), ["sourdough"]);
+        }
+
+        phase an_action_whose_requirement_fails_is_offered_disabled_with_its_reason;
+        // An action whose requirement its target does not meet is offered all the same, its
+        // control disabled with the requirement's reason as its description, and running it is
+        // refused with that reason: what a header's button says before a person presses it.
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            // The workspace's one Tasks root: a check reads its tasks from it, as the app does.
+            let list = w.rt.create_root("Tasks").unwrap();
             let item = returned_ref(w.call(
                 &apps.todo,
                 "new_task",
@@ -2488,108 +2408,209 @@ mod cases {
                     Value::none(),
                     Value::none(),
                     Value::none(),
-                    Value::text(t),
+                    Value::text("milk"),
                 ],
             ));
-            if done {
-                w.call(&apps.todo, "check", vec![res(&item)]);
+            // Delete finished tasks stands in the header's one menu, as every command that is
+            // not the window's main thing does: a control that names it, and says whether it can
+            // run now.
+            let can_run = |v: &ViewInstance| -> bool {
+                node_with(v.tree(), "ui.Button", "label", "Delete finished tasks")
+                    .props
+                    .get("enabled")
+                    == Some(&Value::Bool(true))
+            };
+            let why = |v: &ViewInstance| -> String {
+                match node_with(v.tree(), "ui.Button", "label", "Delete finished tasks")
+                    .props
+                    .get("description")
+                {
+                    Some(Value::Text(why)) => why.clone(),
+                    other => panic!("no description on Delete finished tasks: {other:?}"),
+                }
+            };
+            let mut v = w.view(&apps.todo, "home", vec![res(&list)]);
+            assert!(
+                !can_run(&v),
+                "nothing is finished, so Delete finished tasks cannot run: {}",
+                dump(v.tree())
+            );
+            assert_eq!(why(&v), "Nothing is finished yet", "and it says why");
+            let refused =
+                w.rt.invoke_action(
+                    &me(),
+                    (apps.todo.action("clear_done").as_str(), vec![res(&list)]),
+                )
+                .expect_err("clear_done is refused while nothing is finished");
+            assert!(
+                refused.to_string().contains("Nothing is finished yet"),
+                "{refused}"
+            );
+            // A task's step goes under it while it is open: nothing is finished still.
+            w.call(
+                &apps.todo,
+                "add_subtask",
+                vec![res(&item), Value::text("milk the cow")],
+            );
+            v.poll_patches().unwrap();
+            assert!(
+                !can_run(&v),
+                "an open step under an open task is nothing finished: {}",
+                dump(v.tree())
+            );
+            // Checking the task off takes the step with it, so Delete finished tasks can run
+            // exactly when a clear takes something.
+            w.call(&apps.todo, "check", vec![res(&item)]);
+            v.poll_patches().unwrap();
+            assert!(
+                can_run(&v),
+                "once an item is finished, Delete finished tasks can run: {}",
+                dump(v.tree())
+            );
+            let cleared = w.call(&apps.todo, "clear_done", vec![res(&list)]);
+            assert!(
+                matches!(cleared, InvokeOutcome::Done(Value::Int(2))),
+                "the task and its step went: {cleared:?}"
+            );
+            assert!(items(&w, &list, "items").is_empty());
+            v.poll_patches().unwrap();
+            assert!(
+                !can_run(&v),
+                "with nothing left to clear it cannot run: {}",
+                dump(v.tree())
+            );
+            assert_eq!(why(&v), "Nothing is finished yet", "and it says why again");
+            let refused =
+                w.rt.invoke_action(
+                    &me(),
+                    (apps.todo.action("clear_done").as_str(), vec![res(&list)]),
+                )
+                .expect_err("clear_done is refused again once nothing is finished");
+            assert!(
+                refused.to_string().contains("Nothing is finished yet"),
+                "{refused}"
+            );
+        }
+
+        phase clearing_done_removes_only_the_finished_items;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let list = w.rt.create_root("Tasks").unwrap();
+            for (t, done) in [("milk", true), ("eggs", false), ("rice", true)] {
+                let item = returned_ref(w.call(
+                    &apps.todo,
+                    "new_task",
+                    vec![
+                        res(&list),
+                        Value::none(),
+                        Value::none(),
+                        Value::none(),
+                        Value::none(),
+                        Value::none(),
+                        Value::text(t),
+                    ],
+                ));
+                if done {
+                    w.call(&apps.todo, "check", vec![res(&item)]);
+                }
+            }
+            let out = w.call(&apps.todo, "clear_done", vec![res(&list)]);
+            assert!(matches!(out, InvokeOutcome::Done(Value::Int(2))), "{out:?}");
+            let left: Vec<String> = items(&w, &list, "items")
+                .iter()
+                .map(|i| text_of(&w, i, "title"))
+                .collect();
+            assert_eq!(left, ["eggs"]);
+        }
+
+        phase notes_tree_rows_carry_the_title_and_the_note_is_edited_beside_them;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let nb = w.create("Notebook");
+            w.call(&apps.notes, "new_note", vec![res(&nb)]);
+            let mut v = w.view(&apps.notes, "notebook", vec![res(&nb)]);
+            let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
+            for tree in [&compact, &wide] {
+                let (_, note) = tree_item_labelled(tree, "Untitled");
+                assert_eq!(
+                    of_kind(tree, "ui.ListRow").len(),
+                    0,
+                    "a notebook lists its notes as a tree, not a column of rows"
+                );
+                assert_eq!(
+                    opened_note(&v),
+                    note,
+                    "the note the tree holds stands beside it, edited in its page"
+                );
+                assert!(
+                    of_kind(tree, "split").is_empty(),
+                    "the tree and the note are the window's two columns, not a split"
+                );
             }
         }
-        let out = w.call(&apps.todo, "clear_done", vec![res(&list)]);
-        assert!(matches!(out, InvokeOutcome::Done(Value::Int(2))), "{out:?}");
-        let left: Vec<String> = items(&w, &list, "items")
-            .iter()
-            .map(|i| text_of(&w, i, "title"))
-            .collect();
-        assert_eq!(left, ["eggs"]);
-    }
 
-    #[test]
-    fn notes_tree_rows_carry_the_title_and_the_note_is_edited_beside_them() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let nb = w.create("Notebook");
-        w.call(&apps.notes, "new_note", vec![res(&nb)]);
-        let mut v = w.view(&apps.notes, "notebook", vec![res(&nb)]);
-        let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
-        for tree in [&compact, &wide] {
-            let (_, note) = tree_item_labelled(tree, "Untitled");
-            assert_eq!(
-                of_kind(tree, "ui.ListRow").len(),
-                0,
-                "a notebook lists its notes as a tree, not a column of rows"
-            );
-            assert_eq!(
-                opened_note(&v),
-                note,
-                "the note the tree holds stands beside it, edited in its page"
-            );
-            assert!(
-                of_kind(tree, "split").is_empty(),
-                "the tree and the note are the window's two columns, not a split"
-            );
+        phase letters_list_rows_carry_the_subject_and_the_recipient;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let letters = w.create("Letters");
+            let d = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&letters)]));
+            let editor = w.view(&apps.letters, "editor", vec![res(&d)]);
+            let to = of_kind(editor.tree(), "ui.TextInput")[0].key.clone();
+            editor.edit(&to, &Value::text("bo@example.org")).unwrap();
+            let mut v = w.view(&apps.letters, "letters", vec![res(&letters)]);
+            let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
+            for tree in [&compact, &wide] {
+                let rows = of_kind(tree, "ui.ListRow");
+                assert_eq!(rows.len(), 1);
+                assert_eq!(text_prop(rows[0], "title"), "Untitled");
+                assert_eq!(text_prop(rows[0], "secondary"), "bo@example.org");
+                assert!(of_kind(tree, "split").is_empty());
+            }
         }
-    }
 
-    #[test]
-    fn letters_list_rows_carry_the_subject_and_the_recipient() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let letters = w.create("Letters");
-        let d = returned_ref(w.call(&apps.letters, "new_draft", vec![res(&letters)]));
-        let editor = w.view(&apps.letters, "editor", vec![res(&d)]);
-        let to = of_kind(editor.tree(), "ui.TextInput")[0].key.clone();
-        editor.edit(&to, &Value::text("bo@example.org")).unwrap();
-        let mut v = w.view(&apps.letters, "letters", vec![res(&letters)]);
-        let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
-        for tree in [&compact, &wide] {
-            let rows = of_kind(tree, "ui.ListRow");
-            assert_eq!(rows.len(), 1);
-            assert_eq!(text_prop(rows[0], "title"), "Untitled");
-            assert_eq!(text_prop(rows[0], "secondary"), "bo@example.org");
-            assert!(of_kind(tree, "split").is_empty());
-        }
-    }
-
-    #[test]
-    fn chat_names_each_messages_author_for_the_transcript_to_draw() {
-        let apps = apps();
-        let w = world(&apps, &AmStore::new());
-        let (_, conv) = start_chat(&w, &apps);
-        post(&w, &apps, &conv, &person("ada"), "hello", "");
-        post(&w, &apps, &conv, &person("bo"), "hi", "");
-        let mut v = w.view(&apps.chat, "thread", vec![res(&conv)]);
-        let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
-        for tree in [&compact, &wide] {
-            let who: Vec<Value> = of_kind(tree, "ui.ListItem")
-                .iter()
-                .map(|item| item.props["author"].clone())
-                .collect();
-            assert_eq!(
-                who,
-                [Value::Actor(person("ada")), Value::Actor(person("bo"))]
-            );
-            assert_eq!(authors_of(tree), [person("ada"), person("bo")]);
-        }
-    }
-
-    #[test]
-    fn board_is_a_grid_of_cards_at_every_width() {
-        let apps = apps();
-        let m = morning(&apps);
-        let mut v = m.w.view(&apps.today, "today", vec![res(&m.today)]);
-        let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
-        for tree in [&compact, &wide] {
-            let grid = of_kind(tree, "grid")[0];
-            assert_eq!(grid.props["min.rem"], Value::Float(22.0));
-            assert_eq!(grid.children.len(), 3, "one card per app: {}", dump(tree));
-            for child in &grid.children {
+        phase chat_names_each_messages_author_for_the_transcript_to_draw;
+        {
+            let apps = apps();
+            let w = world(&apps, &AmStore::new());
+            let (_, conv) = start_chat(&w, &apps);
+            post(&w, &apps, &conv, &person("ada"), "hello", "");
+            post(&w, &apps, &conv, &person("bo"), "hi", "");
+            let mut v = w.view(&apps.chat, "thread", vec![res(&conv)]);
+            let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
+            for tree in [&compact, &wide] {
+                let who: Vec<Value> = of_kind(tree, "ui.ListItem")
+                    .iter()
+                    .map(|item| item.props["author"].clone())
+                    .collect();
                 assert_eq!(
-                    of_kind(child, "ui.Card").len(),
-                    1,
-                    "a card per app: {}",
-                    dump(tree)
+                    who,
+                    [Value::Actor(person("ada")), Value::Actor(person("bo"))]
                 );
+                assert_eq!(authors_of(tree), [person("ada"), person("bo")]);
+            }
+        }
+
+        phase board_is_a_grid_of_cards_at_every_width;
+        {
+            let apps = apps();
+            let m = morning(&apps);
+            let mut v = m.w.view(&apps.today, "today", vec![res(&m.today)]);
+            let (compact, wide) = (at(&mut v, COMPACT), at(&mut v, WIDE));
+            for tree in [&compact, &wide] {
+                let grid = of_kind(tree, "grid")[0];
+                assert_eq!(grid.props["min.rem"], Value::Float(22.0));
+                assert_eq!(grid.children.len(), 3, "one card per app: {}", dump(tree));
+                for child in &grid.children {
+                    assert_eq!(
+                        of_kind(child, "ui.Card").len(),
+                        1,
+                        "a card per app: {}",
+                        dump(tree)
+                    );
+                }
             }
         }
     }

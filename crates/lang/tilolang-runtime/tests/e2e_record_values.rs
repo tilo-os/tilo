@@ -125,51 +125,6 @@ action keep(l: Line, found_text: Text, one_text: Text) {
             .collect()
     }
 
-    #[test]
-    fn edited_record_values_are_what_the_store_holds_once_inserted() {
-        let app = App::compile(SOURCE, &[]);
-        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-        app.load(&rt);
-        let line = rt.create("Line").unwrap();
-        let keep = app.action("keep");
-        rt.invoke_action(
-            &me(),
-            (
-                keep.as_str(),
-                vec![
-                    Value::resource(&line),
-                    Value::Text(FOUND.to_owned()),
-                    Value::Text(ONE.to_owned()),
-                ],
-            ),
-        )
-        .unwrap();
-        let s = |name: &str, seq: i64, late: bool, from: &str| {
-            (name.to_owned(), seq, late, from.to_owned())
-        };
-        assert_eq!(
-            stops(&rt, &line),
-            vec![
-                s("Elm (first)", 11, true, ""),
-                s("Elm", 1, false, "kept"),
-                s("Oak", 2, false, "kept"),
-                s("Ash", 5, true, "decoded"),
-                s("base", 1, false, ""),
-                s("a", 1, false, ""),
-                s("b", 0, false, ""),
-                s("made", 0, false, "stored"),
-            ],
-            "each record value is stored as its code edited it, and a stored stop's field set \
-             writes the stop"
-        );
-        assert_eq!(
-            text(&rt, &line, "note"),
-            "first still Elm, from ''",
-            "editing a value taken out of a list leaves the list as it was"
-        );
-        assert_eq!(text(&rt, &line, "label"), "kept");
-    }
-
     const IMPORTING: &str = r#"app so.tilo.importing "Importing"
 
 type Part {
@@ -246,83 +201,132 @@ action rename_in(b: Box, text: Text) {
             .collect()
     }
 
-    #[test]
-    fn a_decoded_record_reaches_the_action_that_takes_its_type() {
-        let app = App::compile(IMPORTING, &[]);
-        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-        app.load(&rt);
-        let b = rt.create("Box").unwrap();
-        let adopt = app.action("adopt");
-        rt.invoke_action(
-            &me(),
-            (
-                adopt.as_str(),
-                vec![Value::resource(&b), Value::Text(PARTS.to_owned())],
-            ),
-        )
-        .unwrap_or_else(|e| panic!("the value the decoder checked is handed over: {e}"));
-        assert_eq!(part_names(&rt, &b), vec!["First", "Second"]);
-        assert_eq!(text(&rt, &b, "note"), "read");
-    }
+    tilo_test_env::scenario! {
+        fn e2e_record_values_1;
 
-    #[test]
-    fn a_record_value_of_another_type_is_refused_by_its_name() {
-        let app = App::compile(IMPORTING, &[]);
-        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-        app.load(&rt);
-        let b = rt.create("Box").unwrap();
-        let holder = app
-            .meta()
-            .types
-            .iter()
-            .find(|t| t.name == "Holder")
-            .expect("the app declares Holder")
-            .id
-            .clone();
-        let keep = app.action("keep_one");
-        let failed = rt
-            .invoke_action(
+        phase edited_record_values_are_what_the_store_holds_once_inserted;
+        {
+            let app = App::compile(SOURCE, &[]);
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            app.load(&rt);
+            let line = rt.create("Line").unwrap();
+            let keep = app.action("keep");
+            rt.invoke_action(
                 &me(),
                 (
                     keep.as_str(),
                     vec![
-                        Value::resource(&b),
-                        Value::Rec(tilolang_runtime::RecordInit {
-                            ty: holder,
-                            fields: std::collections::BTreeMap::new(),
-                        }),
+                        Value::resource(&line),
+                        Value::Text(FOUND.to_owned()),
+                        Value::Text(ONE.to_owned()),
                     ],
                 ),
             )
-            .expect_err("a Holder is no Part");
-        let said = format!("{failed}");
-        assert!(
-            said.contains("a record of `Holder` is no `Part`"),
-            "the refusal names the value's own type and the parameter's: {said}"
-        );
-    }
+            .unwrap();
+            let s = |name: &str, seq: i64, late: bool, from: &str| {
+                (name.to_owned(), seq, late, from.to_owned())
+            };
+            assert_eq!(
+                stops(&rt, &line),
+                vec![
+                    s("Elm (first)", 11, true, ""),
+                    s("Elm", 1, false, "kept"),
+                    s("Oak", 2, false, "kept"),
+                    s("Ash", 5, true, "decoded"),
+                    s("base", 1, false, ""),
+                    s("a", 1, false, ""),
+                    s("b", 0, false, ""),
+                    s("made", 0, false, "stored"),
+                ],
+                "each record value is stored as its code edited it, and a stored stop's field set \
+             writes the stop"
+            );
+            assert_eq!(
+                text(&rt, &line, "note"),
+                "first still Elm, from ''",
+                "editing a value taken out of a list leaves the list as it was"
+            );
+            assert_eq!(text(&rt, &line, "label"), "kept");
+        }
 
-    #[test]
-    fn a_value_an_action_changes_fails_where_it_is_written() {
-        let app = App::compile(IMPORTING, &[]);
-        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-        app.load(&rt);
-        let b = rt.create("Box").unwrap();
-        let rename = app.action("rename_in");
-        let failed = rt
-            .invoke_action(
+        phase a_decoded_record_reaches_the_action_that_takes_its_type;
+        {
+            let app = App::compile(IMPORTING, &[]);
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            app.load(&rt);
+            let b = rt.create("Box").unwrap();
+            let adopt = app.action("adopt");
+            rt.invoke_action(
                 &me(),
                 (
-                    rename.as_str(),
+                    adopt.as_str(),
                     vec![Value::resource(&b), Value::Text(PARTS.to_owned())],
                 ),
             )
-            .expect_err("a value names no resource to change");
-        let said = format!("{failed}");
-        assert!(
-            said.contains("a record value an action is handed names no resource to change"),
-            "the failure says what a handed value is: {said}"
-        );
-        assert!(part_names(&rt, &b).is_empty(), "nothing was kept");
+            .unwrap_or_else(|e| panic!("the value the decoder checked is handed over: {e}"));
+            assert_eq!(part_names(&rt, &b), vec!["First", "Second"]);
+            assert_eq!(text(&rt, &b, "note"), "read");
+        }
+
+        phase a_record_value_of_another_type_is_refused_by_its_name;
+        {
+            let app = App::compile(IMPORTING, &[]);
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            app.load(&rt);
+            let b = rt.create("Box").unwrap();
+            let holder = app
+                .meta()
+                .types
+                .iter()
+                .find(|t| t.name == "Holder")
+                .expect("the app declares Holder")
+                .id
+                .clone();
+            let keep = app.action("keep_one");
+            let failed = rt
+                .invoke_action(
+                    &me(),
+                    (
+                        keep.as_str(),
+                        vec![
+                            Value::resource(&b),
+                            Value::Rec(tilolang_runtime::RecordInit {
+                                ty: holder,
+                                fields: std::collections::BTreeMap::new(),
+                            }),
+                        ],
+                    ),
+                )
+                .expect_err("a Holder is no Part");
+            let said = format!("{failed}");
+            assert!(
+                said.contains("a record of `Holder` is no `Part`"),
+                "the refusal names the value's own type and the parameter's: {said}"
+            );
+        }
+
+        phase a_value_an_action_changes_fails_where_it_is_written;
+        {
+            let app = App::compile(IMPORTING, &[]);
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            app.load(&rt);
+            let b = rt.create("Box").unwrap();
+            let rename = app.action("rename_in");
+            let failed = rt
+                .invoke_action(
+                    &me(),
+                    (
+                        rename.as_str(),
+                        vec![Value::resource(&b), Value::Text(PARTS.to_owned())],
+                    ),
+                )
+                .expect_err("a value names no resource to change");
+            let said = format!("{failed}");
+            assert!(
+                said.contains("a record value an action is handed names no resource to change"),
+                "the failure says what a handed value is: {said}"
+            );
+            assert!(part_names(&rt, &b).is_empty(), "nothing was kept");
+        }
     }
 }

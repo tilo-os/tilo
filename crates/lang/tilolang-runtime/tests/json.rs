@@ -265,226 +265,230 @@ action explore(f: Feed) uses web {
             .to_string()
     }
 
-    #[test]
-    fn a_feed_reads_into_records_of_the_type_the_code_names() {
-        let w = world(FEED);
-        w.call("refresh");
+    tilo_test_env::scenario! {
+        fn json_1;
 
-        assert_eq!(w.text("status"), "read");
-        assert_eq!(w.int("count"), 3);
-        let items = w.items();
-        let titles: Vec<&str> = items.iter().map(|i| i.0.as_str()).collect();
-        assert_eq!(
-            titles,
-            ["Zoë — 東京 ☕", "second", "third"],
-            "text keeps its characters"
-        );
-        assert_eq!(
-            items.iter().map(|i| i.1).collect::<Vec<_>>(),
-            [5, 0, 12],
-            "a whole number reads as an Int"
-        );
-        assert_eq!(
-            items.iter().map(|i| i.2).collect::<Vec<_>>(),
-            [4.5, 3.0, 1.25],
-            "an Int in the text reads as the Float it is"
-        );
-        let states: Vec<&str> = items.iter().map(|i| i.3.as_str()).collect();
-        assert_eq!(
-            states,
-            [
-                id_of(&w.app, "State.open"),
-                id_of(&w.app, "State.tagged"),
-                id_of(&w.app, "State.closed"),
-            ],
-            "a case reads from its name, and the value holds the declared case"
-        );
-        assert_eq!(w.note(0), Value::some(Value::text("héllo")));
-        assert_eq!(
-            w.note(1),
-            Value::none(),
-            "a field the text leaves out is none"
-        );
-        assert_eq!(w.note(2), Value::none(), "null is none too");
-        assert_eq!(
-            w.text("status"),
-            "read",
-            "a field the type does not declare (`extra`) breaks nothing"
-        );
-    }
+        phase a_feed_reads_into_records_of_the_type_the_code_names;
+        {
+            let w = world(FEED);
+            w.call("refresh");
 
-    #[test]
-    fn a_value_that_does_not_fit_is_an_error_naming_its_path() {
-        let w = world(r#"[{"title": "a", "stars": "no", "score": 1, "state": "open"}]"#);
-        w.call("refresh");
-        let why = w.text("status");
-        assert!(why.contains("$[0].stars"), "names the path: {why}");
-        assert!(why.contains("whole number"), "names what fitted: {why}");
+            assert_eq!(w.text("status"), "read");
+            assert_eq!(w.int("count"), 3);
+            let items = w.items();
+            let titles: Vec<&str> = items.iter().map(|i| i.0.as_str()).collect();
+            assert_eq!(
+                titles,
+                ["Zoë — 東京 ☕", "second", "third"],
+                "text keeps its characters"
+            );
+            assert_eq!(
+                items.iter().map(|i| i.1).collect::<Vec<_>>(),
+                [5, 0, 12],
+                "a whole number reads as an Int"
+            );
+            assert_eq!(
+                items.iter().map(|i| i.2).collect::<Vec<_>>(),
+                [4.5, 3.0, 1.25],
+                "an Int in the text reads as the Float it is"
+            );
+            let states: Vec<&str> = items.iter().map(|i| i.3.as_str()).collect();
+            assert_eq!(
+                states,
+                [
+                    id_of(&w.app, "State.open"),
+                    id_of(&w.app, "State.tagged"),
+                    id_of(&w.app, "State.closed"),
+                ],
+                "a case reads from its name, and the value holds the declared case"
+            );
+            assert_eq!(w.note(0), Value::some(Value::text("héllo")));
+            assert_eq!(
+                w.note(1),
+                Value::none(),
+                "a field the text leaves out is none"
+            );
+            assert_eq!(w.note(2), Value::none(), "null is none too");
+            assert_eq!(
+                w.text("status"),
+                "read",
+                "a field the type does not declare (`extra`) breaks nothing"
+            );
+        }
 
-        let w = world(r#"[{"title": "a", "score": 1, "state": "open"}]"#);
-        w.call("refresh");
-        let why = w.text("status");
-        assert!(
-            why.contains("$[0].stars is missing"),
-            "names the missing field: {why}"
-        );
-        assert!(
-            why.contains("title, stars, score, state, note"),
-            "says what the type has: {why}"
-        );
+        phase a_value_that_does_not_fit_is_an_error_naming_its_path;
+        {
+            let w = world(r#"[{"title": "a", "stars": "no", "score": 1, "state": "open"}]"#);
+            w.call("refresh");
+            let why = w.text("status");
+            assert!(why.contains("$[0].stars"), "names the path: {why}");
+            assert!(why.contains("whole number"), "names what fitted: {why}");
 
-        let w = world(r#"[{"title": "a", "stars": 1, "score": 1, "state": "nope"}]"#);
-        w.call("refresh");
-        let why = w.text("status");
-        assert!(why.contains("$[0].state is no case of `State`"), "{why}");
-        assert!(
-            why.contains("open, closed, tagged"),
-            "lists the cases: {why}"
-        );
+            let w = world(r#"[{"title": "a", "score": 1, "state": "open"}]"#);
+            w.call("refresh");
+            let why = w.text("status");
+            assert!(
+                why.contains("$[0].stars is missing"),
+                "names the missing field: {why}"
+            );
+            assert!(
+                why.contains("title, stars, score, state, note"),
+                "says what the type has: {why}"
+            );
 
-        let w = world(r"not json at all");
-        w.call("refresh");
-        assert!(
-            w.text("status").starts_with("not JSON"),
-            "{}",
-            w.text("status")
-        );
+            let w = world(r#"[{"title": "a", "stars": 1, "score": 1, "state": "nope"}]"#);
+            w.call("refresh");
+            let why = w.text("status");
+            assert!(why.contains("$[0].state is no case of `State`"), "{why}");
+            assert!(
+                why.contains("open, closed, tagged"),
+                "lists the cases: {why}"
+            );
 
-        let w = world(r#"{"title": "a", "stars": 1, "score": 1, "state": "open"}"#);
-        w.call("decode_one");
-        assert_eq!(w.text("status"), "read a");
-    }
+            let w = world(r"not json at all");
+            w.call("refresh");
+            assert!(
+                w.text("status").starts_with("not JSON"),
+                "{}",
+                w.text("status")
+            );
 
-    /// A record nested in a decoded record is a value too, at any depth: text makes it and its
-    /// fields read. An option of one is none when the text says `null` or leaves it out.
-    #[test]
-    fn a_record_field_reads_a_record_value_at_any_depth() {
-        const NESTED: &str = r#"{
+            let w = world(r#"{"title": "a", "stars": 1, "score": 1, "state": "open"}"#);
+            w.call("decode_one");
+            assert_eq!(w.text("status"), "read a");
+        }
+
+        phase a_record_field_reads_a_record_value_at_any_depth;
+        // A record nested in a decoded record is a value too, at any depth: text makes it and its
+        // fields read. An option of one is none when the text says `null` or leaves it out.
+        {
+            const NESTED: &str = r#"{
           "inner": {"title": "a", "stars": 4, "score": 1.0, "state": "open"},
           "maybe": {"title": "b", "stars": 1, "score": 2.0, "state": "closed"},
           "found": [{"title": "first", "stars": 2, "score": 3.0, "state": "tagged"}],
           "label": "x"
         }"#;
-        let w = world(NESTED);
-        w.call("wrap");
-        assert_eq!(
-            w.text("status"),
-            "read x a 4 b first",
-            "a record, an option of one and a list of them read as values, field by field"
-        );
+            let w = world(NESTED);
+            w.call("wrap");
+            assert_eq!(
+                w.text("status"),
+                "read x a 4 b first",
+                "a record, an option of one and a list of them read as values, field by field"
+            );
 
-        let null = NESTED.replace(
-            r#""maybe": {"title": "b", "stars": 1, "score": 2.0, "state": "closed"}"#,
-            r#""maybe": null"#,
-        );
-        let w = world(&null);
-        w.call("wrap");
-        assert_eq!(
-            w.text("status"),
-            "read x a 4 no maybe first",
-            "null is none"
-        );
+            let null = NESTED.replace(
+                r#""maybe": {"title": "b", "stars": 1, "score": 2.0, "state": "closed"}"#,
+                r#""maybe": null"#,
+            );
+            let w = world(&null);
+            w.call("wrap");
+            assert_eq!(
+                w.text("status"),
+                "read x a 4 no maybe first",
+                "null is none"
+            );
 
-        let missing = NESTED.replace(
-            r#""maybe": {"title": "b", "stars": 1, "score": 2.0, "state": "closed"},"#,
-            "",
-        );
-        let w = world(&missing);
-        w.call("wrap");
-        assert_eq!(
-            w.text("status"),
-            "read x a 4 no maybe first",
-            "a field the text leaves out is none"
-        );
+            let missing = NESTED.replace(
+                r#""maybe": {"title": "b", "stars": 1, "score": 2.0, "state": "closed"},"#,
+                "",
+            );
+            let w = world(&missing);
+            w.call("wrap");
+            assert_eq!(
+                w.text("status"),
+                "read x a 4 no maybe first",
+                "a field the text leaves out is none"
+            );
 
-        let wrong = NESTED.replace(r#""stars": 4"#, r#""stars": "no""#);
-        let w = world(&wrong);
-        w.call("wrap");
-        let why = w.text("status");
-        assert!(
-            why.contains("$.inner.stars"),
-            "names the nested path: {why}"
-        );
-        assert!(why.contains("whole number"), "{why}");
-    }
-
-    #[test]
-    fn a_value_written_as_text_is_what_the_type_declares() {
-        let w = world(FEED);
-        w.call("encode_items");
-        let written: serde_json::Value =
-            serde_json::from_str(&w.text("payload")).expect("encode writes JSON");
-        assert_eq!(
-            written,
-            json!([
-                {"title": "Zoë — 東京 ☕", "stars": 5, "score": 4.5, "state": "open", "note": "héllo"},
-                {"title": "second", "stars": 0, "score": 3.0, "state": "tagged", "note": null},
-                {"title": "third", "stars": 12, "score": 1.25, "state": "closed", "note": null}
-            ]),
-            "fields by their names, enums by their cases, none as null"
-        );
-
-        // What was read reads back: text written from a value reads as that value, and writes
-        // back as the same text.
-        let first_written = w.text("payload");
-        let w = world(&first_written);
-        w.call("encode_items");
-        assert_eq!(
-            w.text("payload"),
-            first_written,
-            "a round trip keeps every field"
-        );
-    }
-
-    #[test]
-    fn a_scalar_is_written_as_the_json_value_it_is() {
-        let w = world(FEED);
-        w.call("encode_scalars");
-        assert_eq!(w.text("summary"), "7", "an Int is a number");
-        assert_eq!(
-            w.text("payload"),
-            "true",
-            "a Bool is true or false, not 1 or 0"
-        );
-        assert_eq!(w.text("status"), "1.5", "a Float keeps its fraction");
-    }
-
-    #[test]
-    fn a_document_whose_shape_is_unknown_reads_case_by_case() {
-        let cases = [
-            (r#"{"a": 1, "b": 2, "c": 3}"#, 3, ""),
-            (r"[1, 2]", 2, ""),
-            (r"1.0", 1, "1"),
-            (r"7", 7, "7"),
-            (r"true", 1, ""),
-            (r"false", 0, ""),
-            (r"null", -1, ""),
-            (r"1.5", 1, "1.5"),
-            ("\"hello\"", 0, "hello"),
-        ];
-        for (document, count, summary) in cases {
-            let w = world(document);
-            w.call("explore");
-            assert_eq!(w.text("status"), "parsed", "{document}");
-            assert_eq!(w.int("count"), count, "{document}");
-            assert_eq!(w.text("summary"), summary, "{document}");
+            let wrong = NESTED.replace(r#""stars": 4"#, r#""stars": "no""#);
+            let w = world(&wrong);
+            w.call("wrap");
+            let why = w.text("status");
+            assert!(
+                why.contains("$.inner.stars"),
+                "names the nested path: {why}"
+            );
+            assert!(why.contains("whole number"), "{why}");
         }
 
-        // A value under a key the code asks for by name: read back as the text it was.
-        let w = world(r#"{"title": "Zoë ☕", "n": 2}"#);
-        w.call("peek");
-        assert_eq!(w.text("status"), "parsed");
-        assert_eq!(w.text("summary"), "\"Zoë ☕\"");
-        let w = world(r#"{"other": 1}"#);
-        w.call("peek");
-        assert_eq!(w.text("summary"), "none", "a key the object lacks is none");
+        phase a_value_written_as_text_is_what_the_type_declares;
+        {
+            let w = world(FEED);
+            w.call("encode_items");
+            let written: serde_json::Value =
+                serde_json::from_str(&w.text("payload")).expect("encode writes JSON");
+            assert_eq!(
+                written,
+                json!([
+                    {"title": "Zoë — 東京 ☕", "stars": 5, "score": 4.5, "state": "open", "note": "héllo"},
+                    {"title": "second", "stars": 0, "score": 3.0, "state": "tagged", "note": null},
+                    {"title": "third", "stars": 12, "score": 1.25, "state": "closed", "note": null}
+                ]),
+                "fields by their names, enums by their cases, none as null"
+            );
 
-        let w = world("{oops");
-        w.call("explore");
-        assert!(
-            w.text("status").starts_with("not JSON"),
-            "{}",
-            w.text("status")
-        );
+            // What was read reads back: text written from a value reads as that value, and writes
+            // back as the same text.
+            let first_written = w.text("payload");
+            let w = world(&first_written);
+            w.call("encode_items");
+            assert_eq!(
+                w.text("payload"),
+                first_written,
+                "a round trip keeps every field"
+            );
+        }
+
+        phase a_scalar_is_written_as_the_json_value_it_is;
+        {
+            let w = world(FEED);
+            w.call("encode_scalars");
+            assert_eq!(w.text("summary"), "7", "an Int is a number");
+            assert_eq!(
+                w.text("payload"),
+                "true",
+                "a Bool is true or false, not 1 or 0"
+            );
+            assert_eq!(w.text("status"), "1.5", "a Float keeps its fraction");
+        }
+
+        phase a_document_whose_shape_is_unknown_reads_case_by_case;
+        {
+            let cases = [
+                (r#"{"a": 1, "b": 2, "c": 3}"#, 3, ""),
+                (r"[1, 2]", 2, ""),
+                (r"1.0", 1, "1"),
+                (r"7", 7, "7"),
+                (r"true", 1, ""),
+                (r"false", 0, ""),
+                (r"null", -1, ""),
+                (r"1.5", 1, "1.5"),
+                ("\"hello\"", 0, "hello"),
+            ];
+            for (document, count, summary) in cases {
+                let w = world(document);
+                w.call("explore");
+                assert_eq!(w.text("status"), "parsed", "{document}");
+                assert_eq!(w.int("count"), count, "{document}");
+                assert_eq!(w.text("summary"), summary, "{document}");
+            }
+
+            // A value under a key the code asks for by name: read back as the text it was.
+            let w = world(r#"{"title": "Zoë ☕", "n": 2}"#);
+            w.call("peek");
+            assert_eq!(w.text("status"), "parsed");
+            assert_eq!(w.text("summary"), "\"Zoë ☕\"");
+            let w = world(r#"{"other": 1}"#);
+            w.call("peek");
+            assert_eq!(w.text("summary"), "none", "a key the object lacks is none");
+
+            let w = world("{oops");
+            w.call("explore");
+            assert!(
+                w.text("status").starts_with("not JSON"),
+                "{}",
+                w.text("status")
+            );
+        }
     }
 }

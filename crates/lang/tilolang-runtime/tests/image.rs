@@ -257,126 +257,130 @@ view shelf(s: Shelf) {
         }
     }
 
-    #[test]
-    fn an_image_states_its_size_and_is_cropped_turned_resized_and_encoded() {
-        let bench = Bench::new();
-        let photo = bench.photo();
-        assert_eq!(bench.call("read", &photo), "3x2");
+    tilo_test_env::scenario! {
+        fn image_1;
 
-        for (action, name, dimensions) in [
-            ("crop", "photo-cropped.png", (2, 2)),
-            ("turn", "photo-turned.png", (2, 3)),
-            ("resize", "photo-resized.png", (1, 1)),
-        ] {
-            let said = bench.call(action, &photo);
-            let (produced, url) = said.split_once(' ').expect("a file's name and address");
-            assert_eq!(produced, name);
-            let image = tilo_image_codec::decode_upright_now(&bench.device.bytes_at(url), None)
-                .expect("the produced file decodes");
-            assert_eq!(
-                (image.width, image.height),
-                dimensions,
-                "{action} moved the pixels it names"
+        phase an_image_states_its_size_and_is_cropped_turned_resized_and_encoded;
+        {
+            let bench = Bench::new();
+            let photo = bench.photo();
+            assert_eq!(bench.call("read", &photo), "3x2");
+
+            for (action, name, dimensions) in [
+                ("crop", "photo-cropped.png", (2, 2)),
+                ("turn", "photo-turned.png", (2, 3)),
+                ("resize", "photo-resized.png", (1, 1)),
+            ] {
+                let said = bench.call(action, &photo);
+                let (produced, url) = said.split_once(' ').expect("a file's name and address");
+                assert_eq!(produced, name);
+                let image = tilo_image_codec::decode_upright_now(&bench.device.bytes_at(url), None)
+                    .expect("the produced file decodes");
+                assert_eq!(
+                    (image.width, image.height),
+                    dimensions,
+                    "{action} moved the pixels it names"
+                );
+            }
+
+            let said = bench.call("encode", &photo);
+            let (media, url) = said
+                .split_once(' ')
+                .expect("the file's media type and address");
+            assert_eq!(media, "image/webp");
+            assert!(bench.device.bytes_at(url).starts_with(b"RIFF"));
+        }
+
+        phase a_file_says_whether_this_device_holds_its_bytes;
+        {
+            let bench = Bench::new();
+            let photo = bench.photo();
+            assert_eq!(bench.call("here", &photo), "here");
+            // A record whose bytes another device still holds: its address is all this one has.
+            let away = FileValue::new("away.png", "image/png", 12, "not-in-this-store");
+            assert_eq!(bench.call("here", &away), "arriving");
+        }
+
+        phase a_thumbnail_comes_from_the_devices_preview_cache_or_is_none;
+        {
+            let bench = Bench::new();
+            let photo = bench.photo();
+            assert_eq!(bench.call("thumb", &photo), "photo-64.png");
+            let not_an_image = bench.device.keeping("plan.md", "text/markdown", b"# Plan");
+            assert_eq!(bench.call("thumb", &not_an_image), "none");
+        }
+
+        phase a_chooser_fills_a_list_of_files_or_the_one_file_an_action_asks_for;
+        {
+            let bench = Bench::new();
+            let one = bench
+                .device
+                .keeping("a.png", "image/png", &photo_png())
+                .with_path("trip/a.png");
+            let two = bench
+                .device
+                .keeping("b.png", "image/png", &photo_png())
+                .with_path("trip/b.png");
+            *bench.device.picked.borrow_mut() = vec![one.clone(), two];
+
+            assert_eq!(bench.press("Import many"), "2 trip/a.png");
+            let asked = bench.device.chosen.borrow().last().cloned().unwrap();
+            assert!(asked.multiple, "a `List<File>` may take several");
+            assert!(!asked.folder);
+
+            *bench.device.picked.borrow_mut() = vec![one];
+            assert_eq!(bench.press("Import one"), "trip/a.png");
+            let asked = bench.device.chosen.borrow().last().cloned().unwrap();
+            assert!(!asked.multiple, "a `File` takes the one file chosen");
+
+            let one = bench
+                .device
+                .keeping("a.png", "image/png", &photo_png())
+                .with_path("trip/a.png");
+            let two = bench
+                .device
+                .keeping("b.png", "image/png", &photo_png())
+                .with_path("trip/b.png");
+            *bench.device.picked.borrow_mut() = vec![one, two];
+            assert_eq!(bench.press("Import folder"), "2 trip/a.png");
+            let asked = bench.device.chosen.borrow().last().cloned().unwrap();
+            assert!(asked.folder, "a folder chooser asks for a folder");
+        }
+
+        phase an_oversized_preview_or_resize_is_refused;
+        {
+            let bench = Bench::new();
+            let photo = bench.photo();
+            let out = bench.rt.invoke_action(
+                &bench.me,
+                (
+                    "huge",
+                    vec![Value::resource(&bench.shelf), Value::file(photo.clone())],
+                ),
+            );
+            assert!(out.is_err(), "an oversized preview is refused: {out:?}");
+            let said = bench.call("nothing", &photo);
+            assert!(
+                said.contains("is refused"),
+                "a resize to no pixels is refused with why: {said}"
+            );
+            let not_an_image = bench.device.keeping("plan.md", "text/markdown", b"# Plan");
+            let said = bench.call("crop", &not_an_image);
+            assert!(
+                said.contains("is no image this device opens"),
+                "a file that is no image is refused with why: {said}"
             );
         }
 
-        let said = bench.call("encode", &photo);
-        let (media, url) = said
-            .split_once(' ')
-            .expect("the file's media type and address");
-        assert_eq!(media, "image/webp");
-        assert!(bench.device.bytes_at(url).starts_with(b"RIFF"));
-    }
-
-    #[test]
-    fn a_file_says_whether_this_device_holds_its_bytes() {
-        let bench = Bench::new();
-        let photo = bench.photo();
-        assert_eq!(bench.call("here", &photo), "here");
-        // A record whose bytes another device still holds: its address is all this one has.
-        let away = FileValue::new("away.png", "image/png", 12, "not-in-this-store");
-        assert_eq!(bench.call("here", &away), "arriving");
-    }
-
-    #[test]
-    fn a_thumbnail_comes_from_the_devices_preview_cache_or_is_none() {
-        let bench = Bench::new();
-        let photo = bench.photo();
-        assert_eq!(bench.call("thumb", &photo), "photo-64.png");
-        let not_an_image = bench.device.keeping("plan.md", "text/markdown", b"# Plan");
-        assert_eq!(bench.call("thumb", &not_an_image), "none");
-    }
-
-    #[test]
-    fn a_chooser_fills_a_list_of_files_or_the_one_file_an_action_asks_for() {
-        let bench = Bench::new();
-        let one = bench
-            .device
-            .keeping("a.png", "image/png", &photo_png())
-            .with_path("trip/a.png");
-        let two = bench
-            .device
-            .keeping("b.png", "image/png", &photo_png())
-            .with_path("trip/b.png");
-        *bench.device.picked.borrow_mut() = vec![one.clone(), two];
-
-        assert_eq!(bench.press("Import many"), "2 trip/a.png");
-        let asked = bench.device.chosen.borrow().last().cloned().unwrap();
-        assert!(asked.multiple, "a `List<File>` may take several");
-        assert!(!asked.folder);
-
-        *bench.device.picked.borrow_mut() = vec![one];
-        assert_eq!(bench.press("Import one"), "trip/a.png");
-        let asked = bench.device.chosen.borrow().last().cloned().unwrap();
-        assert!(!asked.multiple, "a `File` takes the one file chosen");
-
-        let one = bench
-            .device
-            .keeping("a.png", "image/png", &photo_png())
-            .with_path("trip/a.png");
-        let two = bench
-            .device
-            .keeping("b.png", "image/png", &photo_png())
-            .with_path("trip/b.png");
-        *bench.device.picked.borrow_mut() = vec![one, two];
-        assert_eq!(bench.press("Import folder"), "2 trip/a.png");
-        let asked = bench.device.chosen.borrow().last().cloned().unwrap();
-        assert!(asked.folder, "a folder chooser asks for a folder");
-    }
-
-    #[test]
-    fn an_oversized_preview_or_resize_is_refused() {
-        let bench = Bench::new();
-        let photo = bench.photo();
-        let out = bench.rt.invoke_action(
-            &bench.me,
-            (
-                "huge",
-                vec![Value::resource(&bench.shelf), Value::file(photo.clone())],
-            ),
-        );
-        assert!(out.is_err(), "an oversized preview is refused: {out:?}");
-        let said = bench.call("nothing", &photo);
-        assert!(
-            said.contains("is refused"),
-            "a resize to no pixels is refused with why: {said}"
-        );
-        let not_an_image = bench.device.keeping("plan.md", "text/markdown", b"# Plan");
-        let said = bench.call("crop", &not_an_image);
-        assert!(
-            said.contains("is no image this device opens"),
-            "a file that is no image is refused with why: {said}"
-        );
-    }
-
-    #[test]
-    fn a_dismissed_chooser_runs_nothing() {
-        let bench = Bench::new();
-        assert_eq!(bench.press("Import many"), "");
-        assert_eq!(
-            bench.device.chosen.borrow().len(),
-            1,
-            "the chooser was asked"
-        );
+        phase a_dismissed_chooser_runs_nothing;
+        {
+            let bench = Bench::new();
+            assert_eq!(bench.press("Import many"), "");
+            assert_eq!(
+                bench.device.chosen.borrow().len(),
+                1,
+                "the chooser was asked"
+            );
+        }
     }
 }

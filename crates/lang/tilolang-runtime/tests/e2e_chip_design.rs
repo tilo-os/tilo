@@ -359,606 +359,6 @@ mod cases {
         found[0].clone()
     }
 
-    #[test]
-    fn a_first_run_starts_empty_and_opens_the_graph() {
-        let c = Chip::new();
-        assert_eq!(c.text(&c.root, "selected"), "all");
-        assert!(c.records(&c.root, "reports").is_empty());
-        assert!(c.records(&c.root, "operators").is_empty());
-        let window = c.window();
-        assert!(holds(window.tree(), "Nothing in this project yet"));
-        c.done("show_graph", vec![Value::resource(&c.root)]);
-        assert_eq!(c.text(&c.root, "selected"), "graph");
-        let window = c.window();
-        assert!(holds(window.tree(), "No operators yet"));
-    }
-
-    #[test]
-    fn an_imported_report_keeps_its_provenance_and_is_removed_by_its_own_action() {
-        let c = Chip::new();
-        let reports = c.report(REPORT);
-        assert_eq!(reports.len(), 1);
-        let r = &reports[0];
-        assert_eq!(c.text(r, "model"), "Synthetic/Contract-Example");
-        assert_eq!(
-            c.text(r, "revision"),
-            "ad835591193cff5d2a231485cab35f8654c71287"
-        );
-        assert_eq!(c.number(r, "packed_weight_bytes"), 512);
-        assert_eq!(c.text(r, "config_sha256").len(), 64);
-        assert!(
-            c.texts(r, "not_estimated")
-                .iter()
-                .any(|v| v == "coding_quality")
-        );
-        assert_eq!(c.text(&c.root, "selected"), "report");
-        assert_eq!(c.text(&c.root, "subject"), c.text(r, "digest"));
-
-        let window = c.window();
-        assert!(holds(window.tree(), "Synthetic/Contract-Example"));
-        assert!(holds(window.tree(), "Packed weight bytes"));
-        assert!(holds(window.tree(), "Verification scope"));
-
-        c.done(
-            "remove_report",
-            vec![Value::resource(&c.root), Value::resource(r)],
-        );
-        assert!(c.records(&c.root, "reports").is_empty());
-        assert_eq!(c.text(&c.root, "selected"), "all");
-    }
-
-    #[test]
-    fn the_same_imported_bytes_keep_one_record() {
-        let c = Chip::new();
-        c.report(REPORT);
-        c.report(REPORT);
-        assert_eq!(c.records(&c.root, "reports").len(), 1);
-    }
-
-    #[test]
-    fn a_forged_report_is_refused_and_leaves_no_record() {
-        let c = Chip::new();
-        let mut report: serde_json::Value = serde_json::from_str(REPORT).unwrap();
-        report["packed_weight_bytes"] = serde_json::json!(1);
-        c.report(&report.to_string());
-        assert!(c.records(&c.root, "reports").is_empty());
-        assert!(!c.text(&c.root, "failure").is_empty());
-
-        let mut moving: serde_json::Value = serde_json::from_str(REPORT).unwrap();
-        moving["revision"] = serde_json::json!("main");
-        c.report(&moving.to_string());
-        assert!(c.records(&c.root, "reports").is_empty());
-    }
-
-    #[test]
-    fn an_imported_receipt_keeps_its_checks_and_no_device_path() {
-        let c = Chip::new();
-        let receipts = c.receipt(CHECKPOINT);
-        assert_eq!(receipts.len(), 1);
-        let r = &receipts[0];
-        assert_eq!(c.text(r, "evidence"), "checkpoint_tile_integer_contract");
-        assert!(c.is_case(r, "status", "RunResult.passed"));
-        let checks = c.records(r, "checks");
-        assert_eq!(checks.len(), 3);
-        assert!(
-            checks
-                .iter()
-                .any(|check| c.text(check, "name") == "rtl_vs_integer_oracle")
-        );
-        assert_eq!(c.records(r, "tools").len(), 2);
-        assert!(!c.text(r, "source").contains("/private/device"));
-        let window = c.window();
-        assert!(holds(window.tree(), "Reported passed"));
-        c.done(
-            "remove_verification",
-            vec![Value::resource(&c.root), Value::resource(r)],
-        );
-        assert!(c.records(&c.root, "verifications").is_empty());
-    }
-
-    #[test]
-    fn a_cpu_receipt_keeps_every_numerical_observation() {
-        let c = Chip::new();
-        c.receipt(RMS);
-        let receipts = c.records(&c.root, "verifications");
-        let r = &receipts[0];
-        assert!(c.flag(r, "operator"));
-        let observations = c.records(r, "observations");
-        assert_eq!(observations.len(), 6);
-        assert!(
-            observations
-                .iter()
-                .all(|o| c.is_case(o, "kind", "ObservationKind.rms_norm"))
-        );
-        let window = c.window();
-        assert!(holds(window.tree(), "Reported numerical observations"));
-        assert!(holds(window.tree(), "FP32 words compared exactly"));
-    }
-
-    #[test]
-    fn a_research_mapping_keeps_its_declared_scope() {
-        let c = Chip::new();
-        let receipts = c.receipt(MAPPING);
-        let r = &receipts[0];
-        assert_eq!(c.number(r, "mapped_cell_count"), 100);
-        assert_eq!(c.text(r, "reported_library_area"), "123.5");
-        assert!(c.flag(r, "has_manufacturable"));
-        assert!(!c.flag(r, "manufacturable"));
-        let window = c.window();
-        assert!(holds(window.tree(), "Nonmanufacturable research library"));
-
-        let mut forged: serde_json::Value = serde_json::from_str(MAPPING).unwrap();
-        forged["manufacturable"] = serde_json::json!(true);
-        c.receipt(&forged.to_string());
-        assert_eq!(
-            c.records(&c.root, "verifications").len(),
-            1,
-            "the forged claim is refused"
-        );
-    }
-
-    #[test]
-    fn a_superblock_receipt_keeps_its_cells_and_scalar_protocol() {
-        let c = Chip::new();
-        let receipts = c.receipt(SUPERBLOCK);
-        let r = &receipts[0];
-        assert_eq!(c.number(r, "generic_cell_count"), 9940);
-        assert_eq!(c.number(r, "external_scalar_comparisons"), 32);
-        assert!(!c.records(r, "generic_cells").is_empty());
-        let window = c.window();
-        assert!(holds(window.tree(), "SUPERBLOCK_PASS"));
-        assert!(holds(window.tree(), "Reported generic cell count"));
-    }
-
-    #[test]
-    fn an_evidence_flow_shows_its_stages_their_dependencies_and_the_placement() {
-        let c = Chip::new();
-        c.receipt(&flow_with_placement());
-        let receipts = c.records(&c.root, "verifications");
-        let r = &receipts[0];
-        assert!(c.flag(r, "flow"));
-        assert_eq!(c.records(r, "stages").len(), 1);
-        let stages = c.records(r, "stages");
-        let stage = stages.into_iter().next().unwrap();
-        assert!(c.flag(&stage, "placed"));
-        assert_eq!(c.records(&stage, "macros").len(), 1);
-        assert_eq!(c.text(&stage, "title"), "Physical");
-
-        // The window draws the flow and, with the stage opened, its placement.
-        c.done(
-            "inspect_stage",
-            vec![
-                Value::resource(&c.root),
-                Value::resource(r),
-                Value::resource(&stage),
-            ],
-        );
-        let window = c.window();
-        assert!(holds(window.tree(), "Reported macro placement"));
-        assert!(holds(window.tree(), "SRAM0"));
-        assert!(holds(window.tree(), "Reported evidence flow"));
-
-        let macros = c.records(&stage, "macros");
-        let macro_ref = macros.into_iter().next().unwrap();
-        c.done(
-            "inspect_macro",
-            vec![
-                Value::resource(&c.root),
-                Value::resource(r),
-                Value::resource(&macro_ref),
-            ],
-        );
-        assert_eq!(c.text(&c.root, "macro"), c.text(&macro_ref, "slot"));
-        let window = c.window();
-        assert!(holds(window.tree(), "sram_1rw"));
-    }
-
-    #[test]
-    fn a_flow_stage_shows_the_facts_it_reports_and_the_artifacts_it_names() {
-        let c = Chip::new();
-        let hash = |byte: &str| byte.repeat(64);
-        c.receipt(&flow_with_facts());
-        let receipts = c.records(&c.root, "verifications");
-        let r = &receipts[0];
-        assert!(c.flag(r, "flow"));
-        let stages = c.records(r, "stages");
-        let mut by_key = BTreeMap::new();
-        for stage in &stages {
-            by_key.insert(c.text(stage, "key"), stage);
-        }
-
-        let cpu = properties(c.stage_page(by_key["cpu"]).tree());
-        assert_eq!(
-            fact(&cpu, "Comparison contract"),
-            "Backend characterization"
-        );
-        assert_eq!(fact(&cpu, "Compared words"), "8");
-        assert_eq!(fact(&cpu, "Differing words"), "1");
-        assert_eq!(fact(&cpu, "Reported accepted output SHA-256"), hash("a"));
-        assert!(cpu.contains(&(
-            "Original receipt artifact".to_owned(),
-            "cpu.json".to_owned()
-        )));
-        assert!(cpu.contains(&("Declared artifact SHA-256".to_owned(), hash("1"))));
-
-        let rtl = properties(c.stage_page(by_key["rtl"]).tree());
-        assert_eq!(
-            fact(&rtl, "Reported simulation outcome"),
-            "Completed simulation"
-        );
-        assert_eq!(fact(&rtl, "Expected refusals observed"), "0");
-        assert_eq!(fact(&rtl, "Observed RTL simulation cycles"), "1200");
-        assert_eq!(fact(&rtl, "Accepted inputs"), "8");
-        assert_eq!(fact(&rtl, "Accepted outputs"), "8");
-        assert_eq!(fact(&rtl, "Reported accepted output SHA-256"), hash("a"));
-        assert!(rtl.contains(&("Declared artifact SHA-256".to_owned(), hash("2"))));
-
-        let refused = properties(c.stage_page(by_key["rtl-refused"]).tree());
-        assert_eq!(
-            fact(&refused, "Reported simulation outcome"),
-            "Expected refusal; no completed result"
-        );
-        assert_eq!(fact(&refused, "Expected refusals observed"), "3");
-        assert_eq!(fact(&refused, "Accepted outputs"), "0");
-        assert!(refused.contains(&("Declared artifact SHA-256".to_owned(), hash("3"))));
-
-        let synth = properties(c.stage_page(by_key["synth"]).tree());
-        assert_eq!(fact(&synth, "Generic logic cells"), "80");
-        assert_eq!(fact(&synth, "Logical memory bits"), "256");
-        assert!(synth.contains(&("Declared artifact SHA-256".to_owned(), hash("4"))));
-
-        let physical = c.stage_page(by_key["physical"]);
-        let facts = properties(physical.tree());
-        assert_eq!(
-            fact(&facts, "Declared library"),
-            "Synthetic research library"
-        );
-        assert_eq!(fact(&facts, "Declared clock constraint (ns)"), "6");
-        assert_eq!(fact(&facts, "Estimated setup slack (ns)"), "0.9");
-        assert_eq!(fact(&facts, "Estimated hold slack (ns)"), "0.04");
-        assert_eq!(fact(&facts, "Routed signal nets"), "40");
-        assert_eq!(fact(&facts, "Reported router violations"), "0");
-        assert_eq!(fact(&facts, "Mapped library area estimate (µm²)"), "120");
-        assert!(facts.contains(&("Declared artifact SHA-256".to_owned(), hash("5"))));
-        assert!(facts.contains(&("Placement database artifact".to_owned(), "db.h5".to_owned())));
-        assert!(facts.contains(&("Declared artifact SHA-256".to_owned(), hash("6"))));
-        assert!(facts.contains(&(
-            "Placement observation artifact".to_owned(),
-            "report.json".to_owned()
-        )));
-        assert!(facts.contains(&("Declared artifact SHA-256".to_owned(), hash("7"))));
-        assert!(holds(physical.tree(), "Reported numerical observation"));
-
-        // A stage that reports no observation states none of the facts.
-        let prepared = c.stage_page(by_key["prepared"]);
-        let none = properties(prepared.tree());
-        assert!(
-            !holds(prepared.tree(), "Reported numerical observation"),
-            "a stage that reports no observation shows no facts section"
-        );
-        for name in [
-            "Comparison contract",
-            "Reported simulation outcome",
-            "Generic logic cells",
-            "Declared library",
-            "Routed signal nets",
-            "Placement database artifact",
-            "Placement observation artifact",
-        ] {
-            assert!(
-                !none.iter().any(|(label, _)| label == name),
-                "{name}: {none:?}"
-            );
-        }
-        assert!(none.contains(&(
-            "Original receipt artifact".to_owned(),
-            "prepared.json".to_owned()
-        )));
-        assert!(none.contains(&("Declared artifact SHA-256".to_owned(), hash("9"))));
-    }
-
-    #[test]
-    fn an_architecture_study_keeps_its_links_variants_and_memories() {
-        let c = Chip::new();
-        c.receipt(&study());
-        let receipts = c.records(&c.root, "verifications");
-        let r = &receipts[0];
-        assert!(c.flag(r, "study"));
-        assert!(c.is_case(r, "study_stage", "StageKind.aggregate"));
-        assert_eq!(c.records(r, "variants").len(), 2);
-        let variants = c.records(r, "variants");
-        let variant = variants.into_iter().next().unwrap();
-        assert!(c.flag(&variant, "synthesis"));
-        assert_eq!(c.records(&variant, "memories").len(), 1);
-        let window = c.window();
-        assert!(holds(window.tree(), "Producer-reported stage checks"));
-        assert!(holds(window.tree(), "Preparation"));
-    }
-
-    #[test]
-    fn an_operator_is_added_connected_reshaped_and_removed() {
-        let c = Chip::new();
-        c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
-        c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
-        let x = c.operator("x");
-        let rms = c.operator("rms");
-        assert_eq!(c.number(&x, "normalization_width"), 8);
-        assert_eq!(c.port_ids(&x, "outputs"), ["value"]);
-        assert_eq!(c.port_ids(&rms, "inputs"), ["value"]);
-        assert_eq!(c.port_ids(&rms, "outputs"), ["result"]);
-
-        c.connect("x", "value", "rms", "value");
-        let connections = c.records(&c.root, "connections");
-        assert_eq!(connections.len(), 1);
-        assert!(c.flag(&connections[0], "active"));
-        assert!(!c.text(&connections[0], "digest").is_empty());
-
-        // A shape the ports no longer match stops the connection holding.
-        let rms = c.operator("rms");
-        c.done(
-            "set_shape",
-            vec![
-                Value::resource(&c.root),
-                Value::resource(&rms),
-                Value::List(vec![Value::Int(4), Value::Int(16)]),
-            ],
-        );
-        let connections = c.records(&c.root, "connections");
-        assert!(!c.flag(&connections[0], "active"));
-        assert_eq!(c.text(&connections[0], "reason"), "type_mismatch");
-
-        let rms = c.operator("rms");
-        c.done(
-            "remove_operator",
-            vec![Value::resource(&c.root), Value::resource(&rms)],
-        );
-        assert_eq!(c.records(&c.root, "operators").len(), 1);
-        assert!(c.records(&c.root, "connections").is_empty());
-    }
-
-    #[test]
-    fn removing_an_operator_asks_the_device_about_the_design_it_leaves_and_is_one_step() {
-        let c = Chip::new();
-        c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
-        c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
-        c.add_operator("silu", "silu", vec![4, 8], 0, 560, 0);
-        c.connect("x", "value", "rms", "value");
-        c.connect("rms", "result", "silu", "value");
-        let asked = c.device.asked().len();
-        let rms = c.operator("rms");
-        c.done(
-            "inspect_operator",
-            vec![Value::resource(&c.root), Value::resource(&rms)],
-        );
-        let before = c.changes();
-
-        let rms = c.operator("rms");
-        c.done(
-            "remove_operator",
-            vec![Value::resource(&c.root), Value::resource(&rms)],
-        );
-
-        // The device is asked once, about the design the removal leaves: the operator and its
-        // own connections are out of the ask already.
-        let asks = c.device.asked();
-        assert_eq!(asks.len(), asked + 1, "the removal asks the device once");
-        assert_eq!(asks[asked].0, "graph");
-        let design: serde_json::Value = serde_json::from_str(&asks[asked].1).unwrap();
-        assert_eq!(design["nodes"].as_array().unwrap().len(), 2);
-        assert!(!asks[asked].1.contains("\"rms\""));
-        assert!(design["connections"].as_array().unwrap().is_empty());
-
-        assert_eq!(c.operator_nodes(), ["x", "silu"]);
-        assert!(c.records(&c.root, "connections").is_empty());
-        assert_eq!(c.text(&c.root, "node"), "", "the removed operator closes");
-        assert_eq!(c.text(&c.root, "failure"), "");
-
-        // Every change the removal made, in the project and in the items it held, is one
-        // invocation: one step to undo.
-        let made = c.made_since(&before);
-        assert!(!made.is_empty(), "the removal changed the design");
-        let invocation = &made[0].invocation;
-        assert!(invocation.is_some(), "the removal is a run of its own");
-        assert!(
-            made.iter().all(|note| &note.invocation == invocation),
-            "the removal is one step: {made:?}"
-        );
-    }
-
-    #[test]
-    fn a_declined_ask_leaves_the_design_as_it_was() {
-        let c = Chip::new();
-        c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
-        c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
-        c.connect("x", "value", "rms", "value");
-        let operators = c.item_ids("operators");
-        let connections = c.item_ids("connections");
-        c.device.declines.set(true);
-
-        let rms = c.operator("rms");
-        c.done(
-            "remove_operator",
-            vec![Value::resource(&c.root), Value::resource(&rms)],
-        );
-
-        assert_eq!(c.operator_nodes(), ["x", "rms"]);
-        assert_eq!(c.item_ids("operators"), operators, "no operator left");
-        assert_eq!(c.item_ids("connections"), connections, "no connection left");
-        let connection = c.records(&c.root, "connections");
-        assert!(c.flag(&connection[0], "active"));
-        assert!(!c.text(&connection[0], "digest").is_empty());
-        assert_eq!(
-            c.text(&c.root, "failure"),
-            "the device declines this design"
-        );
-    }
-
-    #[test]
-    fn disconnecting_an_input_asks_the_device_and_is_one_step() {
-        let c = Chip::new();
-        c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
-        c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
-        c.connect("x", "value", "rms", "value");
-        let before = c.changes();
-        let asked = c.device.asked().len();
-
-        let rms = c.operator("rms");
-        c.done(
-            "disconnect",
-            vec![
-                Value::resource(&c.root),
-                Value::resource(&rms),
-                Value::text("value"),
-            ],
-        );
-
-        let asks = c.device.asked();
-        assert_eq!(asks.len(), asked + 1, "the disconnect asks the device once");
-        assert_eq!(asks[asked].0, "graph");
-        assert!(
-            !asks[asked].1.contains("from_node"),
-            "the ask holds no connection into that input"
-        );
-        assert_eq!(c.operator_nodes(), ["x", "rms"]);
-        assert!(c.records(&c.root, "connections").is_empty());
-        assert_eq!(c.text(&c.root, "failure"), "");
-
-        let made = c.made_since(&before);
-        assert!(!made.is_empty(), "the disconnect changed the design");
-        let invocation = &made[0].invocation;
-        assert!(invocation.is_some(), "the disconnect is a run of its own");
-        assert!(
-            made.iter().all(|note| &note.invocation == invocation),
-            "the disconnect is one step: {made:?}"
-        );
-    }
-
-    #[test]
-    fn a_connection_the_types_refuse_is_refused_and_says_why() {
-        let c = Chip::new();
-        c.add_operator("w", "norm_weight_input", vec![8], 0, 0, 0);
-        c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
-        c.connect("w", "weights", "rms", "value");
-        assert!(c.records(&c.root, "connections").is_empty());
-        assert_eq!(c.text(&c.root, "failure"), "Port shapes differ");
-    }
-
-    #[test]
-    fn choosing_an_output_names_what_it_can_feed() {
-        let c = Chip::new();
-        c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
-        c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
-        let x = c.operator("x");
-        c.done(
-            "select_output",
-            vec![
-                Value::resource(&c.root),
-                Value::resource(&x),
-                Value::text("value"),
-            ],
-        );
-        assert_eq!(
-            c.text(&c.root, "failure"),
-            "",
-            "choosing an output is refused"
-        );
-        assert_eq!(c.text(&c.root, "output_node"), "x");
-        assert_eq!(c.text(&c.root, "output_port"), "value");
-        c.done("show_graph", vec![Value::resource(&c.root)]);
-        let window = c.window();
-        assert!(holds(
-            window.tree(),
-            "Connecting from the Value output of Input"
-        ));
-    }
-
-    #[test]
-    fn the_graph_zooms_and_a_press_opens_an_operator() {
-        let c = Chip::new();
-        c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
-        c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
-        c.done("show_graph", vec![Value::resource(&c.root)]);
-        c.done(
-            "zoom_graph",
-            vec![Value::resource(&c.root), Value::text("in")],
-        );
-        assert_eq!(c.number(&c.root, "zoom"), 125);
-        c.done(
-            "zoom_graph",
-            vec![Value::resource(&c.root), Value::text("fit")],
-        );
-        assert_eq!(c.number(&c.root, "zoom"), 100);
-
-        // The first shape of the canvas is the first operator's box.
-        c.done("tap_graph", vec![Value::resource(&c.root), Value::Int(0)]);
-        assert_eq!(c.text(&c.root, "node"), "rms");
-        let window = c.window();
-        assert!(holds(window.tree(), "Node identity"));
-        assert!(holds(window.tree(), "Apply shape"));
-    }
-
-    #[test]
-    fn an_operator_the_design_cannot_hold_is_refused() {
-        let c = Chip::new();
-        c.add_operator("x", "input", vec![], 0, 0, 0);
-        assert!(c.records(&c.root, "operators").is_empty());
-        assert!(!c.text(&c.root, "failure").is_empty());
-        c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
-        c.add_operator("x", "rms_norm", vec![4, 8], 0, 0, 0);
-        assert_eq!(c.records(&c.root, "operators").len(), 1);
-        assert_eq!(
-            c.text(&c.root, "failure"),
-            "An operator with that identity already exists"
-        );
-    }
-
-    #[test]
-    fn the_window_lists_everything_the_project_holds() {
-        let c = Chip::new();
-        c.report(REPORT);
-        c.receipt(CHECKPOINT);
-        let window = c.window();
-        assert!(holds(window.tree(), "Synthetic/Contract-Example"));
-        assert!(holds(window.tree(), "checkpoint_tile_integer_contract"));
-        assert!(holds(window.tree(), "Reports"));
-        assert!(holds(window.tree(), "Verifications"));
-    }
-
-    #[test]
-    fn a_published_surface_is_the_one_the_app_declares() {
-        let c = Chip::new();
-        for action in [
-            "import_report",
-            "import_verification",
-            "import_file",
-            "remove_report",
-            "remove_verification",
-            "add_operator",
-            "add_operator_at",
-            "set_shape",
-            "set_output_width",
-            "move_operator",
-            "remove_operator",
-            "connect",
-            "disconnect",
-            "show_graph",
-            "show_all",
-            "inspect_report",
-            "inspect_receipt",
-            "inspect_stage",
-            "inspect_macro",
-            "open_subflow",
-            "zoom_graph",
-            "select_output",
-            "inspect_operator",
-        ] {
-            assert!(
-                c.app.meta().action_named(action).is_some(),
-                "{action} is published"
-            );
-        }
-    }
-
     fn flow_with_placement() -> String {
         let hash = "a".repeat(64);
         serde_json::json!({
@@ -1205,5 +605,613 @@ mod cases {
                 "memories": [],
             },
         })
+    }
+
+    tilo_test_env::scenario! {
+        fn e2e_chip_design_1;
+
+        phase a_first_run_starts_empty_and_opens_the_graph;
+        {
+            let c = Chip::new();
+            assert_eq!(c.text(&c.root, "selected"), "all");
+            assert!(c.records(&c.root, "reports").is_empty());
+            assert!(c.records(&c.root, "operators").is_empty());
+            let window = c.window();
+            assert!(holds(window.tree(), "Nothing in this project yet"));
+            c.done("show_graph", vec![Value::resource(&c.root)]);
+            assert_eq!(c.text(&c.root, "selected"), "graph");
+            let window = c.window();
+            assert!(holds(window.tree(), "No operators yet"));
+        }
+
+        phase an_imported_report_keeps_its_provenance_and_is_removed_by_its_own_action;
+        {
+            let c = Chip::new();
+            let reports = c.report(REPORT);
+            assert_eq!(reports.len(), 1);
+            let r = &reports[0];
+            assert_eq!(c.text(r, "model"), "Synthetic/Contract-Example");
+            assert_eq!(
+                c.text(r, "revision"),
+                "ad835591193cff5d2a231485cab35f8654c71287"
+            );
+            assert_eq!(c.number(r, "packed_weight_bytes"), 512);
+            assert_eq!(c.text(r, "config_sha256").len(), 64);
+            assert!(
+                c.texts(r, "not_estimated")
+                    .iter()
+                    .any(|v| v == "coding_quality")
+            );
+            assert_eq!(c.text(&c.root, "selected"), "report");
+            assert_eq!(c.text(&c.root, "subject"), c.text(r, "digest"));
+
+            let window = c.window();
+            assert!(holds(window.tree(), "Synthetic/Contract-Example"));
+            assert!(holds(window.tree(), "Packed weight bytes"));
+            assert!(holds(window.tree(), "Verification scope"));
+
+            c.done(
+                "remove_report",
+                vec![Value::resource(&c.root), Value::resource(r)],
+            );
+            assert!(c.records(&c.root, "reports").is_empty());
+            assert_eq!(c.text(&c.root, "selected"), "all");
+        }
+
+        phase the_same_imported_bytes_keep_one_record;
+        {
+            let c = Chip::new();
+            c.report(REPORT);
+            c.report(REPORT);
+            assert_eq!(c.records(&c.root, "reports").len(), 1);
+        }
+
+        phase a_forged_report_is_refused_and_leaves_no_record;
+        {
+            let c = Chip::new();
+            let mut report: serde_json::Value = serde_json::from_str(REPORT).unwrap();
+            report["packed_weight_bytes"] = serde_json::json!(1);
+            c.report(&report.to_string());
+            assert!(c.records(&c.root, "reports").is_empty());
+            assert!(!c.text(&c.root, "failure").is_empty());
+
+            let mut moving: serde_json::Value = serde_json::from_str(REPORT).unwrap();
+            moving["revision"] = serde_json::json!("main");
+            c.report(&moving.to_string());
+            assert!(c.records(&c.root, "reports").is_empty());
+        }
+
+        phase an_imported_receipt_keeps_its_checks_and_no_device_path;
+        {
+            let c = Chip::new();
+            let receipts = c.receipt(CHECKPOINT);
+            assert_eq!(receipts.len(), 1);
+            let r = &receipts[0];
+            assert_eq!(c.text(r, "evidence"), "checkpoint_tile_integer_contract");
+            assert!(c.is_case(r, "status", "RunResult.passed"));
+            let checks = c.records(r, "checks");
+            assert_eq!(checks.len(), 3);
+            assert!(
+                checks
+                    .iter()
+                    .any(|check| c.text(check, "name") == "rtl_vs_integer_oracle")
+            );
+            assert_eq!(c.records(r, "tools").len(), 2);
+            assert!(!c.text(r, "source").contains("/private/device"));
+            let window = c.window();
+            assert!(holds(window.tree(), "Reported passed"));
+            c.done(
+                "remove_verification",
+                vec![Value::resource(&c.root), Value::resource(r)],
+            );
+            assert!(c.records(&c.root, "verifications").is_empty());
+        }
+
+        phase a_cpu_receipt_keeps_every_numerical_observation;
+        {
+            let c = Chip::new();
+            c.receipt(RMS);
+            let receipts = c.records(&c.root, "verifications");
+            let r = &receipts[0];
+            assert!(c.flag(r, "operator"));
+            let observations = c.records(r, "observations");
+            assert_eq!(observations.len(), 6);
+            assert!(
+                observations
+                    .iter()
+                    .all(|o| c.is_case(o, "kind", "ObservationKind.rms_norm"))
+            );
+            let window = c.window();
+            assert!(holds(window.tree(), "Reported numerical observations"));
+            assert!(holds(window.tree(), "FP32 words compared exactly"));
+        }
+
+        phase a_research_mapping_keeps_its_declared_scope;
+        {
+            let c = Chip::new();
+            let receipts = c.receipt(MAPPING);
+            let r = &receipts[0];
+            assert_eq!(c.number(r, "mapped_cell_count"), 100);
+            assert_eq!(c.text(r, "reported_library_area"), "123.5");
+            assert!(c.flag(r, "has_manufacturable"));
+            assert!(!c.flag(r, "manufacturable"));
+            let window = c.window();
+            assert!(holds(window.tree(), "Nonmanufacturable research library"));
+
+            let mut forged: serde_json::Value = serde_json::from_str(MAPPING).unwrap();
+            forged["manufacturable"] = serde_json::json!(true);
+            c.receipt(&forged.to_string());
+            assert_eq!(
+                c.records(&c.root, "verifications").len(),
+                1,
+                "the forged claim is refused"
+            );
+        }
+
+        phase a_superblock_receipt_keeps_its_cells_and_scalar_protocol;
+        {
+            let c = Chip::new();
+            let receipts = c.receipt(SUPERBLOCK);
+            let r = &receipts[0];
+            assert_eq!(c.number(r, "generic_cell_count"), 9940);
+            assert_eq!(c.number(r, "external_scalar_comparisons"), 32);
+            assert!(!c.records(r, "generic_cells").is_empty());
+            let window = c.window();
+            assert!(holds(window.tree(), "SUPERBLOCK_PASS"));
+            assert!(holds(window.tree(), "Reported generic cell count"));
+        }
+
+        phase an_evidence_flow_shows_its_stages_their_dependencies_and_the_placement;
+        {
+            let c = Chip::new();
+            c.receipt(&flow_with_placement());
+            let receipts = c.records(&c.root, "verifications");
+            let r = &receipts[0];
+            assert!(c.flag(r, "flow"));
+            assert_eq!(c.records(r, "stages").len(), 1);
+            let stages = c.records(r, "stages");
+            let stage = stages.into_iter().next().unwrap();
+            assert!(c.flag(&stage, "placed"));
+            assert_eq!(c.records(&stage, "macros").len(), 1);
+            assert_eq!(c.text(&stage, "title"), "Physical");
+
+            // The window draws the flow and, with the stage opened, its placement.
+            c.done(
+                "inspect_stage",
+                vec![
+                    Value::resource(&c.root),
+                    Value::resource(r),
+                    Value::resource(&stage),
+                ],
+            );
+            let window = c.window();
+            assert!(holds(window.tree(), "Reported macro placement"));
+            assert!(holds(window.tree(), "SRAM0"));
+            assert!(holds(window.tree(), "Reported evidence flow"));
+
+            let macros = c.records(&stage, "macros");
+            let macro_ref = macros.into_iter().next().unwrap();
+            c.done(
+                "inspect_macro",
+                vec![
+                    Value::resource(&c.root),
+                    Value::resource(r),
+                    Value::resource(&macro_ref),
+                ],
+            );
+            assert_eq!(c.text(&c.root, "macro"), c.text(&macro_ref, "slot"));
+            let window = c.window();
+            assert!(holds(window.tree(), "sram_1rw"));
+        }
+
+        phase a_flow_stage_shows_the_facts_it_reports_and_the_artifacts_it_names;
+        {
+            let c = Chip::new();
+            let hash = |byte: &str| byte.repeat(64);
+            c.receipt(&flow_with_facts());
+            let receipts = c.records(&c.root, "verifications");
+            let r = &receipts[0];
+            assert!(c.flag(r, "flow"));
+            let stages = c.records(r, "stages");
+            let mut by_key = BTreeMap::new();
+            for stage in &stages {
+                by_key.insert(c.text(stage, "key"), stage);
+            }
+
+            let cpu = properties(c.stage_page(by_key["cpu"]).tree());
+            assert_eq!(
+                fact(&cpu, "Comparison contract"),
+                "Backend characterization"
+            );
+            assert_eq!(fact(&cpu, "Compared words"), "8");
+            assert_eq!(fact(&cpu, "Differing words"), "1");
+            assert_eq!(fact(&cpu, "Reported accepted output SHA-256"), hash("a"));
+            assert!(cpu.contains(&(
+                "Original receipt artifact".to_owned(),
+                "cpu.json".to_owned()
+            )));
+            assert!(cpu.contains(&("Declared artifact SHA-256".to_owned(), hash("1"))));
+
+            let rtl = properties(c.stage_page(by_key["rtl"]).tree());
+            assert_eq!(
+                fact(&rtl, "Reported simulation outcome"),
+                "Completed simulation"
+            );
+            assert_eq!(fact(&rtl, "Expected refusals observed"), "0");
+            assert_eq!(fact(&rtl, "Observed RTL simulation cycles"), "1200");
+            assert_eq!(fact(&rtl, "Accepted inputs"), "8");
+            assert_eq!(fact(&rtl, "Accepted outputs"), "8");
+            assert_eq!(fact(&rtl, "Reported accepted output SHA-256"), hash("a"));
+            assert!(rtl.contains(&("Declared artifact SHA-256".to_owned(), hash("2"))));
+
+            let refused = properties(c.stage_page(by_key["rtl-refused"]).tree());
+            assert_eq!(
+                fact(&refused, "Reported simulation outcome"),
+                "Expected refusal; no completed result"
+            );
+            assert_eq!(fact(&refused, "Expected refusals observed"), "3");
+            assert_eq!(fact(&refused, "Accepted outputs"), "0");
+            assert!(refused.contains(&("Declared artifact SHA-256".to_owned(), hash("3"))));
+
+            let synth = properties(c.stage_page(by_key["synth"]).tree());
+            assert_eq!(fact(&synth, "Generic logic cells"), "80");
+            assert_eq!(fact(&synth, "Logical memory bits"), "256");
+            assert!(synth.contains(&("Declared artifact SHA-256".to_owned(), hash("4"))));
+
+            let physical = c.stage_page(by_key["physical"]);
+            let facts = properties(physical.tree());
+            assert_eq!(
+                fact(&facts, "Declared library"),
+                "Synthetic research library"
+            );
+            assert_eq!(fact(&facts, "Declared clock constraint (ns)"), "6");
+            assert_eq!(fact(&facts, "Estimated setup slack (ns)"), "0.9");
+            assert_eq!(fact(&facts, "Estimated hold slack (ns)"), "0.04");
+            assert_eq!(fact(&facts, "Routed signal nets"), "40");
+            assert_eq!(fact(&facts, "Reported router violations"), "0");
+            assert_eq!(fact(&facts, "Mapped library area estimate (µm²)"), "120");
+            assert!(facts.contains(&("Declared artifact SHA-256".to_owned(), hash("5"))));
+            assert!(facts.contains(&("Placement database artifact".to_owned(), "db.h5".to_owned())));
+            assert!(facts.contains(&("Declared artifact SHA-256".to_owned(), hash("6"))));
+            assert!(facts.contains(&(
+                "Placement observation artifact".to_owned(),
+                "report.json".to_owned()
+            )));
+            assert!(facts.contains(&("Declared artifact SHA-256".to_owned(), hash("7"))));
+            assert!(holds(physical.tree(), "Reported numerical observation"));
+
+            // A stage that reports no observation states none of the facts.
+            let prepared = c.stage_page(by_key["prepared"]);
+            let none = properties(prepared.tree());
+            assert!(
+                !holds(prepared.tree(), "Reported numerical observation"),
+                "a stage that reports no observation shows no facts section"
+            );
+            for name in [
+                "Comparison contract",
+                "Reported simulation outcome",
+                "Generic logic cells",
+                "Declared library",
+                "Routed signal nets",
+                "Placement database artifact",
+                "Placement observation artifact",
+            ] {
+                assert!(
+                    !none.iter().any(|(label, _)| label == name),
+                    "{name}: {none:?}"
+                );
+            }
+            assert!(none.contains(&(
+                "Original receipt artifact".to_owned(),
+                "prepared.json".to_owned()
+            )));
+            assert!(none.contains(&("Declared artifact SHA-256".to_owned(), hash("9"))));
+        }
+
+        phase an_architecture_study_keeps_its_links_variants_and_memories;
+        {
+            let c = Chip::new();
+            c.receipt(&study());
+            let receipts = c.records(&c.root, "verifications");
+            let r = &receipts[0];
+            assert!(c.flag(r, "study"));
+            assert!(c.is_case(r, "study_stage", "StageKind.aggregate"));
+            assert_eq!(c.records(r, "variants").len(), 2);
+            let variants = c.records(r, "variants");
+            let variant = variants.into_iter().next().unwrap();
+            assert!(c.flag(&variant, "synthesis"));
+            assert_eq!(c.records(&variant, "memories").len(), 1);
+            let window = c.window();
+            assert!(holds(window.tree(), "Producer-reported stage checks"));
+            assert!(holds(window.tree(), "Preparation"));
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn e2e_chip_design_2;
+
+        phase an_operator_is_added_connected_reshaped_and_removed;
+        {
+            let c = Chip::new();
+            c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
+            c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
+            let x = c.operator("x");
+            let rms = c.operator("rms");
+            assert_eq!(c.number(&x, "normalization_width"), 8);
+            assert_eq!(c.port_ids(&x, "outputs"), ["value"]);
+            assert_eq!(c.port_ids(&rms, "inputs"), ["value"]);
+            assert_eq!(c.port_ids(&rms, "outputs"), ["result"]);
+
+            c.connect("x", "value", "rms", "value");
+            let connections = c.records(&c.root, "connections");
+            assert_eq!(connections.len(), 1);
+            assert!(c.flag(&connections[0], "active"));
+            assert!(!c.text(&connections[0], "digest").is_empty());
+
+            // A shape the ports no longer match stops the connection holding.
+            let rms = c.operator("rms");
+            c.done(
+                "set_shape",
+                vec![
+                    Value::resource(&c.root),
+                    Value::resource(&rms),
+                    Value::List(vec![Value::Int(4), Value::Int(16)]),
+                ],
+            );
+            let connections = c.records(&c.root, "connections");
+            assert!(!c.flag(&connections[0], "active"));
+            assert_eq!(c.text(&connections[0], "reason"), "type_mismatch");
+
+            let rms = c.operator("rms");
+            c.done(
+                "remove_operator",
+                vec![Value::resource(&c.root), Value::resource(&rms)],
+            );
+            assert_eq!(c.records(&c.root, "operators").len(), 1);
+            assert!(c.records(&c.root, "connections").is_empty());
+        }
+
+        phase removing_an_operator_asks_the_device_about_the_design_it_leaves_and_is_one_step;
+        {
+            let c = Chip::new();
+            c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
+            c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
+            c.add_operator("silu", "silu", vec![4, 8], 0, 560, 0);
+            c.connect("x", "value", "rms", "value");
+            c.connect("rms", "result", "silu", "value");
+            let asked = c.device.asked().len();
+            let rms = c.operator("rms");
+            c.done(
+                "inspect_operator",
+                vec![Value::resource(&c.root), Value::resource(&rms)],
+            );
+            let before = c.changes();
+
+            let rms = c.operator("rms");
+            c.done(
+                "remove_operator",
+                vec![Value::resource(&c.root), Value::resource(&rms)],
+            );
+
+            // The device is asked once, about the design the removal leaves: the operator and its
+            // own connections are out of the ask already.
+            let asks = c.device.asked();
+            assert_eq!(asks.len(), asked + 1, "the removal asks the device once");
+            assert_eq!(asks[asked].0, "graph");
+            let design: serde_json::Value = serde_json::from_str(&asks[asked].1).unwrap();
+            assert_eq!(design["nodes"].as_array().unwrap().len(), 2);
+            assert!(!asks[asked].1.contains("\"rms\""));
+            assert!(design["connections"].as_array().unwrap().is_empty());
+
+            assert_eq!(c.operator_nodes(), ["x", "silu"]);
+            assert!(c.records(&c.root, "connections").is_empty());
+            assert_eq!(c.text(&c.root, "node"), "", "the removed operator closes");
+            assert_eq!(c.text(&c.root, "failure"), "");
+
+            // Every change the removal made, in the project and in the items it held, is one
+            // invocation: one step to undo.
+            let made = c.made_since(&before);
+            assert!(!made.is_empty(), "the removal changed the design");
+            let invocation = &made[0].invocation;
+            assert!(invocation.is_some(), "the removal is a run of its own");
+            assert!(
+                made.iter().all(|note| &note.invocation == invocation),
+                "the removal is one step: {made:?}"
+            );
+        }
+
+        phase a_declined_ask_leaves_the_design_as_it_was;
+        {
+            let c = Chip::new();
+            c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
+            c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
+            c.connect("x", "value", "rms", "value");
+            let operators = c.item_ids("operators");
+            let connections = c.item_ids("connections");
+            c.device.declines.set(true);
+
+            let rms = c.operator("rms");
+            c.done(
+                "remove_operator",
+                vec![Value::resource(&c.root), Value::resource(&rms)],
+            );
+
+            assert_eq!(c.operator_nodes(), ["x", "rms"]);
+            assert_eq!(c.item_ids("operators"), operators, "no operator left");
+            assert_eq!(c.item_ids("connections"), connections, "no connection left");
+            let connection = c.records(&c.root, "connections");
+            assert!(c.flag(&connection[0], "active"));
+            assert!(!c.text(&connection[0], "digest").is_empty());
+            assert_eq!(
+                c.text(&c.root, "failure"),
+                "the device declines this design"
+            );
+        }
+
+        phase disconnecting_an_input_asks_the_device_and_is_one_step;
+        {
+            let c = Chip::new();
+            c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
+            c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
+            c.connect("x", "value", "rms", "value");
+            let before = c.changes();
+            let asked = c.device.asked().len();
+
+            let rms = c.operator("rms");
+            c.done(
+                "disconnect",
+                vec![
+                    Value::resource(&c.root),
+                    Value::resource(&rms),
+                    Value::text("value"),
+                ],
+            );
+
+            let asks = c.device.asked();
+            assert_eq!(asks.len(), asked + 1, "the disconnect asks the device once");
+            assert_eq!(asks[asked].0, "graph");
+            assert!(
+                !asks[asked].1.contains("from_node"),
+                "the ask holds no connection into that input"
+            );
+            assert_eq!(c.operator_nodes(), ["x", "rms"]);
+            assert!(c.records(&c.root, "connections").is_empty());
+            assert_eq!(c.text(&c.root, "failure"), "");
+
+            let made = c.made_since(&before);
+            assert!(!made.is_empty(), "the disconnect changed the design");
+            let invocation = &made[0].invocation;
+            assert!(invocation.is_some(), "the disconnect is a run of its own");
+            assert!(
+                made.iter().all(|note| &note.invocation == invocation),
+                "the disconnect is one step: {made:?}"
+            );
+        }
+
+        phase a_connection_the_types_refuse_is_refused_and_says_why;
+        {
+            let c = Chip::new();
+            c.add_operator("w", "norm_weight_input", vec![8], 0, 0, 0);
+            c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
+            c.connect("w", "weights", "rms", "value");
+            assert!(c.records(&c.root, "connections").is_empty());
+            assert_eq!(c.text(&c.root, "failure"), "Port shapes differ");
+        }
+
+        phase choosing_an_output_names_what_it_can_feed;
+        {
+            let c = Chip::new();
+            c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
+            c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
+            let x = c.operator("x");
+            c.done(
+                "select_output",
+                vec![
+                    Value::resource(&c.root),
+                    Value::resource(&x),
+                    Value::text("value"),
+                ],
+            );
+            assert_eq!(
+                c.text(&c.root, "failure"),
+                "",
+                "choosing an output is refused"
+            );
+            assert_eq!(c.text(&c.root, "output_node"), "x");
+            assert_eq!(c.text(&c.root, "output_port"), "value");
+            c.done("show_graph", vec![Value::resource(&c.root)]);
+            let window = c.window();
+            assert!(holds(
+                window.tree(),
+                "Connecting from the Value output of Input"
+            ));
+        }
+
+        phase the_graph_zooms_and_a_press_opens_an_operator;
+        {
+            let c = Chip::new();
+            c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
+            c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
+            c.done("show_graph", vec![Value::resource(&c.root)]);
+            c.done(
+                "zoom_graph",
+                vec![Value::resource(&c.root), Value::text("in")],
+            );
+            assert_eq!(c.number(&c.root, "zoom"), 125);
+            c.done(
+                "zoom_graph",
+                vec![Value::resource(&c.root), Value::text("fit")],
+            );
+            assert_eq!(c.number(&c.root, "zoom"), 100);
+
+            // The first shape of the canvas is the first operator's box.
+            c.done("tap_graph", vec![Value::resource(&c.root), Value::Int(0)]);
+            assert_eq!(c.text(&c.root, "node"), "rms");
+            let window = c.window();
+            assert!(holds(window.tree(), "Node identity"));
+            assert!(holds(window.tree(), "Apply shape"));
+        }
+
+        phase an_operator_the_design_cannot_hold_is_refused;
+        {
+            let c = Chip::new();
+            c.add_operator("x", "input", vec![], 0, 0, 0);
+            assert!(c.records(&c.root, "operators").is_empty());
+            assert!(!c.text(&c.root, "failure").is_empty());
+            c.add_operator("x", "input", vec![4, 8], 0, 0, 0);
+            c.add_operator("x", "rms_norm", vec![4, 8], 0, 0, 0);
+            assert_eq!(c.records(&c.root, "operators").len(), 1);
+            assert_eq!(
+                c.text(&c.root, "failure"),
+                "An operator with that identity already exists"
+            );
+        }
+
+        phase the_window_lists_everything_the_project_holds;
+        {
+            let c = Chip::new();
+            c.report(REPORT);
+            c.receipt(CHECKPOINT);
+            let window = c.window();
+            assert!(holds(window.tree(), "Synthetic/Contract-Example"));
+            assert!(holds(window.tree(), "checkpoint_tile_integer_contract"));
+            assert!(holds(window.tree(), "Reports"));
+            assert!(holds(window.tree(), "Verifications"));
+        }
+
+        phase a_published_surface_is_the_one_the_app_declares;
+        {
+            let c = Chip::new();
+            for action in [
+                "import_report",
+                "import_verification",
+                "import_file",
+                "remove_report",
+                "remove_verification",
+                "add_operator",
+                "add_operator_at",
+                "set_shape",
+                "set_output_width",
+                "move_operator",
+                "remove_operator",
+                "connect",
+                "disconnect",
+                "show_graph",
+                "show_all",
+                "inspect_report",
+                "inspect_receipt",
+                "inspect_stage",
+                "inspect_macro",
+                "open_subflow",
+                "zoom_graph",
+                "select_output",
+                "inspect_operator",
+            ] {
+                assert!(
+                    c.app.meta().action_named(action).is_some(),
+                    "{action} is published"
+                );
+            }
+        }
     }
 }

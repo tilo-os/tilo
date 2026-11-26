@@ -100,29 +100,6 @@ mod cases {
         }
     }
 
-    #[test]
-    fn an_action_calling_another_apps_actions_is_one_action_of_the_workspace() {
-        let (w, c) = world();
-        w.auth.trust(&Runtime::module_hash(&stranger_wasm()));
-        assert_eq!(
-            run(&w, "ask", vec![Value::resource(&c)]),
-            InvokeOutcome::Done(Value::Int(2))
-        );
-        let calls = invocations(&w, &c);
-        assert_eq!(calls.len(), 2);
-        assert_eq!(
-            calls[0], calls[1],
-            "the other app's actions are steps of the one action that called them"
-        );
-        assert!(
-            w.rt.history(&c.doc)
-                .unwrap()
-                .iter()
-                .all(|n| n.action != "ask"),
-            "the callee's change stays the callee's, inside the caller's action"
-        );
-    }
-
     tilo_test_env::scenario! {
         fn a_run_waits_on_an_asked_call_and_answers_it;
 
@@ -252,20 +229,6 @@ mod cases {
         }
     }
 
-    #[test]
-    fn model_calls_are_journaled_and_not_repeated_on_replay() {
-        let (w, c) = world();
-        let calls = Rc::new(Cell::new(0));
-        w.rt.set_model_host(CountingModel(Rc::clone(&calls)));
-        let InvokeOutcome::Waits { run, .. } = run(&w, "m", vec![Value::resource(&c)]) else {
-            panic!("expected a wait");
-        };
-        assert_eq!(calls.get(), 1);
-        let out = w.dispatch.allow(&w.rt, &run);
-        assert_eq!(out, RunOutcome::Done(Value::text("classify:hello")));
-        assert_eq!(calls.get(), 1, "the replay used the journaled answer");
-    }
-
     /// An action that reads its collection, calls its own insert for each name it lacks, and
     /// writes again: every call and every write of the run happens once, though the run is run
     /// again from its start after each call.
@@ -383,76 +346,6 @@ action poll(l: Lib) -> Text {
         fn cancel(&self, _job: &str) -> bool {
             true
         }
-    }
-
-    #[test]
-    fn a_run_that_calls_an_action_reads_the_device_answer_it_read() {
-        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-        let device = Moving::default();
-        rt.set_engine(device.clone());
-        let app = App::compile(POLLED, &[]);
-        app.load(&rt);
-        let lib = rt.create_root("Lib").unwrap();
-        let poll = app.action("poll");
-        let out = rt
-            .invoke_action(&me(), (poll.as_str(), vec![Value::resource(&lib)]))
-            .unwrap();
-        assert_eq!(
-            out,
-            InvokeOutcome::Done(Value::text("one")),
-            "the branch the first answer chose is the one the run stays on"
-        );
-        assert_eq!(
-            device.0.get(),
-            1,
-            "the device was asked once, not again for the replay"
-        );
-        match rt.read(&lib, "notes").unwrap() {
-            Value::List(items) => assert_eq!(items.len(), 1, "the call it made once"),
-            other => panic!("notes reads {other:?}"),
-        }
-        assert_eq!(rt.read(&lib, "state").unwrap(), Value::text("one"));
-    }
-
-    #[test]
-    fn an_action_that_calls_one_of_its_own_runs_each_call_once() {
-        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-        let app = App::compile(ATLAS, &[]);
-        app.load(&rt);
-        let board = rt.create_root("Board").unwrap();
-        let take = app.action("take");
-        let out = rt
-            .invoke_action(
-                &me(),
-                (
-                    take.as_str(),
-                    vec![
-                        Value::resource(&board),
-                        Value::List(vec![Value::text("one"), Value::text("two")]),
-                    ],
-                ),
-            )
-            .unwrap();
-        assert_eq!(out, InvokeOutcome::Done(Value::Int(2)), "{out:?}");
-        match rt.read(&board, "items").unwrap() {
-            Value::List(items) => assert_eq!(items.len(), 2, "each call inserted one item once"),
-            other => panic!("items reads {other:?}"),
-        }
-        assert_eq!(
-            rt.read(&board, "taken").unwrap(),
-            Value::Int(1),
-            "the write after the calls happens once"
-        );
-        let add = app.action("add");
-        assert_eq!(
-            rt.history(&board.doc)
-                .unwrap()
-                .iter()
-                .filter(|note| note.action == add)
-                .count(),
-            2,
-            "each call is one change, and ten replays make no more"
-        );
     }
 
     /// A device that checks what a design holds: its answer is an action of its own app, which a
@@ -827,63 +720,6 @@ action move_then_ask(s: Shelf, d: device.Desk, from: Text, folder: Text) -> Text
         }
     }
 
-    #[test]
-    fn a_run_that_moved_a_file_before_it_waited_moves_it_no_more_when_it_goes_on() {
-        let device = App::compile(DEVICE, &[]);
-        let mover = App::compile(MOVER, &[device.meta().clone()]);
-        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-        device.load(&rt);
-        mover.load(&rt);
-        let disk = Disk::default();
-        disk.file("~/Downloads/report.pdf");
-        rt.set_device_files(disk.clone());
-        let dispatch = Dispatch::new();
-        rt.set_foreign_invoker(dispatch.clone());
-        let shelf = rt.create_root("Shelf").unwrap();
-        let desk_root = rt.create_root("Desk").unwrap();
-        let move_then_ask = mover.action("move_then_ask");
-        let InvokeOutcome::Waits { run, .. } = rt
-            .invoke_action(
-                &me(),
-                (
-                    move_then_ask.as_str(),
-                    vec![
-                        Value::resource(&shelf),
-                        Value::resource(&desk_root),
-                        Value::text("~/Downloads/report.pdf"),
-                        Value::text("~/Documents"),
-                    ],
-                ),
-            )
-            .unwrap()
-        else {
-            panic!("the device's verdict is asked of a person first");
-        };
-        assert!(disk.holds("~/Documents/report.pdf"), "the file moved");
-        assert!(
-            !disk.holds("~/Downloads/report.pdf"),
-            "and left where it stood"
-        );
-        let out = dispatch.allow(&rt, &run);
-        assert_eq!(
-            out,
-            RunOutcome::Done(Value::text("holds 1")),
-            "the run went on from the answer it asked for, on the branch the move took"
-        );
-        assert_eq!(
-            disk.moves.get(),
-            1,
-            "going on answered the move it made once instead of moving the file again"
-        );
-        assert!(
-            disk.holds("~/Documents/report.pdf"),
-            "the file stands where the first run moved it"
-        );
-        assert_eq!(rt.read(&shelf, "moved").unwrap(), Value::text("holds 1"));
-        assert_eq!(rt.read(&shelf, "refused").unwrap(), Value::text(""));
-        assert_eq!(rt.read(&desk_root, "asked").unwrap(), Value::Int(1));
-    }
-
     /// A package whose action makes a resource and answers it, as the discussion makes a comment.
     const SHELF: &str = r#"app so.tilo.shelf "Shelf"
 
@@ -1044,6 +880,174 @@ action jot(p: Pad, title: Text) -> shelf.Note {
                 "{error}"
             );
             assert_eq!(w.rt.read(&w.pad, "said").unwrap(), Value::text(""));
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn runs_1;
+
+        phase an_action_calling_another_apps_actions_is_one_action_of_the_workspace;
+        {
+            let (w, c) = world();
+            w.auth.trust(&Runtime::module_hash(&stranger_wasm()));
+            assert_eq!(
+                run(&w, "ask", vec![Value::resource(&c)]),
+                InvokeOutcome::Done(Value::Int(2))
+            );
+            let calls = invocations(&w, &c);
+            assert_eq!(calls.len(), 2);
+            assert_eq!(
+                calls[0], calls[1],
+                "the other app's actions are steps of the one action that called them"
+            );
+            assert!(
+                w.rt.history(&c.doc)
+                    .unwrap()
+                    .iter()
+                    .all(|n| n.action != "ask"),
+                "the callee's change stays the callee's, inside the caller's action"
+            );
+        }
+
+        phase model_calls_are_journaled_and_not_repeated_on_replay;
+        {
+            let (w, c) = world();
+            let calls = Rc::new(Cell::new(0));
+            w.rt.set_model_host(CountingModel(Rc::clone(&calls)));
+            let InvokeOutcome::Waits { run, .. } = run(&w, "m", vec![Value::resource(&c)]) else {
+                panic!("expected a wait");
+            };
+            assert_eq!(calls.get(), 1);
+            let out = w.dispatch.allow(&w.rt, &run);
+            assert_eq!(out, RunOutcome::Done(Value::text("classify:hello")));
+            assert_eq!(calls.get(), 1, "the replay used the journaled answer");
+        }
+
+        phase a_run_that_calls_an_action_reads_the_device_answer_it_read;
+        {
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            let device = Moving::default();
+            rt.set_engine(device.clone());
+            let app = App::compile(POLLED, &[]);
+            app.load(&rt);
+            let lib = rt.create_root("Lib").unwrap();
+            let poll = app.action("poll");
+            let out = rt
+                .invoke_action(&me(), (poll.as_str(), vec![Value::resource(&lib)]))
+                .unwrap();
+            assert_eq!(
+                out,
+                InvokeOutcome::Done(Value::text("one")),
+                "the branch the first answer chose is the one the run stays on"
+            );
+            assert_eq!(
+                device.0.get(),
+                1,
+                "the device was asked once, not again for the replay"
+            );
+            match rt.read(&lib, "notes").unwrap() {
+                Value::List(items) => assert_eq!(items.len(), 1, "the call it made once"),
+                other => panic!("notes reads {other:?}"),
+            }
+            assert_eq!(rt.read(&lib, "state").unwrap(), Value::text("one"));
+        }
+
+        phase an_action_that_calls_one_of_its_own_runs_each_call_once;
+        {
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            let app = App::compile(ATLAS, &[]);
+            app.load(&rt);
+            let board = rt.create_root("Board").unwrap();
+            let take = app.action("take");
+            let out = rt
+                .invoke_action(
+                    &me(),
+                    (
+                        take.as_str(),
+                        vec![
+                            Value::resource(&board),
+                            Value::List(vec![Value::text("one"), Value::text("two")]),
+                        ],
+                    ),
+                )
+                .unwrap();
+            assert_eq!(out, InvokeOutcome::Done(Value::Int(2)), "{out:?}");
+            match rt.read(&board, "items").unwrap() {
+                Value::List(items) => assert_eq!(items.len(), 2, "each call inserted one item once"),
+                other => panic!("items reads {other:?}"),
+            }
+            assert_eq!(
+                rt.read(&board, "taken").unwrap(),
+                Value::Int(1),
+                "the write after the calls happens once"
+            );
+            let add = app.action("add");
+            assert_eq!(
+                rt.history(&board.doc)
+                    .unwrap()
+                    .iter()
+                    .filter(|note| note.action == add)
+                    .count(),
+                2,
+                "each call is one change, and ten replays make no more"
+            );
+        }
+
+        phase a_run_that_moved_a_file_before_it_waited_moves_it_no_more_when_it_goes_on;
+        {
+            let device = App::compile(DEVICE, &[]);
+            let mover = App::compile(MOVER, &[device.meta().clone()]);
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            device.load(&rt);
+            mover.load(&rt);
+            let disk = Disk::default();
+            disk.file("~/Downloads/report.pdf");
+            rt.set_device_files(disk.clone());
+            let dispatch = Dispatch::new();
+            rt.set_foreign_invoker(dispatch.clone());
+            let shelf = rt.create_root("Shelf").unwrap();
+            let desk_root = rt.create_root("Desk").unwrap();
+            let move_then_ask = mover.action("move_then_ask");
+            let InvokeOutcome::Waits { run, .. } = rt
+                .invoke_action(
+                    &me(),
+                    (
+                        move_then_ask.as_str(),
+                        vec![
+                            Value::resource(&shelf),
+                            Value::resource(&desk_root),
+                            Value::text("~/Downloads/report.pdf"),
+                            Value::text("~/Documents"),
+                        ],
+                    ),
+                )
+                .unwrap()
+            else {
+                panic!("the device's verdict is asked of a person first");
+            };
+            assert!(disk.holds("~/Documents/report.pdf"), "the file moved");
+            assert!(
+                !disk.holds("~/Downloads/report.pdf"),
+                "and left where it stood"
+            );
+            let out = dispatch.allow(&rt, &run);
+            assert_eq!(
+                out,
+                RunOutcome::Done(Value::text("holds 1")),
+                "the run went on from the answer it asked for, on the branch the move took"
+            );
+            assert_eq!(
+                disk.moves.get(),
+                1,
+                "going on answered the move it made once instead of moving the file again"
+            );
+            assert!(
+                disk.holds("~/Documents/report.pdf"),
+                "the file stands where the first run moved it"
+            );
+            assert_eq!(rt.read(&shelf, "moved").unwrap(), Value::text("holds 1"));
+            assert_eq!(rt.read(&shelf, "refused").unwrap(), Value::text(""));
+            assert_eq!(rt.read(&desk_root, "asked").unwrap(), Value::Int(1));
         }
     }
 }

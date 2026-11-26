@@ -98,76 +98,6 @@ view drawing(c: Canvas) {
 
     // An enum field holds one case and merges as a register; a union field holds a reference
     // to a resource of any of its types, and a collection of a union owns items of each type.
-    #[test]
-    fn enum_and_union_fields_hold_whole_values_and_sync_as_registers() {
-        let (mut store_a, mut store_b) = (AmStore::new(), AmStore::new());
-        let (rt_a, app, canvas) = setup(&store_a);
-        let ids = &app.compiled.ids;
-        let id = |name: &str| ids.get(name).unwrap().to_owned();
-        assert_eq!(
-            rt_a.read(&canvas, "kind").unwrap(),
-            Value::Enum(EnumValue {
-                ty: id("Kind"),
-                variant: id("Kind.dot"),
-                fields: std::collections::BTreeMap::default(),
-            }),
-            "an enum field starts as its first case"
-        );
-        draw(&rt_a, &app, &canvas, 3);
-        let Value::Opt(Some(line)) = rt_a.read(&canvas, "shape").unwrap() else {
-            panic!("a shape");
-        };
-        let Value::Ref(line) = *line else {
-            panic!("a reference")
-        };
-        assert_eq!(line.target.ty, id("Line"), "a reference to a Line");
-        let rt_b = Runtime::new(store_b.clone(), TestAuthority::new()).unwrap();
-        app.load(&rt_b);
-        store_a.sync_with(&mut store_b).unwrap();
-        draw(&rt_a, &app, &canvas, 9);
-        draw(&rt_b, &app, &canvas, 2);
-        store_a.sync_with(&mut store_b).unwrap();
-        let (on_a, on_b) = (
-            rt_a.read(&canvas, "shape").unwrap(),
-            rt_b.read(&canvas, "shape").unwrap(),
-        );
-        assert_eq!(
-            on_a, on_b,
-            "concurrent writes converge on one whole reference"
-        );
-        let Value::List(items) = rt_a.read(&canvas, "shapes").unwrap() else {
-            panic!("a list");
-        };
-        let mut types: Vec<String> = items
-            .iter()
-            .map(|v| match v {
-                Value::Ref(r) => r.target.ty.clone(),
-                other => panic!("{other:?}"),
-            })
-            .collect();
-        types.sort();
-        let mut want = vec![id("Line"), id("Line"), id("Box")];
-        want.sort();
-        assert_eq!(types, want, "each item is read as its own type");
-    }
-
-    #[test]
-    fn views_match_on_enum_values_and_compare_options_of_them() {
-        let store = AmStore::new();
-        let (rt, app, canvas) = setup(&store);
-        let mut v = rt
-            .open_view(&me(), &app.view("drawing"), vec![Value::resource(&canvas)])
-            .unwrap();
-        assert_eq!(texts(&v)[0], "a dot");
-        draw(&rt, &app, &canvas, 9);
-        v.poll_patches().unwrap();
-        assert_eq!(texts(&v)[..2], ["big 1.5", "was a dot"]);
-        draw(&rt, &app, &canvas, 4);
-        v.poll_patches().unwrap();
-        assert_eq!(texts(&v)[0], "a line of 4");
-        assert!(!texts(&v).contains(&"was a dot".to_owned()));
-    }
-
     tilo_test_env::scenario! {
         fn bound_state_and_drafts_follow_each_press_and_keystroke;
 
@@ -321,9 +251,85 @@ view talk(t: Talk) {
 
     // A text field the new item was not given starts as the words its type declares, as a case
     // field starts as its declared case: a control bound to it shows them, never an empty field.
-    #[test]
-    fn a_new_items_text_field_starts_as_its_declared_words() {
-        const ROOMS: &str = r#"app so.tilo.rooms "Rooms"
+    // A root is a record of its type too: what its fields start as is the words their type
+    // declares, so a control bound to one shows them from the window's first frame.
+
+    tilo_test_env::scenario! {
+        fn e2e_enums_1;
+
+        phase enum_and_union_fields_hold_whole_values_and_sync_as_registers;
+        {
+            let (mut store_a, mut store_b) = (AmStore::new(), AmStore::new());
+            let (rt_a, app, canvas) = setup(&store_a);
+            let ids = &app.compiled.ids;
+            let id = |name: &str| ids.get(name).unwrap().to_owned();
+            assert_eq!(
+                rt_a.read(&canvas, "kind").unwrap(),
+                Value::Enum(EnumValue {
+                    ty: id("Kind"),
+                    variant: id("Kind.dot"),
+                    fields: std::collections::BTreeMap::default(),
+                }),
+                "an enum field starts as its first case"
+            );
+            draw(&rt_a, &app, &canvas, 3);
+            let Value::Opt(Some(line)) = rt_a.read(&canvas, "shape").unwrap() else {
+                panic!("a shape");
+            };
+            let Value::Ref(line) = *line else {
+                panic!("a reference")
+            };
+            assert_eq!(line.target.ty, id("Line"), "a reference to a Line");
+            let rt_b = Runtime::new(store_b.clone(), TestAuthority::new()).unwrap();
+            app.load(&rt_b);
+            store_a.sync_with(&mut store_b).unwrap();
+            draw(&rt_a, &app, &canvas, 9);
+            draw(&rt_b, &app, &canvas, 2);
+            store_a.sync_with(&mut store_b).unwrap();
+            let (on_a, on_b) = (
+                rt_a.read(&canvas, "shape").unwrap(),
+                rt_b.read(&canvas, "shape").unwrap(),
+            );
+            assert_eq!(
+                on_a, on_b,
+                "concurrent writes converge on one whole reference"
+            );
+            let Value::List(items) = rt_a.read(&canvas, "shapes").unwrap() else {
+                panic!("a list");
+            };
+            let mut types: Vec<String> = items
+                .iter()
+                .map(|v| match v {
+                    Value::Ref(r) => r.target.ty.clone(),
+                    other => panic!("{other:?}"),
+                })
+                .collect();
+            types.sort();
+            let mut want = vec![id("Line"), id("Line"), id("Box")];
+            want.sort();
+            assert_eq!(types, want, "each item is read as its own type");
+        }
+
+        phase views_match_on_enum_values_and_compare_options_of_them;
+        {
+            let store = AmStore::new();
+            let (rt, app, canvas) = setup(&store);
+            let mut v = rt
+                .open_view(&me(), &app.view("drawing"), vec![Value::resource(&canvas)])
+                .unwrap();
+            assert_eq!(texts(&v)[0], "a dot");
+            draw(&rt, &app, &canvas, 9);
+            v.poll_patches().unwrap();
+            assert_eq!(texts(&v)[..2], ["big 1.5", "was a dot"]);
+            draw(&rt, &app, &canvas, 4);
+            v.poll_patches().unwrap();
+            assert_eq!(texts(&v)[0], "a line of 4");
+            assert!(!texts(&v).contains(&"was a dot".to_owned()));
+        }
+
+        phase a_new_items_text_field_starts_as_its_declared_words;
+        {
+            const ROOMS: &str = r#"app so.tilo.rooms "Rooms"
 
 type Booking {
     room: Text = "Studio"
@@ -346,42 +352,40 @@ action book(d: Calendar) {
     d.bookings.insert(Booking(note: "Bring the key"))
 }
 "#;
-        let store = AmStore::new();
-        let app = App::compile(ROOMS, &[]);
-        let rt = Runtime::new(store, TestAuthority::new()).unwrap();
-        app.load(&rt);
-        let calendar = rt.create("Calendar").unwrap();
-        rt.invoke_action(
-            &me(),
-            (
-                app.action("book").as_str(),
-                vec![Value::resource(&calendar)],
-            ),
-        )
-        .unwrap();
-        let Value::List(bookings) = rt.read(&calendar, "bookings").unwrap() else {
-            panic!("a list");
-        };
-        let Some(Value::Ref(booking)) = bookings.first() else {
-            panic!("the booking");
-        };
-        assert_eq!(
-            rt.read(&booking.target, "room").unwrap(),
-            Value::text("Studio"),
-            "the room it was not given is the one its type declares"
-        );
-        assert_eq!(
-            rt.read(&booking.target, "note").unwrap(),
-            Value::text("Bring the key"),
-            "the words it was given stand"
-        );
-    }
+            let store = AmStore::new();
+            let app = App::compile(ROOMS, &[]);
+            let rt = Runtime::new(store, TestAuthority::new()).unwrap();
+            app.load(&rt);
+            let calendar = rt.create("Calendar").unwrap();
+            rt.invoke_action(
+                &me(),
+                (
+                    app.action("book").as_str(),
+                    vec![Value::resource(&calendar)],
+                ),
+            )
+            .unwrap();
+            let Value::List(bookings) = rt.read(&calendar, "bookings").unwrap() else {
+                panic!("a list");
+            };
+            let Some(Value::Ref(booking)) = bookings.first() else {
+                panic!("the booking");
+            };
+            assert_eq!(
+                rt.read(&booking.target, "room").unwrap(),
+                Value::text("Studio"),
+                "the room it was not given is the one its type declares"
+            );
+            assert_eq!(
+                rt.read(&booking.target, "note").unwrap(),
+                Value::text("Bring the key"),
+                "the words it was given stand"
+            );
+        }
 
-    // A root is a record of its type too: what its fields start as is the words their type
-    // declares, so a control bound to one shows them from the window's first frame.
-    #[test]
-    fn a_new_roots_text_field_starts_as_its_declared_words() {
-        const FOLDERS: &str = r#"app so.tilo.folders "Folders"
+        phase a_new_roots_text_field_starts_as_its_declared_words;
+        {
+            const FOLDERS: &str = r#"app so.tilo.folders "Folders"
 
 type Folder {
     label: Text = "Studio"
@@ -398,36 +402,37 @@ view folders(f: Folder) {
     ui.Dropdown(bind: f.label, options: ["Studio", "Annex"], placeholder: "Choose one")
 }
 "#;
-        let app = App::compile(FOLDERS, &[]);
-        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-        app.load(&rt);
-        let folder = rt.create("Folder").unwrap();
-        let mut view = rt
-            .open_view(&me(), &app.view("folders"), vec![Value::resource(&folder)])
-            .unwrap();
-        view.poll_patches().unwrap();
-        assert_eq!(
-            texts(&view),
-            ["Studio", ""],
-            "the label the root was not given is the one its type declares, and a text whose type declares nothing starts empty: {}",
-            dump(view.tree())
-        );
-        assert_eq!(
-            rt.read(&folder, "label").unwrap(),
-            Value::text("Studio"),
-            "the root holds what its type declares"
-        );
-        assert_eq!(
-            rt.read(&folder, "note").unwrap(),
-            Value::text(""),
-            "a text whose type declares nothing starts empty"
-        );
-    }
-    /// The cases of an enum are elements of a set and of a map's sets, and values of a map:
-    /// added, removed and read back as the cases they are, so an alarm keeps the days it rings.
-    #[test]
-    fn enum_cases_are_kept_in_sets_and_maps() {
-        const ALARMS: &str = r#"app so.tilo.alarms "Alarms"
+            let app = App::compile(FOLDERS, &[]);
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            app.load(&rt);
+            let folder = rt.create("Folder").unwrap();
+            let mut view = rt
+                .open_view(&me(), &app.view("folders"), vec![Value::resource(&folder)])
+                .unwrap();
+            view.poll_patches().unwrap();
+            assert_eq!(
+                texts(&view),
+                ["Studio", ""],
+                "the label the root was not given is the one its type declares, and a text whose type declares nothing starts empty: {}",
+                dump(view.tree())
+            );
+            assert_eq!(
+                rt.read(&folder, "label").unwrap(),
+                Value::text("Studio"),
+                "the root holds what its type declares"
+            );
+            assert_eq!(
+                rt.read(&folder, "note").unwrap(),
+                Value::text(""),
+                "a text whose type declares nothing starts empty"
+            );
+        }
+
+        phase enum_cases_are_kept_in_sets_and_maps;
+        // The cases of an enum are elements of a set and of a map's sets, and values of a map:
+        // added, removed and read back as the cases they are, so an alarm keeps the days it rings.
+        {
+            const ALARMS: &str = r#"app so.tilo.alarms "Alarms"
 
 enum Weekday {
     mon
@@ -471,55 +476,56 @@ view alarm(a: Alarm) {
     text(if a.days.contains(Weekday.tue) { "rings Tuesday" } else { "quiet Tuesday" })
 }
 "#;
-        let app = App::compile(ALARMS, &[]);
-        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-        app.load(&rt);
-        let alarm = rt.create("Alarm").unwrap();
-        let ids = &app.compiled.ids;
-        let day = |case: &str| {
-            Value::Enum(EnumValue {
-                ty: ids.get("Weekday").unwrap().to_owned(),
-                variant: ids.get(&format!("Weekday.{case}")).unwrap().to_owned(),
-                fields: std::collections::BTreeMap::default(),
-            })
-        };
-        let run = |action: &str, case: &str| {
-            rt.invoke_action(
-                &me(),
-                (
-                    app.action(action).as_str(),
-                    vec![Value::resource(&alarm), day(case)],
-                ),
-            )
-            .unwrap_or_else(|e| panic!("{action}({case}): {e}"));
-        };
-        run("ring_on", "mon");
-        run("ring_on", "tue");
-        run("ring_on", "wed");
-        run("quiet_on", "mon");
-        let mut view = rt
-            .open_view(&me(), &app.view("alarm"), vec![Value::resource(&alarm)])
-            .unwrap();
-        view.poll_patches().unwrap();
-        let mut shown = texts(&view);
-        // A set keeps no order of its own: compare the days whatever order they come in.
-        for line in shown.iter_mut().take(2) {
-            let mut days: Vec<&str> = line.split(' ').collect();
-            days.sort_unstable();
-            *line = days.join(" ");
+            let app = App::compile(ALARMS, &[]);
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
+            app.load(&rt);
+            let alarm = rt.create("Alarm").unwrap();
+            let ids = &app.compiled.ids;
+            let day = |case: &str| {
+                Value::Enum(EnumValue {
+                    ty: ids.get("Weekday").unwrap().to_owned(),
+                    variant: ids.get(&format!("Weekday.{case}")).unwrap().to_owned(),
+                    fields: std::collections::BTreeMap::default(),
+                })
+            };
+            let run = |action: &str, case: &str| {
+                rt.invoke_action(
+                    &me(),
+                    (
+                        app.action(action).as_str(),
+                        vec![Value::resource(&alarm), day(case)],
+                    ),
+                )
+                .unwrap_or_else(|e| panic!("{action}({case}): {e}"));
+            };
+            run("ring_on", "mon");
+            run("ring_on", "tue");
+            run("ring_on", "wed");
+            run("quiet_on", "mon");
+            let mut view = rt
+                .open_view(&me(), &app.view("alarm"), vec![Value::resource(&alarm)])
+                .unwrap();
+            view.poll_patches().unwrap();
+            let mut shown = texts(&view);
+            // A set keeps no order of its own: compare the days whatever order they come in.
+            for line in shown.iter_mut().take(2) {
+                let mut days: Vec<&str> = line.split(' ').collect();
+                days.sort_unstable();
+                *line = days.join(" ");
+            }
+            assert_eq!(
+                shown,
+                ["Tue Wed", "Tue Wed", "Wed", "rings Tuesday"],
+                "{}",
+                dump(view.tree())
+            );
+            let Value::List(days) = rt.read(&alarm, "days").unwrap() else {
+                panic!("a set reads as a list");
+            };
+            assert!(
+                days.contains(&day("tue")) && days.contains(&day("wed")) && days.len() == 2,
+                "the set holds the cases themselves: {days:?}"
+            );
         }
-        assert_eq!(
-            shown,
-            ["Tue Wed", "Tue Wed", "Wed", "rings Tuesday"],
-            "{}",
-            dump(view.tree())
-        );
-        let Value::List(days) = rt.read(&alarm, "days").unwrap() else {
-            panic!("a set reads as a list");
-        };
-        assert!(
-            days.contains(&day("tue")) && days.contains(&day("wed")) && days.len() == 2,
-            "the set holds the cases themselves: {days:?}"
-        );
     }
 }

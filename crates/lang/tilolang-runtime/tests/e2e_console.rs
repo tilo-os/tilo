@@ -546,484 +546,492 @@ mod cases {
         }
     }
 
-    /// Every session is listed with what it is doing now, who asked for it and where, the working
-    /// one under "Working now" and the rest under "Earlier".
-    #[test]
-    fn every_session_is_listed_with_its_place_and_its_client() {
-        let console = Console::new(&sessions_of(), &server_of(""));
-        let window = console.window();
-        assert!(shows(&window, "Tidy the notes"), "{}", dump(window.tree()));
-        assert!(shows(&window, "Draft the letter"));
-        assert!(shows(&window, "Working now"));
-        assert!(shows(&window, "Earlier"));
-        assert!(shows(&window, "Running cargo test…"));
-        assert!(shows(&window, "Started by Bo"));
-        assert!(shows(&window, "Studio"));
-        assert!(shows(&window, "Elsewhere"));
-        // The clients that acted here are listed once each.
-        assert!(shows(&window, "Clients"));
-        assert!(shows(&window, "Claude Code"));
-        assert!(shows(&window, "Cursor"));
-    }
+    tilo_test_env::scenario! {
+        fn e2e_console_1;
 
-    /// Activating a session opens its own resource: the timeline of what it was asked, what can
-    /// be done with it, why, and each action with the undo it offers on its own. The list it was
-    /// chosen from stays where it was.
-    #[test]
-    fn a_session_opens_as_its_timeline_in_a_window_of_its_own() {
-        let console = Console::new(&sessions_of(), &server_of(""));
-        let mut window = console.window();
-        activate(&mut window, "Tidy the notes");
-        let link = opened(&mut window);
-        assert_eq!(
-            console.rt.title(&link).unwrap(),
-            "Tidy the notes",
-            "the session's own words name its resource"
-        );
-        let view = console.open(&link);
-        assert!(shows(&view, "Edited src/notes.rs"), "{}", dump(view.tree()));
-        assert!(shows(&view, "Ran cargo test"));
-        assert!(shows(&view, "Stop"));
-        assert!(shows(&view, "Take over"));
-        assert!(shows(&view, "Undo session"));
-        assert!(shows(&view, "Undo this run"));
-        assert!(shows(&view, "2 actions"));
-        // The window that listed it still stands on the list.
-        assert!(
-            shows(&window, "Draft the letter"),
-            "the list is still there"
-        );
-    }
+        phase every_session_is_listed_with_its_place_and_its_client;
+        // Every session is listed with what it is doing now, who asked for it and where, the working
+        // one under "Working now" and the rest under "Earlier".
+        {
+            let console = Console::new(&sessions_of(), &server_of(""));
+            let window = console.window();
+            assert!(shows(&window, "Tidy the notes"), "{}", dump(window.tree()));
+            assert!(shows(&window, "Draft the letter"));
+            assert!(shows(&window, "Working now"));
+            assert!(shows(&window, "Earlier"));
+            assert!(shows(&window, "Running cargo test…"));
+            assert!(shows(&window, "Started by Bo"));
+            assert!(shows(&window, "Studio"));
+            assert!(shows(&window, "Elsewhere"));
+            // The clients that acted here are listed once each.
+            assert!(shows(&window, "Clients"));
+            assert!(shows(&window, "Claude Code"));
+            assert!(shows(&window, "Cursor"));
+        }
 
-    /// The sessions narrow to one client and one workspace, and "Show everything" brings the rest
-    /// back.
-    #[test]
-    fn the_sessions_narrow_to_a_client_and_a_workspace() {
-        let console = Console::new(&sessions_of(), &server_of(""));
-        let mut window = console.window();
-        press(&mut window, "Cursor");
-        assert!(shows(&window, "Draft the letter"));
-        assert!(!shows(&window, "Tidy the notes"), "{}", dump(window.tree()));
-        press(&mut window, "Show everything");
-        assert!(shows(&window, "Tidy the notes"));
-        press(&mut window, "Studio");
-        assert!(shows(&window, "Tidy the notes"));
-        assert!(!shows(&window, "Draft the letter"));
-    }
-
-    /// A file's change opens to its lines, what it removed and what it added.
-    #[test]
-    fn a_file_change_shows_what_it_removed_and_added() {
-        let console = Console::new(&sessions_of(), &server_of(""));
-        let mut window = console.window();
-        activate(&mut window, "Tidy the notes");
-        let link = opened(&mut window);
-        let mut view = console.open(&link);
-        activate(&mut view, "Edited src/notes.rs");
-        assert!(shows(&view, "src/notes.rs"));
-        assert!(shows(&view, "− old line"), "{}", dump(view.tree()));
-        assert!(shows(&view, "+ new line"));
-        assert!(shows(&view, "Open"));
-    }
-
-    /// A command opens to its last lines and its exit, and "Show all output" reads everything its
-    /// shell kept.
-    #[test]
-    fn a_command_shows_its_output_and_reads_every_line() {
-        let console = Console::new(&sessions_of(), &server_of(""));
-        let output = ResourceRef::parse_id(
-            "workspace.activity/output/-/so.tilo.terminal/shell-1/exec-1",
-            "so.tilo.history#OutputReading",
-        )
-        .expect("the output's address");
-        console
-            .rt
-            .set_reading(
-                &output,
-                r#"{"output":{"lines":["running 3 tests","ok"],"truncated":false,"unavailable":false,"running":false}}"#,
-            )
-            .expect("the output reads");
-        let mut window = console.window();
-        activate(&mut window, "Tidy the notes");
-        let link = opened(&mut window);
-        let mut view = console.open(&link);
-        activate(&mut view, "Ran cargo test");
-        assert!(shows(&view, "$ cargo test"), "{}", dump(view.tree()));
-        assert!(shows(&view, "running 3 tests"));
-        assert!(shows(&view, "Exited with 0 after 2m"));
-        press(&mut view, "Show all output");
-        assert!(shows(&view, "Show less"), "{}", dump(view.tree()));
-        assert!(shows(&view, "ok"), "{}", dump(view.tree()));
-    }
-
-    /// Connect shows where an agent reaches the server and every agent it let in, with the reach it
-    /// was let in for and Revoke. A server with no endpoint offers setting the agent up instead.
-    #[test]
-    fn connect_shows_the_endpoint_and_every_grant() {
-        let console = Console::new(&sessions_of(), &server_of("https://mcp.tilo.sh"));
-        let mut window = console.window();
-        choose(&mut window, "Connect");
-        assert!(
-            shows(&window, "https://mcp.tilo.sh"),
-            "{}",
-            dump(window.tree())
-        );
-        assert!(shows(
-            &window,
-            r#"{"mcpServers": {"tilo": {"type": "http", "url": "https://mcp.tilo.sh"}}}"#
-        ));
-        // Both values are the person's to copy into their agent's configuration.
-        for label in ["Server address", "Any MCP client"] {
-            let property = of_kind(window.tree(), "ui.Property")
-                .into_iter()
-                .find(|node| text(node, "label") == label)
-                .unwrap_or_else(|| panic!("no `{label}` property in:\n{}", dump(window.tree())));
+        phase a_session_opens_as_its_timeline_in_a_window_of_its_own;
+        // Activating a session opens its own resource: the timeline of what it was asked, what can
+        // be done with it, why, and each action with the undo it offers on its own. The list it was
+        // chosen from stays where it was.
+        {
+            let console = Console::new(&sessions_of(), &server_of(""));
+            let mut window = console.window();
+            activate(&mut window, "Tidy the notes");
+            let link = opened(&mut window);
+            assert_eq!(
+                console.rt.title(&link).unwrap(),
+                "Tidy the notes",
+                "the session's own words name its resource"
+            );
+            let view = console.open(&link);
+            assert!(shows(&view, "Edited src/notes.rs"), "{}", dump(view.tree()));
+            assert!(shows(&view, "Ran cargo test"));
+            assert!(shows(&view, "Stop"));
+            assert!(shows(&view, "Take over"));
+            assert!(shows(&view, "Undo session"));
+            assert!(shows(&view, "Undo this run"));
+            assert!(shows(&view, "2 actions"));
+            // The window that listed it still stands on the list.
             assert!(
-                property.props.get("copyable") == Some(&Value::Bool(true)),
-                "`{label}` copies: {:?}",
-                property.props.get("copyable")
+                shows(&window, "Draft the letter"),
+                "the list is still there"
             );
         }
-        assert!(shows(&window, "Only Studio"));
-        assert!(shows(&window, "operates web pages"));
-        let _ = button(&window, "Revoke");
 
-        let console = Console::new(&sessions_of(), &server_of(""));
-        let mut window = console.window();
-        choose(&mut window, "Connect");
-        assert!(
-            shows(&window, "Set up your agent"),
-            "{}",
-            dump(window.tree())
-        );
-    }
-
-    /// Workspaces lists what the server reaches, who made it, and opens it in the full desktop.
-    #[test]
-    fn workspaces_lists_what_the_server_reaches() {
-        let console = Console::new(&sessions_of(), &server_of("https://mcp.tilo.sh"));
-        let mut window = console.window();
-        choose(&mut window, "Workspaces");
-        assert!(shows(&window, "Studio"), "{}", dump(window.tree()));
-        assert!(shows(&window, "Made by Claude Code"));
-        let _ = button(&window, "Open in Tilo");
-    }
-
-    /// Usage says what is not counted yet rather than showing nothing.
-    #[test]
-    fn usage_says_what_is_not_counted_yet() {
-        let console = Console::new(&sessions_of(), &server_of(""));
-        let mut window = console.window();
-        choose(&mut window, "Usage");
-        assert!(
-            shows(&window, "No Linux machine time yet"),
-            "{}",
-            dump(window.tree())
-        );
-    }
-
-    /// Every session the history lists has one resource of its own, named by what the session was
-    /// asked; reading the list again leaves the same resources where they stand, and each opens
-    /// its own session's page.
-    #[test]
-    fn every_session_has_a_resource_of_its_own() {
-        let console = Console::new(&sessions_of(), &server_of(""));
-        let mut window = console.window();
-        // The window reads the history: its clock gives what it lists a resource each.
-        tick(&mut window);
-        window.poll_patches().unwrap();
-
-        let links = console.links();
-        assert_eq!(links.len(), 2, "one resource per session: {links:?}");
-        let mut runs: Vec<String> = links
-            .iter()
-            .map(|link| console.field(link, "run"))
-            .collect();
-        runs.sort();
-        assert_eq!(runs, ["run-1", "run-2"]);
-        let named = console.link("run-2");
-        assert_eq!(
-            console.rt.title(&named).unwrap(),
-            "Tidy the notes",
-            "the session's own words name its resource"
-        );
-        let ids: Vec<String> = links.iter().map(ResourceRef::id_string).collect();
-
-        // The history answers again: the resources already standing are those, unchanged.
-        console.publish();
-        let again: Vec<String> = console.links().iter().map(ResourceRef::id_string).collect();
-        assert_eq!(again, ids, "no session's resource is made twice");
-
-        // Each resource opens its own session's page, and no other's.
-        let view = console.open(&named);
-        assert!(shows(&view, "Edited src/notes.rs"), "{}", dump(view.tree()));
-        assert!(shows(&view, "Ran cargo test"));
-        let other = console.open(&console.link("run-1"));
-        assert!(shows(&other, "Draft the letter"), "{}", dump(other.tree()));
-        assert!(
-            !shows(&other, "Tidy the notes"),
-            "the other session's page is its own"
-        );
-        assert_eq!(
-            console.link("run-2").id_string(),
-            named.id_string(),
-            "the link every path names is the one resource"
-        );
-    }
-
-    /// A link names a session before the history has answered: its resource exists, says it is
-    /// reading, and fills in when the answer lands; one the history never lists says so.
-    #[test]
-    fn a_link_opens_before_the_history_answers() {
-        let console = Console::new(&sessions_pending(), &server_of(""));
-        let link = console.session_link("run-2");
-        assert_eq!(
-            console.rt.title(&link).unwrap(),
-            "Agent session",
-            "nothing names it until the history lists it"
-        );
-        let mut view = console.open(&link);
-        assert!(
-            shows(&view, "Reading this session"),
-            "{}",
-            dump(view.tree())
-        );
-
-        console
-            .rt
-            .set_reading(&console.sessions, &sessions_of().to_string())
-            .expect("the history answers");
-        view.poll_patches().unwrap();
-        assert!(shows(&view, "Edited src/notes.rs"), "{}", dump(view.tree()));
-        assert!(!shows(&view, "Reading this session"), "the page filled in");
-
-        // A session the history never lists keeps the state that says so.
-        let missing = console.session_link("run-9");
-        let view = console.open(&missing);
-        assert!(
-            shows(&view, "This session is not here"),
-            "{}",
-            dump(view.tree())
-        );
-    }
-
-    /// Each client's card is a resource of its own, named by the agent, showing that client's
-    /// work, commands and access and no other's.
-    #[test]
-    fn each_clients_card_is_a_resource_of_its_own() {
-        let console = Console::new(&sessions_of(), &server_of("https://mcp.tilo.sh"));
-        let mut window = console.window();
-        tick(&mut window);
-        window.poll_patches().unwrap();
-
-        let cards = console.cards();
-        assert_eq!(cards.len(), 2, "one card per client: {cards:?}");
-        let claude = console.card("Claude Code");
-        let cursor = console.card("Cursor");
-        assert_eq!(
-            console.rt.title(&claude).unwrap(),
-            "Claude Code",
-            "the agent's name names its card's window"
-        );
-        assert_ne!(
-            claude.id_string(),
-            cursor.id_string(),
-            "two clients, two cards"
-        );
-        assert_eq!(
-            console.agent_card("Cursor").id_string(),
-            cursor.id_string(),
-            "the action every path opens a card by makes the one card"
-        );
-
-        let view = console.open(&claude);
-        assert!(shows(&view, "Only Studio"), "{}", dump(view.tree()));
-        assert!(shows(&view, "Stop"));
-        assert!(shows(&view, "Take over"));
-        assert!(shows(&view, "Undo session"));
-        assert!(shows(&view, "Tidy the notes"));
-        assert!(
-            !shows(&view, "Draft the letter"),
-            "the other client's work is not here"
-        );
-
-        let theirs = console.open(&cursor);
-        assert!(
-            shows(&theirs, "Draft the letter"),
-            "{}",
-            dump(theirs.tree())
-        );
-        assert!(!shows(&theirs, "Tidy the notes"));
-        assert!(
-            !shows(&theirs, "Stop"),
-            "it came in by no grant, so has none to stop"
-        );
-    }
-
-    /// The card's commands are actions of the card, published with it: a button, the palette and
-    /// an agent call the same ones, and none is bound to a key chord the card never had.
-    #[test]
-    fn a_cards_commands_are_its_published_actions() {
-        let console = Console::new(&sessions_of(), &server_of(""));
-        for (name, destructive) in [
-            ("stop_agent", true),
-            ("take_over_agent", false),
-            ("undo_agent_session", true),
-            ("revoke_agent", true),
-            ("let_agent_go_on", false),
-        ] {
-            let action = console
-                .app
-                .meta()
-                .action_named(name)
-                .unwrap_or_else(|| panic!("{name} is an action of the package"));
-            assert_eq!(
-                action.params.first().map(|param| param.ty.as_str()),
-                Some("AgentCard"),
-                "{name} acts on the client's card"
-            );
-            assert_eq!(
-                action.role.as_deref() == Some("destructive"),
-                destructive,
-                "{name}'s look"
-            );
-            assert!(action.key.is_none(), "{name} declares no shortcut");
+        phase the_sessions_narrow_to_a_client_and_a_workspace;
+        // The sessions narrow to one client and one workspace, and "Show everything" brings the rest
+        // back.
+        {
+            let console = Console::new(&sessions_of(), &server_of(""));
+            let mut window = console.window();
+            press(&mut window, "Cursor");
+            assert!(shows(&window, "Draft the letter"));
+            assert!(!shows(&window, "Tidy the notes"), "{}", dump(window.tree()));
+            press(&mut window, "Show everything");
+            assert!(shows(&window, "Tidy the notes"));
+            press(&mut window, "Studio");
+            assert!(shows(&window, "Tidy the notes"));
+            assert!(!shows(&window, "Draft the letter"));
         }
-    }
 
-    /// A client's command is Console's own action by the client a card, a palette or an agent
-    /// names: it makes that client's card and acts on it, so the stop reaches that client only.
-    #[test]
-    fn a_clients_command_acts_on_that_client_only() {
-        let console = Console::new(&sessions_of(), &server_of("https://mcp.tilo.sh"));
-        console.publish();
+        phase a_file_change_shows_what_it_removed_and_added;
+        // A file's change opens to its lines, what it removed and what it added.
+        {
+            let console = Console::new(&sessions_of(), &server_of(""));
+            let mut window = console.window();
+            activate(&mut window, "Tidy the notes");
+            let link = opened(&mut window);
+            let mut view = console.open(&link);
+            activate(&mut view, "Edited src/notes.rs");
+            assert!(shows(&view, "src/notes.rs"));
+            assert!(shows(&view, "− old line"), "{}", dump(view.tree()));
+            assert!(shows(&view, "+ new line"));
+            assert!(shows(&view, "Open"));
+        }
 
-        console.client_command("Claude Code", "undo_client_session");
-        let call = console.dispatch.waiting();
-        assert_eq!(call.app(), "so.tilo.history", "the undo the history offers");
-        assert!(call.name().contains("undo"), "{}", call.name());
-        let (_, args) = console.dispatch.asked();
-        assert_eq!(
-            args.get(1).and_then(Value::as_text),
-            Some("aa"),
-            "Claude Code's run"
-        );
-        assert_eq!(args.get(2).and_then(Value::as_text), Some("bb"));
+        phase a_command_shows_its_output_and_reads_every_line;
+        // A command opens to its last lines and its exit, and "Show all output" reads everything its
+        // shell kept.
+        {
+            let console = Console::new(&sessions_of(), &server_of(""));
+            let output = ResourceRef::parse_id(
+                "workspace.activity/output/-/so.tilo.terminal/shell-1/exec-1",
+                "so.tilo.history#OutputReading",
+            )
+            .expect("the output's address");
+            console
+                .rt
+                .set_reading(
+                    &output,
+                    r#"{"output":{"lines":["running 3 tests","ok"],"truncated":false,"unavailable":false,"running":false}}"#,
+                )
+                .expect("the output reads");
+            let mut window = console.window();
+            activate(&mut window, "Tidy the notes");
+            let link = opened(&mut window);
+            let mut view = console.open(&link);
+            activate(&mut view, "Ran cargo test");
+            assert!(shows(&view, "$ cargo test"), "{}", dump(view.tree()));
+            assert!(shows(&view, "running 3 tests"));
+            assert!(shows(&view, "Exited with 0 after 2m"));
+            press(&mut view, "Show all output");
+            assert!(shows(&view, "Show less"), "{}", dump(view.tree()));
+            assert!(shows(&view, "ok"), "{}", dump(view.tree()));
+        }
 
-        console.client_command("Cursor", "undo_client_session");
-        let (_, args) = console.dispatch.asked();
-        assert_eq!(
-            args.get(1).and_then(Value::as_text),
-            Some("01"),
-            "Cursor's run, not the other client's"
-        );
-        assert_eq!(args.get(2).and_then(Value::as_text), Some("02"));
-
-        // The stop ends the working session of the named client, and no other's.
-        console.client_command("Claude Code", "stop_client");
-        let call = console.dispatch.waiting();
-        assert_eq!(call.app(), "tilo.mcp-server", "the stop the server answers");
-        let (_, args) = console.dispatch.asked();
-        let Some(Value::Rec(session)) = args.get(1) else {
-            panic!("the stop names the session: {:?}", args.get(1));
-        };
-        let said = |name: &str| {
-            session
-                .fields
-                .get(&field_id_of("tilo.mcp-server", "AgentSessionRef", name))
-                .and_then(Value::as_text)
-        };
-        assert_eq!(said("session"), Some("Claude Code #2"));
-        assert_eq!(said("grant"), Some("0b1c"));
-
-        let before = console.dispatch.len();
-        console.client_command("Cursor", "stop_client");
-        assert_eq!(
-            console.dispatch.len(),
-            before,
-            "Cursor came in by no grant, so has none to stop"
-        );
-    }
-
-    /// The card offers the system's Copy link among its own actions: the press is the system's
-    /// copy link on the card, which the window's host mints and copies, not an action the app
-    /// writes. `card.share_link()` compiles against the verb every resource has.
-    #[test]
-    fn a_cards_copy_link_is_the_systems() {
-        let console = Console::new(&sessions_of(), &server_of(""));
-        console.publish();
-        let card = console.card("Claude Code");
-        let mut view = console.open(&card);
-        let key = button(&view, "Copy link").key;
-        view.fire(&key, "press").unwrap();
-        view.poll_patches().unwrap();
-        match view.poll_events().as_slice() {
-            [ViewEvent::CopyLink { target, app }] => {
-                assert_eq!(
-                    target.id_string(),
-                    card.id_string(),
-                    "the link is the card's own"
+        phase connect_shows_the_endpoint_and_every_grant;
+        // Connect shows where an agent reaches the server and every agent it let in, with the reach it
+        // was let in for and Revoke. A server with no endpoint offers setting the agent up instead.
+        {
+            let console = Console::new(&sessions_of(), &server_of("https://mcp.tilo.sh"));
+            let mut window = console.window();
+            choose(&mut window, "Connect");
+            assert!(
+                shows(&window, "https://mcp.tilo.sh"),
+                "{}",
+                dump(window.tree())
+            );
+            assert!(shows(
+                &window,
+                r#"{"mcpServers": {"tilo": {"type": "http", "url": "https://mcp.tilo.sh"}}}"#
+            ));
+            // Both values are the person's to copy into their agent's configuration.
+            for label in ["Server address", "Any MCP client"] {
+                let property = of_kind(window.tree(), "ui.Property")
+                    .into_iter()
+                    .find(|node| text(node, "label") == label)
+                    .unwrap_or_else(|| panic!("no `{label}` property in:\n{}", dump(window.tree())));
+                assert!(
+                    property.props.get("copyable") == Some(&Value::Bool(true)),
+                    "`{label}` copies: {:?}",
+                    property.props.get("copyable")
                 );
-                assert_eq!(app, "so.tilo.console", "minted as the app's resource");
             }
-            other => panic!("the press copies the card's link, not {other:?}"),
+            assert!(shows(&window, "Only Studio"));
+            assert!(shows(&window, "operates web pages"));
+            let _ = button(&window, "Revoke");
+
+            let console = Console::new(&sessions_of(), &server_of(""));
+            let mut window = console.window();
+            choose(&mut window, "Connect");
+            assert!(
+                shows(&window, "Set up your agent"),
+                "{}",
+                dump(window.tree())
+            );
+        }
+
+        phase workspaces_lists_what_the_server_reaches;
+        // Workspaces lists what the server reaches, who made it, and opens it in the full desktop.
+        {
+            let console = Console::new(&sessions_of(), &server_of("https://mcp.tilo.sh"));
+            let mut window = console.window();
+            choose(&mut window, "Workspaces");
+            assert!(shows(&window, "Studio"), "{}", dump(window.tree()));
+            assert!(shows(&window, "Made by Claude Code"));
+            let _ = button(&window, "Open in Tilo");
+        }
+
+        phase usage_says_what_is_not_counted_yet;
+        // Usage says what is not counted yet rather than showing nothing.
+        {
+            let console = Console::new(&sessions_of(), &server_of(""));
+            let mut window = console.window();
+            choose(&mut window, "Usage");
+            assert!(
+                shows(&window, "No Linux machine time yet"),
+                "{}",
+                dump(window.tree())
+            );
         }
     }
 
-    /// Each command acts on the client its card is of: the undo takes back that client's newest
-    /// run, and the stop ends that client's session, through the same actions the card's buttons
-    /// call.
-    #[test]
-    fn a_cards_command_acts_on_that_client_only() {
-        let console = Console::new(&sessions_of(), &server_of("https://mcp.tilo.sh"));
-        console.publish();
-        let claude = console.card("Claude Code");
-        let cursor = console.card("Cursor");
+    tilo_test_env::scenario! {
+        fn e2e_console_2;
 
-        console.command(&claude, "undo_agent_session");
-        let call = console.dispatch.waiting();
-        assert_eq!(call.app(), "so.tilo.history", "the undo the history offers");
-        assert!(call.name().contains("undo"), "{}", call.name());
-        let (_, args) = console.dispatch.asked();
-        assert_eq!(
-            args.get(1).and_then(Value::as_text),
-            Some("aa"),
-            "Claude Code's run"
-        );
-        assert_eq!(args.get(2).and_then(Value::as_text), Some("bb"));
+        phase every_session_has_a_resource_of_its_own;
+        // Every session the history lists has one resource of its own, named by what the session was
+        // asked; reading the list again leaves the same resources where they stand, and each opens
+        // its own session's page.
+        {
+            let console = Console::new(&sessions_of(), &server_of(""));
+            let mut window = console.window();
+            // The window reads the history: its clock gives what it lists a resource each.
+            tick(&mut window);
+            window.poll_patches().unwrap();
 
-        console.command(&cursor, "undo_agent_session");
-        let (_, args) = console.dispatch.asked();
-        assert_eq!(
-            args.get(1).and_then(Value::as_text),
-            Some("01"),
-            "Cursor's run, not the other client's"
-        );
-        assert_eq!(args.get(2).and_then(Value::as_text), Some("02"));
+            let links = console.links();
+            assert_eq!(links.len(), 2, "one resource per session: {links:?}");
+            let mut runs: Vec<String> = links
+                .iter()
+                .map(|link| console.field(link, "run"))
+                .collect();
+            runs.sort();
+            assert_eq!(runs, ["run-1", "run-2"]);
+            let named = console.link("run-2");
+            assert_eq!(
+                console.rt.title(&named).unwrap(),
+                "Tidy the notes",
+                "the session's own words name its resource"
+            );
+            let ids: Vec<String> = links.iter().map(ResourceRef::id_string).collect();
 
-        // Stop ends the working session of the card's own client, and only that.
-        console.command(&claude, "stop_agent");
-        let call = console.dispatch.waiting();
-        assert_eq!(call.app(), "tilo.mcp-server", "the stop the server answers");
-        let (_, args) = console.dispatch.asked();
-        let Some(Value::Rec(session)) = args.get(1) else {
-            panic!("the stop names the session: {:?}", args.get(1));
-        };
-        let said = |name: &str| {
-            session
-                .fields
-                .get(&field_id_of("tilo.mcp-server", "AgentSessionRef", name))
-                .and_then(Value::as_text)
-        };
-        assert_eq!(said("session"), Some("Claude Code #2"));
-        assert_eq!(said("grant"), Some("0b1c"));
+            // The history answers again: the resources already standing are those, unchanged.
+            console.publish();
+            let again: Vec<String> = console.links().iter().map(ResourceRef::id_string).collect();
+            assert_eq!(again, ids, "no session's resource is made twice");
 
-        let before = console.dispatch.len();
-        console.command(&cursor, "stop_agent");
-        assert_eq!(
-            console.dispatch.len(),
-            before,
-            "Cursor's card came in by no grant, so has none to stop"
-        );
+            // Each resource opens its own session's page, and no other's.
+            let view = console.open(&named);
+            assert!(shows(&view, "Edited src/notes.rs"), "{}", dump(view.tree()));
+            assert!(shows(&view, "Ran cargo test"));
+            let other = console.open(&console.link("run-1"));
+            assert!(shows(&other, "Draft the letter"), "{}", dump(other.tree()));
+            assert!(
+                !shows(&other, "Tidy the notes"),
+                "the other session's page is its own"
+            );
+            assert_eq!(
+                console.link("run-2").id_string(),
+                named.id_string(),
+                "the link every path names is the one resource"
+            );
+        }
+
+        phase a_link_opens_before_the_history_answers;
+        // A link names a session before the history has answered: its resource exists, says it is
+        // reading, and fills in when the answer lands; one the history never lists says so.
+        {
+            let console = Console::new(&sessions_pending(), &server_of(""));
+            let link = console.session_link("run-2");
+            assert_eq!(
+                console.rt.title(&link).unwrap(),
+                "Agent session",
+                "nothing names it until the history lists it"
+            );
+            let mut view = console.open(&link);
+            assert!(
+                shows(&view, "Reading this session"),
+                "{}",
+                dump(view.tree())
+            );
+
+            console
+                .rt
+                .set_reading(&console.sessions, &sessions_of().to_string())
+                .expect("the history answers");
+            view.poll_patches().unwrap();
+            assert!(shows(&view, "Edited src/notes.rs"), "{}", dump(view.tree()));
+            assert!(!shows(&view, "Reading this session"), "the page filled in");
+
+            // A session the history never lists keeps the state that says so.
+            let missing = console.session_link("run-9");
+            let view = console.open(&missing);
+            assert!(
+                shows(&view, "This session is not here"),
+                "{}",
+                dump(view.tree())
+            );
+        }
+
+        phase each_clients_card_is_a_resource_of_its_own;
+        // Each client's card is a resource of its own, named by the agent, showing that client's
+        // work, commands and access and no other's.
+        {
+            let console = Console::new(&sessions_of(), &server_of("https://mcp.tilo.sh"));
+            let mut window = console.window();
+            tick(&mut window);
+            window.poll_patches().unwrap();
+
+            let cards = console.cards();
+            assert_eq!(cards.len(), 2, "one card per client: {cards:?}");
+            let claude = console.card("Claude Code");
+            let cursor = console.card("Cursor");
+            assert_eq!(
+                console.rt.title(&claude).unwrap(),
+                "Claude Code",
+                "the agent's name names its card's window"
+            );
+            assert_ne!(
+                claude.id_string(),
+                cursor.id_string(),
+                "two clients, two cards"
+            );
+            assert_eq!(
+                console.agent_card("Cursor").id_string(),
+                cursor.id_string(),
+                "the action every path opens a card by makes the one card"
+            );
+
+            let view = console.open(&claude);
+            assert!(shows(&view, "Only Studio"), "{}", dump(view.tree()));
+            assert!(shows(&view, "Stop"));
+            assert!(shows(&view, "Take over"));
+            assert!(shows(&view, "Undo session"));
+            assert!(shows(&view, "Tidy the notes"));
+            assert!(
+                !shows(&view, "Draft the letter"),
+                "the other client's work is not here"
+            );
+
+            let theirs = console.open(&cursor);
+            assert!(
+                shows(&theirs, "Draft the letter"),
+                "{}",
+                dump(theirs.tree())
+            );
+            assert!(!shows(&theirs, "Tidy the notes"));
+            assert!(
+                !shows(&theirs, "Stop"),
+                "it came in by no grant, so has none to stop"
+            );
+        }
+
+        phase a_cards_commands_are_its_published_actions;
+        // The card's commands are actions of the card, published with it: a button, the palette and
+        // an agent call the same ones, and none is bound to a key chord the card never had.
+        {
+            let console = Console::new(&sessions_of(), &server_of(""));
+            for (name, destructive) in [
+                ("stop_agent", true),
+                ("take_over_agent", false),
+                ("undo_agent_session", true),
+                ("revoke_agent", true),
+                ("let_agent_go_on", false),
+            ] {
+                let action = console
+                    .app
+                    .meta()
+                    .action_named(name)
+                    .unwrap_or_else(|| panic!("{name} is an action of the package"));
+                assert_eq!(
+                    action.params.first().map(|param| param.ty.as_str()),
+                    Some("AgentCard"),
+                    "{name} acts on the client's card"
+                );
+                assert_eq!(
+                    action.role.as_deref() == Some("destructive"),
+                    destructive,
+                    "{name}'s look"
+                );
+                assert!(action.key.is_none(), "{name} declares no shortcut");
+            }
+        }
+
+        phase a_clients_command_acts_on_that_client_only;
+        // A client's command is Console's own action by the client a card, a palette or an agent
+        // names: it makes that client's card and acts on it, so the stop reaches that client only.
+        {
+            let console = Console::new(&sessions_of(), &server_of("https://mcp.tilo.sh"));
+            console.publish();
+
+            console.client_command("Claude Code", "undo_client_session");
+            let call = console.dispatch.waiting();
+            assert_eq!(call.app(), "so.tilo.history", "the undo the history offers");
+            assert!(call.name().contains("undo"), "{}", call.name());
+            let (_, args) = console.dispatch.asked();
+            assert_eq!(
+                args.get(1).and_then(Value::as_text),
+                Some("aa"),
+                "Claude Code's run"
+            );
+            assert_eq!(args.get(2).and_then(Value::as_text), Some("bb"));
+
+            console.client_command("Cursor", "undo_client_session");
+            let (_, args) = console.dispatch.asked();
+            assert_eq!(
+                args.get(1).and_then(Value::as_text),
+                Some("01"),
+                "Cursor's run, not the other client's"
+            );
+            assert_eq!(args.get(2).and_then(Value::as_text), Some("02"));
+
+            // The stop ends the working session of the named client, and no other's.
+            console.client_command("Claude Code", "stop_client");
+            let call = console.dispatch.waiting();
+            assert_eq!(call.app(), "tilo.mcp-server", "the stop the server answers");
+            let (_, args) = console.dispatch.asked();
+            let Some(Value::Rec(session)) = args.get(1) else {
+                panic!("the stop names the session: {:?}", args.get(1));
+            };
+            let said = |name: &str| {
+                session
+                    .fields
+                    .get(&field_id_of("tilo.mcp-server", "AgentSessionRef", name))
+                    .and_then(Value::as_text)
+            };
+            assert_eq!(said("session"), Some("Claude Code #2"));
+            assert_eq!(said("grant"), Some("0b1c"));
+
+            let before = console.dispatch.len();
+            console.client_command("Cursor", "stop_client");
+            assert_eq!(
+                console.dispatch.len(),
+                before,
+                "Cursor came in by no grant, so has none to stop"
+            );
+        }
+
+        phase a_cards_copy_link_is_the_systems;
+        // The card offers the system's Copy link among its own actions: the press is the system's
+        // copy link on the card, which the window's host mints and copies, not an action the app
+        // writes. `card.share_link()` compiles against the verb every resource has.
+        {
+            let console = Console::new(&sessions_of(), &server_of(""));
+            console.publish();
+            let card = console.card("Claude Code");
+            let mut view = console.open(&card);
+            let key = button(&view, "Copy link").key;
+            view.fire(&key, "press").unwrap();
+            view.poll_patches().unwrap();
+            match view.poll_events().as_slice() {
+                [ViewEvent::CopyLink { target, app }] => {
+                    assert_eq!(
+                        target.id_string(),
+                        card.id_string(),
+                        "the link is the card's own"
+                    );
+                    assert_eq!(app, "so.tilo.console", "minted as the app's resource");
+                }
+                other => panic!("the press copies the card's link, not {other:?}"),
+            }
+        }
+
+        phase a_cards_command_acts_on_that_client_only;
+        // Each command acts on the client its card is of: the undo takes back that client's newest
+        // run, and the stop ends that client's session, through the same actions the card's buttons
+        // call.
+        {
+            let console = Console::new(&sessions_of(), &server_of("https://mcp.tilo.sh"));
+            console.publish();
+            let claude = console.card("Claude Code");
+            let cursor = console.card("Cursor");
+
+            console.command(&claude, "undo_agent_session");
+            let call = console.dispatch.waiting();
+            assert_eq!(call.app(), "so.tilo.history", "the undo the history offers");
+            assert!(call.name().contains("undo"), "{}", call.name());
+            let (_, args) = console.dispatch.asked();
+            assert_eq!(
+                args.get(1).and_then(Value::as_text),
+                Some("aa"),
+                "Claude Code's run"
+            );
+            assert_eq!(args.get(2).and_then(Value::as_text), Some("bb"));
+
+            console.command(&cursor, "undo_agent_session");
+            let (_, args) = console.dispatch.asked();
+            assert_eq!(
+                args.get(1).and_then(Value::as_text),
+                Some("01"),
+                "Cursor's run, not the other client's"
+            );
+            assert_eq!(args.get(2).and_then(Value::as_text), Some("02"));
+
+            // Stop ends the working session of the card's own client, and only that.
+            console.command(&claude, "stop_agent");
+            let call = console.dispatch.waiting();
+            assert_eq!(call.app(), "tilo.mcp-server", "the stop the server answers");
+            let (_, args) = console.dispatch.asked();
+            let Some(Value::Rec(session)) = args.get(1) else {
+                panic!("the stop names the session: {:?}", args.get(1));
+            };
+            let said = |name: &str| {
+                session
+                    .fields
+                    .get(&field_id_of("tilo.mcp-server", "AgentSessionRef", name))
+                    .and_then(Value::as_text)
+            };
+            assert_eq!(said("session"), Some("Claude Code #2"));
+            assert_eq!(said("grant"), Some("0b1c"));
+
+            let before = console.dispatch.len();
+            console.command(&cursor, "stop_agent");
+            assert_eq!(
+                console.dispatch.len(),
+                before,
+                "Cursor's card came in by no grant, so has none to stop"
+            );
+        }
     }
 }

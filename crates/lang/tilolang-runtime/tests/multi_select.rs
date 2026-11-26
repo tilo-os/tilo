@@ -182,130 +182,134 @@ mod cases {
             .unwrap_or_else(|| Value::List(Vec::new()))
     }
 
-    /// While the person holds no choice of rows, the list shows chosen the row of the task the
-    /// window has open, so it says what stands beside it; a choice they make is what it shows,
-    /// and once they put it away the open task's row is chosen again.
-    #[test]
-    fn the_open_tasks_row_stands_chosen_while_no_rows_are() {
-        let w = tasks();
-        let root = w.root("Tasks");
-        let three: Vec<ResourceRef> = (1..=3)
-            .map(|n| w.task(&root, &format!("Task {n}")))
-            .collect();
-        let mut window = w.window("home", &root);
-        pick(&mut window, "inbox");
-        let list = list_of(&window);
-        window
-            .fire_with(&list, "opened", Some(&Value::resource(&three[1])))
-            .unwrap();
-        window.poll_patches().unwrap();
-        assert_eq!(
-            chosen_rows(&window),
-            Value::List(vec![Value::resource(&three[1])]),
-            "the open task's row stands chosen"
-        );
-        choose(&mut window, &[&three[0], &three[2]]);
-        assert_eq!(
-            chosen_rows(&window),
-            Value::List(vec![Value::resource(&three[0]), Value::resource(&three[2])]),
-            "the rows the person chose are the ones chosen"
-        );
-        choose(&mut window, &[]);
-        assert_eq!(
-            chosen_rows(&window),
-            Value::List(vec![Value::resource(&three[1])]),
-            "the choice put away, the open task's row stands chosen again"
-        );
-    }
+    tilo_test_env::scenario! {
+        fn multi_select_1;
 
-    /// Six tasks chosen at once are one command of the bar and one change: each of the six
-    /// stands in the same change, which says it changed six, and the bar says what is chosen.
-    #[test]
-    fn six_chosen_tasks_are_changed_as_one_step() {
-        let w = tasks();
-        let root = w.root("Tasks");
-        let six: Vec<ResourceRef> = (1..=6)
-            .map(|n| w.task(&root, &format!("Task {n}")))
-            .collect();
-        let mut window = w.window("home", &root);
-        // The window opens on today, and these tasks are undated: the person picks the inbox,
-        // where what waits to be sorted stands.
-        pick(&mut window, "inbox");
-        let chosen: Vec<&ResourceRef> = six.iter().collect();
-        choose(&mut window, &chosen);
-        let tree = window.tree();
-        let badge = commands(tree)
-            .into_iter()
-            .find(|node| node.kind == "ui.Badge")
-            .unwrap_or_else(|| panic!("the bar says what is chosen:\n{}", dump(tree)));
-        assert_eq!(text_of(badge, "text"), "6 selected");
-        let commands = offered(tree);
-        assert!(
-            commands.contains(&"Today".to_owned()),
-            "what every chosen task can take is offered: {commands:?}"
-        );
-        assert!(
-            commands.contains(&"Delete".to_owned()),
-            "a destructive command is offered as itself: {commands:?}"
-        );
-        assert!(
-            !commands.contains(&"New task".to_owned()),
-            "the window's own target gives its commands to the choice: {commands:?}"
-        );
-        // Run it: one command over the six.
-        let today = button(tree, "Today");
-        window.fire(&today, "press").unwrap();
-        window.poll_patches().unwrap();
-        let due = w.app.action("due_today");
-        let mut changes = Vec::new();
-        for task in &six {
-            let (change, count, action) = w.last(task);
-            assert_eq!(action, due, "each task changed by the one action");
-            assert_eq!(count, 6, "the change says it was made over six items");
-            changes.push((task.id_string(), change));
+        phase the_open_tasks_row_stands_chosen_while_no_rows_are;
+        // While the person holds no choice of rows, the list shows chosen the row of the task the
+        // window has open, so it says what stands beside it; a choice they make is what it shows,
+        // and once they put it away the open task's row is chosen again.
+        {
+            let w = tasks();
+            let root = w.root("Tasks");
+            let three: Vec<ResourceRef> = (1..=3)
+                .map(|n| w.task(&root, &format!("Task {n}")))
+                .collect();
+            let mut window = w.window("home", &root);
+            pick(&mut window, "inbox");
+            let list = list_of(&window);
+            window
+                .fire_with(&list, "opened", Some(&Value::resource(&three[1])))
+                .unwrap();
+            window.poll_patches().unwrap();
+            assert_eq!(
+                chosen_rows(&window),
+                Value::List(vec![Value::resource(&three[1])]),
+                "the open task's row stands chosen"
+            );
+            choose(&mut window, &[&three[0], &three[2]]);
+            assert_eq!(
+                chosen_rows(&window),
+                Value::List(vec![Value::resource(&three[0]), Value::resource(&three[2])]),
+                "the rows the person chose are the ones chosen"
+            );
+            choose(&mut window, &[]);
+            assert_eq!(
+                chosen_rows(&window),
+                Value::List(vec![Value::resource(&three[1])]),
+                "the choice put away, the open task's row stands chosen again"
+            );
         }
-        let first = changes[0].1.clone();
-        assert!(
-            changes.iter().all(|(_, change)| *change == first),
-            "the six are one change: {changes:?}"
-        );
-        // The choice is put away once it has acted: the bar is the window's own again.
-        let tree = window.tree();
-        assert_eq!(
-            tree.of_kind("ui.Badge").len(),
-            0,
-            "the choice is put away once it has acted"
-        );
-        assert!(
-            offered(tree).contains(&"New task".to_owned()),
-            "the window's own commands are back: {:?}",
-            offered(tree)
-        );
-    }
 
-    /// A command one of the chosen tasks cannot take is no command over them: choosing a task
-    /// already done leaves "Today" out of the bar, and "Delete", which every one of them takes,
-    /// still in it.
-    #[test]
-    fn an_action_one_chosen_item_cannot_take_is_not_offered() {
-        let w = tasks();
-        let root = w.root("Tasks");
-        let six: Vec<ResourceRef> = (1..=6)
-            .map(|n| w.task(&root, &format!("Task {n}")))
-            .collect();
-        w.call("check", vec![Value::resource(&six[3])]);
-        let mut window = w.window("home", &root);
-        pick(&mut window, "inbox");
-        let chosen: Vec<&ResourceRef> = six.iter().collect();
-        choose(&mut window, &chosen);
-        let offered = offered(window.tree());
-        assert!(
-            !offered.contains(&"Today".to_owned()),
-            "a task done already cannot be made due today: {offered:?}"
-        );
-        assert!(
-            offered.contains(&"Delete".to_owned()),
-            "what every chosen task takes is still offered: {offered:?}"
-        );
+        phase six_chosen_tasks_are_changed_as_one_step;
+        // Six tasks chosen at once are one command of the bar and one change: each of the six
+        // stands in the same change, which says it changed six, and the bar says what is chosen.
+        {
+            let w = tasks();
+            let root = w.root("Tasks");
+            let six: Vec<ResourceRef> = (1..=6)
+                .map(|n| w.task(&root, &format!("Task {n}")))
+                .collect();
+            let mut window = w.window("home", &root);
+            // The window opens on today, and these tasks are undated: the person picks the inbox,
+            // where what waits to be sorted stands.
+            pick(&mut window, "inbox");
+            let chosen: Vec<&ResourceRef> = six.iter().collect();
+            choose(&mut window, &chosen);
+            let tree = window.tree();
+            let badge = commands(tree)
+                .into_iter()
+                .find(|node| node.kind == "ui.Badge")
+                .unwrap_or_else(|| panic!("the bar says what is chosen:\n{}", dump(tree)));
+            assert_eq!(text_of(badge, "text"), "6 selected");
+            let commands = offered(tree);
+            assert!(
+                commands.contains(&"Today".to_owned()),
+                "what every chosen task can take is offered: {commands:?}"
+            );
+            assert!(
+                commands.contains(&"Delete".to_owned()),
+                "a destructive command is offered as itself: {commands:?}"
+            );
+            assert!(
+                !commands.contains(&"New task".to_owned()),
+                "the window's own target gives its commands to the choice: {commands:?}"
+            );
+            // Run it: one command over the six.
+            let today = button(tree, "Today");
+            window.fire(&today, "press").unwrap();
+            window.poll_patches().unwrap();
+            let due = w.app.action("due_today");
+            let mut changes = Vec::new();
+            for task in &six {
+                let (change, count, action) = w.last(task);
+                assert_eq!(action, due, "each task changed by the one action");
+                assert_eq!(count, 6, "the change says it was made over six items");
+                changes.push((task.id_string(), change));
+            }
+            let first = changes[0].1.clone();
+            assert!(
+                changes.iter().all(|(_, change)| *change == first),
+                "the six are one change: {changes:?}"
+            );
+            // The choice is put away once it has acted: the bar is the window's own again.
+            let tree = window.tree();
+            assert_eq!(
+                tree.of_kind("ui.Badge").len(),
+                0,
+                "the choice is put away once it has acted"
+            );
+            assert!(
+                offered(tree).contains(&"New task".to_owned()),
+                "the window's own commands are back: {:?}",
+                offered(tree)
+            );
+        }
+
+        phase an_action_one_chosen_item_cannot_take_is_not_offered;
+        // A command one of the chosen tasks cannot take is no command over them: choosing a task
+        // already done leaves "Today" out of the bar, and "Delete", which every one of them takes,
+        // still in it.
+        {
+            let w = tasks();
+            let root = w.root("Tasks");
+            let six: Vec<ResourceRef> = (1..=6)
+                .map(|n| w.task(&root, &format!("Task {n}")))
+                .collect();
+            w.call("check", vec![Value::resource(&six[3])]);
+            let mut window = w.window("home", &root);
+            pick(&mut window, "inbox");
+            let chosen: Vec<&ResourceRef> = six.iter().collect();
+            choose(&mut window, &chosen);
+            let offered = offered(window.tree());
+            assert!(
+                !offered.contains(&"Today".to_owned()),
+                "a task done already cannot be made due today: {offered:?}"
+            );
+            assert!(
+                offered.contains(&"Delete".to_owned()),
+                "what every chosen task takes is still offered: {offered:?}"
+            );
+        }
     }
 }
