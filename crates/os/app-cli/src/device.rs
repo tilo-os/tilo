@@ -242,8 +242,12 @@ pub fn line() -> Result<tilo_action_services::LineClient, String> {
 /// One connection to the daemon's native endpoint: over the action wire in the workspace the
 /// person named, else as MCP in the daemon's own.
 pub struct Daemon {
-    reader: BufReader<tilo_files::native::socket::Stream>,
-    writer: tilo_files::native::socket::Stream,
+    /// Where the daemon answers, and its MCP session there, once a call opened it.
+    socket: std::path::PathBuf,
+    mcp: Option<(
+        BufReader<tilo_files::native::socket::Stream>,
+        tilo_files::native::socket::Stream,
+    )>,
     id: u64,
     /// The action wire, in the workspace named, when one was.
     wire: Option<Wire>,
@@ -267,16 +271,31 @@ impl Daemon {
     /// # Errors
     /// No daemon answers on `socket`.
     pub fn at(socket: &Path) -> Result<Self, String> {
-        let stream = stream_at(socket)?;
-        let wire = named()
-            .map(|workspace| Ok::<_, String>(Wire::in_workspace(line_at(socket)?, workspace)))
-            .transpose()?;
+        let (wire, mcp) = match named() {
+            Some(workspace) => (Some(Wire::in_workspace(line_at(socket)?, workspace)), None),
+            None => (None, Some(Self::session(socket)?)),
+        };
         Ok(Self {
-            reader: BufReader::new(stream.try_clone().map_err(|error| error.to_string())?),
-            writer: stream,
+            socket: socket.to_owned(),
+            mcp,
             id: 0,
             wire,
         })
+    }
+
+    /// An MCP session with the daemon on `socket`.
+    fn session(
+        socket: &Path,
+    ) -> Result<
+        (
+            BufReader<tilo_files::native::socket::Stream>,
+            tilo_files::native::socket::Stream,
+        ),
+        String,
+    > {
+        let stream = stream_at(socket)?;
+        let reader = BufReader::new(stream.try_clone().map_err(|error| error.to_string())?);
+        Ok((reader, stream))
     }
 
     /// Ask `path` (`workspace/<resource>#<action>`) of the workspace the person named, else of
@@ -328,9 +347,13 @@ impl Daemon {
         self.id = self.id.saturating_add(1);
         let request = json!({"jsonrpc": "2.0", "id": self.id, "method": "tools/call",
             "params": {"name": tool, "arguments": arguments}});
-        writeln!(self.writer, "{request}").map_err(|error| format!("the daemon: {error}"))?;
+        if self.mcp.is_none() {
+            self.mcp = Some(Self::session(&self.socket)?);
+        }
+        let (reader, writer) = self.mcp.as_mut().ok_or("no MCP session")?;
+        writeln!(writer, "{request}").map_err(|error| format!("the daemon: {error}"))?;
         let mut line = String::new();
-        self.reader
+        reader
             .read_line(&mut line)
             .map_err(|error| format!("the daemon: {error}"))?;
         let reply: Value = serde_json::from_str(&line)
@@ -420,7 +443,9 @@ impl Wire {
     pub fn in_workspace(line: LineClient, workspace: &str) -> Self {
         Self {
             line,
-            caller: Caller::local_person("").in_workspace(workspace),
+            caller: Caller::local_person("")
+                .in_workspace(workspace)
+                .in_new_execution(),
             workspace: Some(workspace.to_owned()),
         }
     }
@@ -452,9 +477,14 @@ impl Wire {
             .strip_prefix("workspace/")
             .and_then(|path| path.rsplit_once('#'))
             .ok_or_else(|| format!("{path} names no action of a workspace"))?;
+        // A workspace's own actions are its governance provider's, each on the child of its tree
+        // the path names (`apps`, `apps/<app>`, `trust`).
         let target = RemoteActionTarget {
-            provider: tilo_actions::remote::workspace_provider(workspace),
-            address: ActionAddress::new(resource, action),
+            provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+            address: ActionAddress::new(
+                tilo_actions::remote::workspace_governance_child(workspace, Some(resource)),
+                action,
+            ),
         };
         let arguments = match arguments {
             Value::Object(arguments) => arguments.clone(),
