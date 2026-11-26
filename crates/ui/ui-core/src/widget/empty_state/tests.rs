@@ -165,49 +165,6 @@ tilo_test_env::scenario! {
             ));
             assert!(fired.get(), "Enter/Space/AT Activate reaches the CTA");
         }
-
-        fn action_path_is_shared_by_pointer_and_accessibility_activation() {
-            use automerge::ReadDoc as _;
-            use std::cell::Cell;
-            let invoked = Rc::new(Cell::new(0));
-            let counted = invoked.clone();
-            let empty = EmptyState::new("Nothing here")
-                .with_action("Open")
-                .with_action_id("empty.open")
-                .on_open(move || counted.set(counted.get() + 1));
-            let mut harness = crate::app::driver::Driver::for_root(
-                crate::State::new(),
-                empty,
-                (600, 400),
-                Theme::dark(),
-            );
-            let action = harness.root::<EmptyState>().action_rect();
-            assert!(action.area() > 0.0, "the recovery action has a target");
-            harness.click_at(action.center().x, action.center().y);
-            assert_eq!(
-                invoked.get(),
-                1,
-                "pointer activation invokes the published action"
-            );
-            harness
-                .perform_named("empty.open", &tilo_ui_base::a11y::Action::Activate)
-                .unwrap();
-            assert_eq!(
-                invoked.get(),
-                2,
-                "accessibility invokes the same published action"
-            );
-            assert!(
-                harness
-                    .state()
-                    .doc
-                    .get(automerge::ROOT, "empty.open")
-                    .unwrap()
-                    .is_none(),
-                "a view action never writes a click pulse into the resource"
-            );
-        }
-
         fn an_action_binding_invokes_the_resource_action() {
             let resource = tilo_actions::ResourceSpec::new("catalog", "catalog", "Catalog")
                 .with_action(
@@ -250,28 +207,8 @@ tilo_test_env::scenario! {
         action_pill_click_fires_once();
         click_outside_action_does_not_fire();
         action_is_keyboard_reachable_and_exposed_as_a_named_button();
-        action_path_is_shared_by_pointer_and_accessibility_activation();
         an_action_binding_invokes_the_resource_action();
     }
-
-    phase a_handler_publishes_the_action_as_a_certified_bound_button;
-    {
-        let opened = std::rc::Rc::new(std::cell::Cell::new(0));
-        let seen = opened.clone();
-        let root = EmptyState::new("No places yet")
-            .with_action("Add a place")
-            .with_action_id("weather.empty.add")
-            .on_open(move || seen.set(seen.get() + 1));
-        let mut driver =
-            crate::app::driver::Driver::new(crate::state::State::new(), Box::new(root), (480, 360));
-        let audit = driver.native_app_audit();
-        assert!(audit.is_certified(), "{audit:#?}");
-        driver
-            .perform_named("weather.empty.add", &tilo_ui_base::a11y::Action::Activate)
-            .expect("the action is addressable by its id");
-        assert_eq!(opened.get(), 1, "the view handler ran once");
-    }
-
 
     phase a_painted_state_is_addressed_as_the_controls_beside_it_are;
     {

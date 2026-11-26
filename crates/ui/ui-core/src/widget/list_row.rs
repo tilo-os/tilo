@@ -3507,3 +3507,35 @@ impl tilo_ui_base::presence::capability::PublishesPresence for ListRow {
         })
     }
 }
+
+/// What a row's parts say to a test outside this crate.
+#[cfg(any(test, feature = "test-support"))]
+impl ListRow {
+    /// The band the row's title is drawn in.
+    pub fn text_band_for_tests(&self) -> Rect {
+        self.text_band()
+    }
+
+    /// The level the check's fill stands at, once drawn.
+    pub fn check_level_for_tests(&self) -> Option<f32> {
+        self.check_pose.map(|pose| pose.level)
+    }
+
+    /// Toggles the row's leading checkbox as a press on it would.
+    pub fn toggle_leading_check_for_tests(&mut self) {
+        if let Some(Leading::Checkbox { checked, .. }) = &mut self.leading {
+            *checked = !*checked;
+            self.dirty = true;
+        } else {
+            panic!("the row has no leading checkbox");
+        }
+    }
+
+    /// Binds the row's check to a run, as a view's props would.
+    pub fn set_check_action_for_tests(
+        &mut self,
+        action: Option<tilo_ui_base::widget::ActionEmitter<()>>,
+    ) {
+        self.check_action = action;
+    }
+}

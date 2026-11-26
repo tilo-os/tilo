@@ -56,6 +56,16 @@ pub struct ReactionsProps {
 
 impl ReactionsProps {
     /// Each emoji with who reacted with it, in the order shown: the map's, else the older form's.
+    /// The emoji groups a described strip shows, for a test outside this crate.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn groups_for_tests(
+        reactions: std::collections::BTreeMap<String, std::collections::BTreeSet<Person>>,
+        emoji: Vec<String>,
+        by: Vec<Vec<Person>>,
+    ) -> Vec<(String, Vec<Person>)> {
+        Self::groups(reactions, emoji, by)
+    }
+
     fn groups(
         reactions: BTreeMap<String, BTreeSet<Person>>,
         emoji: Vec<String>,

@@ -1646,9 +1646,6 @@ impl Banner {
     }
 }
 
-#[cfg(test)]
-mod tests;
-
 /// The dismiss control is a part of the banner: what the view bound to it is carried out here,
 /// where the banner's controls answer for it.
 impl tilo_ui_base::widget::controls::ActionControls for Banner {
@@ -1695,5 +1692,18 @@ impl tilo_ui_base::widget::controls::ActionControls for Banner {
         for child in Widget::children_mut(self) {
             tilo_ui_base::widget::controls::refresh_control_action_availability(child, allowed);
         }
+    }
+}
+/// A banner's dismissal, for a test outside this crate.
+#[cfg(any(test, feature = "test-support"))]
+impl Banner {
+    /// Whether the banner was dismissed.
+    pub fn is_dismissed_for_tests(&self) -> bool {
+        self.dismissed
+    }
+
+    /// Dismisses the banner as its own control would.
+    pub fn dismiss_now_for_tests(&mut self) {
+        self.dismiss_now();
     }
 }

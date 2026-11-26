@@ -277,3 +277,50 @@ mod presence_draft;
 mod ui_graph;
 #[path = "view.rs"]
 mod view;
+
+#[path = "widgets/activity_timeline_edges.rs"]
+mod activity_timeline_edges;
+#[path = "widgets/avatar_name_refresh.rs"]
+mod avatar_name_refresh;
+#[path = "widgets/badge_text_width.rs"]
+mod badge_text_width;
+#[path = "widgets/banner_tests.rs"]
+mod banner_tests;
+#[path = "widgets/board_component_tests.rs"]
+mod board_component_tests;
+#[path = "widgets/board_tests.rs"]
+mod board_tests;
+#[path = "widgets/button_runner_tests.rs"]
+mod button_runner_tests;
+#[path = "widgets/call_tile_ratio.rs"]
+mod call_tile_ratio;
+#[path = "widgets/card_parts_tests.rs"]
+mod card_parts_tests;
+#[path = "widgets/chat_reactions_tests.rs"]
+mod chat_reactions_tests;
+#[path = "widgets/context_menu_nested_tests.rs"]
+mod context_menu_nested_tests;
+#[path = "widgets/data_table_checkbox_tests.rs"]
+mod data_table_checkbox_tests;
+#[path = "widgets/document_viewport_tests.rs"]
+mod document_viewport_tests;
+#[path = "widgets/drag_run_tests.rs"]
+mod drag_run_tests;
+#[path = "widgets/dropdown_tests.rs"]
+mod dropdown_tests;
+#[path = "widgets/empty_state_action_tests.rs"]
+mod empty_state_action_tests;
+#[path = "widgets/find_bar_hosted_tests.rs"]
+mod find_bar_hosted_tests;
+#[path = "widgets/form_composition_tests.rs"]
+mod form_composition_tests;
+#[path = "widgets/form_labels_tests.rs"]
+mod form_labels_tests;
+#[path = "widgets/group_row_presence_tests.rs"]
+mod group_row_presence_tests;
+#[path = "widgets/image_bounds.rs"]
+mod image_bounds;
+#[path = "widgets/list_row_actions_tests.rs"]
+mod list_row_actions_tests;
+#[path = "widgets/page_edges_land_on_device_pixels.rs"]
+mod page_edges_land_on_device_pixels;

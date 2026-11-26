@@ -4105,6 +4105,30 @@ fn is_bot_author(author: &crate::widget::history::HistoryAuthor) -> bool {
 mod writers;
 pub use writers::RowParts;
 
+/// The pane's own state a test reads or places, and the padding it keeps.
+#[cfg(any(test, feature = "test-support"))]
+impl ActivityTimeline {
+    /// The padding the pane keeps from its edge to its controls.
+    pub fn pane_padding_for_tests() -> f64 {
+        PADDING
+    }
+
+    /// Places the selection bar, name field and filter strip as a paint would.
+    pub fn place_controls_for_tests(&mut self, theme: &Theme) {
+        self.place_controls(theme);
+    }
+
+    /// How this change's breadcrumb reads to a person, if it names one thing.
+    pub fn entry_breadcrumb_for_tests(entry: &HistoryEntry) -> Option<String> {
+        Self::entry_breadcrumb(entry)
+    }
+
+    /// The entries a test retitles or drops the context of.
+    pub fn entries_mut_for_tests(&mut self) -> &mut [HistoryEntry] {
+        &mut self.entries
+    }
+}
+
 #[cfg(test)]
 mod tests;
 

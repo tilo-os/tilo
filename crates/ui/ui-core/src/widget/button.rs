@@ -3026,6 +3026,33 @@ impl Button {
     }
 }
 
+/// A button's role, metrics and hit area, and a face's rectangle, for a test
+/// outside this crate.
+#[cfg(any(test, feature = "test-support"))]
+impl Button {
+    /// The role the button was built as.
+    pub fn role_for_tests(&self) -> ButtonRole {
+        self.role
+    }
+
+    /// Sizes a button's face from a control size as the stock metrics would.
+    pub fn set_stock_metrics_for_tests(&mut self, size: ControlSize, theme: &Theme) {
+        self.metrics = FaceMetrics::of(size, theme);
+    }
+
+    /// The area a pointer presses the button in.
+    pub fn hit_rect_for_tests(&self) -> Rect {
+        self.hit_rect()
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl<'a> ButtonFace<'a> {
+    /// The rectangle the face paints into.
+    pub fn rect_for_tests(&self) -> Rect {
+        self.rect
+    }
+}
 #[cfg(test)]
 mod tests;
 

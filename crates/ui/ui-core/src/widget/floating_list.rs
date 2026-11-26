@@ -1065,8 +1065,13 @@ impl<R: FloatingRow> FloatingList<R> {
         self.heights.get(index).copied().unwrap_or(0.0)
     }
 
+    /// The rows' bar thumb and track, for a test outside this crate.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn scrollbar_thumb_for_tests(&self) -> Option<(Rect, Rect)> {
+        self.scrollbar_thumb()
+    }
+
     /// The rows' bar thumb and track.
-    #[cfg(test)]
     pub(crate) fn scrollbar_thumb(&self) -> Option<(Rect, Rect)> {
         self.scroll.test_vertical_thumb(&self.theme)
     }

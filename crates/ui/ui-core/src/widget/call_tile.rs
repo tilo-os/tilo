@@ -488,7 +488,6 @@ impl Widget for CallTile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::headless::Driver;
     use tilo_ui_base::widget::Widget;
 
     tilo_test_env::scenario! {
@@ -563,20 +562,5 @@ mod tests {
             assert!(tile.picture_now().is_none(), "a tile with no frame shows the face");
         }
 
-        phase a_window_with_a_tile_lays_it_out_at_its_ratio;
-        {
-            let person = Person::new(tilo_actions::MemberId::person("ef".repeat(32)), "Lin");
-            let tile = CallTile::of(person, CallSource::Camera);
-            let harness = Driver::new(crate::State::new(), Box::new(tile), (640, 360));
-            let root = harness.root_widget();
-            let rect = root.get_rect();
-            assert!(rect.width() > 1.0, "the tile takes the window's width");
-            assert!(
-                (rect.height() - rect.width() / (16.0 / 9.0)).abs() <= 1.0,
-                "a camera tile is laid out at its frame's ratio, got {}x{}",
-                rect.width(),
-                rect.height()
-            );
-        }
     }
 }

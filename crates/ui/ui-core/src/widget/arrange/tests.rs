@@ -219,13 +219,6 @@ tilo_test_env::scenario! {
     }
 }
 
-fn boxes(widget: &dyn Widget, out: &mut Vec<(String, vello::kurbo::Rect)>) {
-    out.push((widget.name().to_owned(), widget.get_rect()));
-    for child in widget.children() {
-        boxes(child, out);
-    }
-}
-
 tilo_test_env::scenario! {
     /// Stacks and containers: gaps, leads, padding, described changes, settling, repaint and device pixels.
     /// Each phase was a test of its own and builds its own fixture.
@@ -320,58 +313,6 @@ tilo_test_env::scenario! {
             held.x0 > pad + 0.5,
             "a lead stands what it holds further in than the padding alone: {held:?}"
         );
-    }
-
-
-    phase every_edge_lands_on_a_device_pixel_at_the_display_scale;
-    {
-        use crate::widget::Text;
-        use tilo_ui_base::widget::Manual;
-        use vello::kurbo::Rect;
-        let content = Page::new().push(Box::new(
-            Stack::stack()
-                .push(boxed(10.3))
-                .push(Box::new(Text::new(
-                    "A paragraph long enough to wrap onto a few lines in a narrow window",
-                )))
-                .push(Box::new(Row::row().push(boxed(7.7)).push(boxed(3.35))))
-                .push(boxed(5.45)),
-        ));
-        let region = Manual::new(|ctx| {
-            let available = ctx.available();
-            ctx.place(
-                0,
-                Rect::new(
-                    3.3,
-                    7.1,
-                    f64::from(available.width) - 2.2,
-                    f64::from(available.height) - 1.7,
-                ),
-            )?;
-            Ok(available)
-        })
-        .child(Box::new(content));
-        let mut harness = crate::app::driver::Driver::new_with_theme(
-            crate::State::new(),
-            Box::new(region),
-            (333, 517),
-            Theme::light().with_text_scale(1.3),
-        );
-        for scale in [1.0, 1.5, 2.0, 1.25] {
-            harness.set_input_scale(scale).expect("a scale");
-            harness.relayout();
-            let mut laid = Vec::new();
-            boxes(harness.root_widget(), &mut laid);
-            assert!(laid.len() > 8, "{laid:?}");
-            for (name, rect) in laid {
-                for edge in [rect.x0, rect.y0, rect.x1, rect.y1] {
-                    assert!(
-                        (edge * scale - (edge * scale).round()).abs() < 1e-3,
-                        "{name} {rect:?}: {edge} is no device pixel at {scale}x"
-                    );
-                }
-            }
-        }
     }
 
     phase a_spacer_takes_the_leftover_area_and_no_gap_of_its_own;

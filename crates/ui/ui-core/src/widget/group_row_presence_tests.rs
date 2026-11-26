@@ -3,7 +3,6 @@
 
 use super::tests::{relayout_strip, strip_at};
 use super::*;
-use crate::app::driver::Driver;
 use crate::retained_present::{PanFrame, PanReplay};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -197,46 +196,4 @@ fn mark_bounds(node: &crate::headless::InspectionNode) -> Option<Rect> {
             .map(tilo_ui_base::a11y::AccessBounds::to_rect);
     }
     node.children.iter().find_map(mark_bounds)
-}
-
-#[test]
-fn a_peers_caret_in_a_panned_window_is_a_node_where_the_window_drew_it() {
-    let first = Rc::new(Cell::new(Rect::ZERO));
-    let second = Rc::new(Cell::new(Rect::ZERO));
-    let row = GroupRow::new(vec![
-        window(100, "first", Rc::clone(&first)),
-        window(200, "second", Rc::clone(&second)),
-    ]);
-    let mut frame = Driver::for_root(crate::State::new(), row, (390, 844), Theme::default());
-    let peer = tilo_action_policy::MemberId::person("claude");
-    frame
-        .presence_mut()
-        .set_display_name(peer.clone(), "Claude Code");
-    frame
-        .presence_mut()
-        .set_caret(&Field::key("second"), peer, 0);
-    frame.relayout();
-
-    let offset = {
-        let row = frame.root::<GroupRow>();
-        row.groups[1].get_rect().x0 - row.get_rect().x0
-    };
-    assert!(offset > 1.0, "the second window stands beside the first");
-    assert!(
-        frame.root_mut::<GroupRow>().pan_to(offset),
-        "the strip pans to the second window"
-    );
-    frame.relayout();
-
-    let drawn = second.get();
-    assert!(
-        drawn.x0 >= 0.0 && drawn.x1 <= 390.0,
-        "the caret is drawn on the phone's screen: {drawn:?}"
-    );
-    let bounds = mark_bounds(&frame.inspection().root)
-        .expect("the peer's caret is a node a reader finds, where it stands");
-    assert!(
-        close(bounds, drawn),
-        "the node is exactly the caret the window drew: {bounds:?}, drawn {drawn:?}"
-    );
 }

@@ -480,7 +480,7 @@ impl ScrollRegion {
         self.pointer_near || self.vbar.is_active() || self.hbar.is_active()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn test_vertical_thumb(&self, theme: &Theme) -> Option<(Rect, Rect)> {
         let track = self.v_track(theme)?;
         self.vbar

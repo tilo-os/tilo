@@ -30,6 +30,8 @@ tilo-content = { path = "../../core/content", default-features = false }
 tilo-resource = { path = "../../core/tilo-resource" }
 tilo-doc = { path = "../../sdk/tilo-doc", default-features = false }
 tilo-lock = { path = "../../platform/tilo-lock" }
+tilo-identity-client = { path = "../../core/tilo-identity-client" }
+tilo-action-policy = { path = "../../core/action-policy" }
 # The synthesized engine a video player test plays.
 media = { package = "tilo-media", path = "../../engines/tilo-media" }
 tilo-theme-sdk = { path = "../theme-sdk" }

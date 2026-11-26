@@ -379,6 +379,20 @@ impl Widget for Avatar {
     }
 }
 
+/// What an avatar follows and shows, for a test outside this crate.
+#[cfg(any(test, feature = "test-support"))]
+impl Avatar {
+    /// The name the avatar shows, after a bound name state last changed it.
+    pub fn name_for_tests(&self) -> &str {
+        &self.name
+    }
+
+    /// Whether a picture's bytes are read and drawn instead of the initials.
+    pub fn has_image_for_tests(&self) -> bool {
+        self.image.is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,60 +525,6 @@ mod tests {
     }
 
     #[cfg(feature = "local-daemons")]
-    #[test]
-    fn bound_name_refresh_keeps_photo_and_adjacent_input_selection() {
-        use crate::widget::{Row, TextInput};
-        let name = tilo_ui_base::LocalState::new("Ada".to_owned());
-        let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
-        let avatar = Avatar::person("Ada", "ada")
-            .with_name_state(&name)
-            .with_profile_photo(&photo)
-            .size(AvatarSize::Portrait);
-        let input = TextInput::local().with_initial_value("Ada");
-        let root = Row::new().push(Box::new(avatar)).push(Box::new(input));
-        let mut harness = crate::app::driver::Driver::new_with_theme(
-            crate::State::new(),
-            Box::new(root),
-            (640, 320),
-            Theme::dark(),
-        );
-        harness
-            .with_widget_mut::<TextInput, _>(|input| {
-                input.set_text("Ada Lovelace");
-                input.set_focus(true);
-                input.set_selection(4, 8);
-            })
-            .unwrap();
-        let original = harness
-            .with_widget_mut::<Avatar, _>(|avatar| (std::ptr::from_ref(avatar), avatar.get_rect()))
-            .unwrap();
-        name.set("Ada Lovelace".to_owned());
-        // Run the root's production update/sync/layout passes before inspecting
-        // the widgets: with_widget_mut invokes its visitor before pumping a frame.
-        // A name edit must not rebuild the neighbouring editor or replace its
-        // presentation state.
-        harness.relayout();
-        harness
-            .with_widget_mut::<Avatar, _>(|avatar| {
-                assert_eq!(std::ptr::from_ref(avatar), original.0);
-                assert_eq!(avatar.get_rect(), original.1);
-                assert_eq!(avatar.name, "Ada Lovelace");
-                assert!(avatar.image.is_some());
-                assert_eq!(
-                    Widget::accessibility(avatar).unwrap().name.as_deref(),
-                    Some("Ada Lovelace")
-                );
-            })
-            .unwrap();
-        harness
-            .with_widget_mut::<TextInput, _>(|input| {
-                assert!(input.is_focused());
-                assert_eq!(input.cursor_pos(), 8);
-                assert_eq!(input.selection_range_public(), Some((4, 8)));
-            })
-            .unwrap();
-    }
-
     #[cfg(feature = "local-daemons")]
     #[test]
     fn explicit_canonical_photo_is_drawn_by_shared_avatar() {

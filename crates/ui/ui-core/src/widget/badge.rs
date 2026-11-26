@@ -913,28 +913,6 @@ mod tests {
             assert!(scene.encoding().draw_tags.contains(&DrawTag::COLOR));
         }
 
-        phase a_text_badge_is_as_wide_as_its_label_at_every_text_scale;
-        {
-            for scale in [1.0, 2.0] {
-                let theme = Theme::dark().with_text_scale(scale);
-                let harness = crate::app::driver::Driver::new_with_theme(
-                    crate::State::new(),
-                    Box::new(crate::widget::Row::new().push(Box::new(
-                        Badge::text("Maintainer").style(ChipStyle::Tinted(Tone::Success)),
-                    ))),
-                    (600, 200),
-                    theme.clone(),
-                );
-                let rect = harness.inspection().root.children[0].rect;
-                let mut text = TextRenderer::new();
-                text.set_text_scale(scale);
-                let (label, line) =
-                    text.measure_style("Maintainer", None, &theme.text(TextRole::Caption));
-                assert!(rect[2] > f64::from(label), "{scale}x: {rect:?}");
-                assert!(rect[3] >= f64::from(line), "{scale}x: {rect:?}");
-            }
-        }
-
         phase a_count_on_an_icon_is_small_round_and_one_colour_in_every_theme;
         // A count on an icon is a small circle, so most of it stands past the glyph's corner; an
         // alert's count is the same amber in light and dark, lettered in whichever ink reads on it.

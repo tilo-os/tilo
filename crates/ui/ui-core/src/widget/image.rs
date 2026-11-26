@@ -991,88 +991,19 @@ impl Widget for Image {
     }
 }
 
+/// The decoded fixture picture a test reads through [`Image::from_path`].
+#[cfg(any(test, feature = "test-support"))]
+const FIXTURE_PATH: &str = concat!(env!("OUT_DIR"), "/test_image.png");
+
+/// The fixture picture's path, for a test outside this crate that needs one on disk.
+#[cfg(any(test, feature = "test-support"))]
+pub fn fixture_image_path_for_tests() -> &'static str {
+    FIXTURE_PATH
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn intrinsic_images_receive_real_layout_bounds() {
-        use crate::app::driver::Driver;
-        use crate::widget::{Container, Row};
-
-        for scale in [1.0, 2.0] {
-            let theme = Theme::dark().with_ui_scale(scale);
-            let svg = Image::from_svg(
-                br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 16"><path fill="#126abc" d="M0 0H32V16H0Z"/></svg>"##,
-                32,
-                16,
-            ).unwrap();
-            let row = Row::new()
-                .push(Box::new(svg))
-                .push(Box::new(Image::from_path(FIXTURE_PATH)))
-                .push(Box::new(Image::from_rgba(
-                    Arc::from(vec![255; 32 * 16 * 4]),
-                    32,
-                    16,
-                )));
-            let harness =
-                Driver::new_with_theme(crate::State::new(), Box::new(row), (400, 120), theme);
-            let children = harness.root_widget().children();
-            for (index, (width, height)) in [(32.0, 16.0), (16.0, 16.0), (32.0, 16.0)]
-                .into_iter()
-                .enumerate()
-            {
-                let rect = children[index].get_rect();
-                assert_eq!(rect.width(), width * f64::from(scale));
-                assert_eq!(rect.height(), height * f64::from(scale));
-            }
-        }
-
-        let image = Image::from_rgba(Arc::from(vec![255; 32 * 16 * 4]), 32, 16);
-        let harness = Driver::new(
-            crate::State::new(),
-            Box::new(Row::new().push(Box::new(image))),
-            (16, 80),
-        );
-        let rect = harness.root_widget().children()[0].get_rect();
-        assert_eq!(rect.width(), 16.0);
-        assert_eq!(
-            rect.height(),
-            8.0,
-            "a bounded auto image keeps its aspect ratio"
-        );
-
-        let harness = Driver::new(
-            crate::State::new(),
-            Box::new(Row::new().push(Box::new(Image::from_path("missing-image.png")))),
-            (200, 100),
-        );
-        let rect = harness.root_widget().children()[0].get_rect();
-        assert!(
-            rect.width() > 0.0 && rect.height() > 0.0,
-            "decode failures remain visible"
-        );
-
-        for fit in [
-            ImageFit::Contain,
-            ImageFit::Cover,
-            ImageFit::Fill,
-            ImageFit::Actual,
-        ] {
-            let image = Image::from_path(FIXTURE_PATH).filling().with_fit(fit);
-            let root = Row::new().push(Box::new(
-                Container::new()
-                    .with_no_padding()
-                    .with_size(80.0, 40.0)
-                    .with_child(Box::new(image)),
-            ));
-            let harness = Driver::new(crate::State::new(), Box::new(root), (200, 100));
-            let container = harness.root_widget().children()[0];
-            let rect = container.children()[0].get_rect();
-            assert_eq!(rect.width(), 80.0);
-            assert_eq!(rect.height(), 40.0);
-        }
-    }
 
     tilo_test_env::scenario! {
         fn an_image_loads_paints_and_is_named;
@@ -1135,8 +1066,6 @@ mod tests {
             accessibility_without_alt_has_no_name();
         }
     }
-
-    const FIXTURE_PATH: &str = concat!(env!("OUT_DIR"), "/test_image.png");
 
     /// What a picture that takes input heard, in the order it heard it.
     #[derive(Default)]

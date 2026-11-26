@@ -1041,3 +1041,10 @@ pub mod internals {
         pub use crate::widget::window_group::*;
     }
 }
+/// The fixtures and measures a test outside this crate reaches.
+#[cfg(any(test, feature = "test-support"))]
+pub use {
+    board::card_estimate_for_tests,
+    dropdown::{chevron_width_for_tests, menu_min_width_for_tests, pad_x_for_tests},
+    image::fixture_image_path_for_tests,
+};

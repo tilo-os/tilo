@@ -600,6 +600,12 @@ impl FindBar {
 
     /// The query typed so far.
     #[must_use]
+    /// The replacement a host's exported field entered.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn replace_text_for_tests(&self) -> &str {
+        self.replace_field.value()
+    }
+
     pub fn query(&self) -> &str {
         self.field.value()
     }
@@ -2030,94 +2036,6 @@ mod tests {
         );
         assert!(reveal.opacity < 1.0, "the controls fade in");
         assert!(scope.content_offset().abs() < f64::EPSILON, "nothing moves");
-    }
-
-    #[test]
-    fn hosted_accessibility_edits_the_real_find_query_and_replacement() {
-        let page = Page {
-            doc: Doc {
-                text: "one two one".into(),
-                ..Doc::default()
-            },
-            rect: Rect::ZERO,
-        };
-        let mut scope = FindScope::new(Box::new(page)).with_bar(FindBar::new().with_replace());
-        scope.open();
-        let mut harness = crate::app::driver::Driver::for_root(
-            crate::State::new(),
-            scope,
-            (900, 400),
-            Theme::dark(),
-        );
-        let field = |harness: &crate::app::driver::Driver, name: &str| {
-            harness
-                .a11y_nodes()
-                .into_iter()
-                .find(|(_, node)| {
-                    node.role() == accesskit::Role::TextInput && node.label() == Some(name)
-                })
-                .map(|(id, _)| id)
-                .unwrap_or_else(|| panic!("missing exported find field {name}"))
-        };
-        for name in [
-            tr("find-bar-placeholder"),
-            tr("find-bar-replace-placeholder"),
-        ] {
-            assert_eq!(
-                harness
-                    .a11y_nodes()
-                    .into_iter()
-                    .filter(|(_, node)| {
-                        node.role() == accesskit::Role::TextInput
-                            && node.label() == Some(name.as_str())
-                    })
-                    .count(),
-                1,
-                "each actual find field has one exported accessibility node"
-            );
-        }
-        let query = field(&harness, &tr("find-bar-placeholder"));
-        harness
-            .perform_a11y_action(query, &tilo_ui_base::a11y::Action::SetValue("one".into()))
-            .expect("the exported query enters the real find scope");
-        assert_eq!(harness.root::<FindScope>().bar.query(), "one");
-        assert_eq!(harness.root::<FindScope>().bar.position(), Some((1, 2)));
-        let query = field(&harness, &tr("find-bar-placeholder"));
-        harness
-            .perform_a11y_action(query, &tilo_ui_base::a11y::Action::Focus)
-            .expect("the exported query can take keyboard focus");
-        let query = field(&harness, &tr("find-bar-placeholder"));
-        harness
-            .perform_a11y_action(
-                query,
-                &tilo_ui_base::a11y::Action::SetSelection {
-                    anchor: 0,
-                    focus: 3,
-                },
-            )
-            .unwrap();
-        harness.type_text("two");
-        assert_eq!(harness.root::<FindScope>().bar.query(), "two");
-        assert_eq!(harness.root::<FindScope>().bar.position(), Some((1, 1)));
-        let replacement = field(&harness, &tr("find-bar-replace-placeholder"));
-        harness
-            .perform_a11y_action(
-                replacement,
-                &tilo_ui_base::a11y::Action::SetValue("three".into()),
-            )
-            .unwrap();
-        assert_eq!(
-            harness.root::<FindScope>().bar.replace_field.value(),
-            "three"
-        );
-        assert_eq!(harness.root::<FindScope>().bar.query(), "two");
-        let query = field(&harness, &tr("find-bar-placeholder"));
-        assert!(
-            harness
-                .perform_a11y_action(query, &tilo_ui_base::a11y::Action::ToggleCheck)
-                .is_err()
-        );
-        assert_eq!(harness.root::<FindScope>().bar.query(), "two");
     }
 }
 

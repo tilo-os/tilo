@@ -2049,5 +2049,104 @@ impl<'a> DropdownFace<'a> {
     }
 }
 
-#[cfg(test)]
-mod tests;
+/// A dropdown's own geometry and list, for a test outside this crate.
+#[cfg(any(test, feature = "test-support"))]
+impl Dropdown {
+    /// The field's laid-out rectangle.
+    pub fn rect_for_tests(&self) -> Rect {
+        self.rect
+    }
+
+    /// Puts the field where a host's layout would.
+    pub fn set_rect_for_tests(&mut self, rect: Rect) {
+        self.rect = rect;
+    }
+
+    /// The rectangle the field's caption and label take around it.
+    pub fn outer_for_tests(&self) -> Rect {
+        self.outer
+    }
+
+    /// Whether the pointer rests over the field.
+    pub fn is_hovered_for_tests(&self) -> bool {
+        self.is_hovered
+    }
+
+    /// The viewport the list was last placed inside.
+    pub fn viewport_for_tests(&self) -> Option<Rect> {
+        self.viewport
+    }
+
+    /// Opens the list as a press would.
+    pub fn do_open_for_tests(&mut self) {
+        self.do_open();
+    }
+
+    /// The filter typed into the open list.
+    pub fn filter_for_tests(&self) -> &str {
+        &self.filter
+    }
+
+    /// Replaces the filter as typed input would.
+    pub fn set_filter_for_tests(&mut self, filter: impl Into<String>) {
+        self.filter = filter.into();
+    }
+
+    /// The selection within the typed filter.
+    pub fn filter_selection_for_tests(&self) -> Selection {
+        self.filter_selection
+    }
+
+    /// Replaces the filter's selection as an edit would.
+    pub fn set_filter_selection_for_tests(&mut self, selection: Selection) {
+        self.filter_selection = selection;
+    }
+
+    /// The rectangle the filter's text is typed in.
+    pub fn query_rect_for_tests(&self) -> Rect {
+        self.query_rect
+    }
+
+    /// The label the field shows for its value.
+    pub fn selected_label_for_tests(&self) -> &str {
+        self.selected_label()
+    }
+
+    /// Whether the field shows a selected value rather than its placeholder.
+    pub fn has_selected_value_for_tests(&self) -> bool {
+        self.has_selected_value()
+    }
+
+    /// The list its open choices stand in.
+    pub fn list_for_tests(&self) -> &SuggestionList {
+        &self.list
+    }
+
+    /// Refreshes the open list's rows as a frame would.
+    pub fn refresh_list_for_tests(&mut self) {
+        self.refresh_list();
+    }
+
+    /// The rectangle the open list occupies.
+    pub fn list_rect_for_tests(&self) -> Rect {
+        self.list_rect()
+    }
+}
+
+/// The field's own paddings, for a test outside this crate.
+#[cfg(any(test, feature = "test-support"))]
+pub fn pad_x_for_tests() -> f64 {
+    PAD_X
+}
+
+#[cfg(any(test, feature = "test-support"))]
+/// The width the field keeps for its chevron.
+pub fn chevron_width_for_tests() -> f64 {
+    CHEVRON_W
+}
+
+/// The least width a menu takes.
+#[cfg(any(test, feature = "test-support"))]
+pub fn menu_min_width_for_tests() -> f64 {
+    menu_min_width()
+}
