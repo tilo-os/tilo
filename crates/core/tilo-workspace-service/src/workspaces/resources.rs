@@ -2666,14 +2666,19 @@ impl Workspaces {
             .await;
             // Every document the action wrote is kept now, so whoever it wakes reads the whole
             // action: a message's files are read with the message they were sent with.
-            let documents: Vec<String> = writes.iter().map(|write| write.doc.clone()).collect();
-            for write in &writes {
-                let together = documents
+            let documents = std::sync::Arc::new(
+                writes
                     .iter()
-                    .filter(|document| **document != write.doc)
-                    .cloned()
-                    .collect();
-                workspaces.wrote_together(hosted.workspace(), &app, &write.doc, together);
+                    .map(|write| write.doc.clone())
+                    .collect::<Vec<_>>(),
+            );
+            for write in &writes {
+                workspaces.wrote_together(
+                    hosted.workspace(),
+                    &app,
+                    &write.doc,
+                    std::sync::Arc::clone(&documents),
+                );
             }
             hosted.resources.batch_kept();
             let _ = complete.send(result);

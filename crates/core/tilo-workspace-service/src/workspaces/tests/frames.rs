@@ -211,13 +211,10 @@ async fn a_write_of_two_documents_notices_them_together() {
             "a document it wrote: {notice:?}"
         );
         let beside: BTreeSet<&String> = notice.together.iter().collect();
-        let others: BTreeSet<&String> = documents
-            .iter()
-            .filter(|doc| **doc != notice.record)
-            .collect();
         assert_eq!(
-            beside, others,
-            "the notice names the documents it was written with: {notice:?}"
+            beside,
+            documents.iter().collect::<BTreeSet<_>>(),
+            "the notice names every document the action wrote: {notice:?}"
         );
     }
 }

@@ -22,10 +22,11 @@ pub struct ResourceWrite {
     pub app: String,
     /// The record's id on the wire (`""` for the app's primary).
     pub record: String,
-    /// The other records the same write changed, when it wrote several: one action writes a
-    /// message and the files it carries to documents of their own, and whoever reads the
-    /// change reads them together.
-    pub together: Vec<String>,
+    /// The records the same write changed, this one among them: one action writes a message
+    /// and the files it carries to documents of their own, and whoever reads the change reads
+    /// them together. The write's notices share one list, so a write of many documents names
+    /// them once.
+    pub together: std::sync::Arc<Vec<String>>,
 }
 
 /// What taking a member's write into the host's copy did.

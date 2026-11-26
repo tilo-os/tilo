@@ -1283,18 +1283,18 @@ impl super::Workspaces {
     /// write of several documents raises it for each of them together once the
     /// whole action is kept, through [`Self::wrote_together`].
     pub(crate) fn wrote(&self, workspace: &str, app: &str, record: &str) {
-        self.wrote_together(workspace, app, record, Vec::new());
+        self.wrote_together(workspace, app, record, std::sync::Arc::default());
     }
 
-    /// [`Self::wrote`] for a record one write wrote with `together`, the write's other records:
-    /// a reader of the change reads them with it, so a message's files are read with the
-    /// message wherever the store placed them.
+    /// [`Self::wrote`] for a record one write wrote with `together`, every record the write
+    /// changed: a reader of the change reads them with it, so a message's files are read with
+    /// the message wherever the store placed them. The write's notices share the one list.
     pub(crate) fn wrote_together(
         &self,
         workspace: &str,
         app: &str,
         record: &str,
-        together: Vec<String>,
+        together: std::sync::Arc<Vec<String>>,
     ) {
         self.begins_write(workspace, app, record);
         let _ = self.inner.document_writes.send(super::ResourceWrite {

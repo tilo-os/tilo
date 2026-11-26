@@ -363,7 +363,7 @@ fn the_desktop_hears_each_write_the_daemon_took() {
                 workspace: WORKSPACE.to_owned(),
                 app: DESKTOP_APP.to_owned(),
                 record: DESKTOP_DOCUMENT.to_owned(),
-                together: Vec::new(),
+                together: std::sync::Arc::default(),
             })
             .unwrap();
         let told = tokio::time::timeout(std::time::Duration::from_secs(10), followed.recv())
