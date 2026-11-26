@@ -1461,3 +1461,146 @@ pub enum AccountIdentity {
     /// This VM's person, through the session's onboarding.
     Device,
 }
+
+#[cfg(test)]
+mod tests {
+    tilo_test_env::scenario! {
+        fn swap_and_account_create_take_their_flags;
+
+        phase account_create_takes_an_opt_in_identity;
+        {
+            let identity = |args: &[&str]| {
+                let cli = Cli::try_parse_from(args).unwrap();
+                let Some(Command::Account(AccountCommand::Create { identity, .. })) = cli.command else {
+                    panic!("account create did not parse");
+                };
+                identity
+            };
+            assert_eq!(
+                identity(&["tilo-vm", "account", "create", "--headful", "--identity"]),
+                Some(AccountIdentity::Throwaway)
+            );
+            assert_eq!(
+                identity(&[
+                    "tilo-vm",
+                    "account",
+                    "create",
+                    "acceptance",
+                    "--headful",
+                    "--identity",
+                    "device"
+                ]),
+                Some(AccountIdentity::Device)
+            );
+            assert_eq!(identity(&["tilo-vm", "account", "create", "--headful"]), None);
+        }
+
+        phase outputs_need_a_headful_account_and_parse_left_to_right;
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-vm",
+                "account",
+                "create",
+                "--headful",
+                "--outputs",
+                "2560x1600@2,1920x1080",
+            ])
+            .unwrap();
+            let Some(Command::Account(AccountCommand::Create { outputs, .. })) = cli.command else {
+                panic!("account create did not parse");
+            };
+            assert_eq!(
+                tilo_device_protocol::display::format_outputs(&outputs),
+                "2560x1600@2,1920x1080@1"
+            );
+            assert!(
+                Cli::try_parse_from(["tilo-vm", "account", "create", "--outputs", "800x600"]).is_err()
+            );
+            let error = Cli::try_parse_from([
+                "tilo-vm",
+                "account",
+                "create",
+                "--headful",
+                "--outputs",
+                "800x600@9",
+            ])
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("outside 0.5 to 4"), "{error}");
+        }
+    }
+
+    use super::*;
+
+    tilo_test_env::scenario! {
+        /// Ages read like durations, and only state-changing or long commands write receipts.
+        fn ages_read_like_durations_and_only_changing_commands_write_receipts;
+
+        phase ages_read_like_durations;
+        {
+            assert_eq!(parse_age("0"), Ok(0));
+            assert_eq!(parse_age("90s"), Ok(90));
+            assert_eq!(parse_age("30m"), Ok(1800));
+            assert_eq!(parse_age("1h"), Ok(3600));
+            assert_eq!(parse_age("2d"), Ok(172_800));
+            assert!(parse_age("1w").is_err());
+            assert!(parse_age("soon").is_err());
+            assert_eq!(parse_resolution("5120x2880"), Ok("5120x2880".into()));
+            assert!(parse_resolution("5120").is_err());
+            assert!(parse_resolution("100x100").is_err());
+            assert!(parse_resolution("5120X2880").is_err());
+            let cli = Cli::try_parse_from(["tilo-vm", "gc", "--min-age", "0"]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Gc {
+                    min_age: Some(0),
+                    ..
+                })
+            ));
+        }
+
+        phase only_state_changing_or_long_commands_write_receipts;
+        {
+            let parse = |args: &[&str]| {
+                let mut all = vec!["tilo-vm"];
+                all.extend_from_slice(args);
+                Cli::try_parse_from(all).unwrap().command
+            };
+            for quiet in [
+                &[][..],
+                &["status"],
+                &["doctor"],
+                &["guide", "quickstart"],
+                &["vm", "list"],
+                &["vm", "status"],
+                &["account", "list"],
+                &["account", "show"],
+                &["account", "exec", "--", "true"],
+                &["logs"],
+                &["vm", "ssh"],
+                &["vm", "ssh", "--", "systemctl", "status", "tilo-daemon"],
+                &["scenario", "install", "--dry-run"],
+            ] {
+                assert!(!writes_receipt(parse(quiet).as_ref()), "{quiet:?}");
+            }
+            // --raw is the one vm ssh that changes the VM behind tilo-vm.
+            assert!(writes_receipt(
+                parse(&["vm", "ssh", "--raw", "--", "podman", "login"]).as_ref()
+            ));
+            for loud in [
+                &["swap", "tilo-session"][..],
+                &["vm", "create", "dev"],
+                &["vm", "start"],
+                &["account", "create"],
+                &["rollback"],
+                &["gc"],
+                &["seat", "claim"],
+                &["shot"],
+                &["vm", "restart"],
+                &["scenario", "install"],
+            ] {
+                assert!(writes_receipt(parse(loud).as_ref()), "{loud:?}");
+            }
+        }
+    }
+}

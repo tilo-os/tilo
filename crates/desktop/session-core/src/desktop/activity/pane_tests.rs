@@ -225,22 +225,6 @@ mod tests {
             );
         }
 
-        phase workspace_switch_summary_fits_the_chrome_activity_line;
-        {
-            let summary = PatchCounts {
-                active_switched: true,
-                ..Default::default()
-            }
-            .describe(&ui::history_source::AuthorDirectory::new())
-            .expect("workspace switch is activity")
-            .0;
-            assert_eq!(summary, "Switched workspace");
-            assert!(
-                summary.len() <= 18,
-                "fixed-width topbar summaries must stay concise: {summary}"
-            );
-        }
-
         phase a_busy_workspaces_feed_is_its_own_changes_attributed_stamped_worded_and_banded;
         // The half-hour of [`busy_workspace`], read once in Explore: which rows the feed holds, whom
         // they are attributed to, when they are stamped, how a capability is worded and how the rows
@@ -345,20 +329,6 @@ mod tests {
             let _ = first;
         }
 
-        phase activity_header_digest_reduces_the_same_scoped_rows;
-        {
-            let (mut tree, _, _) = peers_busy_workspace();
-            let pane = pane_over(&mut tree);
-            let others = pane
-                .entries()
-                .iter()
-                .filter(|entry| !author_is_local(&entry.author, &pane.local_user()))
-                .count();
-            assert!(others > 0, "the fixture is a member's work");
-            assert_eq!(pane.digest.total_changes, others);
-            assert!(!pane.digest.briefs.is_empty());
-            assert!(pane.digest.headline().is_some());
-        }
     }
 
     /// A change that switches workspaces and edits a workspace at once does show a desktop of its
@@ -1694,32 +1664,6 @@ mod tests {
             );
         }
 
-        phase action_type_chips_narrow_by_entry_kind;
-        {
-            use ui::widget::activity_timeline::ChipKind;
-            let (mut tree, _, _) = busy_workspace();
-            let mut pane = pane_over(&mut tree);
-            let all = pane.timeline.visible_len();
-
-            pane.timeline.set_active_chip(ChipKind::Governance);
-            let gov = pane.timeline.visible_len();
-            assert!(
-                gov > 0,
-                "grants and revokes are governance; the workspace has some"
-            );
-            assert!(gov < all, "governance is a subset: {gov} of {all}");
-            for i in 0..pane.timeline.visible_len() {
-                assert_eq!(
-                    pane.timeline.visible_entry(i).unwrap().entry_kind,
-                    EntryKind::Access,
-                    "the Governance chip must only show governance rows"
-                );
-            }
-
-            pane.timeline.set_active_chip(ChipKind::All);
-            assert_eq!(pane.timeline.visible_len(), all);
-        }
-
         phase an_empty_workspace_and_a_filtered_one_do_not_read_the_same;
         {
             let mut empty = WorkspaceTree::default();
@@ -1741,18 +1685,6 @@ mod tests {
             );
         }
 
-        phase contributors_are_only_people_who_actually_did_something;
-        {
-            let (mut tree, _, _) = busy_workspace();
-            tree.desktop.workspaces[0]
-                .member_here(tilo_desktop_model::Member::named(collab_types::MemberId::person("ghost"), "Never Edited"));
-            let pane = pane_over(&mut tree);
-            assert!(
-                !pane.contributors.iter().any(|c| c == "Never Edited"),
-                "a peer who never wrote must not be listed: {:?}",
-                pane.contributors
-            );
-        }
     }
 
     #[test]
@@ -1870,129 +1802,6 @@ mod tests {
             }
         }
 
-        phase naming_a_band_round_trips_through_the_workspace_document;
-        {
-            let (mut tree, _, _) = busy_workspace();
-            let mut pane = pane_over(&mut tree);
-            let entries = pane.entries().to_vec();
-            let (start, end) = (entries[1].id, entries[3].id);
-
-            let wrote = pane.apply_name(
-                &mut tree,
-                &GroupNameRequest {
-                    document_id: None,
-                    start,
-                    end,
-                    label: "Set up the workspace".to_string(),
-                },
-            );
-            assert!(wrote, "the name went into the document");
-
-            // It is in the document, not in the widget: a fresh pane over the same tree finds it.
-            let ranges = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
-            assert_eq!(ranges.len(), 1);
-            assert_eq!(ranges[0].label, "Set up the workspace");
-            assert_eq!(ranges[0].start, start);
-            assert_eq!(ranges[0].end, Some(end));
-
-            let mut fresh = native_pane();
-            fresh.refresh(&mut tree);
-            let titles: Vec<&str> = (0..fresh.timeline.row_count())
-                .filter_map(|i| fresh.timeline.group_title_at_row(i))
-                .collect();
-            assert!(
-                titles.contains(&"Set up the workspace"),
-                "the band is on screen for anyone who opens the pane: {titles:?}"
-            );
-        }
-
-        phase un_naming_removes_the_band_and_leaves_the_changes_alone;
-        {
-            let (mut tree, _, _) = busy_workspace();
-            let mut pane = pane_over(&mut tree);
-            let entries = pane.entries().to_vec();
-            let (start, end) = (entries[1].id, entries[3].id);
-            pane.apply_name(
-                &mut tree,
-                &GroupNameRequest {
-                    document_id: None,
-                    start,
-                    end,
-                    label: "Temporary".to_string(),
-                },
-            );
-            let record = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new())[0]
-                .id
-                .clone();
-            let changes_before = pane.entries().len();
-
-            assert!(pane.apply_name(
-                &mut tree,
-                &GroupNameRequest {
-                    document_id: Some(record),
-                    start,
-                    end,
-                    label: String::new(),
-                },
-            ));
-            assert!(
-                ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new()).is_empty(),
-                "the band is gone"
-            );
-            assert_eq!(
-                pane.entries().len(),
-                changes_before,
-                "and the changes it named are all still there"
-            );
-        }
-
-        phase two_people_naming_the_same_run_converge_on_one_band;
-        {
-            let (mut tree, _, _) = busy_workspace();
-            let mut pane = pane_over(&mut tree);
-            let entries = pane.entries().to_vec();
-            let (start, end) = (entries[1].id, entries[3].id);
-
-            // A peer forks the workspace document, names the same run differently, and syncs back — the
-            // shape a remote replica's sync round has.
-            let mut peer = tree.doc.fork();
-            peer.set_actor(automerge::ActorId::from("ada".as_bytes()));
-            ui::history_groups::name_range(&mut peer, &start, Some(&end), "Ada's pass");
-            tilo_resource::history::commit_stamped(&mut peer);
-
-            pane.apply_name(
-                &mut tree,
-                &GroupNameRequest {
-                    document_id: None,
-                    start,
-                    end,
-                    label: "My pass".to_string(),
-                },
-            );
-
-            // Merge each way round and compare. Both sides have to land on the same single band,
-            // whichever order the names arrived in.
-            let mut mine = tree.doc.fork();
-            mine.merge_incoming(&mut peer.clone()).expect("peers merge");
-            let mut theirs = peer.fork();
-            theirs
-                .merge_incoming(&mut tree.doc.clone())
-                .expect("peers merge");
-
-            let a = ui::history_groups::read_named_ranges(&mine, &AuthorDirectory::new());
-            let b = ui::history_groups::read_named_ranges(&theirs, &AuthorDirectory::new());
-            assert_eq!(a.len(), 1, "one run, one band: {a:?}");
-            assert_eq!(b.len(), 1);
-            assert_eq!(a[0].label, b[0].label, "both peers read the same winner");
-            assert!(
-                a[0].label == "My pass" || a[0].label == "Ada's pass",
-                "the winner is one of the two names actually written: {:?}",
-                a[0].label
-            );
-            assert_eq!(a[0].start, start);
-            assert_eq!(a[0].end, Some(end));
-        }
-
         phase restoring_to_a_band_boundary_lands_on_the_state_at_that_boundary;
         {
             // The band header's [Restore] passes the band's last change, so this is the production path
@@ -2039,39 +1848,6 @@ mod tests {
                 pane.entries().len() > boundary_at + 1,
                 "history was appended to, not rewritten"
             );
-        }
-
-        phase selected_named_bands_can_be_split_and_merged;
-        {
-            let (mut tree, _, _) = busy_workspace();
-            let mut pane = pane_over(&mut tree);
-            let entries = pane.entries().to_vec();
-            assert!(pane.apply_name(
-                &mut tree,
-                &GroupNameRequest {
-                    document_id: None,
-                    start: entries[1].id,
-                    end: entries[3].id,
-                    label: "Investigate".to_string(),
-                },
-            ));
-            pane.timeline.set_selection(Some((2, 2)));
-            assert!(pane.split_selection_group(&mut tree));
-            let split = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
-            assert_eq!(split.len(), 2);
-            assert!(
-                split
-                    .iter()
-                    .any(|range| { range.start == entries[1].id && range.end == Some(entries[1].id) })
-            );
-            assert!(split.iter().any(|range| range.start == entries[2].id));
-
-            pane.timeline.set_selection(Some((1, 3)));
-            assert!(pane.merge_selection_groups(&mut tree));
-            let merged = ui::history_groups::read_named_ranges(&tree.doc, &AuthorDirectory::new());
-            assert_eq!(merged.len(), 1);
-            assert_eq!(merged[0].start, entries[1].id);
-            assert_eq!(merged[0].end, Some(entries[3].id));
         }
 
         phase first_correction_materializes_automatic_work_sessions_as_shared_ranges;

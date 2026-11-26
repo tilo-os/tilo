@@ -6179,6 +6179,32 @@ mod tests {
             }
         }
 
+        phase qemu_accepts_display_fixture_options_but_not_multiple_heads;
+        {
+            let mut args = create_args("dev");
+            args.resolution = Some("1920x1080".into());
+            args.gl = true;
+            assert!(App::validate_create_options("qemu", &args).is_ok());
+            assert!(App::validate_create_options("libvirt", &args).is_ok());
+            for adapter in ["whpx", "utm", "hyperv"] {
+                assert!(App::validate_create_options(adapter, &args).is_err());
+            }
+            args.sound = true;
+            args.vulkan = true;
+            assert!(App::validate_create_options("qemu", &args).is_ok());
+            assert!(App::validate_create_options("libvirt", &args).is_ok());
+            assert!(App::validate_create_options("utm", &args).is_err());
+            assert!(
+                <crate::cli::Cli as clap::Parser>::try_parse_from(["tilo-vm", "vm", "create", "v", "--vulkan"]).is_err(),
+                "--vulkan without --gl has no GPU to render on"
+            );
+            args.sound = false;
+            args.vulkan = false;
+            args.heads = Some(2);
+            assert!(App::validate_create_options("qemu", &args).is_err());
+            assert!(App::validate_create_options("libvirt", &args).is_ok());
+        }
+
         phase published_boot_json_cannot_redirect_to_an_unverified_kernel;
         {
             let dir = tempfile::tempdir().unwrap();
@@ -6460,6 +6486,367 @@ mod tests {
                 assert!(matches!(error, CliError::UnknownVm { .. }), "{error}");
             }
         }
+    }
+
+    tilo_test_env::scenario! {
+        fn the_cli_explains_itself_and_its_errors;
+
+        phase status_and_errors_explain_what_is_wrong_and_what_to_do;
+        {
+            {
+                let debug = [
+                    "tilo-vm vm shot dev".to_owned(),
+                    "tilo-vm vm serial dev".to_owned(),
+                ];
+                let unreachable = CliError::Unreachable {
+                    vm: "dev".into(),
+                    detail: "Connection refused".into(),
+                    debug: debug.to_vec(),
+                };
+                let off = connect_failure("dev", Some(false), &debug, &unreachable);
+                assert_eq!(off.state, "off");
+                assert!(off.summary.contains("shut off"), "{}", off.summary);
+                assert_eq!(off.next, ["tilo-vm vm start dev"]);
+                assert!(!off.text(&unreachable).contains("Connection refused"));
+
+                let silent = connect_failure("dev", Some(true), &debug, &unreachable);
+                assert_eq!(silent.state, "no-answer");
+                assert!(
+                    !silent.next.iter().any(|n| n.contains("vm start")),
+                    "{:?}",
+                    silent.next
+                );
+                assert!(silent.next.contains(&"tilo-vm vm serial dev".to_owned()));
+                assert!(silent.next.contains(&"tilo-vm doctor".to_owned()));
+                let unknown = connect_failure("dev", None, &debug, &unreachable);
+                assert!(unknown.next[0].starts_with("tilo-vm vm start dev"));
+
+                let unjoined = CliError::NotJoined { vm: "dev".into() };
+                let fresh = connect_failure("dev", Some(true), &debug, &unjoined);
+                assert_eq!(fresh.state, "not-joined");
+                assert_eq!(fresh.next, ["tilo-vm vm start dev"]);
+
+                let refused = CliError::NotGranted {
+                    vm: "dev".into(),
+                    resource: "devices/ab/vm".into(),
+                };
+                let not_granted = connect_failure("dev", Some(true), &debug, &refused);
+                assert_eq!(not_granted.state, "not-granted");
+                assert!(
+                    not_granted.text(&refused).contains("tilo grant devices/ab/vm"),
+                    "{}",
+                    not_granted.text(&refused)
+                );
+
+                let older_vm = CliError::DeviceTooOld {
+                    vm: "dev".into(),
+                    action: "tree-sync".into(),
+                };
+                let outdated = connect_failure("dev", Some(true), &debug, &older_vm);
+                assert_eq!(outdated.state, "outdated");
+                assert_eq!(outdated.next, ["tilo-vm vm upgrade dev"]);
+                assert!(!outdated.next.iter().any(|n| n.contains("vm start")));
+
+                let no_login = CliError::NotLoggedIn {
+                    detail: "no identity".into(),
+                };
+                assert_eq!(
+                    connect_failure("dev", Some(true), &debug, &no_login).state,
+                    "no-login"
+                );
+            }
+
+            {
+                struct Guest {
+                    obeys: &'static str,
+                    ran: Vec<String>,
+                    down: bool,
+                }
+                impl Runner for Guest {
+                    fn output(
+                        &mut self,
+                        command: &CommandLine,
+                    ) -> Result<crate::hypervisor::Output, CliError> {
+                        let line = command.display();
+                        if line.contains("--state-running") {
+                            let stdout = if self.down { "" } else { "dev\n" };
+                            return Ok(crate::hypervisor::Output {
+                                success: true,
+                                status: "exit status: 0".into(),
+                                stdout: stdout.into(),
+                                stderr: String::new(),
+                            });
+                        }
+                        if line.contains("Get-Process -Id") && !line.contains("TcpClient") {
+                            return Ok(crate::hypervisor::Output {
+                                success: true,
+                                status: "exit status: 0".into(),
+                                stdout: if self.down { "no" } else { "yes" }.into(),
+                                stderr: String::new(),
+                            });
+                        }
+                        self.down |= line.contains(self.obeys);
+                        self.ran.push(line);
+                        Ok(crate::hypervisor::Output {
+                            success: true,
+                            status: "exit status: 0".into(),
+                            stdout: String::new(),
+                            stderr: String::new(),
+                        })
+                    }
+                    fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
+                        self.output(command).map(|o| o.success)
+                    }
+                }
+                let entry = VmEntry {
+                    hypervisor: "libvirt".into(),
+                    ..VmEntry::default()
+                };
+                let vm = Vm {
+                    name: "dev",
+                    entry: &entry,
+                };
+                let graces = StopGraces {
+                    acpi: Duration::from_millis(30),
+                    guest: Duration::from_millis(30),
+                    hard: Duration::from_millis(30),
+                    poll: Duration::from_millis(1),
+                };
+                let stop = |obeys: &'static str, asked: bool| {
+                    let mut guest = Guest {
+                        obeys,
+                        ran: Vec::new(),
+                        down: false,
+                    };
+                    let result =
+                        stop_escalating(&mut guest, &hypervisor::Libvirt, &vm, asked, graces)
+                            .unwrap();
+                    (result, guest.ran)
+                };
+                let acpi = "virsh --connect qemu:///session shutdown dev";
+                let hard = "virsh --connect qemu:///session destroy dev";
+                assert_eq!(
+                    stop("shutdown dev", false),
+                    ((Some(true), StopStep::Acpi), vec![acpi.to_owned()])
+                );
+                assert_eq!(
+                    stop("destroy dev", false),
+                    (
+                        (Some(true), StopStep::HardPowerOff),
+                        vec![acpi.to_owned(), hard.to_owned()]
+                    )
+                );
+                assert_eq!(
+                    stop("nothing brings it down", false).0,
+                    (Some(false), StopStep::HardPowerOff)
+                );
+                // A guest that obeys the poweroff it was asked for is never sent the ACPI event:
+                // that event can suspend a guest instead of stopping it.
+                let mut obeying = Guest {
+                    obeys: "",
+                    ran: Vec::new(),
+                    down: true,
+                };
+                assert_eq!(
+                    stop_escalating(&mut obeying, &hypervisor::Libvirt, &vm, true, graces).unwrap(),
+                    (Some(true), StopStep::GuestPoweroff)
+                );
+                assert!(obeying.ran.is_empty(), "{:?}", obeying.ran);
+                assert_eq!(
+                    stop("shutdown dev", true),
+                    ((Some(true), StopStep::Acpi), vec![acpi.to_owned()]),
+                    "a guest that ignores its poweroff still gets the ACPI event"
+                );
+            }
+
+            {
+                let manifest = Manifest::parse(
+                    "[[component]]\nname = \"apps+runtime\"\npackages = [\"runtime-dylib\"]\n\
+                 features = [\"music/audio\"]\nlayer = \"direct\"\n\
+                 [[component]]\nname = \"fs\"\npackages = [\"fs\"]\n",
+                )
+                .unwrap();
+                let error = worktree_buildable(manifest.get("apps+runtime").unwrap()).unwrap_err();
+                let CliError::Unsupported { what, alternative } = &error else {
+                    panic!("{error:?}");
+                };
+                assert!(what.contains("apps+runtime"), "{what}");
+                assert!(alternative.contains("swap app:"), "{alternative}");
+                assert!(alternative.contains("--from ci:"), "{alternative}");
+                worktree_buildable(manifest.get("fs").unwrap()).unwrap();
+            }
+
+            {
+                use AppsRuntimeBuild::{Local, Remote};
+                let plan = |b, dev, host, linux, cfg| plan_apps_runtime_build(b, dev, host, linux, cfg);
+                assert_eq!(
+                    plan(Some(Builder::Host), "x86_64", "x86_64", true, false).unwrap(),
+                    Local
+                );
+                assert_eq!(plan(None, "x86_64", "x86_64", true, false).unwrap(), Local);
+                assert_eq!(plan(None, "x86_64", "x86_64", true, true).unwrap(), Remote);
+                assert_eq!(
+                    plan(Some(Builder::Remote), "x86_64", "x86_64", true, false).unwrap(),
+                    Remote
+                );
+                assert_eq!(
+                    plan(None, "aarch64", "x86_64", true, false).unwrap(),
+                    Remote
+                );
+                for refused in [
+                    plan(Some(Builder::Host), "aarch64", "x86_64", true, true),
+                    plan(Some(Builder::Host), "x86_64", "x86_64", false, true),
+                    plan(Some(Builder::Vm), "x86_64", "x86_64", true, true),
+                ] {
+                    assert!(
+                        matches!(refused, Err(CliError::Unsupported { .. })),
+                        "{refused:?}"
+                    );
+                }
+            }
+
+            {
+                let plan =
+                    |b, dev, host, linux, cfg| plan_device_app_build("notes", b, dev, host, linux, cfg);
+                assert_eq!(
+                    plan(None, "aarch64", "aarch64", true, false).unwrap(),
+                    Builder::Host
+                );
+                assert_eq!(
+                    plan(Some(Builder::Host), "aarch64", "aarch64", true, true).unwrap(),
+                    Builder::Host
+                );
+                assert_eq!(
+                    plan(None, "aarch64", "aarch64", true, true).unwrap(),
+                    Builder::Remote
+                );
+                assert_eq!(
+                    plan(None, "aarch64", "x86_64", true, false).unwrap(),
+                    Builder::Remote
+                );
+                assert_eq!(
+                    plan(None, "aarch64", "aarch64", false, false).unwrap(),
+                    Builder::Remote
+                );
+                for refused in [
+                    plan(Some(Builder::Host), "aarch64", "x86_64", true, false),
+                    plan(Some(Builder::Host), "aarch64", "aarch64", false, false),
+                    plan(Some(Builder::Vm), "aarch64", "aarch64", true, false),
+                ] {
+                    let Err(CliError::Unsupported { alternative, .. }) = &refused else {
+                        panic!("{refused:?}");
+                    };
+                    assert!(alternative.contains("app:notes"), "{alternative}");
+                }
+            }
+
+            {
+                check_app_lock(Some("aaaa"), Some("aaaa")).unwrap();
+                check_app_lock(None, Some("aaaa")).unwrap();
+                check_app_lock(Some("aaaa"), None).unwrap();
+                let error = check_app_lock(Some("aaaa"), Some("bbbb")).unwrap_err();
+                let CliError::Unsupported { what, alternative } = &error else {
+                    panic!("{error:?}");
+                };
+                assert!(what.contains("Cargo.lock"), "{what}");
+                assert!(alternative.contains("swap apps+runtime"), "{alternative}");
+                assert!(alternative.contains("rollback"), "{alternative}");
+            }
+
+            {
+                let ready = VmTools {
+                    cargo: true,
+                    python3: true,
+                    sccache: true,
+                    podman: false,
+                };
+                let bare = VmTools::default();
+                assert_eq!(
+                    choose_builder(None, &ready, true, "linux").unwrap(),
+                    (Builder::Vm, None)
+                );
+                let (builder, note) = choose_builder(None, &bare, true, "linux").unwrap();
+                assert_eq!(builder, Builder::Host);
+                assert!(note.unwrap().contains("--builder host"));
+                assert!(matches!(
+                    choose_builder(None, &bare, false, "macos"),
+                    Err(CliError::VmCannotBuild { .. })
+                ));
+                let error = choose_builder(Some(Builder::Host), &ready, false, "macos").unwrap_err();
+                assert!(matches!(error, CliError::HostBuildUnsupported { .. }));
+                assert!(error.to_string().contains("macos"));
+                assert!(error.hint().contains("--builder vm"));
+                assert!(matches!(
+                    choose_builder(Some(Builder::Vm), &bare, true, "linux"),
+                    Err(CliError::VmCannotBuild { .. })
+                ));
+                assert_eq!(
+                    choose_builder(Some(Builder::Host), &bare, true, "linux").unwrap(),
+                    (Builder::Host, None)
+                );
+                assert!(describe_tools(&ready, false).starts_with("in the VM"));
+                assert!(
+                    describe_tools(&ready, true)
+                        .ends_with("CI layers extracted on this host, only the layer sent")
+                );
+                assert!(hypervisor::adapter("device").unwrap().ci_layers_from_host());
+                assert!(
+                    !hypervisor::adapter("libvirt")
+                        .unwrap()
+                        .ci_layers_from_host()
+                );
+            }
+        }
+
+        phase json_errors_have_one_top_level_shape_everywhere;
+        {
+            if std::env::var_os("TILO_VM").is_some() {
+                return;
+            }
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(
+                dir.path().join("vms.toml"),
+                "default = \"probe\"\n[vms.probe]\nhypervisor = \"qemu\"\nssh = \"root@127.0.0.1:1\"\n",
+            )
+            .unwrap();
+            let mut app = app_with_empty_registry(dir.path());
+            let reports = [
+                app.run(Some(Command::Status { account: None })).unwrap(),
+                app.run(Some(Command::Vm(VmCommand::Status { name: None })))
+                    .unwrap(),
+            ];
+            for report in reports {
+                assert!(report.failed, "{}", report.text);
+                for key in ["error", "hint", "see"] {
+                    assert!(
+                        report.data[key].as_str().is_some_and(|v| !v.is_empty()),
+                        "{key} is not a top-level string: {:#}",
+                        report.data
+                    );
+                }
+                assert!(report.text.contains("hint: "), "{}", report.text);
+                assert!(
+                    report.next.iter().all(|n| !n.ends_with("vm start")),
+                    "{:?}",
+                    report.next
+                );
+            }
+            let failed = CliError::NoVm {
+                registry: "r".into(),
+            }
+            .to_json();
+            let mut merged = json!({ "vm": {} });
+            merge_error(
+                &mut merged,
+                &CliError::NoVm {
+                    registry: "r".into(),
+                },
+            );
+            for key in ["error", "hint", "see"] {
+                assert_eq!(merged[key], failed[key]);
+            }
+        }
+
     }
 
     fn app_with_empty_registry(dir: &Path) -> App {

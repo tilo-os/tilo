@@ -355,3 +355,261 @@ pub fn cache_summary(
     }
     summary
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    tilo_test_env::scenario! {
+        fn cargo_is_asked_for_the_right_build_and_its_metadata;
+
+        phase metadata_requires_successful_complete_json_and_preserves_launch_errors;
+        {
+            struct MetadataRunner {
+                response: Option<Result<crate::hypervisor::Output, CliError>>,
+                observed: Vec<CommandLine>,
+                builds: usize,
+            }
+            impl Runner for MetadataRunner {
+                fn output(
+                    &mut self,
+                    line: &CommandLine,
+                ) -> Result<crate::hypervisor::Output, CliError> {
+                    self.observed.push(line.clone());
+                    self.response
+                        .take()
+                        .ok_or_else(|| CliError::InvalidInput("unexpected command".into()))?
+                }
+                fn interactive(&mut self, _: &CommandLine) -> Result<bool, CliError> {
+                    self.builds += 1;
+                    Err(CliError::InvalidInput("unexpected builder".into()))
+                }
+            }
+            for (success, stdout, status) in [
+                (
+                    false,
+                    r#"{"packages":[],"target_directory":"/owned/target"}"#,
+                    "exit 73",
+                ),
+                (true, "not JSON", "invalid metadata JSON"),
+                (true, "null", "incomplete metadata response"),
+                (true, "{}", "incomplete metadata response"),
+            ] {
+                let mut runner = MetadataRunner {
+                    observed: Vec::new(),
+                    builds: 0,
+                    response: Some(Ok(crate::hypervisor::Output {
+                        success,
+                        stdout: stdout.into(),
+                        status: "exit 73".into(),
+                        stderr: "source graph refused".into(),
+                    })),
+                };
+                let CliError::CommandFailed { status: actual, .. } =
+                    cargo_metadata(&mut runner).unwrap_err()
+                else {
+                    panic!("typed failure required")
+                };
+                assert_eq!(actual, status);
+                assert_eq!(runner.observed.len(), 1);
+                assert_eq!(
+                    runner.observed[0].display(),
+                    "cargo metadata --locked --no-deps --format-version 1"
+                );
+                assert!(runner.observed[0].env.is_empty());
+                assert_eq!(runner.builds, 0);
+            }
+            let mut runner = MetadataRunner {
+                observed: Vec::new(),
+                builds: 0,
+                response: Some(Err(CliError::ToolMissing {
+                    tool: "cargo".into(),
+                    purpose: "metadata".into(),
+                })),
+            };
+            assert!(matches!(
+                cargo_metadata(&mut runner),
+                Err(CliError::ToolMissing { .. })
+            ));
+            let mut runner = MetadataRunner { observed: Vec::new(), builds: 0, response: Some(Ok(crate::hypervisor::Output {
+                success: true, status: "exit 0".into(), stderr: String::new(),
+                stdout: r#"{"packages":[{"name":"shell","features":{"dev-overrides":[]}}],"target_directory":"/owned/target"}"#.into(),
+            })) };
+            let metadata = cargo_metadata(&mut runner).unwrap();
+            assert_eq!(target_dir(&metadata), "/owned/target");
+            assert_eq!(
+                dev_features(&metadata, &["shell".into()]),
+                ["shell/dev-overrides"]
+            );
+        }
+    }
+
+    fn elf(machine: u16, comment: &[u8]) -> Vec<u8> {
+        let names = b"\0.comment\0.shstrtab\0";
+        let mut bytes = vec![0_u8; 64];
+        bytes[..6].copy_from_slice(b"\x7fELF\x02\x01");
+        bytes[0x12..0x14].copy_from_slice(&machine.to_le_bytes());
+        let len = |b: &[u8]| u64::try_from(b.len()).unwrap();
+        let comment_at = len(&bytes);
+        bytes.extend_from_slice(comment);
+        let names_at = len(&bytes);
+        bytes.extend_from_slice(names);
+        let headers_at = len(&bytes);
+        bytes[0x28..0x30].copy_from_slice(&headers_at.to_le_bytes());
+        bytes[0x3a..0x3c].copy_from_slice(&64_u16.to_le_bytes());
+        bytes[0x3c..0x3e].copy_from_slice(&3_u16.to_le_bytes());
+        bytes[0x3e..0x40].copy_from_slice(&2_u16.to_le_bytes());
+        for (name, offset, size) in [
+            (0_u32, 0_u64, 0_u64),
+            (1, comment_at, len(comment)),
+            (10, names_at, len(names)),
+        ] {
+            let mut header = vec![0_u8; 64];
+            header[..4].copy_from_slice(&name.to_le_bytes());
+            header[0x18..0x20].copy_from_slice(&offset.to_le_bytes());
+            header[0x20..0x28].copy_from_slice(&size.to_le_bytes());
+            bytes.extend_from_slice(&header);
+        }
+        bytes
+    }
+
+    tilo_test_env::scenario! {
+        fn a_built_binary_tells_its_provenance_and_runtime;
+
+        phase provenance_reads_target_and_rustc_from_the_built_binary;
+        {
+            let comment =
+                b"Linker: LLD 22\0rustc version 1.98.0 (88d9e12ae 2026-08-18)\0GCC: (GNU) 16\0";
+            assert_eq!(
+                elf_facts(&elf(0xb7, comment)),
+                Some(ElfFacts {
+                    target: Some("aarch64-unknown-linux-gnu".into()),
+                    toolchain: Some("rustc 1.98.0 (88d9e12ae 2026-08-18)".into()),
+                })
+            );
+            assert_eq!(
+                elf_facts(&elf(0x3e, b"GCC: (GNU) 16\0")),
+                Some(ElfFacts {
+                    target: Some("x86_64-unknown-linux-gnu".into()),
+                    toolchain: None,
+                })
+            );
+            assert_eq!(elf_facts(b"#!/bin/sh\n"), None);
+            assert_eq!(
+                elf_facts(&elf(0xb7, comment)[..40]).map(|f| f.toolchain),
+                Some(None)
+            );
+
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+            std::fs::create_dir_all(dir.path().join("usr/share/x")).unwrap();
+            std::fs::write(dir.path().join("usr/share/x/readme"), b"text").unwrap();
+            std::fs::write(dir.path().join("usr/bin/shell"), elf(0xb7, comment)).unwrap();
+            assert_eq!(
+                first_elf(dir.path()).and_then(|f| f.target).as_deref(),
+                Some("aarch64-unknown-linux-gnu")
+            );
+            #[cfg(target_os = "linux")]
+            {
+                let me = std::fs::read(std::env::current_exe().unwrap()).unwrap();
+                assert_eq!(
+                    elf_facts(&me).and_then(|f| f.target),
+                    Some(format!("{}-unknown-linux-gnu", std::env::consts::ARCH))
+                );
+            }
+        }
+
+        phase native_layer_facts_find_rust_runtime_after_c_dependencies;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let dependency = dir.path().join("usr/lib/tilo-runtime/00-deps");
+            let runtime = dir.path().join("usr/lib/tilo-runtime/zz-runtime");
+            std::fs::create_dir_all(&dependency).unwrap();
+            std::fs::create_dir_all(&runtime).unwrap();
+            std::fs::write(
+                dependency.join("libnative.so"),
+                elf(0x3e, b"GCC: (GNU) 16\0"),
+            )
+            .unwrap();
+            // This is the same reader that builderlayer::pack uses. With only the
+            // dependency, it must not fabricate a compiler from the build host.
+            assert_eq!(
+                first_elf(dir.path()),
+                Some(ElfFacts {
+                    target: Some("x86_64-unknown-linux-gnu".into()),
+                    toolchain: None,
+                })
+            );
+            std::fs::write(
+                runtime.join("libtilo_runtime.so"),
+                elf(0x3e, b"rustc version 1.98.0 (88d9e12ae 2026-08-18)\0"),
+            )
+            .unwrap();
+            let facts = first_elf(dir.path()).unwrap();
+            assert_eq!(
+                facts,
+                ElfFacts {
+                    target: Some("x86_64-unknown-linux-gnu".into()),
+                    toolchain: Some("rustc 1.98.0 (88d9e12ae 2026-08-18)".into()),
+                }
+            );
+            let mut bytes = Vec::new();
+            crate::builderlayer::write_layer(
+                dir.path(),
+                crate::builderlayer::Packed {
+                    component: "apps+runtime".into(),
+                    target: facts.target.clone(),
+                    toolchain: facts.toolchain.clone(),
+                    source_digest: Some("a".repeat(64)),
+                    ..crate::builderlayer::Packed::default()
+                },
+                &[],
+                &mut bytes,
+            )
+            .unwrap();
+            let mut stream = crate::builderlayer::Stream::new(std::io::Cursor::new(bytes));
+            let packed = stream.header(&mut Vec::new()).unwrap();
+            assert_eq!(packed.component, "apps+runtime");
+            assert_eq!(packed.target, facts.target);
+            assert_eq!(packed.toolchain, facts.toolchain);
+            assert!(!packed.reused);
+            assert!(packed.layer_hash.is_some());
+            std::io::Read::read_to_end(&mut stream, &mut Vec::new()).unwrap();
+            stream.finish().unwrap();
+        }
+    }
+
+    #[test]
+    fn packing_keeps_usr_links_and_sccache_totals_parse() {
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
+            std::fs::write(dir.path().join("usr/bin/shell"), b"x").unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink("shell", dir.path().join("usr/bin/sh-link")).unwrap();
+            let out = dir.path().join("layer.tar");
+            pack(dir.path(), &out).unwrap();
+            let mut archive = tar::Archive::new(std::fs::File::open(&out).unwrap());
+            let names: Vec<String> = archive
+                .entries()
+                .unwrap()
+                .map(|e| e.unwrap().path().unwrap().display().to_string())
+                .collect();
+            assert!(names.contains(&"usr/bin/shell".to_string()), "{names:?}");
+            #[cfg(unix)]
+            assert!(names.contains(&"usr/bin/sh-link".to_string()));
+        }
+
+        {
+            let stats = json!({"stats": {"cache_hits": {"counts": {"Rust": 40, "C/C++": 2}}, "cache_misses": {"counts": {"Rust": 3}}}});
+            assert_eq!(sccache_totals(&stats), Some((42, 3)));
+            assert_eq!(
+                cache_summary(Some((40, 1)), Some((42, 3)))["sccache_hits"],
+                2
+            );
+            assert!(sccache_totals(&json!({})).is_none());
+        }
+    }
+}

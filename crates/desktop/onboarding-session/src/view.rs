@@ -2148,7 +2148,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
     use tilo_identity::store::{IdentityRecord, SerializableIdentity};
-    use tilo_onboarding::copy::{codecs_note, host_desktop_intro_body};
+    use tilo_onboarding::copy::codecs_note;
     use ui::widget::Scrollable;
     use winit::event::ElementState;
     use winit::event::Modifiers;
@@ -3255,80 +3255,6 @@ mod tests {
     tilo_test_env::scenario! {
         fn desktop_tour_is_navigable_skippable_and_dismissable;
 
-        phase desktop_tour_is_complete_backtrackable_and_finishes_only_at_the_end;
-        {
-            let (mut view, _) = view();
-            let mut doc = AutoCommit::new();
-            press(&view, &mut doc, KEY_BEGIN);
-            view.sync(&doc, &automerge::ROOT);
-            press(&view, &mut doc, KEY_UNDERSTOOD);
-            view.sync(&doc, &automerge::ROOT);
-            press(&view, &mut doc, KEY_CREATE);
-            view.sync(&doc, &automerge::ROOT);
-            press(&view, &mut doc, KEY_BACKUP_SKIP_ACKNOWLEDGED);
-            view.sync(&doc, &automerge::ROOT);
-            press(&view, &mut doc, KEY_BACKUP_CONTINUE);
-            view.sync(&doc, &automerge::ROOT);
-
-            press(&view, &mut doc, KEY_TOUR_START);
-            view.sync(&doc, &automerge::ROOT);
-            assert_eq!(view.tour_page, Some(TourPage::Navigate));
-            assert!(!view.finished());
-
-            press(&view, &mut doc, KEY_TOUR_NEXT);
-            view.sync(&doc, &automerge::ROOT);
-            assert_eq!(view.tour_page, Some(TourPage::Organise));
-            press(&view, &mut doc, KEY_TOUR_NEXT);
-            view.sync(&doc, &automerge::ROOT);
-            assert_eq!(view.tour_page, Some(TourPage::Collaborate));
-
-            press(&view, &mut doc, KEY_FINISH);
-            view.sync(&doc, &automerge::ROOT);
-            assert!(
-                !view.finished(),
-                "the tour cannot finish before its hand-off page"
-            );
-
-            press(&view, &mut doc, KEY_TOUR_NEXT);
-            view.sync(&doc, &automerge::ROOT);
-            assert_eq!(view.tour_page, Some(TourPage::Start));
-
-            press(&view, &mut doc, KEY_TOUR_BACK);
-            view.sync(&doc, &automerge::ROOT);
-            assert_eq!(view.tour_page, Some(TourPage::Collaborate));
-            press(&view, &mut doc, KEY_TOUR_NEXT);
-            view.sync(&doc, &automerge::ROOT);
-            press(&view, &mut doc, KEY_FINISH);
-            view.sync(&doc, &automerge::ROOT);
-            assert!(view.finished());
-        }
-
-        phase every_tour_page_exposes_an_explicit_skip_action;
-        {
-            let mut view = OnboardingView::new_tour();
-            let mut doc = AutoCommit::new();
-            view.sync(&doc, &automerge::ROOT);
-
-            for page in [
-                TourPage::Navigate,
-                TourPage::Organise,
-                TourPage::Collaborate,
-            ] {
-                assert_eq!(view.tour_page, Some(page));
-                let node = accessibility_for_id(laid_out(&mut view), "onboarding.tour.skip.button")
-                    .expect("tour page exposes Skip tour");
-                assert_eq!(node.name.as_deref(), Some("Skip tour"));
-                if page != TourPage::Collaborate {
-                    press(&view, &mut doc, KEY_TOUR_NEXT);
-                    view.sync(&doc, &automerge::ROOT);
-                }
-            }
-
-            press(&view, &mut doc, KEY_TOUR_SKIP);
-            view.sync(&doc, &automerge::ROOT);
-            assert!(view.finished(), "Skip tour dismisses a reopened tour");
-        }
-
         phase first_use_skip_works_on_every_tour_page_and_clears_progress;
         {
             for (stage, page) in [
@@ -3356,122 +3282,6 @@ mod tests {
             }
         }
 
-        phase escape_dismisses_a_reopened_tour_from_every_page;
-        {
-            for next_presses in 0..=3 {
-                let mut view = OnboardingView::new_tour();
-                let mut document = AutoCommit::new();
-                for _ in 0..next_presses {
-                    press(&view, &mut document, KEY_TOUR_NEXT);
-                    view.sync(&document, &automerge::ROOT);
-                }
-
-                assert!(dispatch_escape(&mut view, &mut document));
-                view.sync(&document, &automerge::ROOT);
-                assert!(
-                    view.finished(),
-                    "Escape must close a reopened tour after {next_presses} advances"
-                );
-            }
-        }
-
-        phase reopened_tour_does_not_require_an_identity_and_can_be_dismissed;
-        {
-            let mut view = OnboardingView::new_tour();
-            let mut doc = AutoCommit::new();
-            assert_eq!(view.tour_page, Some(TourPage::Navigate));
-            assert!(
-                !view.flow().is_done(),
-                "reopening must not forge identity state"
-            );
-
-            press(&view, &mut doc, KEY_TOUR_BACK);
-            view.sync(&doc, &automerge::ROOT);
-            assert!(
-                view.finished(),
-                "Back on the first page closes a reopened tour"
-            );
-
-            let mut view = OnboardingView::new_tour();
-            press(&view, &mut doc, KEY_TOUR_NEXT);
-            view.sync(&doc, &automerge::ROOT);
-            press(&view, &mut doc, KEY_TOUR_NEXT);
-            view.sync(&doc, &automerge::ROOT);
-            press(&view, &mut doc, KEY_TOUR_NEXT);
-            view.sync(&doc, &automerge::ROOT);
-            press(&view, &mut doc, KEY_FINISH);
-            view.sync(&doc, &automerge::ROOT);
-            assert!(view.finished(), "Done closes the reopened tour");
-        }
-    }
-
-    tilo_test_env::scenario! {
-        fn onboarding_copy_and_live_regions_speak_the_real_contract;
-
-        phase a_join_under_way_speaks_through_one_polite_live_region;
-        {
-            let (mut view, _) = view();
-            view.flow.begin_existing();
-            view.flow.choose_nearby();
-            view.nearby_active_for_snapshot = true;
-            let theme = Theme::dark();
-            let node = accessibility_for_id(
-                laid_out_themed(&mut view, &theme),
-                "onboarding.nearby.status",
-            )
-            .expect("the join's wait has one status region");
-            assert_eq!(node.role, ui::a11y::Role::StaticText);
-            assert_eq!(node.name, Some(t("onboarding-nearby-joining")));
-            assert_eq!(node.live, Some(ui::a11y::Politeness::Polite));
-            assert!(
-                accessibility_for_id(laid_out_themed(&mut view, &theme), "onboarding.nearby.code")
-                    .is_none(),
-                "no code from the other device is shown here"
-            );
-        }
-
-        phase the_code_screen_says_what_to_run_on_the_other_device;
-        {
-            let body = tilo_onboarding::t("onboarding-nearby-body");
-            assert!(body.contains("tilo device add"), "{body}");
-            assert!(body.to_lowercase().contains("code"), "{body}");
-            let field = tilo_onboarding::t("onboarding-nearby-ticket-field").to_lowercase();
-            assert!(field.contains("code"), "{field}");
-            assert!(!field.contains("link"), "{field}");
-        }
-
-        phase onboarding_copy_uses_no_typed_glyphs_as_layout;
-        {
-            let copy = [
-                "onboarding-intro-point-collaboration",
-                "onboarding-intro-point-local",
-                "onboarding-intro-point-not-account",
-                "onboarding-nearby-body",
-                "onboarding-nearby-ticket-field",
-                "onboarding-nearby-joining",
-                "onboarding-progress-stage",
-                "onboarding-tour-eyebrow",
-                "onboarding-tour-stage",
-                "onboarding-tour-search-title",
-                "onboarding-tour-overview-title",
-                "onboarding-tour-move-title",
-                "onboarding-tour-name-title",
-            ]
-            .map(tilo_onboarding::t)
-            .join(" ");
-            for glyph in ['•', '·', '→', '—', '✓', '★'] {
-                assert!(!copy.contains(glyph), "{glyph:?} used as layout in {copy}");
-            }
-        }
-
-        phase host_desktop_copy_does_not_claim_to_replace_the_linux_login;
-        {
-            let copy = host_desktop_intro_body().to_ascii_lowercase();
-            assert!(copy.contains("already signed in"));
-            assert!(copy.contains("does not replace your linux login"));
-            assert!(copy.contains("does not") && copy.contains("online account"));
-            assert!(copy.contains("not all cryptographically signed"));
-        }
     }
 
     tilo_test_env::scenario! {

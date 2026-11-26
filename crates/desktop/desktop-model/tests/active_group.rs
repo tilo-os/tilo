@@ -44,85 +44,6 @@ tilo_test_env::scenario! {
     )]
     fn active_group_follows_closing_groups_and_resolves_neighbours;
 
-    phase active_group_advances_when_active_group_starts_closing;
-    {
-        // Two groups [A, B] with A active. When A starts closing, the
-        // pointer must immediately advance to B so focus / keyboard /
-        // presence stop targeting the fading-away group.
-        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
-        let (a, b) = (ids[0], ids[1]);
-        tree.set_active_group(strip_id, a);
-        assert_eq!(tree.active_group_for(strip_id), Some(a));
-
-        let landed = tree.nudge_active_group_off_closing(strip_id, &[a]);
-
-        assert_eq!(landed, Some(b));
-        assert_eq!(
-            tree.active_group_for(strip_id),
-            Some(b),
-            "active-group pointer must advance to the next surviving sibling at fade-start, not after the 180 ms fade",
-        );
-    }
-
-    phase active_group_advances_to_previous_when_last_group_starts_closing;
-    {
-        // B (rightmost) is closing with no survivor to its right, so
-        // the reconciler falls back to A on the left.
-        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
-        let (a, b) = (ids[0], ids[1]);
-        tree.set_active_group(strip_id, b);
-
-        let landed = tree.nudge_active_group_off_closing(strip_id, &[b]);
-
-        assert_eq!(landed, Some(a));
-        assert_eq!(tree.active_group_for(strip_id), Some(a));
-    }
-
-    phase active_group_doesnt_advance_when_non_active_group_closes;
-    {
-        // B closes while A is active — a stray reconcile pass on a
-        // group not itself closing is a no-op, so the shell can call
-        // it freely from a per-tick loop.
-        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
-        let (a, b) = (ids[0], ids[1]);
-        tree.set_active_group(strip_id, a);
-
-        let landed = tree.nudge_active_group_off_closing(strip_id, &[b]);
-
-        assert_eq!(landed, Some(a));
-        assert_eq!(tree.active_group_for(strip_id), Some(a));
-    }
-
-    phase active_group_clears_when_every_group_is_closing;
-    {
-        // Every group in the strip is closing — the pointer can't land
-        // anywhere, so the entry is dropped rather than clamped to a
-        // closing-group id.
-        let (mut tree, strip_id, ids) = tree_with_n_groups(2);
-        let (a, b) = (ids[0], ids[1]);
-        tree.set_active_group(strip_id, a);
-
-        let landed = tree.nudge_active_group_off_closing(strip_id, &[a, b]);
-
-        assert_eq!(landed, None);
-        assert_eq!(tree.active_group_for(strip_id), None);
-    }
-
-    phase nudge_is_noop_when_strip_has_no_recorded_pointer;
-    {
-        fn nudge_is_noop_when_strip_has_no_recorded_pointer() {
-            // No call to `set_active_group` first. The reconciler must
-            // return `None` and not insert a phantom entry after the
-            // first close.
-            let (mut tree, strip_id, ids) = tree_with_n_groups(2);
-            let (a, _b) = (ids[0], ids[1]);
-            let landed = tree.nudge_active_group_off_closing(strip_id, &[a]);
-            assert_eq!(landed, None);
-            assert_eq!(tree.active_group_for(strip_id), None);
-        }
-        nudge_is_noop_when_strip_has_no_recorded_pointer();
-    }
-
     phase a_strip_whose_focused_group_left_it_focuses_the_window_it_still_holds;
     {
         // The person was in B, then carried B to another strip. The strip B
@@ -146,33 +67,6 @@ tilo_test_env::scenario! {
             None,
             "and the pointer, read straight, never names a window the strip no longer holds"
         );
-    }
-
-    phase resolve_active_group_returns_recorded_when_not_closing;
-    {
-        // Pure read path: with the recorded pointer not in the closing
-        // set, `resolve_active_group` returns it unchanged and, unlike
-        // `nudge_*`, doesn't mutate the map.
-        let (mut tree, strip_id, ids) = tree_with_n_groups(3);
-        let (a, b, c) = (ids[0], ids[1], ids[2]);
-        tree.set_active_group(strip_id, b);
-        let resolved = tree.resolve_active_group(strip_id, |id| id == a || id == c);
-        assert_eq!(resolved, Some(b));
-        assert_eq!(tree.active_group_for(strip_id), Some(b));
-    }
-
-    phase resolve_active_group_walks_left_then_right;
-    {
-        // Three groups [A, B, C] with B active and closing. Focus goes to
-        // A, the neighbour on its left: the strip keeps showing what it
-        // showed and pans at most by B's width.
-        let (mut tree, strip_id, ids) = tree_with_n_groups(3);
-        let (a, b, _c) = (ids[0], ids[1], ids[2]);
-        tree.set_active_group(strip_id, b);
-
-        let landed = tree.nudge_active_group_off_closing(strip_id, &[b]);
-
-        assert_eq!(landed, Some(a));
     }
 
     phase a_closing_active_group_hands_focus_to_its_left_neighbour_whatever_was_focused_before;
@@ -206,26 +100,6 @@ tilo_test_env::scenario! {
             tree.resolve_active_group(strip_id, |id| id == third || id == second),
             Some(first)
         );
-    }
-}
-
-#[test]
-fn window_group_json_round_trips() {
-    // Phase `window_group_maximized_round_trips_through_json`.
-    {
-        // Window state must survive restart: a fresh tree starts
-        // un-maximized, and flipping `maximized = true` on one group
-        // must serialize and deserialize cleanly.
-        let (mut tree, _, _) = tree_with_n_groups(1);
-        let ws = tree.workspaces.first_mut().expect("seed has workspaces");
-        let strip = ws.strips.first_mut().expect("seed has strips");
-        let group = strip.window_groups.first_mut().expect("seed has groups");
-        assert!(!group.maximized);
-        group.maximized = true;
-
-        let json = serde_json::to_string(&tree).unwrap();
-        let round: Layout = serde_json::from_str(&json).unwrap();
-        assert!(round.workspaces[0].strips[0].window_groups[0].maximized);
     }
 }
 

@@ -1837,3 +1837,77 @@ pub fn status_command(run: &Path) -> Outcome {
         failed: false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    #[command(args_override_self = true)]
+    struct Probe {
+        #[command(flatten)]
+        machine: MachineArgs,
+    }
+
+    fn machine(flags: &[&str]) -> Machine {
+        let args = Probe::parse_from(
+            ["probe", "--arch", "x86_64"]
+                .into_iter()
+                .chain(flags.iter().copied()),
+        )
+        .machine;
+        Machine::try_from(&args).unwrap()
+    }
+
+    #[test]
+    fn a_named_render_node_is_used_as_given() {
+        let node = resolve_rendernode(Some("/dev/null")).unwrap();
+        assert_eq!(node.path, "/dev/null");
+        assert!(node.reason.contains("--render-node"), "{}", node.reason);
+        let error = resolve_rendernode(Some("/dev/dri/tilo-no-such-node")).unwrap_err();
+        assert!(error.to_string().contains("does not exist"), "{error}");
+        assert!(error.hint().contains("--render-node"), "{}", error.hint());
+    }
+
+    tilo_test_env::scenario! {
+        fn the_qemu_command_line_follows_the_machine;
+
+        phase paths_with_commas_are_escaped_and_bad_settings_refused;
+        {
+            assert!(Disk::parse("/a,,b.qcow2", 0).is_err());
+            assert_eq!(escape("/x,y"), "/x,,y");
+            let args = Probe::parse_from(["probe", "--arch", "aarch64", "--s3"]).machine;
+            assert!(Machine::try_from(&args).is_err());
+            let args = Probe::parse_from(["probe", "--resolution", "wide"]).machine;
+            assert!(Machine::try_from(&args).is_err());
+        }
+
+        phase the_root_key_travels_as_a_systemd_credential;
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let key = dir.path().join("id.pub");
+            std::fs::write(&key, "ssh-ed25519 AAAA comment, with comma\n").unwrap();
+            let m = machine(&["--root-key", key.to_str().unwrap()]);
+            let credential = m.credential().unwrap().unwrap();
+            assert_eq!(
+                credential,
+                "type=11,value=io.systemd.credential.binary:ssh.authorized_keys.root=c3NoLWVkMjU1MTkgQUFBQSBjb21tZW50LCB3aXRoIGNvbW1hCg=="
+            );
+            std::fs::write(&key, "").unwrap();
+            assert!(m.credential().is_err());
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_run_directory_whose_vm_runs_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = RunDir(dir.path().to_path_buf());
+        claim(&run).unwrap();
+        std::fs::write(run.pidfile(), std::process::id().to_string()).unwrap();
+        assert_eq!(run.running(), Some(std::process::id()));
+        assert!(claim(&run).unwrap_err().detail.contains("already running"));
+        assert_eq!(status_command(dir.path()).data["running"], true);
+    }
+}

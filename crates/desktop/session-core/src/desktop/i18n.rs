@@ -51,6 +51,42 @@ mod tests {
             }
         }
 
+        phase a_stopped_app_is_named_in_plain_words;
+        // A window whose app stopped says so in words, naming the app, and says
+        // why without blaming the person for it.
+        {
+            assert_eq!(
+                crate::desktop::outcome::Closed::Crashed
+                    .outcome("Canvas", t("answer-reopen"))
+                    .detail(),
+                "Canvas stopped working. It ended unexpectedly."
+            );
+            assert_eq!(
+                crate::desktop::outcome::Closed::Memory
+                    .outcome("Canvas", t("answer-reopen"))
+                    .detail(),
+                "Canvas was closed to free memory"
+            );
+            assert_eq!(
+                crate::desktop::outcome::Closed::Runaway
+                    .outcome("Canvas", t("answer-reopen"))
+                    .detail(),
+                "Canvas was using too much memory. It was closed so the rest keeps running."
+            );
+            assert_eq!(
+                t_args("answer-app-not-opened", &[("app", "Notes".into())]),
+                "Notes could not open"
+            );
+            assert_eq!(
+                t_args("answer-app-stopped", &[("app", "Notes".into())]),
+                "Notes stopped working"
+            );
+            assert_eq!(
+                t("answer-why-not-opened"),
+                "It stopped before its window appeared."
+            );
+        }
+
         phase every_catalogue_entry_resolves_to_a_real_string;
         {
             let keys = catalog::messages(CATALOGS[0].1);
@@ -68,6 +104,107 @@ mod tests {
         {
             catalog::check_translations(CATALOGS);
         }
+    }
+
+    /// The tab showing another device's window says what it is called, whose window it is and
+    /// how its pictures stand in every language the desktop ships.
+    #[test]
+    fn a_tab_showing_another_devices_window_reads_in_every_locale() {
+        let words = || {
+            [
+                t_args(
+                    "peer-window-name",
+                    &[("window", "Writer".into()), ("device", "Laptop".into())],
+                ),
+                t_args("peer-window-of", &[("name", "Laptop".into())]),
+                t("peer-window-first-picture"),
+                t_args(
+                    "peer-window-ended",
+                    &[("why", t("peer-window-ended-sender-stopped").into())],
+                ),
+            ]
+        };
+        let english = words();
+        ui::i18n::I18nManager::set_locale("de-DE");
+        let german = words();
+        ui::i18n::I18nManager::set_locale("en-US");
+        assert_eq!(
+            english,
+            [
+                "Writer on Laptop",
+                "Laptop's window",
+                "Waiting for its first picture",
+                "Ended: the sender stopped sharing it",
+            ]
+        );
+        assert_eq!(
+            german,
+            [
+                "Writer auf Laptop",
+                "Fenster von Laptop",
+                "Wartet auf das erste Bild",
+                "Beendet: der Absender teilt es nicht mehr",
+            ]
+        );
+    }
+
+    /// The same tab while nothing of the window is shown in it says where the window runs and
+    /// why it is not here, in every language the desktop ships: by the device's name, and for a
+    /// device nothing names without one.
+    #[test]
+    fn a_tab_whose_window_is_not_shown_says_where_it_runs_and_why_in_every_locale() {
+        let words = || {
+            let named = |key: &str| t_args(key, &[("device", "Laptop".into())]);
+            [
+                t_args(
+                    "peer-window-elsewhere",
+                    &[("app", "Browser".into()), ("device", "Laptop".into())],
+                ),
+                t_args(
+                    "peer-window-elsewhere-unnamed",
+                    &[("app", "Browser".into())],
+                ),
+                t("peer-window-not-shared"),
+                named("peer-window-awaited"),
+                t("peer-window-awaited-unnamed"),
+                named("peer-window-host-away"),
+                t("peer-window-host-away-unnamed"),
+                named("peer-window-host-left"),
+                t("peer-window-host-left-unnamed"),
+            ]
+        };
+        let english = words();
+        ui::i18n::I18nManager::set_locale("de-DE");
+        let german = words();
+        ui::i18n::I18nManager::set_locale("en-US");
+        assert_eq!(
+            english,
+            [
+                "Browser runs on Laptop",
+                "Browser runs on another device of this workspace",
+                "It is not shared with this workspace right now",
+                "Waiting for Laptop to send it",
+                "Waiting for its device to send it",
+                "Laptop is not connected to this workspace right now",
+                "Its device is not connected to this workspace right now",
+                "Laptop is no longer in this workspace",
+                "Its device is no longer in this workspace",
+            ]
+        );
+        assert_eq!(
+            german,
+            [
+                "Browser läuft auf Laptop",
+                "Browser läuft auf einem anderen Gerät dieses Arbeitsbereichs",
+                "Es wird gerade nicht mit diesem Arbeitsbereich geteilt",
+                "Wartet darauf, dass Laptop es sendet",
+                "Wartet darauf, dass sein Gerät es sendet",
+                "Laptop ist gerade nicht mit diesem Arbeitsbereich verbunden",
+                "Sein Gerät ist gerade nicht mit diesem Arbeitsbereich verbunden",
+                "Laptop gehört nicht mehr zu diesem Arbeitsbereich",
+                "Sein Gerät gehört nicht mehr zu diesem Arbeitsbereich",
+            ]
+        );
     }
 }
 

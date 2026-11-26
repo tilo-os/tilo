@@ -385,3 +385,299 @@ pub fn contended_build_check(found: &[std::path::PathBuf]) -> Check {
         "give each worktree its own target: remove the linked one and let cargo rebuild it",
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::tests::{LIBVIRT, linux};
+
+    fn find<'a>(checks: &'a [Check], name: &str) -> &'a Check {
+        checks
+            .iter()
+            .find(|c| c.check == name)
+            .unwrap_or_else(|| panic!("no {name} check in {checks:?}"))
+    }
+
+    tilo_test_env::scenario! {
+        fn doctor_checks_and_explains_the_host;
+
+        phase doctor_checks_tools_hypervisors_and_vm_registration;
+        {
+            {
+                let facts = linux(
+                    HostKind::RpmOstree,
+                    &[("ssh", "/usr/bin/ssh"), ("git", "/usr/bin/git")],
+                );
+                let checks = host_checks(&facts);
+                assert_eq!(
+                    find(&checks, "ssh").detail,
+                    "/usr/bin/ssh (open a shell with tilo-vm vm ssh)"
+                );
+                let curl = find(&checks, "curl");
+                assert_eq!(curl.state, "fail");
+                assert!(
+                    curl.fix
+                        .as_deref()
+                        .unwrap()
+                        .starts_with("this host is image-based: rpm-ostree install curl"),
+                    "{curl:?}"
+                );
+                let apt = linux(HostKind::Apt, &[]);
+                assert_eq!(
+                    find(&host_checks(&apt), "ssh").fix.as_deref(),
+                    Some("sudo apt install openssh-client")
+                );
+            }
+
+            {
+                let facts = linux(HostKind::Dnf, LIBVIRT);
+                let checks = hypervisor_checks(&facts);
+                let hv = find(&checks, "hypervisor");
+                assert_eq!(hv.state, "ok");
+                assert!(
+                    hv.detail.contains("libvirt (qemu:///session)"),
+                    "{}",
+                    hv.detail
+                );
+                assert!(
+                    hv.detail.contains("qemu-img = /usr/bin/qemu-img"),
+                    "{}",
+                    hv.detail
+                );
+                assert!(hv.detail.contains("virt-manager"), "{}", hv.detail);
+                assert_eq!(find(&checks, "kvm").state, "ok");
+                let session = find(&checks, "libvirt session");
+                assert_eq!(session.state, "ok");
+                assert!(
+                    session.detail.contains("x86_64 guests with kvm"),
+                    "{session:?}"
+                );
+
+                let mut broken = linux(HostKind::Dnf, LIBVIRT);
+                broken.kvm = Some(false);
+                let stderr = "error: failed to connect to the hypervisor\nerror: Failed to connect socket to '/run/user/1000/libvirt/virtqemud-sock': Connection refused";
+                broken.session = Some(Err(stderr.into()));
+                let checks = hypervisor_checks(&broken);
+                assert_eq!(find(&checks, "kvm").state, "fail");
+                let session = find(&checks, "libvirt session");
+                assert_eq!(session.state, "fail");
+                assert!(session.detail.contains(stderr), "{session:?}");
+                assert!(
+                    session.fix.as_deref().unwrap().contains(stderr),
+                    "{session:?}"
+                );
+
+                let mut no_kvm = linux(HostKind::Dnf, LIBVIRT);
+                no_kvm.session = Some(Ok(vec![host::Guest {
+                    arch: "x86_64".into(),
+                    domains: vec!["qemu".into()],
+                }]));
+                let session = find(&hypervisor_checks(&no_kvm), "libvirt session").clone();
+                assert_eq!(session.state, "fail");
+                assert!(session.detail.contains("not kvm"), "{session:?}");
+
+                // An image-based host with only an Android SDK's qemu-img on PATH.
+                let stray = linux(
+                    HostKind::RpmOstree,
+                    &[("qemu-img", "/home/u/Android/Sdk/emulator/qemu-img")],
+                );
+                let checks = hypervisor_checks(&stray);
+                let hv = find(&checks, "hypervisor");
+                assert_eq!(hv.state, "fail");
+                assert!(
+                    hv.fix
+                        .as_deref()
+                        .unwrap()
+                        .contains("rpm-ostree install libvirt-daemon-kvm libvirt-client virt-manager"),
+                    "{hv:?}"
+                );
+                assert!(checks.iter().all(|c| c.check != "libvirt session"));
+            }
+
+            {
+                let mut with_it = LIBVIRT.to_vec();
+                with_it.push(("virt-install", "/usr/bin/virt-install"));
+                let with = hypervisor_checks(&linux(HostKind::Dnf, &with_it));
+                let without = hypervisor_checks(&linux(HostKind::Dnf, LIBVIRT));
+                assert_eq!(with, without);
+                assert!(without.iter().all(|c| c.state == "ok"), "{without:?}");
+                let text = format!("{without:?}");
+                assert!(!text.contains("virt-install"), "{text}");
+
+                let only = hypervisor_checks(&linux(
+                    HostKind::Apt,
+                    &[("virt-install", "/usr/bin/virt-install")],
+                ));
+                let hv = find(&only, "hypervisor");
+                assert_eq!(hv.state, "fail");
+                let fix = hv.fix.as_deref().unwrap();
+                assert!(
+                    !fix.contains("virtinst") && !fix.contains("virt-install"),
+                    "{fix}"
+                );
+                assert!(fix.contains("libvirt-clients"), "{fix}");
+            }
+
+            {
+                let entry = VmEntry {
+                    hypervisor: "qemu".into(),
+                    ..VmEntry::default()
+                };
+                let facts = linux(HostKind::Dnf, &[]);
+                let verdict = host::evaluate(&facts, "qemu");
+                let checks = vm_adapter_checks(&entry, verdict, false);
+                assert_eq!(checks[0].state, "fail");
+                assert_eq!(find(&checks, "vm.sh").state, "fail");
+            }
+        }
+
+        phase doctor_explains_credentials_and_disks;
+        {
+            {
+                let token = Token {
+                    value: "t".into(),
+                    source: "FORGEJO_TOKEN".into(),
+                };
+                let checks = credential_checks(Some(&token));
+                assert_eq!(checks.len(), 1);
+                assert!(
+                    checks[0].detail.contains("dev disk downloads"),
+                    "{:?}",
+                    checks[0]
+                );
+            }
+
+            {
+                let token = Token {
+                    value: "t".into(),
+                    source: "fgj".into(),
+                };
+                let listing =
+                    r#"[{"name":"tilo-vm-disk","version":"main-1a2b3c4","created_at":"2026-09-22"}]"#;
+                let ok = disk_check(Ok((200, listing.into())), Some(&token));
+                assert_eq!(ok.state, "ok");
+                assert!(ok.detail.contains("main-1a2b3c4"));
+                let none = disk_check(Ok((200, "[]".into())), Some(&token));
+                assert_eq!(none.state, "warn");
+                let fix = none.fix.unwrap();
+                assert!(fix.contains("tilo-vm vm use <name>"), "{fix}");
+                assert!(fix.contains("tilo-vm image build --disk"), "{fix}");
+                let hidden = disk_check(Ok((200, "[]".into())), None);
+                assert!(hidden.fix.unwrap().contains("FORGEJO_TOKEN"));
+                let refused = disk_check(Ok((401, String::new())), Some(&token));
+                assert!(refused.fix.unwrap().contains("token from fgj"));
+                let offline = disk_check(
+                    Err(CliError::ToolMissing {
+                        tool: "curl".into(),
+                        purpose: "p".into(),
+                    }),
+                    None,
+                );
+                assert_eq!(offline.state, "warn");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    tilo_test_env::scenario! {
+        fn build_files_owned_by_another_fail_the_check;
+
+        phase root_owned_build_files_fail_with_the_chown_that_fixes_them;
+        {
+            assert_eq!(ownership_check(&[], "bob").state, "ok");
+            let found = vec![
+                std::path::PathBuf::from("/w/a/target"),
+                std::path::PathBuf::from("/var/cache/tilo-vm/sccache"),
+            ];
+            let check = ownership_check(&found, "bob");
+            assert_eq!(check.state, "fail");
+            assert!(check.detail.contains("/w/a/target"));
+            assert_eq!(
+                check.fix.as_deref(),
+                Some("sudo chown -R bob: /w/a/target /var/cache/tilo-vm/sccache")
+            );
+        }
+
+        phase another_worktrees_target_fails_the_contention_check;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let mine = root.path().join("mine/target");
+            let theirs = root.path().join("theirs/target");
+            let cache = root.path().join("cache");
+            for dir in [&mine, &theirs] {
+                std::fs::create_dir_all(dir.join("debug/deps")).unwrap();
+                std::fs::write(dir.join("debug/deps/thing.d"), "").unwrap();
+            }
+            std::fs::create_dir_all(cache.join("ab")).unwrap();
+            std::fs::write(cache.join("ab/thing.o"), "").unwrap();
+
+            let found = contended_build_dirs(
+                &mine,
+                &[
+                    mine.clone(),
+                    theirs.clone(),
+                    cache,
+                    root.path().join("gone"),
+                ],
+            );
+            assert_eq!(found, vec![theirs.clone()]);
+            let check = contended_build_check(&found);
+            assert_eq!(check.state, "fail");
+            assert!(check.detail.contains(&theirs.display().to_string()));
+            assert!(check.detail.contains("another worktree writes"));
+            assert!(check.fix.is_some());
+        }
+    }
+
+    tilo_test_env::scenario! {
+        #[cfg(unix)]
+        fn ownership_is_read_through_links_and_within_a_depth;
+
+        phase a_linked_target_is_the_target_it_points_at;
+        {
+            let root = tempfile::tempdir().unwrap();
+            let real = root.path().join("real/target");
+            std::fs::create_dir_all(real.join("debug/deps")).unwrap();
+            std::fs::write(real.join("debug/deps/thing.d"), "").unwrap();
+            let link = root.path().join("link/target");
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            let linked = root.path().join("mine/target");
+            std::fs::create_dir_all(linked.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&link, &linked).unwrap();
+
+            let mine = root.path().join("mine2/target");
+            std::fs::create_dir_all(&mine).unwrap();
+            assert!(!holds_cargo_outputs(&real).is_empty());
+            assert_eq!(
+                contended_build_dirs(&mine, std::slice::from_ref(&real)),
+                vec![real.clone()]
+            );
+            assert_eq!(identity(&linked), identity(&real));
+
+            let elsewhere = root.path().join("elsewhere");
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            assert!(contended_build_dirs(&linked, std::slice::from_ref(&elsewhere)).is_empty());
+        }
+
+        phase the_walk_finds_an_owner_only_within_its_depth;
+        {
+            use std::os::unix::fs::MetadataExt;
+            let dir = tempfile::tempdir().unwrap();
+            let deep = dir.path().join("debug/deps");
+            std::fs::create_dir_all(&deep).unwrap();
+            std::fs::write(deep.join("x.d"), "").unwrap();
+            let me = std::fs::metadata(dir.path()).unwrap().uid();
+            assert!(holds_files_of(dir.path(), me, 0));
+            if me != 0 {
+                assert!(!holds_files_of(dir.path(), 0, 3));
+                assert!(root_owned_build_dirs(&[dir.path().to_owned()], 3).is_empty());
+            }
+            assert!(!holds_files_of(&dir.path().join("missing"), me, 3));
+        }
+    }
+}

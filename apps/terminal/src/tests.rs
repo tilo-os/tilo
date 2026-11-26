@@ -113,6 +113,283 @@ pub(crate) fn build_test_widget_io() -> (
 tilo_test_env::scenario! {
     fn program_output_lands_on_the_grid_and_its_screens;
 
+    phase pty_output_is_read_and_pumped_into_redraws_and_watermark;
+    {
+        {
+            let (mut widget, _writes, output) = build_test_widget_io();
+            let doc = AutoCommit::new();
+
+            assert!(
+                !widget.needs_animation_frame(),
+                "an idle embedded terminal must not pin its host to continuous redraws"
+            );
+
+            output.send(b"embedded output".to_vec()).unwrap();
+            assert!(
+                widget.needs_animation_frame(),
+                "queued PTY bytes must request a frame until the host pumps them"
+            );
+            assert!(widget.update(&doc, &ROOT));
+            widget.sync(&doc, &ROOT);
+            assert!(widget.grid_text().contains("embedded output"));
+            assert!(
+                !widget.needs_animation_frame(),
+                "the terminal must return to idle after its output queue is drained"
+            );
+        }
+
+        {
+            use crate::inner::{PtyReadDisposition, classify_pty_read};
+
+            assert_eq!(
+                classify_pty_read(
+                    &Err(std::io::Error::from(std::io::ErrorKind::Interrupted)),
+                    || false
+                ),
+                PtyReadDisposition::Retry
+            );
+            assert_eq!(
+                classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EIO)), || true),
+                PtyReadDisposition::Retry,
+                "a PTY master can report EIO before the guest opens its slave"
+            );
+            assert_eq!(
+                classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EIO)), || false),
+                PtyReadDisposition::Closed,
+                "once the session's lifetime socket closes, EIO means the guest exited"
+            );
+            assert_eq!(
+                classify_pty_read(&Ok(19), || true),
+                PtyReadDisposition::Data(19)
+            );
+            assert_eq!(
+                classify_pty_read(&Ok(0), || true),
+                if cfg!(target_vendor = "apple") {
+                    PtyReadDisposition::Retry
+                } else {
+                    PtyReadDisposition::Closed
+                },
+                "macOS reports a master without a slave as the end of the file, Linux as EIO"
+            );
+            assert_eq!(
+                classify_pty_read(&Ok(0), || false),
+                PtyReadDisposition::Closed,
+                "once the session's lifetime socket closes, the end of the file is the guest's exit"
+            );
+            assert_eq!(
+                classify_pty_read(&Err(std::io::Error::from_raw_os_error(libc::EBADF)), || {
+                    true
+                }),
+                PtyReadDisposition::Closed
+            );
+        }
+
+        {
+            let (mut widget, _writes) = build_test_widget();
+            assert!(!widget.has_received_pty_output());
+
+            widget.feed(b"\x1b[32m\x1b[?25h");
+
+            assert!(
+                widget.has_received_pty_output(),
+                "control-only startup output still proves the PTY is live"
+            );
+        }
+
+        {
+            let (mut widget, _write_rx, output_tx) = build_test_widget_io();
+            let state = AutoCommit::new();
+            assert!(!widget.has_received_pty_output());
+
+            output_tx.send(vec![b'\x1b', b'[', b'0', b'm']).unwrap();
+            assert!(widget.update(&state, &ROOT));
+            assert!(widget.has_received_pty_output());
+        }
+    }
+
+    phase terminal_grid_initialises_prints_and_is_a_library_widget;
+    {
+        {
+            struct MockMaster;
+            impl MasterPty for MockMaster {
+                fn get_size(&self) -> Result<PtySize, anyhow::Error> {
+                    Ok(PtySize::default())
+                }
+                fn resize(&self, _size: PtySize) -> Result<(), anyhow::Error> {
+                    Ok(())
+                }
+                fn take_writer(&self) -> Result<Box<dyn Write + Send>, anyhow::Error> {
+                    Ok(Box::new(std::io::sink()))
+                }
+                fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>, anyhow::Error> {
+                    Ok(Box::new(std::io::empty()))
+                }
+                #[cfg(unix)]
+                fn process_group_leader(&self) -> Option<i32> {
+                    None
+                }
+                #[cfg(unix)]
+                fn as_raw_fd(&self) -> Option<i32> {
+                    None
+                }
+                #[cfg(unix)]
+                fn tty_name(&self) -> Option<std::path::PathBuf> {
+                    None
+                }
+            }
+
+            let (_output_tx, output_rx) = std::sync::mpsc::channel();
+            let writer: Box<dyn Write + Send> = Box::new(std::io::sink());
+
+            let mut widget = TerminalWidget::new(
+                Arc::new(Mutex::new(writer)),
+                Arc::new(Mutex::new(Box::new(MockMaster))),
+                output_rx,
+                tilo_content::ContentStore::memory(),
+            );
+
+            widget.feed(b"");
+            assert_eq!(widget.grid_text().split('\n').count(), 24);
+        }
+
+        {
+            let (mut widget, _rx) = build_test_widget();
+
+            widget.feed(b"");
+            assert_eq!(widget.grid_row(0).len(), 0, "blank lines are seeded empty");
+
+            widget.feed(b"\x1b[1;11HX");
+            let line = widget.grid_row(0);
+            assert_eq!(
+                line.chars().nth(10),
+                Some('X'),
+                "printed char must land at column 10; got {line:?}",
+            );
+            assert!(
+                line.chars().take(10).all(|c| c == ' '),
+                "columns 0-9 must be padded with spaces; got {line:?}",
+            );
+        }
+
+        {
+            fn _takes_widget<T: ui::widget::Widget>(_: T) {}
+            #[allow(
+                unused_imports,
+                reason = "the import itself is the compile-time public type assertion"
+            )]
+            use crate::TerminalWidget as _;
+        }
+
+        {
+            use ui::{AppKind, AppWidget, IconDescriptor};
+            fn require_app_widget<T: AppWidget>(_: &T) {}
+            let w = crate::TerminalWidget::spawn_default().expect("pty spawn");
+            require_app_widget(&w);
+            assert_eq!(w.app_kind(), AppKind::Terminal);
+            assert_eq!(w.app_title(), "Terminal");
+            match w.app_icon() {
+                IconDescriptor::Glyph(g) => assert_eq!(g, "󰆍"),
+                IconDescriptor::Named(_) => panic!("expected glyph icon"),
+            }
+            assert_eq!(w.permission_hint(), Some(AppKind::Terminal));
+        }
+    }
+
+    phase grid_mirror_stays_linear_aligned_and_reports_changes;
+    {
+        {
+            const LINES: usize = 80;
+            let (mut w, _write_rx, _out_tx) = build_test_widget_io();
+            let doc = AutoCommit::new();
+            w.force_geometry(Rect::new(0.0, 0.0, 1290.0, 760.0), 10.0, 20.0);
+
+            let mut payload = Vec::new();
+            for i in 0..LINES {
+                payload.extend_from_slice(
+                format!("\x1b[38;5;250m{i:>4}\x1b[0m  the quick brown fox jumps over the lazy dog {i:03}\r\n")
+                    .as_bytes(),
+            );
+            }
+
+            w.feed(&payload);
+            w.sync(&doc, &automerge::ROOT);
+
+            let visible = w.visible_lines();
+            assert!(
+                visible.iter().any(|l| l.contains("lazy dog 079")),
+                "newest bulk line rendered: {visible:?}"
+            );
+            w.scroll_to_top();
+            let top = w.visible_lines();
+            assert!(
+                top.iter().any(|l| l.contains("lazy dog 000")),
+                "oldest bulk line retained: {top:?}"
+            );
+        }
+
+        {
+            use vello::kurbo::Rect;
+            let (mut w, _rx, _out) = build_test_widget_io();
+            let doc = AutoCommit::new();
+            w.force_geometry(Rect::new(0.0, 0.0, 800.0, 240.0), 10.0, 20.0); // 80x24 logical grid
+
+            let mut emitted = 0usize;
+            for _chunk in 0..3 {
+                let mut payload = Vec::new();
+                for _ in 0..50 {
+                    payload.extend_from_slice(format!("ROW{emitted:04}\r\n").as_bytes());
+                    emitted += 1;
+                }
+                w.feed(&payload);
+                w.sync(&doc, &automerge::ROOT);
+            }
+            let text = w.grid_text();
+            let count = text.lines().count();
+            assert!(count <= 120 + 24, "history bounded, got {count} lines");
+            assert!(
+                text.lines().any(|l| l.trim_end() == "ROW0149"),
+                "newest line present in the aligned mirror"
+            );
+            assert!(
+                !text.contains("ROW0000"),
+                "oldest line trimmed off the front"
+            );
+            assert!(
+                text.lines().any(|l| l.trim_end() == "ROW0120"),
+                "a surviving scrollback line stays intact: {:?}",
+                text.lines().rev().take(5).collect::<Vec<_>>()
+            );
+        }
+
+        {
+            use automerge::ROOT;
+            use ui::State;
+
+            let mut state = State::new();
+            let _ = state.commit_action_authored(None, None, None);
+
+            assert!(
+                !state.commit_action_authored(None, None, None),
+                "an empty transaction must report no change (App then skips save)"
+            );
+            ui::tilo_resource::write_key(
+                &mut state.doc,
+                &ROOT,
+                "k",
+                &ui::tilo_resource::Atom("v".into()),
+            )
+            .unwrap();
+            assert!(
+                state.commit_action_authored(None, None, None),
+                "a real edit must report a change (App then saves + broadcasts)"
+            );
+            assert!(
+                !state.commit_action_authored(None, None, None),
+                "with nothing new pending, the next commit reports no change again"
+            );
+        }
+    }
+
     phase terminal_modes_switch_screens_cursor_paste_and_focus_reporting;
     {
         {
@@ -711,6 +988,117 @@ tilo_test_env::scenario! {
                         b"\0".as_slice()
                     },
                     "all native key spellings must reach Readline's mark command"
+                );
+            }
+        }
+    }
+}
+
+tilo_test_env::scenario! {
+    fn the_terminal_draws_by_its_theme_on_device_pixels;
+
+    phase terminal_draw_and_disconnected_state_follow_theme_and_text_scale;
+    {
+        {
+            use ui::widget::Widget;
+
+            let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
+                .expect("spawn short-lived pty command");
+            let doc = AutoCommit::new();
+            tilo_test_env::wait_until("PTY EOF to settle the session state", || {
+                ui::headless::frame_widget(&mut widget, &doc);
+                widget.is_disconnected()
+            });
+            let node = Widget::accessibility(&widget).expect("terminal semantics");
+            assert!(
+                node.description
+                    .is_some_and(|description| description.contains("Session ended"))
+            );
+            assert!(node.children.iter().any(|child| {
+                child
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.contains("Session ended"))
+                    && child.live == Some(ui::a11y::Politeness::Assertive)
+            }));
+        }
+
+        {
+            use ui::Theme;
+            let theme = Theme::dark();
+            let mono = theme.tokens.font_mono;
+            assert!(
+                !mono.family.is_empty(),
+                "theme must expose mono font tokens"
+            );
+        }
+
+        {
+            use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+            use vello::{Scene, kurbo::Affine};
+
+            let (mut widget, _) = build_test_widget();
+            widget.force_geometry(Rect::new(0.0, 0.0, 390.0, 844.0), 4.0, 12.0);
+            let (provisional_cols, _) = widget.grid_size();
+            let theme = Theme::high_contrast().with_text_scale(2.0);
+            let mut scene = Scene::new();
+            let mut text_renderer = TextRenderer::new();
+            widget.draw_child(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text_renderer,
+                &theme,&PresenceCtx::empty().draw_env(),
+            );
+            let (resolved_cols, resolved_rows) = widget.grid_size();
+            assert!(resolved_cols < provisional_cols);
+            assert!(resolved_cols > 0 && resolved_rows > 0);
+        }
+
+        {
+            assert_eq!(TerminalWidget::disconnected_badge_label(), "Session ended");
+        }
+    }
+
+    phase the_cursor_is_an_opaque_inverted_cell;
+    {
+        let palette = ui::tokens::TerminalPalette::dark();
+        let cursor = crate::inner::cursor_from_palette(&palette);
+        assert!(
+            (cursor.components[3] - 1.0).abs() < f32::EPSILON,
+            "the block cursor is fully opaque, not a translucent wash"
+        );
+        assert_eq!(
+            cursor.components[..3],
+            palette.fg_default.components[..3],
+            "the cursor is the default foreground"
+        );
+    }
+
+    phase cell_fills_snap_to_device_pixels_and_adjacent_cells_tile;
+    {
+        use crate::inner::snap_to_device_pixels;
+        use vello::kurbo::Affine;
+
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            let transform = Affine::scale(scale);
+            let (char_w, x0) = (8.43, 12.0);
+            for cell in 0..40 {
+                let left = x0 + f64::from(cell) * char_w;
+                let a = snap_to_device_pixels(transform, Rect::new(left, 20.0, left + char_w, 40.0));
+                let b = snap_to_device_pixels(
+                    transform,
+                    Rect::new(left + char_w, 20.0, left + 2.0 * char_w, 40.0),
+                );
+                for edge in [a.x0, a.x1, a.y0, a.y1] {
+                    let device = edge * scale;
+                    assert!(
+                        (device - device.round()).abs() < 1e-9,
+                        "edge {edge} at scale {scale} is not on a device pixel"
+                    );
+                }
+                assert!(
+                    (a.x1 - b.x0).abs() < 1e-9,
+                    "neighbouring cells meet without a boundary or overlap"
                 );
             }
         }
@@ -3509,6 +3897,61 @@ fn windows_native_and_hosted_terminal_paths() {
 
 tilo_test_env::scenario! {
     fn typing_and_scrolling_repaint_only_what_changed;
+
+    phase typing_damages_only_its_row_and_the_cursor;
+    {
+        use ui::{Theme, presence::PresenceCtx, text_render::TextRenderer};
+        use vello::{Scene, kurbo::Affine};
+
+        let (mut widget, _) = build_test_widget();
+        let viewport = Rect::new(0.0, 0.0, 1600.0, 1000.0);
+        widget.force_geometry(viewport, 10.0, 20.0);
+        widget.feed(b"first line\r\nsecond line\r\n$ ");
+        let theme = Theme::dark();
+        let mut text = TextRenderer::new();
+        let mut frame = |widget: &mut TerminalWidget| {
+            let mut scene = Box::new(Scene::new());
+            let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
+                widget.draw_child(
+                    scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,&PresenceCtx::empty().draw_env(),
+                );
+            });
+            (scene, parts.expect("the terminal's parts are well nested"))
+        };
+        let _ = frame(&mut widget);
+        widget.feed(b"");
+        let (before, before_parts) = frame(&mut widget);
+        let (again, again_parts) = frame(&mut widget);
+        assert_eq!(
+            ui::scene_parts::damage(&before, &before_parts, &again, &again_parts),
+            Ok(Vec::new()),
+            "an unchanged terminal draws the same commands"
+        );
+        widget.feed(b"l");
+        let (after, after_parts) = frame(&mut widget);
+        let damage = ui::scene_parts::damage(&again, &again_parts, &after, &after_parts)
+            .expect("typing changes nothing outside the terminal's parts");
+        assert!(!damage.is_empty(), "the typed letter is repainted");
+        let (_, rows) = widget.grid_size();
+        let row_h = widget.grid_rect().height() / rows.max(1) as f64;
+        assert!(
+            damage.iter().all(|rect| rect.height() <= 3.0 * row_h + 2.0),
+            "typing repaints a row band and the cursor's cell, not the grid: {damage:?}"
+        );
+        let area: f64 = damage.iter().map(Rect::area).sum();
+        eprintln!(
+            "#3892 terminal keystroke damage: {area} of {} px",
+            viewport.area()
+        );
+        assert!(
+            area * 4.0 < viewport.area(),
+            "typing repaints a sliver of the terminal, not {area} of {} px: {damage:?}",
+            viewport.area()
+        );
+    }
 
     phase fingers_scroll_the_scrollback_by_the_pixel_and_copy_its_rows;
     {

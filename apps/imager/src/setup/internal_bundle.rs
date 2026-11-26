@@ -413,15 +413,387 @@ pub(in crate::setup) fn windows_directory_path(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use serde_json::Value;
+    use serde_json::{Value, json};
 
     const SHARED_FIXTURE: &str =
         include_str!("../../../../os/tests/fixtures/internal-bundle-v2.json");
+    const ROOT_UUID: &str = "12345678-1234-4234-8234-123456789abc";
+
     pub(crate) fn fixture() -> Value {
         serde_json::from_str(SHARED_FIXTURE).unwrap()
     }
     pub(crate) fn bytes(value: &Value) -> Vec<u8> {
         serde_json::to_vec(value).unwrap()
+    }
+    fn cmdline() -> String {
+        fixture()["boot_binding"]["uki_cmdline"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+    fn with_cmdline(cmdline: &str) -> Result<InternalBundle, String> {
+        let mut data = fixture();
+        data["boot_binding"]["uki_cmdline"] = json!(cmdline);
+        validate_internal_bundle(&bytes(&data))
+    }
+    tilo_test_env::scenario! {
+        fn the_internal_bundle_schema_and_names_are_closed_contracts;
+
+        phase live_cmdline_profile_and_root_floor_are_closed_contracts;
+        {
+            {
+                assert!(validate_internal_bundle(SHARED_FIXTURE.as_bytes()).is_ok());
+                assert!(validate_internal_bundle(&bytes(&fixture())).is_ok());
+                let bundle = validate_internal_bundle(SHARED_FIXTURE.as_bytes()).unwrap();
+                assert_eq!(bundle.purpose(), PURPOSE);
+                assert_eq!(bundle.purpose(), "tilo-internal-installer");
+            }
+
+            {
+                let text = cmdline();
+                let tokens: Vec<_> = text.split_ascii_whitespace().collect();
+                for token in [
+                    "root=tilo-auto",
+                    "rd.luks.options=tpm2-device=auto,fido2-device=auto",
+                    "tilo.install",
+                    "tilo.mode=normal",
+                    "tilo.generation=7",
+                    "preempt=full",
+                    "rw",
+                ] {
+                    assert!(tokens.contains(&token), "fixture lacks {token}");
+                }
+                assert!(!text.contains("tilo.root="));
+                assert!(!text.contains("root=UUID="));
+                assert!(!text.contains("tilo.luks="));
+                assert!(!text.contains("tilo.unlock="));
+            }
+
+            {
+                let data = fixture();
+                let root = &data["components"][1];
+                assert!(root["byte_size"].as_u64() < root["minimum_partition_bytes"].as_u64());
+                let bundle = validate_internal_bundle(&bytes(&data)).unwrap();
+                let view = bundle.component_by_role("staging-root").unwrap();
+                assert_eq!(view.minimum_partition_bytes, LIVE_ROOT_FLOOR_BYTES);
+                assert_eq!(view.byte_size, 8192);
+                assert_eq!(view.partition_type_guid, STAGING_ROOT_TYPE);
+                assert_eq!(view.filesystem_uuid, ROOT_UUID);
+                let esp = bundle.component_by_role("staging-esp").unwrap();
+                assert_eq!((esp.byte_size, esp.minimum_partition_bytes), (4096, 4096));
+                assert_eq!(esp.filesystem_uuid, "1234-ABCD");
+                assert!(bundle.component_by_role("target-root").is_none());
+                assert_eq!(bundle.efi_path(), "/EFI/BOOT/BOOTX64.EFI");
+                assert_eq!(bundle.uki_sha256(), "a".repeat(64));
+                let mut full = fixture();
+                full["components"][1]["byte_size"] = json!(LIVE_ROOT_FLOOR_BYTES);
+                full["source_image_bytes"] = json!(21504 + LIVE_ROOT_FLOOR_BYTES);
+                assert!(validate_internal_bundle(&bytes(&full)).is_ok());
+                full["components"][1]["byte_size"] = json!(LIVE_ROOT_FLOOR_BYTES + 512);
+                full["source_image_bytes"] = json!(21504 + LIVE_ROOT_FLOOR_BYTES + 512);
+                assert!(validate_internal_bundle(&bytes(&full)).is_err());
+            }
+
+            {
+                let base = cmdline();
+                for tail in [
+                    " ro",
+                    " rw",
+                    " init=/bin/sh",
+                    " console=tty0",
+                    " console=tty1",
+                    " tilo.generation=12",
+                    " unknown",
+                    " loglevel=3",
+                    " systemd.show_status=auto",
+                    " rd.udev.log_level=3",
+                    " vt.global_cursor_default=0",
+                    " root=tilo-auto",
+                    " rd.luks.options=tpm2-device=auto,fido2-device=auto",
+                    " tilo.luks=000000000000000000000000000000000000000000000",
+                    " init_on_free=1",
+                ] {
+                    assert!(
+                        with_cmdline(&format!("{base}{tail}")).is_err(),
+                        "accepted {tail}"
+                    );
+                }
+                for (old, new) in [
+                    ("tilo.mode=normal", "tilo.mode=repair"),
+                    ("preempt=full", "preempt=none"),
+                    ("tilo.generation=7", "tilo.generation=0"),
+                    ("tilo.generation=7", "tilo.generation=07"),
+                    ("tilo.generation=7", "tilo.generation=12345678901"),
+                    ("root=tilo-auto", "root=tilo-auto2"),
+                    ("fido2-device=auto", "fido2-device=none"),
+                    (" rw ", " ro "),
+                ] {
+                    assert!(base.contains(old), "fixture lacks {old}");
+                    assert!(
+                        with_cmdline(&base.replacen(old, new, 1)).is_err(),
+                        "accepted {new}"
+                    );
+                }
+                for accepted in [
+                    base.clone(),
+                    base.replacen("tilo.generation=7", "tilo.generation=4294967295", 1),
+                    base.replacen(" tilo.generation=7", "", 1),
+                    base.replacen(
+                        " console=tty0 console=ttyAMA0,115200 console=ttyS0,115200",
+                        "",
+                        1,
+                    ),
+                ] {
+                    assert!(with_cmdline(&accepted).is_ok(), "rejected {accepted}");
+                }
+                for required in ["tilo.install", "rw", "root=tilo-auto"] {
+                    let removed = base
+                        .split_ascii_whitespace()
+                        .filter(|token| *token != required)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    assert!(
+                        with_cmdline(&removed).is_err(),
+                        "accepted without {required}"
+                    );
+                }
+            }
+
+            {
+                let base = cmdline();
+                let auto = "root=tilo-auto";
+                for cmdline in [
+                    base.replacen(auto, &format!("root=UUID={ROOT_UUID}"), 1),
+                    base.replacen(auto, &format!("root=PARTUUID={ROOT_UUID}"), 1),
+                    base.replacen(auto, &format!("tilo.root={}", "0".repeat(37)), 1),
+                ] {
+                    assert!(with_cmdline(&cmdline).is_err(), "accepted {cmdline}");
+                }
+            }
+        }
+
+        phase bundle_schema_rejects_corrupt_ambiguous_or_positional_records;
+        {
+            {
+                let cases = [
+                    ("/schema", json!(1)),
+                    ("/schema", json!(3)),
+                    ("/purpose", json!("removable-media")),
+                    ("/firmware", json!("bios")),
+                    ("/secure_boot", json!("enabled")),
+                    ("/installer_protocol", json!(2)),
+                    ("/architecture", json!("arm")),
+                    ("/release_id", json!("../escape")),
+                    ("/source_image_bytes", json!(1_u64 << 41)),
+                    ("/components/1/role", json!("staging-esp")),
+                    ("/components/1/filename", json!("staging-esp.img")),
+                    ("/components/0/filename", json!("../escape.img")),
+                    ("/components/0/sha256", json!("A".repeat(64))),
+                    ("/components/0/byte_size", json!(4095)),
+                    ("/components/0/source_offset", json!(0)),
+                    ("/components/1/source_offset", json!(17408)),
+                    ("/components/1/minimum_partition_bytes", json!(4096)),
+                    (
+                        "/components/1/minimum_partition_bytes",
+                        json!(LIVE_ROOT_FLOOR_BYTES - 512),
+                    ),
+                    ("/components/0/minimum_partition_bytes", json!(2048)),
+                    (
+                        "/components/1/filesystem_uuid",
+                        json!("00000000-0000-0000-0000-000000000000"),
+                    ),
+                    ("/components/0/filesystem_uuid", json!("1234-abcd")),
+                    ("/components/0/filesystem_type", json!("btrfs")),
+                    (
+                        "/components/1/partition_type_guid",
+                        json!("b921b045-1df0-41c3-af44-4c6f280d3fae"),
+                    ),
+                    (
+                        "/components/1/partition_type_guid",
+                        json!("4f68bce3-e8cd-4db1-96e7-fbcaf984b709"),
+                    ),
+                    (
+                        "/components/1/partition_type_guid",
+                        json!("7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab"),
+                    ),
+                    (
+                        "/components/1/partition_type_guid",
+                        json!("0fc63daf-8483-4772-8e79-3d69d8477de4"),
+                    ),
+                    ("/boot_binding/uki_architecture", json!("aarch64")),
+                    ("/boot_binding/efi_path", json!("/EFI/../evil.efi")),
+                    ("/boot_binding/efi_path", json!("/EFI/Linux/fixture.efi")),
+                    ("/boot_binding/efi_path", json!("/EFI/BOOT/BOOTAA64.EFI")),
+                    ("/boot_binding/efi_path", json!("/EFI/BOOT/bootx64.efi")),
+                    ("/boot_binding/composefs_digest", json!("c".repeat(128))),
+                    ("/boot_binding/uki_sha256", json!("A".repeat(64))),
+                ];
+                for (path, value) in cases {
+                    let mut data = fixture();
+                    *data.pointer_mut(path).unwrap() = value.clone();
+                    assert!(
+                        validate_internal_bundle(&bytes(&data)).is_err(),
+                        "accepted {path} = {value}"
+                    );
+                }
+            }
+
+            {
+                let raw = String::from_utf8(bytes(&fixture())).unwrap();
+                assert!(raw.contains("\"schema\":2"));
+                assert!(
+                    validate_internal_bundle(
+                        raw.replacen("\"schema\":2", "\"schema\":2,\"schema\":2", 1)
+                            .as_bytes()
+                    )
+                    .is_err()
+                );
+                for value in [json!(true), json!(2.0), json!("2"), json!(-2)] {
+                    let mut data = fixture();
+                    data["schema"] = value;
+                    assert!(validate_internal_bundle(&bytes(&data)).is_err());
+                }
+                let mut data = fixture();
+                data["components"][0]["source_attributes"] = json!(0);
+                assert!(validate_internal_bundle(&bytes(&data)).is_err());
+                let mut data = fixture();
+                data["boot_binding"]["root_locator"] = json!(format!("UUID={ROOT_UUID}"));
+                assert!(validate_internal_bundle(&bytes(&data)).is_err());
+                let mut raw = bytes(&fixture());
+                raw.resize(MAX_MANIFEST_BYTES + 1, b' ');
+                assert!(validate_internal_bundle(&raw).is_err());
+            }
+
+            {
+                let mut value = fixture();
+                value["architecture"] = json!("aarch64");
+                value["boot_binding"]["uki_architecture"] = json!("aarch64");
+                assert!(validate_internal_bundle(&bytes(&value)).is_err());
+                value["boot_binding"]["efi_path"] = json!("/EFI/BOOT/BOOTAA64.EFI");
+                assert!(validate_internal_bundle(&bytes(&value)).is_ok());
+                assert_eq!(fallback_loader("aarch64"), Some("/EFI/BOOT/BOOTAA64.EFI"));
+                assert_eq!(fallback_loader("riscv64"), None);
+                for path in ["/boot_binding", "/components/0"] {
+                    let mut value = fixture();
+                    value.pointer_mut(path).unwrap()["unknown"] = json!(true);
+                    assert!(validate_internal_bundle(&bytes(&value)).is_err());
+                }
+                let raw = String::from_utf8(bytes(&fixture())).unwrap();
+                for field in ["filename", "uki_architecture"] {
+                    let marker = format!("\"{field}\":");
+                    let changed = raw.replacen(&marker, &format!("\"{field}\":\"bad\",{marker}"), 1);
+                    assert!(validate_internal_bundle(changed.as_bytes()).is_err());
+                }
+            }
+
+            {
+                let value = fixture();
+                assert!(validate_internal_bundle(&bytes(&value)).is_ok());
+                let array = positional_record(
+                    &value,
+                    "schema purpose release_id architecture firmware secure_boot installer_protocol source_image_bytes components boot_binding",
+                );
+                assert!(validate_internal_bundle(&bytes(&array)).is_err());
+            }
+
+            {
+                let mut value = fixture();
+                assert!(validate_internal_bundle(&bytes(&value)).is_ok());
+                value["components"][0] = positional_record(
+                    &value["components"][0],
+                    "role filename byte_size sha256 partition_type_guid filesystem_type filesystem_uuid minimum_partition_bytes source_offset",
+                );
+                assert!(validate_internal_bundle(&bytes(&value)).is_err());
+            }
+
+            {
+                let mut value = fixture();
+                assert!(validate_internal_bundle(&bytes(&value)).is_ok());
+                value["boot_binding"] = positional_record(
+                    &value["boot_binding"],
+                    "efi_path uki_architecture uki_sha256 uki_cmdline composefs_digest",
+                );
+                assert!(validate_internal_bundle(&bytes(&value)).is_err());
+            }
+        }
+
+        phase windows_names_cannot_alias_escape_or_broaden_authenticated_files;
+        {
+            {
+                assert!(windows_path("C:\\Users\\ordinary").is_ok());
+                for path in [
+                    "",
+                    "C:",
+                    "C:ordinary",
+                    "\\ordinary",
+                    "ordinary",
+                    "1:\\ordinary",
+                    "\\\\server\\share",
+                    "\\\\?\\C:\\ordinary",
+                    "\\\\.\\C:\\ordinary",
+                    "\\??\\C:\\ordinary",
+                    "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1",
+                    "C:/ordinary",
+                    "C:\\Users/ordinary",
+                    "C:\\Users\\",
+                    "C:\\Users\\\\ordinary",
+                    "C:\\Users\\.\\ordinary",
+                    "C:\\Users\\..\\ordinary",
+                ] {
+                    assert!(windows_path(path).is_err(), "accepted {path:?}");
+                }
+            }
+
+            {
+                assert!(windows_path("C:\\Users\\ordinary").is_ok());
+                for name in [
+                    ".",
+                    "..",
+                    "file.",
+                    "file ",
+                    "CON",
+                    "prn.txt",
+                    "aux",
+                    "nul.cache",
+                    "CONIN$",
+                    "conout$.txt",
+                    "CoN .txt",
+                    "COM0",
+                    "com1.ext",
+                    "COM9",
+                    "LPT0",
+                    "lpt1.ext",
+                    "LPT9",
+                    "COM¹",
+                    "com².ext",
+                    "CoM³",
+                    "LPT¹.ext",
+                    "lpt²",
+                    "LPT³",
+                    "PROGRA~1",
+                    "file:stream",
+                ] {
+                    assert!(
+                        windows_path(&format!("C:\\Users\\{name}")).is_err(),
+                        "accepted {name:?}"
+                    );
+                }
+                for unit in (0_u16..=31).chain("<>:\"/\\|?*~".encode_utf16()) {
+                    let mut raw: Vec<_> = "C:\\Users\\".encode_utf16().collect();
+                    raw.push(unit);
+                    assert!(windows_directory_path(raw).is_err(), "accepted {unit:x}");
+                }
+            }
+
+            {
+                assert!(validate_internal_bundle(&bytes(&fixture())).is_ok());
+                for name in ["é.img", "用户.img", "e\u{301}.img", "😀.img"] {
+                    let mut manifest = fixture();
+                    manifest["components"][0]["filename"] = json!(name);
+                    assert!(validate_internal_bundle(&bytes(&manifest)).is_err());
+                }
+            }
+        }
     }
     fn windows_path(text: &str) -> Result<WindowsDirectoryPath, String> {
         windows_directory_path(text.encode_utf16())
@@ -502,5 +874,14 @@ pub(crate) mod tests {
             }
             assert_eq!(rebuilt, raw);
         }
+    }
+
+    fn positional_record(value: &Value, fields: &str) -> Value {
+        Value::Array(
+            fields
+                .split_whitespace()
+                .map(|key| value[key].clone())
+                .collect(),
+        )
     }
 }

@@ -1805,3 +1805,426 @@ impl Hypervisor for HyperV {
         Some(powershell(&args.join(" ")))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    tilo_test_env::scenario! {
+        fn utm_vms_are_imported_and_found_without_guessing;
+
+        phase utm_import_uses_native_scripting_with_escaped_inputs_and_requested_resources;
+        {
+            let mut runner = fake("");
+            utm_import_template(
+                &mut runner,
+                ("Tilo Dev (\"test\")", "/images/a\\b\"c.qcow2"),
+                (8192, 4),
+            )
+            .unwrap();
+            assert_eq!(runner.0.len(), 1);
+            let command = &runner.0[0];
+            assert_eq!(command.program, "osascript");
+            assert_eq!(
+                command.args,
+                [
+                    "-e",
+                    r#"set diskFile to POSIX file "/images/a\\b\"c.qcow2""#,
+                    "-e",
+                    "tell application \"UTM\"",
+                    "-e",
+                    r#"make new virtual machine with properties {backend:qemu, configuration:{name:"Tilo Dev (\"test\")", architecture:"aarch64", memory:8192, cpu cores:4, hypervisor:true, uefi:true, drives:{{interface:virtio, source:diskFile}}}}"#,
+                    "-e",
+                    "end tell",
+                ]
+            );
+        }
+
+        phase utm_import_reports_native_automation_refusal;
+        {
+            let mut runner = fake("");
+            runner.1.success = false;
+            runner.1.stderr = "Not authorized to send Apple events to UTM".into();
+            let error = utm_import_template(
+                &mut runner,
+                ("Tilo Dev (test)", "/images/dev.qcow2"),
+                (UTM_MEMORY_MB, UTM_CPUS),
+            )
+            .unwrap_err();
+            assert!(matches!(error, CliError::Unreachable { .. }));
+            assert!(error.to_string().contains(&runner.1.stderr));
+            assert!(runner.0[0].args[5].contains("memory:16384, cpu cores:8"));
+        }
+
+        phase utm_explicit_ssh_does_not_query_the_hypervisor_or_host_leases;
+        {
+            let entry = VmEntry {
+                ssh: Some("developer@192.0.2.4:2222".into()),
+                ..entry()
+            };
+            let mut runner = fake("");
+            let endpoint = Utm
+                .ssh_endpoint(
+                    &Vm {
+                        name: "dev",
+                        entry: &entry,
+                    },
+                    &mut runner,
+                )
+                .unwrap();
+            assert_eq!(endpoint.user, "developer");
+            assert_eq!(endpoint.host, "192.0.2.4");
+            assert_eq!(endpoint.port, 2222);
+            assert!(runner.0.is_empty());
+        }
+    }
+
+    use super::*;
+
+    const KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample tilo-vm-dev";
+
+    struct Fake(Vec<CommandLine>, Output);
+
+    impl Runner for Fake {
+        fn output(&mut self, command: &CommandLine) -> Result<Output, CliError> {
+            self.0.push(command.clone());
+            Ok(self.1.clone())
+        }
+        fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
+            self.0.push(command.clone());
+            Ok(true)
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn whpx_runs_qemu_with_its_own_defaults;
+
+        phase whpx_monitor_keeps_command_arguments_in_a_literal;
+        {
+            let entry = entry();
+            let vm = Vm {
+                name: "dev",
+                entry: &entry,
+            };
+            let command = Whpx
+                .control(&vm, &["help '; throw 'injected'; #".into()])
+                .expect("WHPX monitor is supported");
+            let script = command.args.last().expect("PowerShell script");
+            assert!(script.contains("'command-line'='help ''; throw ''injected''; #'"));
+            assert!(Whpx.capabilities().control.is_some());
+        }
+
+    }
+
+    fn fake(stdout: &str) -> Fake {
+        Fake(
+            Vec::new(),
+            Output {
+                success: true,
+                status: "0".into(),
+                stdout: stdout.into(),
+                stderr: String::new(),
+            },
+        )
+    }
+
+    fn entry() -> VmEntry {
+        VmEntry {
+            hypervisor: String::new(),
+            image: Some("/img/tilo-vm.qcow2".into()),
+            disk: Some("/vms/dev.qcow2".into()),
+            memory_mb: Some(4096),
+            cpus: Some(2),
+            ssh_port: Some(2223),
+            ..VmEntry::default()
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn qemu_vms_are_driven_through_the_registered_script;
+
+        phase qemu_running_observes_script_status_for_shutdown_and_start;
+        {
+            let entry = entry();
+            let vm = Vm {
+                name: "dev",
+                entry: &entry,
+            };
+            for (status, expected) in [
+                ("stopped\n", Some(false)),
+                ("running (pid 42)\n", Some(true)),
+                ("unavailable", None),
+            ] {
+                let mut runner = fake(status);
+                assert_eq!(Qemu.running(&vm, &mut runner), expected);
+                assert_eq!(
+                    runner.0[0].display(),
+                    "TILO_DISTROBOX='' TILO_SSH_PORT=2223 bash os/dev/vm.sh status"
+                );
+            }
+            let mut runner = fake("stopped");
+            runner.1.success = false;
+            assert_eq!(Qemu.running(&vm, &mut runner), None);
+            assert_eq!(
+                Qemu.stop(&vm)[0].display(),
+                "TILO_DISTROBOX='' TILO_SSH_PORT=2223 bash os/dev/vm.sh cmd system_powerdown"
+            );
+        }
+
+        phase qemu_screenshot_keeps_monitor_runtime_and_passes_destination_as_data;
+        {
+            let entry = entry();
+            let vm = Vm {
+                name: "dev",
+                entry: &entry,
+            };
+            let destination = Path::new("/evidence/checkpoint 'one'.png");
+            let command = Qemu.screenshot(&vm, destination).unwrap();
+            assert_eq!(command.program, "bash");
+            assert_eq!(command.args[0], "-c");
+            assert_eq!(
+                command.args[1],
+                "image=$(bash os/dev/vm.sh shot \"tilo-vm-shot-$$\") && mv -- \"$image\" \"$1\""
+            );
+            assert_eq!(command.args[2], "tilo-vm-shot");
+            assert_eq!(command.args[3], destination.display().to_string());
+            assert_eq!(
+                command.env,
+                vec![
+                    ("TILO_DISTROBOX".into(), String::new()),
+                    ("TILO_SSH_PORT".into(), "2223".into())
+                ]
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn libvirt_domains_are_defined_from_the_entry;
+
+        phase vulkan_under_libvirt_needs_the_sandbox_that_forbids_its_render_server_off;
+        {
+            assert!(seccomp_sandbox_off("seccomp_sandbox = 0\n"));
+            assert!(seccomp_sandbox_off("# x\n  seccomp_sandbox=0 # for Venus\n"));
+            for on in ["", "#seccomp_sandbox = 0", "seccomp_sandbox = 1", "seccomp_sandbox_x = 0"] {
+                assert!(!seccomp_sandbox_off(on), "{on}");
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let conf = dir.path().join("qemu.conf");
+            let error = venus_sandbox_check_at(&conf, "qemu:///session").unwrap_err();
+            let text = format!("{error} {}", error.hint());
+            assert!(text.contains("seccomp_sandbox = 0"), "{text}");
+            assert!(text.contains("--hypervisor qemu"), "{text}");
+            std::fs::write(&conf, "seccomp_sandbox = 0\n").unwrap();
+            venus_sandbox_check_at(&conf, "qemu:///session").unwrap();
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn other_hypervisors_quote_and_resolve_their_commands() {
+        {
+            let entry = entry();
+            let vm = Vm {
+                name: "dev",
+                entry: &entry,
+            };
+            assert_eq!(
+                Qemu.start(&vm)[0].display(),
+                "TILO_DISTROBOX='' TILO_SSH_PORT=2223 TILO_MEM=4096 TILO_SMP=2 bash os/dev/vm.sh boot --2d --disk /vms/dev.qcow2"
+            );
+            assert_eq!(
+                Qemu.reset(&vm).unwrap().display(),
+                "TILO_DISTROBOX='' TILO_SSH_PORT=2223 bash os/dev/vm.sh cmd system_reset"
+            );
+            assert_eq!(
+                Qemu.screenshot(&vm, Path::new("/tmp/out/boot.png"))
+                    .unwrap()
+                    .display(),
+                "TILO_DISTROBOX='' TILO_SSH_PORT=2223 bash -c 'image=$(bash os/dev/vm.sh shot \"tilo-vm-shot-$$\") && mv -- \"$image\" \"$1\"' tilo-vm-shot /tmp/out/boot.png"
+            );
+            assert!(Qemu.destroy(&vm).is_empty());
+            assert_eq!(
+                Qemu.power_off(&vm).unwrap().display(),
+                "TILO_DISTROBOX='' TILO_SSH_PORT=2223 bash os/dev/vm.sh stop"
+            );
+        }
+
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let entry = VmEntry {
+                qemu_img: Some("/usr/bin/qemu-img".into()),
+                disk: Some(dir.path().join("dev.qcow2").display().to_string()),
+                ..entry()
+            };
+            let vm = Vm {
+                name: "dev",
+                entry: &entry,
+            };
+            assert!(
+                Libvirt.create(&vm, KEY).unwrap()[0]
+                    .display()
+                    .starts_with("/usr/bin/qemu-img create")
+            );
+            assert!(
+                Qemu.create(&vm, KEY).unwrap()[0]
+                    .display()
+                    .starts_with("/usr/bin/qemu-img create")
+            );
+        }
+
+        {
+            let entry = VmEntry {
+                template: Some("Tilo Dev".into()),
+                ..entry()
+            };
+            let vm = Vm {
+                name: "dev",
+                entry: &entry,
+            };
+            assert_eq!(
+                Utm.create(&vm, KEY).unwrap()[0].display(),
+                "utmctl clone 'Tilo Dev' --name dev"
+            );
+            assert_eq!(Utm.stop(&vm)[0].display(), "utmctl stop dev --request");
+            assert_eq!(Utm.serial(&vm).unwrap().display(), "utmctl attach dev");
+            let mut runner = fake("fe80::1\n192.168.64.5\n");
+            let endpoint = Utm.ssh_endpoint(&vm, &mut runner).unwrap();
+            assert_eq!(endpoint.host, "192.168.64.5");
+            assert_eq!(runner.0[0].display(), "utmctl ip-address dev");
+            let no_template = entry_without_template();
+            assert!(matches!(
+                Utm.create(
+                    &Vm {
+                        name: "dev",
+                        entry: &no_template
+                    },
+                    KEY
+                ),
+                Err(CliError::Config { .. })
+            ));
+        }
+
+        {
+            let entry = VmEntry {
+                disk: Some(r"C:\VMs\it's.vhdx".into()),
+                image: None,
+                ..entry()
+            };
+            let vm = Vm {
+                name: "dev",
+                entry: &entry,
+            };
+            let create = HyperV.create(&vm, KEY).unwrap();
+            assert_eq!(create.len(), 1);
+            assert_eq!(create[0].program, "powershell.exe");
+            assert_eq!(
+                create[0].args[..3],
+                ["-NoProfile", "-NonInteractive", "-Command"]
+            );
+            let script = &create[0].args[3];
+            assert!(script.contains(r"-VHDPath 'C:\VMs\it''s.vhdx'"), "{script}");
+            assert!(script.contains("-MemoryStartupBytes 4096MB"));
+            assert!(
+                script.contains(
+                    r"Set-VMComPort -VMName 'dev' -Number 1 -Path '\\.\pipe\tilo-vm-dev'"
+                )
+            );
+            assert_eq!(HyperV.start(&vm)[0].args[3], "Start-VM -Name 'dev'");
+            assert_eq!(
+                HyperV.reset(&vm).unwrap().args[3],
+                "Restart-VM -Name 'dev' -Force"
+            );
+            assert_eq!(
+                HyperV.serial(&vm).unwrap().display(),
+                r"plink.exe -serial \\.\pipe\tilo-vm-dev"
+            );
+            let endpoint = HyperV.ssh_endpoint(&vm, &mut fake("172.20.1.9\n")).unwrap();
+            assert_eq!(endpoint.host, "172.20.1.9");
+        }
+
+        {
+            let entry = VmEntry {
+                ssh: Some("tilo@10.0.0.2:2200".into()),
+                ..entry()
+            };
+            let vm = Vm {
+                name: "dev",
+                entry: &entry,
+            };
+            let mut runner = fake("");
+            let endpoint = Utm.ssh_endpoint(&vm, &mut runner).unwrap();
+            assert_eq!(
+                endpoint,
+                SshEndpoint {
+                    user: "tilo".into(),
+                    host: "10.0.0.2".into(),
+                    port: 2200
+                }
+            );
+            assert!(
+                runner.0.is_empty(),
+                "no query when the address is configured"
+            );
+            assert_eq!(SshEndpoint::parse("vm.local").unwrap().port, 22);
+            assert!(SshEndpoint::parse("@x").is_none());
+        }
+
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let disk = dir.path().join("dev.qcow2").display().to_string();
+            let entry = VmEntry {
+                template: Some("Tilo Dev".into()),
+                disk: Some(disk.clone()),
+                key: Some("/keys/tilo-vm".into()),
+                ..entry()
+            };
+            let vm = Vm {
+                name: "dev",
+                entry: &entry,
+            };
+            for name in ["libvirt", "qemu", "utm", "hyperv"] {
+                let a = adapter(name).unwrap();
+                let caps = a.capabilities();
+                assert_eq!(caps.serial, a.serial(&vm).is_some(), "{name} serial");
+                assert_eq!(
+                    caps.screenshot,
+                    a.screenshot(&vm, Path::new("/tmp/x.png")).is_some(),
+                    "{name} shot"
+                );
+                assert_eq!(caps.reset, a.reset(&vm).is_some(), "{name} reset");
+                let _ = std::fs::remove_file(domain_xml_path(&disk));
+                let in_args = a.create(&vm, KEY).unwrap().iter().any(|c| {
+                    c.args
+                        .iter()
+                        .any(|arg| arg.contains("io.systemd.credential"))
+                });
+                let in_domain = std::fs::read_to_string(domain_xml_path(&disk))
+                    .is_ok_and(|xml| xml.contains("io.systemd.credential"));
+                // QEMU's boot script receives the key at each start instead.
+                let at_start = a.start(&vm).iter().any(|c| {
+                    c.env
+                        .iter()
+                        .any(|(name, _)| name == "TILO_VM_ROOT_KEY_FILE")
+                });
+                let passes_key = in_args || in_domain || at_start;
+                assert_eq!(caps.credentials.is_some(), passes_key, "{name} credentials");
+                assert_eq!(
+                    caps.control.is_some(),
+                    a.control(&vm, &[]).is_some(),
+                    "{name} control"
+                );
+                assert_eq!(
+                    caps.direct_kernel,
+                    a.redefine(&vm, KEY, &mut fake("")).is_ok() && a.power_off(&vm).is_some(),
+                    "{name} direct kernel"
+                );
+            }
+            assert!(adapter("vbox").is_err());
+        }
+    }
+
+    fn entry_without_template() -> VmEntry {
+        entry()
+    }
+}
