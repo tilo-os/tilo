@@ -65,10 +65,38 @@ mod wakes;
 
 const APP: &str = "so.tilo.lang.counter";
 
+/// The seed a package's first compile draws its ids from: its text's FNV-1a hash, so every test
+/// that compiles the same text draws the same ids. A process names one surface per app, and
+/// many tests of one app share it; ids that differed per compile left the last compile's surface
+/// standing over the others' writes.
+fn seed(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+/// [`tilolang::compile_package`], its new ids drawn from `source` rather than the system's
+/// randomness: the same text compiles to the same ids wherever a test builds it.
+fn compile(
+    source: &str,
+    ids: &tilolang::IdsLock,
+    imports: &[tilolang::PackageMeta],
+) -> Result<tilolang::Compiled, Vec<tilolang::Diagnostic>> {
+    tilolang::compile_package_with(
+        source,
+        ids,
+        imports,
+        &mut tilolang::SeededEntropy(seed(source)),
+    )
+}
+
 fn counter() -> Bundle {
     let lock =
         tilolang::IdsLock::parse(include_str!("../../../../apps/tl/counter/app.ids")).unwrap();
-    let compiled = tilolang::compile_package(
+    let compiled = compile(
         include_str!("../../../../apps/tl/counter/app.tl"),
         &lock,
         &[],
@@ -1336,7 +1364,7 @@ fn shipped(dir: &std::path::Path) -> (String, Bundle) {
         dir,
         &[],
         &published,
-        &mut tilolang::OsEntropy::default(),
+        &mut tilolang::SeededEntropy(seed(&dir.to_string_lossy())),
     )
     .unwrap_or_else(|error| panic!("{}: the packages compile: {error}", dir.display()));
     let (package, used) = built.split_last().expect("the package is built last");
@@ -2031,7 +2059,7 @@ scenario "fetched" {
 
 /// The clocked package, compiled from [`CLOCKED_SOURCE`].
 fn clocked() -> Bundle {
-    let compiled = tilolang::compile_package(CLOCKED_SOURCE, &tilolang::IdsLock::new(), &[])
+    let compiled = compile(CLOCKED_SOURCE, &tilolang::IdsLock::new(), &[])
         .unwrap_or_else(|diagnostics| panic!("the clocked package compiles: {diagnostics:?}"));
     Bundle::new(&compiled, [])
 }
@@ -2045,9 +2073,12 @@ fn mail() -> Bundle {
     let provided = tilolang::source::apps_of(&platform);
     let dirs = tilolang::source::dependency_order_with(&dir, &[], &provided)
         .expect("the packages resolve");
-    let built =
-        tilolang::source::compile_dirs(&dirs, &platform, &mut tilolang::OsEntropy::default())
-            .expect("the packages compile");
+    let built = tilolang::source::compile_dirs(
+        &dirs,
+        &platform,
+        &mut tilolang::SeededEntropy(seed(&dir.to_string_lossy())),
+    )
+    .expect("the packages compile");
     let (package, used) = built.split_last().expect("the package is built last");
     Bundle::new(&package.compiled, used.iter().map(|used| &used.compiled))
 }
@@ -2405,7 +2436,7 @@ scenario "empty" {
 fn contented() -> Bundle {
     let used = tilolang_tilo::platform_apps::platform_packages_of(["tilo.workspace"])
         .expect("the workspace package reads");
-    let compiled = tilolang::compile_package(CONTENT_SOURCE, &tilolang::IdsLock::new(), &used)
+    let compiled = compile(CONTENT_SOURCE, &tilolang::IdsLock::new(), &used)
         .unwrap_or_else(|diagnostics| panic!("the content package compiles: {diagnostics:#?}"));
     Bundle::new(&compiled, [])
 }
@@ -2446,7 +2477,7 @@ scenario "this week" {
 
 /// The week package, compiled from [`WEEKS_SOURCE`].
 fn weeks() -> Bundle {
-    let compiled = tilolang::compile_package(WEEKS_SOURCE, &tilolang::IdsLock::new(), &[])
+    let compiled = compile(WEEKS_SOURCE, &tilolang::IdsLock::new(), &[])
         .unwrap_or_else(|diagnostics| panic!("the week package compiles: {diagnostics:?}"));
     Bundle::new(&compiled, [])
 }
@@ -2572,7 +2603,7 @@ fn a_hosted_window_names_another_app_as_the_names_it_was_sent() {
 /// The Notes app, and Discussion it is made with: the app a Markdown file opens in.
 fn notes_bundle() -> Bundle {
     let discussion_source = include_str!("../../../../apps/tl/discussion/app.tl");
-    let discussion = tilolang::compile_package(
+    let discussion = compile(
         discussion_source,
         &tilolang::IdsLock::new(),
         &tilolang_tilo::platform_apps::named_platform_packages(discussion_source)
@@ -2584,7 +2615,7 @@ fn notes_bundle() -> Bundle {
     let mut imports = tilolang_tilo::platform_apps::named_platform_packages(notes_source)
         .expect("the platform's packages read");
     imports.push(discussion.meta.clone());
-    let compiled = tilolang::compile_package(notes_source, &lock, &imports)
+    let compiled = compile(notes_source, &lock, &imports)
         .unwrap_or_else(|diagnostics| panic!("the notes app compiles: {diagnostics:?}"));
     Bundle::new(&compiled, [])
 }
@@ -2763,7 +2794,7 @@ action opened(p: Panel, file: File) uses files (opens: ["text/markdown", .md]) {
 
 /// The opener's package, compiled from [`OPENER_SOURCE`].
 fn opener() -> Bundle {
-    let compiled = tilolang::compile_package(OPENER_SOURCE, &tilolang::IdsLock::new(), &[])
+    let compiled = compile(OPENER_SOURCE, &tilolang::IdsLock::new(), &[])
         .unwrap_or_else(|diagnostics| panic!("the opener compiles: {diagnostics:?}"));
     Bundle::new(&compiled, [])
 }
@@ -3489,9 +3520,8 @@ fn buttons(window: &Window) -> Vec<&patch::Node> {
 fn a_platform_packages_reading_reaches_the_app_and_its_verb_goes_to_the_session() {
     let published = Published::install();
     let platform = tilolang_tilo::platform_apps::platform_packages().unwrap();
-    let compiled =
-        tilolang::compile_package(SOUNDCHECK_SOURCE, &tilolang::IdsLock::new(), &platform)
-            .unwrap_or_else(|diagnostics| panic!("the sound check compiles: {diagnostics:#?}"));
+    let compiled = compile(SOUNDCHECK_SOURCE, &tilolang::IdsLock::new(), &platform)
+        .unwrap_or_else(|diagnostics| panic!("the sound check compiles: {diagnostics:#?}"));
     let (mut host, mut window, _sent, _inbox, _route) =
         running_app("ada", SOUNDCHECK, Bundle::new(&compiled, []));
 
@@ -3566,7 +3596,7 @@ view panel(p: Panel) {
 fn the_workspaces_activity_reaches_the_app_that_reads_it() {
     let published = Published::install();
     let platform = tilolang_tilo::platform_apps::platform_packages().unwrap();
-    let compiled = tilolang::compile_package(HISTORY_SOURCE, &tilolang::IdsLock::new(), &platform)
+    let compiled = compile(HISTORY_SOURCE, &tilolang::IdsLock::new(), &platform)
         .unwrap_or_else(|diagnostics| panic!("the history package compiles: {diagnostics:#?}"));
     let (mut host, mut window, _sent, _inbox, _route) =
         running_app("ada", HISTORY, Bundle::new(&compiled, []));
@@ -3608,7 +3638,7 @@ fn the_activity_app_marks_what_it_showed_as_seen() {
     let platform = tilolang_tilo::platform_apps::platform_packages().unwrap();
     let lock =
         tilolang::IdsLock::parse(include_str!("../../../../apps/tl/activity/app.ids")).unwrap();
-    let compiled = tilolang::compile_package(
+    let compiled = compile(
         include_str!("../../../../apps/tl/activity/app.tl"),
         &lock,
         &platform,

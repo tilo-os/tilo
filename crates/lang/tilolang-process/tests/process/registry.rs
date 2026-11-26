@@ -50,7 +50,7 @@ fn bundle() -> Bundle {
     let used =
         tilolang_tilo::platform_apps::platform_packages_of(["tilo.actions", "tilo.invocations"])
             .expect("the platform's registry packages read");
-    let compiled = tilolang::compile_package(REGISTRY, &tilolang::IdsLock::new(), &used)
+    let compiled = compile(REGISTRY, &tilolang::IdsLock::new(), &used)
         .unwrap_or_else(|diagnostics| panic!("the registry app compiles: {diagnostics:#?}"));
     Bundle::new(&compiled, [])
 }

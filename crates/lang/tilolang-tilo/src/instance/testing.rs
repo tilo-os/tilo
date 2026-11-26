@@ -91,8 +91,15 @@ pub struct ProbeActions {
 /// dates typed in words still parse in the person's language.
 #[must_use]
 pub fn compile_probe() -> (tilolang::Compiled, ProbeActions) {
-    let mut compiled = tilolang::compile_package(PROBE_SOURCE, &tilolang::IdsLock::new(), &[])
-        .unwrap_or_else(|diagnostics| panic!("the probe package compiles: {diagnostics:?}"));
+    // The same ids every compile: a process names one surface per app, and every test of the
+    // probe shares it.
+    let mut compiled = tilolang::compile_package_with(
+        PROBE_SOURCE,
+        &tilolang::IdsLock::new(),
+        &[],
+        &mut tilolang::SeededEntropy(0),
+    )
+    .unwrap_or_else(|diagnostics| panic!("the probe package compiles: {diagnostics:?}"));
     tilolang::meta::append_locales(
         &mut compiled.wasm,
         &[("en-US".to_owned(), "d-probe = Probe\n".to_owned())],

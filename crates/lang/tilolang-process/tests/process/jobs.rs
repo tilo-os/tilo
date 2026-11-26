@@ -372,7 +372,7 @@ fn a_window_that_did_not_start_a_job_follows_it_from_the_devices_records() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let device = device();
     tilolang_tilo::engine::register(PAINTER, Arc::new(Painter));
-    let compiled = tilolang::compile_package(PAINTER_SOURCE, &tilolang::IdsLock::new(), &[])
+    let compiled = compile(PAINTER_SOURCE, &tilolang::IdsLock::new(), &[])
         .unwrap_or_else(|diagnostics| panic!("the painter compiles: {diagnostics:?}"));
     let bundle = Bundle::new(&compiled, []);
     let bus = Rc::<Bus>::default();
@@ -586,7 +586,7 @@ fn a_loaded_engines_job_reaches_its_done_after_its_window_closed() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let device = device();
     tilolang_process::loaded_engines::give(clipper::API);
-    let compiled = tilolang::compile_package(CLIPPER_SOURCE, &tilolang::IdsLock::new(), &[])
+    let compiled = compile(CLIPPER_SOURCE, &tilolang::IdsLock::new(), &[])
         .unwrap_or_else(|diagnostics| panic!("the clipper compiles: {diagnostics:?}"));
     let bundle = Bundle::new(&compiled, []);
     let bus = Rc::<Bus>::default();

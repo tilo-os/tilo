@@ -56,9 +56,9 @@ const CALLEE_APP: &str = "test.callee";
 
 /// The caller and the package it uses, compiled from their sources.
 fn bundles() -> Bundle {
-    let callee = tilolang::compile_package(CALLEE, &tilolang::IdsLock::new(), &[])
+    let callee = compile(CALLEE, &tilolang::IdsLock::new(), &[])
         .unwrap_or_else(|diagnostics| panic!("the callee compiles: {diagnostics:#?}"));
-    let client = tilolang::compile_package(
+    let client = compile(
         CALLER,
         &tilolang::IdsLock::new(),
         std::slice::from_ref(&callee.meta),
@@ -719,7 +719,7 @@ fn deliver(
 
 /// The answers app running for `ada`, with the address it publishes `answer` at.
 fn answers() -> (TilolangProcess, Window, Sent, Inbox, (String, String)) {
-    let compiled = tilolang::compile_package(ANSWERS, &tilolang::IdsLock::new(), &[])
+    let compiled = compile(ANSWERS, &tilolang::IdsLock::new(), &[])
         .unwrap_or_else(|diagnostics| panic!("the app compiles: {diagnostics:#?}"));
     let route = RouteSpec::app(ANSWERS_APP, uuid::Uuid::new_v4());
     let mut host = TilolangProcess::new(wake());
