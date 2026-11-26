@@ -2139,6 +2139,10 @@ impl Workspaces {
         )
         .await
         .map_err(|error| error.to_string())?;
+        // This device's apps call their records here, and this service admits those calls: the
+        // receipts are signed as this device from now on, as a host signs for every workspace it
+        // serves. Without it a member copy signed nothing, and no app on this device could open.
+        tilo_invocation_journal::opened(&workspace_id.to_string());
         Ok(())
     }
 
