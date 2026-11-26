@@ -386,6 +386,20 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         })
         .await
         .expect("the owner adds their agent");
+    // The workspace's settings grant the provider's bot the writing it carries in, as a person
+    // grants a connector's bot its reach: a bot writes only what the workspace grants it.
+    let granted = tilo_action_policy::Grant::new(
+        "bridge-writes-the-conversations",
+        tilo_action_policy::Grantee::bot("bridge"),
+        tilo_action_policy::TreePath::workspace(device.workspace.as_str()),
+        tilo_action_policy::KindSet::UNDOABLE,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
+    );
+    workspaces
+        .put_workspace_grants(&device.workspace, cert, [23; 32], vec![granted])
+        .await
+        .expect("the workspace grants the provider's bot its writing");
     let started = Arc::new(Started::default());
     let mut runner = Runner::new(
         workspaces.clone(),
@@ -441,10 +455,12 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         )
         .await;
     };
-    // Rich text whose words are `words`, mentioning the agent where `mention` says.
+    // Rich text whose words are `words`, mentioning the agent where `mention` says: a mention
+    // names its member as every mark does (`MemberId::mark_value`).
     let rich = |words: &str, mention: bool| {
         let marks = if mention {
-            json!([{"start": 0, "end": 5, "name": "mention", "value": {"Str": "{\"agent\":\"scout\"}"}}])
+            let value = tilo_action_policy::MemberId::agent("scout", owner.as_str()).mark_value();
+            json!([{"start": 0, "end": 5, "name": "mention", "value": {"Str": value}}])
         } else {
             json!([])
         };
