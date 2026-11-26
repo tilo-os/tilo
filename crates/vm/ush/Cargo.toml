@@ -38,6 +38,8 @@ tilo-clock = { path = "../../platform/tilo-clock" }
 bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 sha2.workspace = true
 runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
+# The native editor's frames and socket, which Terminal's client drives the prompt over.
+tilo-process = { path = "../../platform/tilo-process", features = ["native-editor"] }
 collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 tilo-action-policy = { path = "../../core/action-policy" }
 # The shell a session runs: POSIX sh and bash's common features, with
@@ -120,8 +122,6 @@ ed25519-dalek.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
-# Terminal's own client of the native editor capability, driving the prompt.
-tilo-process = { path = "../../platform/tilo-process", features = ["native-editor"] }
 
 [[test]]
 name = "it"

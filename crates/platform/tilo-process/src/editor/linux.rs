@@ -1,7 +1,7 @@
 //! Linux ownership and bounded acknowledgement worker.
+pub use super::wire::Socket;
+use super::wire::{self as editor, Request, Status};
 use super::{Completion, Failure, Snapshot};
-pub use runtime_portal::editor::Socket;
-use runtime_portal::editor::{self, Request, Status};
 use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::net::UnixStream;

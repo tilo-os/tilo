@@ -64,14 +64,6 @@ pub fn recv_with_fds(sock: impl AsFd) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
     recv_bundle(sock, &mut [0u8; 4096], MAX_BUNDLE)
 }
 
-#[cfg(target_os = "linux")]
-pub(crate) fn recv_data(sock: impl AsFd, buffer: &mut [u8]) -> io::Result<usize> {
-    if buffer.is_empty() || buffer.len() > 16384 {
-        return Err(io::Error::other("invalid data receive bound"));
-    }
-    recv_bundle(sock, buffer, 0).map(|(bytes, _)| bytes.len())
-}
-
 fn recv_into(sock: impl AsFd, buf: &mut [u8]) -> io::Result<(Vec<u8>, Option<OwnedFd>)> {
     recv_bundle(sock, buf, 1).map(|(bytes, mut fds)| (bytes, fds.pop()))
 }

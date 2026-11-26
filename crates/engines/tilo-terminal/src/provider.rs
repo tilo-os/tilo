@@ -486,7 +486,7 @@ pub fn ush_request(
         if tilo_process::editor::supported() && program.is_empty() && !target.is_host() {
             fields.insert(
                 "editor_protocol".into(),
-                serde_json::json!(runtime_portal::editor::VERSION),
+                serde_json::json!(tilo_process::editor::VERSION),
             );
         }
         if !program.is_empty() {
@@ -561,7 +561,7 @@ impl UshSessionReply {
             && self.host_session.as_deref().is_none_or(hex_key)
             && self
                 .editor_protocol
-                .is_none_or(|version| version == runtime_portal::editor::VERSION)
+                .is_none_or(|version| version == tilo_process::editor::VERSION)
             && (self.editor_protocol.is_none() || (program.is_empty() && !target.is_host()))
             && self.protocol == 2
             && descriptor_count == descriptors

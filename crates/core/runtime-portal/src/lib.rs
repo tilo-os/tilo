@@ -320,6 +320,4 @@ pub(crate) fn no_spawns() -> std::sync::RwLockWriteGuard<'static, ()> {
     CHILD_SPAWNS.write_recover()
 }
 
-pub mod editor;
-
 pub mod native;

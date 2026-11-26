@@ -1,8 +1,8 @@
 #[cfg(all(test, target_os = "linux"))]
 mod native_editing_tests {
     use super::*;
-    use runtime_portal::editor::{self, Lease, Request};
     use std::time::Duration;
+    use tilo_process::editor::{self, Lease, Request};
     use tilo_test_env::{hang_bound, wait_until};
 
     fn fixture() -> std::io::Result<(TerminalWidget, editor::Socket)> {

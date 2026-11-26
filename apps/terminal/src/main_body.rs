@@ -1773,7 +1773,7 @@ impl TerminalWidget {
             && !self.alt_active
             && self.input_unavailable().is_none()
         {
-            return serde_json::json!({ "available": true, "session": self.local_session, "protocol": runtime_portal::editor::VERSION, "lease": serde_json::to_string(&snapshot.lease).ok(), "can_undo": snapshot.can_undo, "can_redo": snapshot.can_redo });
+            return serde_json::json!({ "available": true, "session": self.local_session, "protocol": tilo_process::editor::VERSION, "lease": serde_json::to_string(&snapshot.lease).ok(), "can_undo": snapshot.can_undo, "can_redo": snapshot.can_redo });
         }
         serde_json::json!({ "available": false })
     }
@@ -1799,7 +1799,7 @@ impl TerminalWidget {
                 || self.input_unavailable().is_some()
                 || self.local_session.as_deref() != Some(session)
                 || lease.len() > 512
-                || text.len() > runtime_portal::editor::TEXT_BYTES
+                || text.len() > tilo_process::editor::TEXT_BYTES
             {
                 return Err("The original local editor is unavailable".into());
             }
@@ -1813,12 +1813,12 @@ impl TerminalWidget {
             }
             self.native_capture = None;
             editor.effect(
-                runtime_portal::editor::Request::Replace {
+                tilo_process::editor::Request::Replace {
                     lease,
                     transaction: 1,
                     text,
                 },
-                runtime_portal::editor::Status::Applied,
+                tilo_process::editor::Status::Applied,
                 reply,
             );
             Ok(())

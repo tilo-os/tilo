@@ -162,7 +162,7 @@ fn host(args: &[String]) -> anyhow::Result<i32> {
                     anyhow::bail!("invalid inherited editor descriptor");
                 }
                 let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-                opts.editor = Some(Arc::new(runtime_portal::editor::Socket::adopt(fd)?));
+                opts.editor = Some(Arc::new(tilo_process::editor::Socket::adopt(fd)?));
                 i = i.saturating_add(2);
             }
             ush::setup::TERMINAL_FD_ARG => {

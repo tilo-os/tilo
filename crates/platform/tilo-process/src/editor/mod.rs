@@ -1,7 +1,8 @@
 //! Cooperative native editor capability; unsupported hosts expose none. Transport and
 //! native timing live here, the app owns caller authority.
-pub use runtime_portal::editor::{Lease, Request, Status, TEXT_BYTES, VERSION};
+mod wire;
 use std::io;
+pub use wire::*;
 
 /// A refused, busy, retired or uncertain edit is never permission to retry stdin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

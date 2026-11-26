@@ -890,10 +890,10 @@ tilo_test_env::scenario! {
 
     phase terminals_editor_client_edits_the_line_at_a_ush_prompt;
     {
-        use runtime_portal::editor::{Request, Status};
+        use tilo_process::editor::{Request, Status};
         use tilo_process::editor::{Client, Failure, Snapshot};
 
-        let (app, producer) = runtime_portal::editor::Socket::pair().unwrap();
+        let (app, producer) = tilo_process::editor::Socket::pair().unwrap();
         let field = SessionField::serve(Arc::new(producer)).unwrap();
         let p = prompt_with(&[], Some(&field));
         let client = Client::new(app, Arc::new(|| {})).unwrap();

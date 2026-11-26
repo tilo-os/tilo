@@ -11,7 +11,6 @@ platform = [
     "tilo-locale -> tilo-app",
     "tilo-locale -> tilo-formats",
     "tilo-locale -> tilo-settings-model",
-    "tilo-process -> tilo-runtime-portal",
     "tilo-secrets -> tilo-seal",
 ]
 

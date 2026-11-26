@@ -12,7 +12,7 @@ use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
-use runtime_portal::editor;
+use tilo_process::editor;
 use ush_shell::field::{Field, Lease, Reply, Request, Status};
 
 pub struct SessionField {

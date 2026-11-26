@@ -9,7 +9,7 @@
 //! [`Status::Stale`]; nothing is ever pressed (an edit is literal text, never
 //! Enter). Away from the prompt the line is [`Status::Unavailable`].
 //!
-//! The values are those of `runtime_portal::editor`, the wire format Terminal
+//! The values are those of `tilo_process::editor`, the wire format Terminal
 //! speaks; the host carries them ([`Field`]). Nothing here touches a socket,
 //! so the same editor serves the app wherever the shell runs.
 

@@ -4,6 +4,8 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::net::UnixDatagram;
 use std::time::Duration;
 
+use rustix::net::{RecvAncillaryBuffer, RecvFlags, ReturnFlags, recvmsg};
+
 /// A bounded packet transport. Possession is not app or resource authority.
 pub struct Socket(UnixDatagram);
 
@@ -104,7 +106,23 @@ impl Socket {
         if bytes.len() > super::FRAME_BYTES {
             return Err(io::Error::other("editor packet exceeds its bound"));
         }
-        let received = crate::fd_transport::recv_data(&self.0, bytes)?;
+        if bytes.is_empty() {
+            return Err(io::Error::other("invalid data receive bound"));
+        }
+        // No control buffer: the kernel closes any rights sent along and marks the packet.
+        let mut none = RecvAncillaryBuffer::default();
+        let parts = &mut [io::IoSliceMut::new(bytes)];
+        let received = recvmsg(&self.0, parts, &mut none, RecvFlags::empty())?;
+        if received
+            .flags
+            .intersects(ReturnFlags::CTRUNC | ReturnFlags::TRUNC)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "truncated or oversized descriptor message",
+            ));
+        }
+        let received = received.bytes;
         if received == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,

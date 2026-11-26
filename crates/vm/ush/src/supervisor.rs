@@ -44,7 +44,7 @@ pub struct SessionOptions {
     pub host_root: PathBuf,
     pub verbose: bool,
     pub marks_key: Option<String>,
-    pub editor: Option<Arc<runtime_portal::editor::Socket>>,
+    pub editor: Option<Arc<tilo_process::editor::Socket>>,
     pub terminal: Option<Arc<OwnedFd>>,
     pub mcp_server: Option<PathBuf>,
     /// On a host that serves other people's workspaces: the workspace's
@@ -923,8 +923,8 @@ fn open_environment(
     let commands =
         commands.filter(|key| command.is_empty() && crate::command_marks::valid_key(key));
     let (master, slave) = open_pty(cols, rows)?;
-    let editor = if editor_protocol == Some(runtime_portal::editor::VERSION) && command.is_empty() {
-        Some(runtime_portal::editor::Socket::pair()?)
+    let editor = if editor_protocol == Some(tilo_process::editor::VERSION) && command.is_empty() {
+        Some(tilo_process::editor::Socket::pair()?)
     } else {
         None
     };
@@ -963,7 +963,7 @@ fn open_environment(
             session: id,
             environment: record,
             commands: commands.is_some(),
-            editor_protocol: editor.as_ref().map(|_| runtime_portal::editor::VERSION),
+            editor_protocol: editor.as_ref().map(|_| tilo_process::editor::VERSION),
             host_session: None,
         },
         master,
@@ -1005,7 +1005,7 @@ fn hand_off_session(
     response: &ServeResponse,
     master: std::fs::File,
     child: std::process::Child,
-    editor: Option<runtime_portal::editor::Socket>,
+    editor: Option<tilo_process::editor::Socket>,
     on_started: impl FnOnce() -> Option<EndWatch>,
 ) -> anyhow::Result<()> {
     use std::os::fd::AsFd;
@@ -1494,7 +1494,7 @@ struct Launch<'a> {
     host_root: &'a Path,
     command: &'a [String],
     commands: Option<&'a str>,
-    editor: Option<&'a runtime_portal::editor::Socket>,
+    editor: Option<&'a tilo_process::editor::Socket>,
 }
 
 fn spawn_attached(
