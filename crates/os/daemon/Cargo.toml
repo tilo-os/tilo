@@ -150,6 +150,9 @@ libc.workspace = true
 rand.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
+# The device VPN's tunnel, as the other of the person's devices serves it, and the in-memory
+# stack its exit routes into.
+device-vpn = { package = "tilo-device-vpn", path = "../device-vpn", default-features = false, features = ["tunnel", "test-support"] }
 # A server on this machine's loopback, which a test's device relays through.
 test-server = { path = "../../../tools/test-server" }
 runtime-bundle = { package = "tilo-runtime-bundle", path = "../../core/runtime-bundle" }

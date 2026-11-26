@@ -207,6 +207,7 @@ fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
             identity: None,
             api: None,
             live: None,
+            vpn: None,
             speaking: None,
         })),
         ..ProcessServices::default()

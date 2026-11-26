@@ -11,6 +11,10 @@ pub mod protocol;
 #[cfg(target_os = "linux")]
 pub mod fdpass;
 
+/// One device-VPN link between a person's shell and this device's daemon.
+#[cfg(feature = "tunnel")]
+pub mod link;
+
 #[cfg(feature = "tunnel")]
 pub mod tunnel;
 

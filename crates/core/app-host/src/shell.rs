@@ -209,6 +209,11 @@ pub struct ShellServices {
     /// device's live session, which runs its relay. `None` where the device runs none, and a
     /// link is refused.
     pub live: Option<LiveLinks>,
+    /// What carries a link of the device VPN ([`device_vpn::link`]), handed over as a connection
+    /// the shell made for it ([`runtime_collab::wire::shell::HandedTo::DeviceVpn`]): the daemon,
+    /// which holds this device's endpoint and its key. `None` where the daemon serves none, and
+    /// a link is refused.
+    pub vpn: Option<DeviceVpnLinks>,
     /// The device's one word in each workspace's live session, which the shell tells what the
     /// person says of themselves and which call they are in. `None` where the device runs no
     /// live session, and the shell's word is refused.
@@ -252,6 +257,11 @@ pub type JoinAnswer = Pin<Box<dyn Future<Output = Result<Option<(String, u64)>, 
 /// connection, or refuses it, saying why, for a shell whose person it does not act for.
 pub type ShellApi =
     Arc<dyn Fn(&ShellCaller, tilo_socket::Stream) -> Result<(), String> + Send + Sync>;
+
+/// What carries one device-VPN link of a shell's until it ends.
+pub type DeviceVpnLinks = Arc<
+    dyn Fn(tilo_socket::tokio::Stream) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
+>;
 
 /// What carries one admitted link of a shell's live session until it ends.
 pub type LiveLinks = Arc<

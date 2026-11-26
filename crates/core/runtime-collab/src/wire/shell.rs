@@ -100,6 +100,10 @@ pub enum HandedTo {
     /// kernel said its peer is one of them. The daemon serves it as the person, so it carries
     /// no [`VouchedApp`].
     Api,
+    /// The device VPN: the connection is one link of the shell's (`device_vpn::link`), which the
+    /// daemon carries on this device's endpoint, where only it dials as the device. It is the
+    /// shell's own, so it carries no [`VouchedApp`].
+    DeviceVpn,
 }
 
 /// The app a [`Vouch`] admits its connection as.

@@ -48,6 +48,7 @@ mod daemon_flows;
 mod desktop_page;
 mod device_carry;
 mod device_key;
+mod device_vpn_tunnel;
 mod device_writes;
 mod files_collab;
 mod files_content;

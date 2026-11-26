@@ -256,6 +256,20 @@ fn vouch_for(
         }
         return carry_live(shell, connection);
     }
+    if to == runtime_collab::wire::shell::HandedTo::DeviceVpn {
+        if app.is_some() {
+            return Err("a device VPN link is vouched for by no launch".to_owned());
+        }
+        let vpn = shell
+            .services
+            .vpn
+            .clone()
+            .ok_or("this device serves no device VPN")?;
+        let stream = tilo_socket::tokio::from_std(handed_stream(connection)?)
+            .map_err(|error| format!("the device VPN link cannot be carried: {error}"))?;
+        tokio::spawn(vpn(stream));
+        return Ok(ShellReply::Vouched);
+    }
     if to == runtime_collab::wire::shell::HandedTo::Api {
         if app.is_some() {
             return Err("a program's API connection is vouched for by no launch".to_owned());

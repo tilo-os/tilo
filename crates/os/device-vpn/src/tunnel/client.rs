@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use iroh::endpoint::{Connection, ConnectionError, VarInt};
 use iroh::{Endpoint, EndpointAddr};
+use serde::{Deserialize, Serialize};
 
 use super::ALPN;
 use super::device::PacketDevice;
@@ -17,7 +18,7 @@ use crate::packet::Ipv4Packet;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Refusal {
     /// The exit is not one of this person's devices, or does not count this
     /// one as theirs.
@@ -61,7 +62,7 @@ impl std::fmt::Display for ClientError {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Ended {
     Refused(Refusal),
     Closed,

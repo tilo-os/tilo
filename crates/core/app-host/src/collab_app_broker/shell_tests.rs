@@ -333,6 +333,7 @@ async fn device_carrying(live: Option<crate::shell::LiveLinks>) -> Device {
                 identity: None,
                 api: None,
                 live,
+                vpn: None,
                 speaking: None,
             })),
             // A person's call an app makes is admitted with its evidence, as on a device.

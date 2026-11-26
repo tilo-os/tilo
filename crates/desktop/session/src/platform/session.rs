@@ -132,16 +132,11 @@ impl Session {
         let sources = crate::config::Sources::from_config(&options.config);
         let mut published = Surfaces::default();
         // The device VPN runs for the session's lifetime: the profiles' kill
-        // switches from the start, the route through another of the
-        // person's devices as the session's passes find this device's
-        // endpoint, and this device as an exit for their other devices. What
-        // all of it does is published for Settings, and the exit is served
-        // on the endpoint the session binds next.
-        let beside = options
-            .vpn
-            .as_ref()
-            .map(crate::vpn::Vpn::served)
-            .unwrap_or_default();
+        // switches from the start, and the route through another of the
+        // person's devices, followed on the passes that find this device's
+        // daemon. The tunnel itself is the daemon's, which holds the device's
+        // endpoint; this session opens the TUNs and hands it the packets.
+        let beside = Vec::new();
         let vpn = options.vpn.take().map(crate::vpn::Vpn::start);
         // The shell link the device's daemon gave this session when it started it: the
         // session's own reads and writes go there, the workspace resources it shows itself are

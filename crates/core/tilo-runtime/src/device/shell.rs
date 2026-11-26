@@ -49,6 +49,7 @@ use super::workspaces::ServiceWorkspaces;
 pub(crate) struct Serving {
     pub identity: Arc<dyn Fn(tilo_socket::Stream) + Send + Sync>,
     pub live: Option<tilo_app_host::shell::LiveLinks>,
+    pub vpn: Option<tilo_app_host::shell::DeviceVpnLinks>,
     pub speaking: Arc<dyn tilo_app_host::shell::ShellSpeaking>,
 }
 
@@ -64,6 +65,7 @@ pub(crate) fn services(
     let Serving {
         identity,
         live,
+        vpn,
         speaking,
     } = serving;
     let standing = Standing::new(
@@ -86,6 +88,7 @@ pub(crate) fn services(
         }),
         workspaces: copies,
         live,
+        vpn,
         speaking: Some(speaking),
         actions: Arc::new(Actions {
             kept: Arc::new(Kept {

@@ -35,7 +35,7 @@ default = ["service"]
 # without it.
 service = ["dep:tilo-peer-facts"]
 # The tunnel between two of a person's devices, over their iroh connection.
-tunnel = ["dep:iroh", "dep:tokio", "dep:bytes", "dep:postcard", "dep:tracing"]
+tunnel = ["dep:iroh", "dep:tokio", "tokio/io-util", "dep:bytes", "dep:postcard", "dep:tracing"]
 # What the session runs: the route through another device decided, and the
 # kill switch of the person's VPN profiles followed from the settings and
 # `NetworkManager`.

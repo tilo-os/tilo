@@ -1653,6 +1653,23 @@ impl ShellClient {
         Ok(tokio::net::UnixStream::from_std(ours)?)
     }
 
+    /// A connection the daemon carries as one link of this shell's device VPN
+    /// (`device_vpn::link`): one end of a pair made here, the other handed over on this link.
+    ///
+    /// # Errors
+    /// The link carries no descriptors, or the daemon serves no device VPN.
+    pub async fn device_vpn(&self) -> Result<tokio::net::UnixStream, NotAvailable> {
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        self.hand(
+            crate::wire::shell::HandedTo::DeviceVpn,
+            std::os::fd::OwnedFd::from(theirs),
+            None,
+        )
+        .await?;
+        ours.set_nonblocking(true)?;
+        Ok(tokio::net::UnixStream::from_std(ours)?)
+    }
+
     async fn hand(
         &self,
         to: crate::wire::shell::HandedTo,

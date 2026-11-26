@@ -200,6 +200,7 @@ impl TestDaemon {
                 identity: None,
                 api: None,
                 live: None,
+                vpn: None,
                 speaking: None,
             })),
             // The providers registered on the device, the seat a shell serves among them.

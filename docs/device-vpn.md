@@ -29,8 +29,10 @@ and nobody configures keys, ports or endpoints.
 | --- | --- | --- |
 | Helper | `crates/os/device-vpn` (`tilo-device-vpn`, root system service) | TUN devices, routes and policy rules, NetworkManager DNS for the tunnel, IPv4 forwarding, the nftables kill switch and masquerade |
 | Tunnel | same crate, feature `tunnel` | the `tilo-device-vpn/1` ALPN: handshake, exit authorisation, IP packets as QUIC datagrams, MTU, the exit's DNS relay |
-| Controller | `crates/desktop/session/src/vpn.rs` | the person's choices, the client and exit state machines, the status Settings and quick settings show, the actions |
+| Tunnel on the device | `crates/core/tilo-runtime/src/device/vpn.rs` | this device's endpoint for the tunnel, dialling the exit another of their devices serves, answering the one they route through this one, and carrying the packets |
+| Controller | `crates/desktop/session/src/vpn.rs` | the person's choices, the client and exit state machines, the TUN devices (the root helper answers the seat's compositor alone), the status Settings and quick settings show, the actions |
 | Choices and status | `settings_store::device_vpn` | the settings leaves Settings writes and the shell follows; the status file the shell publishes |
+| Shell link | `device_vpn::link` | one tunnel's link between the session and the device's daemon: the ask, the offer, the packets, and what happens to who routes through this device |
 
 ### The helper
 
@@ -92,10 +94,25 @@ a minute with nothing open.
 
 ### The tunnel
 
-`tilo-device-vpn/1` on the shell's peer endpoint. The client opens one
-bidirectional control stream and says why it came (`probe` or `route`); the
+`tilo-device-vpn/1` on the device's peer endpoint, the daemon's: only the
+daemon has the device's key, and two endpoints under one key push each other
+off the network, so the tunnel's peer-to-peer half runs there. The client opens
+one bidirectional control stream and says why it came (`probe` or `route`); the
 exit answers with an offer (gateway, the client's address, MTU, its home
 networks) or closes the connection with a reason code.
+
+The session does what only it may: it opens the tunnel's TUN devices through
+the root helper, which answers the seat's compositor alone, and hands their
+packets to its daemon over a link of the shell link the daemon gave it
+(`device_vpn::link`). A link opens with one ask — `probe`, `route` or an exit
+TUN lent to the daemon — answered with the exit's offer (and the carrier the
+helper must exempt) or why it was not served; packets then cross it both ways,
+and it says how the tunnel ended. The daemon's exit serves the person's other
+devices while a shell lends its TUN and the person turned the exit on; who
+counts as one of their devices is their record of them, read by the daemon,
+and the devices they took back are turned away within the same recheck as
+before. The TUN devices stay where the privilege is, and the daemon runs as
+this device's own account without `CAP_NET_ADMIN` or a TUN device of its own.
 
 - **Authorisation is at the exit.** The remote endpoint key must be one of
   the person's own devices (`personal_device_peers`: enrolled or certified by
@@ -145,7 +162,9 @@ follows them and makes the tunnel match.
 - **Status** is published to `$XDG_RUNTIME_DIR/tilo/device-vpn.json` (with the
   publisher's pid and start time, like the display snapshot), which Settings
   reads with `DeviceVpnStatus::load`; quick settings and the actions read it
-  in process.
+  in process. The session's half of every route and of the exit is a device-VPN
+  link to its daemon; a session whose daemon serves none (a hosted session, a
+  test's) offers no exit and routes nowhere.
 
 ### Settings
 
@@ -238,6 +257,15 @@ newer `PROFILE_RELEASE`) or whose kill switch they turned off.
   refused while the exit is off, packets both ways, spoofed sources dropped,
   stop and switch-off ending a running tunnel, DNS through the gateway, and a
   packet too large answered with "fragmentation needed".
+- The daemon's half, on a daemon of its own and a shell link
+  (`crates/os/daemon/tests/language/device_vpn_tunnel.rs`): a probe and a route
+  reach another device on this machine's loopback, the packets cross both ways,
+  the route ends when that device stops it, and this device's exit answers the
+  tunnel on its endpoint and turns a device that is not the person's away.
+- The session's half (`crates/desktop/session/src/vpn.rs`'s test): the offer
+  the daemon answers becomes the helper's link for the right network, address
+  and carrier, the packets cross both ways, and turning the choice off undoes
+  the link.
 - Two network namespaces through real TUN devices set up by the helper's
   Linux backend (`tests/netns_tunnel.rs`), skipped without `/dev/net/tun`,
   `ip`, `nft` and user namespaces unless `TILO_REQUIRE_TUN=1`.
