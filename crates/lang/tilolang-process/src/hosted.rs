@@ -306,8 +306,8 @@ impl Surface {
     }
 
     /// The resources the instance publishes: the host's own resource, the workspace's documents
-    /// with their actions, and each package's actions that take no document (the instance's own
-    /// app's with what every app publishes).
+    /// with their actions, and each package's actions that take no document or act on one of its
+    /// roots (the instance's own app's with what every app publishes).
     ///
     /// `shown` bounds what a document publishes to what the window reaches: its level's target and
     /// the rows on screen. `None` is the whole workspace, what a caller that asks the directory

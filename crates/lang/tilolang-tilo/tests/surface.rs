@@ -517,10 +517,33 @@ tilo_test_env::scenario! {
                 .decode(&built)
                 .is_ok()
         );
+        // The package's own resource offers the actions whose subject is a root too: the app
+        // keeps one resource of the type, so a caller names the action at the app
+        // (`tl:<app>#<action>`) whether or not a window opened the root, and the run acts on
+        // `root-<type>`. A person takes them where they work with the root, so this row is for
+        // agents, scripts and devices.
+        let package = publish_package(&meta, &planner, &SourceWords);
+        let ids: Vec<&str> = package.actions.iter().map(|spec| spec.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                meta.actions[0].name.as_str(),
+                meta.actions[1].name.as_str()
+            ]
+        );
         assert!(
-            publish_package(&meta, &planner, &SourceWords)
-                .actions
-                .is_empty()
+            package.actions.iter().all(|spec| !spec.reaches_people()),
+            "a person takes it on the root"
+        );
+        let built = package.actions[1]
+            .build_json(&serde_json::Map::new())
+            .unwrap();
+        let planned: DynAction = tilo_actions::decode_json(&built.payload).unwrap();
+        let root = meta.target_of(&meta.actions[1].params).unwrap().id.clone();
+        assert_eq!(
+            planned.args,
+            json!({"resource": format!("root-{root}"), "args": {}}),
+            "it runs on the app's root, which the first change to it makes"
         );
     }
 

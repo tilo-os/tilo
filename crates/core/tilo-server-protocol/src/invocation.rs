@@ -375,6 +375,13 @@ pub struct RecordHost<'a> {
     pub device: &'a [u8; 32],
 }
 
+/// Whether `named`, the resource a call names, is the resource a tilolang app publishes for
+/// itself (`tl:<app>`), where it offers the actions that take no record and those on its roots
+/// (`publish_package`): a call there names the app, as a call naming it by its id does.
+fn names_the_package(named: &str, app: &str) -> bool {
+    named.strip_prefix("tl:") == Some(app)
+}
+
 /// Whether the change `context` records, in a record of `app`, is outside the call `target`
 /// names: another resource than the call's, or another verb than the one it asked. A step through
 /// the record's history (an undo, a checkpoint) is inside a call that names the app. Such a
@@ -389,11 +396,12 @@ fn outside_call(
         return false;
     }
     let named = &target.address.resource;
-    let in_resource = match &context.resource {
-        Some(resource) => &resource.kind == named || &resource.id == named,
-        None if matches!(&context.what, Some(tilo_actions::Did::History(_))) => named == app,
-        None => context.what.is_none(),
-    };
+    let in_resource = names_the_package(named, app)
+        || match &context.resource {
+            Some(resource) => &resource.kind == named || &resource.id == named,
+            None if matches!(&context.what, Some(tilo_actions::Did::History(_))) => named == app,
+            None => context.what.is_none(),
+        };
     let names_verb = match &context.what {
         Some(tilo_actions::Did::Verb(verb)) => {
             same_action(&verb.action.action, &target.address.action, published_name)
@@ -649,8 +657,11 @@ pub fn carried_effect(
         .and_then(|rest| rest.strip_prefix(record.app))
         .and_then(|rest| rest.strip_prefix(':'))
         .is_some_and(|id| !id.is_empty());
-    let in_record =
-        named == record.document || named == record.app || in_app || claim_names_kind(claim, named);
+    let in_record = named == record.document
+        || named == record.app
+        || names_the_package(named, record.app)
+        || in_app
+        || claim_names_kind(claim, named);
     let verbs = claimed_verbs(claim);
     let names_verb = verbs
         .iter()
@@ -733,7 +744,8 @@ fn claim_names_kind(claim: &collab_types::claim::ChangeClaim, kind: &str) -> boo
 /// for a stamp that keeps no call: the host made the change of its own accord.
 ///
 /// A stamp that says no more than its verb (a page's act) names no resource of its own, so it is
-/// inside its call only when the call names the `app` the change is in.
+/// inside its call only when the call names the `app` the change is in: by its id, or by the
+/// resource a tilolang app publishes for itself (`tl:<app>`, `publish_package`).
 ///
 /// # Errors
 ///
@@ -745,7 +757,8 @@ pub fn stamped_context(
     let Some(call) = stamp.signed.as_deref() else {
         return Ok(None);
     };
-    if stamp.context.is_none() && call.signed.statement().target.address.resource != app {
+    let named = &call.signed.statement().target.address.resource;
+    if stamp.context.is_none() && named != app && !names_the_package(named, app) {
         return Err(StatementMismatch::Target.into());
     }
     Ok(Some(stamp.action_context()))
@@ -1395,6 +1408,58 @@ mod tests {
                     Err(InvocationError::Mismatch(StatementMismatch::Target))
                 );
             }
+        }
+
+        phase a_call_at_a_tilolang_apps_own_resource_covers_the_apps_records;
+        // A tilolang app publishes its own resource (`tl:<app>`), where it offers the actions
+        // that take no record and those on its roots (`publish_package`): a call named there is
+        // the app's, as a call naming it by its id is, and a change of any of the app's records
+        // is inside it.
+        {
+            let (root, _) = UserIdentity::generate("Alice", 1);
+            let key = SigningKey::from_bytes(&[7; 32]);
+            let cert = cert_of(&root, &key, None);
+            let at = |resource: &str| {
+                let mut asking = request();
+                asking.target.address = ActionAddress::new(resource, "new_note");
+                signed(&asking, &cert, &key, NOW)
+            };
+            let claim = collab_types::claim::ChangeClaim {
+                change: [0; 32],
+                action: collab_types::claim::ClaimedAction::Verb {
+                    action: tilo_actions::ActionKey::new(
+                        "so.tilo.notes",
+                        "tl.so.tilo.notes.Notebook",
+                        "new_note",
+                    ),
+                    item: None,
+                },
+                units: Vec::new(),
+                invoker: None,
+                call: None,
+            };
+            let record = collab_types::receipt::WrittenDocument {
+                workspace: WORKSPACE,
+                app: "so.tilo.notes",
+                document: "root-Notebook",
+            };
+            let outside = |asking: &InvokeRequest| {
+                carried_effect(
+                    asking.signed.as_deref().expect("signed above"),
+                    &record,
+                    &claim,
+                    None,
+                )
+            };
+            assert!(
+                !outside(&at("tl:so.tilo.notes")),
+                "the app's own resource names the app"
+            );
+            assert!(!outside(&at("so.tilo.notes")), "so does its id");
+            assert!(
+                outside(&at("tl:so.tilo.other")),
+                "another app's resource is outside it"
+            );
         }
 
         phase a_step_the_called_action_declares_counts_only_from_its_records_keeper;

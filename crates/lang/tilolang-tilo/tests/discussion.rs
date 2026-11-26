@@ -941,3 +941,54 @@ fn a_commenter_comments_on_a_task_and_changes_nothing_of_it() {
     )
     .expect("its owner renames it there");
 }
+
+/// A comment named at the app's own resource (`tl:<app>#comment`), as the workspace's agents and
+/// a member's device name it, acts on Discussion's root: the app keeps one resource of its type
+/// in a workspace, and one no window has opened is not made yet. The comment makes it.
+#[test]
+fn a_comment_at_the_app_acts_on_its_root_and_makes_it() {
+    use tilolang_tilo::meta::MetaExt as _;
+
+    let ada = workspace();
+    let task = task_titled(&ada, "Pay rent");
+    ada.commit();
+    let meta = ada
+        .host
+        .package(DISCUSSION_APP)
+        .expect("Discussion loads")
+        .meta;
+    let comments = meta
+        .types
+        .iter()
+        .find(|ty| ty.name == "Comments")
+        .expect("Discussion keeps its comments in Comments");
+    let all = ResourceRef::root(format!("root-{}", comments.id), comments.id.clone());
+    assert!(
+        !ada.host.store().contains(&all),
+        "no window has opened Discussion, so its root is not made yet"
+    );
+    let mut args = serde_json::Map::new();
+    args.insert("text".into(), serde_json::json!("Paid on the first?"));
+    let at = all.id_string();
+    ada.carry(
+        DISCUSSION_APP,
+        &meta.package_kind(),
+        &action(&ada, DISCUSSION_APP, "comment"),
+        Some(&at),
+        &args,
+        None,
+        Some(&task),
+    )
+    .expect("a comment named at the app's resource runs on its root");
+    ada.commit();
+    assert!(
+        ada.host.store().contains(&all),
+        "the comment made the root it acts on"
+    );
+    let thread = comments_about(&ada, &task);
+    assert_eq!(
+        thread.len(),
+        1,
+        "the comment is made from the task it is about: {thread:?}"
+    );
+}

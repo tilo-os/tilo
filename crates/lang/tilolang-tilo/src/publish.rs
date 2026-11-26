@@ -2315,7 +2315,13 @@ const RELABELS_KEPT: usize = 256;
 /// How many updates [`Publications::changed_since`] reaches back over.
 const MOTIONS_KEPT: usize = 256;
 
-/// The package's own resource, carrying the actions that take no resource.
+/// The package's own resource, carrying the actions that take no resource and those whose subject
+/// is one of the app's roots.
+///
+/// An app keeps one resource of each of its root types in a workspace, so an action on a root is
+/// unambiguous at the package's own resource (`tl:<app>#<action>`): the caller reaches it there
+/// whether or not a window of the app has opened the root, as an agent, a device and `tilo do` do.
+/// The run acts on the root's document, which the first change to it makes.
 #[must_use]
 pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>, words: &dyn Words) -> ResourceSpec {
     let kind = meta.package_kind();
@@ -2324,16 +2330,54 @@ pub fn publish_package(meta: &Meta, planner: &Arc<dyn Planner>, words: &dyn Word
         kind.clone(),
         app_name(words, meta),
     );
+    // An app may declare one action name on more than one of its types, and each resource then
+    // tells them apart; the package's own resource cannot, so it offers a name once. A name an
+    // action that takes no resource has is that action's: it has no other address.
+    let without_resource: BTreeSet<&str> = meta
+        .offered_actions()
+        .filter(|action| meta.target_of(&action.params).is_none())
+        .map(crate::meta::published_name)
+        .collect();
+    let mut offered = BTreeSet::new();
     for action in meta.offered_actions() {
         // An action whose first parameter takes one record is published on that type
         // ([`ActionTypes::new`]); one whose parameter takes a union of types is offered here,
-        // taking the resource it acts on as a reference argument.
-        if meta.target_of(&action.params).is_none() {
-            resource = resource
-                .with_action(action_type(meta, &kind, action, planner, words).bind(Target::none()));
+        // taking the resource it acts on as a reference argument, and one whose subject is a
+        // root is offered here too, acting on the root.
+        let target_ty = meta.target_of(&action.params);
+        let on_a_root = target_ty.is_some();
+        let target = match target_ty {
+            None => Target::none(),
+            Some(target) => {
+                let Some(doc) = root_document(meta, &target.id) else {
+                    continue;
+                };
+                Target::new(doc)
+            }
+        };
+        let name = crate::meta::published_name(action);
+        if (on_a_root && without_resource.contains(name)) || !offered.insert(name) {
+            continue;
         }
+        let mut spec = action_type(meta, &kind, action, planner, words).bind(target);
+        // The root's own resource offers the action where a person works with it; the package's
+        // row is the one an agent, a script or a device names, and a second row of the same name
+        // in a palette helps no one.
+        if on_a_root {
+            spec = spec.for_audience(tilo_actions::Audience::Agents);
+        }
+        resource = resource.with_action(spec);
     }
     resource
+}
+
+/// The document the app's root of `ty` stands at (`root-<type id>`), when `ty` is one of its roots
+/// people share; `None` for any other type, and for a root each device keeps its own, whose
+/// document names the device it stands on.
+fn root_document(meta: &Meta, ty: &str) -> Option<String> {
+    meta.shared_roots()
+        .any(|root| root == ty)
+        .then(|| format!("root-{ty}"))
 }
 
 /// The host's own resource: the [`HostEffect`](crate::effects::HostEffect) vocabulary an agent

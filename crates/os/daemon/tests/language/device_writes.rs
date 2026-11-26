@@ -180,23 +180,21 @@ fn a_members_device_takes_what_its_role_lets_it() {
         host::start_app(host.as_ref(), DISCUSSION)
             .await
             .unwrap_or_else(|refused| panic!("Discussion starts with no window: {refused:?}"));
-        let page = host::listed(host.as_ref(), DISCUSSION)
-            .await
-            .expect("Discussion lists what it publishes");
-        let says = page
-            .rows
-            .iter()
-            .filter_map(|row| row.action.as_ref())
-            .find(|action| action.address.action == "comment")
-            .unwrap_or_else(|| panic!("Discussion publishes comment: {page:?}"));
+        // Discussion's `comment` at its package's resource, as the workspace's agents say
+        // something on a task: made from the task, by its canonical address.
         let discussion = host::app_action(
             host.as_ref(),
             DISCUSSION,
-            &says.address.resource,
-            &says.address.action,
+            format!("tl:{DISCUSSION}").as_str(),
+            "comment",
         );
+        let task = if issue.starts_with("tl:") {
+            issue.clone()
+        } else {
+            format!("tl:{TASKS}:{issue}")
+        };
         let about = tilo_actions::params::MadeFrom {
-            resource: issue.clone(),
+            resource: task,
             kind: "tl.so.tilo.tasks.Task".to_owned(),
         };
         let comment = commenter
