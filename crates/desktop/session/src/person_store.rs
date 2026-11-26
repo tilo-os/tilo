@@ -1,11 +1,14 @@
 //! The person's own workspace as this session keeps what is theirs alone in it: through the
 //! device's daemon, which keeps the workspace ([`PersonStore`]).
 //!
-//! The session holds no copy of the workspace. It reads each resource from the daemon, writes a
-//! change to one there, which the daemon signs and seals as this device, and hears of every write
-//! the daemon takes on the daemon's own feed of them.
+//! The session holds no copy of the workspace. It reads each resource from the daemon, asks the
+//! daemon for each change as the resource's typed action, which the daemon makes, signs and seals
+//! as this device, and hears of every write the daemon takes on the daemon's own feed of them.
 
 use runtime_collab::wire::shell::{ShellCall, ShellReply};
+use tilo_actions::remote::{
+    InvokeArgument, InvokeRequest, RESOURCE_PROVIDER, ReceiptStatus, RemoteActionTarget,
+};
 use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_session_client::daemon_documents::{
     DaemonShell, DaemonWritesFeed, document_read, listing, whole,
@@ -100,43 +103,38 @@ impl PersonStore for DaemonPersonStore {
         authoring: Authoring,
     ) -> Answer<'_, Result<(), String>> {
         Box::pin(async move {
-            let held = self.saved(&app, &name).await?;
-            let founding = held.is_none();
-            // A record the workspace holds none of starts from its kind's founding, where the
-            // caller names one, as the daemon's own writes of the person's workspace found it.
-            let mut document = match held {
-                Some(bytes) => automerge::AutoCommit::load(&bytes)
-                    .map_err(|error| format!("the person's resource does not read: {error}"))?,
-                None => authoring
-                    .genesis
-                    .map_or_else(automerge::AutoCommit::new, |genesis| *genesis),
+            // The daemon builds, numbers and keeps every change this device makes to the person's
+            // records: a change built here from what was last read would take the number the
+            // daemon's own next change takes, and the workspace would refuse one of the two.
+            let Some(call) = authoring.action else {
+                return Err(format!(
+                    "{app} {name} is changed through its actions, which the device's daemon makes"
+                ));
             };
-            let before = document.get_heads();
-            (authoring.edit)(&mut document)?;
-            // A resource the workspace holds none of is written whole, founded by this write; one
-            // it holds takes only what this change added.
-            let changes = if founding {
-                document.save()
-            } else {
-                document.save_after(&before)
+            let request = InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: format!("{RESOURCE_PROVIDER}:{app}:{name}"),
+                    address: call.address,
+                },
+                argument: InvokeArgument::Json(call.arguments),
+                context: None,
+                confirmation: None,
+                revision: None,
+                on_behalf_of: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
             };
-            if !founding && changes.is_empty() {
-                return Ok(());
-            }
-            match self
+            let receipt = self
                 .shell
-                .ask(ShellCall::Write {
-                    workspace: self.workspace.clone(),
-                    app,
-                    kind: authoring.kind.map(str::to_owned),
-                    record: name,
-                    changes,
-                })
-                .await?
-            {
-                ShellReply::Written(Ok(_)) => Ok(()),
-                ShellReply::Written(Err(refusal)) => Err(refusal),
-                other => Err(format!("the daemon answered a write with {other:?}")),
+                .invoke_receipt(Some(&self.workspace), request)
+                .await?;
+            match receipt.status {
+                ReceiptStatus::Completed { .. } => Ok(()),
+                ReceiptStatus::Rejected { error } => Err(error.to_string()),
+                ReceiptStatus::Failed { error } => Err(error.message),
+                status => Err(format!("the action did not settle: {status:?}")),
             }
         })
     }
@@ -173,16 +171,18 @@ impl PersonStore for DaemonPersonStore {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
-    use automerge::ReadDoc as _;
-    use automerge::transaction::Transactable as _;
     use tilo_session_client::daemon_documents::inherited_link;
+    use tilo_workspace_service::workspaces::PersonResources;
+    use tilo_workspace_service::workspaces::person_workspace::devices::{DEVICES, Devices};
 
-    /// The shell's first write of one of its documents to the person's workspace founds it at the
-    /// daemon, which then holds it: the shell's documents carry no genesis of their own, and a
-    /// write the daemon was never handed would leave the person's shell on this device alone.
+    /// Two parts of one device write the person's devices record at once, many times over, as the
+    /// session's parts and the daemon's own do: every write lands, none refused. Each asks the daemon for its
+    /// action and the daemon builds the change, so no two changes of the device's take one
+    /// number, which two changes each built from the last read would.
     #[test]
-    fn the_first_write_of_a_document_the_workspace_holds_none_of_founds_it() {
+    fn writes_of_the_persons_record_from_two_parts_of_one_device_all_land() {
         use std::os::unix::fs::PermissionsExt as _;
+        const ROUNDS: u8 = 8;
         let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
         let (_identity, cert, _key) = crate::governance::tests::provisioned_identity(&mut home);
         let profile = tempfile::tempdir().expect("a profile for the daemon");
@@ -201,67 +201,69 @@ mod tests {
             &runtime,
         );
         let shell = DaemonShell::new(link.map(|(link, _)| link), runtime.clone());
-        let person =
-            tilo_actions::Acting::person(tilo_actions::PersonId::from_root(cert.user_public_key));
-        let workspace = tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key);
-        let store = DaemonPersonStore::new(shell.clone(), DaemonWritesFeed::start(&shell), cert);
-        let (app, name) = (
-            tilo_desktop_model::ownership::DESKTOP_APP,
-            tilo_desktop_model::ownership::DESKTOP_DOCUMENT,
-        );
+        let store =
+            || DaemonPersonStore::new(shell.clone(), DaemonWritesFeed::start(&shell), cert.clone());
+        let probe = store();
         runtime.block_on(async {
             let deadline = tokio::time::Instant::now() + within;
-            while !store.held().await {
+            while !probe.held().await {
                 assert!(
                     tokio::time::Instant::now() < deadline,
                     "the daemon never held the person's workspace"
                 );
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            assert_eq!(
-                store.document(app, name).await.expect("the daemon reads"),
-                None,
-                "the workspace holds none of the document before the shell writes it"
-            );
-            store
-                .author(
-                    app.to_owned(),
-                    name.to_owned(),
-                    Authoring {
-                        kind: Some(tilo_desktop_model::ownership::DESKTOP_KIND),
-                        genesis: Some(Box::new(
-                            tilo_desktop_model::record::founded(&workspace)
-                                .expect("the layout founds"),
-                        )),
-                        edit: Box::new(move |document| {
-                            document
-                                .put(automerge::ROOT, "edge", "left")
-                                .map_err(|error| error.to_string())?;
-                            document.commit_with(
-                                automerge::transaction::CommitOptions::default().with_message(
-                                    tilo_actions::ActionContext::whole_edit_by(&person),
-                                ),
-                            );
-                            Ok(())
-                        }),
-                    },
-                )
-                .await
-                .expect("the shell's first write of the document lands");
-            let held = store
-                .document(app, name)
-                .await
-                .expect("the daemon reads")
-                .expect("the workspace holds the document the shell founded");
-            let held = automerge::AutoCommit::load(&held).expect("the document reads");
-            assert_eq!(
-                held.get(automerge::ROOT, "edge")
-                    .expect("the document reads")
-                    .map(|(value, _)| value.to_string()),
-                Some("\"left\"".to_owned()),
-                "what the shell wrote is what the workspace holds"
-            );
         });
+        let device = hex::encode(cert.device_public_key);
+        let certificate =
+            hex::encode(postcard::to_allocvec(&cert).expect("the certificate encodes"));
+        let parts: Vec<(PersonResources, &str)> = ["first", "second"]
+            .into_iter()
+            .map(|fact| {
+                let part = PersonResources::default();
+                part.attach(std::sync::Arc::new(store()), &runtime);
+                (part, fact)
+            })
+            .collect();
+        for round in 1..=ROUNDS {
+            for (part, fact) in &parts {
+                let keep = Devices::KEEP_FACT.with((
+                    device.clone(),
+                    certificate.clone(),
+                    format!("{fact}-{round}"),
+                    format!("{round:02x}"),
+                ));
+                part.apply(DEVICES, move || keep.clone());
+            }
+        }
+        let written: Vec<String> = (1..=ROUNDS)
+            .flat_map(|round| parts.iter().map(move |(_, fact)| format!("{fact}-{round}")))
+            .collect();
+        let kept = |part: &PersonResources| {
+            part.read::<Devices>(DEVICES)
+                .and_then(|devices| {
+                    devices
+                        .devices
+                        .get(&tilo_resource::Id::from_raw(device.clone()))
+                        .map(|kept| kept.facts.clone())
+                })
+                .unwrap_or_default()
+        };
+        runtime.block_on(async {
+            let deadline = tokio::time::Instant::now() + within;
+            loop {
+                let facts = kept(&parts[0].0);
+                if written.iter().all(|fact| facts.contains_key(fact)) {
+                    break;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "a part's write was refused or never landed: the record says {facts:?}"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        });
+        drop(parts);
         drop(daemon);
     }
 }

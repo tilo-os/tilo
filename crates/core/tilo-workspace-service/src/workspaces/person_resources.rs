@@ -34,6 +34,25 @@ pub struct Authoring {
     pub genesis: Option<Box<automerge::AutoCommit>>,
     /// The change, made on the document as it stands.
     pub edit: Edit,
+    /// The typed action the change is, where it is one: what a store that keeps no copy of the
+    /// workspace hands to the one that does, which makes the change itself.
+    pub action: Option<ActionCall>,
+}
+
+/// A typed action of a resource of the person's workspace, as it is asked of the one writer that
+/// keeps the workspace on this device: its address and its arguments.
+///
+/// Every change a device makes is numbered under that device's one author. Two processes of one
+/// device that each built a change from what they last read would give one number to two
+/// changes, and the workspace would refuse the later; so a store that reaches the workspace
+/// through another process (the session, through the device's daemon) asks for the action, and
+/// the daemon builds, numbers and keeps the change.
+#[derive(Clone, Debug)]
+pub struct ActionCall {
+    /// The action, as the resource's type addresses it.
+    pub address: tilo_actions::ActionAddress,
+    /// Its arguments.
+    pub arguments: serde_json::Map<String, serde_json::Value>,
 }
 
 /// One change made to a document of the person's workspace, as [`Authoring::edit`] makes it.
@@ -138,6 +157,13 @@ impl PersonResources {
             let invoke = action();
             // The store tells its own write as it tells any other: the follower reads it back.
             Box::pin(async move {
+                if let Some(refusal) = invoke.refusal() {
+                    return Err(refusal.to_owned());
+                }
+                let call = ActionCall {
+                    address: invoke.address(),
+                    arguments: invoke.arguments.clone(),
+                };
                 let cert = store.certificate();
                 let (app, name) = resource;
                 // The person's own workspace, which the store keeps.
@@ -154,6 +180,7 @@ impl PersonResources {
                             edit: Box::new(move |doc| {
                                 person_workspace::invoke(doc, &cert, app, invoke)
                             }),
+                            action: Some(call),
                         },
                     )
                     .await
@@ -204,6 +231,7 @@ impl PersonResources {
                             kind,
                             genesis: None,
                             edit: Box::new(move |document| edit.as_ref()(document)),
+                            action: None,
                         },
                     )
                     .await
