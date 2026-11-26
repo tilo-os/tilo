@@ -1109,9 +1109,23 @@ fn changed_rows(
         let Some(rows) = shown.lists.get_mut(list) else {
             continue;
         };
-        let row_changes = if changes.reread {
-            rows.reread()
-        } else {
+        if changes.reread {
+            // A list read anew is a new list to the window: its first rows come with it, as they
+            // do with a list the view shows for the first time ([`Instance::track_lists`]), so
+            // showing it takes no round of the window asking for them.
+            let reset = rows.reread();
+            let len = u32::try_from(rows.len()).unwrap_or(u32::MAX);
+            messages.push(ToUi::RowsChanged {
+                level,
+                list: list.clone(),
+                len,
+                changes: reset,
+            });
+            let first = rows.request(0..FIRST_ROWS.min(rows.len()), (None, None));
+            messages.push(rows_message(host, &**names, &handle, level, list, first));
+            continue;
+        }
+        let row_changes = {
             let mut structural = rows.apply(&changes.structure);
             let changed = rows.changed(&changes.rows);
             convert_with(host, &**names, &handle, |convert, _| {
