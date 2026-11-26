@@ -217,9 +217,14 @@ impl Touches {
         self.by_id.get(id)
     }
 
-    /// Read the changes the document took since the last read.
+    /// Read the changes the document took since the last read. Versions read from changes the
+    /// document does not hold (a staged copy's, never taken in) are let go first, and the
+    /// document is read again from its start.
     pub fn read(&mut self, doc: &Automerge, doc_id: &str) {
         let heads = doc.get_heads();
+        if heads != self.heads && self.heads.iter().any(|head| !doc.has_change(head)) {
+            *self = Self::default();
+        }
         if heads != self.heads {
             for change in doc.get_changes(&self.heads) {
                 if let Some((id, version)) = checkpoint(&change) {

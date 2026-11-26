@@ -251,8 +251,13 @@ pub struct Store {
     /// Per resource something was made from ([`Stamp::from`]), the documents a change stamped
     /// as made from it is in.
     made_from: HashMap<String, BTreeSet<String>>,
-    /// Per document, the versions of each resource in it, read as far as its changes go.
-    touches: std::sync::Mutex<HashMap<String, collab_types::history::Touches>>,
+    /// Per document, the versions of each resource in it, read as far as its changes go. A
+    /// staged copy of the store ([`Self::stage`]) reads into the same one: a document's changes
+    /// make the same versions whoever reads them, so a draft reads only the changes it adds, not
+    /// every change the document took since it was made, and the store taking those changes in
+    /// reads nothing again. What a stage read and the store never took in is let go when a
+    /// document is next read ([`collab_types::history::Touches::read`]).
+    touches: std::sync::Arc<std::sync::Mutex<HashMap<String, collab_types::history::Touches>>>,
     /// Per resource, the time of the latest change that made a resource in it or removed one
     /// from it: a change of it too, which its [`UPDATED`] reflects without reading the
     /// history of what it holds.
@@ -344,6 +349,7 @@ impl Store {
             rules: self.rules.clone(),
             reader: self.reader.clone(),
             drafting: self.drafting.clone(),
+            touches: std::sync::Arc::clone(&self.touches),
             ..Self::default()
         };
         let result = command(&mut staged);
@@ -373,23 +379,30 @@ impl Store {
         author: [u8; 32],
         admit: &dyn Admit,
     ) -> Result<(), Refusal> {
-        if writes.is_empty() {
+        let Some((last, before)) = writes.split_last() else {
             return Ok(());
+        };
+        // A write the store judges as it stands, a batch's only one, is judged against this
+        // store: judging reads it and changes nothing, so no copy of it is made. One into a
+        // document the store does not hold yet is judged in a copy, which makes the document.
+        if before.is_empty() && self.docs.contains_key(&last.doc) {
+            return self.check_write_with(last, author, admit);
         }
         // A check reads any row of the index, as the write the store takes in is judged: stage
-        // the whole of it.
+        // the whole of it. Each write is taken in so the next is judged against it; the last is
+        // judged and taken in by no one.
         let scope = crate::wire::DraftScope {
             undo: true,
             ..crate::wire::DraftScope::default()
         };
         self.stage(&scope, |staged| {
-            for write in writes {
+            for write in before {
                 staged.check_write_with(write, author, admit)?;
                 staged
                     .apply(&write.doc, &write.readers, write.change.clone())
                     .map_err(|_| Refusal::Unplaced)?;
             }
-            Ok(())
+            staged.check_write_with(last, author, admit)
         })
     }
 
@@ -2483,7 +2496,9 @@ impl Store {
             .map(|ty| collab_types::document::founding::structure(kind, id, &ty.founding))
             .transpose()
             .map_err(|error| {
-                Refusal::Undeclared(format!("the founding `{kind}` derives cannot be made: {error}"))
+                Refusal::Undeclared(format!(
+                    "the founding `{kind}` derives cannot be made: {error}"
+                ))
             })?;
         if derived.is_some_and(|derived| derived.hash() == received.change.hash()) {
             Ok(())
