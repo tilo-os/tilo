@@ -66,6 +66,10 @@ use wire::Convert;
 /// How long a migration that waits for its turn waits before it is asked for again, in seconds.
 const MIGRATE_AGAIN_S: i64 = 5;
 
+/// How many lists a level keeps what the window holds of: a view lists at a few keys, and the
+/// keys a place-switching view names past this start the count again.
+const HOLDS_KEPT: usize = 64;
+
 /// What an instance runs as.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -312,6 +316,11 @@ struct Shown {
     /// The view calls that read the space layout gives them, as last sent: the window measures
     /// these and no others.
     spaces: Option<Vec<String>>,
+    /// How many rows from its top the window last said each list of this level holds, by the
+    /// list's key: the list shown again under that key (a place switched back to) is sent about
+    /// that many with it, the rows the window shows (`rows::FIRST_ROWS` until it said). A list
+    /// stands at a key whatever it lists, so these are as many as the view has lists.
+    holds: HashMap<String, usize>,
 }
 
 impl Shown {
@@ -327,6 +336,7 @@ impl Shown {
             bound: HashMap::new(),
             acked: HashMap::new(),
             spaces: None,
+            holds: HashMap::new(),
         }
     }
 }
@@ -2092,6 +2102,14 @@ impl Instance {
             return;
         };
         let handle = Rc::clone(&view.view);
+        // What the window holds of a list from its top is what it shows of it: the list shown
+        // again at its key is sent as many rows.
+        if range.start == 0 && !range.is_empty() {
+            if view.holds.len() >= HOLDS_KEPT && !view.holds.contains_key(list) {
+                view.holds.clear();
+            }
+            view.holds.insert(list.to_owned(), range.end);
+        }
         let Some(rows) = view.lists.get_mut(list) else {
             return;
         };

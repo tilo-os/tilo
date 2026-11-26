@@ -417,6 +417,9 @@ pub struct VirtualRows {
     requested_range: Option<Range<usize>>,
     requested_open: Option<ListKey>,
     request_dirty: bool,
+    /// The list asked its model for no rows while its layout had not placed it
+    /// ([`VirtualRows::reconcile_mounted`]): it asks once it is placed.
+    request_deferred: bool,
     structure_dirty: bool,
     box_dirty: bool,
     layout_dirty: bool,
@@ -613,6 +616,7 @@ impl VirtualRows {
             requested_range: None,
             requested_open: None,
             request_dirty: true,
+            request_deferred: false,
             structure_dirty: true,
             box_dirty: false,
             layout_dirty: true,
@@ -2065,6 +2069,10 @@ impl Widget for VirtualRows {
             } else {
                 self.refresh_anchor();
             }
+        }
+        if self.request_deferred && self.rect.height() > 0.0 {
+            self.request_deferred = false;
+            self.visible_window_changed();
         }
         let slack = self.end_slack();
         let content = tilo_ui_base::widget::layout::snap_to_device_pixels(

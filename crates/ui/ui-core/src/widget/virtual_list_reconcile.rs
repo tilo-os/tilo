@@ -270,9 +270,17 @@ impl VirtualRows {
         self.shape_tree(&range);
         self.settle_lead();
         let open = self.open.clone();
-        if self.request_dirty
-            || self.requested_range.as_ref() != Some(&range)
-            || self.requested_open != open
+        // A list as tall as the space it is given holds the rows of a default height until its
+        // layout places it: it asks its model for none of them until it knows the rows it shows,
+        // and asks once it is placed. A model with no rows yet is asked at once.
+        let unplaced = (self.fill_height || self.most.is_some())
+            && self.rect.height() <= 0.0
+            && self.model.len() > 0;
+        self.request_deferred |= unplaced;
+        if !unplaced
+            && (self.request_dirty
+                || self.requested_range.as_ref() != Some(&range)
+                || self.requested_open != open)
         {
             self.model.request_range(range.clone(), open.as_ref());
             self.requested_range = Some(range.clone());

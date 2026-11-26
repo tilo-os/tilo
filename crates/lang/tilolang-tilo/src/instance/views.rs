@@ -522,7 +522,7 @@ impl Instance {
                 continue;
             }
             let mut rows = ListRows::of(&handle, &list);
-            let first = 0..FIRST_ROWS.min(rows.len());
+            let first = 0..first_rows(view.holds.get(&list).copied()).min(rows.len());
             // Which row a list shows open is its list's to say: the host asks for it with the
             // rows it shows, and the open a view kept arrives with that ask.
             let requested = rows.request(first, (None, None));
@@ -1104,6 +1104,17 @@ impl Instance {
     }
 }
 
+/// How many rows a list is sent with before its window asks for any: as many as the window said
+/// a list of its level holds and a few more, since the rows of another list stand a little
+/// taller or shorter, and no more than [`FIRST_ROWS`], which a window that said nothing yet is
+/// sent. A window tells the app it holds fewer only when it holds a good deal fewer, so a list
+/// sent these few more keeps them.
+fn first_rows(holds: Option<usize>) -> usize {
+    holds
+        .map_or(FIRST_ROWS, |holds| holds.saturating_add(FIRST_ROWS / 8))
+        .min(FIRST_ROWS)
+}
+
 /// The key prefix of the page a level shows when what it showed is gone.
 const GONE: &str = "gone~";
 
@@ -1133,7 +1144,8 @@ fn changed_rows(
                 len,
                 changes: reset,
             });
-            let first = rows.request(0..FIRST_ROWS.min(rows.len()), (None, None));
+            let holds = shown.holds.get(list).copied();
+            let first = rows.request(0..first_rows(holds).min(rows.len()), (None, None));
             messages.push(rows_message(host, &**names, &handle, level, list, first));
             continue;
         }

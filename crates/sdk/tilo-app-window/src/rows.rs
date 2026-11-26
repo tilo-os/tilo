@@ -30,6 +30,11 @@ pub type BoundValues = Rc<RefCell<HashMap<String, crate::Value>>>;
 /// asked for and asks the app nothing more until it reaches past it.
 const PAGE: usize = 48;
 
+/// How many fewer rows than the app sent unasked a list holds before it tells the app so
+/// ([`RemoteRows::request_range`]): a quarter of a page, more than the few rows past what a list
+/// held that the app sends the next one.
+const NARROWS_BY: usize = PAGE / 4;
+
 pub struct RemoteRows {
     level: Level,
     list: String,
@@ -59,6 +64,9 @@ pub struct RemoteRows {
     sent: bool,
     /// Rows the list shows that the app is still to be asked for.
     wanted: Option<Asked>,
+    /// `wanted` tells the app the list holds fewer of the rows it sent unasked than it sent: no
+    /// row the app has to render, only which it keeps.
+    narrowing: bool,
     /// The row whose menu the person opened, by key: the app sends it again with its menu.
     menu: Option<String>,
     /// The words of the heading over its rows (`ui.Card`, `ui.Section`, the window's title), where
@@ -106,6 +114,7 @@ impl RemoteRows {
             asked: None,
             sent: false,
             wanted: None,
+            narrowing: false,
             menu: None,
             awaiting: false,
             under: None,
@@ -140,6 +149,7 @@ impl RemoteRows {
         let asked = self.wanted.take()?;
         self.asked = Some(asked.clone());
         self.sent = false;
+        self.narrowing = false;
         self.awaiting = true;
         Some((self.level, self.list.clone(), asked))
     }
@@ -250,6 +260,11 @@ impl RemoteRows {
                     *self.index.get_mut() = None;
                     self.asked = None;
                     self.sent = false;
+                    // What a list held of the rows read before is nothing to say of the new ones.
+                    if self.narrowing {
+                        self.wanted = None;
+                    }
+                    self.narrowing = false;
                     self.awaiting = false;
                     ListModelChange::Reset
                 }
@@ -493,6 +508,35 @@ impl RowSource for RemoteRows {
                 && asked.range.start <= range.start
                 && end <= asked.range.end
         };
+        // The first rows come unasked, as many as the app knows a list of the window holds and a
+        // few more, or as a tall window shows when it knows none. A list that holds a good deal
+        // fewer tells
+        // the app the rows it holds: the app forgets the others, and the next list it shows at
+        // this level comes with as many rows as this one holds, so a place switched to renders
+        // the rows the window shows and none past them. A list a few rows shorter keeps them:
+        // saying so would cost the app its surface published again, more than those rows did.
+        if self.sent
+            && (self.wanted.is_none() || self.narrowing)
+            && let Some(sent) = self.asked.as_ref().filter(|sent| covers(sent))
+        {
+            let holds = range.start..end;
+            if holds.start == sent.range.start
+                && holds.end.saturating_add(NARROWS_BY) > sent.range.end
+            {
+                if self.narrowing {
+                    self.wanted = None;
+                    self.narrowing = false;
+                }
+            } else {
+                self.wanted = Some(Asked {
+                    range: holds,
+                    open: open.clone(),
+                    menu: menu.clone(),
+                });
+                self.narrowing = true;
+            }
+            return;
+        }
         if self
             .wanted
             .as_ref()
@@ -501,6 +545,7 @@ impl RowSource for RemoteRows {
         {
             return;
         }
+        self.narrowing = false;
         let start = (range.start / PAGE).saturating_mul(PAGE);
         let paged = end.div_ceil(PAGE).saturating_mul(PAGE);
         let end = if len == 0 { paged } else { paged.min(len) }.max(end);
@@ -841,7 +886,7 @@ mod tests {
         let mut rows = rows();
         let keys = (0..48).map(|i| format!("v/{i}")).collect();
         rows.rows(200, 0, keys, Vec::new());
-        rows.request_range(0..20, None);
+        rows.request_range(0..40, None);
         assert!(!rows.wants(), "the rows it shows came with the list");
         rows.request_range(30..60, None);
         assert_eq!(
@@ -854,6 +899,36 @@ mod tests {
             rows.take_wanted().map(|(_, _, asked)| asked.open),
             Some(Some("v/4".to_owned())),
             "the row the person opens is asked for"
+        );
+    }
+
+    /// A list holding a good deal fewer of the rows sent with it than were sent tells the app the
+    /// rows it holds, rendering nothing: the app forgets the others, and sends the next list as
+    /// many. Holding more again asks for the page they are on.
+    #[test]
+    fn a_list_holding_fewer_rows_than_were_sent_says_which_it_holds() {
+        let mut rows = rows();
+        let keys = (0..48).map(|i| format!("v/{i}")).collect();
+        rows.rows(200, 0, keys, Vec::new());
+        rows.request_range(0..20, None);
+        rows.request_range(0..30, None);
+        assert_eq!(
+            rows.take_wanted().map(|(_, _, asked)| asked.range),
+            Some(0..30),
+            "the list says the rows it holds once, as it holds them last"
+        );
+        rows.rows(
+            200,
+            0,
+            (0..30).map(|i| format!("v/{i}")).collect(),
+            Vec::new(),
+        );
+        assert_eq!(rows.take_wanted(), None, "said once");
+        rows.request_range(0..40, None);
+        assert_eq!(
+            rows.take_wanted().map(|(_, _, asked)| asked.range),
+            Some(0..PAGE),
+            "rows past the ones it holds are asked for by their page"
         );
     }
 
