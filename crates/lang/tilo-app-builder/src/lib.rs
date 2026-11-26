@@ -2105,20 +2105,29 @@ fn format_pending_rust(writes: &mut [PendingWrite]) -> Result<()> {
     Ok(())
 }
 
+/// `source` as rustfmt lays it out. Formatting only tidies generated code, so a computer
+/// without rustfmt (a fresh install that has no Rust toolchain yet) gets it as generated,
+/// unless `RUSTFMT` names a formatter, which then has to run.
 fn rustfmt_source(source: &str, path: &Path) -> Result<String> {
-    let rustfmt = std::env::var_os("RUSTFMT").unwrap_or_else(|| OsString::from("rustfmt"));
-    let mut child = ProcessCommand::new(&rustfmt)
+    let named = std::env::var_os("RUSTFMT");
+    let rustfmt = named.clone().unwrap_or_else(|| OsString::from("rustfmt"));
+    let spawned = ProcessCommand::new(&rustfmt)
         .args(["--emit", "stdout", "--edition", "2024"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| {
+        .spawn();
+    let mut child = match spawned {
+        Err(error) if named.is_none() && error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(source.to_owned());
+        }
+        spawned => spawned.with_context(|| {
             format!(
                 "starting rustfmt for generated Rust {}; install the rustfmt component or set RUSTFMT",
                 path.display()
             )
-        })?;
+        })?,
+    };
     child
         .stdin
         .take()
