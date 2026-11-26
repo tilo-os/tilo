@@ -274,36 +274,9 @@ mod cases {
             }
         }
 
-        fn text(&self, r: &ResourceRef, field: &str) -> String {
-            match self.rt.read(r, field).unwrap() {
-                Value::Text(text) => text,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn number(&self, r: &ResourceRef, field: &str) -> i64 {
-            match self.rt.read(r, field).unwrap() {
-                Value::Int(n) => n,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
         fn held(&self, r: &ResourceRef, field: &str) -> ResourceRef {
             match self.rt.read(r, field).unwrap() {
                 Value::Ref(r) => std::rc::Rc::unwrap_or_clone(r.target),
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn records(&self, r: &ResourceRef, field: &str) -> Vec<ResourceRef> {
-            match self.rt.read(r, field).unwrap() {
-                Value::List(items) => items
-                    .into_iter()
-                    .filter_map(|item| match item {
-                        Value::Ref(r) => Some(std::rc::Rc::unwrap_or_clone(r.target)),
-                        _ => None,
-                    })
-                    .collect(),
                 other => panic!("{field} reads {other:?}"),
             }
         }
@@ -379,6 +352,12 @@ mod cases {
         /// The work ended, as the engine says it did.
         fn ended(&self) {
             self.moves(|handlers| handlers.done.clone());
+        }
+    }
+
+    impl Reads for Backups {
+        fn rt(&self) -> &Runtime {
+            &self.rt
         }
     }
 

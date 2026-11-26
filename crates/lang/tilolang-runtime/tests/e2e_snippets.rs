@@ -6,59 +6,22 @@
 mod cases {
     use crate::common::*;
     use serde_json::{Value as Json, json};
-    use std::cell::RefCell;
-    use std::rc::Rc;
-    use tilolang_runtime::clipboard::ClipboardHost;
     use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/snippets/app.tl");
-
-    /// What the device's clipboard holds.
-    #[derive(Clone, Default)]
-    struct Selection {
-        copied: Rc<RefCell<Option<String>>>,
-        /// How long the last copy stays, when it was a secret's.
-        clears_after: Rc<RefCell<Option<std::time::Duration>>>,
-        /// Whether the device takes no copy at all, as a session with no selection does.
-        refuses: Rc<RefCell<bool>>,
-    }
-
-    impl ClipboardHost for Selection {
-        fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
-            if mime != "text/plain" || *self.refuses.borrow() {
-                return false;
-            }
-            *self.copied.borrow_mut() = Some(String::from_utf8_lossy(bytes).into_owned());
-            *self.clears_after.borrow_mut() = None;
-            true
-        }
-
-        fn copy_secret(&self, text: &str, clear_after: std::time::Duration) -> bool {
-            if *self.refuses.borrow() {
-                return false;
-            }
-            *self.copied.borrow_mut() = Some(text.to_owned());
-            *self.clears_after.borrow_mut() = Some(clear_after);
-            true
-        }
-
-        fn paste(&self, _types: &[&str]) -> Option<(String, Vec<u8>)> {
-            None
-        }
-    }
 
     struct Snippets {
         rt: Runtime,
         app: App,
         lib: ResourceRef,
-        selection: Selection,
+        selection: Clipboard,
     }
 
     impl Snippets {
         fn new() -> Self {
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
-            let selection = Selection::default();
+            let selection = Clipboard::default();
             rt.set_clipboard(selection.clone());
             rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
             let app = App::compile(SOURCE, &[]);
@@ -127,11 +90,8 @@ mod cases {
         }
 
         fn copied(&self) -> String {
-            self.selection
-                .copied
-                .borrow()
-                .clone()
-                .unwrap_or_else(|| panic!("nothing was copied"))
+            assert!(self.selection.held().is_some(), "nothing was copied");
+            self.selection.text()
         }
 
         /// The snippet the list shows as `title`.
@@ -279,10 +239,10 @@ mod cases {
             let snippets = Snippets::new();
             let restart = snippets.add("Restart deployment", "Ops");
             snippets.write_body(&restart, "kubectl rollout restart deployment/web");
-            *snippets.selection.refuses.borrow_mut() = true;
+            snippets.selection.refuse(true);
             snippets.call("copy", &[("snippet", Value::resource(&restart))]);
             assert_eq!(snippets.field(&restart, "uses"), json!(0));
-            assert!(snippets.selection.copied.borrow().is_none());
+            assert!(snippets.selection.held().is_none());
             let said = snippets.rt.take_said();
             assert_eq!(said.len(), 1, "{said:?}");
             assert_eq!(said[0].text, "Could not copy to the clipboard");
@@ -300,7 +260,7 @@ mod cases {
             snippets.call("record_use", &[("snippet", Value::resource(&restart))]);
             assert_eq!(snippets.field(&restart, "uses"), json!(1));
             assert!(
-                snippets.selection.copied.borrow().is_none(),
+                snippets.selection.held().is_none(),
                 "recording a use put nothing on the clipboard"
             );
             // The page counts the use the same way a copy does.
@@ -337,7 +297,7 @@ mod cases {
                 .unwrap_or_else(|error| panic!("copy: {error:?}"));
             assert_eq!(snippets.copied(), "export API_KEY=sk-live-4f2a");
             assert_eq!(
-                *snippets.selection.clears_after.borrow(),
+                snippets.selection.clears_after(),
                 Some(tilolang_runtime::clipboard::SECRET_CLEARS_AFTER),
                 "the key is a secret copy, taken off the clipboard again"
             );
@@ -359,7 +319,7 @@ mod cases {
                 )
                 .unwrap_or_else(|error| panic!("copy: {error:?}"));
             assert_eq!(snippets.copied(), "Thanks for the quick review!");
-            assert_eq!(*snippets.selection.clears_after.borrow(), None);
+            assert_eq!(snippets.selection.clears_after(), None);
             let said = snippets.rt.take_said();
             assert_eq!(said.len(), 1, "{said:?}");
             assert_eq!(said[0].text, "Copied", "a body that stays says so");

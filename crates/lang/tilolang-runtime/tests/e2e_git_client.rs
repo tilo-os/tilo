@@ -505,37 +505,6 @@ mod cases {
             self.records(&self.root, "sessions")[0].clone()
         }
 
-        fn text(&self, at: &ResourceRef, field: &str) -> String {
-            match self.rt.read(at, field).unwrap() {
-                Value::Text(text) => text,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn number(&self, at: &ResourceRef, field: &str) -> i64 {
-            match self.rt.read(at, field).unwrap() {
-                Value::Int(n) => n,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn records(&self, at: &ResourceRef, field: &str) -> Vec<ResourceRef> {
-            match self.rt.read(at, field).unwrap() {
-                Value::List(items) => items
-                    .into_iter()
-                    .filter_map(|item| match item {
-                        Value::Ref(reference) => Some(Rc::unwrap_or_clone(reference.target)),
-                        _ => None,
-                    })
-                    .collect(),
-                Value::Coll(coll) => {
-                    let _ = coll;
-                    panic!("{field} reads a collection handle, not its items")
-                }
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
         fn open(&self, path: &str) {
             self.call(
                 "open_repository",
@@ -604,6 +573,12 @@ mod cases {
                 variant: ids.get(variant).unwrap().to_owned(),
                 fields: BTreeMap::default(),
             })
+        }
+    }
+
+    impl Reads for Site {
+        fn rt(&self) -> &Runtime {
+            &self.rt
         }
     }
 

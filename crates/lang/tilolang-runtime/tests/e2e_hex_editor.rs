@@ -5,134 +5,21 @@
 
 #[cfg(test)]
 mod cases {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::clipboard::ClipboardHost;
-    use tilolang_runtime::host_work::EngineHost;
+    use tilolang_runtime::blob::FileValue;
     use tilolang_runtime::{
         AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/hex-editor/app.tl");
 
-    /// The device's content store, as a window lends it, kept for the test's length.
-    #[derive(Clone)]
-    struct Device {
-        store: tilo_content::ContentStore,
-        /// The window's scope: the engine's calls run inside it, as a session runs an app's.
-        scope: Rc<tilo_wake::WakeScope>,
-        saved: Rc<RefCell<HashMap<String, Vec<u8>>>>,
-    }
-
-    impl Device {
-        fn new() -> Self {
-            let store = tilo_content::ContentStore::memory_in_workspace();
-            let scope = Rc::new(tilo_wake::WakeScope::new());
-            tilo_resource::content::register(&scope.handle(), store.clone());
-            Self {
-                store,
-                scope,
-                saved: Rc::default(),
-            }
-        }
-    }
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.store.read(hash)
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Err("this test chooses nothing".to_owned())
-        }
-
-        fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<(), String> {
-            self.saved
-                .borrow_mut()
-                .insert(request.name.clone(), content.to_vec());
-            Ok(())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            let hash = self.store.put(bytes).map_err(|error| error.to_string())?;
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-    }
-
-    /// The device's engine, answered by the crate the session registers, inside the window's
-    /// content store as a session answers it.
-    #[derive(Clone)]
-    struct Engine {
-        hex: Rc<hex_engine::HexEngine>,
-        scope: Rc<tilo_wake::WakeScope>,
-        jobs: DeviceJobs,
-    }
-
-    impl EngineHost for Engine {
-        fn call(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
-            use tilolang_tilo::engine::Provider as _;
-            let _window = self.scope.enter();
-            self.hex.call(op, input)
-        }
-
-        fn start(
-            &self,
-            app: &str,
-            op: &str,
-            input: &str,
-            _handlers: &tilolang_runtime::host_work::JobHandlers,
-        ) -> Result<String, String> {
-            let _window = self.scope.enter();
-            self.jobs.start(&*self.hex, app, op, input)
-        }
-
-        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
-            Ok(self.jobs.job(job))
-        }
-
-        fn cancel(&self, job: &str) -> bool {
-            use tilolang_tilo::engine::Provider as _;
-            let _window = self.scope.enter();
-            self.hex.cancel(job)
-        }
-    }
-
-    /// The media type and bytes of what the person copied.
-    type Copied = Option<(String, Vec<u8>)>;
-
-    /// The person's selection, as the device answers it.
-    #[derive(Clone, Default)]
-    struct Selection(Rc<RefCell<Copied>>);
-
-    impl ClipboardHost for Selection {
-        fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
-            *self.0.borrow_mut() = Some((mime.to_owned(), bytes.to_vec()));
-            true
-        }
-
-        fn paste(&self, types: &[&str]) -> Option<(String, Vec<u8>)> {
-            let held = self.0.borrow().clone()?;
-            types
-                .iter()
-                .any(|kind| held.0.starts_with(kind))
-                .then_some(held)
-        }
-    }
-
     struct Desk {
         rt: Runtime,
         app: App,
         root: ResourceRef,
-        device: Device,
+        device: Files,
         directory: tempfile::TempDir,
     }
 
@@ -142,14 +29,10 @@ mod cases {
             // its buttons is.
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
-            let device = Device::new();
+            let device = Files::default();
             rt.set_blobs(device.clone());
-            rt.set_clipboard(Selection::default());
-            rt.set_engine(Engine {
-                hex: Rc::new(hex_engine::HexEngine::new()),
-                scope: device.scope.clone(),
-                jobs: DeviceJobs::default(),
-            });
+            rt.set_clipboard(Clipboard::default());
+            rt.set_engine(DeviceEngine::new(hex_engine::HexEngine::new(), &device));
             let app = App::compile(SOURCE, &[]);
             authority.trust(&app.load(&rt));
             for action in ["press", "copy", "cut", "paste", "open_path", "save"] {
@@ -206,13 +89,6 @@ mod cases {
                     other => panic!("a desk is a record, not {other:?}"),
                 },
                 other => panic!("desks reads {other:?}"),
-            }
-        }
-
-        fn text(&self, r: &ResourceRef, field: &str) -> String {
-            match self.rt.read(r, field).unwrap() {
-                Value::Text(text) => text,
-                other => panic!("{field} reads {other:?}"),
             }
         }
 
@@ -279,6 +155,12 @@ mod cases {
         }
     }
 
+    impl Reads for Desk {
+        fn rt(&self) -> &Runtime {
+            &self.rt
+        }
+    }
+
     /// The first node of `kind` in `node`'s tree.
     fn find<'a>(node: &'a UiNode, kind: &str) -> Option<&'a UiNode> {
         if node.kind == kind {
@@ -317,11 +199,7 @@ mod cases {
         phase a_file_another_app_hands_over_opens_from_its_address;
         {
             let s = Desk::new();
-            let kept = s.device.keep("handed.bin", "application/octet-stream", &[0xDE, 0xAD]);
-            let file = match kept {
-                Ok(file) => file,
-                Err(why) => panic!("{why}"),
-            };
+            let file = s.device.keeping("handed.bin", "application/octet-stream", &[0xDE, 0xAD]);
             let d = s.opened_file(file);
             assert_eq!(s.text(&d, "name"), "handed.bin");
             assert!((s.number(&d, "length") - 2.0).abs() < f64::EPSILON);

@@ -4,12 +4,9 @@
 
 #[cfg(test)]
 mod cases {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+    use tilolang_runtime::blob::FileValue;
     use tilolang_runtime::rich::RichValue;
     use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value};
 
@@ -49,64 +46,18 @@ view member_row(p: Member) {
 }
 "#;
 
-    /// The device's content store: the files a test keeps, by the address of their bytes.
-    #[derive(Clone, Default)]
-    struct Device(Rc<RefCell<HashMap<String, Vec<u8>>>>);
-
-    impl Device {
-        fn keeping(&self, name: &str, media: &str, bytes: &[u8]) -> FileValue {
-            let hash = digest_of(bytes);
-            self.0.borrow_mut().insert(hash.clone(), bytes.to_vec());
-            FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            )
-        }
-    }
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.0.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Ok(Vec::new())
-        }
-
-        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            Ok(self.keeping(name, media, bytes))
-        }
-    }
-
-    fn digest_of(bytes: &[u8]) -> String {
-        use std::fmt::Write as _;
-        let mut digest = 0xcbf2_9ce4_8422_2325_u64;
-        for byte in bytes {
-            digest = (digest ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        let mut hex = String::with_capacity(17);
-        let _ = write!(hex, "h{digest:016x}");
-        hex
-    }
-
     struct Writer {
         rt: Runtime,
         app: App,
         doc: ResourceRef,
-        device: Device,
+        device: Files,
     }
 
     impl Writer {
         fn new() -> Self {
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
-            let device = Device::default();
+            let device = Files::default();
             rt.set_blobs(device.clone());
             rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
             let workspace = App::compile(WORKSPACE, &[]);

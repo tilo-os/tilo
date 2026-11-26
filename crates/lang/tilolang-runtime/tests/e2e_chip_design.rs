@@ -6,12 +6,11 @@
 
 #[cfg(test)]
 mod cases {
-    use std::cell::{Cell, RefCell};
+    use std::cell::Cell;
     use std::collections::BTreeMap;
     use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::host_work::EngineHost;
     use tilolang_runtime::value::ResourceRef;
     use tilolang_runtime::{
         AmStore, EnumValue, InvokeOutcome, Runtime, UiNode, Value, ViewInstance,
@@ -45,51 +44,15 @@ mod cases {
     /// engine cannot answer does.
     #[derive(Clone, Default)]
     struct Device {
-        asks: Rc<RefCell<Vec<(String, String)>>>,
         declines: Rc<Cell<bool>>,
     }
 
-    impl Device {
-        fn asked(&self) -> Vec<(String, String)> {
-            self.asks.borrow().clone()
-        }
-    }
-
-    impl EngineHost for Device {
-        fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-            if app != "so.tilo.chip-design" {
-                return Err(format!("`{app}` is not the app this device designs for"));
-            }
-            self.asks
-                .borrow_mut()
-                .push((op.to_owned(), input.to_owned()));
+    impl tilolang_tilo::engine::Provider for Device {
+        fn call(&self, op: &str, input: &str) -> Result<String, String> {
             if self.declines.get() {
                 return Err("the device declines this design".to_owned());
             }
             tilo_chip_design_engine::call(op, input)
-        }
-
-        fn start(
-            &self,
-            _app: &str,
-            op: &str,
-            _input: &str,
-            _handlers: &tilolang_runtime::host_work::JobHandlers,
-        ) -> Result<String, String> {
-            Err(format!("`{op}` is no work this device starts"))
-        }
-
-        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
-            let said = || -> Result<String, String> {
-                Err(format!("no work `{job}` runs on this device"))
-            };
-            Ok(said()
-                .ok()
-                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
-        }
-
-        fn cancel(&self, _job: &str) -> bool {
-            false
         }
     }
 
@@ -98,13 +61,16 @@ mod cases {
         app: App,
         root: ResourceRef,
         device: Device,
+        engine: DeviceEngine,
     }
 
     impl Chip {
         fn new() -> Self {
             let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let device = Device::default();
-            rt.set_engine(device.clone());
+            let engine =
+                DeviceEngine::new(device.clone(), &Files::default()).for_app("so.tilo.chip-design");
+            rt.set_engine(engine.clone());
             let app = App::compile(SOURCE, &[]);
             app.load(&rt);
             let root = rt.create_root("Project").unwrap();
@@ -113,6 +79,7 @@ mod cases {
                 app,
                 root,
                 device,
+                engine,
             }
         }
 
@@ -128,45 +95,11 @@ mod cases {
             }
         }
 
-        fn text(&self, r: &ResourceRef, field: &str) -> String {
-            match self.rt.read(r, field).unwrap() {
-                Value::Text(text) => text,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn number(&self, r: &ResourceRef, field: &str) -> i64 {
-            match self.rt.read(r, field).unwrap() {
-                Value::Int(n) => n,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn flag(&self, r: &ResourceRef, field: &str) -> bool {
-            match self.rt.read(r, field).unwrap() {
-                Value::Bool(flag) => flag,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
         fn is_case(&self, r: &ResourceRef, field: &str, case: &str) -> bool {
             match self.rt.read(r, field).unwrap() {
                 Value::Enum(value) => {
                     self.app.compiled.ids.get(case) == Some(value.variant.as_str())
                 }
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn records(&self, r: &ResourceRef, field: &str) -> Vec<ResourceRef> {
-            match self.rt.read(r, field).unwrap() {
-                Value::List(items) => items
-                    .into_iter()
-                    .filter_map(|item| match item {
-                        Value::Ref(r) => Some(std::rc::Rc::unwrap_or_clone(r.target)),
-                        _ => None,
-                    })
-                    .collect(),
                 other => panic!("{field} reads {other:?}"),
             }
         }
@@ -315,6 +248,12 @@ mod cases {
             before: &[tilolang_runtime::ChangeNote],
         ) -> Vec<tilolang_runtime::ChangeNote> {
             self.changes()[before.len()..].to_vec()
+        }
+    }
+
+    impl Reads for Chip {
+        fn rt(&self) -> &Runtime {
+            &self.rt
         }
     }
 
@@ -979,7 +918,7 @@ mod cases {
             c.add_operator("silu", "silu", vec![4, 8], 0, 560, 0);
             c.connect("x", "value", "rms", "value");
             c.connect("rms", "result", "silu", "value");
-            let asked = c.device.asked().len();
+            let asked = c.engine.asked().len();
             let rms = c.operator("rms");
             c.done(
                 "inspect_operator",
@@ -995,7 +934,7 @@ mod cases {
 
             // The device is asked once, about the design the removal leaves: the operator and its
             // own connections are out of the ask already.
-            let asks = c.device.asked();
+            let asks = c.engine.asked();
             assert_eq!(asks.len(), asked + 1, "the removal asks the device once");
             assert_eq!(asks[asked].0, "graph");
             let design: serde_json::Value = serde_json::from_str(&asks[asked].1).unwrap();
@@ -1055,7 +994,7 @@ mod cases {
             c.add_operator("rms", "rms_norm", vec![4, 8], 0, 280, 0);
             c.connect("x", "value", "rms", "value");
             let before = c.changes();
-            let asked = c.device.asked().len();
+            let asked = c.engine.asked().len();
 
             let rms = c.operator("rms");
             c.done(
@@ -1067,7 +1006,7 @@ mod cases {
                 ],
             );
 
-            let asks = c.device.asked();
+            let asks = c.engine.asked();
             assert_eq!(asks.len(), asked + 1, "the disconnect asks the device once");
             assert_eq!(asks[asked].0, "graph");
             assert!(

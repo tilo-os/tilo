@@ -4,11 +4,9 @@
 #[cfg(test)]
 mod cases {
     use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, SaveRequest};
     use tilolang_runtime::canvas::{CanvasHost, OpenedArtwork as OpenedArchive};
     use tilolang_runtime::{
         AmStore, FileValue, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance,
@@ -54,35 +52,6 @@ mod cases {
         ],
         "selection": { "d": "M 0 0 L 5 5 Z", "feather": 2.0 }
     }"##;
-
-    /// The device's content store, of what a test kept there: a file's hash is its bytes.
-    #[derive(Clone, Default)]
-    struct Device(Rc<RefCell<HashMap<String, Vec<u8>>>>);
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.0.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Err("this test chooses nothing".to_owned())
-        }
-
-        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
-            Err("this test writes no files out".to_owned())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            let hash = format!("h{}", bytes.len());
-            self.0.borrow_mut().insert(hash.clone(), bytes.to_vec());
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-    }
 
     /// The device's drawing engine, which opens every archive as [`ARTWORK_FILE`] and keeps the
     /// artwork each call asked it to draw.
@@ -221,6 +190,7 @@ mod cases {
         rt: Runtime,
         app: App,
         root: ResourceRef,
+        files: Files,
     }
 
     impl Canvas {
@@ -229,15 +199,24 @@ mod cases {
             let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let root = rt.create_root("Library").unwrap();
-            Self { rt, app, root }
+            let files = Files::default();
+            rt.set_blobs(files.clone());
+            Self {
+                rt,
+                app,
+                root,
+                files,
+            }
+        }
+
+        /// A picture the device keeps.
+        fn dawn(&self) -> FileValue {
+            self.files.keeping("Dawn.png", "image/png", &[1, 2, 3])
         }
 
         /// A canvas whose device keeps a file and draws on it.
         fn drawing() -> Self {
             let canvas = Self::new();
-            let device = Device::default();
-            device.0.borrow_mut().insert("h3".to_owned(), vec![1, 2, 3]);
-            canvas.rt.set_blobs(device);
             canvas.rt.set_canvas(Drawing::default());
             canvas
         }
@@ -294,27 +273,6 @@ mod cases {
                 .into_iter()
                 .map(|layer| self.text(&layer, "name"))
                 .collect()
-        }
-
-        fn text(&self, at: &ResourceRef, field: &str) -> String {
-            match self.rt.read(at, field).unwrap() {
-                Value::Text(text) => text,
-                other => panic!("{field} reads as text, not {other:?}"),
-            }
-        }
-
-        fn float(&self, at: &ResourceRef, field: &str) -> f64 {
-            match self.rt.read(at, field).unwrap() {
-                Value::Float(number) => number,
-                other => panic!("{field} reads as a number, not {other:?}"),
-            }
-        }
-
-        fn flag(&self, at: &ResourceRef, field: &str) -> bool {
-            match self.rt.read(at, field).unwrap() {
-                Value::Bool(flag) => flag,
-                other => panic!("{field} reads as a flag, not {other:?}"),
-            }
         }
 
         /// The marks of `art`, in the order they were laid.
@@ -380,6 +338,12 @@ mod cases {
                     Value::text("#1d1b19"),
                 ],
             )
+        }
+    }
+
+    impl Reads for Canvas {
+        fn rt(&self) -> &Runtime {
+            &self.rt
         }
     }
 
@@ -456,10 +420,14 @@ mod cases {
 
     /// A reference picture is set, and the engine compares the artwork against it.
     fn the_reference_is_compared(c: &Canvas, art: &ResourceRef, log: &Rc<RefCell<Vec<String>>>) {
-        let file = FileValue::new("Dawn.png", "image/png", 3, "h3");
+        let file = c.dawn();
         c.call(
             "set_reference",
-            vec![Value::resource(art), Value::file(file), Value::Float(0.5)],
+            vec![
+                Value::resource(art),
+                Value::file(file.clone()),
+                Value::Float(0.5),
+            ],
         );
         let compared = c.call(
             "compare_reference",
@@ -482,7 +450,7 @@ mod cases {
             "the engine is given the reference: {seen}"
         );
         assert!(
-            seen.contains("h3"),
+            seen.contains(&file.hash),
             "the reference's picture is lent to the engine: {seen}"
         );
         assert!(seen.contains("\"mode\":\"overlay\""), "the mode: {seen}");
@@ -876,10 +844,7 @@ mod cases {
         {
             let c = Canvas::new();
             let art = c.new_artwork("A picture");
-            let device = Device::default();
-            device.0.borrow_mut().insert("h3".to_owned(), vec![1, 2, 3]);
-            c.rt.set_blobs(device);
-            let file = FileValue::new("Dawn.png", "image/png", 3, "h3");
+            let file = c.dawn();
             let mark = returned_ref(c.call(
                 "place_picture",
                 vec![Value::resource(&art), Value::file(file)],
@@ -914,9 +879,6 @@ mod cases {
             let c = Canvas::new();
             let art = c.new_artwork("Balance");
             let log = Rc::new(RefCell::new(Vec::new()));
-            let device = Device::default();
-            device.0.borrow_mut().insert("h3".to_owned(), vec![1, 2, 3]);
-            c.rt.set_blobs(device);
             c.rt.set_canvas(Drawing(log.clone()));
 
             let combined = shapes_combine_into_one_mark(&c, &art);
@@ -930,7 +892,6 @@ mod cases {
             let c = Canvas::new();
             let art = c.new_artwork("Marks");
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_blobs(Device::default());
             c.rt.set_canvas(Drawing(log.clone()));
             let kept = two_picked_marks_combine_into_one(&c, &art);
             the_mark_is_clipped_finished_and_drawn(&c, &art, &kept, &log);
@@ -941,7 +902,6 @@ mod cases {
             let c = Canvas::new();
             let art = c.new_artwork("Selecting");
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_blobs(Device::default());
             c.rt.set_canvas(Drawing(log));
             let selected = c.call(
                 "select_shape",
@@ -1022,7 +982,6 @@ mod cases {
             let c = Canvas::new();
             let art = c.new_artwork("Versions");
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_blobs(Device::default());
             c.rt.set_canvas(Drawing(log.clone()));
             c.call(
                 "add_shape",
@@ -1105,12 +1064,9 @@ mod cases {
         {
             let c = Canvas::new();
             let art = c.new_artwork("A photo");
-            let device = Device::default();
-            device.0.borrow_mut().insert("h3".to_owned(), vec![1, 2, 3]);
-            c.rt.set_blobs(device);
             let log = Rc::new(RefCell::new(Vec::new()));
             c.rt.set_canvas(Drawing(log.clone()));
-            let file = FileValue::new("Dawn.png", "image/png", 3, "h3");
+            let file = c.dawn();
             let picture = returned_ref(c.call(
                 "place_picture",
                 vec![Value::resource(&art), Value::file(file)],
@@ -1184,11 +1140,8 @@ mod cases {
         phase a_picture_is_graded_into_a_new_file;
         {
             let c = Canvas::new();
-            let device = Device::default();
-            device.0.borrow_mut().insert("h3".to_owned(), vec![1, 2, 3]);
-            c.rt.set_blobs(device);
             c.rt.set_canvas(Drawing::default());
-            let file = FileValue::new("Dawn.png", "image/png", 3, "h3");
+            let file = c.dawn();
             let graded = c.call(
                 "grade_picture",
                 vec![
@@ -1223,7 +1176,6 @@ mod cases {
             let c = Canvas::new();
             let art = c.new_artwork("Masks");
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_blobs(Device::default());
             c.rt.set_canvas(Drawing(log.clone()));
             c.call("add_layer", vec![Value::resource(&art), Value::text("Ink")]);
             let ink = c.layer(&art, "Ink");
@@ -1298,11 +1250,8 @@ mod cases {
         {
             let c = Canvas::new();
             let art = c.new_artwork("Wand");
-            let device = Device::default();
-            device.0.borrow_mut().insert("h3".to_owned(), vec![1, 2, 3]);
-            c.rt.set_blobs(device);
             c.rt.set_canvas(Drawing::default());
-            let file = FileValue::new("Dawn.png", "image/png", 3, "h3");
+            let file = c.dawn();
             c.call(
                 "place_picture",
                 vec![Value::resource(&art), Value::file(file)],
@@ -1335,7 +1284,6 @@ mod cases {
         {
             let c = Canvas::new();
             let art = c.new_artwork("Subject");
-            c.rt.set_blobs(Device::default());
             c.rt.set_canvas(Drawing::default());
             let subject = c.call(
                 "select_subject",
@@ -1390,7 +1338,6 @@ mod cases {
             let c = Canvas::new();
             let art = c.new_artwork("Type");
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_blobs(Device::default());
             c.rt.set_canvas(Drawing(log.clone()));
             let text = returned_ref(c.call(
                 "add_text",
@@ -1458,7 +1405,6 @@ mod cases {
             let c = Canvas::new();
             let art = c.new_artwork("Oil");
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_blobs(Device::default());
             c.rt.set_canvas(Drawing(log.clone()));
             let medium = returned_ref(c.call(
                 "save_medium",
@@ -1578,7 +1524,6 @@ mod cases {
         {
             let c = Canvas::new();
             let log = Rc::new(RefCell::new(Vec::new()));
-            c.rt.set_blobs(Device::default());
             c.rt.set_canvas(Drawing(log.clone()));
             let art = c.new_artwork("Seen");
             c.drag(&art, "brush", [1.0, 2.0], [3.0, 4.0], [5.0, 6.0]);
@@ -1604,7 +1549,7 @@ mod cases {
         phase a_saved_artwork_opens_with_its_layers_its_paint_and_its_selection;
         {
             let c = Canvas::drawing();
-            let file = FileValue::new("study.artwork", "application/vnd.tilo.artwork+zip", 3, "h3");
+            let file = c.files.keeping("study.artwork", "application/vnd.tilo.artwork+zip", &[1, 2, 3]);
             let art = returned_ref(c.call(
                 "open_artwork",
                 vec![Value::resource(&c.root), Value::file(file)],

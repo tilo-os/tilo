@@ -5,12 +5,6 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::rc::Rc;
-
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::clipboard::ClipboardHost;
     use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = r#"app so.tilo.clipboard "Clipboard"
@@ -43,91 +37,22 @@ action paste_picture(b: Board) uses clipboard {
 }
 "#;
 
-    /// What the selection holds: a media type and its bytes.
-    type Held = Option<(String, Vec<u8>)>;
-
-    /// The person's selection, as the device answers it: what a copy leaves there and a paste
-    /// reads off it.
-    #[derive(Clone, Default)]
-    struct Selection(Rc<RefCell<Held>>);
-
-    impl ClipboardHost for Selection {
-        fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
-            *self.0.borrow_mut() = Some((mime.to_owned(), bytes.to_vec()));
-            true
-        }
-
-        fn paste(&self, types: &[&str]) -> Option<(String, Vec<u8>)> {
-            let held = self.0.borrow().clone()?;
-            types.iter().any(|wanted| *wanted == held.0).then_some(held)
-        }
-    }
-
-    /// The device's content store, of what a test kept there: a file's hash is its bytes.
-    #[derive(Clone, Default)]
-    struct Device(Rc<RefCell<HashMap<String, Vec<u8>>>>);
-
-    impl Device {
-        fn keeps(&self, bytes: &[u8]) -> String {
-            let hash = digest_of(bytes);
-            self.0.borrow_mut().insert(hash.clone(), bytes.to_vec());
-            hash
-        }
-    }
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.0.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Ok(Vec::new())
-        }
-
-        fn save(&self, _: &SaveRequest, _: &[u8]) -> Result<(), String> {
-            Err("this test writes no files out".to_owned())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            let hash = self.keeps(bytes);
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-    }
-
-    fn digest_of(bytes: &[u8]) -> String {
-        use std::fmt::Write as _;
-        let mut digest = 0xcbf2_9ce4_8422_2325_u64;
-        for byte in bytes {
-            digest = (digest ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        let mut hex = String::with_capacity(17);
-        let _ = write!(hex, "h{digest:016x}");
-        hex
-    }
-
+    /// The clipboard app on a runtime whose clipboard and files are the device's: its own code
+    /// is trusted and its copies granted, as a person's press of its copy button is.
     struct Bench {
         rt: Runtime,
         app: App,
         board: ResourceRef,
-        clipboard: Selection,
-        device: Device,
+        clipboard: Clipboard,
+        files: Files,
     }
 
     impl Bench {
         fn new() -> Self {
-            // The app's own code is trusted and its copies are granted, as a person's press of
-            // its copy button is: an action that copies reaches outside Tilo, which the policy
-            // allows for the app it is written in.
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
-            let device = Device::default();
-            let clipboard = Selection::default();
-            rt.set_blobs(device.clone());
+            let (files, clipboard) = (Files::default(), Clipboard::default());
+            rt.set_blobs(files.clone());
             rt.set_clipboard(clipboard.clone());
             let app = App::compile(SOURCE, &[]);
             authority.trust(&app.load(&rt));
@@ -140,13 +65,20 @@ action paste_picture(b: Board) uses clipboard {
                 app,
                 board,
                 clipboard,
-                device,
+                files,
             }
         }
 
-        fn call(&self, action: &str, args: Vec<Value>) -> InvokeOutcome {
+        fn call(
+            &self,
+            action: &str,
+            arg: Option<Value>,
+        ) -> Result<InvokeOutcome, tilolang_runtime::RuntimeError> {
             let id = self.app.action(action);
-            self.rt.invoke_action(&me(), (id.as_str(), args)).unwrap()
+            let args = std::iter::once(Value::resource(&self.board))
+                .chain(arg)
+                .collect();
+            self.rt.invoke_action(&me(), (id.as_str(), args))
         }
 
         fn text(&self) -> String {
@@ -155,73 +87,53 @@ action paste_picture(b: Board) uses clipboard {
                 other => panic!("the board's text reads {other:?}"),
             }
         }
-
-        fn set_text(&self, text: &str) {
-            self.call(
-                "type_in",
-                vec![Value::resource(&self.board), Value::text(text)],
-            );
-        }
     }
 
-    tilo_test_env::scenario! {
-        fn clipboard_1;
+    /// Text and pictures go onto the person's selection and come back from it; a file that is no
+    /// picture is refused rather than copying nothing.
+    #[test]
+    fn copies_and_pastes_through_the_person_s_selection() {
+        let board = Bench::new();
+        board
+            .call("type_in", Some(Value::text("Lisbon in May")))
+            .unwrap();
+        board.call("copy", None).unwrap();
+        assert_eq!(
+            board.clipboard.held(),
+            Some(("text/plain".to_owned(), b"Lisbon in May".to_vec())),
+            "the action's text is the person's copy"
+        );
 
-        phase an_action_copies_text_onto_the_person_s_selection;
-        {
-            let board = Bench::new();
-            board.set_text("Lisbon in May");
-            board.call("copy", vec![Value::resource(&board.board)]);
-            assert_eq!(
-                board.clipboard.0.borrow().clone(),
-                Some(("text/plain".to_owned(), b"Lisbon in May".to_vec())),
-                "the action's text is the person's copy"
-            );
-        }
+        board.clipboard.put("text/plain", b"Porto");
+        board.call("paste", None).unwrap();
+        assert_eq!(
+            board.text(),
+            "Porto",
+            "a paste answers what was copied elsewhere"
+        );
 
-        phase a_paste_answers_what_the_person_copied_elsewhere;
-        {
-            let board = Bench::new();
-            board.set_text("old");
-            *board.clipboard.0.borrow_mut() = Some(("text/plain".to_owned(), b"Porto".to_vec()));
-            board.call("paste", vec![Value::resource(&board.board)]);
-            assert_eq!(board.text(), "Porto");
-        }
+        let png = [0x89, b'P', b'N', b'G', 0, 1, 2, 3];
+        let fox = board.files.keeping("fox.png", "image/png", &png);
+        board.call("copy_picture", Some(Value::file(fox))).unwrap();
+        assert_eq!(
+            board.clipboard.held(),
+            Some(("image/png".to_owned(), png.to_vec())),
+            "an image is offered as the bytes the file holds, under its media type"
+        );
 
-        phase an_image_is_copied_as_its_bytes_and_pastes_back_as_a_file_the_device_kept;
-        {
-            let board = Bench::new();
-            let png = [0x89, b'P', b'N', b'G', 0, 1, 2, 3];
-            let hash = board.device.keeps(&png);
-            let file = Value::file(FileValue::new("fox.png", "image/png", 8, hash));
-            board.call("copy_picture", vec![Value::resource(&board.board), file]);
-            assert_eq!(
-                board.clipboard.0.borrow().clone(),
-                Some(("image/png".to_owned(), png.to_vec())),
-                "an image is offered as the bytes the file holds, under its media type"
-            );
+        // What another app copied as an image pastes as a file this device keeps.
+        board.clipboard.put("image/jpeg", b"\xff\xd8jpeg");
+        board.call("paste_picture", None).unwrap();
+        assert_eq!(board.text(), "pasted.jpg");
 
-            // What another app copied as an image pastes as a file this device keeps.
-            *board.clipboard.0.borrow_mut() = Some(("image/jpeg".to_owned(), b"\xff\xd8jpeg".to_vec()));
-            board.call("paste_picture", vec![Value::resource(&board.board)]);
-            assert_eq!(board.text(), "pasted.jpg");
-        }
-
-        phase copying_a_file_that_is_no_image_fails_rather_than_copying_nothing;
-        {
-            let board = Bench::new();
-            let hash = board.device.keeps(b"# Notes");
-            let file = Value::file(FileValue::new("Notes.md", "text/markdown", 7, hash));
-            let id = board.app.action("copy_picture");
-            let failed = board.rt.invoke_action(
-                &me(),
-                (id.as_str(), vec![Value::resource(&board.board), file]),
-            );
-            assert!(
-                failed.is_err(),
-                "a copy of no image says why: `Notes.md` is text/markdown"
-            );
-            assert_eq!(board.clipboard.0.borrow().clone(), None, "nothing copied");
-        }
+        let notes = board.files.keeping("Notes.md", "text/markdown", b"# Notes");
+        board.clipboard.put("text/plain", b"kept");
+        assert!(
+            board
+                .call("copy_picture", Some(Value::file(notes)))
+                .is_err(),
+            "a copy of no image says why: `Notes.md` is text/markdown"
+        );
+        assert_eq!(board.clipboard.text(), "kept", "nothing copied");
     }
 }

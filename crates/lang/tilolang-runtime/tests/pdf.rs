@@ -4,12 +4,9 @@
 
 #[cfg(test)]
 mod cases {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+    use tilolang_runtime::blob::FileValue;
     use tilolang_runtime::{AmStore, Runtime, Value};
 
     const SOURCE: &str = r#"app so.tilo.papers "Papers"
@@ -45,39 +42,6 @@ action refused(s: Shelf, f: File) {
     s.words = said
 }
 "#;
-
-    /// The device's content store: what a kept file's bytes are.
-    #[derive(Clone, Default)]
-    struct Store(Rc<RefCell<HashMap<String, Vec<u8>>>>);
-
-    impl BlobHost for Store {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.0.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Ok(Vec::new())
-        }
-
-        fn save(&self, _: &SaveRequest, _: &[u8]) -> Result<(), String> {
-            Err("this test writes no files out".to_owned())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            let hash = blake3::hash(bytes).to_hex().to_string();
-            self.0.borrow_mut().insert(hash.clone(), bytes.to_vec());
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-
-        fn thumbnail(&self, _: &FileValue, _: u32) -> Result<Option<FileValue>, String> {
-            Ok(None)
-        }
-    }
 
     /// The device's PDF engine: one page, a picture of it, and a copy of it.
     struct Reader;
@@ -137,16 +101,12 @@ action refused(s: Shelf, f: File) {
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             rt.set_pdf(Reader);
-            let store = Store::default();
-            store
-                .0
-                .borrow_mut()
-                .insert("paper".to_owned(), b"%PDF-1.7 a paper".to_vec());
+            let store = Files::default();
+            let paper = store.keeping("paper.pdf", "application/pdf", b"%PDF-1.7 a paper");
             rt.set_blobs(store);
             let app = App::compile(SOURCE, &[]);
             authority.trust(&app.load(&rt));
             let shelf = rt.create_root("Shelf").unwrap();
-            let paper = FileValue::new("paper.pdf", "application/pdf", 9, "paper");
             Self {
                 rt,
                 app,

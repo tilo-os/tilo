@@ -5,16 +5,20 @@
 #[cfg(test)]
 mod cases {
     use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::clipboard::ClipboardHost;
-    use tilolang_runtime::host_work::EngineHost;
     use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/typst-editor/app.tl");
+
+    /// The PDF the engine typesets every document into.
+    const TYPESET: &[u8] = b"%PDF-1.7 a document";
+
+    /// Where the device keeps [`TYPESET`].
+    fn pdf_url() -> String {
+        format!("tilo-blob://{}", blake3::hash(TYPESET).to_hex())
+    }
 
     /// What the device's engine answers a typeset with.
     #[derive(Clone)]
@@ -35,7 +39,7 @@ mod cases {
                     ("look-b".to_owned(), 595.0, 842.0),
                 ],
                 problems: Vec::new(),
-                pdf: Some("tilo-blob://pdf-1".to_owned()),
+                pdf: Some(pdf_url()),
                 trouble: String::new(),
             }
         }
@@ -117,8 +121,8 @@ mod cases {
         }
     }
 
-    impl EngineHost for Engine {
-        fn call(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
+    impl tilolang_tilo::engine::Provider for Engine {
+        fn call(&self, op: &str, input: &str) -> Result<String, String> {
             self.asked
                 .borrow_mut()
                 .push((op.to_owned(), input.to_owned()));
@@ -144,27 +148,6 @@ mod cases {
                 other => Err(format!("`{other}` is no op this device runs")),
             }
         }
-
-        fn start(
-            &self,
-            _app: &str,
-            op: &str,
-            _input: &str,
-            _handlers: &tilolang_runtime::host_work::JobHandlers,
-        ) -> Result<String, String> {
-            Err(format!("`{op}` is no op this device runs"))
-        }
-
-        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
-            let said = || -> Result<String, String> { Err(format!("no job `{job}`")) };
-            Ok(said()
-                .ok()
-                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
-        }
-
-        fn cancel(&self, _job: &str) -> bool {
-            false
-        }
     }
 
     fn page_of(input: &str) -> i64 {
@@ -181,74 +164,23 @@ mod cases {
             .unwrap_or(0)
     }
 
-    /// The device's content store: the bytes of a file it keeps or hands over.
-    #[derive(Clone, Default)]
-    struct Device(Rc<RefCell<HashMap<String, Vec<u8>>>>);
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.0.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Err("this test chooses nothing".to_owned())
-        }
-
-        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
-            Err("this test writes no files out".to_owned())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            let hash = blake3::hash(bytes).to_hex().to_string();
-            self.0.borrow_mut().insert(hash.clone(), bytes.to_vec());
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-
-        fn thumbnail(&self, _file: &FileValue, _size: u32) -> Result<Option<FileValue>, String> {
-            Ok(None)
-        }
-    }
-
-    /// The person's clipboard: what an action copied.
-    #[derive(Clone, Default)]
-    struct Board(Rc<RefCell<String>>);
-
-    impl ClipboardHost for Board {
-        fn copy(&self, _mime: &str, bytes: &[u8]) -> bool {
-            *self.0.borrow_mut() = String::from_utf8_lossy(bytes).into_owned();
-            true
-        }
-
-        fn paste(&self, _types: &[&str]) -> Option<(String, Vec<u8>)> {
-            None
-        }
-    }
-
     struct Desk {
         rt: Runtime,
         app: App,
         lib: ResourceRef,
         engine: Engine,
-        device: Device,
+        device: Files,
     }
 
     impl Desk {
         fn new() -> Self {
             let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let engine = Engine::default();
-            rt.set_engine(engine.clone());
-            let device = Device::default();
-            device
-                .0
-                .borrow_mut()
-                .insert("pdf-1".to_owned(), b"%PDF-1.7 a document".to_vec());
+            rt.set_engine(DeviceEngine::new(engine.clone(), &Files::default()));
+            let device = Files::default();
+            device.keeping("document.pdf", "application/pdf", TYPESET);
             rt.set_blobs(device.clone());
-            let board = Board::default();
+            let board = Clipboard::default();
             rt.set_clipboard(board);
             let app = App::compile(SOURCE, &[]);
             app.load(&rt);
@@ -274,47 +206,6 @@ mod cases {
 
         fn new_document(&self) -> ResourceRef {
             returned_ref(self.call("new_document", vec![Value::resource(&self.lib)]))
-        }
-
-        fn text(&self, r: &ResourceRef, field: &str) -> String {
-            match self.rt.read(r, field).unwrap() {
-                Value::Text(text) => text,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn number(&self, r: &ResourceRef, field: &str) -> i64 {
-            match self.rt.read(r, field).unwrap() {
-                Value::Int(n) => n,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn float(&self, r: &ResourceRef, field: &str) -> f64 {
-            match self.rt.read(r, field).unwrap() {
-                Value::Float(n) => n,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn flag(&self, r: &ResourceRef, field: &str) -> bool {
-            match self.rt.read(r, field).unwrap() {
-                Value::Bool(flag) => flag,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn records(&self, r: &ResourceRef, field: &str) -> Vec<ResourceRef> {
-            match self.rt.read(r, field).unwrap() {
-                Value::List(items) => items
-                    .into_iter()
-                    .filter_map(|item| match item {
-                        Value::Ref(r) => Some(std::rc::Rc::unwrap_or_clone(r.target)),
-                        _ => None,
-                    })
-                    .collect(),
-                other => panic!("{field} reads {other:?}"),
-            }
         }
 
         fn window(&self, d: &ResourceRef) -> ViewInstance {
@@ -343,17 +234,13 @@ mod cases {
 
         /// A `.typ` a person chose, as the device hands it over.
         fn typ_file(&self, name: &str, words: &str) -> Value {
-            let hash = blake3::hash(words.as_bytes()).to_hex().to_string();
-            self.device
-                .0
-                .borrow_mut()
-                .insert(hash.clone(), words.as_bytes().to_vec());
-            Value::file(FileValue::new(
-                name,
-                "text/plain",
-                i64::try_from(words.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
+            Value::file(self.device.keeping(name, "text/plain", words.as_bytes()))
+        }
+    }
+
+    impl Reads for Desk {
+        fn rt(&self) -> &Runtime {
+            &self.rt
         }
     }
 
@@ -384,7 +271,7 @@ mod cases {
             let pages = desk.records(&d, "pages");
             assert_eq!(pages.len(), 2, "both pages are laid out");
             assert_eq!(desk.text(&pages[0], "look"), "look-a");
-            assert_eq!(desk.text(&d, "pdf"), "tilo-blob://pdf-1");
+            assert_eq!(desk.text(&d, "pdf"), pdf_url());
             let headings = desk.records(&d, "headings");
             assert_eq!(headings.len(), 2, "both headings are read");
             assert_eq!(desk.text(&headings[0], "title"), "Hello");
@@ -647,13 +534,7 @@ mod cases {
             assert_eq!(saved.name, "Untitled.typ");
             assert_eq!(
                 String::from_utf8_lossy(
-                    &desk
-                        .device
-                        .0
-                        .borrow()
-                        .get(&saved.hash)
-                        .cloned()
-                        .unwrap_or_default()
+                    &desk.device.bytes_of(&saved)
                 ),
                 desk.text(&d, "source"),
                 "the file holds the document's source"
@@ -663,7 +544,7 @@ mod cases {
                 other => panic!("an export answers a file: {other:?}"),
             };
             assert_eq!(pdf.name, "Untitled.pdf");
-            assert_eq!(pdf.url(), "tilo-blob://pdf-1", "the typeset's PDF");
+            assert_eq!(pdf.url(), pdf_url(), "the typeset's PDF");
         }
 
         phase a_page_s_words_are_read_whole_and_within_a_selection;

@@ -6,12 +6,9 @@
 #[cfg(test)]
 mod cases {
     use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::clipboard::ClipboardHost;
     use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{
         AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
@@ -126,73 +123,14 @@ mod cases {
         }
     }
 
-    /// The person's clipboard: what a copy leaves there.
-    #[derive(Clone, Default)]
-    struct Selection(Rc<RefCell<String>>);
-
-    impl ClipboardHost for Selection {
-        fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
-            if mime == "text/plain" {
-                *self.0.borrow_mut() = String::from_utf8_lossy(bytes).into_owned();
-                true
-            } else {
-                false
-            }
-        }
-
-        fn paste(&self, _types: &[&str]) -> Option<(String, Vec<u8>)> {
-            None
-        }
-    }
-
-    /// The device's content store: the files an action made, by their digest.
-    #[derive(Clone, Default)]
-    struct Device(Rc<RefCell<HashMap<String, Vec<u8>>>>);
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.0.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Ok(Vec::new())
-        }
-
-        fn save(&self, _: &SaveRequest, _: &[u8]) -> Result<(), String> {
-            Err("this test writes no files out".to_owned())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            let hash = digest_of(bytes);
-            self.0.borrow_mut().insert(hash.clone(), bytes.to_vec());
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-    }
-
-    fn digest_of(bytes: &[u8]) -> String {
-        use std::fmt::Write as _;
-        let mut digest = 0xcbf2_9ce4_8422_2325_u64;
-        for byte in bytes {
-            digest = (digest ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        let mut hex = String::with_capacity(17);
-        let _ = write!(hex, "h{digest:016x}");
-        hex
-    }
-
     /// The app on a machine: its window, its engine, its clipboard and its store.
     struct Publisher {
         rt: Runtime,
         app: App,
         root: ResourceRef,
         engine: Engine,
-        selection: Selection,
-        device: Device,
+        selection: Clipboard,
+        device: Files,
         /// This machine's clock, which a test moves between checks.
         clock: Rc<RefCell<String>>,
     }
@@ -207,9 +145,9 @@ mod cases {
             rt.set_clock(move || ticking.borrow().clone());
             let engine = Engine::new();
             rt.set_engine(engine.clone());
-            let selection = Selection::default();
+            let selection = Clipboard::default();
             rt.set_clipboard(selection.clone());
-            let device = Device::default();
+            let device = Files::default();
             rt.set_blobs(device.clone());
             authority.trust(&app.load(&rt));
             // A copy reaches outside Tilo, which the policy allows for the app it is written in.
@@ -423,7 +361,7 @@ mod cases {
             p.engine.set_key(A_KEY);
             p.act("open_key");
             p.act("copy_proof");
-            assert_eq!(p.selection.0.borrow().as_str(), PROOF);
+            assert_eq!(p.selection.text(), PROOF);
             assert_eq!(p.text("notice_title"), "Copied the proof line.");
             assert_eq!(p.text("notice_detail"), PROOF);
 
@@ -448,7 +386,7 @@ mod cases {
                 "the key file comes from the device"
             );
             assert_eq!(
-                p.selection.0.borrow().as_str(),
+                p.selection.text(),
                 r#"{"secret_key_hex":"9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f"}"#
             );
             assert_eq!(p.text("notice_kind"), "success");
@@ -458,7 +396,7 @@ mod cases {
                 panic!("an export answers a file");
             };
             assert_eq!(file.name, "publisher-key.json");
-            let bytes = p.device.0.borrow().get(&file.hash).cloned();
+            let bytes = p.device.read(&file.hash);
             assert_eq!(
                 bytes.as_deref().map(String::from_utf8_lossy),
                 Some("{\"secret_key_hex\":\"9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f\"}".into()),

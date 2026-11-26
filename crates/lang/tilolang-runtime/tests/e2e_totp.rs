@@ -14,10 +14,9 @@ mod cases {
     use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::clipboard::ClipboardHost;
+    use tilolang_runtime::blob::{BlobHost, FileValue};
     use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
-    use tilolang_runtime::host_work::{EngineHost, JobHandlers, VaultCode, VaultHost};
+    use tilolang_runtime::host_work::{VaultCode, VaultHost};
     use tilolang_runtime::{
         AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };
@@ -31,117 +30,6 @@ mod cases {
     /// The code every item of the test's vault makes, and the instant it stops being good.
     const CODE: &str = "123456";
     const UNTIL: &str = "2030-01-01T00:00:30Z";
-
-    /// The device's content store, as a window lends it, kept for the test's length.
-    #[derive(Clone)]
-    struct Device {
-        store: tilo_content::ContentStore,
-        scope: Rc<tilo_wake::WakeScope>,
-    }
-
-    impl Device {
-        fn new() -> Self {
-            let store = tilo_content::ContentStore::memory_in_workspace();
-            let scope = Rc::new(tilo_wake::WakeScope::new());
-            tilo_resource::content::register(&scope.handle(), store.clone());
-            Self { store, scope }
-        }
-    }
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.store.read(hash)
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Err("this test chooses nothing".to_owned())
-        }
-
-        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            let hash = self.store.put(bytes).map_err(|error| error.to_string())?;
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-    }
-
-    /// The device's engine, answered by the crate the app's engine library loads: setup links,
-    /// pictures and whether a key reads.
-    #[derive(Clone)]
-    struct Engine {
-        totp: Rc<totp_engine::TotpEngine>,
-        scope: Rc<tilo_wake::WakeScope>,
-    }
-
-    impl EngineHost for Engine {
-        fn call(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
-            let _window = self.scope.enter();
-            self.totp.call(op, input)
-        }
-
-        fn start(
-            &self,
-            _app: &str,
-            op: &str,
-            input: &str,
-            _handlers: &JobHandlers,
-        ) -> Result<String, String> {
-            let _window = self.scope.enter();
-            self.totp.start(op, input)
-        }
-
-        /// Authenticator starts no jobs, so the device records none of its.
-        fn job(&self, _path: &str) -> Result<Option<serde_json::Value>, String> {
-            Ok(None)
-        }
-
-        fn cancel(&self, job: &str) -> bool {
-            let _window = self.scope.enter();
-            self.totp.cancel(job)
-        }
-    }
-
-    /// The media type and bytes of what the person copied.
-    type Copied = Option<(String, Vec<u8>)>;
-
-    /// The person's selection, as the device answers it: holding what was copied, or refusing
-    /// to take it where the test asks for a clipboard that does not.
-    #[derive(Clone, Default)]
-    struct Selection {
-        kept: Rc<RefCell<Copied>>,
-        refuses: Rc<std::cell::Cell<bool>>,
-    }
-
-    impl Selection {
-        fn copied(&self) -> Option<(String, Vec<u8>)> {
-            self.kept.borrow().clone()
-        }
-
-        fn refuse(&self, refuses: bool) {
-            self.refuses.set(refuses);
-        }
-    }
-
-    impl ClipboardHost for Selection {
-        fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
-            if self.refuses.get() {
-                return false;
-            }
-            *self.kept.borrow_mut() = Some((mime.to_owned(), bytes.to_vec()));
-            true
-        }
-
-        fn paste(&self, _types: &[&str]) -> Option<(String, Vec<u8>)> {
-            self.kept.borrow().clone()
-        }
-    }
 
     /// What the workspace's vault holds: each item's reference by the seed it keeps, and the
     /// words it was kept with. It answers the code of this moment and the writes, as the vault
@@ -314,23 +202,24 @@ mod cases {
         rt: Runtime,
         app: App,
         root: ResourceRef,
-        selection: Selection,
+        selection: Clipboard,
         vault: Vault,
-        device: Device,
+        device: Files,
     }
 
     impl Desk {
         fn new() -> Self {
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
-            let device = Device::new();
-            let selection = Selection::default();
+            let device = Files::default();
+            let selection = Clipboard::default();
             rt.set_blobs(device.clone());
             rt.set_clipboard(selection.clone());
-            rt.set_engine(Engine {
-                totp: Rc::new(totp_engine::TotpEngine::new()),
-                scope: device.scope.clone(),
-            });
+            let totp = totp_engine::TotpEngine::new();
+            rt.set_engine(DeviceEngine::calls(
+                move |op, input| totp.call(op, input),
+                &device,
+            ));
             let vault = Vault::new();
             rt.set_foreign_invoker(vault.clone());
             rt.set_vault(vault.clone());
@@ -396,13 +285,6 @@ mod cases {
                 .expect("the clock reading reads");
         }
 
-        fn text(&self, r: &ResourceRef, field: &str) -> String {
-            match self.rt.read(r, field).unwrap() {
-                Value::Text(text) => text,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
         fn accounts(&self) -> Vec<ResourceRef> {
             match self.rt.read(&self.root, "accounts").unwrap() {
                 Value::List(items) => items
@@ -433,6 +315,12 @@ mod cases {
             self.device
                 .keep("code.png", "image/png", bytes)
                 .expect("the picture is kept")
+        }
+    }
+
+    impl Reads for Desk {
+        fn rt(&self) -> &Runtime {
+            &self.rt
         }
     }
 
@@ -856,7 +744,7 @@ mod cases {
             let s = Desk::new();
             let a = s.add("GitHub", "", VECTOR);
             s.call("copy_code", vec![Value::resource(&a)]);
-            let held = s.selection.copied().expect("the code was copied");
+            let held = s.selection.held().expect("the code was copied");
             assert_eq!(String::from_utf8(held.1).unwrap(), CODE);
         }
 
@@ -1073,7 +961,7 @@ mod cases {
             );
             press(&s, "Copy");
             assert_eq!(
-                s.selection.copied().map(|(_, bytes)| String::from_utf8(bytes).unwrap()),
+                s.selection.held().map(|(_, bytes)| String::from_utf8(bytes).unwrap()),
                 Some(CODE.to_owned()),
                 "the same control copies the code it showed"
             );
@@ -1104,7 +992,7 @@ mod cases {
                 "a copy that failed is shown"
             );
             assert_eq!(
-                s.selection.copied().map(|(_, bytes)| String::from_utf8(bytes).unwrap()),
+                s.selection.held().map(|(_, bytes)| String::from_utf8(bytes).unwrap()),
                 Some(CODE.to_owned()),
                 "and the code that was there before is not taken for this press"
             );

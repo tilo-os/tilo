@@ -3,12 +3,10 @@
 #[cfg(test)]
 mod cases {
     use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::rc::Rc;
 
     use crate::common::*;
-    use bounded_zip::{ZipLimits, write_zip};
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+    use tilolang_runtime::blob::FileValue;
     use tilolang_runtime::rich::RichValue;
     use tilolang_runtime::{
         AmStore, EditOutcome, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
@@ -16,54 +14,6 @@ mod cases {
 
     const SOURCE: &str = include_str!("../../../../apps/tl/notes/app.tl");
     const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
-
-    /// The device the notebook's files are read from: its content store, of what a test kept
-    /// there. A file's hash is its bytes, as a content store addresses them: the same bytes are
-    /// one file, whatever name they came in as.
-    #[derive(Clone, Default)]
-    struct Device(Rc<RefCell<HashMap<String, Vec<u8>>>>);
-
-    impl Device {
-        /// `bytes` kept as the file `name`: what a person choosing it would answer.
-        fn keeping(&self, name: &str, media: &str, bytes: &[u8]) -> FileValue {
-            let hash = blake3::hash(bytes).to_hex().to_string();
-            self.0.borrow_mut().insert(hash.clone(), bytes.to_vec());
-            FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            )
-        }
-
-        /// The pages `entries` as one archive, kept under `name`.
-        fn archive(&self, name: &str, entries: &[(&str, &[u8])]) -> FileValue {
-            let entries: Vec<(String, Vec<u8>)> = entries
-                .iter()
-                .map(|(name, bytes)| ((*name).to_owned(), bytes.to_vec()))
-                .collect();
-            let bytes = write_zip(&entries, &ZipLimits::default()).expect("the archive writes");
-            self.keeping(name, "application/zip", &bytes)
-        }
-    }
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.0.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Ok(Vec::new())
-        }
-
-        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
-            Err("this test writes no files out".to_owned())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            Ok(self.keeping(name, media, bytes))
-        }
-    }
 
     /// A PNG of one colour: what a page that shows a picture keeps beside it.
     fn png() -> Vec<u8> {
@@ -84,7 +34,7 @@ mod cases {
         app: App,
         nb: ResourceRef,
         /// The device whose files the notebook reads, as a person's own store holds them.
-        device: Device,
+        device: Files,
         /// What the workspace's clock says: when a note is made, and when it is written since.
         clock: Rc<RefCell<String>>,
     }
@@ -97,7 +47,7 @@ mod cases {
         /// A notebook whose clock says `now`.
         fn at(now: &str) -> Self {
             let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-            let device = Device::default();
+            let device = Files::default();
             rt.set_blobs(device.clone());
             let clock = Rc::new(RefCell::new(now.to_owned()));
             let reading = Rc::clone(&clock);

@@ -5,14 +5,12 @@
 #[cfg(test)]
 mod cases {
     use std::cell::RefCell;
-    use std::collections::{BTreeMap, HashMap};
+    use std::collections::BTreeMap;
     use std::path::Path;
     use std::rc::Rc;
 
     use crate::common::*;
     use tilo_db::Database;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::clipboard::ClipboardHost;
     use tilolang_runtime::host_work::EngineHost;
     use tilolang_runtime::{
         AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
@@ -71,57 +69,13 @@ mod cases {
         }
     }
 
-    /// The device's content store: what a file an action made holds.
-    #[derive(Clone, Default)]
-    struct Device(Rc<RefCell<HashMap<String, Vec<u8>>>>);
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.0.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Err("this test chooses nothing".to_owned())
-        }
-
-        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
-            Err("this test writes no files out".to_owned())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            let hash = format!("h{}", bytes.len());
-            self.0.borrow_mut().insert(hash.clone(), bytes.to_vec());
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-    }
-
-    /// The person's clipboard, as a copy offers it.
-    #[derive(Clone, Default)]
-    struct Clip(Rc<RefCell<String>>);
-
-    impl ClipboardHost for Clip {
-        fn copy(&self, _mime: &str, bytes: &[u8]) -> bool {
-            *self.0.borrow_mut() = String::from_utf8_lossy(bytes).into_owned();
-            true
-        }
-
-        fn paste(&self, _types: &[&str]) -> Option<(String, Vec<u8>)> {
-            None
-        }
-    }
-
     struct Client {
         rt: Runtime,
         app: App,
         root: ResourceRef,
-        device: Device,
+        device: Files,
         engine: Engine,
-        clip: Clip,
+        clip: Clipboard,
         /// The database file the test's connection opens, kept alive for the test's length.
         _directory: tempfile::TempDir,
         path: String,
@@ -144,9 +98,9 @@ mod cases {
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let engine = Engine::default();
             rt.set_engine(engine.clone());
-            let device = Device::default();
+            let device = Files::default();
             rt.set_blobs(device.clone());
-            let clip = Clip::default();
+            let clip = Clipboard::default();
             rt.set_clipboard(clip.clone());
             rt.set_clock(|| "2026-01-02T03:04:05Z".to_owned());
             authority.trust(&app.load(&rt));
@@ -189,33 +143,10 @@ mod cases {
             Value::resource(&self.root)
         }
 
-        fn text(&self, r: &ResourceRef, field: &str) -> String {
-            match self.rt.read(r, field).unwrap() {
-                Value::Text(text) => text,
-                Value::Int(n) => n.to_string(),
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn flag(&self, r: &ResourceRef, field: &str) -> bool {
-            match self.rt.read(r, field).unwrap() {
-                Value::Bool(flag) => flag,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
         #[expect(
             clippy::cast_possible_truncation,
             reason = "a query's whole numbers are far inside i64"
         )]
-        fn number(&self, r: &ResourceRef, field: &str) -> i64 {
-            match self.rt.read(r, field).unwrap() {
-                Value::Int(n) => n,
-                Value::Float(n) => n as i64,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
         fn records(&self, name: &str) -> Vec<ResourceRef> {
             let d = self.rt.read(&self.root, name).unwrap();
             match d {
@@ -509,6 +440,12 @@ mod cases {
                 "browse",
                 &[("d", self.root_arg()), ("t", Value::resource(&found))],
             );
+        }
+    }
+
+    impl Reads for Client {
+        fn rt(&self) -> &Runtime {
+            &self.rt
         }
     }
 
@@ -850,9 +787,9 @@ mod cases {
             c.run("SELECT 'a,b' AS said, 2 AS counted");
             let row = c.rows("queries").into_iter().next().expect("a row");
             c.with("copy_row", &[("d", c.root_arg()), ("row", Value::resource(&row))]);
-            assert_eq!(*c.clip.0.borrow(), "a,b\t2");
+            assert_eq!(c.clip.text(), "a,b\t2");
             c.with("copy_result", &[("d", c.root_arg())]);
-            assert_eq!(*c.clip.0.borrow(), "said\tcounted\na,b\t2");
+            assert_eq!(c.clip.text(), "said\tcounted\na,b\t2");
             assert_eq!(c.status(), "Result copied");
             let file = match c.with("export_csv", &[("d", c.root_arg())]) {
                 InvokeOutcome::Done(Value::Opt(Some(held))) => match &*held {
@@ -863,7 +800,7 @@ mod cases {
             };
             assert_eq!(file.name, "query-results.csv");
             let bytes = String::from_utf8_lossy(
-                &c.device.0.borrow().get(&file.hash).cloned().unwrap_or_default(),
+                &c.device.read(&file.hash).unwrap_or_default(),
             )
             .into_owned();
             assert_eq!(bytes, "\"said\",\"counted\"\n\"a,b\",\"2\"\n");

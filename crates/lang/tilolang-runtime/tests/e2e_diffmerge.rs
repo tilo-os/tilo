@@ -5,108 +5,14 @@
 
 #[cfg(test)]
 mod cases {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::host_work::EngineHost;
     use tilolang_runtime::{
         AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/diffmerge/app.tl");
-
-    /// The device's content store, as a window lends it, kept for the test's length.
-    #[derive(Clone)]
-    struct Device {
-        store: tilo_content::ContentStore,
-        /// The window's scope: the engine's calls run inside it, as a session runs an app's.
-        scope: Rc<tilo_wake::WakeScope>,
-        saved: Rc<RefCell<HashMap<String, Vec<u8>>>>,
-    }
-
-    impl Device {
-        fn new() -> Self {
-            let store = tilo_content::ContentStore::memory_in_workspace();
-            let scope = Rc::new(tilo_wake::WakeScope::new());
-            tilo_resource::content::register(&scope.handle(), store.clone());
-            Self {
-                store,
-                scope,
-                saved: Rc::default(),
-            }
-        }
-    }
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.store.read(hash)
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Err("this test chooses nothing".to_owned())
-        }
-
-        fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<(), String> {
-            self.saved
-                .borrow_mut()
-                .insert(request.name.clone(), content.to_vec());
-            Ok(())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            let hash = self.store.put(bytes).map_err(|error| error.to_string())?;
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-    }
-
-    /// The device's engine, answered by the crate the session registers, inside the window's
-    /// content store as a session answers it.
-    #[derive(Clone)]
-    struct Engine {
-        merger: Rc<diffmerge_engine::DiffmergeEngine>,
-        scope: Rc<tilo_wake::WakeScope>,
-    }
-
-    impl EngineHost for Engine {
-        fn call(&self, _app: &str, op: &str, input: &str) -> Result<String, String> {
-            let _window = self.scope.enter();
-            self.merger.call(op, input)
-        }
-
-        fn start(
-            &self,
-            _app: &str,
-            op: &str,
-            input: &str,
-            _handlers: &tilolang_runtime::host_work::JobHandlers,
-        ) -> Result<String, String> {
-            let _window = self.scope.enter();
-            self.merger.start(op, input)
-        }
-
-        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
-            let said = || -> Result<String, String> {
-                let _window = self.scope.enter();
-                self.merger.status(job)
-            };
-            Ok(said()
-                .ok()
-                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
-        }
-
-        fn cancel(&self, job: &str) -> bool {
-            let _window = self.scope.enter();
-            self.merger.cancel(job)
-        }
-    }
 
     /// The actions that reach the device: each is granted the outside work its call makes, as a
     /// person's press of it is.
@@ -141,7 +47,7 @@ mod cases {
         rt: Runtime,
         app: App,
         root: ResourceRef,
-        device: Device,
+        device: Files,
         directory: tempfile::TempDir,
     }
 
@@ -149,12 +55,13 @@ mod cases {
         fn new() -> Self {
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
-            let device = Device::new();
+            let device = Files::default();
             rt.set_blobs(device.clone());
-            rt.set_engine(Engine {
-                merger: Rc::new(diffmerge_engine::DiffmergeEngine::new()),
-                scope: device.scope.clone(),
-            });
+            let merger = diffmerge_engine::DiffmergeEngine::new();
+            rt.set_engine(DeviceEngine::calls(
+                move |op, input| merger.call(op, input),
+                &device,
+            ));
             let app = App::compile(SOURCE, &[]);
             authority.trust(&app.load(&rt));
             for action in TOUCHING {
@@ -258,40 +165,6 @@ mod cases {
             ))
         }
 
-        fn text(&self, r: &ResourceRef, field: &str) -> String {
-            match self.rt.read(r, field).unwrap() {
-                Value::Text(text) => text,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn number(&self, r: &ResourceRef, field: &str) -> i64 {
-            match self.rt.read(r, field).unwrap() {
-                Value::Int(n) => n,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn flag(&self, r: &ResourceRef, field: &str) -> bool {
-            match self.rt.read(r, field).unwrap() {
-                Value::Bool(on) => on,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn records(&self, r: &ResourceRef, field: &str) -> Vec<ResourceRef> {
-            match self.rt.read(r, field).unwrap() {
-                Value::List(items) => items
-                    .into_iter()
-                    .map(|item| match item {
-                        Value::Ref(r) => Rc::unwrap_or_clone(r.target),
-                        other => panic!("{field} holds a record, not {other:?}"),
-                    })
-                    .collect(),
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
         fn blocks(&self, s: &ResourceRef) -> Vec<ResourceRef> {
             self.records(s, "blocks")
         }
@@ -317,6 +190,12 @@ mod cases {
                 .unwrap();
             window.set_lazy_rows(false).unwrap();
             window
+        }
+    }
+
+    impl Reads for Desk {
+        fn rt(&self) -> &Runtime {
+            &self.rt
         }
     }
 

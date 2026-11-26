@@ -4,12 +4,8 @@
 
 #[cfg(test)]
 mod cases {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::{
         AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, Space, UiNode, Value, ViewInstance,
     };
@@ -183,35 +179,6 @@ mod cases {
     /// Whether the shell prop `name` asks yes.
     fn prop_flag(node: &UiNode, name: &str) -> Option<bool> {
         node.props.get(name).map(|value| is_true(Some(value)))
-    }
-
-    /// The device's content store: a file's hash is its bytes, kept as a file's name says.
-    #[derive(Clone, Default)]
-    struct Store(Rc<RefCell<HashMap<String, Vec<u8>>>>);
-
-    impl BlobHost for Store {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.0.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Err("this test chooses nothing".to_owned())
-        }
-
-        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
-            Err("this test writes no files out".to_owned())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            let hash = format!("h{}", bytes.len());
-            self.0.borrow_mut().insert(hash.clone(), bytes.to_vec());
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
     }
 
     /// The slide's notes as the window binds them: the editor the inspector (and a compact
@@ -556,7 +523,7 @@ mod cases {
         phase a_deck_survives_a_trip_through_a_presentation_file;
         {
             let s = Slides::new();
-            s.rt.set_blobs(Store::default());
+            s.rt.set_blobs(Files::default());
             s.call(
                 "set_title",
                 vec![Value::resource(&s.deck), Value::text("Round trip")],
@@ -672,7 +639,7 @@ mod cases {
             use tilolang_runtime::FileValue;
 
             let s = Slides::new();
-            s.rt.set_blobs(Store::default());
+            s.rt.set_blobs(Files::default());
             let slide = s.slide(0);
             let picture = FileValue::new("logo.png", "image/png", 4, "h4");
             let url = picture.url();
@@ -709,7 +676,7 @@ mod cases {
         phase lists_written_in_a_box_survive_the_round_trip;
         {
             let s = Slides::new();
-            s.rt.set_blobs(Store::default());
+            s.rt.set_blobs(Files::default());
             let first = s.slide(0);
             s.call(
                 "set_text",

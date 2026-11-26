@@ -7,12 +7,11 @@
 #[cfg(test)]
 mod cases {
     use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::rc::Rc;
 
     use crate::common::*;
     use std::sync::{Arc, Mutex};
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+    use tilolang_runtime::blob::BlobHost;
     use tilolang_runtime::host_work::{EngineHost, HeldHost, JobHandlers, Push, held_slot};
     use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value};
 
@@ -187,42 +186,13 @@ mod cases {
         }
     }
 
-    /// The device's content store: what a file a person chose holds.
-    #[derive(Clone, Default)]
-    struct Device(Rc<RefCell<HashMap<String, Vec<u8>>>>);
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.0.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Err("this test chooses nothing".to_owned())
-        }
-
-        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
-            Err("this test writes no files out".to_owned())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            let hash = format!("h{}", bytes.len());
-            self.0.borrow_mut().insert(hash.clone(), bytes.to_vec());
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-    }
-
     struct Editor {
         rt: Runtime,
         app: App,
         root: ResourceRef,
         engine: Engine,
         servers: Servers,
-        device: Device,
+        device: Files,
     }
 
     impl Editor {
@@ -232,7 +202,7 @@ mod cases {
             rt.set_engine(engine.clone());
             let servers = Servers::default();
             rt.set_held(servers.clone());
-            let device = Device::default();
+            let device = Files::default();
             rt.set_blobs(device.clone());
             let app = App::compile(SOURCE, &[]);
             app.load(&rt);
@@ -307,42 +277,10 @@ mod cases {
             ))
         }
 
-        fn text(&self, r: &ResourceRef, field: &str) -> String {
-            match self.rt.read(r, field).unwrap() {
-                Value::Text(text) => text,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
         #[expect(
             clippy::cast_possible_truncation,
             reason = "a document's whole numbers are far inside i64"
         )]
-        fn number(&self, r: &ResourceRef, field: &str) -> i64 {
-            match self.rt.read(r, field).unwrap() {
-                Value::Int(n) => n,
-                Value::Float(n) if n.is_finite() => n as i64,
-                Value::Float(_) => 0,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        /// The number a field holds, kept as a float: a size, which an `Int` would lose.
-        fn float(&self, r: &ResourceRef, field: &str) -> f64 {
-            match self.rt.read(r, field).unwrap() {
-                Value::Float(n) => n,
-                Value::Int(n) => f64::from(i32::try_from(n).unwrap_or(0)),
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn flag(&self, r: &ResourceRef, field: &str) -> bool {
-            match self.rt.read(r, field).unwrap() {
-                Value::Bool(b) => b,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
         fn value(&self, r: &ResourceRef, field: &str) -> Value {
             self.rt.read(r, field).unwrap()
         }
@@ -387,19 +325,6 @@ mod cases {
             }
         }
 
-        fn records(&self, r: &ResourceRef, field: &str) -> Vec<ResourceRef> {
-            match self.rt.read(r, field).unwrap() {
-                Value::List(items) => items
-                    .into_iter()
-                    .filter_map(|item| match item {
-                        Value::Ref(r) => Some(Rc::unwrap_or_clone(r.target)),
-                        _ => None,
-                    })
-                    .collect(),
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
         fn window(&self) -> tilolang_runtime::ViewInstance {
             self.rt
                 .open_view(
@@ -408,6 +333,12 @@ mod cases {
                     vec![Value::resource(&self.root)],
                 )
                 .unwrap()
+        }
+    }
+
+    impl Reads for Editor {
+        fn rt(&self) -> &Runtime {
+            &self.rt
         }
     }
 

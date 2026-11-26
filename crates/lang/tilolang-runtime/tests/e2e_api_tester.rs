@@ -11,7 +11,6 @@ mod cases {
     use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::clipboard::ClipboardHost;
     use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{
         AmStore, EditOutcome, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
@@ -218,35 +217,6 @@ mod cases {
         }
     }
 
-    /// The media type and bytes of what the person copied.
-    type Copied = Option<(String, Vec<u8>)>;
-
-    /// The person's clipboard, as the device answers it.
-    #[derive(Clone, Default)]
-    struct Selection(Rc<RefCell<Copied>>);
-
-    impl Selection {
-        fn text(&self) -> String {
-            self.0
-                .borrow()
-                .as_ref()
-                .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
-                .unwrap_or_default()
-        }
-    }
-
-    impl ClipboardHost for Selection {
-        fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
-            *self.0.borrow_mut() = Some((mime.to_owned(), bytes.to_vec()));
-            true
-        }
-
-        fn paste(&self, types: &[&str]) -> Option<(String, Vec<u8>)> {
-            let held = self.0.borrow().clone()?;
-            types.iter().any(|wanted| *wanted == held.0).then_some(held)
-        }
-    }
-
     /// One answer as the engine writes it.
     fn answer_json(status: i32, body: &str) -> String {
         serde_json::json!({
@@ -272,7 +242,7 @@ mod cases {
         rt: Runtime,
         app: App,
         engine: Engine,
-        selection: Selection,
+        selection: Clipboard,
         root: ResourceRef,
     }
 
@@ -283,7 +253,7 @@ mod cases {
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let engine = Engine::new();
             rt.set_engine(engine.clone());
-            let selection = Selection::default();
+            let selection = Clipboard::default();
             rt.set_clipboard(selection.clone());
             authority.trust(&app.load(&rt));
             // A copy reaches outside Tilo, which the policy allows for the app it is written
@@ -312,40 +282,6 @@ mod cases {
             match self.call(action, args) {
                 InvokeOutcome::Done(value) => value,
                 other => panic!("{action}: {other:?}"),
-            }
-        }
-
-        fn text(&self, r: &ResourceRef, field: &str) -> String {
-            match self.rt.read(r, field).unwrap() {
-                Value::Text(text) => text,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn number(&self, r: &ResourceRef, field: &str) -> i64 {
-            match self.rt.read(r, field).unwrap() {
-                Value::Int(n) => i64::from(i32::try_from(n).unwrap_or(0)),
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn flag(&self, r: &ResourceRef, field: &str) -> bool {
-            match self.rt.read(r, field).unwrap() {
-                Value::Bool(flag) => flag,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn records(&self, r: &ResourceRef, field: &str) -> Vec<ResourceRef> {
-            match self.rt.read(r, field).unwrap() {
-                Value::List(items) => items
-                    .into_iter()
-                    .filter_map(|item| match item {
-                        Value::Ref(r) => Some(std::rc::Rc::unwrap_or_clone(r.target)),
-                        _ => None,
-                    })
-                    .collect(),
-                other => panic!("{field} reads {other:?}"),
             }
         }
 
@@ -430,6 +366,12 @@ mod cases {
             self.rt
                 .invoke_action(&me(), call)
                 .unwrap_or_else(|error| panic!("the send's handler: {error:?}"));
+        }
+    }
+
+    impl Reads for Tester {
+        fn rt(&self) -> &Runtime {
+            &self.rt
         }
     }
 

@@ -8,11 +8,8 @@ mod cases {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use std::collections::HashMap;
-
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::clipboard::ClipboardHost;
+    use tilolang_runtime::blob::FileValue;
     use tilolang_runtime::host_work::{EngineHost, JobHandlers, Push};
     use tilolang_runtime::{
         AmStore, EnumValue, Held, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance,
@@ -205,78 +202,23 @@ mod cases {
         }
     }
 
-    /// The device's content store: what a file an action made holds, and what a file it opens
-    /// reads back.
-    #[derive(Clone, Default)]
-    struct Device(Rc<RefCell<HashMap<String, Vec<u8>>>>);
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.0.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Err("this test chooses nothing".to_owned())
-        }
-
-        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
-            Err("this test writes no files out".to_owned())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            let hash = format!("h{}", bytes.len());
-            self.0.borrow_mut().insert(hash.clone(), bytes.to_vec());
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-    }
-
     struct Studio {
         rt: Runtime,
         app: App,
         root: ResourceRef,
         engine: Engine,
-        device: Device,
+        device: Files,
     }
 
     impl Studio {
         fn held(&self, file: &FileValue) -> String {
-            String::from_utf8_lossy(
-                &self
-                    .device
-                    .0
-                    .borrow()
-                    .get(&file.hash)
-                    .cloned()
-                    .unwrap_or_default(),
-            )
-            .into_owned()
+            String::from_utf8_lossy(&self.device.bytes_of(file)).into_owned()
         }
     }
 
-    /// The media type and bytes of what the person copied.
-    type Copied = Option<(String, Vec<u8>)>;
-
-    /// The person's clipboard, as the device answers it.
-    #[derive(Clone, Default)]
-    struct Selection(Rc<RefCell<Copied>>);
-
-    impl ClipboardHost for Selection {
-        fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
-            *self.0.borrow_mut() = Some((mime.to_owned(), bytes.to_vec()));
-            true
-        }
-
-        fn paste(&self, types: &[&str]) -> Option<(String, Vec<u8>)> {
-            let held = self.0.borrow().clone()?;
-            types
-                .iter()
-                .any(|kind| held.0.starts_with(kind))
-                .then_some(held)
+    impl Reads for Studio {
+        fn rt(&self) -> &Runtime {
+            &self.rt
         }
     }
 
@@ -286,9 +228,9 @@ mod cases {
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let engine = Engine::default();
             rt.set_engine(engine.clone());
-            let device = Device::default();
+            let device = Files::default();
             rt.set_blobs(device.clone());
-            rt.set_clipboard(Selection::default());
+            rt.set_clipboard(Clipboard::default());
             let playback = App::compile(PLAYBACK, &[]);
             playback.load(&rt);
             let app = App::compile(SOURCE, &[playback.meta().clone()]);
@@ -347,19 +289,6 @@ mod cases {
             );
         }
 
-        fn records(&self, p: &ResourceRef, field: &str) -> Vec<ResourceRef> {
-            match self.rt.read(p, field).unwrap() {
-                Value::List(items) => items
-                    .into_iter()
-                    .filter_map(|item| match item {
-                        Value::Ref(r) => Some(std::rc::Rc::unwrap_or_clone(r.target)),
-                        _ => None,
-                    })
-                    .collect(),
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
         fn tracks(&self, p: &ResourceRef) -> Vec<ResourceRef> {
             self.records(p, "tracks")
         }
@@ -370,20 +299,6 @@ mod cases {
 
         fn clips(&self, p: &ResourceRef) -> Vec<ResourceRef> {
             self.records(p, "clips")
-        }
-
-        fn text(&self, r: &ResourceRef, field: &str) -> String {
-            match self.rt.read(r, field).unwrap() {
-                Value::Text(text) => text,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn flag(&self, r: &ResourceRef, field: &str) -> bool {
-            match self.rt.read(r, field).unwrap() {
-                Value::Bool(flag) => flag,
-                other => panic!("{field} reads {other:?}"),
-            }
         }
 
         /// A `List<Float>` field of a record, as numbers.

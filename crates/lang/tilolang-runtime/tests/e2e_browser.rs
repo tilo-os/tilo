@@ -8,7 +8,7 @@ mod cases {
     use serde_json::{Value as Json, json};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+    use tilolang_runtime::blob::FileValue;
     use tilolang_runtime::files::{Entry, FileTarget, FilesHost};
     use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::page::PageHost;
@@ -86,11 +86,11 @@ mod cases {
 
     /// The device's files, as a download's open asks them: what was opened, in order.
     #[derive(Clone, Default)]
-    struct Files {
+    struct Disk {
         opened: Rc<RefCell<Vec<String>>>,
     }
 
-    impl FilesHost for Files {
+    impl FilesHost for Disk {
         fn list(&self, _path: &str) -> Result<Vec<Entry>, String> {
             Ok(Vec::new())
         }
@@ -127,12 +127,9 @@ mod cases {
         }
     }
 
-    /// The device's content store, and the file the person picks when a control asks: the
-    /// package an extension install takes, and the bytes a file the Browser hands on holds.
+    /// The device's engine: the downloads it started and the jobs it stopped.
     #[derive(Clone, Default)]
     struct Device {
-        content: Rc<RefCell<std::collections::HashMap<String, Vec<u8>>>>,
-        file: Rc<RefCell<Option<FileValue>>>,
         /// The downloads the app started, as the engine was asked: the op and its input.
         started: Rc<RefCell<Vec<(String, Json)>>>,
         /// The jobs the app stopped, in order.
@@ -174,41 +171,13 @@ mod cases {
         }
     }
 
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.content.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Ok(self.file.borrow().clone().into_iter().collect())
-        }
-
-        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
-            Err("this test writes no files out".to_owned())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            // The content's own address: the same bytes are one file, as a content store keeps
-            // them.
-            let hash = format!("h{}", bytes.len());
-            self.content
-                .borrow_mut()
-                .insert(hash.clone(), bytes.to_vec());
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-    }
-
     struct Browser {
         rt: Runtime,
         app: App,
         root: ResourceRef,
         page: Page,
-        files: Files,
+        files: Disk,
+        blobs: Files,
         device: Device,
         print_centre: App,
         opened: ResourceRef,
@@ -245,10 +214,11 @@ mod cases {
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let page = Page::default();
             rt.set_page(page.clone());
-            let files = Files::default();
+            let files = Disk::default();
             rt.set_device_files(files.clone());
+            let blobs = Files::default();
+            rt.set_blobs(blobs.clone());
             let device = Device::default();
-            rt.set_blobs(device.clone());
             rt.set_engine(device.clone());
             rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
             // The Browser shows where a download stands by asking Files, whose own action knows
@@ -276,6 +246,7 @@ mod cases {
                 root,
                 page,
                 files,
+                blobs,
                 device,
                 print_centre,
                 opened,
@@ -285,8 +256,12 @@ mod cases {
         /// The file the person picks when a control asks: `name`'s bytes, in this device's
         /// content store under `hash`.
         fn chooses(&self, name: &str, hash: &str) {
-            *self.device.file.borrow_mut() =
-                Some(FileValue::new(name, "application/octet-stream", 2048, hash));
+            self.blobs.pick(vec![FileValue::new(
+                name,
+                "application/octet-stream",
+                2048,
+                hash,
+            )]);
         }
 
         fn call(
@@ -1586,7 +1561,7 @@ mod cases {
             assert_eq!(printed.name, "Example page.pdf");
             assert_eq!(printed.media, "application/pdf");
             assert_eq!(
-                b.device.read(&printed.hash).as_deref(),
+                b.blobs.read(&printed.hash).as_deref(),
                 Some(PRINTED_PDF),
                 "Print Centre is handed the PDF's own bytes"
             );

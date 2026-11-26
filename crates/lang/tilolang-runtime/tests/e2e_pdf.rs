@@ -4,13 +4,8 @@
 
 #[cfg(test)]
 mod cases {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::clipboard::ClipboardHost;
     use tilolang_runtime::{
         AmStore, InvokeOutcome, PdfHost, ResourceRef, Runtime, Space, UiNode, Value,
     };
@@ -122,77 +117,17 @@ mod cases {
         }
     }
 
-    /// The device's content store and its clipboard.
-    #[derive(Clone, Default)]
-    struct Device {
-        files: Rc<RefCell<HashMap<String, Vec<u8>>>>,
-        clip: Rc<RefCell<String>>,
-    }
-
-    impl Device {
-        /// `bytes` kept as the file `name`, as a person choosing it answers.
-        fn keeping(&self, name: &str, media: &str, bytes: &[u8]) -> FileValue {
-            let hash = digest_of(bytes);
-            self.files.borrow_mut().insert(hash.clone(), bytes.to_vec());
-            FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            )
-        }
-
-        fn copied(&self) -> String {
-            self.clip.borrow().clone()
-        }
-    }
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.files.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Ok(Vec::new())
-        }
-
-        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            Ok(self.keeping(name, media, bytes))
-        }
-    }
-
-    impl ClipboardHost for Device {
-        fn copy(&self, _mime: &str, bytes: &[u8]) -> bool {
-            *self.clip.borrow_mut() = String::from_utf8_lossy(bytes).into_owned();
-            true
-        }
-
-        fn paste(&self, _types: &[&str]) -> Option<(String, Vec<u8>)> {
-            None
-        }
-    }
-
-    /// The address a content store names `bytes` by: the test's stand-in for the store's hash.
+    /// The address a content store names `bytes` by.
     fn digest_of(bytes: &[u8]) -> String {
-        use std::fmt::Write as _;
-        let mut digest = 0xcbf2_9ce4_8422_2325_u64;
-        for byte in bytes {
-            digest = (digest ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        let mut hex = String::with_capacity(17);
-        let _ = write!(hex, "h{digest:016x}");
-        hex
+        blake3::hash(bytes).to_hex().to_string()
     }
 
     struct Reader {
         rt: Runtime,
         app: App,
         lib: ResourceRef,
-        device: Device,
+        device: Files,
+        clipboard: Clipboard,
     }
 
     impl Reader {
@@ -200,9 +135,10 @@ mod cases {
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             rt.set_pdf(Engine);
-            let device = Device::default();
+            let device = Files::default();
             rt.set_blobs(device.clone());
-            rt.set_clipboard(device.clone());
+            let clipboard = Clipboard::default();
+            rt.set_clipboard(clipboard.clone());
             rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
             let app = App::compile(SOURCE, &[]);
             authority.trust(&app.load(&rt));
@@ -215,6 +151,7 @@ mod cases {
                 app,
                 lib,
                 device,
+                clipboard,
             }
         }
 
@@ -270,17 +207,16 @@ mod cases {
             }
         }
 
-        fn text(&self, at: &ResourceRef, field: &str) -> String {
-            match self.rt.read(at, field).unwrap() {
-                Value::Text(text) => text,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
         fn window(&self, view: &str, args: Vec<Value>) -> tilolang_runtime::ViewInstance {
             self.rt
                 .open_view(&me(), &self.app.view(view), args)
                 .unwrap()
+        }
+    }
+
+    impl Reads for Reader {
+        fn rt(&self) -> &Runtime {
+            &self.rt
         }
     }
 
@@ -464,7 +400,7 @@ mod cases {
                     Value::Int(1),
                 ],
             );
-            assert_eq!(reader.device.copied(), "Hello world");
+            assert_eq!(reader.clipboard.text(), "Hello world");
 
             reader.call(
                 "copy_selected",
@@ -475,13 +411,13 @@ mod cases {
                     Value::Int(1),
                 ],
             );
-            assert_eq!(reader.device.copied(), "world", "a selection of one run");
+            assert_eq!(reader.clipboard.text(), "world", "a selection of one run");
 
             reader.call(
                 "copy_page",
                 vec![Value::resource(&doc), Value::resource(&first)],
             );
-            assert_eq!(reader.device.copied(), "Hello world");
+            assert_eq!(reader.clipboard.text(), "Hello world");
         }
 
         phase finding_counts_the_pages_and_the_words_it_finds;

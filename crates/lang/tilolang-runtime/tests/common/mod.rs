@@ -2,6 +2,9 @@
 //! modules the tests run. Replace `Meta` JSON here with the compiler's output when it lands.
 #![allow(dead_code, reason = "each test file uses part of the fixtures")]
 
+pub mod device;
+pub use device::{Clipboard, DeviceEngine, Files, Started};
+
 use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::rc::Rc;
@@ -1212,4 +1215,63 @@ pub fn stage_members(
         .unwrap();
     rt.set_member_policy(members, reads);
     moved
+}
+
+/// What a test reads of a resource's fields, through the runtime a bench holds: each field as
+/// the value it must be, or the test fails naming what it read instead.
+pub trait Reads {
+    fn rt(&self) -> &Runtime;
+
+    fn text(&self, r: &tilolang_runtime::ResourceRef, field: &str) -> String {
+        match self.rt().read(r, field).unwrap() {
+            Value::Text(text) => text,
+            other => panic!("{field} reads {other:?}"),
+        }
+    }
+
+    fn flag(&self, r: &tilolang_runtime::ResourceRef, field: &str) -> bool {
+        match self.rt().read(r, field).unwrap() {
+            Value::Bool(flag) => flag,
+            other => panic!("{field} reads {other:?}"),
+        }
+    }
+
+    fn number(&self, r: &tilolang_runtime::ResourceRef, field: &str) -> i64 {
+        match self.rt().read(r, field).unwrap() {
+            Value::Int(n) => n,
+            other => panic!("{field} reads {other:?}"),
+        }
+    }
+
+    fn float(&self, r: &tilolang_runtime::ResourceRef, field: &str) -> f64 {
+        match self.rt().read(r, field).unwrap() {
+            Value::Float(n) => n,
+            Value::Int(n) => f64::from(i32::try_from(n).unwrap()),
+            other => panic!("{field} reads {other:?}"),
+        }
+    }
+
+    /// The records a list field holds.
+    fn records(
+        &self,
+        r: &tilolang_runtime::ResourceRef,
+        field: &str,
+    ) -> Vec<tilolang_runtime::ResourceRef> {
+        match self.rt().read(r, field).unwrap() {
+            Value::List(items) => items
+                .into_iter()
+                .filter_map(|item| match item {
+                    Value::Ref(r) => Some(Rc::unwrap_or_clone(r.target)),
+                    _ => None,
+                })
+                .collect(),
+            other => panic!("{field} reads {other:?}"),
+        }
+    }
+}
+
+impl Reads for Runtime {
+    fn rt(&self) -> &Runtime {
+        self
+    }
 }

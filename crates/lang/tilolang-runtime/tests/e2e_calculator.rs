@@ -331,26 +331,6 @@ mod cases {
 
         phase the_window_answers_its_own_keys;
         {
-            use std::cell::RefCell;
-            use std::rc::Rc;
-
-            /// What a copy leaves on the person's selection, as the device answers it.
-            type Held = Option<(String, Vec<u8>)>;
-
-            /// The person's selection.
-            #[derive(Clone, Default)]
-            struct Selection(Rc<RefCell<Held>>);
-
-            impl tilolang_runtime::clipboard::ClipboardHost for Selection {
-                fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
-                    *self.0.borrow_mut() = Some((mime.to_owned(), bytes.to_vec()));
-                    true
-                }
-
-                fn paste(&self, _types: &[&str]) -> Option<(String, Vec<u8>)> {
-                    self.0.borrow().clone()
-                }
-            }
 
             /// The keypad control showing `label`.
             fn button_key(view: &ViewInstance, label: &str) -> String {
@@ -377,7 +357,7 @@ mod cases {
             }
 
             let c = Calc::new();
-            let selection = Selection::default();
+            let selection = Clipboard::default();
             c.rt.set_clipboard(selection.clone());
             // Every mode is a key on the tab that chooses it.
             let view = c.window();
@@ -432,18 +412,18 @@ mod cases {
             view.fire(&copy_result, "press").unwrap();
             view.poll_patches().unwrap();
             assert_eq!(
-                selection.0.borrow().clone(),
+                selection.held(),
                 Some(("text/plain".to_owned(), b"21".to_vec())),
                 "the result's control copies the result"
             );
-            *selection.0.borrow_mut() = None;
+            selection.clear();
             let (copy_expression, expression_key) =
                 keyed(&view, "ui.Button", "Copy expression");
             assert_eq!(expression_key, "Ctrl+Shift+C");
             view.fire(&copy_expression, "press").unwrap();
             view.poll_patches().unwrap();
             assert_eq!(
-                selection.0.borrow().clone(),
+                selection.held(),
                 Some(("text/plain".to_owned(), b"7*3".to_vec())),
                 "the expression's control copies the expression"
             );
@@ -494,34 +474,14 @@ mod cases {
 
         phase copying_a_value_reaches_the_clipboard;
         {
-            use std::cell::RefCell;
-            use std::rc::Rc;
-
-            /// The media type and bytes of what the person copied.
-            type Copied = Option<(String, Vec<u8>)>;
-
-            /// The person's selection, as the device answers it: what a copy leaves there.
-            #[derive(Clone, Default)]
-            struct Selection(Rc<RefCell<Copied>>);
-
-            impl tilolang_runtime::clipboard::ClipboardHost for Selection {
-                fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
-                    *self.0.borrow_mut() = Some((mime.to_owned(), bytes.to_vec()));
-                    true
-                }
-
-                fn paste(&self, _types: &[&str]) -> Option<(String, Vec<u8>)> {
-                    self.0.borrow().clone()
-                }
-            }
 
             let c = Calc::new();
-            let selection = Selection::default();
+            let selection = Clipboard::default();
             c.rt.set_clipboard(selection.clone());
             c.worked_out("12*(4+3)");
             let copied = c.call("copy_text", vec![Value::text("84")]);
             assert!(matches!(copied, InvokeOutcome::Done(_)), "{copied:?}");
-            let held = selection.0.borrow().clone();
+            let held = selection.held();
             assert_eq!(
                 held,
                 Some(("text/plain".to_owned(), b"84".to_vec())),

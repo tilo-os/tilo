@@ -6,11 +6,10 @@
 #[cfg(test)]
 mod cases {
     use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+    use tilolang_runtime::blob::FileValue;
     use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::run::WebRequest;
     use tilolang_runtime::web::{WebReply, WebTransport};
@@ -323,37 +322,6 @@ action open_app(app_name: Text) {
         }
     }
 
-    /// The device's files: what an action saved, and what a chosen file holds.
-    #[derive(Clone, Default)]
-    struct Device(Rc<RefCell<HashMap<String, Vec<u8>>>>);
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.0.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Err("this test chooses nothing".to_owned())
-        }
-
-        fn save(&self, request: &SaveRequest, content: &[u8]) -> Result<(), String> {
-            self.0
-                .borrow_mut()
-                .insert(request.name.clone(), content.to_vec());
-            Ok(())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            self.0.borrow_mut().insert(name.to_owned(), bytes.to_vec());
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                name.to_owned(),
-            ))
-        }
-    }
-
     struct Market {
         rt: Runtime,
         app: App,
@@ -374,7 +342,7 @@ action open_app(app_name: Text) {
             let flathub = Flathub::default();
             rt.set_web(flathub.clone());
             rt.set_clock(|| "2026-11-24T09:30:00Z".to_owned());
-            let device = Device::default();
+            let device = Files::default();
             rt.set_blobs(device);
             // The platform's own packages: the session the app opens, the device whose language
             // and processor it reads, and the settings its catalogue is read in.
@@ -520,20 +488,6 @@ action open_app(app_name: Text) {
             }
         }
 
-        fn text(&self, r: &ResourceRef, field: &str) -> String {
-            match self.rt.read(r, field).unwrap() {
-                Value::Text(text) => text,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
-        fn flag(&self, r: &ResourceRef, field: &str) -> bool {
-            match self.rt.read(r, field).unwrap() {
-                Value::Bool(flag) => flag,
-                other => panic!("{field} reads {other:?}"),
-            }
-        }
-
         fn window(&self) -> ViewInstance {
             let mut window = self
                 .rt
@@ -554,6 +508,12 @@ action open_app(app_name: Text) {
                 .unwrap();
             window.set_lazy_rows(false).unwrap();
             window
+        }
+    }
+
+    impl Reads for Market {
+        fn rt(&self) -> &Runtime {
+            &self.rt
         }
     }
 

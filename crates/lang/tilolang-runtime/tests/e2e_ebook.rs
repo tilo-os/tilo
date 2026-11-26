@@ -85,34 +85,16 @@ action open_window(resource: host.Resource) {
     /// answered.
     #[derive(Clone, Default)]
     struct Device {
-        files: Rc<RefCell<std::collections::HashMap<String, Vec<u8>>>>,
+        files: Files,
         requests: Rc<RefCell<Vec<WebRequest>>>,
         /// The device's disk: each path it holds, and whether it is a folder.
         disk: Rc<RefCell<std::collections::BTreeMap<String, DiskEntry>>>,
         /// The folders the app asked to watch, by path, with the action each runs.
         watches: Rc<RefCell<Vec<(String, String)>>>,
-        /// What the person last copied.
-        clip: Rc<RefCell<String>>,
+        clip: Clipboard,
     }
 
     impl Device {
-        /// The file `name` of `bytes`, kept in this device's store.
-        fn keeping(
-            &self,
-            name: &str,
-            media: &str,
-            bytes: &[u8],
-        ) -> tilolang_runtime::blob::FileValue {
-            let hash = digest_of(bytes);
-            self.files.borrow_mut().insert(hash.clone(), bytes.to_vec());
-            tilolang_runtime::blob::FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            )
-        }
-
         /// Put the file `name` in the folder `folder`, keeping the folder itself.
         fn put(&self, folder: &str, name: &str, bytes: &[u8]) {
             let mut disk = self.disk.borrow_mut();
@@ -130,63 +112,6 @@ action open_window(resource: host.Resource) {
                 .iter()
                 .map(|request| request.url.clone())
                 .collect()
-        }
-
-        fn copied(&self) -> String {
-            self.clip.borrow().clone()
-        }
-    }
-
-    impl tilolang_runtime::clipboard::ClipboardHost for Device {
-        fn copy(&self, _mime: &str, bytes: &[u8]) -> bool {
-            *self.clip.borrow_mut() = String::from_utf8_lossy(bytes).into_owned();
-            true
-        }
-
-        fn paste(&self, _types: &[&str]) -> Option<(String, Vec<u8>)> {
-            None
-        }
-    }
-
-    /// The address a content store names `bytes` by.
-    fn digest_of(bytes: &[u8]) -> String {
-        use std::fmt::Write as _;
-        let mut digest = 0xcbf2_9ce4_8422_2325_u64;
-        for byte in bytes {
-            digest = (digest ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        let mut hex = String::with_capacity(17);
-        let _ = write!(hex, "h{digest:016x}");
-        hex
-    }
-
-    impl tilolang_runtime::blob::BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.files.borrow().get(hash).cloned()
-        }
-
-        fn choose(
-            &self,
-            _request: &tilolang_runtime::blob::FileRequest,
-        ) -> Result<Vec<tilolang_runtime::blob::FileValue>, String> {
-            Ok(Vec::new())
-        }
-
-        fn save(
-            &self,
-            _request: &tilolang_runtime::blob::SaveRequest,
-            _content: &[u8],
-        ) -> Result<(), String> {
-            Err("this test writes no files out".to_owned())
-        }
-
-        fn keep(
-            &self,
-            name: &str,
-            media: &str,
-            bytes: &[u8],
-        ) -> Result<tilolang_runtime::blob::FileValue, String> {
-            Ok(self.keeping(name, media, bytes))
         }
     }
 
@@ -283,9 +208,9 @@ action open_window(resource: host.Resource) {
             let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let device = Device::default();
-            rt.set_blobs(device.clone());
+            rt.set_blobs(device.files.clone());
             rt.set_web(device.clone());
-            rt.set_clipboard(device.clone());
+            rt.set_clipboard(device.clip.clone());
             rt.set_fonts(device.clone());
             rt.set_device_files(device.clone());
             rt.set_clock(|| "2026-11-23T09:00:00Z".to_owned());
@@ -341,6 +266,7 @@ action open_window(resource: host.Resource) {
         fn epub(&self, name: &str) -> Value {
             Value::file(
                 self.device
+                    .files
                     .keeping(name, "application/epub+zip", &tideglass()),
             )
         }
@@ -541,7 +467,7 @@ action open_window(resource: host.Resource) {
             assert_eq!(books.said(&book, "language"), "en");
             assert_eq!(
                 books.said(&book, "source"),
-                format!("tilo-blob://{}", digest_of(&tideglass())),
+                format!("tilo-blob://{}", blake3::hash(&tideglass()).to_hex()),
                 "the book is the file's content"
             );
             let window = books.book_window(&book);
@@ -665,8 +591,8 @@ action open_window(resource: host.Resource) {
         phase a_book_is_dropped_on_the_shelf_and_a_photo_is_not;
         {
             let books = Books::new();
-            let book = Value::file(books.device.keeping("The Tide Glass.epub", "application/epub+zip", &tideglass()));
-            let picture = Value::file(books.device.keeping("cover.png", "image/png", b"png"));
+            let book = Value::file(books.device.files.keeping("The Tide Glass.epub", "application/epub+zip", &tideglass()));
+            let picture = Value::file(books.device.files.keeping("cover.png", "image/png", b"png"));
             books.call(
                 "drop_books",
                 books.args(
@@ -1361,7 +1287,7 @@ action open_window(resource: host.Resource) {
             assert_eq!(books.said(&book, "subject"), "Fable");
             assert_eq!(books.said(&book, "language"), "de");
             // A cover is a picture the person chooses, and taken off again.
-            let picture = Value::file(books.device.keeping(
+            let picture = Value::file(books.device.files.keeping(
                 "cover.png",
                 "image/png",
                 &[0x89, b'P', b'N', b'G'],
@@ -1402,7 +1328,7 @@ action open_window(resource: host.Resource) {
                 "copy_passage",
                 books.args("copy_passage", &[("text", Value::text("Worth keeping"))]),
             );
-            assert_eq!(books.device.copied(), "Worth keeping");
+            assert_eq!(books.device.clip.text(), "Worth keeping");
             books.call(
                 "edit_mark_text",
                 books.args(

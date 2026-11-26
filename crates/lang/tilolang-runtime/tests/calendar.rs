@@ -5,12 +5,9 @@
 
 #[cfg(test)]
 mod cases {
-    use std::cell::RefCell;
-    use std::collections::{BTreeMap, HashMap};
-    use std::rc::Rc;
+    use std::collections::BTreeMap;
 
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::{
         ActionInfo, Actor, AmStore, Authority, Decision, EnumValue, InvokeOutcome, MemorySink,
         ResourceRef, Runtime, UiNode, Value, ViewInstance,
@@ -19,53 +16,6 @@ mod cases {
     /// The moment every test reads as now: a Tuesday, late morning, in UTC.
     const NOW: &str = "2026-11-24T09:40:00Z";
     const TODAY: &str = "2026-11-24";
-
-    /// The device's content store: the files a test keeps and the bytes a saved file holds.
-    #[derive(Clone, Default)]
-    struct Device {
-        content: Rc<RefCell<HashMap<String, Vec<u8>>>>,
-    }
-
-    impl Device {
-        fn keeping(&self, name: &str, media: &str, bytes: &[u8]) -> FileValue {
-            self.keep(name, media, bytes).expect("the bytes are kept")
-        }
-
-        fn bytes_of(&self, file: &FileValue) -> Vec<u8> {
-            self.content
-                .borrow()
-                .get(&file.hash)
-                .cloned()
-                .unwrap_or_else(|| panic!("{} has no bytes", file.name))
-        }
-    }
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.content.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Ok(Vec::new())
-        }
-
-        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
-            Err("this test writes no files out".to_owned())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            let hash = blake3::hash(bytes).to_hex().to_string();
-            self.content
-                .borrow_mut()
-                .insert(hash.clone(), bytes.to_vec());
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-    }
 
     /// The authority a test at the workspace runs under: everything it asks for is allowed, so
     /// an effect to a server is delivered rather than held for a person's yes.
@@ -87,14 +37,14 @@ mod cases {
         rt: Runtime,
         app: App,
         root: ResourceRef,
-        device: Device,
+        device: Files,
         raised: Raised,
         /// What the app asked of a server, as every outside effect it delivered.
         sink: MemorySink,
     }
 
     fn sheet() -> Sheet {
-        let device = Device::default();
+        let device = Files::default();
         let raised = Raised::default();
         let rt = Runtime::new(AmStore::new(), Allow).unwrap();
         rt.set_clock(|| NOW.to_owned());

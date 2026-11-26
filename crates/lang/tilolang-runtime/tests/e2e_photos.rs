@@ -7,81 +7,26 @@
 #[cfg(test)]
 mod cases {
     use std::cell::RefCell;
-    use std::collections::HashMap;
     use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::clipboard::ClipboardHost;
+    use tilolang_runtime::blob::BlobHost;
     use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
-    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{
         EnumValue, InvokeOutcome, RecordInit, ResourceRef, Runtime, Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/photos/app.tl");
 
-    /// The picture the tests import: a 64 × 64 PNG, real bytes the device's codec decodes.
-    fn picture() -> Vec<u8> {
+    /// The picture a camera took as `name`, as the tests import it: a 64 × 64 PNG, real bytes the
+    /// device's codec decodes, each name its own colour, as two photos are two pictures.
+    fn picture(name: &str) -> Vec<u8> {
         use tilo_image_codec::{DecodedImage, Encoding};
-        tilo_image_codec::encode_now(
-            &DecodedImage::filled(64, 64, [200, 120, 60, 255]),
-            Encoding::Png,
-        )
-        .expect("the fixture encodes")
-    }
-
-    /// The device's content store: what a chosen file holds, and what a save asked for.
-    #[derive(Clone, Default)]
-    struct Device(Rc<RefCell<HashMap<String, Vec<u8>>>>);
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.0.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Err("this test chooses nothing".to_owned())
-        }
-
-        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
-            Ok(())
-        }
-
-        /// This device's preview of a picture is the picture itself: a real host shrinks it.
-        fn thumbnail(&self, file: &FileValue, _size: u32) -> Result<Option<FileValue>, String> {
-            Ok(Some(file.clone()))
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            // The name tells two kept pictures apart even when their bytes are the same.
-            let hash = format!("h{}-{}", name.len(), bytes.len());
-            self.0.borrow_mut().insert(hash.clone(), bytes.to_vec());
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-    }
-
-    /// The media type and bytes of what the person copied.
-    type Copied = Option<(String, Vec<u8>)>;
-
-    /// What the person copied: the media type and bytes of the last copy.
-    #[derive(Clone, Default)]
-    struct Clipboard(Rc<RefCell<Copied>>);
-
-    impl ClipboardHost for Clipboard {
-        fn copy(&self, mime: &str, bytes: &[u8]) -> bool {
-            *self.0.borrow_mut() = Some((mime.to_owned(), bytes.to_vec()));
-            true
-        }
-
-        fn paste(&self, _types: &[&str]) -> Option<(String, Vec<u8>)> {
-            None
-        }
+        let shade = name.bytes().fold(0u8, u8::wrapping_add);
+        // Its top left corner dark, so a turned or cropped picture is other pixels.
+        let mut image = DecodedImage::filled(64, 64, [200, 120, shade, 255]);
+        image.rgba[..4].copy_from_slice(&[0, 0, 0, 255]);
+        tilo_image_codec::encode_now(&image, Encoding::Png).expect("the fixture encodes")
     }
 
     /// The call the workspace asked the person about and they have not answered: its app and
@@ -174,89 +119,6 @@ mod cases {
         }
     }
 
-    /// The device's engine for Photos: the jobs it was asked to start, by their input, the jobs it
-    /// was asked to stop, and what each start named to run as its job moves, which the test runs
-    /// as the device would.
-    #[derive(Clone, Default)]
-    struct Engine {
-        started: Rc<RefCell<Vec<(String, String)>>>,
-        cancelled: Rc<RefCell<Vec<String>>>,
-        handlers: Rc<RefCell<HashMap<String, JobHandlers>>>,
-    }
-
-    impl Engine {
-        /// The job last started, and the pictures it was asked to read, by name and address.
-        fn last(&self) -> (String, Vec<(String, String)>) {
-            let started = self.started.borrow();
-            let (job, input) = started.last().expect("a job was started").clone();
-            let ask: serde_json::Value = serde_json::from_str(&input).expect("the ask is JSON");
-            let files = ask["files"]
-                .as_array()
-                .expect("the ask names its pictures")
-                .iter()
-                .map(|f| {
-                    (
-                        f["name"].as_str().unwrap().to_owned(),
-                        f["url"].as_str().unwrap().to_owned(),
-                    )
-                })
-                .collect();
-            (job, files)
-        }
-
-        /// The job's record as the device keeps it, with what the engine said of it (`detail`).
-        fn record(job: &str, state: &str, detail: &serde_json::Value) -> serde_json::Value {
-            serde_json::json!({
-                "id": job, "app": "so.tilo.photos", "op": "import", "state": state,
-                "detail": detail,
-            })
-        }
-    }
-
-    impl EngineHost for Engine {
-        fn call(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
-            Err(format!("`{op}` is no op this device answers now"))
-        }
-
-        fn start(
-            &self,
-            app: &str,
-            op: &str,
-            input: &str,
-            handlers: &JobHandlers,
-        ) -> Result<String, String> {
-            if app != "so.tilo.photos" {
-                return Err(format!("`{app}` is not the app this engine answers for"));
-            }
-            if op != "import" {
-                return Err(format!("`{op}` is no work this test's engine starts"));
-            }
-            let job = format!(
-                "devices/ab/jobs/photos-{}",
-                self.started.borrow().len().saturating_add(1)
-            );
-            self.started
-                .borrow_mut()
-                .push((job.clone(), input.to_owned()));
-            self.handlers
-                .borrow_mut()
-                .insert(job.clone(), handlers.clone());
-            Ok(job)
-        }
-
-        fn job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
-            Err(format!(
-                "the window reads job `{job}` from its record as the device hands it on, never \
-                 by asking"
-            ))
-        }
-
-        fn cancel(&self, job: &str) -> bool {
-            self.cancelled.borrow_mut().push(job.to_owned());
-            true
-        }
-    }
-
     /// The words a field holds.
     fn text_of(value: &Value) -> String {
         value
@@ -290,30 +152,30 @@ mod cases {
         rt: Runtime,
         app: App,
         lib: ResourceRef,
-        device: Device,
+        device: Files,
         clipboard: Clipboard,
         vision: Vision,
-        engine: Engine,
+        engine: DeviceEngine,
     }
 
     impl Gallery {
-        /// The job says how far it has got: the device hands its record on to the window.
-        fn says(&self, job: &str, detail: &serde_json::Value) {
-            self.rt
-                .set_job(job, &Engine::record(job, "running", detail));
-        }
-
-        /// The job ends as `state`, saying `detail` last: the device hands the record on and
-        /// runs what its start named for its end, as the person who started it.
-        fn ends(&self, job: &str, state: &str, detail: &serde_json::Value) -> InvokeOutcome {
-            let record = Engine::record(job, state, detail);
-            self.rt.set_job(job, &record);
-            let done = self.engine.handlers.borrow()[job]
-                .done
-                .clone()
-                .expect("the import's start names what runs at its end");
-            let call = self.rt.job_call(&done, &record).unwrap();
-            self.rt.invoke_action(&me(), call).unwrap()
+        /// The import started last, and the pictures it was asked to read, by name and address.
+        fn last_import(&self) -> (String, Vec<(String, String)>) {
+            let started = self.engine.last_started();
+            let ask: serde_json::Value =
+                serde_json::from_str(&started.input).expect("the ask is JSON");
+            let files = ask["files"]
+                .as_array()
+                .expect("the ask names its pictures")
+                .iter()
+                .map(|f| {
+                    (
+                        f["name"].as_str().unwrap().to_owned(),
+                        f["url"].as_str().unwrap().to_owned(),
+                    )
+                })
+                .collect();
+            (started.job, files)
         }
 
         fn new() -> Self {
@@ -333,7 +195,7 @@ mod cases {
                 .expect("a reading of the image model");
             rt.set_reading(&analysis(), r#"{"phase":"idle","completed":0,"total":0}"#)
                 .expect("a reading of the analysis");
-            let device = Device::default();
+            let device = Files::default().previewing(|_, file, _| Some(file.clone()));
             rt.set_blobs(device.clone());
             let clipboard = Clipboard::default();
             rt.set_clipboard(clipboard.clone());
@@ -354,7 +216,12 @@ mod cases {
                 ..Vision::default()
             };
             rt.set_foreign_invoker(vision.clone());
-            let engine = Engine::default();
+            let engine = DeviceEngine::calls(
+                |op, _| Err(format!("`{op}` is no op this device answers now")),
+                &device,
+            )
+            .for_app("so.tilo.photos")
+            .starting(&["import"]);
             rt.set_engine(engine.clone());
             let app = App::compile(SOURCE, std::slice::from_ref(&package));
             app.load(&rt);
@@ -488,7 +355,7 @@ mod cases {
         fn chosen(&self, name: &str) -> Value {
             let kept = self
                 .device
-                .keep(name, "image/png", &picture())
+                .keep(name, "image/png", &picture(name))
                 .expect("the picture is kept");
             Value::file(kept)
         }
@@ -639,7 +506,7 @@ mod cases {
                 ],
             );
             // The device is asked to read the two pictures; the notes are no picture.
-            let (job, files) = g.engine.last();
+            let (job, files) = g.last_import();
             assert_eq!(
                 files.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>(),
                 ["Harbour.png", "Quay-at-dusk.png"]
@@ -648,8 +515,7 @@ mod cases {
             assert_eq!(g.number("import_found"), 3);
             assert!(g.photos().is_empty(), "nothing arrives before the job reads it");
             // The window reads how far the job has got from its record, as the device pushes it.
-            g.says(
-                &job,
+            g.engine.moves(&g.rt, &job, "running",
                 &serde_json::json!({
                     "job": job, "state": "running", "found": 2, "done": 1,
                     "photos": [], "issues": [],
@@ -665,9 +531,7 @@ mod cases {
             // The job ends: its `done:` runs as the person who started it, and what it read joins
             // the library; what it could not read is kept to try again.
             let (harbour, quay) = (&files[0].1, &files[1].1);
-            let finished = g.ends(
-                &job,
-                "done",
+            g.engine.moves(&g.rt, &job, "done",
                 &serde_json::json!({
                     "job": job, "state": "done", "found": 2, "done": 2,
                     "photos": [{
@@ -680,10 +544,6 @@ mod cases {
                         "why": "Could not read this image", "retry": true,
                     }],
                 }),
-            );
-            assert!(
-                matches!(finished, InvokeOutcome::Done(_)),
-                "the job's `done:` ran: {finished:?}"
             );
             let photos = g.photos();
             assert_eq!(photos.len(), 1, "the picture the device read became a photo");
@@ -714,23 +574,20 @@ mod cases {
 
             // Trying again asks the device for the picture that failed, and nothing else.
             g.call("retry_import", vec![Value::resource(&g.lib)]);
-            let (again, files) = g.engine.last();
+            let (again, files) = g.last_import();
             assert_eq!(files, [("Quay-at-dusk.png".to_owned(), quay.clone())]);
             // Stopping it asks the device to stop, and the job ends saying so.
             g.call("stop_import", vec![Value::resource(&g.lib)]);
             assert_eq!(
-                g.engine.cancelled.borrow().as_slice(),
+                g.engine.cancelled().as_slice(),
                 std::slice::from_ref(&again)
             );
-            let stopped = g.ends(
-                &again,
-                "cancelled",
+            g.engine.moves(&g.rt, &again, "cancelled",
                 &serde_json::json!({
                     "job": again, "state": "stopped", "found": 1, "done": 0,
                     "photos": [], "issues": [],
                 }),
             );
-            assert!(matches!(stopped, InvokeOutcome::Done(_)), "{stopped:?}");
             let page = g.open("library", vec![Value::resource(&g.lib)]);
             let banner = of_kind(page.tree(), "ui.Banner").into_iter().next().unwrap();
             assert_eq!(
@@ -744,7 +601,7 @@ mod cases {
                 "reindex",
                 vec![Value::resource(&g.lib), Value::text("Trip")],
             );
-            let (_, files) = g.engine.last();
+            let (_, files) = g.last_import();
             assert_eq!(files, [("Harbour.png".to_owned(), harbour.clone())]);
             g.call("dismiss_import", vec![Value::resource(&g.lib)]);
             assert_eq!(g.number("import_found"), 0, "the report can be taken down");
@@ -945,10 +802,10 @@ mod cases {
                 vec![Value::resource(&g.lib), g.chosen("Harbour.png")],
             ));
             g.call_and_approve("copy_photo", vec![Value::resource(&photo)]);
-            let copied = g.clipboard.0.borrow().clone();
+            let copied = g.clipboard.held();
             let (mime, bytes) = copied.expect("the picture was copied");
             assert_eq!(mime, "image/png");
-            assert_eq!(bytes, picture(), "the picture's own bytes are what was copied");
+            assert_eq!(bytes, picture("Harbour.png"), "the picture's own bytes are what was copied");
         }
 
         phase many_photos_details_say_mixed_and_change_only_what_is_edited;
@@ -1271,13 +1128,7 @@ mod cases {
             assert_eq!(g.rt.read(&photo, "rotation").unwrap(), Value::Int(1));
             let cropped = text_of(&g.rt.read(&photo, "edited").unwrap());
             assert_ne!(cropped, turned);
-            let drawn_pixels = g
-                .device
-                .0
-                .borrow()
-                .get(cropped.strip_prefix("tilo-blob://").expect("an address"))
-                .cloned()
-                .expect("the device kept what it drew");
+            let drawn_pixels = g.device.bytes_at(&cropped);
             let drawn_image = tilo_image_codec::decode_upright_now(&drawn_pixels, None)
                 .expect("what the device drew is a picture");
             assert_eq!(
@@ -1476,7 +1327,7 @@ mod cases {
             ));
             // The bytes go from this device while the record stays: what a second device holds
             // before the picture has arrived.
-            g.device.0.borrow_mut().clear();
+            g.device.send_all_away();
             g.call("check_picture", vec![Value::resource(&photo)]);
             assert_eq!(
                 g.rt.read(&photo, "picture_state").unwrap(),
@@ -1579,7 +1430,7 @@ mod cases {
                 .strip_prefix("tilo-blob://")
                 .expect("the picture's address")
                 .to_owned();
-            let bytes = g.device.0.borrow_mut().remove(&hash).expect("the bytes were here");
+            g.device.send_away(&hash);
             g.call("check_picture", vec![Value::resource(&photo)]);
             assert_eq!(
                 g.rt.read(&photo, "picture_state").unwrap(),
@@ -1604,7 +1455,7 @@ mod cases {
                 "It is still arriving from another device."
             );
             // The bytes arrive, and the same window draws the picture.
-            g.device.0.borrow_mut().insert(hash, bytes);
+            g.device.arrive(&hash);
             g.call("check_picture", vec![Value::resource(&photo)]);
             page.poll_patches().unwrap();
             assert_eq!(g.rt.read(&photo, "picture_state").unwrap(), Value::text("here"));

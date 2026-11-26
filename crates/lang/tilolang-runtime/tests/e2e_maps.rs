@@ -10,7 +10,6 @@ mod cases {
     use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::ids::MemberId;
     use tilolang_runtime::run::WebRequest;
     use tilolang_runtime::web::{WebReply, WebTransport};
@@ -118,100 +117,35 @@ mod cases {
         }
     }
 
-    /// The device's location and tiles work, as the maps engine answers it: what was asked, what
-    /// the area downloads were given, and what each job runs as it ends.
-    #[derive(Clone, Default)]
-    struct Engine {
-        asked: Rc<RefCell<Vec<String>>>,
-        /// Whether the device can say where it is.
-        found: Rc<RefCell<bool>>,
-        /// The jobs started, each its id and the ask it was given.
-        started: Rc<RefCell<Vec<(String, String)>>>,
-        /// What each job runs as it ends, by its path.
-        handlers: Rc<RefCell<Vec<(String, JobHandlers)>>>,
-        /// The jobs the app stopped.
-        cancelled: Rc<RefCell<Vec<String>>>,
-    }
-
-    impl Engine {
-        /// The area download started last: its job and the ask it was given.
-        fn last(&self) -> (String, String) {
-            self.started
-                .borrow()
-                .last()
-                .cloned()
-                .expect("an area download started")
-        }
-    }
-
-    impl EngineHost for Engine {
-        fn call(&self, _app: &str, op: &str, _input: &str) -> Result<String, String> {
-            self.asked.borrow_mut().push(op.to_owned());
-            match op {
-                "locate" => {
-                    if *self.found.borrow() {
-                        Ok(r#"{"lat":48.1374,"lon":11.5755}"#.to_owned())
-                    } else {
-                        Ok(r#"{"why":"Location is unavailable right now"}"#.to_owned())
-                    }
-                }
-                "forget-area" => Ok(r#"{"freed":1024}"#.to_owned()),
-                "clear-saved" => Ok(r#"{"freed":4096}"#.to_owned()),
-                "kept-areas" => Ok("[]".to_owned()),
-                _ => Err(format!("`{op}` is no op this device runs")),
-            }
-        }
-
-        fn start(
-            &self,
-            app: &str,
-            op: &str,
-            input: &str,
-            handlers: &JobHandlers,
-        ) -> Result<String, String> {
-            if app != "so.tilo.maps" {
-                return Err(format!("`{app}` is not the app this engine answers for"));
-            }
-            if op != "save-area" {
-                return Err(format!("`{op}` is no work this test's engine starts"));
-            }
-            let job = format!(
-                "devices/local/jobs/save-area-{}",
-                self.started.borrow().len().saturating_add(1)
-            );
-            self.started
-                .borrow_mut()
-                .push((job.clone(), input.to_owned()));
-            self.handlers
-                .borrow_mut()
-                .push((job.clone(), handlers.clone()));
-            Ok(job)
-        }
-
-        fn job(&self, _job: &str) -> Result<Option<serde_json::Value>, String> {
-            // The window reads a job from its record, which the device hands it as it moves.
-            Ok(None)
-        }
-
-        fn cancel(&self, job: &str) -> bool {
-            self.cancelled.borrow_mut().push(job.to_owned());
-            true
-        }
-    }
-
     struct Maps {
         rt: Runtime,
         app: App,
         root: ResourceRef,
         web: Web,
-        engine: Engine,
+        engine: DeviceEngine,
+        /// Whether the device can say where it is.
+        located: Rc<std::cell::Cell<bool>>,
     }
 
     impl Maps {
         fn new() -> Self {
             let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let web = Web::default();
-            let engine = Engine::default();
+            let located = Rc::new(std::cell::Cell::new(false));
+            let found = Rc::clone(&located);
+            let engine = DeviceEngine::calls(
+                move |op, _| match op {
+                    "locate" if found.get() => Ok(r#"{"lat":48.1374,"lon":11.5755}"#.to_owned()),
+                    "locate" => Ok(r#"{"why":"Location is unavailable right now"}"#.to_owned()),
+                    "forget-area" => Ok(r#"{"freed":1024}"#.to_owned()),
+                    "clear-saved" => Ok(r#"{"freed":4096}"#.to_owned()),
+                    "kept-areas" => Ok("[]".to_owned()),
+                    _ => Err(format!("`{op}` is no op this device runs")),
+                },
+                &Files::default(),
+            )
+            .for_app("so.tilo.maps")
+            .starting(&["save-area"]);
             rt.set_web(web.clone());
             rt.set_engine(engine.clone());
             rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
@@ -238,36 +172,8 @@ mod cases {
                 root,
                 web,
                 engine,
+                located,
             }
-        }
-
-        /// The job `job` moves to `state`, saying `detail`, as the device records it: what a view
-        /// reads, and at its end the action its `done:` names, run as its starter.
-        fn job_moves(&self, job: &str, state: &str, detail: &serde_json::Value) {
-            let record = serde_json::json!({
-                "id": job, "app": "so.tilo.maps", "op": "save-area", "state": state, "detail": detail,
-            });
-            self.rt.set_job(job, &record);
-            if state == "running" {
-                return;
-            }
-            let handlers = self
-                .engine
-                .handlers
-                .borrow()
-                .iter()
-                .find(|(held, _)| held.as_str() == job)
-                .map(|(_, handlers)| handlers.clone())
-                .expect("the job was started here");
-            let done = handlers
-                .done
-                .expect("the download names what runs as it ends");
-            let call = self
-                .rt
-                .job_call(&done, &record)
-                .expect("`done:` names an action");
-            let outcome = self.rt.invoke_action(&me(), call).expect("`done:` runs");
-            assert!(matches!(outcome, InvokeOutcome::Done(_)), "{outcome:?}");
         }
 
         fn call(&self, action: &str, args: Vec<Value>) -> InvokeOutcome {
@@ -695,7 +601,7 @@ mod cases {
     phase the_device_says_where_it_is_and_no_where_it_cannot;
     {
         let m = Maps::new();
-        *m.engine.found.borrow_mut() = true;
+        m.located.set(true);
         m.call("locate", vec![Value::resource(&m.root)]);
         assert_eq!(m.web.asked(), Vec::<String>::new(), "locating asks no service");
         assert!((m.float(&m.root, "centre_latitude") - 48.1374).abs() < 1e-6);
@@ -705,7 +611,7 @@ mod cases {
         );
         // A device that cannot say where it is says why, and shows nothing.
         let m = Maps::new();
-        *m.engine.found.borrow_mut() = false;
+        m.located.set(false);
         m.call("locate", vec![Value::resource(&m.root)]);
         assert_eq!(m.text(&m.root, "status"), "Location is unavailable right now");
         assert!(
@@ -751,7 +657,7 @@ mod cases {
         );
         // The device's tiles engine is asked for the box on screen, its levels and the address
         // its imagery comes from.
-        let (job, ask) = m.engine.last();
+        let Started { job, input: ask, .. } = m.engine.last_started();
         let ask: serde_json::Value = serde_json::from_str(&ask).expect("the ask reads");
         assert_eq!(ask["north"], 48.18);
         assert_eq!(ask["south"], 48.10);
@@ -776,7 +682,7 @@ mod cases {
             "the area knows the job keeping it"
         );
         // What the job says of itself is what the row shows.
-        m.job_moves(&job, "running", &serde_json::json!({"done": 5, "total": 100}));
+        m.engine.moves(&m.rt, &job, "running", &serde_json::json!({"done": 5, "total": 100}));
         let mut running = m
             .rt
             .open_view(
@@ -814,11 +720,11 @@ mod cases {
             vec![Value::resource(&m.root), Value::Text("This view".to_owned())],
         );
         assert_eq!(
-            m.engine.cancelled.borrow().as_slice(),
+            m.engine.cancelled().as_slice(),
             std::slice::from_ref(&job)
         );
         assert!(m.flag(&area, "stopped"));
-        m.job_moves(&job, "cancelled", &serde_json::json!({"done": 5, "total": 100}));
+        m.engine.moves(&m.rt, &job, "cancelled", &serde_json::json!({"done": 5, "total": 100}));
         assert_eq!(
             m.float(&area, "done").to_bits(),
             5.0_f64.to_bits(),
@@ -831,11 +737,11 @@ mod cases {
             "continue_offline_area",
             vec![Value::resource(&m.root), Value::Text("This view".to_owned())],
         );
-        let (again, again_ask) = m.engine.last();
+        let Started { job: again, input: again_ask, .. } = m.engine.last_started();
         assert_ne!(again, job, "continuing starts a job of its own");
         let again_ask: serde_json::Value = serde_json::from_str(&again_ask).unwrap();
         assert_eq!(again_ask["id"], ask["id"], "the same footprint, so its tiles are reused");
-        m.job_moves(&again, "done", &serde_json::json!({"done": 100, "total": 100}));
+        m.engine.moves(&m.rt, &again, "done", &serde_json::json!({"done": 100, "total": 100}));
         assert_eq!(m.float(&area, "done").to_bits(), 100.0_f64.to_bits());
         assert_eq!(
             m.text(&m.root, "status"),
@@ -843,15 +749,14 @@ mod cases {
         );
         assert!(!m.flag(&area, "stopped"));
         // Deleting the area asks the device to give up its tiles and takes it off the list.
-        m.engine.asked.borrow_mut().clear();
         m.call(
             "delete_offline_area",
             vec![Value::resource(&m.root), Value::Text("This view".to_owned())],
         );
         assert!(
-            m.engine.asked.borrow().iter().any(|op| op.as_str() == "forget-area"),
+            m.engine.was_asked("forget-area"),
             "the device gives up the area's tiles: {:?}",
-            m.engine.asked.borrow()
+            m.engine.asked()
         );
         assert!(m.offline().is_empty(), "the device lists it no more");
         // Downloading a place asks the geocoder where it is and keeps that box.
@@ -866,21 +771,20 @@ mod cases {
         );
         assert_eq!(m.offline().len(), 1);
         assert_eq!(m.text(&m.offline()[0], "name"), "Marienplatz");
-        let (place_job, place_ask) = m.engine.last();
+        let Started { job: place_job, input: place_ask, .. } = m.engine.last_started();
         let place_ask: serde_json::Value = serde_json::from_str(&place_ask).unwrap();
         assert!(
             (place_ask["north"].as_f64().unwrap_or_default() - 48.1874).abs() < 1e-6,
             "the place's box is around where it is: {place_ask}"
         );
-        m.job_moves(&place_job, "done", &serde_json::json!({"done": 60, "total": 60}));
+        m.engine.moves(&m.rt, &place_job, "done", &serde_json::json!({"done": 60, "total": 60}));
         assert_eq!(m.text(&m.root, "status"), "Offline area ready (60 tiles)");
         // Clearing asks the device to give up every saved picture and lists none.
-        m.engine.asked.borrow_mut().clear();
         m.call("clear_offline_areas", vec![Value::resource(&m.root)]);
         assert!(
-            m.engine.asked.borrow().iter().any(|op| op.as_str() == "clear-saved"),
+            m.engine.was_asked("clear-saved"),
             "the device gives up every saved picture: {:?}",
-            m.engine.asked.borrow()
+            m.engine.asked()
         );
         assert!(m.offline().is_empty());
     }
@@ -1536,7 +1440,7 @@ mod cases {
             .key
             .clone();
         window.fire(&save, "press").expect("the view is saved");
-        let (_job, ask) = m.engine.last();
+        let Started { job: _job, input: ask, .. } = m.engine.last_started();
         let ask: serde_json::Value = serde_json::from_str(&ask).expect("the ask reads");
         assert_eq!(ask["north"], 50.2);
         assert_eq!(ask["south"], 49.8);

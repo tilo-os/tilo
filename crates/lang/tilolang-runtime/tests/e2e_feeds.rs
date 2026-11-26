@@ -8,7 +8,6 @@ mod cases {
     use serde_json::{Value as Json, json};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use tilolang_runtime::blob::FileValue;
     use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
 
@@ -18,9 +17,6 @@ mod cases {
     const LWN: &str = "https://lwn.net/headlines/rss";
     const BROKEN: &str = "https://broken.test/feed";
     const CAPSULE: &str = "gemini://example.org/";
-
-    /// A file the content store holds: its name and bytes.
-    type Stored = (String, Vec<u8>);
 
     /// What the device answered, and what it was asked: the engine's side of a refresh, played
     /// over the app's own JSON, so both ends of the contract are read here.
@@ -33,8 +29,7 @@ mod cases {
         ready: Rc<RefCell<Vec<String>>>,
         /// What a `take` was asked for.
         taken: Rc<RefCell<Vec<String>>>,
-        /// The bytes the content store holds, by hash.
-        files: Rc<RefCell<Vec<Stored>>>,
+        files: Files,
         /// The actions each started job named as it moves and ends.
         handlers: Rc<RefCell<Vec<JobHandlers>>>,
     }
@@ -54,20 +49,6 @@ mod cases {
                 .iter()
                 .map(|(_, input)| input.clone())
                 .collect()
-        }
-
-        /// The file `name` holding `text`, kept in this device's store.
-        fn file(&self, name: &str, text: &str) -> Value {
-            let hash = format!("h{}", text.len());
-            self.files
-                .borrow_mut()
-                .push((hash.clone(), text.as_bytes().to_vec()));
-            Value::file(FileValue::new(
-                name,
-                "text/x-opml",
-                i64::try_from(text.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
         }
     }
 
@@ -210,47 +191,6 @@ mod cases {
         .to_string()
     }
 
-    impl tilolang_runtime::blob::BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.files
-                .borrow()
-                .iter()
-                .find(|(held, _)| held == hash)
-                .map(|(_, bytes)| bytes.clone())
-        }
-
-        fn choose(
-            &self,
-            _request: &tilolang_runtime::blob::FileRequest,
-        ) -> Result<Vec<tilolang_runtime::blob::FileValue>, String> {
-            Ok(Vec::new())
-        }
-
-        fn save(
-            &self,
-            _request: &tilolang_runtime::blob::SaveRequest,
-            _content: &[u8],
-        ) -> Result<(), String> {
-            Err("this test writes no files out".to_owned())
-        }
-
-        fn keep(
-            &self,
-            name: &str,
-            media: &str,
-            bytes: &[u8],
-        ) -> Result<tilolang_runtime::blob::FileValue, String> {
-            let hash = format!("h{}", bytes.len());
-            self.files.borrow_mut().push((hash.clone(), bytes.to_vec()));
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-    }
-
     struct Feeds {
         rt: Runtime,
         app: App,
@@ -266,7 +206,7 @@ mod cases {
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let device = Device::default();
             rt.set_engine(device.clone());
-            rt.set_blobs(device.clone());
+            rt.set_blobs(device.files.clone());
             rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
             let app = App::compile(SOURCE, &[]);
             authority.trust(&app.load(&rt));
@@ -756,7 +696,7 @@ mod cases {
         phase an_opml_file_subscribes_what_it_lists_and_the_library_writes_one_back;
         {
             let feeds = Feeds::new();
-            let file = feeds.device.file("feeds.opml", "<opml version=\"2.0\"/>");
+            let file = Value::file(feeds.device.files.keeping("feeds.opml", "text/x-opml", b"<opml version=\"2.0\"/>"));
             feeds.call(
                 "import_opml",
                 &[("lib", Value::resource(&feeds.lib)), ("file", file)],

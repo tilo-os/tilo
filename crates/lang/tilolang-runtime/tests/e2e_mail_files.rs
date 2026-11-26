@@ -3,112 +3,23 @@
 
 #[cfg(test)]
 mod cases {
-    use std::cell::RefCell;
-    use std::collections::HashMap;
-    use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
+    use tilolang_runtime::blob::FileValue;
     use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value};
-
-    /// The address a content store names `bytes` by: the same bytes are one file, whatever name
-    /// they came in as.
-    fn digest_of(bytes: &[u8]) -> String {
-        use std::fmt::Write as _;
-        let mut digest = 0xcbf2_9ce4_8422_2325_u64;
-        for byte in bytes {
-            digest = (digest ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3);
-        }
-        let mut hex = String::with_capacity(17);
-        let _ = write!(hex, "h{digest:016x}");
-        hex
-    }
-
-    /// A file an action wrote out: its name, its media type, and its bytes.
-    type Written = (String, String, Vec<u8>);
-
-    /// The device whose files Mail reads and writes: what it holds, and what an action wrote
-    /// out as a file.
-    #[derive(Clone, Default)]
-    struct Device {
-        held: Rc<RefCell<HashMap<String, Vec<u8>>>>,
-        written: Rc<RefCell<Vec<Written>>>,
-    }
-
-    impl Device {
-        /// The file `name` of `text`, kept in this device's store, as a person's chosen file is.
-        fn keeping(&self, name: &str, media: &str, text: &str) -> FileValue {
-            let hash = digest_of(text.as_bytes());
-            self.held
-                .borrow_mut()
-                .insert(hash.clone(), text.as_bytes().to_vec());
-            FileValue::new(
-                name,
-                media,
-                i64::try_from(text.len()).unwrap_or(i64::MAX),
-                hash,
-            )
-        }
-
-        /// What the file `name` an action wrote out says.
-        fn said(&self, name: &str) -> String {
-            let written = self.written.borrow();
-            let (_, _, bytes) = written
-                .iter()
-                .find(|(written, _, _)| written == name)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "no file {name} was written: {:?}",
-                        written
-                            .iter()
-                            .map(|(written, _, _)| written.as_str())
-                            .collect::<Vec<_>>()
-                    )
-                });
-            String::from_utf8_lossy(bytes).into_owned()
-        }
-    }
-
-    impl BlobHost for Device {
-        fn read(&self, hash: &str) -> Option<Vec<u8>> {
-            self.held.borrow().get(hash).cloned()
-        }
-
-        fn choose(&self, _request: &FileRequest) -> Result<Vec<FileValue>, String> {
-            Ok(Vec::new())
-        }
-
-        fn save(&self, _request: &SaveRequest, _content: &[u8]) -> Result<(), String> {
-            Err("this test writes no files out".to_owned())
-        }
-
-        fn keep(&self, name: &str, media: &str, bytes: &[u8]) -> Result<FileValue, String> {
-            self.written
-                .borrow_mut()
-                .push((name.to_owned(), media.to_owned(), bytes.to_vec()));
-            let hash = digest_of(bytes);
-            self.held.borrow_mut().insert(hash.clone(), bytes.to_vec());
-            Ok(FileValue::new(
-                name,
-                media,
-                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-                hash,
-            ))
-        }
-    }
 
     /// Mail at a workspace with a device's files, at a moment the person's clock says.
     struct Mail {
         rt: Runtime,
         app: App,
         root: ResourceRef,
-        device: Device,
+        device: Files,
     }
 
     impl Mail {
         fn new() -> Self {
             let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
-            let device = Device::default();
+            let device = Files::default();
             rt.set_blobs(device.clone());
             rt.set_clock(|| "2026-06-30T09:00:00Z".to_owned());
             let mut packages = built("mail");
@@ -232,7 +143,9 @@ mod cases {
                     Date: Tue, 30 Jun 2026 09:00:00 +0000\r\n\
                     \r\n\
                     Here is the plan.\r\n";
-        let file = mail.device.keeping("plan.eml", "message/rfc822", text);
+        let file = mail
+            .device
+            .keeping("plan.eml", "message/rfc822", text.as_bytes());
         let out = mail.call(
             "open_message_file",
             &[
@@ -266,7 +179,9 @@ mod cases {
         assert_eq!(threads.len(), 1, "one conversation: {threads:?}");
 
         // Opened again: the message already kept.
-        let again = mail.device.keeping("plan.eml", "message/rfc822", text);
+        let again = mail
+            .device
+            .keeping("plan.eml", "message/rfc822", text.as_bytes());
         let out = mail.call(
             "open_message_file",
             &[
