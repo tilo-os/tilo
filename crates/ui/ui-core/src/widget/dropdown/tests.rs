@@ -1105,3 +1105,60 @@ use crate::synthetic_input::key_press;
 fn feed_key(dd: &mut Dropdown, ev: &WindowEvent, doc: &mut AutoCommit, root: &ObjId) -> bool {
     Dispatch::new().doc(doc).path(root).send(dd, ev).handled
 }
+
+/// In a short list, typing jumps to the option it spells instead of filtering, and the value
+/// stays while the list is open.
+#[test]
+fn a_short_list_jumps_instead_of_filtering() {
+    let mut dd = Dropdown::new(opts(), "tz");
+    let (mut doc, root) = doc_with_tz("UTC");
+    dd.sync(&doc, &root);
+    dd.set_focus(true);
+    dd.do_open();
+    assert_eq!(dd.highlight_index(), 0);
+    assert!(feed_key(
+        &mut dd,
+        &key_press(Key::Character("a".into()), Some("a")),
+        &mut doc,
+        &root,
+    ));
+    assert_eq!(dd.filter_query(), "", "a short list never filters");
+    assert_eq!(dd.visible_count(), 4);
+    assert_eq!(dd.highlight_index(), 2, "the next option starting with a");
+    feed_key(
+        &mut dd,
+        &key_press(Key::Character("a".into()), Some("a")),
+        &mut doc,
+        &root,
+    );
+    assert_eq!(dd.highlight_index(), 3, "typing again moves on");
+    dd.close();
+    dd.do_open();
+    assert_eq!(dd.highlight_index(), 0);
+    for letter in ["a", "s"] {
+        feed_key(
+            &mut dd,
+            &key_press(Key::Character(letter.into()), Some(letter)),
+            &mut doc,
+            &root,
+        );
+    }
+    assert_eq!(dd.highlight_index(), 3, "\"as\" spells Asia");
+    feed_key(
+        &mut dd,
+        &key_press(Key::Character("x".into()), Some("x")),
+        &mut doc,
+        &root,
+    );
+    assert_eq!(
+        dd.highlight_index(),
+        3,
+        "a name no option begins leaves the highlight where it is"
+    );
+    let node = Widget::accessibility(&dd).expect("semantics");
+    assert_eq!(
+        node.value.as_deref(),
+        Some("UTC"),
+        "the value stays while the list is open"
+    );
+}

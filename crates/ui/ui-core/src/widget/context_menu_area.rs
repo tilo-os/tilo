@@ -1834,4 +1834,36 @@ mod tests {
         );
         crate::shared_selection::set_send_host_available(false);
     }
+
+    /// A row an assistive technology or an agent names is the entry the area runs through the
+    /// action the row names: the menu leaves its owner's rows to the area, which runs the app's
+    /// action once and closes the menu. No press lands where the row is drawn.
+    #[test]
+    fn a_row_a_tool_names_is_the_entry_the_area_runs() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = crate::motion::testing::settled();
+        let (mut area, _) = opening_menu();
+        let mut doc = automerge::AutoCommit::new();
+        let target = crate::a11y_child_route::encode(&[0], Some("context-menu:item:1"));
+        assert!(
+            crate::a11y_child_route::perform(
+                &mut area,
+                &target,
+                &crate::a11y::Action::Activate,
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ),
+            "the area runs the row its menu offers"
+        );
+        assert_eq!(
+            chosen_action(&mut area).as_deref(),
+            Some("action-2"),
+            "the row ran the action it names"
+        );
+        assert!(
+            chosen_action(&mut area).is_none(),
+            "an activation runs the entry once"
+        );
+        assert!(!area.is_open(), "the menu closed on the row");
+    }
 }

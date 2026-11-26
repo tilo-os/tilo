@@ -1372,3 +1372,44 @@ fn escape_puts_the_file_type_menu_away_and_keeps_the_dialog() {
         "Escape closes the menu, not the dialog"
     );
 }
+
+/// Saving, typing replaces the name and keeps its type (a dotfile has none to keep); a press on
+/// a place opens it; a narrow dialog drops the places and keeps the list.
+#[test]
+fn a_save_keeps_the_type_and_a_place_opens_where_it_is_pressed() {
+    let (_g, root) = temp_tree();
+    for (name, chosen) in [
+        ("report.final.pdf", "report.final".len()),
+        (".bashrc", ".bashrc".len()),
+    ] {
+        let picker = FilePicker::new("Save", &root, vec![root.clone()])
+            .with_mode(FilePickerMode::Save)
+            .with_filename(name)
+            .settled();
+        assert_eq!(
+            picker.filename.selection_range_public(),
+            Some((0, chosen)),
+            "{name}"
+        );
+    }
+
+    let inner = root.join("docs");
+    fs::create_dir(&inner).unwrap();
+    let mut picker = FilePicker::new("Open", &root, vec![root.clone(), inner.clone()]).settled();
+    picker.set_rect(Rect::new(0.0, 0.0, 900.0, 620.0));
+    assert!(picker.has_sidebar());
+    let at = picker
+        .places
+        .iter()
+        .position(|p| p.path == inner)
+        .expect("an accessible root is a place");
+    let rect = picker.place_rects[at];
+    feed(&mut picker, &cursor_at(rect.center()));
+    feed(&mut picker, &mouse_press());
+    assert_eq!(picker.current_dir(), inner);
+    assert_eq!(picker.active_place(), Some(at));
+
+    let mut narrow = FilePicker::new("Open", &root, vec![root.clone()]).settled();
+    narrow.set_rect(Rect::new(0.0, 0.0, 420.0, 420.0));
+    assert!(!narrow.has_sidebar(), "a narrow dialog keeps the list");
+}

@@ -460,3 +460,77 @@ fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
     }
     crate::shared_selection::set_send_host_available(false);
 }
+
+/// A context menu a click opens comes from the pointer (`motion::Appear`):
+/// its rows are hit where they are drawn while it arrives, it is drawn
+/// while it leaves but takes no input then, and a nested menu that
+/// follows the pointer across rows is simply there.
+#[test]
+fn a_clicked_menu_comes_from_the_pointer_and_fades_when_it_closes() {
+    use crate::time::testing::with_monotonic_time;
+    let theme = Theme::dark();
+    let presence = PresenceCtx::default();
+    let mut text = TextRenderer::new();
+    let t0 = crate::time::now();
+    let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+    let mut menu = ContextMenu::new();
+    menu.push(MenuItem::action("Open", || {}));
+    menu.push(MenuItem::submenu(
+        "More",
+        vec![MenuItem::action("Rename", || {})],
+    ));
+    let paint = |menu: &mut ContextMenu, text: &mut TextRenderer| {
+        let mut top = Scene::new();
+        menu.draw_overlay(&mut crate::draw::DrawCtx::new(
+            &mut top,
+            Affine::IDENTITY,
+            text,
+            &theme,
+            presence.draw_env(),
+        ));
+        top
+    };
+    with_monotonic_time(t0, || {
+        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        menu.open_at([40.0, 40.0]);
+        let _ = paint(&mut menu, &mut text);
+        assert!(menu.needs_animation_frame(), "it arrives");
+        // The pointer it opened at is the origin: the menu leans that way,
+        // up and to the left of its centre, by its whole reach.
+        let corner = Point::new(40.0, 40.0);
+        let drawn = menu.drawn.to_drawn(corner);
+        assert!(
+            ((drawn - corner).hypot() - crate::motion::Appear::REACH).abs() < 1e-6,
+            "the corner comes toward the pointer by its reach: {drawn:?}"
+        );
+        assert!(drawn.x < corner.x && drawn.y < corner.y, "{drawn:?}");
+    });
+    with_monotonic_time(at(400), || {
+        let _ = paint(&mut menu, &mut text);
+        assert!(!menu.needs_animation_frame(), "it rests");
+        assert!(menu.drawn.is_rest());
+        menu.open_submenu(1, false);
+        let _ = paint(&mut menu, &mut text);
+        assert!(
+            !menu.needs_animation_frame(),
+            "a nested menu does not animate"
+        );
+        menu.close();
+        assert!(
+            !menu.contains([50.0, 50.0]),
+            "a closing menu takes no input"
+        );
+        let leaving = paint(&mut menu, &mut text);
+        assert!(
+            !leaving.encoding().is_empty(),
+            "it is drawn while it leaves"
+        );
+        assert!(!menu.painted_bounds(&theme).is_empty());
+    });
+    with_monotonic_time(at(800), || {
+        let gone = paint(&mut menu, &mut text);
+        assert!(gone.encoding().is_empty(), "and then it has gone");
+        assert!(menu.painted_bounds(&theme).is_empty());
+        assert!(!menu.needs_animation_frame());
+    });
+}
