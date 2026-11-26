@@ -11,6 +11,17 @@ use tilo_automerge::ApplyIncoming as _;
 const FROM: &str = "3f2b1c00-0000-4000-8000-00000000000a";
 const TO: &str = "3f2b1c00-0000-4000-8000-00000000000b";
 
+/// A workspace's emoji type, as the record's app declares it: the emoji are kept in a map.
+fn emoji_type() -> tilo_actions::surface::Surface {
+    serde_json::from_value(serde_json::json!({
+        "kind": "tilo.workspace.emoji",
+        "label": "Workspace emoji",
+        "version": 1,
+        "fields": [{ "path": "emoji", "type": { "map": "any" } }],
+    }))
+    .expect("a workspace emoji's type")
+}
+
 tilo_test_env::scenario! {
     fn a_branched_workspace_resource;
 
@@ -31,11 +42,18 @@ tilo_test_env::scenario! {
                 .map_err(|error| error.to_string())
         };
         let resources = |workspace: &str| {
-            WorkspaceResources::in_workspace(
+            let records = WorkspaceResources::in_workspace(
                 ResourceOwners::in_memory(),
                 workspace.into(),
                 tilo_ui_base::MemberId::person("ada"),
-            )
+            );
+            // The app keeps its record of the workspace's emoji by its declared type: the type
+            // founds its container alike on every device.
+            records
+                .store_of(CHAT)
+                .expect("the chat app's store in the workspace")
+                .declare_type(EMOJI, emoji_type);
+            records
         };
         let emoji = |doc: &AutoCommit| {
             let Ok(Some((Value::Object(ObjType::Map), map))) = doc.get(ROOT, "emoji") else {

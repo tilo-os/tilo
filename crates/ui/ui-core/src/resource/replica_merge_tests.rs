@@ -5,6 +5,18 @@ use super::*;
 use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
 
+/// A note's type, as the app that keeps it declares it: the body is text the record holds, which
+/// its first write makes alike on every device.
+fn note_type() -> tilo_actions::surface::Surface {
+    serde_json::from_value(serde_json::json!({
+        "kind": "note",
+        "label": "Note",
+        "version": 1,
+        "fields": [{ "path": "body", "type": "text" }],
+    }))
+    .expect("a note's type")
+}
+
 fn put_text(doc: &mut AutoCommit, key: &str, value: &str) {
     let _ = doc.put(&ROOT, key, value);
 }
@@ -23,6 +35,7 @@ tilo_test_env::scenario! {
     {
         let mut owners = ResourceOwners::in_memory();
         let store = owners.open("so.tilo.test", "workspace-a").unwrap();
+        store.declare_type("note", note_type);
         let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         store
             .reserve_resource(&want)
@@ -51,6 +64,7 @@ tilo_test_env::scenario! {
     {
         let mut owners = ResourceOwners::in_memory();
         let store = owners.open("so.tilo.test", "workspace-a").unwrap();
+        store.declare_type("note", note_type);
         let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         store
             .reserve_resource(&want)
@@ -103,6 +117,7 @@ tilo_test_env::scenario! {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let mut owners = ResourceOwners::in_memory();
         let store = owners.open("so.tilo.test", "workspace-a").unwrap();
+        store.declare_type("note", note_type);
         let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         store
             .reserve_resource(&want)
@@ -193,6 +208,7 @@ tilo_test_env::scenario! {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let mut owners = ResourceOwners::in_memory();
         let store = owners.open("so.tilo.test", "workspace-a").unwrap();
+        store.declare_type("note", note_type);
         let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
         store
             .reserve_resource(&want)
@@ -363,6 +379,7 @@ fn large_text_resource() -> (
 ) {
     let mut owners = ResourceOwners::in_memory();
     let store = owners.open("so.tilo.test", "workspace-a").unwrap();
+    store.declare_type("note", note_type);
     let want = DocumentCheckout::new(DocumentId::minted(), ResourceType::new("note"));
     let source = "fn source() { /* café */ }\n".repeat(900);
     store
