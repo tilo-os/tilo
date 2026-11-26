@@ -168,5 +168,7 @@ ask whether the larger thing could be done a better way; if it could, say so bef
 - No tests while iterating. Run the focused tests once, when the work is done,
   then push.
 - A red `main` is fixed by the next commit, never by a revert or a hold.
-- After your change lands, watch CI on `main`; fix what you broke.
+- Per-package tests run on `main` only when t has room (bisected to the commit
+  that broke them) and at every `stable` head, so run your change's focused
+  tests before pushing. After it lands, watch CI on `main`; fix what you broke.
 - App packaging is affected-only; full image builds stay explicit or scheduled.

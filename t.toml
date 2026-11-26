@@ -117,12 +117,17 @@ env = { TILO_FONT_IMAGE_SEED = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "
 # tilo-environment tilo-liveness tilo-oci-images tilo-sandbox tilo-sandbox-core
 # tilolang-cli tilolang-tilo ush windows-vm
 
+# The per-package test families run when t has room on main (bisected when one fails), at every
+# stable head and when asked, not with every push: main is the integration branch and gets
+# minimal testing, and a change's author runs its focused tests before pushing.
+#
 # Tests, one check per package: `test/<package>`. The driver runs nextest once over the whole
 # family, so a shared dependency compiles once for all of them, and t shards each test binary by
 # its measured per-test time. The flows' tests are not here: the shared filters leave them out,
 # and the `flows` check runs each flow alone.
 [[cargo]]
 name = "test"
+on = ["dispatch", "idle", "stable"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "nextest"
 wrapper = ["bash", "tools/ci/nextest.sh"]
@@ -189,6 +194,7 @@ starts = { tilo-daemon = ["tilo-test-env:tilo-capability-probe", "install:tilo-i
 # each flow alone.
 [[cargo]]
 name = "test-{arch}"
+on = ["dispatch", "idle", "stable"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 tool = "nextest"
 requires = ["arch={arch}"]
