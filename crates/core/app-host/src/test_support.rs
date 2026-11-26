@@ -103,6 +103,31 @@ impl WorkspaceTree {
         WorkspaceTreeHandle(Arc::new(parking_lot::RwLock::new(self)))
     }
 }
+/// Name what signs the evidence this process's fixtures keep: one synthetic device of a person
+/// no workspace knows, served once for the whole process, as a host that opened its workspaces
+/// names its signer (`tilo_invocation_journal::serve_as`). Every fixture's broker then keeps
+/// signed evidence, whatever workspace its tree describes.
+pub fn serve_the_test_signer() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        tilo_identity::sources::test_trust::install();
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0x91; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[0x92; 32]);
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Synthetic test device".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+        tilo_invocation_journal::serve_as(certificate, Arc::new(device));
+    });
+}
+
 impl WorkspaceTreeHandle {
     pub fn authority(&self) -> crate::services::WorkspaceAuthorityHandle {
         Arc::new(self.clone())

@@ -25,6 +25,7 @@ mod evidence_signer;
 #[cfg(any(test, feature = "test-support"))]
 pub use evidence_signer::BEFORE_SIGN;
 pub use evidence_signer::serve_as;
+pub use evidence_signer::serves_a_signer;
 
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::ser::SerializeStruct;

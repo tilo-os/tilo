@@ -1137,6 +1137,8 @@ pub(crate) mod signed_test_support {
             let mut fixture = Self::new(services);
             let (key, certificate) =
                 tilo_identity::trusted_device::current(&fixture.workspace).unwrap();
+            // The evidence this fixture's broker keeps is signed as the device it acts as.
+            tilo_invocation_journal::serve_as(certificate.clone(), Arc::new(key.clone()));
             let presentation = runtime_collab::CertifiedJoinIdentity {
                 workspace_id: fixture.workspace.clone(),
                 device_certificate: serde_json::to_vec(&certificate).unwrap(),
@@ -1297,6 +1299,10 @@ pub(crate) mod signed_test_support {
         }
 
         pub fn assert_signed(&self, request: &InvokeRequest, terminal: bool) -> DurableInvocation {
+            assert!(
+                tilo_invocation_journal::serves_a_signer(),
+                "no host names what signs this process's receipts"
+            );
             let record = self.record(request);
             let admission = record.admission.as_ref().expect("signed admission");
             let receipt = admission.public_receipt();

@@ -72,6 +72,13 @@ pub fn serve_as(certificate: DeviceCert, signer: Arc<dyn DeviceSigner>) {
     })));
 }
 
+/// Whether a host named what signs this process's receipts yet: what a fixture asks before it
+/// waits on evidence, so a missing signer fails at once naming it.
+#[must_use]
+pub fn serves_a_signer() -> bool {
+    HOST.read().is_some()
+}
+
 /// Sign already domain-separated semantic receipt bytes with this host's device. The returned
 /// certificate identifies the device signing the bytes.
 ///
