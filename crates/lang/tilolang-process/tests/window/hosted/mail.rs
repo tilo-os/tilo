@@ -1175,9 +1175,25 @@ fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
     });
     let delivered = session.call("deliver_message", &root, &first);
     let again = session.call("deliver_message", &root, &first);
+    // The message handed over again is the one kept: the second call makes nothing, answers
+    // that message alone, and the conversation goes on holding it once.
     assert_eq!(
-        delivered.resources, again.resources,
-        "the message handed over again is the one kept"
+        again.resources.len(),
+        1,
+        "a delivery of the message already kept makes nothing: {again:?}"
+    );
+    assert!(
+        delivered.resources.contains(&again.resources[0]),
+        "it answers the message the first delivery kept: {delivered:?}"
+    );
+    let held = session.refs(&root, "recovered_mail");
+    let [one] = held.as_slice() else {
+        panic!("one conversation: {held:?}");
+    };
+    assert_eq!(
+        session.refs(one, "messages").len(),
+        1,
+        "the message handed over again is kept once"
     );
     session.call(
         "deliver_message",
