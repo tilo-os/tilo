@@ -12,13 +12,11 @@ mod caps;
 pub mod desktop_service;
 mod location;
 pub mod login;
-pub mod machine;
 pub mod session;
 
 pub use app::{AppPaths, DEFAULT_PROFILE, default_profile, set_default_profile};
 pub use caps::{Availability, Feature, Unsupported, availability, available};
 pub use location::{InvalidVPath, Location, VPath, VirtualRoot};
-pub use machine::Reach;
 
 /// Where a Tilo Linux session mounts the collaborative workspace, and the
 /// root every member's documents name workspace files under, whatever
@@ -235,7 +233,11 @@ pub fn scoped_profile() -> Option<PathBuf> {
     PROFILE_ROOT.with(|root| root.borrow().clone())
 }
 
-fn var(name: &str) -> Option<OsString> {
+/// The environment variable `name`, as this process's profile scopes it: a location variable
+/// resolves below the profile root a test or a stack lent this process, and any other is read as
+/// the process has it.
+#[must_use]
+pub fn var(name: &str) -> Option<OsString> {
     let Some(root) = scoped_profile() else {
         return std::env::var_os(name);
     };

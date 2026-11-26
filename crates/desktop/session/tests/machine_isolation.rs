@@ -1,5 +1,5 @@
 //! A session that runs inside another desktop reaches no machine of it
-//! (`tilo_paths::machine`).
+//! (`tilo_machine`).
 //!
 //! `dist/dev/nested-session.sh` starts its session with `TILO_MACHINE=hosted`,
 //! and this is what that one declaration buys: the services that act on the

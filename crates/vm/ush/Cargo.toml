@@ -111,6 +111,7 @@ tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-ident
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-machine.workspace = true
 ush = { path = ".", features = ["test-workspace"] }
 # The real guest agent behind a fake VM link: a hosted program's terminal
 # server is tested against what serves it in the VM.

@@ -50,6 +50,7 @@ tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-ident
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-machine.workspace = true
 tempfile.workspace = true
 # tests/identity_ownership.rs: where the production identity and vault code
 # keep their keys when this service answers, is locked, or is absent.

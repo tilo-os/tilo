@@ -197,7 +197,7 @@ pub fn line_at(socket: &Path) -> Result<tilo_actions::remote::LineClient, String
 /// # Errors
 /// No daemon answers on this computer.
 pub fn line() -> Result<tilo_actions::remote::LineClient, String> {
-    line_at(&tilo_paths::machine::daemon_native()?)
+    line_at(&tilo_machine::daemon_native()?)
 }
 
 /// One connection to the daemon's native endpoint, as MCP.
@@ -215,7 +215,7 @@ impl Daemon {
     /// # Errors
     /// No daemon answers on this computer.
     pub fn reach() -> Result<Self, String> {
-        let socket = tilo_paths::machine::daemon_native()?;
+        let socket = tilo_machine::daemon_native()?;
         Self::at(&socket)
     }
 

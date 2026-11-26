@@ -24,7 +24,7 @@ path = "src/lib.rs"
 [dependencies]
 futures-util.workspace = true
 # What a session reaches of the machine: a hosted session drives no host daemon.
-tilo-paths.workspace = true
+tilo-machine.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 uuid.workspace = true

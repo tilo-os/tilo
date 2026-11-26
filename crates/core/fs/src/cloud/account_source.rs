@@ -123,7 +123,7 @@ impl Daemon {
     /// # Errors
     /// This computer's daemon socket is not known.
     pub fn here() -> Result<Self, String> {
-        Ok(Self::at(tilo_paths::machine::daemon_native()?))
+        Ok(Self::at(tilo_machine::daemon_native()?))
     }
 
     /// The daemon listening at `socket`.

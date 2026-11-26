@@ -73,6 +73,8 @@ path = "src/main.rs"
 
 [dependencies]
 tilo-paths.workspace = true
+tilo-machine.workspace = true
+
 agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }
 # Signing in with Hugging Face by device code from a terminal: the token is kept as the
 # model provider's key through the published `models` actions.

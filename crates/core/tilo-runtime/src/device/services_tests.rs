@@ -1366,7 +1366,7 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
     // Any other process of the account, which dials the dispatch itself, is refused; the shell
     // the daemon starts is admitted by the link it hands it.
     let other = std::process::Command::new(std::env::current_exe().unwrap());
-    let native = root.join(tilo_paths::machine::DAEMON_NATIVE);
+    let native = root.join(tilo_machine::DAEMON_NATIVE);
     let mut other = shell_child(
         &root,
         &native,

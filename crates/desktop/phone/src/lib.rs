@@ -49,7 +49,7 @@ pub struct Phone;
 /// The daemon's profile on this device: this computer's own, as `tilo` names it.
 #[must_use]
 pub fn profile() -> PathBuf {
-    tilo_paths::machine::account_daemon_profile().unwrap_or_default()
+    tilo_machine::account_daemon_profile().unwrap_or_default()
 }
 
 /// The device's worker, started once for the process: the daemon outlives every window.

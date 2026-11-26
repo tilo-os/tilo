@@ -267,10 +267,7 @@ fn a_hosted_workspaces_window_types_into_the_hosts_shell_and_hears_it_end() {
             env.set("TILO_IDENTITY_ROOT", dir.path().join("identity"));
             env.set("TILO_USH_IMAGES", dir.path().join("images"));
             // The test's daemon listens in a profile of its own, never the account's.
-            env.set(
-                tilo_paths::machine::DAEMON_PROFILE_VAR,
-                dir.path().join("profile"),
-            );
+            env.set(tilo_machine::DAEMON_PROFILE_VAR, dir.path().join("profile"));
             let asks = daemon();
             let socket = serving(dir.path());
 
@@ -336,10 +333,7 @@ fn a_lost_stream_is_said_and_the_window_comes_back_to_the_hosts_session() {
             env.set("TILO_IDENTITY_ROOT", dir.path().join("identity"));
             env.set("TILO_USH_IMAGES", dir.path().join("images"));
             // The test's daemon listens in a profile of its own, never the account's.
-            env.set(
-                tilo_paths::machine::DAEMON_PROFILE_VAR,
-                dir.path().join("profile"),
-            );
+            env.set(tilo_machine::DAEMON_PROFILE_VAR, dir.path().join("profile"));
             let asks = daemon();
             let socket = serving(dir.path());
             let window = Window::connect(&socket);

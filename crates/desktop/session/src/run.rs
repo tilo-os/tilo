@@ -47,7 +47,7 @@ pub struct Reach {
 
 impl Reach {
     /// What `backend` reaches of `buses` as asked for, for a session told whether it owns the
-    /// machine ([`tilo_paths::machine`]): a session that runs inside another desktop owns none of
+    /// machine ([`tilo_machine`]): a session that runs inside another desktop owns none of
     /// the machine's daemons, so it registers no agent on that desktop's system bus and exports no
     /// displays to it.
     #[must_use]

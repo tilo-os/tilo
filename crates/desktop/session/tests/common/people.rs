@@ -1294,7 +1294,7 @@ impl Device {
         self.home
             .path()
             .join("runtime/tilo")
-            .join(tilo_paths::machine::DAEMON_NATIVE)
+            .join(tilo_machine::DAEMON_NATIVE)
     }
 
     /// Call the device action `action` of `devices` on this device's daemon, as `tilo login`
@@ -1579,9 +1579,7 @@ impl Device {
             .stdout(Stdio::null())
             .stderr(Stdio::from(log.try_clone().expect("the log's own handle")));
         let mut daemon = spawn_group(daemon, "tilo-runtime");
-        let native = root
-            .join("runtime/tilo")
-            .join(tilo_paths::machine::DAEMON_NATIVE);
+        let native = root.join("runtime/tilo").join(tilo_machine::DAEMON_NATIVE);
         let deadline = tilo_test_env::hang_deadline();
         loop {
             if let Ok(Some(ended)) = daemon.try_wait() {
@@ -1786,9 +1784,7 @@ impl Device {
         self.daemon = Some(daemon);
         // The daemon holds the device once its native endpoint answers, before the person's
         // services start: from then on the session finds it there and asks it for its shell.
-        let native = root
-            .join("runtime/tilo")
-            .join(tilo_paths::machine::DAEMON_NATIVE);
+        let native = root.join("runtime/tilo").join(tilo_machine::DAEMON_NATIVE);
         let label = self.label.clone();
         let logged = logs.join("session.log");
         // A daemon that never answers is read where it waits: what it logged, and each of its

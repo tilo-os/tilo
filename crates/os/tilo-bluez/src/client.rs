@@ -53,7 +53,7 @@ impl BluezClient {
     /// Connect to the system bus.
     ///
     /// A session that runs inside another desktop owns no machine of its own
-    /// ([`tilo_paths::machine`]): it reaches no `BlueZ` at all, and never the
+    /// ([`tilo_machine`]): it reaches no `BlueZ` at all, and never the
     /// host's.
     ///
     /// # Errors
@@ -61,7 +61,7 @@ impl BluezClient {
     /// [`zbus::Error::Failure`] when this session owns no machine, whatever
     /// the system bus answers otherwise.
     pub async fn connect() -> zbus::Result<Self> {
-        if !tilo_paths::machine::owns_the_machine() {
+        if !tilo_machine::owns_the_machine() {
             return Err(zbus::Error::Failure(
                 "this session reaches no machine: BlueZ belongs to the desktop it runs in".into(),
             ));

@@ -465,7 +465,7 @@ impl PackageCache {
 /// launcher and every app sandbox find them; on macOS, beside the rest of the daemon's state.
 fn cache_root() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
-    return tilo_paths::machine::account_daemon_profile().map(|profile| profile.join("packages"));
+    return tilo_machine::account_daemon_profile().map(|profile| profile.join("packages"));
     #[cfg(not(target_os = "macos"))]
     return package_store::layout::default_user_root();
 }

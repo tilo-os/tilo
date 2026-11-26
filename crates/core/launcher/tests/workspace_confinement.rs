@@ -292,11 +292,10 @@ fn a_home_grant_never_reaches_the_device_daemons_profiles_or_endpoint() {
 
     let _ = workspacetest_payload();
     let mut home = tilo_test_env::TestHome::new().expect("temporary home");
-    let own = tilo_paths::machine::account_daemon_profile().expect("the home names a profile");
+    let own = tilo_machine::account_daemon_profile().expect("the home names a profile");
     assert!(own.starts_with(home.home()), "{}", own.display());
     let named = home.home().join("dev/runtime");
-    home.env()
-        .set(tilo_paths::machine::DAEMON_PROFILE_VAR, &named);
+    home.env().set(tilo_machine::DAEMON_PROFILE_VAR, &named);
     let endpoint_dir = home.runtime().join("tilo");
     std::fs::create_dir_all(&endpoint_dir).expect("endpoint dir");
 
@@ -307,7 +306,7 @@ fn a_home_grant_never_reaches_the_device_daemons_profiles_or_endpoint() {
         let key = profile.join("data/tilo/device/device.key");
         std::fs::create_dir_all(key.parent().expect("parent")).expect("profile");
         std::fs::write(&key, "device-key").expect("key");
-        let endpoint = sockets.join(tilo_paths::machine::DAEMON_NATIVE);
+        let endpoint = sockets.join(tilo_machine::DAEMON_NATIVE);
         let listener = UnixListener::bind(&endpoint).expect("endpoint");
         listener.set_nonblocking(true).expect("nonblocking");
         listeners.push(listener);

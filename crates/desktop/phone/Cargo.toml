@@ -37,6 +37,7 @@ tilolang-tilo = { path = "../../../crates/lang/tilolang-tilo" }
 tilo-app-window = { path = "../../../crates/sdk/tilo-app-window" }
 tilo-render-protocol = { path = "../../../crates/ui/tilo-render-protocol" }
 tilo-paths = { path = "../../../crates/platform/tilo-paths" }
+tilo-machine = { path = "../../../crates/platform/tilo-machine" }
 # The type of a file the workspace holds, by its name, as a file picker shows it.
 tilo-mime = { path = "../../../crates/platform/tilo-mime" }
 # The platform a window with no session stands on: the packages it loads, its words and clock.

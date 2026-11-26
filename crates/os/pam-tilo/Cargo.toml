@@ -17,6 +17,8 @@ crate-type = ["cdylib"]
 libc.workspace = true
 tilo-auth = { path = "../tilo-auth", default-features = false }
 tilo-paths.workspace = true
+tilo-machine.workspace = true
+
 tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 zeroize.workspace = true
 

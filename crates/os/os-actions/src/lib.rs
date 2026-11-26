@@ -135,11 +135,11 @@ pub use users::AccountRole;
 use tracing::warn;
 
 /// The system bus this session may ask, or the reason it may not: the machine's daemons are its
-/// own only when it owns the machine ([`tilo_paths::machine`]). Every call here that reaches the
+/// own only when it owns the machine ([`tilo_machine`]). Every call here that reaches the
 /// system bus goes through this, so a session that runs inside another desktop reaches no daemon of
 /// it and answers as if none were installed.
 pub(crate) async fn system_bus() -> Result<zbus::Connection, String> {
-    if !tilo_paths::machine::owns_the_machine() {
+    if !tilo_machine::owns_the_machine() {
         return Err(
             "this session reaches no machine: its daemons belong to the desktop it runs in".into(),
         );

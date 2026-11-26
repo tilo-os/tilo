@@ -69,6 +69,8 @@ tilo-process = { version = "0.1.0", path = "../../platform/tilo-process", featur
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["watch"] }
 toml.workspace = true
 tilo-paths.workspace = true
+tilo-machine.workspace = true
+
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 # The app window's half of a window and the patch protocol to it: what `layout-check` lays out.
 tilo-app-window = { version = "0.1.0", path = "../../sdk/tilo-app-window" }

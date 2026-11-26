@@ -234,7 +234,7 @@ mod tests {
             use std::io::{BufRead as _, Write as _};
             use std::sync::atomic::{AtomicBool, Ordering};
             std::fs::create_dir_all(dir).unwrap();
-            let socket = dir.join(tilo_paths::machine::DAEMON_NATIVE);
+            let socket = dir.join(tilo_machine::DAEMON_NATIVE);
             let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
             let stop = std::sync::Arc::new(AtomicBool::new(false));
             let stopping = std::sync::Arc::clone(&stop);
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn a_daemon_that_is_not_running_is_refused_in_its_own_words() {
         let tmp = tempfile::tempdir().unwrap();
-        let actions = DeviceActions::at(tmp.path().join(tilo_paths::machine::DAEMON_NATIVE));
+        let actions = DeviceActions::at(tmp.path().join(tilo_machine::DAEMON_NATIVE));
         let refused = device_public_key_of(&actions).expect_err("nothing listens");
         let CertifiedIdentityError::DeviceService(refusal) = refused else {
             panic!("a daemon that is not running is refused as such, not {refused:?}");

@@ -443,7 +443,7 @@ impl Peer {
             .parent()
             .ok_or_else(|| "the session names no runtime directory".to_owned())?
             .join("tilo")
-            .join(tilo_paths::machine::DAEMON_NATIVE);
+            .join(tilo_machine::DAEMON_NATIVE);
         let answered = native_call(&socket, &serde_json::json!({"native": "status"}))?;
         let workspace = answered
             .get("workspace")

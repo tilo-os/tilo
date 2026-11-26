@@ -1,0 +1,32 @@
+[package]
+name = "tilo-machine"
+version = "0.1.0"
+edition = "2024"
+# Published: the SDK's platform layer (tools/sdk/publish_check.py).
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
+repository.workspace = true
+homepage.workspace = true
+description = "What a session reaches of the computer it draws on, and where this computer's device daemon keeps its profile and sockets: one answer on Linux, macOS and Windows, read by every service that acts on the machine."
+
+[lib]
+name = "tilo_machine"
+path = "src/lib.rs"
+
+# The person's locations; the rest is the platform's own calls.
+[dependencies]
+tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

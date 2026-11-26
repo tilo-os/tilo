@@ -60,6 +60,8 @@ workspace-hack = { version = "0.1" }
 # directory it is kept in.
 anyhow.workspace = true
 tilo-paths.workspace = true
+tilo-machine.workspace = true
+
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"] }

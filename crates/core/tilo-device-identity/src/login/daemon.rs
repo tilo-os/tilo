@@ -26,9 +26,9 @@ pub const REFUSED: &str = "refused";
 pub const UNANSWERED: &str = "unanswered";
 
 /// Where the system unit keeps the daemon's sockets on Tilo OS.
-const SYSTEM_SOCKETS: &str = tilo_paths::machine::DAEMON_SOCKETS;
+const SYSTEM_SOCKETS: &str = tilo_machine::DAEMON_SOCKETS;
 /// The native endpoint's socket, in the daemon's sockets.
-const NATIVE: &str = tilo_paths::machine::DAEMON_NATIVE;
+const NATIVE: &str = tilo_machine::DAEMON_NATIVE;
 /// The longest a socket's path may be: a socket's address fits 104 bytes on macOS (108 on
 /// Linux), its closing NUL among them.
 const SOCKET_PATH_MAX: usize = 103;
@@ -87,7 +87,7 @@ impl std::error::Error for DeviceRefusal {}
 /// too long for a socket's address.
 pub fn sockets(login: &Path) -> Result<(PathBuf, bool), String> {
     let named = named_profile();
-    let sockets = match placed(tilo_paths::machine::system_daemon(), named.as_deref()) {
+    let sockets = match placed(tilo_machine::system_daemon(), named.as_deref()) {
         Placed::System => PathBuf::from(SYSTEM_SOCKETS),
         Placed::Apart(profile) => profile_sockets(login, profile)?,
         Placed::Own => own_sockets(login)?,
@@ -104,14 +104,11 @@ pub fn sockets(login: &Path) -> Result<(PathBuf, bool), String> {
 /// computer's and names none apart.
 #[must_use]
 pub fn named_profile() -> Option<PathBuf> {
-    std::env::var_os(tilo_paths::machine::DAEMON_PROFILE_VAR)
+    std::env::var_os(tilo_machine::DAEMON_PROFILE_VAR)
         .filter(|profile| !profile.is_empty())
         .map(PathBuf::from)
         .filter(|profile| {
-            !tilo_paths::machine::serves_the_computer(
-                tilo_paths::machine::system_daemon(),
-                Some(profile),
-            )
+            !tilo_machine::serves_the_computer(tilo_machine::system_daemon(), Some(profile))
         })
 }
 
@@ -131,7 +128,7 @@ enum Placed<'a> {
 /// client finds it; a daemon serving any other profile, as one account's, listens in that
 /// profile's own directory, and a command run beside it with the same profile asks it there.
 fn placed(system: bool, named: Option<&Path>) -> Placed<'_> {
-    if tilo_paths::machine::serves_the_computer(system, named) {
+    if tilo_machine::serves_the_computer(system, named) {
         Placed::System
     } else if let Some(profile) = named {
         Placed::Apart(profile)
@@ -182,14 +179,14 @@ pub fn profile_sockets(login: &Path, profile: &Path) -> Result<PathBuf, String> 
 /// Where this account's own programs keep their sockets, on every host.
 #[cfg(unix)]
 fn account_sockets(login: &Path) -> Result<PathBuf, String> {
-    tilo_paths::machine::account_sockets(owner(login)?)
+    tilo_machine::account_sockets(owner(login)?)
 }
 
 /// Where this account's own programs keep their sockets, on every host.
 #[cfg(windows)]
 fn account_sockets(login: &Path) -> Result<PathBuf, String> {
     let _ = login;
-    tilo_paths::machine::daemon_sockets()
+    tilo_machine::daemon_sockets()
 }
 
 /// A profile's name among this account's sockets: a hash of its path, so the daemon serving it
@@ -216,7 +213,7 @@ fn owner(login: &Path) -> Result<u32, String> {
 /// The directory a person's own service keeps its sockets in, made private to this account.
 #[cfg(unix)]
 fn own_sockets(login: &Path) -> Result<PathBuf, String> {
-    let dir = tilo_paths::machine::daemon_sockets(owner(login)?)?;
+    let dir = tilo_machine::daemon_sockets(owner(login)?)?;
     private_dir(&dir)?;
     Ok(dir)
 }
@@ -252,7 +249,7 @@ fn private_dir(dir: &Path) -> Result<(), String> {
 #[cfg(windows)]
 fn own_sockets(login: &Path) -> Result<PathBuf, String> {
     let _ = login;
-    let dir = tilo_paths::machine::daemon_sockets()?;
+    let dir = tilo_machine::daemon_sockets()?;
     private_dir(&dir)?;
     Ok(dir)
 }
@@ -345,9 +342,7 @@ impl DeviceActions {
             .get("renewed")
             .and_then(Value::as_u64)
             .ok_or_else(|| {
-                DeviceRefusal::said(format!(
-                    "the device service answered no renewal: {renewed}"
-                ))
+                DeviceRefusal::said(format!("the device service answered no renewal: {renewed}"))
             })
     }
 
@@ -623,7 +618,7 @@ mod tests {
     /// as that account's, and is not the computer's.
     #[test]
     fn the_system_units_profile_is_the_computers_and_any_other_is_apart() {
-        let system_profile = Path::new(tilo_paths::machine::DAEMON_SYSTEM_PROFILE);
+        let system_profile = Path::new(tilo_machine::DAEMON_SYSTEM_PROFILE);
         assert_eq!(placed(true, Some(system_profile)), Placed::System);
         assert_eq!(placed(true, None), Placed::System);
         let apart = Path::new("/var/tmp/owner/daemon");

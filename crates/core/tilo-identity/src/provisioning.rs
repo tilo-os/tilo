@@ -297,7 +297,7 @@ pub fn runs_tilo_os() -> bool {
     if let Some(platform) = std::env::var_os(TEST_PLATFORM_ENV) {
         return platform == TILO_OS_PLATFORM;
     }
-    tilo_paths::machine::system_daemon() || tilo_paths::machine::hosted_guest()
+    tilo_machine::system_daemon() || tilo_machine::hosted_guest()
 }
 
 /// The platform a test plays, for the class of the device it certifies

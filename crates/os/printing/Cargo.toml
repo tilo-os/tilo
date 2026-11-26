@@ -16,7 +16,7 @@ path = "src/lib.rs"
 [features]
 # Following the print service's queue and job changes: a host's system service turns it on, over
 # D-Bus. An app process asks for the queues when it shows them and links no bus.
-follow = ["dep:zbus", "dep:tilo-rt", "dep:tilo-paths", "dep:futures-util", "dep:tokio"]
+follow = ["dep:zbus", "dep:tilo-rt", "dep:tilo-machine", "dep:futures-util", "dep:tokio"]
 
 [dependencies]
 # Every shell-out is bounded: `ipptool` and `lp` are the print service's own clients.
@@ -26,7 +26,7 @@ futures-util = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["macros", "rt", "time"] }
 tilo-rt = { version = "0.1.0", path = "../../platform/tilo-rt", optional = true }
 # A follow asks the machine's own daemons only when the session owns the machine.
-tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths", optional = true }
+tilo-machine = { version = "0.1.0", path = "../../platform/tilo-machine", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { workspace = true, optional = true, features = ["tokio"] }

@@ -209,7 +209,7 @@ fn command(
         .env("XDG_RUNTIME_DIR", &runtime_dir)
         .env(launcher::services::BLOB_SOCKET_ENV, &sockets.blobs)
         // The launcher keeps the profile out of every grant it binds.
-        .env(tilo_paths::machine::DAEMON_PROFILE_VAR, &apps.root)
+        .env(tilo_machine::DAEMON_PROFILE_VAR, &apps.root)
         // The launcher connects every service itself; nothing inherited
         // from this process stands for one.
         .env_remove("TILO_SVC_COLLAB_FD")

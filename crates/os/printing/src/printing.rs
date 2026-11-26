@@ -914,7 +914,7 @@ mod tests {
 /// The system bus a follow may ask, or why not: this machine's daemons belong to its own desktop
 /// only when it owns the machine.
 async fn system_bus() -> Result<zbus::Connection, String> {
-    if !tilo_paths::machine::owns_the_machine() {
+    if !tilo_machine::owns_the_machine() {
         return Err(
             "this session reaches no machine: its daemons belong to the desktop it runs in".into(),
         );

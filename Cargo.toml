@@ -335,6 +335,7 @@ members = [
     "crates/integrations/tilo-host-search",
     "crates/platform/tilo-notify",
     "crates/platform/tilo-paths",
+    "crates/platform/tilo-machine",
     "crates/engines/tilo-pdf",
     "crates/engines/pdf",
     "crates/platform/tilo-process",
@@ -688,6 +689,7 @@ tokio = "1.53.3"
 tilo-rt = { version = "0.1.0", path = "crates/platform/tilo-rt" }
 tilo-wake = { version = "0.1.0", path = "crates/platform/tilo-wake" }
 tilo-paths = { version = "0.1.0", path = "crates/platform/tilo-paths" }
+tilo-machine = { version = "0.1.0", path = "crates/platform/tilo-machine" }
 tilo-clipboard = { version = "0.1.0", path = "crates/platform/tilo-clipboard" }
 tilo-dialogs = { version = "0.1.0", path = "crates/platform/tilo-dialogs" }
 tilo-notify = { version = "0.1.0", path = "crates/platform/tilo-notify" }

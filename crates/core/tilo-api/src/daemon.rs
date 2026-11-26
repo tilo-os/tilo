@@ -33,9 +33,9 @@ pub const AGENT_LINE: &str = r#"{"native":"agent"}"#;
 pub const STOP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The system unit's profile: the daemon's home and state on Tilo OS.
-pub const SYSTEM_PROFILE: &str = tilo_paths::machine::DAEMON_SYSTEM_PROFILE;
+pub const SYSTEM_PROFILE: &str = tilo_machine::DAEMON_SYSTEM_PROFILE;
 pub use tilo_device_identity::login::daemon::{DeviceRefusal, socket_fits};
-pub use tilo_paths::machine::system_daemon;
+pub use tilo_machine::system_daemon;
 
 /// Where this computer's daemon listens: the one place every client finds it, and the daemon
 /// binds. Under Tilo OS's system unit its sockets are in its runtime directory; a person's own
@@ -668,7 +668,7 @@ mod tests {
         let no_programs = home.root().join("no-programs");
         std::fs::create_dir_all(&no_programs).unwrap();
         home.env()
-            .set(tilo_paths::machine::DAEMON_PROFILE_VAR, &profile)
+            .set(tilo_machine::DAEMON_PROFILE_VAR, &profile)
             .set("PATH", &no_programs)
             .remove("TILO_IDENTITY_ROOT");
         let place = this_computer().unwrap();

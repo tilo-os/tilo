@@ -39,7 +39,7 @@ tunnel = ["dep:iroh", "dep:tokio", "dep:bytes", "dep:postcard", "dep:tracing"]
 # What the session runs: the route through another device decided, and the
 # kill switch of the person's VPN profiles followed from the settings and
 # `NetworkManager`.
-session = ["tunnel", "dep:settings-store", "dep:tilo-nm", "dep:os-actions", "dep:tilo-paths", "dep:hex", "tokio/rt", "tokio/sync"]
+session = ["tunnel", "dep:settings-store", "dep:tilo-nm", "dep:os-actions", "dep:tilo-machine", "dep:hex", "tokio/rt", "tokio/sync"]
 # An in-memory packet device for tests of code that runs a tunnel.
 test-support = ["tunnel"]
 
@@ -59,7 +59,7 @@ settings-store = { package = "tilo-settings-store", path = "../../desktop/settin
 tilo-nm = { path = "../tilo-nm", optional = true }
 os-actions = { path = "../os-actions", optional = true }
 # What a session reaches of the machine: a hosted session has no kill switch of its own.
-tilo-paths = { path = "../../platform/tilo-paths", optional = true }
+tilo-machine = { path = "../../platform/tilo-machine", optional = true }
 hex = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

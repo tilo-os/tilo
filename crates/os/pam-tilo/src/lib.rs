@@ -43,8 +43,8 @@ impl Args {
     unsafe fn parse(arg_count: c_int, arg_values: *const *const c_char) -> Self {
         let mut parsed = Self {
             socket: PathBuf::from(tilo_auth::SOCKET),
-            seats: std::path::Path::new(tilo_paths::machine::DAEMON_SOCKETS)
-                .join(tilo_paths::machine::DAEMON_NATIVE),
+            seats: std::path::Path::new(tilo_machine::DAEMON_SOCKETS)
+                .join(tilo_machine::DAEMON_NATIVE),
             boot_sign_in: None,
             fingerprint: false,
         };

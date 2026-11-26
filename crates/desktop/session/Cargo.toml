@@ -114,6 +114,8 @@ settings-model = { package = "tilo-settings-model", path = "../../sdk/settings-m
 tilo-files = { path = "../../platform/tilo-files" }
 automerge.workspace = true
 tilo-paths.workspace = true
+tilo-machine.workspace = true
+
 # This process's id and kernel start time, which the desktop's ready record names.
 tilo-process = { path = "../../platform/tilo-process" }
 tilo-action-policy = { path = "../../core/action-policy" }

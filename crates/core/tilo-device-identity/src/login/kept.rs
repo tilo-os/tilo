@@ -289,15 +289,15 @@ pub const FILES_TREE_SOCKET: &str = "files-tree.sock";
 
 /// Where the device daemon the account `uid` reaches serves the workspaces' trees, and the files
 /// daemon that mounts them dials: beside the daemon's other sockets
-/// ([`tilo_paths::machine::daemon_sockets`]), which the daemon makes. Neither made nor checked
+/// ([`tilo_machine::daemon_sockets`]), which the daemon makes. Neither made nor checked
 /// here: a machine's files daemon is root's and dials the person's daemon, whose directory is
 /// not its own.
 ///
 /// # Errors
-/// As [`tilo_paths::machine::daemon_sockets`].
+/// As [`tilo_machine::daemon_sockets`].
 #[cfg(unix)]
 pub fn files_tree_socket(uid: u32) -> Result<PathBuf, String> {
-    Ok(tilo_paths::machine::daemon_sockets(uid)?.join(FILES_TREE_SOCKET))
+    Ok(tilo_machine::daemon_sockets(uid)?.join(FILES_TREE_SOCKET))
 }
 
 #[cfg(all(test, target_os = "linux"))]

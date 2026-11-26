@@ -36,7 +36,7 @@ const ANSWER_WAIT: Duration = Duration::from_secs(60);
 
 /// The manager's connection to this computer's daemon, as the person whose terminal runs it.
 fn daemon() -> Result<LineClient, String> {
-    let socket = tilo_paths::machine::daemon_native()
+    let socket = tilo_machine::daemon_native()
         .map_err(|error| format!("this computer's daemon is not known: {error}"))?;
     LineClient::connect(&socket).map_err(|error| {
         format!(

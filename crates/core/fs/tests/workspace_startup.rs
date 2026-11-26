@@ -265,7 +265,7 @@ tilo_test_env::scenario! {
         let profile = Profile::new();
         profile.identity();
         // The device's daemon serves the trees at `files_tree_socket` of the account: among its
-        // sockets, `$XDG_RUNTIME_DIR/tilo` ([`tilo_paths::machine::daemon_sockets`]).
+        // sockets, `$XDG_RUNTIME_DIR/tilo` ([`tilo_machine::daemon_sockets`]).
         {
             use std::os::unix::fs::DirBuilderExt as _;
             std::fs::DirBuilder::new()

@@ -101,7 +101,7 @@ pub fn spawn(launch: &HostLaunch, keep: Option<&Keep>) -> Result<ExitStatus, Hos
     let busctl = Path::new(scope::BUSCTL);
     let ask_manager = busctl.is_file()
         && !crate::app_cgroup::current_is_app_cgroup()
-        && tilo_paths::machine::owns_the_machine();
+        && tilo_machine::owns_the_machine();
     spawn_with(
         launch,
         ask_manager.then_some(busctl),

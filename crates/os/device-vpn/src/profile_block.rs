@@ -61,11 +61,11 @@ pub struct Sources {
 impl Sources {
     /// The machine's own helper and `NetworkManager` — for a session that owns
     /// the machine. A session that runs inside another desktop has neither
-    /// ([`tilo_paths::machine`]), and [`Vpns::None`] keeps the kill switch off
+    /// ([`tilo_machine`]), and [`Vpns::None`] keeps the kill switch off
     /// for it.
     #[must_use]
     pub fn system() -> Self {
-        if !tilo_paths::machine::owns_the_machine() {
+        if !tilo_machine::owns_the_machine() {
             return Self::hosted();
         }
         Self {

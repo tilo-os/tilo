@@ -367,7 +367,7 @@ fn a_phone_that_joins_lists_its_workspaces_installed_apps_by_name_and_no_others(
     // The workspace runs Notes before the phone ever joins it; nothing is installed on the phone.
     server.install(&notes_tapp(scratch.path()));
     let laptop = Issuing::start(server.runtime.handle(), &server.person, server.entry());
-    let profile = tilo_paths::machine::account_daemon_profile().expect("the phone keeps a daemon");
+    let profile = tilo_machine::account_daemon_profile().expect("the phone keeps a daemon");
     let mut phone = Device::start(&profile).expect("the phone's daemon");
     phone
         .log_in(&laptop.ticket(), "Pixel")

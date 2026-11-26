@@ -52,6 +52,8 @@ blake3.workspace = true
 # This computer's login (`client::device`): where it is kept, with this computer's one device
 # key and its certificates.
 tilo-paths.workspace = true
+tilo-machine.workspace = true
+
 tilo-device-identity = { path = "../tilo-device-identity" }
 tilo-identity = { path = "../tilo-identity" }
 tilo-clock = { path = "../../platform/tilo-clock" }

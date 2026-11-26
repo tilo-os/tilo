@@ -82,7 +82,7 @@ impl Home {
 
 /// The daemon's profile, where the phone keeps it.
 pub fn profile() -> PathBuf {
-    tilo_paths::machine::account_daemon_profile().expect("a home for the daemon's profile")
+    tilo_machine::account_daemon_profile().expect("a home for the daemon's profile")
 }
 
 /// A key made from `seed`, so each test's devices are the same devices on every run.

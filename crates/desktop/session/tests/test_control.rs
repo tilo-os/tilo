@@ -222,7 +222,7 @@ impl StartedSession {
                 .env("XDG_CACHE_HOME", home.path().join(".cache"))
                 .env_remove("WAYLAND_DISPLAY")
                 .env_remove("DISPLAY")
-                .env_remove(tilo_paths::machine::DAEMON_PROFILE_VAR);
+                .env_remove(tilo_machine::DAEMON_PROFILE_VAR);
         };
         // A session is one of a computer's: this account's daemon serves it, makes the
         // account's identity through `devices#found`, and once its person's services run starts
@@ -267,7 +267,7 @@ impl StartedSession {
                 .set("XDG_DATA_HOME", home.path().join(".local/share"))
                 .set("XDG_STATE_HOME", home.path().join(".local/state"))
                 .set("XDG_CACHE_HOME", home.path().join(".cache"))
-                .remove(tilo_paths::machine::DAEMON_PROFILE_VAR);
+                .remove(tilo_machine::DAEMON_PROFILE_VAR);
             tilo_api::daemon::this_computer()
                 .expect("this account's daemon has a place to listen")
                 .native()
@@ -381,7 +381,7 @@ impl Drop for StartedSession {
 /// own that no launcher knew, so every app it started ran without one and its agents exited.
 #[test]
 fn a_hosted_session_serves_its_apps_where_its_launcher_hands_them() {
-    let session = StartedSession::start(&[(tilo_paths::machine::VAR, "hosted")]);
+    let session = StartedSession::start(&[(tilo_machine::VAR, "hosted")]);
     let collab = session.runtime.path().join("tilo/services/collab.sock");
     assert!(
         collab.exists(),
@@ -399,7 +399,7 @@ fn a_hosted_session_serves_its_apps_where_its_launcher_hands_them() {
 /// reach a nested session.
 #[test]
 fn a_hosted_session_serves_its_persons_agents() {
-    let session = StartedSession::start(&[(tilo_paths::machine::VAR, "hosted")]);
+    let session = StartedSession::start(&[(tilo_machine::VAR, "hosted")]);
     let server = session
         .runtime
         .path()

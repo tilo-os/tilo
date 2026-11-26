@@ -73,7 +73,7 @@ fn sockets_dir(profile: &Path) -> Result<PathBuf> {
 
 /// The native endpoint of the daemon serving `profile`, in its [`sockets_dir`].
 fn native_socket(profile: &Path) -> Result<PathBuf> {
-    Ok(sockets_dir(profile)?.join(tilo_paths::machine::DAEMON_NATIVE))
+    Ok(sockets_dir(profile)?.join(tilo_machine::DAEMON_NATIVE))
 }
 
 /// The launcher a test's profile starts apps through: the build the run made for the runtime's
@@ -666,7 +666,10 @@ fn a_launch_of_an_uninstalled_app_is_refused_and_mcp_still_answers() -> Result<(
     );
     ping(profile.path())?;
     let running = apps_once(profile.path())?;
-    ensure!(running.is_empty(), "nothing runs, so no app is listed: {running:?}");
+    ensure!(
+        running.is_empty(),
+        "nothing runs, so no app is listed: {running:?}"
+    );
     Ok(())
 }
 
@@ -1355,7 +1358,7 @@ impl OwnComputer {
     }
 
     fn native(&self) -> PathBuf {
-        self.sockets().join(tilo_paths::machine::DAEMON_NATIVE)
+        self.sockets().join(tilo_machine::DAEMON_NATIVE)
     }
 
     fn log(&self) -> String {

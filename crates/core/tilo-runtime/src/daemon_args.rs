@@ -71,7 +71,7 @@ pub(crate) fn own_profile() -> io::Result<PathBuf> {
     if tilo_api::daemon::system_daemon() {
         return Ok(PathBuf::from(tilo_api::daemon::SYSTEM_PROFILE));
     }
-    tilo_paths::machine::account_daemon_profile()
+    tilo_machine::account_daemon_profile()
         .ok_or_else(|| invalid("HOME is missing; set TILO_RUNTIME_PROFILE"))
 }
 

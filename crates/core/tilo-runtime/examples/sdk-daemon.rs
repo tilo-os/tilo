@@ -39,7 +39,7 @@ fn run() -> Result<ExitCode> {
     if let Some(profile) = std::env::var_os(SOCKET_OF) {
         let socket = tilo_api::daemon::profile_sockets(Path::new(&profile))
             .map_err(anyhow::Error::msg)?
-            .join(tilo_paths::machine::DAEMON_NATIVE);
+            .join(tilo_machine::DAEMON_NATIVE);
         println!("{}", socket.display());
         return Ok(ExitCode::SUCCESS);
     }
@@ -99,7 +99,7 @@ fn run() -> Result<ExitCode> {
 
     let log = std::fs::File::create(profile.join("daemon.log"))?;
     let mut daemon = with_profile(&mut Command::new(&runtime), profile)
-        .env(tilo_paths::machine::DAEMON_PROFILE_VAR, profile)
+        .env(tilo_machine::DAEMON_PROFILE_VAR, profile)
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD")
         .env_remove("TILO_SVC_NATIVE_FD")
@@ -113,7 +113,7 @@ fn run() -> Result<ExitCode> {
         Ok(()) => {
             let status = with_profile(&mut Command::new(program), profile)
                 .args(rest)
-                .env(tilo_paths::machine::DAEMON_PROFILE_VAR, profile)
+                .env(tilo_machine::DAEMON_PROFILE_VAR, profile)
                 .env_remove("TILO_SVC_NATIVE_FD")
                 .status()
                 .with_context(|| format!("running {}", Path::new(program).display()))?;

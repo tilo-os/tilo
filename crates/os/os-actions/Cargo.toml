@@ -19,7 +19,7 @@ path = "src/lib.rs"
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 # What a session reaches of the machine: a hosted session drives no host daemon.
-tilo-paths.workspace = true
+tilo-machine.workspace = true
 # Change watches on the extension status and brightness memory directories.
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 uuid.workspace = true

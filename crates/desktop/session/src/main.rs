@@ -507,7 +507,7 @@ fn reach(ours: &[String], backend: Backend) -> Reach {
             session: bus(ours, "--session-bus"),
             system: bus(ours, "--system-bus"),
         },
-        tilo_paths::machine::owns_the_machine(),
+        tilo_machine::owns_the_machine(),
     )
 }
 
@@ -670,8 +670,7 @@ fn start(
     // the host. A headless session told it is hosted (`TILO_MACHINE=hosted`, which a test run
     // beside a live desktop declares) is the same: the daemons of the machine it runs on are that
     // desktop's.
-    let machine = if matches!(backend, Backend::Nested) || !tilo_paths::machine::owns_the_machine()
-    {
+    let machine = if matches!(backend, Backend::Nested) || !tilo_machine::owns_the_machine() {
         tilo_session::Machine::Window
     } else {
         tilo_session::Machine::Owned

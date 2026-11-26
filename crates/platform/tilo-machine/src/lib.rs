@@ -1,5 +1,6 @@
 //! What a session reaches of the machine it draws on: the one answer every
-//! service that acts on the machine reads.
+//! service that acts on the machine reads, and where this computer's device
+//! daemon keeps its profile and sockets.
 //!
 //! A Tilo login owns the machine under it: its VPN kill switch configures the
 //! firewall, its Bluetooth and network services drive the radios, its power
@@ -42,7 +43,7 @@ pub fn account_daemon_profile() -> Option<std::path::PathBuf> {
     let suffix = "AppData/Local/Tilo/runtime";
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     let suffix = ".local/state/tilo/runtime";
-    Some(super::home()?.join(suffix))
+    Some(tilo_paths::home()?.join(suffix))
 }
 
 /// The unit Tilo OS runs the device daemon from boot with, as the system's own account.
@@ -111,7 +112,7 @@ pub fn account_sockets(uid: u32) -> Result<std::path::PathBuf, String> {
         Ok(darwin_temp_dir()?.join("tilo"))
     }
     #[cfg(not(target_os = "macos"))]
-    Ok(crate::var("XDG_RUNTIME_DIR")
+    Ok(tilo_paths::var("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .filter(|runtime| runtime.is_absolute() && runtime.is_dir())
         .or_else(|| Some(PathBuf::from(format!("/run/user/{uid}"))).filter(|run| run.is_dir()))
@@ -213,7 +214,7 @@ impl Reach {
 /// What this process's session reaches of the machine.
 #[must_use]
 pub fn reach() -> Reach {
-    Reach::named(crate::var(VAR).as_ref())
+    Reach::named(tilo_paths::var(VAR).as_ref())
 }
 
 /// Whether this session may drive the machine's own daemons: the one answer

@@ -138,6 +138,7 @@ collab-types = { package = "tilo-collab-types", path = "../../core/collab-types"
 tilo-identity = { path = "../../core/tilo-identity" }
 tilo-automerge-isolate.workspace = true
 tilo-paths.workspace = true
+tilo-machine.workspace = true
 anyhow.workspace = true
 hex.workspace = true
 libc.workspace = true

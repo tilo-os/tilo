@@ -47,6 +47,8 @@ blake3.workspace = true
 hex.workspace = true
 tempfile.workspace = true
 tilo-paths.workspace = true
+tilo-machine.workspace = true
+
 # The MPRIS name a launched package's player requests, so the session-bus
 # filter grants that same name (`dbus_proxy::media_player_name`).
 tilo-process = { path = "../../platform/tilo-process" }

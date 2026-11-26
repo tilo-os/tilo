@@ -965,7 +965,7 @@ fn a_device_founds_its_person_only_when_its_own_account_asks() {
     let sockets = root.join("sockets");
     std::fs::create_dir_all(&sockets).unwrap();
     let listener =
-        tilo_files::native::private::bind_socket(&sockets.join(tilo_paths::machine::DAEMON_NATIVE))
+        tilo_files::native::private::bind_socket(&sockets.join(tilo_machine::DAEMON_NATIVE))
             .unwrap();
     {
         let native = std::sync::Arc::clone(&native);
@@ -2756,13 +2756,13 @@ fn a_long_profile_path_keeps_its_sockets_where_every_client_finds_them() {
         .join("server");
     std::fs::create_dir_all(&profile).unwrap();
     assert!(
-        tilo_api::daemon::socket_fits(&profile.join(tilo_paths::machine::DAEMON_NATIVE)).is_err(),
+        tilo_api::daemon::socket_fits(&profile.join(tilo_machine::DAEMON_NATIVE)).is_err(),
         "the test's profile is long enough that a socket cannot live in it"
     );
     let sockets = super::sockets_dir(&profile).unwrap();
     assert_ne!(sockets, profile, "{}", sockets.display());
     assert!(!sockets.starts_with(&profile), "{}", sockets.display());
-    tilo_api::daemon::socket_fits(&sockets.join(tilo_paths::machine::DAEMON_NATIVE)).unwrap();
+    tilo_api::daemon::socket_fits(&sockets.join(tilo_machine::DAEMON_NATIVE)).unwrap();
     assert_eq!(
         tilo_api::daemon::profile_sockets(&profile).unwrap(),
         sockets,
@@ -2877,7 +2877,7 @@ fn a_system_daemons_services_are_the_accounts_and_its_native_endpoint_is_everyon
     let shared = directory.path().join("run");
     std::fs::create_dir(&shared).unwrap();
     std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let native = shared.join(tilo_paths::machine::DAEMON_NATIVE);
+    let native = shared.join(tilo_machine::DAEMON_NATIVE);
 
     // The daemon answers at its native endpoint before anyone signs in, and a founding then makes
     // the services' directory: the endpoint is still there, and still reached through the
@@ -2992,13 +2992,13 @@ fn an_unclaimed_system_daemon_answers_roots_sign_in_then_has_a_person() {
     let sockets = root.join("sockets");
     std::fs::create_dir_all(&sockets).unwrap();
     let listener =
-        tilo_files::native::private::bind_socket(&sockets.join(tilo_paths::machine::DAEMON_NATIVE))
+        tilo_files::native::private::bind_socket(&sockets.join(tilo_machine::DAEMON_NATIVE))
             .unwrap();
     {
         let native = std::sync::Arc::clone(&native);
         std::thread::spawn(move || native.accept(&listener));
     }
-    let native_socket = sockets.join(tilo_paths::machine::DAEMON_NATIVE);
+    let native_socket = sockets.join(tilo_machine::DAEMON_NATIVE);
     let ask = |uid: u32, request: Value| {
         FOUNDING_PEER.store(uid, Ordering::SeqCst);
         let stream = std::os::unix::net::UnixStream::connect(&native_socket).unwrap();
@@ -3189,13 +3189,13 @@ fn a_founding_link_is_never_an_apps_or_another_programs() {
     let sockets = root.join("sockets");
     std::fs::create_dir_all(&sockets).unwrap();
     let listener =
-        tilo_files::native::private::bind_socket(&sockets.join(tilo_paths::machine::DAEMON_NATIVE))
+        tilo_files::native::private::bind_socket(&sockets.join(tilo_machine::DAEMON_NATIVE))
             .unwrap();
     {
         let native = std::sync::Arc::clone(&native);
         std::thread::spawn(move || native.accept(&listener));
     }
-    let native_socket = sockets.join(tilo_paths::machine::DAEMON_NATIVE);
+    let native_socket = sockets.join(tilo_machine::DAEMON_NATIVE);
     let ask = |uid: u32, pid: u32, request: Value| {
         UID.store(uid, Ordering::SeqCst);
         PID.store(pid, Ordering::SeqCst);

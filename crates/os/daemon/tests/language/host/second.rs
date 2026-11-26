@@ -82,7 +82,7 @@ impl Second {
                 "1".into(),
             ),
             (
-                tilo_paths::machine::DAEMON_PROFILE_VAR.into(),
+                tilo_machine::DAEMON_PROFILE_VAR.into(),
                 profile.clone().into(),
             ),
         ];
@@ -194,7 +194,11 @@ impl Second {
                 "--cache-dir",
                 cache.to_str().expect("the cache is text"),
             ])
-            .envs(self.env.iter().map(|(name, value)| (name.clone(), value.clone())))
+            .envs(
+                self.env
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone())),
+            )
             .env("TILO_FS_FUSE_REQUIRED", "1")
             .env_remove("TILO_SERVER_CONFIG")
             .env_remove(runtime_bundle::RUNTIME_DIR_ENV)

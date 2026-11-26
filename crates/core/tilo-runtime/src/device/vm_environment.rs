@@ -713,7 +713,7 @@ fn session_command(holds: Holds, workspace: &str) -> std::process::Command {
     if holds == Holds::Apps
         && let Some(tenant) = std::env::var_os(crate::daemon::TENANT_SOCKETS_ENV)
     {
-        command.env(tilo_paths::machine::DAEMON_PROFILE_VAR, tenant);
+        command.env(tilo_machine::DAEMON_PROFILE_VAR, tenant);
     }
     command
 }

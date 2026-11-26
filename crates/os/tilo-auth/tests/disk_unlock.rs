@@ -148,7 +148,7 @@ fn own_process(test: &str) {
         .env(PROFILE, place("p"))
         // The daemon's profile is named apart from the account's own, as a test's or a VM host's
         // is: it keeps its sockets there, and every client of this computer finds them there
-        // (`tilo_paths::machine::DAEMON_PROFILE_VAR`).
+        // (`tilo_machine::DAEMON_PROFILE_VAR`).
         .env("TILO_RUNTIME_PROFILE", place("p"))
         .env("HOME", place("h"))
         .env("XDG_CONFIG_HOME", place("c"))
@@ -314,7 +314,12 @@ impl Siblings for Answers {
 /// The half the person's devices carry for this device's enrolment of `slot`: what its daemon
 /// published in its entry of their devices, opened with their secret-sync key as a device that
 /// keeps their root opens it to release it.
-fn carried_half(daemon: &DaemonPlace, root: &SigningIdentity, cert: &DeviceCert, slot: SlotId) -> [u8; HALF_LEN] {
+fn carried_half(
+    daemon: &DaemonPlace,
+    root: &SigningIdentity,
+    cert: &DeviceCert,
+    slot: SlotId,
+) -> [u8; HALF_LEN] {
     use tilo_server_protocol::devices::{DEVICES, record_value};
     let this = hex::encode(
         daemon
@@ -336,8 +341,13 @@ fn carried_half(daemon: &DaemonPlace, root: &SigningIdentity, cert: &DeviceCert,
         .iter()
         .find(|enrolment| enrolment.slot == slot)
         .expect("the enrolment of the slot is published");
-    assert_eq!(&enrolment.cert, cert, "the enrolment is the certificate the token keeps");
-    let secret_sync = root.secret_sync_key().expect("the root derives its secret-sync key");
+    assert_eq!(
+        &enrolment.cert, cert,
+        "the enrolment is the certificate the token keeps"
+    );
+    let secret_sync = root
+        .secret_sync_key()
+        .expect("the root derives its secret-sync key");
     *open_sibling_half(&secret_sync, cert, &enrolment.sealed_half)
         .expect("the person's root opens the half")
         .expose()
@@ -677,7 +687,10 @@ fn sets_up_and_opens(profile: &Path, root: SigningIdentity) {
     enrol::prepare(&prepared, machine).unwrap();
     enrol::register(&handed, &DaemonRegistrar::new(here.clone()))
         .expect("the daemon has the root certify the boot key");
-    assert!(!handed.join(enrol::ASKED).exists(), "what was asked is gone");
+    assert!(
+        !handed.join(enrol::ASKED).exists(),
+        "what was asked is gone"
+    );
     enrol::finish(&finished, machine).expect("root writes the token");
     assert!(sibling::enrolled(&runner, &device));
     assert!(!waiting.exists());

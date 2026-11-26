@@ -81,7 +81,7 @@ impl NmClient {
     /// Connect to the system bus.
     ///
     /// A session that runs inside another desktop owns no machine of its own
-    /// ([`tilo_paths::machine`]): it reaches no `NetworkManager` at all, and
+    /// ([`tilo_machine`]): it reaches no `NetworkManager` at all, and
     /// never the host's.
     ///
     /// # Errors
@@ -89,7 +89,7 @@ impl NmClient {
     /// [`NmError::Hosted`] when this session owns no machine, `NmError::Bus`
     /// when the system bus cannot be reached.
     pub async fn system() -> Result<Self, NmError> {
-        if !tilo_paths::machine::owns_the_machine() {
+        if !tilo_machine::owns_the_machine() {
             return Err(NmError::Hosted);
         }
         Ok(Self::new(Connection::system().await?))

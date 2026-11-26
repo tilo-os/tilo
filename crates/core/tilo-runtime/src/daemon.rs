@@ -61,7 +61,7 @@ impl Sockets {
     /// The names a daemon's sockets have in the directory serving a profile keeps them in.
     pub(crate) fn in_dir(dir: &Path) -> Self {
         Self {
-            native: dir.join(tilo_paths::machine::DAEMON_NATIVE),
+            native: dir.join(tilo_machine::DAEMON_NATIVE),
             collab: dir.join(COLLAB_SOCKET),
             identity: dir.join(IDENTITY_SOCKET),
             blobs: dir.join(BLOB_SOCKET),
@@ -112,7 +112,7 @@ fn native_socket(profile: &Path) -> io::Result<PathBuf> {
 /// is, and the profile's path never has to fit a socket's address.
 #[cfg(unix)]
 fn publish_native(profile: &Path, native: &Path) -> io::Result<()> {
-    let named = profile.join(tilo_paths::machine::DAEMON_NATIVE);
+    let named = profile.join(tilo_machine::DAEMON_NATIVE);
     if named == native {
         return Ok(());
     }
@@ -153,7 +153,7 @@ pub(crate) fn service_sockets(profile: &Path) -> io::Result<PathBuf> {
 /// Whether the daemon serving `profile` is the computer's: Tilo OS's system unit, serving every
 /// account of it. A daemon started over any other profile, there too, is one account's.
 fn serves_the_computer(profile: &Path) -> bool {
-    tilo_paths::machine::serves_the_computer(tilo_api::daemon::system_daemon(), Some(profile))
+    tilo_machine::serves_the_computer(tilo_api::daemon::system_daemon(), Some(profile))
 }
 
 /// [`service_sockets`] for a daemon that is the computer's (`system`) or one account's, serving
@@ -175,7 +175,7 @@ fn service_sockets_at(own: &Path, system: bool, account: Option<u32>) -> io::Res
 pub const TENANT_UID_ENV: &str = "TILO_VM_TENANT_UID";
 /// The directory the daemon serves its tenant's socket in: made by the VM's keeper for the
 /// tenant's group, which is the first gate, and what a client of the daemon whose sockets are in
-/// a named profile looks in ([`tilo_paths::machine::DAEMON_PROFILE_VAR`]).
+/// a named profile looks in ([`tilo_machine::DAEMON_PROFILE_VAR`]).
 pub const TENANT_SOCKETS_ENV: &str = "TILO_VM_TENANT_SOCKETS";
 
 /// The tenant a workspace VM's keeper hands this daemon: the account its socket serves, and the
@@ -189,7 +189,7 @@ pub(crate) struct Tenant {
 impl Tenant {
     /// The tenant's native endpoint, in its directory.
     fn native(&self) -> PathBuf {
-        self.sockets.join(tilo_paths::machine::DAEMON_NATIVE)
+        self.sockets.join(tilo_machine::DAEMON_NATIVE)
     }
 }
 
@@ -212,7 +212,7 @@ fn tenant_of_environment() -> io::Result<Option<Tenant>> {
             "{TENANT_SOCKETS_ENV} is not an absolute path"
         )));
     }
-    tilo_api::daemon::socket_fits(&sockets.join(tilo_paths::machine::DAEMON_NATIVE))
+    tilo_api::daemon::socket_fits(&sockets.join(tilo_machine::DAEMON_NATIVE))
         .map_err(io::Error::other)?;
     Ok(Some(Tenant { uid, sockets }))
 }

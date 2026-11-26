@@ -19,7 +19,7 @@ use tilo_device_identity::persist::{IdentityPaths, load_or_create_device_key};
 use tilo_seal::secret_service::{CallerKey, open_vault, seal_vault};
 
 /// The variable a program finds a daemon's profile, and its sockets, by.
-pub const PROFILE: &str = tilo_paths::machine::DAEMON_PROFILE_VAR;
+pub const PROFILE: &str = tilo_machine::DAEMON_PROFILE_VAR;
 
 /// A running stand-in, answering until it is dropped.
 pub struct DeviceDaemon {

@@ -68,7 +68,7 @@ impl Daemon {
         std::fs::set_permissions(&sockets, std::fs::Permissions::from_mode(0o700))
             .expect("the daemon's socket directory is its own");
         env.set("XDG_RUNTIME_DIR", runtime.path());
-        let listener = UnixListener::bind(sockets.join(tilo_paths::machine::DAEMON_NATIVE))
+        let listener = UnixListener::bind(sockets.join(tilo_machine::DAEMON_NATIVE))
             .expect("the daemon's native endpoint");
         listener
             .set_nonblocking(true)
