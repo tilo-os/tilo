@@ -314,18 +314,6 @@ impl DocumentId {
         (number > 0).then(|| (Self(base.to_owned()), number))
     }
 
-    /// The number of the part of the chain `self` whose document is kept
-    /// under `storage_key` ([`Self::storage_key`]), or `None` for any other
-    /// document's: what a store lists of a chain it holds parts of without
-    /// having opened them.
-    #[must_use]
-    pub fn part_of_storage_key(&self, storage_key: &str) -> Option<u64> {
-        let index = storage_key.strip_prefix("derived_part.")?;
-        let digits = index.bytes().take_while(u8::is_ascii_digit).count();
-        let index: u64 = index.get(..digits)?.parse().ok()?;
-        (self.part(index).storage_key() == storage_key).then_some(index)
-    }
-
     /// The number of the chunk of the document `self` whose document is kept
     /// under `storage_key` ([`Self::storage_key`]), or `None` for any other
     /// document's: what a store lists of a document's chunks it holds without
@@ -635,18 +623,6 @@ pub struct DocumentCheckout {
 }
 
 impl DocumentCheckout {
-    /// The document a desktop tab of `app_id` shows: the workspace's package-primary
-    /// document for Chat, the tab's own document for every other app. Keeps the
-    /// tab identity, so a tab dragged elsewhere keeps its document.
-    pub fn for_component_tab(app_id: &str, tab: u64, kind: ResourceType) -> Self {
-        let id = if app_id == "so.tilo.chat" {
-            DocumentId::package_primary()
-        } else {
-            DocumentId::for_tab(tab)
-        };
-        Self::new(id, kind)
-    }
-
     pub fn package_primary(kind: ResourceType) -> Self {
         Self::new(DocumentId::package_primary(), kind)
     }

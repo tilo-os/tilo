@@ -316,40 +316,6 @@ impl InboundState {
         }
         Ok(rewritten)
     }
-
-    /// Collect up to `max` ops whose `artifact` matches and `seq <
-    /// before_seq`, ascending seq order. Used by `FetchScrollback`.
-    ///
-    /// Also returns whether the log is exhausted for that artifact — the
-    /// caller uses that to decide whether to fall back to a peer-to-peer fetch.
-    pub fn scrollback_for(
-        &self,
-        artifact: ArtifactId,
-        before_seq: u64,
-        max: u16,
-    ) -> (Vec<SignedOp>, bool) {
-        let mut matching: Vec<SignedOp> = self
-            .op_log
-            .iter()
-            .filter(|op| op.artifact == artifact && op.seq < before_seq)
-            .cloned()
-            .collect();
-        matching.sort_by_key(|op| op.seq);
-        let total = matching.len();
-        if max == 0 {
-            // Caller asked for zero ops: `exhausted` is then "is the requested range empty?".
-            return (Vec::new(), total == 0);
-        }
-        let max_usize = max as usize;
-        // Take the highest-seq window — late joiners scroll backwards from
-        // "before this seq", so the most recent ops are the most useful first batch.
-        let start = total.saturating_sub(max_usize);
-        let ops: Vec<SignedOp> = matching
-            .get(start..)
-            .map_or_else(Vec::new, <[SignedOp]>::to_vec);
-        let exhausted = ops.len() >= total;
-        (ops, exhausted)
-    }
 }
 
 /// `collab_admission::validate_admitted_inbound_op` for an op a receiver already admitted as

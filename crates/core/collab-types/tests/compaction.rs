@@ -1,8 +1,7 @@
-//! Op-log compaction + scrollback integration tests.
+//! Op-log compaction integration tests.
 //!
-//! Exercises [`InboundState::record_validated_op`],
-//! [`InboundState::apply_compaction`], and
-//! [`InboundState::scrollback_for`]. Live in `tests/` (not unit tests)
+//! Exercises [`InboundState::record_validated_op`] and
+//! [`InboundState::apply_compaction`]. Live in `tests/` (not unit tests)
 //! because they cover the validator's *public* API.
 
 use std::time::SystemTime;
@@ -220,79 +219,4 @@ tilo_test_env::scenario! {
         let parsed = collab_types::parse_compaction_payload(&op).expect("parse");
         assert_eq!(parsed, cp);
     }
-
-    phase scrollback_pages_backwards_per_artifact_until_exhausted;
-    // Scrollback pages backwards from `before_seq`, returns at most `max` of
-    // the most recent ops in seq order, filters by artifact, and reports
-    // exhaustion — including after the prefix was compacted away.
-    {
-        // (case, ops logged, before_seq, max, expected seqs, expected exhausted
-        // or None when the case does not pin it, why)
-        let cases: [ScrollCase; 3] = [
-            (
-                "returns recent ops in seq order",
-                5,
-                6,
-                10,
-                vec![1, 2, 3, 4, 5],
-                Some(true),
-                "all 5 ops returned; nothing left in the log",
-            ),
-            (
-                // Caller is paging backwards from the present → most recent 3.
-                "caps at max returning tail",
-                10,
-                11,
-                3,
-                vec![8, 9, 10],
-                Some(false),
-                "10 ops > max of 3 → caller needs to page further; not exhausted",
-            ),
-            (
-                // before_seq = 3 → seqs strictly less than 3.
-                "respects before_seq bound",
-                5,
-                3,
-                10,
-                vec![1, 2],
-                None,
-                "",
-            ),
-        ];
-        for (case, logged, before_seq, max, want, want_exhausted, why) in cases {
-            let (state, _, _, artifact, _) = state_with_ops(1..=logged);
-            let (ops, exhausted) = state.scrollback_for(artifact, before_seq, max);
-            assert_eq!(seqs_of(&ops), want, "case {case}");
-            if let Some(want_exhausted) = want_exhausted {
-                assert_eq!(exhausted, want_exhausted, "case {case}: {why}");
-            }
-        }
-
-        // Case: the artifact filter — only artifact A's ops are returned.
-        let (mut state, sk, author, artifact_a, att_id) = minimal_state();
-        interleave_second_artifact(&mut state, &sk, author, artifact_a, att_id);
-        let (ops, _) = state.scrollback_for(artifact_a, 1000, 10);
-        assert_eq!(seqs_of(&ops), vec![1, 2, 3], "only artifact A ops returned");
-
-        // Case: exhausted after compaction. Compact seqs 1..=3 away; asking for
-        // seqs < 4 → returns empty + exhausted.
-        let (mut state, _, _, artifact, _) = state_with_ops(1..=5);
-        let cp = checkpoint(&state, artifact, 3);
-        state.apply_compaction(&cp).expect("apply");
-        let (ops, exhausted) = state.scrollback_for(artifact, 4, 10);
-        assert!(ops.is_empty(), "compacted prefix has been evicted");
-        assert!(exhausted, "the requested range is fully exhausted locally");
-    }
 }
-
-/// (case, ops logged, `before_seq`, max, expected seqs, expected exhaustion when
-/// the case pins it, why)
-type ScrollCase = (
-    &'static str,
-    u64,
-    u64,
-    u16,
-    Vec<u64>,
-    Option<bool>,
-    &'static str,
-);

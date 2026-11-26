@@ -32,12 +32,6 @@ pub fn personal_cluster(root: &[u8; 32]) -> uuid::Uuid {
     uuid::Builder::from_custom_bytes(bytes).into_uuid()
 }
 
-/// Whether `cluster` is the retained store's of the person whose root public key is `root`.
-#[must_use]
-pub fn is_personal_cluster(root: &[u8; 32], cluster: &uuid::Uuid) -> bool {
-    personal_cluster(root) == *cluster
-}
-
 /// What every person record's id derives from: the app's base record
 /// (`tab:0`), whose role the person's record of a kind plays.
 const PERSON_RESOURCE_BASE: &str = "tab:0000000000000000";
@@ -172,8 +166,6 @@ mod tests {
             );
             assert!(!cluster.is_nil());
             assert_eq!(cluster.get_version_num(), 8);
-            assert!(is_personal_cluster(&ada, &cluster));
-            assert!(!is_personal_cluster(&bob, &cluster));
         }
     }
 }

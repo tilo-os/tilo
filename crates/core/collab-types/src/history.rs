@@ -460,12 +460,6 @@ impl HistoryPager {
             }
         }
     }
-
-    /// Forget an outstanding request that will never be answered (transport
-    /// reset), so the next trigger re-issues it.
-    pub fn reset_in_flight(&mut self) {
-        self.in_flight = None;
-    }
 }
 
 #[cfg(test)]

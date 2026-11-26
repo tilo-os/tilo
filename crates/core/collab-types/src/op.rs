@@ -633,10 +633,6 @@ pub fn governance_head(hash: &[u8; 32]) -> [u8; 4] {
     hash.first_chunk::<4>().copied().unwrap_or_default()
 }
 
-/// Why a write that waited for the governance it was written under is
-/// refused when that governance did not come in time.
-pub const GOVERNANCE_NEVER_ARRIVED: &str = "the role change it depends on never arrived";
-
 /// One signed CRDT mutation. `Clone` because the broker fans an op to
 /// multiple peers; `PartialEq` for envelope-identity assertions in tests.
 /// Deliberately not `Hash` — use the signature bytes as a map key if needed.

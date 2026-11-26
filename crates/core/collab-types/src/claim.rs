@@ -321,7 +321,9 @@ impl ClaimedAction {
             return None;
         };
         let mut verbs = members.iter().filter_map(|member| match member {
-            Self::Verb { action, item: None } if action.app.is_empty() && action.kind.is_empty() => {
+            Self::Verb { action, item: None }
+                if action.app.is_empty() && action.kind.is_empty() =>
+            {
                 Some(action.action.as_str())
             }
             _ => None,

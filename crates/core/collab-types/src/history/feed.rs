@@ -348,7 +348,11 @@ mod tests {
                 )
             })
             .collect();
-        assert_eq!(told, [("created", "note1"), ("edited", "note1")], "{page:?}");
+        assert_eq!(
+            told,
+            [("created", "note1"), ("edited", "note1")],
+            "{page:?}"
+        );
     }
 
     #[test]

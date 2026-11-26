@@ -10,8 +10,8 @@
 
 use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{AutoCommit, ObjType, ROOT};
-use tilo_automerge::ApplyIncoming as _;
 use tilo_actions::surface::{FieldType, Surface};
+use tilo_automerge::ApplyIncoming as _;
 
 pub mod split;
 
@@ -260,7 +260,9 @@ mod tests {
         let mut here = device(1, 1, "milk", "2 l");
         let mut there = device(1, 2, "eggs", "6");
         let (own_heads, peer_heads) = (here.get_heads(), there.get_heads());
-        assert!(super::bring_up((KIND, ID, APP), 3, &containers(), &unchanged(), &mut here).unwrap());
+        assert!(
+            super::bring_up((KIND, ID, APP), 3, &containers(), &unchanged(), &mut here).unwrap()
+        );
         assert!(
             super::bring_up((KIND, ID, APP), 3, &containers(), &unchanged(), &mut there).unwrap()
         );
@@ -344,7 +346,9 @@ mod tests {
         let mut there = made(2, "eggs");
         tilo_automerge::ApplyIncoming::merge_incoming(&mut here, &mut there).unwrap();
         let mut again = here.fork();
-        assert!(super::bring_up((KIND, ID, APP), 2, &containers(), &unchanged(), &mut here).unwrap());
+        assert!(
+            super::bring_up((KIND, ID, APP), 2, &containers(), &unchanged(), &mut here).unwrap()
+        );
         assert!(
             super::bring_up((KIND, ID, APP), 2, &containers(), &unchanged(), &mut again).unwrap()
         );

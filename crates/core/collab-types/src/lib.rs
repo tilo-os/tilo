@@ -61,7 +61,6 @@ pub mod document_transfer;
 pub mod handoff;
 pub mod history;
 pub mod identity;
-pub mod inbound;
 pub mod member;
 pub mod mls_governance;
 pub mod op;
@@ -124,8 +123,7 @@ pub use crypto::{
 };
 pub use direct::{canonical_pair, direct_pair_id, direct_resource};
 pub use document_transfer::{
-    DocumentFrame, DocumentMutationKind, DocumentReassembler, DocumentSegment,
-    MAX_DOCUMENT_TRANSFER_BYTES, ReassembledDocument, ReassemblyError,
+    DocumentFrame, DocumentMutationKind, DocumentSegment, MAX_DOCUMENT_TRANSFER_BYTES,
 };
 pub use identity::{AttestationId, AvatarBytes};
 pub use member::{Member, Person};
@@ -135,10 +133,10 @@ pub use mls_governance::{
 };
 pub use op::{
     ContentRetention, DocumentMutation, DocumentMutationEncodeError, DocumentMutationError,
-    EncryptionMetadata, EncryptionScheme, GOVERNANCE_NEVER_ARRIVED, MAX_DOCUMENT_MUTATION_BYTES,
-    RoutedDocumentPayload, SignedOp, WholeDocumentPayload, document_artifact_id,
-    document_attestation_id, governance_head, names_document, next_unordered_document_sequence,
-    validate_document_payload_route, validate_whole_document_payload_route,
+    EncryptionMetadata, EncryptionScheme, MAX_DOCUMENT_MUTATION_BYTES, RoutedDocumentPayload,
+    SignedOp, WholeDocumentPayload, document_artifact_id, document_attestation_id, governance_head,
+    names_document, next_unordered_document_sequence, validate_document_payload_route,
+    validate_whole_document_payload_route,
 };
 pub use peer::{PeerPresence, PeerPresencePayload};
 pub use photo::{MAX_PHOTO_CHARS, PhotoError, avatar_of, photo, photo_bytes, photo_url};
@@ -152,8 +150,8 @@ pub use receipt::{
     claim_node, written_node,
 };
 pub use record_id::{
-    is_personal_cluster, person_document_context, person_document_for_workspace,
-    person_document_id, person_resource_type, personal_cluster,
+    person_document_context, person_document_for_workspace, person_document_id,
+    person_resource_type, personal_cluster,
 };
 pub use redaction::{
     MAX_REDACTION_REASON_BYTES, OpId, RedactRequest, RedactedMarker, RedactionError,
