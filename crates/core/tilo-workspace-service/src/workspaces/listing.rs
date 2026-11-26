@@ -667,9 +667,11 @@ impl Workspaces {
     /// A workspace whose entry takes people by invitation answers its entry only
     /// to a person with a device already in it (joining again from another
     /// device of theirs), one an invitation still names
-    /// [`PendingInvitation::recipient_user_public_key`], or one it declared a
-    /// member before their device arrived. Everyone else is turned away with
-    /// the entry's own words.
+    /// [`PendingInvitation::recipient_user_public_key`], one it declared a
+    /// member before their device arrived, or one invited into any workspace
+    /// this host serves: whoever invited them let them in, and the home is
+    /// where everyone on the host is. Everyone else is turned away with the
+    /// entry's own words.
     ///
     /// The entry admits strangers: a person with a device already in it is told
     /// to add another from that device, and a device of theirs that enters on
@@ -681,7 +683,10 @@ impl Workspaces {
     /// as theirs, and an entry that handed them another would change it. An
     /// invitation a member made is the decision, and the entry never changes its
     /// role or lifetime; for a person the workspace declared itself, it issues
-    /// one at their part, so the declaration is what lets their device in.
+    /// one at their part, so the declaration is what lets their device in. A
+    /// person it holds nothing of but who is in a workspace of this host's is
+    /// issued one at the listing's default role, as a stranger who asks would
+    /// come in at.
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the workspace is held while the invitation is written: a change between the two would hand out a role the workspace no longer has"
@@ -705,9 +710,9 @@ impl Workspaces {
                 .map_err(|error| refused(CollaborationError::new(error.to_string())))?
                 .policy;
             let entry = Self::entry_of(&hosted);
-            if entry.listing.is_none() {
+            let Some(listing) = entry.listing.clone() else {
                 return Err(EntryRefusal::refused("that workspace is not public"));
-            }
+            };
             if policy.is_blocked(&hex::encode(user)) {
                 return Err(EntryRefusal::Banned);
             }
@@ -732,54 +737,59 @@ impl Workspaces {
             // their own, and says so: the person's page offers them the way to
             // be invited (the site's wait list) instead of a link in as a
             // guest. The invitation a member made is the decision when nobody
-            // declared them here.
-            if entry.invitation_only && part.is_none() {
-                let Some(issued) = hosted.invitation_for(user, now) else {
-                    return Err(EntryRefusal::InvitationOnly);
-                };
+            // declared them here. Someone invited into any workspace on the
+            // host is no stranger: whoever invited them let them in, and the
+            // home is where everyone on the host is.
+            if entry.invitation_only
+                && let Some(issued) = hosted.invitation_for(user, now)
+            {
                 return Ok(Listed::Invited(issued));
             }
-            if let Some(part) = part {
-                // Someone the operator declared here comes in at the part
-                // they were given, not at the role the entry hands a
-                // stranger: the workspace invites them at it, as a member
-                // would, rather than the entry changing their role.
-                let invited = hosted.invitation_for(user, now);
-                let issued = if let Some(issued) = invited {
-                    issued
-                } else {
-                    let role = match part {
-                        Role::Viewer | Role::Commenter => part,
-                        _ => Role::Editor,
-                    };
-                    let request = IssueInvitationRequest {
-                        request_id: rand::random(),
-                        role,
-                        recipient_user_public_key: Some(user),
-                        invitee_name: tilo_user_identity::display_name(&join.display_name)
-                            .ok()
-                            .map(str::to_owned),
-                        expires_at_ns: now.saturating_add(ENTRY_INVITATION_NS),
-                        inviter_name: self
-                            .member_name_by_root(&hosted, self.inner.host.cert.user_public_key),
-                    };
-                    let issued = self
-                        .stage_issue(
-                            &mut hosted,
-                            &self.inner.host.cert,
-                            request,
-                            false,
-                            &address,
-                            now,
-                        )
-                        .map_err(refused)?;
-                    minted = true;
-                    issued
-                };
-                Listed::Invited(issued)
-            } else {
-                Listed::Open
+            if entry.invitation_only && part.is_none() && !self.inner.memberships.holds_any(&user) {
+                return Err(EntryRefusal::InvitationOnly);
             }
+            if part.is_none() && !entry.invitation_only {
+                return Ok(Listed::Open);
+            }
+            // The entry invites the person it lets in, at the part the
+            // workspace declared them at or, for someone the host has in a
+            // workspace of its own, the role it lists. The invitation is what
+            // their device redeems, so it comes in as a member's does, and its
+            // role is the workspace's decision: an entry that handed them
+            // another would change the part they were given.
+            let invited = hosted.invitation_for(user, now);
+            let issued = if let Some(issued) = invited {
+                issued
+            } else {
+                let role = part.map_or(listing.default_role, |part| match part {
+                    Role::Viewer | Role::Commenter => part,
+                    _ => Role::Editor,
+                });
+                let request = IssueInvitationRequest {
+                    request_id: rand::random(),
+                    role,
+                    recipient_user_public_key: Some(user),
+                    invitee_name: tilo_user_identity::display_name(&join.display_name)
+                        .ok()
+                        .map(str::to_owned),
+                    expires_at_ns: now.saturating_add(ENTRY_INVITATION_NS),
+                    inviter_name: self
+                        .member_name_by_root(&hosted, self.inner.host.cert.user_public_key),
+                };
+                let issued = self
+                    .stage_issue(
+                        &mut hosted,
+                        &self.inner.host.cert,
+                        request,
+                        false,
+                        &address,
+                        now,
+                    )
+                    .map_err(refused)?;
+                minted = true;
+                issued
+            };
+            Listed::Invited(issued)
         };
         if minted {
             self.written(workspace, true).await.map_err(refused)?;
