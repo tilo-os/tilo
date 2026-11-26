@@ -16,6 +16,10 @@ use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
+/// The height the funnel draws at where its rows have room: a stage's name breaks over two lines
+/// beside it, so a chart of many stages grows to keep every row that tall.
+const NATURAL_HEIGHT: f64 = 380.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FunnelDirection {
     Funnel,
@@ -61,6 +65,15 @@ struct StageGeometry {
     conversion: f64,
 }
 
+/// A stage's name as it is painted: the lines it reads as with the box each covers, its value
+/// under them, and the ink it reads in.
+#[derive(Clone, Debug)]
+struct StageLabel {
+    lines: Vec<(String, Rect)>,
+    value: Option<(String, Rect)>,
+    ink: Color,
+}
+
 pub struct FunnelMarks {
     stages: Vec<ChartItem>,
     style: FunnelStyle,
@@ -75,7 +88,7 @@ impl FunnelChart {
         Plot::from_marks(FunnelMarks {
             stages,
             style: FunnelStyle::default(),
-            frame: PlotFrame::new(380.0, 150.0),
+            frame: PlotFrame::fill(150.0),
         })
     }
     #[must_use]
@@ -108,7 +121,7 @@ impl FunnelMarks {
     /// The same margin on both sides of the centred funnel: a stage's name where it stands beside
     /// a stage too narrow for it, and the conversion beside the other edge, a step from the
     /// stages; never more than a quarter of the chart a side.
-    fn measure_margins(&self, tr: &mut TextRenderer, theme: &Theme) -> Margins {
+    fn side_margin(&self, tr: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         let name_style = theme
             .text(TextRole::Label)
             .with_weight(TextWeight::Semibold);
@@ -122,8 +135,10 @@ impl FunnelMarks {
         } else {
             0.0
         };
-        let side = (names.max(conversion) + crate::widget::plot::step(theme))
-            .min(self.frame.rect.width() / 4.0);
+        (names.max(conversion) + crate::widget::plot::step(theme)).min(width / 4.0)
+    }
+    fn measure_margins(&self, tr: &mut TextRenderer, theme: &Theme) -> Margins {
+        let side = self.side_margin(tr, theme, self.frame.rect.width());
         let mut margins = Margins::header(theme, &self.frame.title, 0);
         margins.left = side;
         margins.right = side;
@@ -220,19 +235,16 @@ impl FunnelMarks {
         }
         output
     }
-    /// A stage's name and its value: inside the stage where both fit, otherwise beside the funnel.
-    fn draw_stage_label(
+    /// A stage's name as it is painted, whole inside the stage where it fits, otherwise beside
+    /// it.
+    fn stage_label(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
         geometry: &StageGeometry,
         color: Color,
-    ) {
-        let Some(stage) = self.stages.get(geometry.index) else {
-            return;
-        };
+    ) -> Option<StageLabel> {
+        let stage = self.stages.get(geometry.index)?;
         let name_style = theme
             .text(TextRole::Label)
             .with_weight(TextWeight::Semibold);
@@ -255,51 +267,110 @@ impl FunnelMarks {
             && nh + pad <= bounds.height()
         {
             let cx = bounds.center().x;
+            let name = Rect::new(cx - nw / 2.0, top, cx + nw / 2.0, top + nh);
+            let value = if two_lines {
+                value.as_ref().map(|value| {
+                    let at = Rect::new(cx - vw / 2.0, top + nh, cx + vw / 2.0, top + nh + vh);
+                    (value.clone(), at)
+                })
+            } else {
+                None
+            };
+            return Some(StageLabel {
+                lines: vec![(stage.label.clone(), name)],
+                value,
+                ink: inside_ink,
+            });
+        }
+        // Beside the funnel: broken over the lines the row holds so the name reads whole, then
+        // shortened to whole words around one ellipsis, and left out where no whole-word reading
+        // fits — its tooltip and accessible name still read it.
+        let edge = bounds.center().x - narrow.max(geometry.wide_width) / 2.0;
+        let spare = edge - pad - self.frame.rect.x0 - pad;
+        let line = f64::from(name_style.line_height_px());
+        let value_shown = vh > 0.0 && vw <= spare && line + vh + pad <= bounds.height();
+        let room = bounds.height() - if value_shown { vh } else { 0.0 };
+        if room + 0.5 < line {
+            return None;
+        }
+        let mut lines = crate::widget::chart_labels::wrapped_labels(tr, &stage.label, &name_style)
+            .into_iter()
+            .find(|wrapped| wrapped.width <= spare && wrapped.height <= room + 0.5)
+            .map(|wrapped| wrapped.lines)
+            .unwrap_or_default();
+        if lines.is_empty() {
+            lines = crate::widget::chart_labels::shortened_labels(tr, &stage.label, &name_style)
+                .into_iter()
+                .find(|(_, width, height)| *width <= spare && *height <= room + 0.5)
+                .map(|(text, width, height)| vec![(text, width, height)])
+                .unwrap_or_default();
+        }
+        if lines.is_empty() {
+            return None;
+        }
+        let height: f64 = lines.iter().map(|(_, _, height)| *height).sum();
+        let total = height + if value_shown { vh } else { 0.0 };
+        if total > bounds.height() + 0.5 {
+            return None;
+        }
+        let x1 = edge - pad;
+        let mut y = bounds.center().y - total / 2.0;
+        let mut shown = Vec::with_capacity(lines.len());
+        for (text, width, height) in lines {
+            shown.push((text, Rect::new(x1 - width, y, x1, y + height)));
+            y += height;
+        }
+        let value = if value_shown {
+            value.as_ref().map(|value| {
+                let at = Rect::new(x1 - vw, y, x1, y + vh);
+                (value.clone(), at)
+            })
+        } else {
+            None
+        };
+        Some(StageLabel {
+            lines: shown,
+            value,
+            ink: theme.tokens.colors.text_primary,
+        })
+    }
+
+    fn draw_stage_label(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        geometry: &StageGeometry,
+        color: Color,
+    ) {
+        let Some(label) = self.stage_label(tr, theme, geometry, color) else {
+            return;
+        };
+        let name_style = theme
+            .text(TextRole::Label)
+            .with_weight(TextWeight::Semibold);
+        let value_style = theme.text(TextRole::Caption);
+        for (text, rect) in label.lines {
             tr.draw_style(
                 scene,
-                &stage.label,
-                inside_ink,
-                transform * Affine::translate((cx - nw / 2.0, top)),
+                &text,
+                label.ink,
+                transform * Affine::translate((rect.x0, rect.y0)),
                 None,
                 &name_style,
             );
-            if two_lines && let Some(value) = value.as_deref() {
-                tr.draw_style(
-                    scene,
-                    value,
-                    inside_ink,
-                    transform * Affine::translate((cx - vw / 2.0, top + nh)),
-                    None,
-                    &value_style,
-                );
-            }
-            return;
         }
-        let edge = bounds.center().x - narrow.max(geometry.wide_width) / 2.0;
-        let spare = edge - pad - self.frame.rect.x0 - pad;
-        let Some((name, w, _)) =
-            crate::widget::chart_labels::fit_label(tr, &stage.label, spare, &name_style)
-        else {
-            return;
-        };
-        let x1 = edge - pad;
-        tr.draw_style(
-            scene,
-            &name,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((x1 - w, top)),
-            None,
-            &name_style,
-        );
-        if two_lines
-            && let Some(value) = value.as_deref()
-            && vw <= spare
-        {
+        if let Some((text, rect)) = label.value {
             tr.draw_style(
                 scene,
-                value,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((x1 - vw, top + nh)),
+                &text,
+                if label.ink == theme.tokens.colors.text_primary {
+                    theme.tokens.colors.text_dim
+                } else {
+                    label.ink
+                },
+                transform * Affine::translate((rect.x0, rect.y0)),
                 None,
                 &value_style,
             );
@@ -362,6 +433,44 @@ impl PlotMarks for FunnelMarks {
         self.frame.margins = self.measure_margins(tr, theme);
     }
 
+    /// A row tall enough for a stage's name broken over its lines beside the funnel, with its
+    /// value under it, for every stage: a chart of few stages still draws at
+    /// [`NATURAL_HEIGHT`], and one of many grows so their labels read whole.
+    fn natural_height(&self, tr: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
+        let stages = self.valid().len();
+        if stages == 0 {
+            return NATURAL_HEIGHT;
+        }
+        let name_style = theme
+            .text(TextRole::Label)
+            .with_weight(TextWeight::Semibold);
+        let line = f64::from(name_style.line_height_px());
+        let value_line = crate::widget::plot::caption_line(theme);
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let side = self.side_margin(tr, theme, width);
+        let spare = (side - 2.0 * pad).max(0.0);
+        let value = if self.style.show_values {
+            value_line
+        } else {
+            0.0
+        };
+        let mut row = line + value;
+        for stage in self
+            .valid()
+            .iter()
+            .filter_map(|index| self.stages.get(*index))
+        {
+            let lines = crate::widget::chart_labels::wrapped_labels(tr, &stage.label, &name_style)
+                .into_iter()
+                .find(|wrapped| wrapped.width <= spare)
+                .map_or(1, |wrapped| wrapped.lines.len());
+            row = row.max(crate::num::f64_of_usize(lines) * line + value);
+        }
+        let gaps = self.style.gap * crate::num::f64_of_usize(stages.saturating_sub(1));
+        let title = crate::widget::chart_navigation::title_band(theme, &self.frame.title);
+        (title + crate::num::f64_of_usize(stages) * row + gaps).max(NATURAL_HEIGHT)
+    }
+
     fn paint(
         &mut self,
         scene: &mut Scene,
@@ -398,18 +507,22 @@ impl PlotMarks for FunnelMarks {
             self.draw_stage_label(scene, transform, tr, theme, &geometry, color);
             if self.style.show_conversion && geometry.conversion < 0.999 {
                 let label = format!("{:.0}%", geometry.conversion * 100.0);
-                tr.draw_style(
-                    scene,
-                    &label,
-                    theme.tokens.colors.text_dim,
-                    transform
-                        * Affine::translate((
-                            geometry.bounds.x1 + crate::widget::plot::step(theme),
-                            geometry.bounds.y0 + f64::from(theme.tokens.spacing.s1),
-                        )),
-                    None,
-                    &theme.text(TextRole::Caption),
-                );
+                let (w, _) = tr.measure_style(&label, None, &theme.text(TextRole::Caption));
+                let x = geometry.bounds.x1 + crate::widget::plot::step(theme);
+                if x + f64::from(w) <= self.frame.rect.x1 + 0.5 {
+                    tr.draw_style(
+                        scene,
+                        &label,
+                        theme.tokens.colors.text_dim,
+                        transform
+                            * Affine::translate((
+                                x,
+                                geometry.bounds.y0 + f64::from(theme.tokens.spacing.s1),
+                            )),
+                        None,
+                        &theme.text(TextRole::Caption),
+                    );
+                }
             }
         }
     }
@@ -440,6 +553,8 @@ pub use funnel_chart_component::{FunnelChartProps, FunnelStage, stages_descripti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::chart_labels::reads_as_whole_words;
+
     #[test]
     fn invalid_stages_are_omitted() {
         let chart = FunnelChart::new(vec![
@@ -447,5 +562,142 @@ mod tests {
             ChartItem::new("zero", "Zero", 0.0),
         ]);
         assert!(chart.marks.valid().is_empty());
+    }
+
+    /// The gallery's long funnel: names far wider than the row they stand beside.
+    fn self_serve_path() -> Vec<ChartItem> {
+        vec![
+            ChartItem::new(
+                "opened",
+                "Opened the product page from a shared link",
+                860.0,
+            ),
+            ChartItem::new("read", "Read past the first screen of the tour", 412.0),
+            ChartItem::new(
+                "started",
+                "Started an import of an existing workspace",
+                148.0,
+            ),
+            ChartItem::new("finished", "Finished the import and invited the team", 73.0),
+        ]
+    }
+
+    /// Every stage's name stays readable at a laptop's width and a phone's: it is the whole name
+    /// — broken over the lines its row holds — or whole words at its start and its end around
+    /// one ellipsis, never a cut inside a word. A stage left unnamed is still read whole by its
+    /// tooltip and accessible name, and no label paints outside the chart.
+    #[test]
+    fn stage_labels_stay_readable_at_every_width() {
+        for theme in [Theme::light(), Theme::dark()] {
+            let mut tr = TextRenderer::new();
+            for width in [1000.0, 358.0] {
+                let mut chart = FunnelChart::new(self_serve_path());
+                chart.marks.frame.rect = Rect::new(0.0, 0.0, width, 380.0);
+                chart.marks.place(&mut tr, &theme);
+                let rect = chart.marks.frame.rect;
+                let items = chart.marks.items();
+                let geometry = chart.marks.geometry();
+                assert_eq!(geometry.len(), 4, "{width}: every stage is drawn");
+                let mut shown = 0;
+                for stage in &geometry {
+                    let name = chart
+                        .marks
+                        .stages
+                        .get(stage.index)
+                        .map(|stage| stage.label.clone())
+                        .unwrap_or_default();
+                    assert!(
+                        items.iter().any(|item| item.name == name),
+                        "{width}: {name:?} is named nowhere"
+                    );
+                    let Some(label) = chart
+                        .marks
+                        .stage_label(&mut tr, &theme, stage, Color::BLACK)
+                    else {
+                        continue;
+                    };
+                    shown += 1;
+                    let text = label
+                        .lines
+                        .iter()
+                        .map(|(text, _)| text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    assert!(
+                        reads_as_whole_words(&name, &text),
+                        "{width}: {name:?} reads as {text:?}"
+                    );
+                    let rects = label
+                        .lines
+                        .iter()
+                        .map(|(_, rect)| *rect)
+                        .chain(label.value.iter().map(|(_, rect)| *rect));
+                    for at in rects {
+                        assert!(
+                            at.x0 >= rect.x0 - 0.5
+                                && at.x1 <= rect.x1 + 0.5
+                                && at.y0 >= rect.y0 - 0.5
+                                && at.y1 <= rect.y1 + 0.5,
+                            "{width}: {at:?} lies outside {rect:?}"
+                        );
+                    }
+                }
+                // A laptop's margin holds every long name over its lines; a phone's holds the
+                // ones a whole word either side of an ellipsis still names, and drops the rest.
+                let least = if width > 500.0 { 4 } else { 1 };
+                assert!(shown >= least, "{width}: only {shown} stages are named");
+            }
+        }
+    }
+
+    /// A row too short for three lines still holds the name broken over the lines it has, and
+    /// the natural height grows a chart of many stages so their rows hold the name whole.
+    /// A chart of many stages grows past the height it draws at so each row holds its name over
+    /// the lines it needs: at the height the chart asks for, every stage reads whole.
+    #[test]
+    fn the_natural_height_holds_the_names_wrapped() {
+        let theme = Theme::light();
+        let mut tr = TextRenderer::new();
+        let mut chart = FunnelChart::new(self_serve_path().into_iter().cycle().take(8).collect());
+        let height = chart.marks.natural_height(&mut tr, &theme, 1000.0);
+        assert!(
+            height > NATURAL_HEIGHT,
+            "eight stages of long names need more than {NATURAL_HEIGHT}: {height}"
+        );
+        chart.marks.frame.rect = Rect::new(0.0, 0.0, 1000.0, height);
+        chart.marks.place(&mut tr, &theme);
+        let mut named = 0;
+        for geometry in chart.marks.geometry() {
+            let name = chart
+                .marks
+                .stages
+                .get(geometry.index)
+                .map(|stage| stage.label.clone())
+                .unwrap_or_default();
+            let Some(label) = chart
+                .marks
+                .stage_label(&mut tr, &theme, &geometry, Color::BLACK)
+            else {
+                continue;
+            };
+            named += 1;
+            let text = label
+                .lines
+                .iter()
+                .map(|(text, _)| text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert_eq!(
+                text, name,
+                "the row the chart asked for reads the name whole"
+            );
+        }
+        assert_eq!(named, 8, "every stage is named at the height it asked for");
+        let four = FunnelChart::new(self_serve_path());
+        assert_eq!(
+            four.marks.natural_height(&mut tr, &theme, 1000.0),
+            NATURAL_HEIGHT,
+            "the gallery's four stages keep the height they draw at"
+        );
     }
 }

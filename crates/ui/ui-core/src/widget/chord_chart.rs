@@ -159,9 +159,10 @@ impl ChordMarks {
         self.label_width = (widest + 2.0 * pad).min(self.frame.rect.width() / 4.0);
     }
 
-    /// Each arc's label outside its arc, largest arc first: shortened to the
-    /// width left before the chart's edge, and dropped (the tooltip names
-    /// the arc) where it would collide with a label already placed.
+    /// Each arc's label outside its arc, largest arc first: whole where the room before the
+    /// chart's edge holds it, otherwise shortened at a word boundary keeping the words at its
+    /// start and its end, and dropped (the tooltip and accessible name still read the arc) where
+    /// no reading of it fits the room or clears a label already placed.
     fn label_layout(
         &self,
         tr: &mut TextRenderer,
@@ -193,14 +194,22 @@ impl ChordMarks {
             let mid = geom.start.midpoint(geom.end);
             let spare =
                 crate::widget::chart_labels::radial_extent(center, radius, mid, self.frame.rect);
-            let Some((shown, w, h)) =
-                crate::widget::chart_labels::fit_label(tr, &label, spare, &style)
-            else {
-                continue;
+            let (whole_w, whole_h) = tr.measure_style(&label, None, &style);
+            let readings = if f64::from(whole_w) <= spare {
+                vec![(label, f64::from(whole_w), f64::from(whole_h))]
+            } else {
+                crate::widget::chart_labels::shortened_labels(tr, &label, &style)
+                    .into_iter()
+                    .filter(|(_, width, _)| *width <= spare)
+                    .collect()
             };
-            let rect = crate::widget::chart_labels::radial_label_rect(center, radius, mid, (w, h));
-            if placer.place(rect) {
-                placed.push((shown, rect));
+            for (shown, w, h) in readings {
+                let rect =
+                    crate::widget::chart_labels::radial_label_rect(center, radius, mid, (w, h));
+                if placer.place(rect) {
+                    placed.push((shown, rect));
+                    break;
+                }
             }
         }
         placed
@@ -509,5 +518,84 @@ impl PlotMarks for ChordMarks {
             ));
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::chart_labels::reads_as_whole_words;
+
+    /// The gallery's long chord: arc names far wider than the room outside the ring.
+    fn weekly_report() -> (Vec<ChartNode>, Vec<ChartLink>) {
+        (
+            vec![
+                ChartNode::new("ingest", "Ingest the raw readings from the field"),
+                ChartNode::new("clean", "Clean and join them with the customer list"),
+                ChartNode::new("model", "Model the weekly totals for the report"),
+                ChartNode::new("review", "Review the numbers before they go out"),
+            ],
+            vec![
+                ChartLink::new("one", "ingest", "clean", 44.0),
+                ChartLink::new("two", "clean", "model", 37.0),
+                ChartLink::new("three", "model", "review", 29.0),
+                ChartLink::new("four", "review", "ingest", 6.0),
+            ],
+        )
+    }
+
+    /// Every arc's label stays readable at a laptop's width and a phone's: it is the arc's whole
+    /// name, or whole words at its start and its end around one ellipsis, never a cut inside a
+    /// word. An arc left unnamed is still read whole by its tooltip and accessible name, and no
+    /// label paints outside the chart.
+    #[test]
+    fn arc_labels_stay_readable_at_every_width() {
+        for theme in [Theme::light(), Theme::dark()] {
+            let mut tr = TextRenderer::new();
+            for width in [1000.0, 358.0] {
+                let (nodes, links) = weekly_report();
+                let mut chart = ChordChart::new(nodes, links);
+                chart.marks.frame.rect = Rect::new(0.0, 0.0, width, 360.0);
+                chart.marks.place(&mut tr, &theme);
+                // The arcs are laid out as they paint, so paint them before reading the labels.
+                let mut scene = Scene::new();
+                chart
+                    .marks
+                    .paint(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+                let (center, _, outer) = chart.marks.geometry();
+                let labels = chart.marks.label_layout(&mut tr, &theme, center, outer);
+                let rect = chart.marks.frame.rect;
+                let items = chart.marks.items();
+                for node in &chart.marks.nodes {
+                    assert!(
+                        items.iter().any(|item| item.name == node.label),
+                        "{width}: {:?} is named nowhere",
+                        node.label
+                    );
+                }
+                let mut shown = 0;
+                for (text, at) in &labels {
+                    shown += 1;
+                    assert!(
+                        chart
+                            .marks
+                            .nodes
+                            .iter()
+                            .any(|node| reads_as_whole_words(&node.label, text)),
+                        "{width}: {text:?} names no arc whole"
+                    );
+                    assert!(
+                        at.x0 >= rect.x0 - 0.5
+                            && at.x1 <= rect.x1 + 0.5
+                            && at.y0 >= rect.y0 - 0.5
+                            && at.y1 <= rect.y1 + 0.5,
+                        "{width}: {at:?} lies outside {rect:?}"
+                    );
+                }
+                if width > 500.0 {
+                    assert!(shown >= 2, "{width}: only {shown} arcs are named");
+                }
+            }
+        }
     }
 }

@@ -22,6 +22,10 @@ use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
+/// The height the flow draws at: its nodes share the room between its labels, so a flow whose
+/// labels break over two lines at a narrow width grows to keep them whole.
+const NATURAL_HEIGHT: f64 = 420.0;
+
 #[derive(Clone, Debug)]
 pub struct SankeyStyle {
     pub node_width: f64,
@@ -67,6 +71,17 @@ struct LinkBand {
     thickness: f64,
 }
 
+/// A node's label as it is painted: the lines it reads as with the box each covers, and its
+/// value under them.
+#[derive(Clone, Debug)]
+struct NodeLabel {
+    /// Which node it names.
+    #[cfg_attr(not(test), allow(dead_code))]
+    index: usize,
+    lines: Vec<(String, Rect)>,
+    value: Option<(String, Rect)>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Hit {
     Node(usize),
@@ -92,7 +107,7 @@ impl SankeyChart {
             nodes,
             links,
             style: SankeyStyle::default(),
-            frame: PlotFrame::new(420.0, 180.0),
+            frame: PlotFrame::fill(180.0),
         })
     }
     #[must_use]
@@ -333,21 +348,25 @@ impl SankeyMarks {
 
     /// Where each node's label goes, laid out so no two collide at any size: after its node, in
     /// the gap before the next column (the last column's in the trailing width the chart
-    /// reserves for them), elided to it, and dropped (the tooltip still names the node)
-    /// where even a short label does not fit or it would run into the label above it.
+    /// reserves for them), broken over the lines the room between it and the node below holds so
+    /// a long name reads whole; shortened at a word boundary where even those lines do not hold
+    /// it; and dropped (the tooltip and accessible name still read the node) where not even a
+    /// whole word either side of its ellipsis fits, or it would run into the label above it.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each node's column, room and collision are weighed in one ordered pass"
+    )]
     fn label_layout(
         &self,
         nodes: &[NodeBox],
         tr: &mut TextRenderer,
         theme: &Theme,
-    ) -> Vec<(usize, String, Point, bool)> {
+    ) -> Vec<NodeLabel> {
         let style = Self::label_style(theme);
         let value_style = theme.text(TextRole::Caption);
         let line = f64::from(style.line_height_px());
         let value_line = f64::from(value_style.line_height_px());
         let pad = f64::from(theme.tokens.spacing.s2);
-        let content = self.content_rect();
-        let _ = content;
         let mut columns: Vec<f64> = nodes.iter().map(|node| node.rect.x0).collect();
         columns.compact_sort_by(f64::total_cmp);
         columns.dedup_by(|a, b| (*a - *b).abs() < 0.5);
@@ -363,7 +382,6 @@ impl SankeyMarks {
         } else {
             0.0
         };
-        let min_label_width = 3.0 * f64::from(tr.measure_style("M", None, &style).0);
         let mut order: Vec<&NodeBox> = nodes.iter().collect();
         order.compact_sort_by(|a, b| {
             a.rect
@@ -371,6 +389,13 @@ impl SankeyMarks {
                 .total_cmp(&b.rect.x0)
                 .then(a.rect.y0.total_cmp(&b.rect.y0))
         });
+        // Where each column's nodes start, in order: a label's room ends at the node below it.
+        let mut tops: HashMap<usize, Vec<f64>> = HashMap::new();
+        for node in &order {
+            tops.entry(column_of(node.rect.x0))
+                .or_default()
+                .push(node.rect.y0);
+        }
         let mut bottoms: HashMap<usize, f64> = HashMap::new();
         let mut placed = Vec::new();
         for node in order {
@@ -384,26 +409,62 @@ impl SankeyMarks {
             } else {
                 gap - 2.0 * pad
             };
-            if spare < min_label_width {
-                continue;
-            }
-            let label = tr.elide_to_width_style(&spec.label, spare as f32, &style);
-            if label.is_empty() || label == "…" {
-                continue;
-            }
-            let (width, _) = tr.measure_style(&label, None, &style);
-            let width = f64::from(width);
-            let _ = width;
             let x = node.rect.x1 + pad;
             let y = node.rect.y0 + 2.0;
+            let below = tops
+                .get(&column)
+                .and_then(|tops| tops.iter().copied().find(|top| *top > node.rect.y0 + 0.5))
+                .unwrap_or(self.frame.rect.y1);
+            let available = (below - y - pad).max(0.0);
+            let value_text = format_compact(node.value);
+            let (value_width, _) = tr.measure_style(&value_text, None, &value_style);
+            let value_width = f64::from(value_width);
+            let show_value = self.style.show_values
+                && value_width <= spare
+                && node.rect.height() >= line + value_line + 4.0;
+            let room = available - if show_value { value_line } else { 0.0 };
+            if spare <= 0.0 || room + 0.5 < line {
+                continue;
+            }
+            // Whole over two lines where a break fits, otherwise whole words around one ellipsis.
+            let mut lines = crate::widget::chart_labels::wrapped_labels(tr, &spec.label, &style)
+                .into_iter()
+                .find(|wrapped| wrapped.width <= spare && wrapped.height <= room + 0.5)
+                .map(|wrapped| wrapped.lines)
+                .unwrap_or_default();
+            if lines.is_empty() {
+                lines = crate::widget::chart_labels::shortened_labels(tr, &spec.label, &style)
+                    .into_iter()
+                    .find(|(_, width, height)| *width <= spare && *height <= room + 0.5)
+                    .map(|(text, width, height)| vec![(text, width, height)])
+                    .unwrap_or_default();
+            }
+            if lines.is_empty() {
+                continue;
+            }
             let bottom = bottoms.entry(column).or_insert(f64::NEG_INFINITY);
             if y < *bottom {
                 continue;
             }
-            let show_value =
-                self.style.show_values && node.rect.height() >= line + value_line + 4.0;
-            *bottom = y + line + if show_value { value_line } else { 0.0 };
-            placed.push((node.index, label, Point::new(x, y), show_value));
+            let mut cursor = y;
+            let mut shown = Vec::with_capacity(lines.len());
+            for (text, width, height) in lines {
+                shown.push((text, Rect::new(x, cursor, x + width, cursor + height)));
+                cursor += height;
+            }
+            let value = show_value.then(|| {
+                let at = Rect::new(x, cursor, x + value_width, cursor + value_line);
+                (value_text, at)
+            });
+            if value.is_some() {
+                cursor += value_line;
+            }
+            *bottom = cursor;
+            placed.push(NodeLabel {
+                index: node.index,
+                lines: shown,
+                value,
+            });
         }
         placed
     }
@@ -476,48 +537,22 @@ impl SankeyMarks {
     ) {
         let style = Self::label_style(theme);
         let value_style = theme.text(TextRole::Caption);
-        let line = f64::from(style.line_height_px());
-        let value_line = f64::from(value_style.line_height_px());
-        for (index, label, origin, show_value) in self.label_layout(nodes, tr, theme) {
-            let (w, h) = tr.measure_style(&label, None, &style);
-            let label_rect = Rect::new(
-                origin.x,
-                origin.y,
-                origin.x + f64::from(w),
-                origin.y + f64::from(h),
-            );
-            let value = nodes
-                .iter()
-                .find(|node| node.index == index)
-                .map_or(0.0, |node| node.value);
-            let value_text = format_compact(value);
-            let value_rect = show_value.then(|| {
-                let (vw, _) = tr.measure_style(&value_text, None, &value_style);
-                Rect::new(
-                    origin.x,
-                    origin.y + line,
-                    origin.x + f64::from(vw),
-                    origin.y + line + value_line,
-                )
-            });
-            tr.draw_style(
-                scene,
-                &label,
-                self.label_ink(
-                    links,
-                    &[label_rect],
-                    theme.tokens.colors.text_primary,
-                    theme,
-                ),
-                transform * Affine::translate((origin.x, origin.y)),
-                None,
-                &style,
-            );
-            if let Some(rect) = value_rect {
+        for label in self.label_layout(nodes, tr, theme) {
+            for (text, rect) in &label.lines {
                 tr.draw_style(
                     scene,
-                    &value_text,
-                    self.label_ink(links, &[rect], theme.tokens.colors.text_dim, theme),
+                    text,
+                    self.label_ink(links, &[*rect], theme.tokens.colors.text_primary, theme),
+                    transform * Affine::translate((rect.x0, rect.y0)),
+                    None,
+                    &style,
+                );
+            }
+            if let Some((text, rect)) = &label.value {
+                tr.draw_style(
+                    scene,
+                    text,
+                    self.label_ink(links, &[*rect], theme.tokens.colors.text_dim, theme),
                     transform * Affine::translate((rect.x0, rect.y0)),
                     None,
                     &value_style,
@@ -595,6 +630,82 @@ impl PlotMarks for SankeyMarks {
 
     fn place(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         self.measure_margins(tr, theme);
+    }
+
+    /// The height the flow wants at `width`: each column's labels stand beside its nodes, so the
+    /// tallest column's names broken over two lines, with their values and the gaps between
+    /// nodes, is the room its nodes share. [`NATURAL_HEIGHT`] is the least it draws at.
+    fn natural_height(&self, tr: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
+        let links = self.resolved_links();
+        if self.nodes.is_empty() || links.is_empty() {
+            return NATURAL_HEIGHT;
+        }
+        let depths = self.depths(&links);
+        let last = depths.iter().copied().max().unwrap_or_default();
+        let style = Self::label_style(theme);
+        let line = f64::from(style.line_height_px());
+        let value_line = crate::widget::plot::caption_line(theme);
+        let pad = f64::from(theme.tokens.spacing.s2);
+        let widest = self
+            .nodes
+            .iter()
+            .zip(&depths)
+            .filter(|(_, depth)| **depth == last && last > 0)
+            .map(|(node, _)| f64::from(tr.measure_style(&node.label, None, &style).0))
+            .fold(0.0, f64::max);
+        let reserve = if widest > 0.0 {
+            (widest + pad).min(width / 3.0)
+        } else {
+            0.0
+        };
+        let content = (width - reserve).max(0.0);
+        let columns = last.saturating_add(1);
+        let step = if columns > 1 {
+            (content - self.style.node_width) / crate::num::f64_of_usize(columns.saturating_sub(1))
+        } else {
+            0.0
+        };
+        let gap = if columns > 1 {
+            step - self.style.node_width
+        } else {
+            0.0
+        };
+        let value = if self.style.show_values {
+            value_line
+        } else {
+            0.0
+        };
+        let mut needed = vec![0.0_f64; columns];
+        for (index, depth) in depths.iter().enumerate() {
+            let Some(node) = self.nodes.get(index) else {
+                continue;
+            };
+            let spare = if *depth == last {
+                if columns > 1 {
+                    reserve - pad
+                } else {
+                    width - self.style.node_width - pad
+                }
+            } else {
+                gap - 2.0 * pad
+            };
+            let lines = crate::widget::chart_labels::wrapped_labels(tr, &node.label, &style)
+                .into_iter()
+                .find(|wrapped| wrapped.width <= spare.max(0.0))
+                .map_or(1, |wrapped| wrapped.lines.len());
+            if let Some(total) = needed.get_mut(*depth) {
+                // Each label stands a step past its node's top and keeps air above the node
+                // below it, so it needs those along with its lines and value.
+                *total += crate::num::f64_of_usize(lines) * line
+                    + value
+                    + self.style.node_gap
+                    + pad
+                    + 2.0;
+            }
+        }
+        let body = needed.iter().copied().fold(0.0, f64::max);
+        let title = crate::widget::chart_navigation::title_band(theme, &self.frame.title);
+        (title + body).max(NATURAL_HEIGHT)
     }
 
     #[allow(
@@ -717,5 +828,147 @@ impl PlotMarks for SankeyMarks {
             ));
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::widget::chart_labels::reads_as_whole_words;
+
+    /// The gallery's long flow: node names far wider than the gap beside their node.
+    fn docs_to_team() -> (Vec<ChartNode>, Vec<ChartLink>) {
+        (
+            vec![
+                ChartNode::new("docs", "Visited the documentation from the release notes"),
+                ChartNode::new("pricing", "Read the pricing page for the hosted workspace"),
+                ChartNode::new("trial", "Started a trial on their own computer"),
+                ChartNode::new("team", "Invited the rest of the team to the workspace"),
+            ],
+            vec![
+                ChartLink::new("one", "docs", "pricing", 48.0),
+                ChartLink::new("two", "pricing", "trial", 26.0),
+                ChartLink::new("three", "trial", "team", 11.0),
+            ],
+        )
+    }
+
+    /// Every node's label stays readable at a laptop's width and a phone's: it is the whole name
+    /// — broken over the lines the gap beside its node holds — or whole words at its start and
+    /// its end around one ellipsis, never a cut inside a word. A node left unnamed is still read
+    /// whole by its tooltip and accessible name, and no label paints outside the chart.
+    #[test]
+    fn node_labels_stay_readable_at_every_width() {
+        for theme in [Theme::light(), Theme::dark()] {
+            let mut tr = TextRenderer::new();
+            for width in [1000.0, 358.0] {
+                let (nodes, links) = docs_to_team();
+                let mut chart = SankeyChart::new(nodes, links);
+                let height = chart.marks.natural_height(&mut tr, &theme, width);
+                chart.marks.frame.rect = Rect::new(0.0, 0.0, width, height);
+                chart.marks.place(&mut tr, &theme);
+                let rect = chart.marks.frame.rect;
+                let items = chart.marks.items();
+                for node in &chart.marks.nodes {
+                    assert!(
+                        items.iter().any(|item| item.name == node.label),
+                        "{width}: {:?} is named nowhere",
+                        node.label
+                    );
+                }
+                let (boxes, _) = chart.marks.geometry();
+                let labels = chart.marks.label_layout(&boxes, &mut tr, &theme);
+                let mut shown = 0;
+                for label in &labels {
+                    let Some(node) = chart.marks.nodes.get(label.index) else {
+                        continue;
+                    };
+                    shown += 1;
+                    let text = label
+                        .lines
+                        .iter()
+                        .map(|(text, _)| text.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    assert!(
+                        reads_as_whole_words(&node.label, &text),
+                        "{width}: {:?} reads as {text:?}",
+                        node.label
+                    );
+                    let rects = label
+                        .lines
+                        .iter()
+                        .map(|(_, rect)| *rect)
+                        .chain(label.value.iter().map(|(_, rect)| *rect));
+                    for at in rects {
+                        assert!(
+                            at.x0 >= rect.x0 - 0.5
+                                && at.x1 <= rect.x1 + 0.5
+                                && at.y0 >= rect.y0 - 0.5
+                                && at.y1 <= rect.y1 + 0.5,
+                            "{width}: {at:?} lies outside {rect:?}"
+                        );
+                    }
+                }
+                // A laptop's gap holds every long name over its lines; a phone's holds the ones
+                // a whole word either side of an ellipsis still names, and drops the rest.
+                if width > 500.0 {
+                    assert_eq!(shown, 4, "{width}: every node of the flow is named");
+                }
+            }
+        }
+    }
+
+    /// The natural height grows with the lines the labels break over, so a column of many named
+    /// nodes is drawn tall enough to read them whole rather than shortening or dropping them.
+    #[test]
+    fn the_natural_height_holds_a_column_of_named_nodes() {
+        let theme = Theme::light();
+        let mut tr = TextRenderer::new();
+        let mut nodes = vec![ChartNode::new(
+            "trial",
+            "Started a trial on their own computer",
+        )];
+        let mut links = Vec::new();
+        for index in 0..8 {
+            let label = format!("Started a trial on their own computer {index}");
+            nodes.push(ChartNode::new(format!("team-{index}"), label));
+            links.push(ChartLink::new(
+                format!("link-{index}"),
+                "trial",
+                format!("team-{index}"),
+                2.0,
+            ));
+        }
+        let mut chart = SankeyChart::new(nodes, links);
+        let width = 1000.0;
+        let height = chart.marks.natural_height(&mut tr, &theme, width);
+        assert!(
+            height > NATURAL_HEIGHT,
+            "eight named nodes need more than the least height: {height}"
+        );
+        chart.marks.frame.rect = Rect::new(0.0, 0.0, width, height);
+        chart.marks.place(&mut tr, &theme);
+        let (boxes, _) = chart.marks.geometry();
+        let labels = chart.marks.label_layout(&boxes, &mut tr, &theme);
+        let named = labels
+            .iter()
+            .filter(|label| label.index != 0)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            named.len(),
+            8,
+            "the room the chart asked for names them all"
+        );
+        for label in named {
+            let node = chart.marks.nodes.get(label.index);
+            let text = label
+                .lines
+                .iter()
+                .map(|(text, _)| text.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert_eq!(Some(text.as_str()), node.map(|node| node.label.as_str()));
+        }
     }
 }
