@@ -1110,7 +1110,7 @@ requires = ["arch=x86_64"]
 on = ["dispatch", "idle", "stable"]
 heavy = true
 
-# The Android library's std, built from source for a target spec with native thread-locals, holds
+# The Android library's std, built from source with native thread-locals, holds
 # more thread-locals than bionic has pthread keys, and rustc's own Android std does not: a program
 # built both ways, linked statically so this kernel runs it. Building std fetches the crates its
 # own lockfile names from crates.io, which needs cargo's network.
@@ -1143,6 +1143,24 @@ outputs = ["/target/android-apk/**"]
 requires = ["arch=x86_64"]
 on = ["dispatch", "idle", "stable"]
 heavy = true
+# t's compiler cache keeps none of the Android crates built against a std built from source (it
+# counts them as compiles of two inputs), so each run compiles them all: about an hour.
+timeout_secs = 7200
+
+# That APK on an Android emulator: it starts, draws, answers a swipe with a new frame and keeps
+# running (tools/ci/android-launch.sh). The setup installs, once and pinned, what the emulator
+# links against, a JDK for avdmanager, and the SDK's emulator, platform-tools and system image
+# from Google's repository. The emulator renders with SwiftShader, so a node needs KVM, no GPU.
+[[check]]
+name = "android-launch"
+needs = ["android-apk"]
+setup = { run = "dnf install -y --setopt=install_weak_deps=False --repo=fedora --setopt=fedora.metalink= '--setopt=fedora.baseurl=https://dl.fedoraproject.org/pub/fedora/linux/releases/$releasever/Everything/$basearch/os/' java-25-openjdk-headless unzip libX11 libxkbfile libXext libXdamage libXfixes libXcomposite libXcursor libXi libXrandr libXrender libXtst libxcb libdrm mesa-libgbm nss nspr pulseaudio-libs libsecret libbsd libuuid ncurses-libs libpng fontconfig freetype dbus-libs expat libxkbcommon libxkbcommon-x11 xcb-util-wm xcb-util-image xcb-util-keysyms xcb-util-renderutil alsa-lib libglvnd-egl libglvnd-glx && dnf clean all\nexport JAVA_HOME=\"$(dirname \"$(dirname \"$(ls /usr/lib/jvm/java-25-openjdk*/bin/java | head -n 1)\")\")\"\nmkdir -p /opt/android-sdk/cmdline-tools\ncurl -fsSL -o /tmp/cmdline-tools.zip https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip\nunzip -q /tmp/cmdline-tools.zip -d /opt/android-sdk/cmdline-tools\nmv /opt/android-sdk/cmdline-tools/cmdline-tools /opt/android-sdk/cmdline-tools/latest\nrm /tmp/cmdline-tools.zip\nyes | /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=/opt/android-sdk --licenses >/dev/null\n/opt/android-sdk/cmdline-tools/latest/bin/sdkmanager --sdk_root=/opt/android-sdk emulator platform-tools 'system-images;android-35;google_apis;x86_64' >/dev/null\n", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
+run = "export JAVA_HOME=\"$(dirname \"$(dirname \"$(ls /usr/lib/jvm/java-25-openjdk*/bin/java | head -n 1)\")\")\"\nexport PATH=\"$JAVA_HOME/bin:$PATH\" ANDROID_HOME=/opt/android-sdk OUT=/target/android-launch\nbash tools/ci/android-launch.sh /target/android-apk/tilo-phone-x86_64.apk\n"
+# The screenshots and the log, for a failure to be read by.
+outputs = ["/target/android-launch/**"]
+# The emulator's disks take about 8 GiB of scratch space.
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+on = ["dispatch", "idle"]
 
 [[check]]
 name = "wasm"

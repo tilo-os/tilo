@@ -1,8 +1,8 @@
 //! A program built for Android as `tilolang build --platform android` builds the app's library
 //! holds more thread-locals than bionic has pthread keys. rustc's own Android std gives each
 //! `thread_local!` a key, and bionic has about 128: the phone app, with several hundred in its
-//! tree, aborted with "out of TLS keys" in its first redraw. The library's std is built for a
-//! target spec with native thread-locals instead (`android::native_tls_target`).
+//! tree, aborted with "out of TLS keys" in its first redraw. The library's std is built from source
+//! with native thread-locals instead (`android::native_tls_cargo_args`).
 //!
 //! The program is linked statically against bionic, so this Linux host's kernel runs it without
 //! Android's loader; the same program built against rustc's stock Android std shows the abort
@@ -21,7 +21,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::process::Command;
 
-use tilo_app_builder::android::{BUILD_STD_ARGS, Toolchain, native_tls_target};
+use tilo_app_builder::android::{Toolchain, native_tls_cargo_args};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 const TRIPLE: &str = "x86_64-linux-android";
@@ -57,13 +57,8 @@ fn probe_source() -> String {
     source
 }
 
-/// Build the probe with `cargo_args` before `build` and `target` as the target, and run it.
-fn build_and_run(
-    probe: &Path,
-    target_dir: &Path,
-    cargo_args: &[&str],
-    target: &Path,
-) -> std::process::Output {
+/// Build the probe with `cargo_args` before Cargo's subcommand, and run it.
+fn build_and_run(probe: &Path, target_dir: &Path, cargo_args: &[OsString]) -> std::process::Output {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let env = Toolchain::discover().cargo_env(TRIPLE).unwrap();
     let linker_var = "CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER";
@@ -83,20 +78,18 @@ fn build_and_run(
     let builtins = String::from_utf8(builtins.stdout).unwrap();
     let status = Command::new(&cargo)
         .args(cargo_args)
-        .args(["build", "--release", "--target"])
-        .arg(target)
+        // Linked statically, the program needs no Android loader to run here. Cargo joins these
+        // flags with the ones `cargo_args` sets for the target.
+        .arg("--config")
+        .arg(format!(
+            "target.{TRIPLE}.rustflags=[\"-Ctarget-feature=+crt-static\", \"-Clink-arg={}\"]",
+            builtins.trim()
+        ))
+        .args(["build", "--release", "--target", TRIPLE])
         .arg("--target-dir")
         .arg(target_dir)
         .current_dir(probe)
         .envs(env)
-        // Linked statically, the program needs no Android loader to run here.
-        .env(
-            "CARGO_TARGET_X86_64_LINUX_ANDROID_RUSTFLAGS",
-            format!(
-                "-C target-feature=+crt-static -C link-arg={}",
-                builtins.trim()
-            ),
-        )
         .env("RUSTC_BOOTSTRAP", "1")
         .status_locked()
         .unwrap();
@@ -117,20 +110,15 @@ fn a_program_built_for_android_holds_more_thread_locals_than_bionic_has_keys() {
     )
     .unwrap();
     std::fs::write(probe.join("src/main.rs"), probe_source()).unwrap();
-    // The std build stays in the job's kept target directory, as the app's does.
     let target_dir = std::env::var_os("CARGO_TARGET_DIR")
         .map_or_else(|| scratch.path().join("target"), Into::into)
         .join("android-tls-probe");
 
-    let spec = native_tls_target(&probe, TRIPLE, &target_dir).unwrap();
-    assert_eq!(spec.file_stem().unwrap(), TRIPLE);
-    let written: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&spec).unwrap()).unwrap();
-    assert_eq!(written["has-thread-local"], true);
-    assert_eq!(written["llvm-target"], "x86_64-linux-android29");
-    assert!(written.get("tls-model").is_none(), "{written}");
-
-    let built = build_and_run(&probe, &target_dir.join("native"), &BUILD_STD_ARGS, &spec);
+    let built = build_and_run(
+        &probe,
+        &target_dir.join("native"),
+        &native_tls_cargo_args(TRIPLE),
+    );
     // Each thread-local, first touched by each thread, counts one.
     let expected = THREAD_LOCALS;
     assert!(
@@ -144,7 +132,7 @@ fn a_program_built_for_android_holds_more_thread_locals_than_bionic_has_keys() {
         format!("touched {expected} and {expected}"),
     );
 
-    let stock = build_and_run(&probe, &target_dir.join("stock"), &[], Path::new(TRIPLE));
+    let stock = build_and_run(&probe, &target_dir.join("stock"), &[]);
     assert!(
         !stock.status.success()
             && String::from_utf8_lossy(&stock.stderr).contains("out of TLS keys"),

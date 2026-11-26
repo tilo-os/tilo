@@ -677,7 +677,7 @@ fn android_triples() -> Vec<String> {
 }
 
 /// The toolchain's std sources, which the library's std is built from (see
-/// [`native_tls_target`]).
+/// [`native_tls_cargo_args`]).
 fn std_sources() -> Option<PathBuf> {
     let output = Command::new(rustc_program())
         .args(["--print", "sysroot"])
@@ -1241,132 +1241,46 @@ pub fn check_library_entry(app_dir: &Path) -> Result<()> {
     )
 }
 
-// rustc's Android targets have no native thread-locals (`has-thread-local` is false, and LLVM
-// emulates TLS below API 29), so std gives every `thread_local!` a pthread key of its own. Bionic
-// gives a process about 128 keys (`PTHREAD_KEYS_MAX`), fewer than the tree's thread-locals: the
-// app aborted with "out of TLS keys" in its first redraw. Bionic has ELF TLS from API 29, which
-// is `MIN_SDK`, so the library links a std built from source (`-Zbuild-std`) for a target spec
-// that turns native thread-locals on and names API 29 in its LLVM target, which then emits ELF
-// TLS. Building std, and reading a target spec from JSON, are unstable in Cargo and rustc:
-// `RUSTC_BOOTSTRAP` allows them for the Cargo run that builds the Android library, and no other.
+// rustc's Android targets have no native thread-locals (`has-thread-local` is false and their TLS
+// model is emulated), so std gives every `thread_local!` a pthread key of its own. Bionic gives a
+// process about 128 keys (`PTHREAD_KEYS_MAX`), fewer than the tree's thread-locals: the app
+// aborted with "out of TLS keys" in its first redraw. Bionic has ELF TLS from API 29, which is
+// `MIN_SDK` and the API the NDK's clang links for, so the library links a std built from source
+// (`-Zbuild-std`) with native thread-locals in the general-dynamic model a shared library uses.
+// The target stays rustc's builtin one, so build scripts, the linker settings and the compiler
+// cache see the triple they know. Building std, and those `-Z` flags, are unstable in Cargo and
+// rustc: `RUSTC_BOOTSTRAP` allows them for the Cargo run that builds the Android library, and no
+// other.
 
-/// The `-Z` flags Cargo builds the Android library's std with, for the spec
-/// [`native_tls_target`] writes.
-pub const BUILD_STD_ARGS: [&str; 2] = ["-Zbuild-std=std,panic_abort", "-Zjson-target-spec"];
-
-/// `spec`, rustc's own target spec for an Android triple, with native thread-locals in ELF TLS
-/// from [`MIN_SDK`].
-pub fn native_tls_spec(spec: &mut serde_json::Value) -> Result<()> {
-    let object = spec
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("rustc printed a target spec that is no object"))?;
-    let llvm_target = object
-        .get("llvm-target")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("rustc's target spec names no LLVM target"))?;
-    if !llvm_target.contains("android") {
-        bail!("{llvm_target} is no Android target");
-    }
-    let llvm_target = format!(
-        "{}{MIN_SDK}",
-        llvm_target.trim_end_matches(|c: char| c.is_ascii_digit())
-    );
-    object.insert("llvm-target".into(), llvm_target.into());
-    object.insert("has-thread-local".into(), true.into());
-    // Emulated TLS is what keeps std off native thread-locals; without it LLVM picks the
-    // general-dynamic model for a shared library, which bionic's linker resolves.
-    object.remove("tls-model");
-    // A spec read from a file is no builtin, and rustc refuses one that says it is.
-    object.remove("is-builtin");
-    Ok(())
+/// The Cargo arguments that build the Android library for `triple` with a std of native
+/// thread-locals, before Cargo's subcommand.
+#[must_use]
+pub fn native_tls_cargo_args(triple: &str) -> Vec<OsString> {
+    vec![
+        "-Zbuild-std=std,panic_abort".into(),
+        "--config".into(),
+        format!(
+            "target.{triple}.rustflags=[\"-Zhas-thread-local=yes\", \"-Ztls-model=global-dynamic\"]"
+        )
+        .into(),
+    ]
 }
 
 fn rustc_program() -> OsString {
     std::env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc"))
 }
 
-/// Write the target spec the Android library for `triple` builds against, rustc's own with
-/// native thread-locals ([`native_tls_spec`]), and return its path.
-///
-/// The file sits under `target_dir` in a directory named by the toolchain, so the std Cargo
-/// builds for it stays in that target directory from one build to the next and is rebuilt only
-/// for another compiler. Its stem is the triple, which Cargo names the target by to build
-/// scripts, in its `CARGO_TARGET_<triple>_*` settings and in its output directory, as for the
-/// builtin target.
-pub fn native_tls_target(app_dir: &Path, triple: &str, target_dir: &Path) -> Result<PathBuf> {
-    let rustc = rustc_program();
-    let version = Command::new(&rustc)
-        .arg("-vV")
-        .current_dir(app_dir)
-        .stderr(Stdio::inherit())
-        .output()
-        .with_context(|| format!("starting {}", rustc.to_string_lossy()))?;
-    if !version.status.success() {
-        bail!("rustc -vV failed with {}", version.status);
-    }
-    let version = String::from_utf8_lossy(&version.stdout);
-    let field = |name: &str| {
-        version
-            .lines()
-            .find_map(|line| line.strip_prefix(name))
-            .map_or("unknown", str::trim)
-    };
-    let commit = field("commit-hash:");
-    let toolchain = format!(
-        "{}-{}",
-        field("release:"),
-        commit.get(..12).unwrap_or(commit)
-    );
-
-    let printed = Command::new(&rustc)
-        .args([
-            "-Zunstable-options",
-            "--print",
-            "target-spec-json",
-            "--target",
-            triple,
-        ])
-        .env("RUSTC_BOOTSTRAP", "1")
-        .current_dir(app_dir)
-        .stderr(Stdio::inherit())
-        .output()
-        .with_context(|| format!("starting {}", rustc.to_string_lossy()))?;
-    if !printed.status.success() {
-        bail!(
-            "rustc could not print the target spec of {triple}: {}",
-            printed.status
-        );
-    }
-    let mut spec: serde_json::Value = serde_json::from_slice(&printed.stdout)
-        .with_context(|| format!("parsing rustc's target spec of {triple}"))?;
-    native_tls_spec(&mut spec)?;
-    let mut text = serde_json::to_string_pretty(&spec).context("writing the target spec")?;
-    text.push('\n');
-
-    let dir = target_dir
-        .join("android-std")
-        .join(toolchain.replace(['/', '\\', ' '], "_"));
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-    let path = dir.join(format!("{triple}.json"));
-    // Rewritten only when it changes, so Cargo's fingerprints of std, and of every crate built
-    // against it, hold.
-    if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
-        std::fs::write(&path, text).with_context(|| format!("writing {}", path.display()))?;
-    }
-    Ok(path)
-}
-
-/// The Cargo command that builds the Android library against `target`, the spec
-/// [`native_tls_target`] wrote, with a std built for it ([`BUILD_STD_ARGS`]).
+/// The Cargo command that builds the Android library for `triple`, with a std of native
+/// thread-locals ([`native_tls_cargo_args`]).
 #[must_use]
 pub fn library_cargo_args(
     manifest: &Path,
-    target: &Path,
+    triple: &str,
     profile: &str,
     features: &[String],
     no_default_features: bool,
 ) -> Vec<OsString> {
-    let mut args: Vec<OsString> = BUILD_STD_ARGS.iter().map(OsString::from).collect();
+    let mut args = native_tls_cargo_args(triple);
     args.extend([
         "rustc".into(),
         "--lib".into(),
@@ -1375,7 +1289,7 @@ pub fn library_cargo_args(
         "--manifest-path".into(),
         manifest.as_os_str().to_os_string(),
         "--target".into(),
-        target.as_os_str().to_os_string(),
+        triple.into(),
         "--profile".into(),
         profile.into(),
         "--message-format=json-render-diagnostics".into(),
@@ -1407,7 +1321,7 @@ fn build_library(
         .args(args)
         .current_dir(app_dir)
         .envs(tools.cargo_env(triple)?)
-        // For the std build and the JSON target (see `native_tls_target`).
+        // For the std build and its `-Z` flags (see `native_tls_cargo_args`).
         .env("RUSTC_BOOTSTRAP", "1")
         .stdout(Stdio::piped());
     let mut child = command
@@ -1743,13 +1657,12 @@ pub fn build(start: &Path, request: &BuildRequest) -> Result<AndroidBuild> {
         request.arch.android_abi(),
         request.profile
     );
-    let target = native_tls_target(&app_dir, &triple, &checkout.target_dir)?;
     let built = build_library(
         &app_dir,
         &tools,
         &library_cargo_args(
             &app_dir.join("Cargo.toml"),
-            &target,
+            &triple,
             &request.profile,
             &request.features,
             request.no_default_features,
@@ -3112,28 +3025,26 @@ type = "gui"
         phase the_library_command_builds_a_cdylib_for_the_triple;
         {
             let manifest = Path::new("/app/Cargo.toml");
-            let spec = Path::new("/t/android-std/1.0.0/aarch64-linux-android.json");
-            let lib = library_cargo_args(manifest, spec, "dev", &[], false);
+            let lib = library_cargo_args(manifest, "aarch64-linux-android", "dev", &[], false);
             let lib: Vec<_> = lib
                 .iter()
                 .map(|arg| arg.to_string_lossy().into_owned())
                 .collect();
-            assert_eq!(lib[..BUILD_STD_ARGS.len()], BUILD_STD_ARGS);
+            let std_args = native_tls_cargo_args("aarch64-linux-android").len();
             assert_eq!(
-                &lib[BUILD_STD_ARGS.len()..][..4],
+                &lib[std_args..][..4],
                 ["rustc", "--lib", "--crate-type", "cdylib"]
             );
-            assert!(lib.windows(2).any(|pair| pair
-                == [
-                    "--target",
-                    "/t/android-std/1.0.0/aarch64-linux-android.json"
-                ]));
+            assert!(
+                lib.windows(2)
+                    .any(|pair| pair == ["--target", "aarch64-linux-android"])
+            );
             assert!(lib.windows(2).any(|pair| pair == ["--profile", "dev"]));
             assert!(!lib.iter().any(|arg| arg == "--features"));
 
             let release = library_cargo_args(
                 manifest,
-                Path::new("x86_64-linux-android.json"),
+                "x86_64-linux-android",
                 "release",
                 &["extra".to_owned()],
                 true,
