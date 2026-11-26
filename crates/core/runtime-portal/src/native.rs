@@ -22,7 +22,7 @@ pub const LAUNCH: &str = "launch";
 pub struct LaunchRequest {
     pub native: String,
     pub app_id: String,
-    /// The workspace the caller read from the daemon a moment before.
+    /// The workspace the app opens in: any this computer holds for its person.
     pub workspace: String,
     /// Whether this starts the app's default presentation, which one already shown answers.
     pub presentation: bool,

@@ -848,6 +848,80 @@ fn the_clis_calls_reach_a_second_workspace_through_the_daemon_and_no_other() {
     assert_eq!(probe.asked().len(), 1, "nothing ran in it");
 }
 
+const LAUNCH_TEST: &str =
+    "device::local::tests::an_app_starts_in_any_workspace_the_computer_holds_and_no_other";
+
+/// The app a launch test asks for.
+const APP: &str = "so.tilo.chat";
+
+/// The daemon's answer to `tilo-runtime --run-app <app> --workspace <workspace>`, as the person's
+/// account asks it over the native endpoint at `socket`.
+fn launched(socket: &Path, app: &str, workspace: &str) -> Value {
+    use std::io::{BufRead as _, Write as _};
+    PEER.store(OWN, Ordering::SeqCst);
+    let mut stream = UnixStream::connect(socket).unwrap();
+    let request = runtime_portal::native::LaunchRequest::new(app, workspace, false);
+    writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
+    let mut answer = String::new();
+    BufReader::new(stream).read_line(&mut answer).unwrap();
+    serde_json::from_str(&answer).unwrap()
+}
+
+/// A computer holding two workspaces of its person's starts an app in the one its daemon does
+/// not show now, as `--run-app APP --workspace W` asks, and that leaves the computer's own
+/// workspace where it was. A workspace the computer does not hold is refused, named.
+#[test]
+fn an_app_starts_in_any_workspace_the_computer_holds_and_no_other() {
+    let Some(root) = isolated_root(LAUNCH_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let own = daemon.workspace().unwrap();
+    let studio = tilo_desktop_model::WorkspaceId::new();
+    let serving = Arc::clone(daemon.serving());
+    tilo_rt::app()
+        .block_on(async move { serving.found(studio, "Studio").await })
+        .expect("the runtime runs the founding")
+        .expect("the device founds Studio");
+    let studio = studio.to_string();
+    let socket = native_endpoint(&daemon, &root);
+    // No app is installed here, so a launch the workspace admits ends at the installed package:
+    // what it says names the app, never the workspace.
+    let not_installed = |answer: &Value| {
+        answer
+            .get("error")
+            .and_then(Value::as_str)
+            .is_some_and(|error| error.contains(&format!("{APP} is not installed")))
+    };
+
+    let answer = launched(&socket, APP, &studio);
+    assert!(
+        not_installed(&answer),
+        "the launch reaches the app in the second workspace: {answer}"
+    );
+    assert_eq!(
+        daemon.workspace().unwrap(),
+        own,
+        "the computer's own workspace stays where it was"
+    );
+    let answer = launched(&socket, APP, &own);
+    assert!(
+        not_installed(&answer),
+        "the launch reaches the app in the computer's own workspace: {answer}"
+    );
+
+    let elsewhere = tilo_desktop_model::WorkspaceId::new().to_string();
+    let answer = launched(&socket, APP, &elsewhere);
+    let refusal = answer
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    assert!(
+        refusal.contains(&format!("holds no workspace {elsewhere}")),
+        "a workspace the computer does not hold is refused, named: {answer}"
+    );
+}
+
 const OWN_LINE_TEST: &str =
     "device::local::tests::an_apps_own_process_keeps_reads_back_and_is_keyed_on_its_daemon_line";
 

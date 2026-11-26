@@ -647,11 +647,7 @@ impl Apps {
     ) -> Result<connectors::Process, String> {
         #[cfg(unix)]
         use std::os::fd::AsFd as _;
-        if !self
-            .grants
-            .get()
-            .is_some_and(|source| source.serves(workspace))
-        {
+        if !self.launches_into(workspace) {
             return Err(format!(
                 "workspace {workspace} is not served by this runtime"
             ));
@@ -771,6 +767,14 @@ impl Apps {
         Ok(app)
     }
 
+    /// Whether an app may be started here in `workspace`: one this computer holds for its person,
+    /// as host or member copy ([`LaunchGrantsSource::serves`]).
+    pub(crate) fn launches_into(&self, workspace: &str) -> bool {
+        self.grants
+            .get()
+            .is_some_and(|source| source.serves(workspace))
+    }
+
     /// The profile this runtime reads its apps and services in.
     pub(crate) fn root(&self) -> &Path {
         &self.root
@@ -866,11 +870,7 @@ impl Apps {
         shows: Shows,
         open: Option<&str>,
     ) -> Result<Launch, String> {
-        if !self
-            .grants
-            .get()
-            .is_some_and(|source| source.serves(workspace))
-        {
+        if !self.launches_into(workspace) {
             return Err(format!(
                 "workspace {workspace} is not served by this runtime"
             ));

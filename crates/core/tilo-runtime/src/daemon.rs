@@ -3293,33 +3293,37 @@ fn start_requested(
     let daemon = session
         .upgrade()
         .ok_or_else(|| io::Error::other("this computer's daemon is stopping"))?;
-    // The workspace the app runs in is the one this daemon serves now: a caller that read
-    // another a moment ago is told, rather than starting an app into a workspace gone.
-    let serving = daemon
-        .workspace()
-        .map_err(|error| io::Error::other(error.to_string()))?;
-    if serving.is_empty() {
-        return Err(io::Error::other(
-            "this computer serves no workspace to start an app in yet",
-        ));
-    }
-    if serving != request.workspace {
-        return Err(io::Error::other(format!(
-            "this computer serves {serving} now, not {}; start the app again",
-            request.workspace
-        )));
-    }
-    // An app this computer started asks for another instance of itself: the launch a person's own
-    // program makes is not an app's to make for another app.
-    if let Some((started, _)) = peer.and_then(|pid| daemon.app_of(pid))
-        && started != request.app_id
-    {
-        return Err(io::Error::other(format!(
-            "this process runs {started}: an app asks for another instance of itself, not of {}",
-            request.app_id
-        )));
-    }
+    // The app opens in the workspace the launch names: any this computer holds for its person,
+    // whichever one its other windows show. Nothing of the computer's own workspace changes.
+    let workspace = request.workspace.as_str();
     let apps = daemon.apps();
+    if !apps.launches_into(workspace) {
+        // The person's own workspace is founded the first time something opens it here.
+        let own = daemon.workspace().ok();
+        if own.as_deref() != Some(workspace) {
+            return Err(io::Error::other(format!(
+                "this computer holds no workspace {workspace} of yours to start {} in; \
+                 `tilo ls` lists the ones it does",
+                request.app_id
+            )));
+        }
+    }
+    // An app this computer started asks for another instance of itself, in the workspace it
+    // runs in: the launch a person's own program makes is not an app's to make for another app,
+    // and an app acts in its own workspace alone.
+    if let Some((started, started_in)) = peer.and_then(|pid| daemon.app_of(pid)) {
+        if started != request.app_id {
+            return Err(io::Error::other(format!(
+                "this process runs {started}: an app asks for another instance of itself, not of {}",
+                request.app_id
+            )));
+        }
+        if started_in != workspace {
+            return Err(io::Error::other(format!(
+                "{started} runs in {started_in} and starts its instances there, not in {workspace}"
+            )));
+        }
+    }
     // What runs is the package this computer has installed: the request's name is a name, never
     // a program.
     let app = apps
@@ -3341,7 +3345,7 @@ fn start_requested(
     } else {
         None
     };
-    apps.start_watched_window(&app.app_id, &serving, guard)
+    apps.start_watched_window(&app.app_id, workspace, guard)
         .map_err(io::Error::other)?;
     Ok(json!({"started": true}))
 }
