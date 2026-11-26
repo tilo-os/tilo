@@ -670,14 +670,11 @@ fn agent_caller(
         .and_then(|its| its.root())
         .ok_or("the agent belongs to no person")?;
     let key = roster.grant_for(workspace, agent)?;
-    // A device that is not the agent's person's hands its session to the agent: the change is
-    // the agent's, acting with its person's preset, and the device carried it out.
-    let handed = root != owner;
-    let caller = if handed {
-        Caller::handed_agent(agent.id.0.clone(), root, key, owner)
-    } else {
-        Caller::delegated_agent(agent.id.0.clone(), root, key)
-    };
+    // The engine runs the turn on this device, which hands it the agent's session: the change
+    // names the agent acting for its person, carrying the delegation a device gives its agents,
+    // so every device that receives what the turn writes decides it alike. The device that
+    // hands it is this one, whose person is the agent's own where it serves them.
+    let caller = Caller::handed_agent(agent.id.0.clone(), root, key, owner);
     // The agent carries the bound its record keeps, which the device's broker holds it to.
     // The engine runs the turn on this device, so its calls come from here: that says where
     // they come from and grants nothing, the agent's grants still decide each one.
