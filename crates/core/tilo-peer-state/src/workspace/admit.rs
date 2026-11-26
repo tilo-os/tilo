@@ -484,6 +484,21 @@ fn enrolling_writes(
         .collect();
     let touched =
         super::rows::touched(&candidate, &written).ok_or(WorkspaceRefusal::WriteForbidden)?;
+    // A key its person made, listed already, records the grant it is admitted under beside
+    // the row it wrote: that grant alone, and only its own.
+    if !touched.is_empty()
+        && touched
+            .keys()
+            .all(|key| key == collab_types::workspace_grant::WORKSPACE_GRANTS_KEY)
+    {
+        let author = listed(before, input.workspace, sender)?;
+        own_grant((before, &candidate), &touched, &author)?;
+        checked(input, &candidate, true)?;
+        return Ok(AdmittedWorkspace {
+            candidate,
+            rebased: false,
+        });
+    }
     let author = own_operations((before, &candidate), &touched, sender)?;
     only_own_rows((before, &candidate), &touched, sender, &author)?;
     let grown =
@@ -551,6 +566,31 @@ fn own_operations(
         return Err(WorkspaceRefusal::WriteForbidden.into());
     }
     Ok(author)
+}
+
+/// The certificate `before` lists `sender`'s device under, its person holding a role in
+/// `workspace`.
+fn listed(
+    before: &AutoCommit,
+    workspace: &str,
+    sender: [u8; 32],
+) -> Result<tilo_user_identity::DeviceCert, AdmissionFailure> {
+    let Some(automerge::ScalarValue::Bytes(bytes)) =
+        super::membership::winner(before, "peer_identities_v1", &hex::encode(sender))
+    else {
+        return Err(WorkspaceRefusal::WriteForbidden.into());
+    };
+    let cert = crate::state::DeviceRow::certificate_of(&bytes)
+        .map_err(|_| WorkspaceRefusal::WriteForbidden)?;
+    let policy = super::policy_of(before, workspace);
+    if cert.device_public_key != sender
+        || policy
+            .active_role(&hex::encode(cert.user_public_key))
+            .is_none()
+    {
+        return Err(WorkspaceRefusal::WriteForbidden.into());
+    }
+    Ok(cert)
 }
 
 /// Whether the rows the batch changed are `sender`'s own: the only device row
