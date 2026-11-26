@@ -6,7 +6,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, ResourceRef, Runtime, Value};
 
     /// An app that says what native reactions were, and what an emoji key names, with the
     /// library's own functions.
@@ -121,7 +121,7 @@ fn ranking() -> List<Text> {
 ";
 
     fn runtime() -> Runtime {
-        Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap()
+        Runtime::new(AmStore::new(), TestAuthority::new()).unwrap()
     }
 
     fn res(r: &ResourceRef) -> Value {

@@ -14,9 +14,7 @@ mod cases {
     use std::sync::{Arc, Mutex};
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::host_work::{EngineHost, HeldHost, JobHandlers, Push, held_slot};
-    use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
-    };
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/code-editor/app.tl");
 
@@ -229,7 +227,7 @@ mod cases {
 
     impl Editor {
         fn new() -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let engine = Engine::default();
             rt.set_engine(engine.clone());
             let servers = Servers::default();

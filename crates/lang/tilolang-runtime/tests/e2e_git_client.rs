@@ -11,7 +11,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::host_work::EngineHost;
-    use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, Value, ViewInstance};
+    use tilolang_runtime::{AmStore, ResourceRef, Runtime, Value, ViewInstance};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/git-client/app.tl");
     const REPO: &str = "/srv/repos/garden";
@@ -464,7 +464,7 @@ mod cases {
 
     impl Site {
         fn new() -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let engine = Engine::new();
             rt.set_engine(engine.clone());
             let app = App::compile(SOURCE, &[]);

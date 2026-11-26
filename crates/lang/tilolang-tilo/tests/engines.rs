@@ -1,7 +1,15 @@
 //! The engine the suite runs on, and the bench's compute workload computing what the same
 //! arithmetic computes natively, on whichever engine that is.
 
-use tilolang_runtime::{Actor, AmStore, InvokeOutcome, Runtime, SimpleAuthority, Value};
+use tilolang_runtime::{Actor, AmStore, InvokeOutcome, Runtime, Value};
+
+/// The platform's authority for one person, with no workspace: the code's authorship decides.
+fn solo() -> tilolang_tilo::authority::TiloAuthority {
+    tilolang_tilo::authority::TiloAuthority::new(
+        tilolang_runtime::Actor::from(tilolang_runtime::ids::MemberId::person("me")),
+        || None,
+    )
+}
 
 /// The suites run on each engine by naming it in `TILOLANG_ENGINE`; a run that names an engine
 /// this build lacks fails here instead of passing on the default one.
@@ -39,7 +47,7 @@ fn the_compute_workload_computes_what_rust_does() {
         let found = package.meta.actions.iter().find(|a| a.name == name);
         found.unwrap().id.clone()
     };
-    let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+    let rt = Runtime::new(AmStore::new(), solo()).unwrap();
     rt.load_wasm(&package.wasm).unwrap();
     let lab = rt.create("Lab").unwrap();
     let who = Actor::from(tilolang_tilo::runtime::ids::MemberId::person("test"));

@@ -10,7 +10,7 @@ mod cases {
     use serde_json::json;
     use tilolang_runtime::page::PageHost;
     use tilolang_runtime::run::JournalEntry;
-    use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, Runtime, Value};
 
     const READER: &str = r#"app so.tilo.pagedemo "Page demo"
 
@@ -63,7 +63,7 @@ action look(f: Feed) uses page {
     fn world(page: Option<&FakePage>) -> World {
         let reader = App::compile(READER, &[]);
         let store = AmStore::new();
-        let rt = Runtime::new(store, SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(store, TestAuthority::new()).unwrap();
         if let Some(page) = page {
             rt.set_page(page.clone());
         }

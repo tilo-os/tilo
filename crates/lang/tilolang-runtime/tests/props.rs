@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, EngineKind, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, EngineKind, Runtime, Value};
 
     const SOURCE: &str = r#"app so.tilo.talk "Talk"
 
@@ -34,7 +34,7 @@ view message(m: Message) {
         phase a_map_goes_whole_and_offered_actions_run_by_their_nodes_events;
         {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let m = rt.create("Message").unwrap();
             rt.invoke_action(
@@ -81,7 +81,7 @@ view message(m: Message) {
         phase a_map_of_sets_holds_each_element_and_reads_as_sets_by_key;
         {
             let app = App::compile(REACTED, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let p = rt.create("Post").unwrap();
             let ben = person("ben");
@@ -164,7 +164,7 @@ view board(b: Board) {
     fn a_flag_prop_reads_as_a_flag_on_every_tier() {
         // The tiered process checks both legs; a process pinned to one engine through
         // `TILOLANG_ENGINE` runs its own, and takes the compiled artifact only where it can.
-        let engine = Runtime::new(AmStore::new(), SimpleAuthority::new())
+        let engine = Runtime::new(AmStore::new(), TestAuthority::new())
             .unwrap()
             .engine()
             .kind();
@@ -190,7 +190,7 @@ view board(b: Board) {
             if compiled {
                 crate::common::adopt_compiled(&app.compiled.wasm);
             }
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let hash = Runtime::module_hash(&app.compiled.wasm);
             assert_eq!(

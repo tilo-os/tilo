@@ -4,10 +4,10 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, Runtime, Value};
 
     fn runtime(app: &App) -> Runtime {
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         app.load(&rt);
         rt
     }

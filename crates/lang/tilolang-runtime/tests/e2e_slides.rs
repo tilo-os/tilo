@@ -11,8 +11,7 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::{
-        AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Space, UiNode,
-        Value, ViewInstance,
+        AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, Space, UiNode, Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/slides/app.tl");
@@ -26,7 +25,7 @@ mod cases {
     impl Slides {
         fn new() -> Self {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let deck = rt.create_root("Deck").unwrap();
             Self { rt, app, deck }

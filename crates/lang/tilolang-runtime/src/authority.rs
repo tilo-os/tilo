@@ -1,12 +1,10 @@
-//! The `Authority` trait and the reference `SimpleAuthority`.
+//! The `Authority` trait: how the runtime asks the platform's policy.
 //!
 //! Before it runs an action on anyone's behalf (a press, a step of a run, a block), the runtime
 //! asks the authority with the invoker, the authorship chain (every code author between the
 //! invoker and the action) and what the action is. The answer is Allow, Ask or Deny; Ask
-//! suspends the invocation as a suggestion. The rules are authority.md's.
-
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+//! suspends the invocation as a suggestion. The rules are authority.md's; the platform decides
+//! them in its one policy (`tilolang_tilo::authority::TiloAuthority`, over `tilo_action_policy`).
 
 use crate::ids::{ActionId, Actor, AppId, ModuleHash};
 use crate::meta::EffectClass;
@@ -72,83 +70,5 @@ pub trait Authority {
     /// settles as refused, and never reaches the sink.
     fn may_reach(&self, _app: &str, _capability: &str) -> bool {
         true
-    }
-}
-
-#[derive(Default)]
-struct Trust {
-    trusted: HashSet<ModuleHash>,
-}
-
-/// The authorship rule of authority.md, for a runtime without a platform (its own tests, a
-/// benchmark): an outside action asks; otherwise the action is allowed when every author in the
-/// chain is trusted, the action's own module counting as trusted for its own actions, and asks
-/// when not.
-///
-/// What a person may do, the denials and grants of a workspace and the answers a person gave their
-/// agents are not the runtime's: a platform decides them in its one policy, with the code's
-/// authorship as one more input (`tilolang_tilo::authority::TiloAuthority`).
-///
-/// Clones share their trust, so a test can keep a handle and change it while the runtime holds
-/// another.
-#[derive(Clone, Default)]
-pub struct SimpleAuthority {
-    trust: Arc<Mutex<Trust>>,
-}
-
-impl SimpleAuthority {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    fn lock(&self) -> MutexGuard<'_, Trust> {
-        self.trust.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Trust the code of this exact module version.
-    pub fn trust(&self, module: &ModuleHash) {
-        self.lock().trusted.insert(module.clone());
-    }
-
-    /// Whether the code of this module is trusted.
-    pub fn is_trusted(&self, module: &ModuleHash) -> bool {
-        self.lock().trusted.contains(module)
-    }
-
-    /// Trust the code a person or an agent task writes (an embedded block's author).
-    pub fn trust_actor(&self, actor: &Actor) {
-        self.trust(&ModuleHash::written_by(actor));
-    }
-
-    pub fn revoke_actor(&self, actor: &Actor) {
-        self.revoke(&ModuleHash::written_by(actor));
-    }
-
-    /// Withdraw trust. Takes effect at the next invocation.
-    pub fn revoke(&self, module: &ModuleHash) {
-        self.lock().trusted.remove(module);
-    }
-}
-
-impl Trust {
-    fn decide(&self, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
-        if action.class == EffectClass::Outside {
-            return Decision::Ask;
-        }
-        // An own invocation is free for the declaring module; every other author in the
-        // chain still needs trust (the minimum along the whole chain).
-        let covered =
-            |m: &ModuleHash| self.trusted.contains(m) || (action.own && *m == action.module);
-        if chain.iter().all(covered) {
-            Decision::Allow
-        } else {
-            Decision::Ask
-        }
-    }
-}
-
-impl Authority for SimpleAuthority {
-    fn decide(&self, _invoker: &Actor, chain: &[ModuleHash], action: &ActionInfo) -> Decision {
-        self.lock().decide(chain, action)
     }
 }

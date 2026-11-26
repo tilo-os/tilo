@@ -6,7 +6,7 @@ mod cases {
     use serde_json::json;
     use tilolang_runtime::{
         AmStore, DEFAULT_LIMITS, EngineLimits, InvokeOutcome, Patch, Runtime, RuntimeError,
-        SignatureKind, SimpleAuthority, Value,
+        SignatureKind, Value,
     };
 
     tilo_test_env::scenario! {
@@ -301,7 +301,7 @@ mod cases {
 
         phase a_module_that_misses_a_declared_export_is_refused;
         {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), crate::common::TestAuthority::new()).unwrap();
             let wasm = Wat::new().func(r#"(func (export "a_x"))"#).build();
             let err = rt
                 .load_package(
@@ -350,7 +350,7 @@ mod cases {
 fn a_packages_catalogues_reach_the_runtimes_words() {
     use std::cell::RefCell;
     use std::rc::Rc;
-    use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Words};
+    use tilolang_runtime::{AmStore, Runtime, Words};
 
     /// The catalogues handed over: the window's package's own, which choose its language, and
     /// those of the packages it uses (the standard library's among them), which ride along.
@@ -390,7 +390,7 @@ fn a_packages_catalogues_reach_the_runtimes_words() {
     tilolang::meta::append_locales(&mut wasm, &catalogues);
 
     let before = Taken::default();
-    let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+    let rt = Runtime::new(AmStore::new(), crate::common::TestAuthority::new()).unwrap();
     rt.set_words(before.clone());
     rt.load_package(&wasm, crate::common::counter_meta())
         .unwrap();
@@ -398,7 +398,7 @@ fn a_packages_catalogues_reach_the_runtimes_words() {
     assert!(before.library_rode_along());
 
     let after = Taken::default();
-    let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+    let rt = Runtime::new(AmStore::new(), crate::common::TestAuthority::new()).unwrap();
     rt.load_package(&wasm, crate::common::counter_meta())
         .unwrap();
     rt.set_words(after.clone());
@@ -408,7 +408,7 @@ fn a_packages_catalogues_reach_the_runtimes_words() {
     // A window loads its app as a module, which is a package reload: the load that first brings
     // a package hands its catalogues over too, as a later build of it does.
     let window = Taken::default();
-    let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+    let rt = Runtime::new(AmStore::new(), crate::common::TestAuthority::new()).unwrap();
     rt.set_words(window.clone());
     rt.reload_package(&wasm, crate::common::counter_meta())
         .unwrap();
@@ -421,13 +421,13 @@ fn a_packages_catalogues_reach_the_runtimes_words() {
 /// library a host was handed is the one its packages are held to.
 #[test]
 fn a_package_built_against_another_library_is_refused() {
-    use tilolang_runtime::{AmStore, Runtime, SimpleAuthority};
+    use tilolang_runtime::{AmStore, Runtime};
 
     let built_elsewhere =
         |meta: &mut tilolang_runtime::Meta| meta.std = "0123456789abcdef".to_owned();
     let mut meta = crate::common::counter_meta();
     built_elsewhere(&mut meta);
-    let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+    let rt = Runtime::new(AmStore::new(), crate::common::TestAuthority::new()).unwrap();
     let refused = rt
         .load_package(&crate::common::counter_wasm(), meta.clone())
         .unwrap_err()
@@ -443,7 +443,7 @@ fn a_package_built_against_another_library_is_refused() {
     let library = tilolang::stdlib::compiled();
     let mut handed = library.meta.clone();
     built_elsewhere(&mut handed);
-    let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+    let rt = Runtime::new(AmStore::new(), crate::common::TestAuthority::new()).unwrap();
     rt.reload_package(&library.wasm, handed).unwrap();
     rt.load_package(&crate::common::counter_wasm(), meta)
         .unwrap();

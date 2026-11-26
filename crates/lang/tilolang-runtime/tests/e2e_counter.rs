@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, InvokeOutcome, Patch, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, InvokeOutcome, Patch, Runtime, Value};
 
     const SOURCE: &str = include_str!("../../tilolang/tests/fixtures/counter.tl");
 
@@ -14,8 +14,8 @@ mod cases {
         {
             let app = App::compile(SOURCE, &[]);
             let (mut store_a, mut store_b) = (AmStore::new(), AmStore::new());
-            let rt_a = Runtime::new(store_a.clone(), SimpleAuthority::new()).unwrap();
-            let rt_b = Runtime::new(store_b.clone(), SimpleAuthority::new()).unwrap();
+            let rt_a = Runtime::new(store_a.clone(), TestAuthority::new()).unwrap();
+            let rt_b = Runtime::new(store_b.clone(), TestAuthority::new()).unwrap();
             app.load(&rt_a);
             app.load(&rt_b);
             let me = me();
@@ -38,7 +38,7 @@ mod cases {
         phase the_view_shows_the_count_and_the_plus_button_bumps_it;
         {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let me = me();
             let c = rt.create("Counter").unwrap();
@@ -66,7 +66,7 @@ mod cases {
         // key its anchor gives it, the text with the count it shows.
         {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let c = rt.create("Counter").unwrap();
             let view_id = &app.meta().view_named("counter").unwrap().id;
@@ -105,7 +105,7 @@ mod cases {
                 "app t.notes \"Notes\"\ntype Note {\n    title: Text\n}\naction retitle(n: Note, title: Text) (label: \"Rename…\") {\n    require title != n.title \"It has that title already\"\n    n.title = title\n}\n",
                 &[],
             );
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let me = me();
             let retitle = app.action("retitle");
@@ -130,8 +130,8 @@ mod cases {
     fn a_replica_view_follows_incoming_changes() {
         let app = App::compile(SOURCE, &[]);
         let (mut store_a, mut store_b) = (AmStore::new(), AmStore::new());
-        let rt_a = Runtime::new(store_a.clone(), SimpleAuthority::new()).unwrap();
-        let rt_b = Runtime::new(store_b.clone(), SimpleAuthority::new()).unwrap();
+        let rt_a = Runtime::new(store_a.clone(), TestAuthority::new()).unwrap();
+        let rt_b = Runtime::new(store_b.clone(), TestAuthority::new()).unwrap();
         app.load(&rt_a);
         app.load(&rt_b);
         let me = me();
@@ -183,7 +183,7 @@ mod cases {
             v2.action("increment"),
             "the lock keeps ids"
         );
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         let old = v1.load(&rt);
         let me = me();
         let c = rt.create("Counter").unwrap();
@@ -225,7 +225,7 @@ mod cases {
     fn a_refused_reload_leaves_the_old_version_running() {
         let v1 = App::compile(SOURCE, &[]);
         let v2 = tilolang::compile_package(&counter_v2(), &v1.compiled.ids, &[]).unwrap();
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         v1.load(&rt);
         // The old module with the new metadata lacks the new action's export.
         assert!(rt.reload_package(&v1.compiled.wasm, v2.meta).is_err());

@@ -4,9 +4,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, RunOutcome, Runtime, SimpleAuthority, Value,
-    };
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, RunOutcome, Runtime, Value};
 
     /// A list of counts, and the rule over it: the only place the rule is written.
     const BAG: &str = "app so.tilo.lib \"Lib\"
@@ -97,7 +95,7 @@ view bigs(b: lib.Bag) {
     fn world() -> World {
         let lib = App::compile(BAG, &[]);
         let caller = App::compile(CALLER, &[lib.meta().clone()]);
-        let auth = SimpleAuthority::new();
+        let auth = TestAuthority::new();
         let rt = Runtime::new(AmStore::new(), auth).unwrap();
         let dispatch = Dispatch::new();
         rt.set_foreign_invoker(dispatch.clone());
@@ -278,7 +276,7 @@ action name(value: Text) -> Text {
     fn a_json_document_crosses_a_call_into_another_package() {
         let docs = App::compile(DOCS, &[]);
         let caller = App::compile(DOC_CALLER, &[docs.meta().clone()]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         docs.load(&rt);
         caller.load(&rt);
         let InvokeOutcome::Done(Value::Text(written)) = rt

@@ -11,9 +11,7 @@ mod cases {
     use std::collections::BTreeMap;
     use std::rc::Rc;
     use tilolang_runtime::files::{Entry, FilesHost};
-    use tilolang_runtime::{
-        AmStore, ResourceRef, Runtime, SimpleAuthority, UiNode, Value, ViewInstance,
-    };
+    use tilolang_runtime::{AmStore, ResourceRef, Runtime, UiNode, Value, ViewInstance};
 
     /// An app that asks for files the way the system's asking view does: it reads the folder the
     /// picker shows, watches it, and keeps what the person answered.
@@ -188,7 +186,7 @@ view chooser(p: Picking) {
         }
 
         fn on(disk: Disk) -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             rt.set_device_files(disk.clone());
             let app = App::compile(PICKING, &[]);
             app.load(&rt);

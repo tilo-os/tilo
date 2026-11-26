@@ -8,9 +8,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::rich::RichValue;
-    use tilolang_runtime::{
-        AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value,
-    };
+    use tilolang_runtime::{AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = concat!(
         include_str!("../../../../apps/tl/sheets/app.tl"),
@@ -55,7 +53,7 @@ view member_row(p: Member) {
 
     impl Sheets {
         fn new() -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             rt.set_clock(|| "2026-11-24T09:00:00Z".to_owned());
             let workspace = App::compile(WORKSPACE, &[]);
             workspace.load(&rt);

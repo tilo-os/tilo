@@ -11,7 +11,7 @@ mod cases {
     use crate::common::*;
     use tilo_image_codec::{DecodedImage, Encoding};
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::{AmStore, InvokeOutcome, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, InvokeOutcome, Runtime, Value};
 
     const SOURCE: &str = r#"app so.tilo.images "Images"
 
@@ -194,7 +194,7 @@ view shelf(s: Shelf) {
     impl Bench {
         fn new() -> Self {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let device = Device::default();
             rt.set_blobs(device.clone());

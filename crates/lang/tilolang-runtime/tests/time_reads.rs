@@ -9,7 +9,7 @@ mod cases {
     use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, UiNode, Value};
+    use tilolang_runtime::{AmStore, ResourceRef, Runtime, UiNode, Value};
 
     const SOURCE: &str = r#"app so.tilo.days "Days"
 
@@ -90,7 +90,7 @@ view recent(b: Board) {
     impl Days {
         fn at(now: &str) -> Self {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let clock = Rc::new(RefCell::new(now.to_owned()));
             let reading = Rc::clone(&clock);
             rt.set_clock(move || reading.borrow().clone());

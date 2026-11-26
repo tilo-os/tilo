@@ -4,13 +4,13 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, InvokeOutcome, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, InvokeOutcome, Runtime, Value};
 
     /// The package `source` compiled and its view `view` opened over its root, as a window does:
     /// whether the view ran.
     fn opens(source: &str, view: &str) -> Result<(), String> {
         let app = App::compile(source, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).expect("a runtime");
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).expect("a runtime");
         app.load(&rt);
         let root = rt.create_root("T").expect("a root");
         rt.open_view(&me(), &app.view(view), vec![Value::resource(&root)])
@@ -180,7 +180,7 @@ view controls(r: T) {
 }
 "#;
         let app = App::compile(source, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).expect("a runtime");
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).expect("a runtime");
         app.load(&rt);
         let root = rt.create_root("T").expect("a root");
         let view = rt
@@ -254,7 +254,7 @@ view tools(r: T, open: State<Bool>) {
             "the template's metadata carries the anchors its body declares"
         );
 
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).expect("a runtime");
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).expect("a runtime");
         app.load(&rt);
         let root = rt.create_root("T").expect("a root");
         let view = rt

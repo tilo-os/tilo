@@ -11,8 +11,7 @@ mod cases {
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::rich::RichValue;
     use tilolang_runtime::{
-        AmStore, EditOutcome, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
-        ViewInstance,
+        AmStore, EditOutcome, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/notes/app.tl");
@@ -97,7 +96,7 @@ mod cases {
 
         /// A notebook whose clock says `now`.
         fn at(now: &str) -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let device = Device::default();
             rt.set_blobs(device.clone());
             let clock = Rc::new(RefCell::new(now.to_owned()));
@@ -1234,8 +1233,8 @@ mod cases {
         let discussion = App::compile(DISCUSSION, &[]);
         let app = App::compile(SOURCE, &[discussion.meta().clone()]);
         let (mut store_a, mut store_b) = (AmStore::new(), AmStore::new());
-        let rt_a = Runtime::new(store_a.clone(), SimpleAuthority::new()).unwrap();
-        let rt_b = Runtime::new(store_b.clone(), SimpleAuthority::new()).unwrap();
+        let rt_a = Runtime::new(store_a.clone(), TestAuthority::new()).unwrap();
+        let rt_b = Runtime::new(store_b.clone(), TestAuthority::new()).unwrap();
         discussion.load(&rt_a);
         discussion.load(&rt_b);
         app.load(&rt_a);

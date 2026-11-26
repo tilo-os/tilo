@@ -6,7 +6,7 @@
 mod cases {
     use crate::common::*;
     use serde_json::json;
-    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = r#"app so.tilo.checks "Checks"
 
@@ -63,7 +63,7 @@ view item(item: Todo) {
     impl World {
         fn new() -> Self {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let item = rt.create("Todo").unwrap();
             Self { rt, app, item }

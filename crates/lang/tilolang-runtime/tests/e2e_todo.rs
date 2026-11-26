@@ -3,9 +3,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{
-        AmStore, InvokeOutcome, Patch, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
-    };
+    use tilolang_runtime::{AmStore, InvokeOutcome, Patch, ResourceRef, Runtime, UiNode, Value};
 
     const SOURCE: &str = include_str!("../../tilolang/tests/fixtures/todo.tl");
 
@@ -18,7 +16,7 @@ mod cases {
     impl Todo {
         fn new() -> Self {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let list = rt.create("TodoList").unwrap();
             Self { rt, app, list }

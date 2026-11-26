@@ -319,7 +319,7 @@ mod cases {
         fn new() -> Self {
             let rt = Runtime::new(
                 tilolang_runtime::AmStore::new(),
-                tilolang_runtime::SimpleAuthority::new(),
+                crate::common::TestAuthority::new(),
             )
             .unwrap();
             // The device's image model is the platform's own package, read as an app reads it.

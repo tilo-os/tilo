@@ -5,15 +5,13 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::program::{ProgramOutcome, ProgramReply, Session};
-    use tilolang_runtime::{
-        Actor, AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value,
-    };
+    use tilolang_runtime::{Actor, AmStore, InvokeOutcome, ResourceRef, Runtime, Value};
 
     const TODO: &str = crate::common::TASKS_SOURCE;
 
     struct World {
         rt: Runtime,
-        auth: SimpleAuthority,
+        auth: TestAuthority,
         list: ResourceRef,
         notes: Vec<ResourceRef>,
     }
@@ -23,7 +21,7 @@ mod cases {
     }
 
     fn world() -> World {
-        let auth = SimpleAuthority::new();
+        let auth = TestAuthority::new();
         let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
         let imports = Uses::load(&rt, "tasks", |_| {});
         let todo = App::compile(TODO, &imports.metas());

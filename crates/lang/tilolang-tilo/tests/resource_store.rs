@@ -1,10 +1,16 @@
 //! A package run over the device's one resource store: what an action writes is read back at
 //! once, lists, moves and removals land where they should, and a view follows them.
 
-use tilolang_runtime::{
-    InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value, ViewInstance,
-};
+use tilolang_runtime::{InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance};
 use tilolang_tilo::resources::ResourceStore;
+
+/// The platform's authority for one person, with no workspace: the code's authorship decides.
+fn solo() -> tilolang_tilo::authority::TiloAuthority {
+    tilolang_tilo::authority::TiloAuthority::new(
+        tilolang_runtime::Actor::from(tilolang_runtime::ids::MemberId::person("me")),
+        || None,
+    )
+}
 
 const SOURCE: &str = include_str!("../../tilolang/tests/fixtures/todo.tl");
 
@@ -82,7 +88,7 @@ impl Todo {
     /// The package `compiled` run over `store`.
     fn over(store: ResourceStore, compiled: tilolang::Compiled) -> Self {
         store.declare(&compiled.meta);
-        let rt = Runtime::new(store, SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(store, solo()).unwrap();
         rt.load_compiled(&compiled).unwrap();
         let list = rt.create("TodoList").unwrap();
         Self {
@@ -295,7 +301,7 @@ view items(list: Items) {
     ));
     let store = ResourceStore::new(port.clone());
     store.declare(&compiled.meta);
-    let rt = Runtime::new(store, SimpleAuthority::new()).unwrap();
+    let rt = Runtime::new(store, solo()).unwrap();
     rt.load_compiled(&compiled).unwrap();
     let list = rt.create("Items").unwrap();
     let find = |name: &str, of: &[(String, String)]| {
@@ -405,7 +411,7 @@ impl Sweep {
             .unwrap_or_else(|errors| panic!("{errors:#?}"));
         let store = ResourceStore::in_memory();
         store.declare(&compiled.meta);
-        let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(store.clone(), solo()).unwrap();
         rt.load_compiled(&compiled).unwrap();
         let board = rt.create("Board").unwrap();
         Self {
@@ -640,7 +646,7 @@ fn a_filter_after_an_actions_own_write_reads_what_the_index_narrows_it_to() {
     });
     let store = ResourceStore::new(port.clone());
     store.declare(&compiled.meta);
-    let rt = Runtime::new(store, SimpleAuthority::new()).unwrap();
+    let rt = Runtime::new(store, solo()).unwrap();
     rt.load_compiled(&compiled).unwrap();
     let list = rt.create("Ticks").unwrap();
     let call = |action: &str, args: Vec<Value>| {
@@ -753,7 +759,7 @@ fn a_lists_first_version_is_asked_for_once_until_the_list_is_written() {
     });
     let store = ResourceStore::new(port.clone());
     store.declare(&compiled.meta);
-    let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
+    let rt = Runtime::new(store.clone(), solo()).unwrap();
     rt.load_compiled(&compiled).unwrap();
     let list = rt.create("Ticks").unwrap();
     let made = store.version_end(&list, false).unwrap();

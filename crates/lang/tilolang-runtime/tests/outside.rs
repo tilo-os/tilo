@@ -330,7 +330,7 @@ action answer(d: Draft, to: Text, body: Text) {
             // action asks.
             let other = tilolang_runtime::Runtime::new(
                 w.store.clone(),
-                tilolang_runtime::SimpleAuthority::new(),
+                crate::common::TestAuthority::new(),
             )
             .unwrap();
             other.set_foreign_invoker(Dispatch::new());

@@ -12,8 +12,7 @@ mod cases {
     use tilolang_runtime::delegate::Invoked;
     use tilolang_runtime::files::{Entry, FilesHost};
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, ModelHost, Pending, RunOutcome, Runtime, SimpleAuthority, Store,
-        Value,
+        AmStore, InvokeOutcome, ModelHost, Pending, RunOutcome, Runtime, Store, Value,
     };
 
     fn incs(w: &World, c: &tilolang_runtime::ResourceRef) -> usize {
@@ -388,7 +387,7 @@ action poll(l: Lib) -> Text {
 
     #[test]
     fn a_run_that_calls_an_action_reads_the_device_answer_it_read() {
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         let device = Moving::default();
         rt.set_engine(device.clone());
         let app = App::compile(POLLED, &[]);
@@ -417,7 +416,7 @@ action poll(l: Lib) -> Text {
 
     #[test]
     fn an_action_that_calls_one_of_its_own_runs_each_call_once() {
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         let app = App::compile(ATLAS, &[]);
         app.load(&rt);
         let board = rt.create_root("Board").unwrap();
@@ -541,7 +540,7 @@ action prune(g: Design, d: device.Desk, first: Text, second: Text) -> Text {
     fn trim_world() -> Trim {
         let device = App::compile(DEVICE, &[]);
         let trim = App::compile(TRIM, &[device.meta().clone()]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         device.load(&rt);
         trim.load(&rt);
         let dispatch = Dispatch::new();
@@ -832,7 +831,7 @@ action move_then_ask(s: Shelf, d: device.Desk, from: Text, folder: Text) -> Text
     fn a_run_that_moved_a_file_before_it_waited_moves_it_no_more_when_it_goes_on() {
         let device = App::compile(DEVICE, &[]);
         let mover = App::compile(MOVER, &[device.meta().clone()]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         device.load(&rt);
         mover.load(&rt);
         let disk = Disk::default();
@@ -938,7 +937,7 @@ action jot(p: Pad, title: Text) -> shelf.Note {
 
     struct Jot {
         rt: Runtime,
-        auth: SimpleAuthority,
+        auth: TestAuthority,
         desk: App,
         dispatch: Dispatch,
         pad: tilolang_runtime::ResourceRef,
@@ -947,7 +946,7 @@ action jot(p: Pad, title: Text) -> shelf.Note {
     fn jot_world() -> Jot {
         let shelf = App::compile(SHELF, &[]);
         let desk = App::compile(DESK, &[shelf.meta().clone()]);
-        let auth = SimpleAuthority::new();
+        let auth = TestAuthority::new();
         let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
         shelf.load(&rt);
         desk.load(&rt);

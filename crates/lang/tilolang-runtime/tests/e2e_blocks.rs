@@ -3,15 +3,13 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{
-        AmStore, BlockOutput, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value,
-    };
+    use tilolang_runtime::{AmStore, BlockOutput, InvokeOutcome, ResourceRef, Runtime, Value};
 
     const TODO: &str = include_str!("../../tilolang/tests/fixtures/todo.tl");
 
     struct World {
         rt: Runtime,
-        auth: SimpleAuthority,
+        auth: TestAuthority,
         todo: App,
         list: ResourceRef,
         dispatch: Dispatch,
@@ -19,7 +17,7 @@ mod cases {
 
     fn world() -> World {
         let todo = App::compile(TODO, &[]);
-        let auth = SimpleAuthority::new();
+        let auth = TestAuthority::new();
         let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
         let dispatch = Dispatch::new();
         rt.set_foreign_invoker(dispatch.clone());

@@ -12,9 +12,7 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::run::{JournalEntry, RunOutcome, WebRequest};
     use tilolang_runtime::web::{WebReply, WebTransport};
-    use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Store, Value,
-    };
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Store, Value};
 
     const DEMO: &str = r#"app so.tilo.feeddemo "Feed demo"
 
@@ -138,7 +136,7 @@ action start(f: Feed, b: demo.Board) -> Text uses web {
         let demo = App::compile(DEMO, &[]);
         let reader = App::compile(READER, &[demo.meta().clone()]);
         let store = AmStore::new();
-        let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(store.clone(), TestAuthority::new()).unwrap();
         rt.set_web(web.clone());
         let dispatch = Dispatch::new();
         rt.set_foreign_invoker(dispatch.clone());

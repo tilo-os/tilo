@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, UiNode, Value};
+    use tilolang_runtime::{AmStore, ResourceRef, Runtime, UiNode, Value};
 
     const SOURCE: &str = r#"app so.tilo.notes "Notes" (icon: .bookmark)
 
@@ -92,7 +92,7 @@ view detail(n: Note) {
 
     fn setup() -> (Runtime, App, ResourceRef) {
         let app = App::compile(SOURCE, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         app.load(&rt);
         let nb = rt.create("Notebook").unwrap();
         let add = app.action("add");

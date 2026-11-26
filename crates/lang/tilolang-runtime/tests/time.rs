@@ -7,7 +7,7 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, Runtime, RuntimeError, SimpleAuthority, UiNode, Value,
+        AmStore, InvokeOutcome, ResourceRef, Runtime, RuntimeError, UiNode, Value,
     };
 
     const SOURCE: &str = r#"app so.tilo.time "Time"
@@ -234,7 +234,7 @@ view span_label(span: Duration) {
         /// where the host names one, whose week starts `week_start` days after Monday.
         fn at(clock: &str, offset: i64, name: Option<&str>, week_start: i64) -> Self {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let clock = clock.to_owned();
             rt.set_clock(move || clock.clone());
             rt.set_zone(move || offset);
@@ -778,7 +778,7 @@ view span_label(span: Duration) {
 
         phase an_int_export_accepts_a_flag_while_a_duration_refuses_it;
         {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let app = App::compile(
                 "app so.tilo.flag_int \"Flag Int\"\n\
                  action echo_int(n: Int) -> Int {\n\

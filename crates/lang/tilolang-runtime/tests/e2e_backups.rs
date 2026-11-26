@@ -12,9 +12,7 @@ mod cases {
     use tilolang_runtime::files::{Entry, FilesHost};
     use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::value::ResourceRef;
-    use tilolang_runtime::{
-        AmStore, InvokeOutcome, Runtime, SimpleAuthority, UiNode, Value, ViewInstance,
-    };
+    use tilolang_runtime::{AmStore, InvokeOutcome, Runtime, UiNode, Value, ViewInstance};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/backups/app.tl");
 
@@ -237,7 +235,7 @@ mod cases {
     impl Backups {
         fn new() -> Self {
             let engine = Engine::default();
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             rt.set_engine(engine.clone());
             rt.set_device_files(Disk);
             let app = App::compile(SOURCE, &[]);

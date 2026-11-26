@@ -8,7 +8,7 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::members::Member;
-    use tilolang_runtime::{Actor, AmStore, ResourceRef, Runtime, SimpleAuthority, UiNode, Value};
+    use tilolang_runtime::{Actor, AmStore, ResourceRef, Runtime, UiNode, Value};
 
     const NOW: &str = "2026-10-27T10:00:00Z";
 
@@ -104,7 +104,7 @@ view sidebar(b: Board) {
     impl Tasks {
         fn new() -> Self {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let now = std::rc::Rc::new(std::cell::RefCell::new(NOW.to_owned()));
             let clock = std::rc::Rc::clone(&now);
             rt.set_clock(move || clock.borrow().clone());

@@ -12,7 +12,7 @@ use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::ids::RunId;
 use tilolang_runtime::{
     ActionInfo, Actor, AmStore, Authority, DEFAULT_LIMITS, Decision, EngineLimits, InvokeOutcome,
-    Meta, ModuleHash, PackageId, RunOutcome, Runtime, SimpleAuthority, Value,
+    Meta, ModuleHash, PackageId, RunOutcome, Runtime, Value,
 };
 
 /// The Tasks package (`apps/tl/tasks`): its app and the scenarios staged beside it.
@@ -24,6 +24,7 @@ pub const TASKS_SOURCE: &str = concat!(
 
 #[derive(Default)]
 struct Overrides {
+    trusted: std::collections::HashSet<ModuleHash>,
     denied_modules: std::collections::HashSet<ModuleHash>,
     denied_actions: std::collections::HashSet<String>,
     denied_invokers: std::collections::HashSet<Actor>,
@@ -31,14 +32,14 @@ struct Overrides {
     asked_first: std::collections::HashSet<String>,
 }
 
-/// The authorship rule ([`SimpleAuthority`]) with what a platform's policy would add on top,
-/// stood in for: denials of a module, an action or an invoker, a grant of an outside action, and
-/// a rule that asks the person first before an action.
-/// Only for seeing how the runtime takes each answer; the platform's policy is
-/// `tilo_action_policy`'s.
+/// An authority standing in for the platform's, only for seeing how the runtime takes each
+/// answer: an outside action asks, and otherwise an action is allowed when every author in the
+/// chain is trusted (the action's own module is, for its own actions), with denials of a module,
+/// an action or an invoker, a grant of an outside action, and a rule that asks the person first.
+/// The platform's policy is `tilo_action_policy`'s (`tilolang_tilo::authority::TiloAuthority`).
+/// Clones share their state.
 #[derive(Clone, Default)]
 pub struct TestAuthority {
-    authorship: SimpleAuthority,
     overrides: std::rc::Rc<std::cell::RefCell<Overrides>>,
 }
 
@@ -48,19 +49,24 @@ impl TestAuthority {
     }
 
     pub fn trust(&self, module: &ModuleHash) {
-        self.authorship.trust(module);
+        self.overrides.borrow_mut().trusted.insert(module.clone());
     }
 
     pub fn revoke(&self, module: &ModuleHash) {
-        self.authorship.revoke(module);
+        self.overrides.borrow_mut().trusted.remove(module);
     }
 
+    pub fn is_trusted(&self, module: &ModuleHash) -> bool {
+        self.overrides.borrow().trusted.contains(module)
+    }
+
+    /// Trust the code a person or an agent task writes (an embedded block's author).
     pub fn trust_actor(&self, actor: &Actor) {
-        self.authorship.trust_actor(actor);
+        self.trust(&ModuleHash::written_by(actor));
     }
 
     pub fn revoke_actor(&self, actor: &Actor) {
-        self.authorship.revoke_actor(actor);
+        self.revoke(&ModuleHash::written_by(actor));
     }
 
     pub fn deny_module(&self, module: &ModuleHash) {
@@ -119,14 +125,22 @@ impl Authority for TestAuthority {
         }
         if action.class == tilolang_runtime::meta::EffectClass::Outside
             && overrides.granted_outside.contains(&action.action)
-            && chain.iter().all(|m| self.authorship.is_trusted(m))
+            && chain.iter().all(|m| overrides.trusted.contains(m))
         {
             return Decision::Allow;
         }
-        if overrides.asked_first.contains(&action.action) {
+        if overrides.asked_first.contains(&action.action)
+            || action.class == tilolang_runtime::meta::EffectClass::Outside
+        {
             return Decision::Ask;
         }
-        self.authorship.decide(invoker, chain, action)
+        let covered =
+            |m: &ModuleHash| overrides.trusted.contains(m) || (action.own && *m == action.module);
+        if chain.iter().all(covered) {
+            Decision::Allow
+        } else {
+            Decision::Ask
+        }
     }
 
     fn asks_first(&self, _invoker: &Actor, action: &ActionInfo) -> bool {
@@ -529,7 +543,7 @@ impl World {
 
 /// A runtime over `store` with the given packages loaded.
 pub fn replica(store: &AmStore, packages: &[(Vec<u8>, Meta)]) -> Runtime {
-    let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
+    let rt = Runtime::new(store.clone(), TestAuthority::new()).unwrap();
     for (wasm, m) in packages {
         rt.load_package(wasm, m.clone()).unwrap();
     }

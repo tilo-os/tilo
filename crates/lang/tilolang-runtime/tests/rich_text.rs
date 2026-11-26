@@ -5,7 +5,7 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::rich::{Reference, RichValue};
-    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = include_str!("../../tilolang/tests/fixtures/richtext.tl");
 
@@ -22,7 +22,7 @@ mod cases {
                 static COMPILED: App = App::compile(SOURCE, &[]);
             }
             let app = COMPILED.with(Clone::clone);
-            let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(store.clone(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let board = board
                 .cloned()

@@ -11,7 +11,7 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::host_work::{EngineHost, Frame, Push};
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value, ViewInstance,
+        AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };
 
     const SOURCE: &str = r#"
@@ -187,7 +187,7 @@ view window(s: Screen) {
 
     impl Screen {
         fn new() -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let device = Device::default();
             rt.set_engine(device.clone());
             let app = App::compile(SOURCE, &[]);
@@ -360,7 +360,7 @@ view window(s: Screen) {
 
         phase a_device_that_runs_no_streams_says_so;
         {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             rt.set_engine(Bare);
             let app = App::compile(SOURCE, &[]);
             app.load(&rt);

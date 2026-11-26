@@ -5,7 +5,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = include_str!("../../tilolang/tests/fixtures/sweep.tl");
 
@@ -18,7 +18,7 @@ mod cases {
     impl Sweep {
         fn new() -> Self {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let board = rt.create("Board").unwrap();
             Self { rt, app, board }

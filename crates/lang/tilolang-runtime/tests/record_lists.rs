@@ -7,7 +7,7 @@ mod cases {
     use std::rc::Rc;
 
     use crate::common::*;
-    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = r#"app so.tilo.trips "Trips"
 
@@ -75,7 +75,7 @@ action take_in(b: Board, names: List<Text>) -> Int {
 
     impl Trips {
         fn new() -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let app = App::compile(SOURCE, &[]);
             app.load(&rt);
             let board = rt.create_root("Board").unwrap();

@@ -1977,7 +1977,9 @@ impl ViewInstance {
             approved_by: None,
             at: Some(self.core.clock_now()),
             touched: vec![target.id_string()],
-            readers: self.core.change_readers(&[target.id_string()], Some(&self.live.viewer)),
+            readers: self
+                .core
+                .change_readers(&[target.id_string()], Some(&self.live.viewer)),
             count: 1,
             group: None,
             from: None,
@@ -2236,8 +2238,18 @@ mod orphan_tests {
     fn a_boundary_the_tree_does_not_hold_writes_nowhere() {
         let app = tilolang::compile_package(SOURCE, &tilolang::IdsLock::new(), &[])
             .unwrap_or_else(|d| panic!("{d:#?}"));
-        let rt = crate::Runtime::new(crate::AmStore::new(), crate::SimpleAuthority::new())
-            .expect("a runtime");
+        struct Allow;
+        impl crate::Authority for Allow {
+            fn decide(
+                &self,
+                _: &crate::Actor,
+                _: &[crate::ModuleHash],
+                _: &crate::ActionInfo,
+            ) -> crate::Decision {
+                crate::Decision::Allow
+            }
+        }
+        let rt = crate::Runtime::new(crate::AmStore::new(), Allow).expect("a runtime");
         rt.load_compiled(&app).expect("the app loads");
         let board = rt.create("Board").expect("a board");
         let mut view = rt

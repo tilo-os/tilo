@@ -91,7 +91,7 @@ pub mod words;
 mod written;
 
 pub use amstore::AmStore;
-pub use authority::{ActionInfo, Authority, Decision, SimpleAuthority};
+pub use authority::{ActionInfo, Authority, Decision};
 pub use blob::{BlobHost, FileRequest, FileValue, SaveRequest};
 pub use canvas::CanvasHost;
 pub use catalogue::{Signature, SignatureKind, catalogue};

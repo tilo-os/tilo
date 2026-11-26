@@ -5,7 +5,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, UiNode, Value};
+    use tilolang_runtime::{AmStore, ResourceRef, Runtime, UiNode, Value};
 
     const SOURCE: &str = r#"app so.tilo.clock "Clock"
 
@@ -32,7 +32,7 @@ view shown(t: Task) {
     impl Clock {
         fn in_zone(offset: i64, name: Option<&str>) -> Self {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             rt.set_zone(move || offset);
             if let Some(name) = name {
                 let name = name.to_owned();

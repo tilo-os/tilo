@@ -7,7 +7,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, ResourceRef, Runtime, Value};
 
     /// The shell's shape, as the shell's is: a root view on one root (`layout`) that reads
     /// another root (`shell`) through a function call and an `if`, choosing one of several
@@ -131,7 +131,7 @@ action unpin(item: DockItem) {
     impl Shell {
         fn new() -> Self {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let _shell = rt.create_root("Shell").unwrap();
             let layout = rt.create_root("Layout").unwrap();
@@ -254,7 +254,7 @@ action unpin(item: DockItem) {
         {
             let (mut store_a, mut store_b) = (AmStore::new(), AmStore::new());
             let app = App::compile(SOURCE, &[]);
-            let rt_a = Runtime::new(store_a.clone(), SimpleAuthority::new()).unwrap();
+            let rt_a = Runtime::new(store_a.clone(), TestAuthority::new()).unwrap();
             app.load(&rt_a);
             let _shell = rt_a.create_root("Shell").unwrap();
             let layout = rt_a.create_root("Layout").unwrap();
@@ -268,7 +268,7 @@ action unpin(item: DockItem) {
             assert_eq!(texts(&view), ["the strips"]);
 
             // Another connection, over a store of its own, changes the shell's record.
-            let rt_b = Runtime::new(store_b.clone(), SimpleAuthority::new()).unwrap();
+            let rt_b = Runtime::new(store_b.clone(), TestAuthority::new()).unwrap();
             app.load(&rt_b);
             rt_b.create_root("Shell").unwrap();
             let ty = app

@@ -3,7 +3,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, Patch, Runtime, SimpleAuthority, Space, UiNode, Value};
+    use tilolang_runtime::{AmStore, Patch, Runtime, Space, UiNode, Value};
 
     const SOURCE: &str = "app so.tilo.library \"Library\"\n\
 type Album {\n    title: Text\n    artist: Text\n}\n\
@@ -19,7 +19,7 @@ view paged(a: Album) {\n    std.page(a, canvas: true, fill: true) {\n        she
 
     fn setup() -> (Runtime, App, tilolang_runtime::ResourceRef) {
         let app = App::compile(SOURCE, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         app.load(&rt);
         let lib = rt.create("Library").unwrap();
         let add = app.action("add");
@@ -266,7 +266,7 @@ action rename(a: Album, title: Text) (icon: .pen_tool, group: \"Edit\") {\n    a
 view shelf(s: Shelf) {\n    ui.NavShell(content_kind: .list, title: meta(s).title) {\n        content: {\n            stack {\n                for a in s.albums {\n                    ui.ListItem(item: a) {\n                        ui.ListRow(title: a.title)\n                    }\n                }\n            }\n        }\n    }\n}\n\
 view album(a: Album) {\n    text(a.title)\n}";
         let app = App::compile(ACTIONS, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         app.load(&rt);
         let shelf = rt.create_root("Shelf").unwrap();
         rt.invoke_action(

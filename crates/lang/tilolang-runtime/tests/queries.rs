@@ -7,7 +7,7 @@ mod cases {
     use crate::common::*;
     use tilolang::pred::{CmpOp, Lit, Operand, Pred};
     use tilolang_runtime::query::{Clock, Query, Term, find, resolve};
-    use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, UiNode, Value};
+    use tilolang_runtime::{AmStore, ResourceRef, Runtime, UiNode, Value};
 
     const SOURCE: &str = r#"app so.tilo.tasks "Tasks"
 
@@ -117,7 +117,7 @@ view sorted(b: Board, q: Text) {
     impl Tasks {
         fn new() -> Self {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             rt.set_clock(|| NOW.to_owned());
             app.load(&rt);
             let board = rt.create("Board").unwrap();

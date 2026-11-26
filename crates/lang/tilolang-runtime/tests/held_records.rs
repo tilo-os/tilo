@@ -7,7 +7,7 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::ids::MemberId;
-    use tilolang_runtime::{Actor, AmStore, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{Actor, AmStore, ResourceRef, Runtime, Value};
 
     const CLOCKS: &str = r#"app so.tilo.clocks "Clocks"
 
@@ -46,7 +46,7 @@ view clocks(c: Clocks) {
 "#;
 
     fn device(store: &AmStore, app: &App) -> Runtime {
-        let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(store.clone(), TestAuthority::new()).unwrap();
         app.load(&rt);
         rt
     }

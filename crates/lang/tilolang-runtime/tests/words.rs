@@ -10,7 +10,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang::source::compile_package;
-    use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Value, Words};
+    use tilolang_runtime::{AmStore, Runtime, Value, Words};
 
     /// A reader who resolves a message from the catalogue of one language, and reads the source
     /// text where the package has none: what a window's host does with the catalogues a package's
@@ -164,7 +164,7 @@ view editor_with_own_words(n: Note) {
                 .id
                 .clone();
             for (language, expected) in [("en-US", "Increment"), ("de-DE", "Erhöhen")] {
-                let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+                let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
                 rt.set_words(Speaking::new(language));
                 rt.load_compiled(compiled).unwrap();
                 let c = rt.create("Counter").unwrap();
@@ -189,7 +189,7 @@ view editor_with_own_words(n: Note) {
         // placeholder.
         {
             let app = App::compile(TITLED, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             rt.set_words(German);
             let nb = rt.create("Notebook").unwrap();
@@ -267,7 +267,7 @@ view draft_editor(d: Draft) {
 }
 "#;
             let app = App::compile(DRAFTS, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let ds = rt.create("Drafts").unwrap();
             let draft = |subject: &str| {
@@ -338,7 +338,7 @@ view draft_editor(d: Draft) {
                 "a filter's label is a message: {catalogue}"
             );
 
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             rt.set_words(German);
             let inbox = rt.create("Inbox").unwrap();

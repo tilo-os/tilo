@@ -11,7 +11,7 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::rich::RichValue;
-    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = concat!(
         include_str!("../../../../apps/tl/word-processor/app.tl"),
@@ -104,7 +104,7 @@ view member_row(p: Member) {
 
     impl Writer {
         fn new() -> Self {
-            let authority = SimpleAuthority::new();
+            let authority = TestAuthority::new();
             let rt = Runtime::new(AmStore::new(), authority.clone()).unwrap();
             let device = Device::default();
             rt.set_blobs(device.clone());

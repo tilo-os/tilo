@@ -11,8 +11,7 @@ mod cases {
     use tilolang_runtime::blob::{BlobHost, FileRequest, SaveRequest};
     use tilolang_runtime::canvas::{CanvasHost, OpenedArtwork as OpenedArchive};
     use tilolang_runtime::{
-        AmStore, FileValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value,
-        ViewInstance,
+        AmStore, FileValue, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/canvas/app.tl");
@@ -227,7 +226,7 @@ mod cases {
     impl Canvas {
         fn new() -> Self {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let root = rt.create_root("Library").unwrap();
             Self { rt, app, root }

@@ -14,7 +14,7 @@ mod cases {
     use tilolang_runtime::host_work::EngineHost;
     use tilolang_runtime::value::ResourceRef;
     use tilolang_runtime::{
-        AmStore, EnumValue, InvokeOutcome, Runtime, SimpleAuthority, UiNode, Value, ViewInstance,
+        AmStore, EnumValue, InvokeOutcome, Runtime, UiNode, Value, ViewInstance,
     };
 
     const SOURCE: &str = concat!(
@@ -102,7 +102,7 @@ mod cases {
 
     impl Chip {
         fn new() -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let device = Device::default();
             rt.set_engine(device.clone());
             let app = App::compile(SOURCE, &[]);

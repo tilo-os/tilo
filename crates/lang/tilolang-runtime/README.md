@@ -22,14 +22,25 @@ tilolang-runtime = "0.5"
 ```
 
 ```rust
-use tilolang_runtime::{Actor, AmStore, MemberId, Runtime, SimpleAuthority, Value};
+use tilolang_runtime::{
+    ActionInfo, Actor, AmStore, Authority, Decision, MemberId, ModuleHash, Runtime, Value,
+};
+
+/// Lets every call run; a platform decides with its own policy.
+struct Everyone;
+
+impl Authority for Everyone {
+    fn decide(&self, _: &Actor, _: &[ModuleHash], _: &ActionInfo) -> Decision {
+        Decision::Allow
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The module `tilolang` compiled for one package.
     let wasm = std::fs::read("counter.wasm")?;
     let person = Actor::from(MemberId::person("me"));
 
-    let runtime = Runtime::new(AmStore::new(), SimpleAuthority::new())?;
+    let runtime = Runtime::new(AmStore::new(), Everyone)?;
     runtime.load_wasm(&wasm)?;
 
     let counter = runtime.create("Counter")?;
@@ -40,9 +51,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-`Runtime::new` takes a `Store` and an `Authority`. `AmStore` keeps documents in memory and
-`SimpleAuthority` decides by module authorship; a platform supplies its own implementations of
-both. `Runtime::load_package` takes a module with its `Meta` when the caller already holds the
+`Runtime::new` takes a `Store` and an `Authority`. `AmStore` keeps documents in memory; a
+platform supplies its own implementations of both, and Tilo's authority decides with the
+workspace's roles and grants (`tilolang_tilo::authority`). `Runtime::load_package` takes a module with its `Meta` when the caller already holds the
 metadata. `Runtime::open_view` opens a view and returns the `ViewInstance` that receives the
 person's events and edits. `Runtime::record_costs` turns counting on and `Runtime::costs`
 returns what the calls since then spent in the language's own units.

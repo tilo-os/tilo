@@ -7,9 +7,7 @@
 mod cases {
     use crate::common::*;
     use serde_json::json;
-    use tilolang_runtime::{
-        AmStore, Meta, ResourceRef, Runtime, SimpleAuthority, UiNode, Value, ViewInstance,
-    };
+    use tilolang_runtime::{AmStore, Meta, ResourceRef, Runtime, UiNode, Value, ViewInstance};
 
     /// The window menu as the shell publishes it: the window it is for, where it stands, and the
     /// rows that window offers now (`desktop:window-menu`).
@@ -104,7 +102,7 @@ view state(m: desktop.MenuState) {
 
     /// The view, the shell's package loaded, and the shell's menu reading `text`.
     fn workspace(text: &str) -> (Runtime, ViewInstance) {
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         let shell = desktop();
         rt.load_foreign(shell.clone()).unwrap();
         let view = App::compile(VIEW, std::slice::from_ref(&shell));
@@ -199,7 +197,7 @@ view state(m: desktop.MenuState) {
         // The case a reading names is the case its app declares, so a view's `== .open` asks the
         // same of the reading as of a value of its own.
         {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let shell = desktop();
             rt.load_foreign(shell.clone()).unwrap();
             let view = App::compile(STATE_VIEW, std::slice::from_ref(&shell));
@@ -345,7 +343,7 @@ view state(m: desktop.MenuState) {
         // A type of an app whose package this runtime holds, which that package does not declare,
         // is a fault: no package can come with it.
         {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let elsewhere = meta(json!({
                 "app": "desktop",
                 "types": [{"id": "Elsewhere", "name": "Elsewhere", "fields": []}],
@@ -421,7 +419,7 @@ view from(n: Note) {
     /// A note on a board made from the shell's menu, as a view over it would read what it was
     /// made from; the view and the note.
     fn note_from_the_shell(shell: &Meta) -> (Runtime, String, ResourceRef) {
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         let app = App::compile(LINK_SOURCE, std::slice::from_ref(shell));
         app.load(&rt);
         let board = rt.create("Board").expect("a board");
@@ -483,7 +481,7 @@ view from(n: Note) {
 
     /// Opening the view over the shell's menu reading `text`, as it went.
     fn opening(text: &str) -> Result<(), String> {
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         let shell = desktop();
         rt.load_foreign(shell.clone()).map_err(|e| e.to_string())?;
         let view = App::compile(VIEW, std::slice::from_ref(&shell));
@@ -561,7 +559,7 @@ view remarks(p: papers.Paper) {
 
     /// A runtime that knows the papers' app and holds `reading` of the paper.
     fn with_paper(reading: &str) -> Result<Runtime, String> {
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         rt.load_foreign(papers()).map_err(|e| e.to_string())?;
         rt.set_reading(&paper(), reading)
             .map_err(|e| e.to_string())?;
@@ -725,7 +723,7 @@ view shelf(s: papers.Shelf) {
         const SHELF: &str = r#"{"tags": {"b": "blue", "a": "amber"}, "counts": {"a": 1, "b": 2},
             "spots": {"first": {"page": 3}},
             "drawers": {"top": {"pens": 4, "clips": 1}}}"#;
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         rt.load_foreign(papers()).unwrap();
         rt.set_reading(&shelf(), SHELF)
             .expect("a reading of the shelf");
@@ -827,7 +825,7 @@ view shelf(s: papers.Shelf) {
     #[test]
     fn a_map_the_runtime_itself_encoded_reads_as_it_did() {
         // The entries as a list of pairs in the runtime's own encoding, and none.
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         rt.load_foreign(papers()).unwrap();
         rt.set_reading(
             &shelf(),
@@ -867,7 +865,7 @@ view note(n: other.Note) {
 
     #[test]
     fn a_map_field_a_reading_leaves_out_reaches_a_view_as_the_empty_map() {
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         let other = reacted_notes();
         rt.load_foreign(other.clone()).unwrap();
         let view = App::compile(NOTE_VIEW, std::slice::from_ref(&other));
@@ -942,7 +940,7 @@ view asking() {
 
         phase what_waits_for_the_person_is_listed_once_its_listing_comes;
         {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let app = listed();
             assert!(
                 app.types[0].search.filters.iter().any(|f| f.key == "status"),
@@ -1038,7 +1036,7 @@ view window(ws: device.WindowsApps) {
 
     #[test]
     fn a_view_over_an_absent_reading_reads_the_empty_state() {
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         let app = App::compile(ABSENT_VIEW, &[]);
         app.load(&rt);
         // No service of this host publishes the device's resources: nothing is coming.

@@ -5,8 +5,8 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::{
-        AmStore, EngineKind, InvokeOutcome, PackageId, Patch, ResourceRef, Runtime,
-        SimpleAuthority, UiNode, Value, ViewInstance,
+        AmStore, EngineKind, InvokeOutcome, PackageId, Patch, ResourceRef, Runtime, UiNode, Value,
+        ViewInstance,
     };
 
     const SOURCE: &str = r#"app so.tilo.rows "Rows"
@@ -273,7 +273,7 @@ view tinted_row(item: Item, tint: Text) {
             if compiled {
                 crate::common::adopt_compiled(&app.compiled.wasm);
             }
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let module = app.load(&rt);
             let bag = rt.create("Bag").unwrap();
             let mut rows = Self {
@@ -398,7 +398,7 @@ view deck(d: Deck) {
         phase what_a_host_shows_beside_what_the_view_read_runs_it_again;
         {
             let app = App::compile(CARDS, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let deck = rt.create("Deck").unwrap();
             let card = match rt
@@ -1769,7 +1769,7 @@ view board(b: Board) {
 
     fn swapping() -> (Runtime, App, ResourceRef, ViewInstance) {
         let app = App::compile(SWAPPING, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         app.load(&rt);
         let board = rt.create("Board").unwrap();
         let view = rt

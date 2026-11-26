@@ -5,7 +5,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, InvokeOutcome, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, InvokeOutcome, Runtime, Value};
 
     const SOURCE: &str = r#"
 app test.recoat "Recoat" (
@@ -53,7 +53,7 @@ action read_at(n: Note, version: Text) -> Text (label: "Then") {
     impl World {
         fn new() -> Self {
             let package = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             package.load(&rt);
             let note = rt.create_root("Note").unwrap();
             Self { rt, package, note }

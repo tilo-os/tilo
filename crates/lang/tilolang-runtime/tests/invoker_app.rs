@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, Runtime, Value};
 
     const SOURCE: &str = r#"app so.tilo.bridge "Bridge"
 
@@ -31,7 +31,7 @@ action relay(b: Bridge, text: Text) {
     #[test]
     fn an_action_admits_the_attested_app_and_refuses_another_and_a_person() {
         let app = App::compile(SOURCE, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         app.load(&rt);
         let bridge = rt.create("Bridge").unwrap();
         let relay = app.action("relay");

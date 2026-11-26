@@ -7,7 +7,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = r#"app so.tilo.stops "Stops"
 
@@ -128,7 +128,7 @@ action keep(l: Line, found_text: Text, one_text: Text) {
     #[test]
     fn edited_record_values_are_what_the_store_holds_once_inserted() {
         let app = App::compile(SOURCE, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         app.load(&rt);
         let line = rt.create("Line").unwrap();
         let keep = app.action("keep");
@@ -249,7 +249,7 @@ action rename_in(b: Box, text: Text) {
     #[test]
     fn a_decoded_record_reaches_the_action_that_takes_its_type() {
         let app = App::compile(IMPORTING, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         app.load(&rt);
         let b = rt.create("Box").unwrap();
         let adopt = app.action("adopt");
@@ -268,7 +268,7 @@ action rename_in(b: Box, text: Text) {
     #[test]
     fn a_record_value_of_another_type_is_refused_by_its_name() {
         let app = App::compile(IMPORTING, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         app.load(&rt);
         let b = rt.create("Box").unwrap();
         let holder = app
@@ -305,7 +305,7 @@ action rename_in(b: Box, text: Text) {
     #[test]
     fn a_value_an_action_changes_fails_where_it_is_written() {
         let app = App::compile(IMPORTING, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         app.load(&rt);
         let b = rt.create("Box").unwrap();
         let rename = app.action("rename_in");

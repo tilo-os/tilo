@@ -11,7 +11,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::{
-        Actor, AmStore, NameHost, Runtime, ShownHost, SimpleAuthority, Value, ViewInstance, Words,
+        Actor, AmStore, NameHost, Runtime, ShownHost, Value, ViewInstance, Words,
     };
 
     const SOURCE: &str = r#"app so.tilo.named "Named"
@@ -136,7 +136,7 @@ view when(m: Meeting) {
     /// says it calls `ada`.
     fn setup(title: &str) -> (Runtime, App, ViewInstance, Said) {
         let app = App::compile(SOURCE, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         app.load(&rt);
         let names = Rc::new(RefCell::new(HashMap::new()));
         rt.set_name_host(Window(Rc::clone(&names)));
@@ -224,7 +224,7 @@ view when(m: Meeting) {
         phase another_way_of_writing_a_clock_runs_again_only_the_boundary_that_writes_one;
         {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let twelve = Rc::new(RefCell::new(false));
             rt.set_shown_host(Style(Rc::clone(&twelve)));
@@ -251,7 +251,7 @@ view when(m: Meeting) {
         phase another_language_runs_again_only_the_boundary_that_shows_a_word;
         {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let language = Rc::new(RefCell::new("Hello"));
             rt.set_words(Speech(Rc::clone(&language)));

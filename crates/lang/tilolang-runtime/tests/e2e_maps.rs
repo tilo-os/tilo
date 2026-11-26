@@ -15,8 +15,7 @@ mod cases {
     use tilolang_runtime::run::WebRequest;
     use tilolang_runtime::web::{WebReply, WebTransport};
     use tilolang_runtime::{
-        Actor, AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode,
-        Value, ViewInstance,
+        Actor, AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };
 
     const SOURCE: &str = include_str!("../../../../apps/tl/maps/app.tl");
@@ -210,7 +209,7 @@ mod cases {
 
     impl Maps {
         fn new() -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let web = Web::default();
             let engine = Engine::default();
             rt.set_web(web.clone());

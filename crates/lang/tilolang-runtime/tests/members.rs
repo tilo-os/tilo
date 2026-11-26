@@ -8,7 +8,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::members::Member;
-    use tilolang_runtime::{Actor, AmStore, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{Actor, AmStore, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = r#"app so.tilo.workspaces "Workspaces"
 
@@ -77,7 +77,7 @@ view two(r: Workspace) {
 
     fn setup() -> (Runtime, App, ResourceRef, ResourceRef) {
         let app = App::compile(SOURCE, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         app.load(&rt);
         let open = rt.create("Workspace").unwrap();
         let private = rt.create("Workspace").unwrap();

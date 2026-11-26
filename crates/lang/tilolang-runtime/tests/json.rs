@@ -12,9 +12,7 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::run::WebRequest;
     use tilolang_runtime::web::{WebReply, WebTransport};
-    use tilolang_runtime::{
-        AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value,
-    };
+    use tilolang_runtime::{AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = r#"app so.tilo.jsoncase "JSON case" (web: ["example.com"])
 
@@ -173,7 +171,7 @@ action explore(f: Feed) uses web {
 
     fn world(body: &str) -> World {
         let app = App::compile(SOURCE, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         rt.set_web(FakeWeb::serving(body));
         app.load(&rt);
         let feed = rt.create("Feed").unwrap();

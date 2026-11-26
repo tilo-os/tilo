@@ -5,7 +5,7 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::files::FilesHost;
-    use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, ResourceRef, Runtime, Value};
 
     const OPENED: &str = r#"app so.tilo.opened "Opened"
 
@@ -79,7 +79,7 @@ type Launch {
 
     impl Opened {
         fn on(device: Device) -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             rt.set_device_files(device);
             let app = App::compile(OPENED, &[]);
             app.load(&rt);

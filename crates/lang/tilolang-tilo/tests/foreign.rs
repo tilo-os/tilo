@@ -9,8 +9,7 @@ use serde_json::json;
 use tilolang::IdsLock;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::{
-    Actor, AmStore, EditOutcome, ModuleHash, Patch, ResourceRef, Runtime, SimpleAuthority, Value,
-    ViewInstance,
+    Actor, AmStore, EditOutcome, ModuleHash, Patch, ResourceRef, Runtime, Value, ViewInstance,
 };
 use tilolang_tilo::catalogue;
 use tilolang_tilo::host::Host;
@@ -36,6 +35,14 @@ view quiet(p: sound.Player) {
   text("held")
 }
 "#;
+
+/// The platform's authority for one person, with no workspace: the code's authorship decides.
+fn solo() -> tilolang_tilo::authority::TiloAuthority {
+    tilolang_tilo::authority::TiloAuthority::new(
+        tilolang_runtime::Actor::from(tilolang_runtime::ids::MemberId::person("me")),
+        || None,
+    )
+}
 
 const APP: &str = "sound";
 const TYPE: &str = "sound#Player";
@@ -640,7 +647,7 @@ fn a_type_an_app_names_as_the_language_names_one_of_its_own_stays_the_apps_in_a_
     let surfaces =
         catalogue::parse_surfaces(&named_as_the_language(names)).expect("a surface file");
     let meta = catalogue::package_of("post", "Post", &surfaces);
-    let runtime = Runtime::new(AmStore::new(), SimpleAuthority::new()).expect("a runtime starts");
+    let runtime = Runtime::new(AmStore::new(), solo()).expect("a runtime starts");
     runtime.load_foreign(meta).expect("the app's package loads");
     let tray = ResourceRef::root("post.tray".to_owned(), "post#Tray".to_owned());
     let reading: serde_json::Map<String, serde_json::Value> = names

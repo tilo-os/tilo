@@ -5,9 +5,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, UiNode, Value,
-    };
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value};
 
     const SOURCE: &str = r#"app t.slides "Slides"
 
@@ -66,7 +64,7 @@ view editor(s: Slide) {
     impl Editor {
         fn new() -> Self {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let slide = rt.create("Slide").unwrap();
             Self { rt, app, slide }

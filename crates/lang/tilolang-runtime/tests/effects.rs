@@ -10,7 +10,7 @@ mod cases {
     use crate::common::*;
     use tilolang_runtime::run::{Clock, JournalEntry};
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, RunOutcome, Runtime, SimpleAuthority, Store, Value,
+        AmStore, InvokeOutcome, ResourceRef, RunOutcome, Runtime, Store, Value,
     };
 
     /// Two hours ahead of UTC: their midnight is 22:00 UTC.
@@ -81,7 +81,7 @@ action start(b: demo.Board) -> Time uses time {
 
     fn runtime(clock: &HostClock) -> (Runtime, AmStore) {
         let store = AmStore::new();
-        let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(store.clone(), TestAuthority::new()).unwrap();
         clock.install(&rt);
         (rt, store)
     }

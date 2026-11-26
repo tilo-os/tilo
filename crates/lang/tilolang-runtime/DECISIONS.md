@@ -124,8 +124,8 @@ Each entry is the simplest choice consistent with `docs/designs/app-language`.
   a field it wrote; no guest import builds one from text, and a `Text` handle does not fit a
   `Actor` field or parameter. An actor's authorship identity is
   `ModuleHash::written_by(actor)`; only the host resolves one (an embed's
-  `author` prop, an invocation's author). `SimpleAuthority::trust_actor` trusts every block
-  the actor wrote. Denials, grants and agents' answers are not the runtime's: a platform
+  `author` prop, an invocation's author). Trusting that hash trusts every block the actor
+  wrote. Denials, grants and agents' answers are not the runtime's: a platform
   decides them in its one policy (`tilolang_tilo::authority`).
 - **`embed` nodes** are resolved while the tree is built, like foreign views. The host
   compiles the source with `tilolang::compile_block` against the newest loaded package of

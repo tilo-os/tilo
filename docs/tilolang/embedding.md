@@ -84,7 +84,7 @@ A compile error is a list of diagnostics, each with a code, a position and a mes
 ```rust
 use tilolang::IdsLock;
 use tilolang_runtime::ids::{Actor, MemberId};
-use tilolang_runtime::{AmStore, Runtime, SimpleAuthority, Value};
+use tilolang_runtime::{ActionInfo, AmStore, Authority, Decision, ModuleHash, Runtime, Value};
 
 const SOURCE: &str = include_str!("../counter.tl");
 const IDS: &str = include_str!("../counter.ids");
@@ -101,15 +101,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 A runtime keeps resources in a store and asks an authority whether each call may run.
 `AmStore` keeps every resource as an Automerge document in memory; implementing the `Store`
-trait keeps them anywhere else, and two `AmStore`s sync with `sync_with`. `SimpleAuthority`
-decides by who wrote the code: a person's own call runs, and so does code calling an action of
-its own package, while an action that reaches outside the workspace, or code of a package it was
-not told to trust, asks first. Your program implements the `Authority` trait to decide what each
-person may do. Loading the compiled package makes its types, actions and views available.
+trait keeps them anywhere else, and two `AmStore`s sync with `sync_with`. Your program
+implements the `Authority` trait to decide what each person may do; this one lets every call
+run. Tilo decides with its workspace's roles and grants (`tilolang_tilo::authority`). Loading
+the compiled package makes its types, actions and views available.
 
 <!-- file: src/main.rs -->
 ```rust
-    let runtime = Runtime::new(AmStore::new(), SimpleAuthority::new())?;
+    struct Everyone;
+    impl Authority for Everyone {
+        fn decide(&self, _: &Actor, _: &[ModuleHash], _: &ActionInfo) -> Decision {
+            Decision::Allow
+        }
+    }
+    let runtime = Runtime::new(AmStore::new(), Everyone)?;
     runtime.load_compiled(&compiled)?;
 ```
 

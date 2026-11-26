@@ -4,9 +4,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{
-        Actor, AmStore, EditOutcome, EnumValue, ResourceRef, Runtime, SimpleAuthority, Value,
-    };
+    use tilolang_runtime::{Actor, AmStore, EditOutcome, EnumValue, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = r#"app so.tilo.shapes "Shapes"
 
@@ -76,7 +74,7 @@ view drawing(c: Canvas) {
 
     fn setup(store: &AmStore) -> (Runtime, App, ResourceRef) {
         let app = App::compile(SOURCE, &[]);
-        let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(store.clone(), TestAuthority::new()).unwrap();
         app.load(&rt);
         let canvas = rt.create("Canvas").unwrap();
         (rt, app, canvas)
@@ -123,7 +121,7 @@ view drawing(c: Canvas) {
             panic!("a reference")
         };
         assert_eq!(line.target.ty, id("Line"), "a reference to a Line");
-        let rt_b = Runtime::new(store_b.clone(), SimpleAuthority::new()).unwrap();
+        let rt_b = Runtime::new(store_b.clone(), TestAuthority::new()).unwrap();
         app.load(&rt_b);
         store_a.sync_with(&mut store_b).unwrap();
         draw(&rt_a, &app, &canvas, 9);
@@ -303,7 +301,7 @@ view talk(t: Talk) {
 
     fn pressed() -> (Runtime, App, ResourceRef, tilolang_runtime::ViewInstance) {
         let app = App::compile(PRESSED, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         app.load(&rt);
         let talk = rt.create("Talk").unwrap();
         let view = rt
@@ -350,7 +348,7 @@ action book(d: Calendar) {
 "#;
         let store = AmStore::new();
         let app = App::compile(ROOMS, &[]);
-        let rt = Runtime::new(store, SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(store, TestAuthority::new()).unwrap();
         app.load(&rt);
         let calendar = rt.create("Calendar").unwrap();
         rt.invoke_action(
@@ -401,7 +399,7 @@ view folders(f: Folder) {
 }
 "#;
         let app = App::compile(FOLDERS, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         app.load(&rt);
         let folder = rt.create("Folder").unwrap();
         let mut view = rt
@@ -474,7 +472,7 @@ view alarm(a: Alarm) {
 }
 "#;
         let app = App::compile(ALARMS, &[]);
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         app.load(&rt);
         let alarm = rt.create("Alarm").unwrap();
         let ids = &app.compiled.ids;

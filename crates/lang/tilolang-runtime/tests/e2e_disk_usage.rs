@@ -11,9 +11,7 @@ mod cases {
     use tilolang_runtime::files::{Entry, FilesHost};
     use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::value::ResourceRef;
-    use tilolang_runtime::{
-        AmStore, InvokeOutcome, Runtime, SimpleAuthority, UiNode, Value, ViewInstance,
-    };
+    use tilolang_runtime::{AmStore, InvokeOutcome, Runtime, UiNode, Value, ViewInstance};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/disk-usage/app.tl");
     const RUNNING: &str = r#"{"state":"running","path":"/home/you","bytes":42000000000,"files":1430,"total":0,"unreadable":0,"error":""}"#;
@@ -133,7 +131,7 @@ mod cases {
     impl Usage {
         fn new() -> Self {
             let engine = Engine::default();
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             rt.set_engine(engine.clone());
             rt.set_device_files(Disk);
             // The session's own package, which Open Disks calls; nothing of it is read here.

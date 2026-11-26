@@ -12,9 +12,7 @@ mod cases {
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
     use tilolang_runtime::clipboard::ClipboardHost;
     use tilolang_runtime::host_work::EngineHost;
-    use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value, ViewInstance,
-    };
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/typst-editor/app.tl");
 
@@ -241,7 +239,7 @@ mod cases {
 
     impl Desk {
         fn new() -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let engine = Engine::default();
             rt.set_engine(engine.clone());
             let device = Device::default();

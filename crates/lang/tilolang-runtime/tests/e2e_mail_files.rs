@@ -9,7 +9,7 @@ mod cases {
 
     use crate::common::*;
     use tilolang_runtime::blob::{BlobHost, FileRequest, FileValue, SaveRequest};
-    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value};
 
     /// The address a content store names `bytes` by: the same bytes are one file, whatever name
     /// they came in as.
@@ -107,7 +107,7 @@ mod cases {
 
     impl Mail {
         fn new() -> Self {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let device = Device::default();
             rt.set_blobs(device.clone());
             rt.set_clock(|| "2026-06-30T09:00:00Z".to_owned());

@@ -3,16 +3,14 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, RunOutcome, Runtime, SimpleAuthority, Value,
-    };
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, RunOutcome, Runtime, Value};
 
     const TODO: &str = include_str!("../../tilolang/tests/fixtures/todo.tl");
     const CLEANUP: &str = include_str!("../../tilolang/tests/fixtures/cleanup.tl");
 
     struct World {
         rt: Runtime,
-        auth: SimpleAuthority,
+        auth: TestAuthority,
         todo: App,
         cleanup: App,
         cleanup_id: tilolang_runtime::PackageId,
@@ -23,7 +21,7 @@ mod cases {
     fn world() -> World {
         let todo = App::compile(TODO, &[]);
         let cleanup = App::compile(CLEANUP, &[todo.meta().clone()]);
-        let auth = SimpleAuthority::new();
+        let auth = TestAuthority::new();
         let rt = Runtime::new(AmStore::new(), auth.clone()).unwrap();
         todo.load(&rt);
         let cleanup_id = cleanup.load(&rt);

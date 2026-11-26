@@ -16,9 +16,7 @@ mod cases {
     use tilolang_runtime::rust_views::{
         RustEvent, RustNode, RustRendered, RustResource, RustViewDecl, RustViews,
     };
-    use tilolang_runtime::{
-        Actor, AmStore, Meta, ResourceRef, Runtime, SimpleAuthority, Value, ViewInstance,
-    };
+    use tilolang_runtime::{Actor, AmStore, Meta, ResourceRef, Runtime, Value, ViewInstance};
 
     /// The app whose channel a view shows, and the verb its channel publishes.
     const APP: &str = "chat";
@@ -132,7 +130,7 @@ view canvas() {
         published: Option<(Vec<String>, String)>,
         sent: &Rc<RefCell<Vec<Invocation>>>,
     ) -> ViewInstance {
-        let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
         let app = chat();
         rt.load_foreign(app.clone()).unwrap();
         if let Some((params, app)) = published {

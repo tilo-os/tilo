@@ -8,7 +8,7 @@
 #[cfg(test)]
 mod cases {
     use crate::common::*;
-    use tilolang_runtime::{AmStore, Meta, Runtime, SimpleAuthority, ViewInstance};
+    use tilolang_runtime::{AmStore, Meta, Runtime, ViewInstance};
 
     /// The session's layout type, as the shell's package declares it: the origin is what
     /// makes a view of it a style.
@@ -120,7 +120,7 @@ view timeline(a: shell.Layout) {
 
         phase a_style_declared_by_another_package_draws_the_layout;
         {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let shell = shell_app();
             shell.load(&rt);
             // The person's own package is installed too, so its `timeline` is declared here: the
@@ -144,7 +144,7 @@ view timeline(a: shell.Layout) {
 
         phase a_style_whose_package_is_not_loaded_waits_for_it;
         {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let shell = shell_app();
             shell.load(&rt);
             // No `me.styles` here: `style_shell`'s `show` names a view of a package that is not loaded.
@@ -170,7 +170,7 @@ view timeline(a: shell.Layout) {
 
         phase a_style_whose_view_traps_draws_a_failed_state_and_is_reported;
         {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let shell = shell_naming("me.broken", "broken");
             shell.load(&rt);
             App::compile(TRAPPING, &[session(), shell.meta().clone()]).load(&rt);
@@ -199,7 +199,7 @@ view timeline(a: shell.Layout) {
 
         phase a_style_whose_package_does_not_load_draws_a_failed_state_and_is_reported;
         {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let shell = shell_naming("me.miscompiled", "miscompiled");
             shell.load(&rt);
             // The host tried the package and could not load it: nothing more is coming, so the
@@ -230,7 +230,7 @@ view timeline(a: shell.Layout) {
 
         phase a_fixed_style_package_brings_the_style_back;
         {
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             let shell = shell_naming("me.broken", "broken");
             shell.load(&rt);
             // The package was tried and did not load: the shell shows its failed state.

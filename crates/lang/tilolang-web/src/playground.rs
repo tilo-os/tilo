@@ -9,9 +9,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value as Json, json};
 use tilolang::{Compiled, IdsLock, SeededEntropy, compile_package_with};
 use tilolang_runtime::ids::MemberId;
-use tilolang_runtime::{
-    Actor, AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value, ViewInstance,
-};
+use tilolang_runtime::{Actor, AmStore, InvokeOutcome, ResourceRef, Runtime, Value, ViewInstance};
+use tilolang_tilo::authority::TiloAuthority;
 use ui::widget::code_editor::{Highlighter as _, TilolangHighlighter, TokenKind};
 use wasm_bindgen::prelude::*;
 
@@ -177,8 +176,11 @@ fn history_count(peer: &Peer) -> usize {
 fn boot_peers(compiled: &Compiled) -> Result<(ResourceRef, Peer, Peer, usize), String> {
     let mut store_a = AmStore::new();
     let mut store_b = AmStore::new();
-    let rt_a = Runtime::new(store_a.clone(), SimpleAuthority::new()).map_err(|e| e.to_string())?;
-    let rt_b = Runtime::new(store_b.clone(), SimpleAuthority::new()).map_err(|e| e.to_string())?;
+    // Each peer is one person with no workspace around them: the platform's authority decides
+    // by the code's authorship alone.
+    let solo = |peer: PeerId| TiloAuthority::new(peer.actor(), || None);
+    let rt_a = Runtime::new(store_a.clone(), solo(PeerId::Alice)).map_err(|e| e.to_string())?;
+    let rt_b = Runtime::new(store_b.clone(), solo(PeerId::Bob)).map_err(|e| e.to_string())?;
 
     rt_a.load_compiled(compiled).map_err(|e| e.to_string())?;
     rt_b.load_compiled(compiled).map_err(|e| e.to_string())?;

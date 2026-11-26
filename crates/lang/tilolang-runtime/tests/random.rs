@@ -6,9 +6,7 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::run::{JournalEntry, RunOutcome};
-    use tilolang_runtime::{
-        AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Store, Value,
-    };
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Store, Value};
 
     const DICE: &str = r#"app so.tilo.dice "Dice"
 
@@ -67,7 +65,7 @@ action start(b: board.Board) -> Int uses random {
 
     fn runtime() -> (Runtime, AmStore) {
         let store = AmStore::new();
-        let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(store.clone(), TestAuthority::new()).unwrap();
         (rt, store)
     }
 

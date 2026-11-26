@@ -4,7 +4,7 @@
 mod cases {
     use crate::common::*;
     use tilolang_runtime::rich::RichValue;
-    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = include_str!("../../tilolang/tests/fixtures/links.tl");
 
@@ -17,7 +17,7 @@ mod cases {
     impl Links {
         fn new() -> Self {
             let app = App::compile(SOURCE, &[]);
-            let rt = Runtime::new(AmStore::new(), SimpleAuthority::new()).unwrap();
+            let rt = Runtime::new(AmStore::new(), TestAuthority::new()).unwrap();
             app.load(&rt);
             let board = rt.create_root("Board").unwrap();
             Self { rt, app, board }
