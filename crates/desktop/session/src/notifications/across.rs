@@ -294,7 +294,12 @@ impl Across {
                         (!notice.chosen.is_empty()).then(|| notice.chosen.clone()),
                     ));
                 }
-                continue;
+                // One this session projected is shown here already; one this device's daemon
+                // kept for the person, as a refused device at another peer version is, is shown
+                // like another device's.
+                if state.by_id.contains_key(id) {
+                    continue;
+                }
             }
             if !notice.shown_at(now_ms) {
                 continue;

@@ -560,11 +560,19 @@ impl Workspaces {
     /// the link judges it: a change the workspace refuses is dropped before
     /// any device is sent it.
     pub(super) async fn serve_direct(&self, workspace: &HostedWorkspace) -> Result<(), String> {
+        let hooks = std::sync::Arc::clone(&self.inner.versions);
+        let announcing: std::sync::Arc<tilo_peer_state::direct::Versions> =
+            std::sync::Arc::new(move |device, theirs| {
+                for hook in hooks.lock_recover().iter() {
+                    hook(device, theirs);
+                }
+            });
         let link = tilo_peer_state::direct::DirectSync::over(
             workspace.peer.clone(),
             self.inner.host.key.clone(),
         )
-        .with_store(Arc::clone(&self.inner.store));
+        .with_store(Arc::clone(&self.inner.store))
+        .announcing(announcing);
         link.drop_refused_workspace_changes().await;
         self.inner.direct.serve(link.clone())?;
         self.follow_link(workspace, &link);

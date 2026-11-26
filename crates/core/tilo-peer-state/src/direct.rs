@@ -1113,6 +1113,9 @@ struct Inner {
     /// Asks the link this device dialled to read the other device's retained
     /// history again ([`DirectSync::ask_replay`]).
     replay: Arc<tokio::sync::Notify>,
+    /// What hears a device's hello this build's peer protocol does not work with
+    /// ([`DirectSync::announcing`]).
+    versions: Option<Arc<Versions>>,
     /// This device is the workspace's host on its links: what they bring in,
     /// it sends on to its other links, so a member's frame reaches every
     /// member through one path.
@@ -1215,6 +1218,7 @@ impl DirectSync {
             pair_links: watch::channel(BTreeMap::new()).0,
             endings: broadcast::channel(ENDINGS).0,
             replay: Arc::default(),
+            versions: None,
             fan_out: std::sync::atomic::AtomicBool::new(false),
             geneses: Geneses::default(),
             other_store: Arc::default(),
@@ -1248,6 +1252,7 @@ impl DirectSync {
             ended: self.0.ended.clone(),
             ended_links: Arc::clone(&self.0.ended_links),
             pair_links: self.0.pair_links.clone(),
+            versions: self.0.versions.clone(),
             endings: self.0.endings.clone(),
             replay: Arc::clone(&self.0.replay),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
@@ -1376,6 +1381,16 @@ impl DirectSync {
     pub fn with_heard_capacity(&self, capacity: usize) -> Self {
         Self(Arc::new(Inner {
             heard: broadcast::channel(capacity).0,
+            ..self.copied()
+        }))
+    }
+
+    /// Hear every device's hello this build's peer protocol does not work with, by `hook`: what
+    /// the daemon tells the person, once for each device and version.
+    #[must_use]
+    pub fn announcing(self, hook: Arc<Versions>) -> Self {
+        Self(Arc::new(Inner {
+            versions: Some(hook),
             ..self.copied()
         }))
     }
@@ -4172,6 +4187,15 @@ impl DirectSync {
             };
             return heard_of(author, message, Err(refused), retained || history);
         }
+        if let NeighbourMsg::IdentityHello { protocol, .. } = &message
+            && !neighbour_wire::works_with_peer_version(*protocol)
+        {
+            // A device at another peer protocol version is refused by the workspace state; the
+            // person is told which side updates, through the hook the daemon set.
+            if let Some(versions) = &self.0.versions {
+                versions(author, *protocol);
+            }
+        }
         let origin = if retained || history {
             TransportOrigin::RetainedServerDelta(author)
         } else {
@@ -4486,6 +4510,10 @@ pub struct Serving {
     #[cfg(not(target_arch = "wasm32"))]
     admitting: Option<Arc<Admitting>>,
 }
+
+/// What hears a device's hello naming a peer protocol this build does not work with: the device
+/// it came from, and the version it speaks. The daemon posts the person their notice from it.
+pub type Versions = dyn Fn([u8; 32], u32) + Send + Sync;
 
 /// What [`Serving::admitting`] installs: the scope a device at `remote`
 /// reaches in `link`'s workspace, or why it is refused.

@@ -2223,6 +2223,9 @@ impl Daemon {
             app_serving.clone(),
             keeping.as_ref().zip(itself.clone()),
         )?;
+        // A device of the person's at another peer protocol version is refused by the
+        // workspaces here: the person reads which side updates, once for each device and version.
+        super::version_notice::watch(&workspaces);
         // The person's record of their devices says where this one answers, so their other
         // devices dial it directly when no relay and no discovery find it: the addresses are
         // the ones the endpoint is bound at, told again whenever a network change moves them.

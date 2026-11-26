@@ -119,3 +119,15 @@ unlock-code = Code on its screen
 unlock-gone = The device that asked stopped waiting
 unlock-unanswered = Nobody answered in time, so the device was not unlocked
 boot-unlock-no-root-device = None of your devices that keep your identity can be reached right now. Turn one on, connect it to the internet and sign in, then try again.
+
+# Another of the person's devices speaks a peer protocol version this one does not work with:
+# $device is the name their record gives it. The side that updates is the side that is behind.
+system-update-app-name = Updates
+version-mismatch-updating-title = { $device } runs a newer Tilo
+version-mismatch-updating-body = This device updates and restarts onto it once your screen has been locked for a while.
+version-mismatch-needs-update-title = { $device } must update
+version-mismatch-needs-update-body = Update Tilo there, then both work together again.
+version-mismatch-unknown-updating-title = Another device runs a newer Tilo
+version-mismatch-unknown-updating-body = This device updates and restarts onto it once your screen has been locked for a while.
+version-mismatch-unknown-needs-update-title = Another device must update
+version-mismatch-unknown-needs-update-body = Update Tilo there, then both work together again.

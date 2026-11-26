@@ -145,6 +145,7 @@ pub(crate) mod store_lane;
 pub(crate) mod vault_release;
 #[cfg(target_os = "linux")]
 pub(crate) mod vm_environment;
+pub(crate) mod version_notice;
 pub mod wake;
 pub mod wifi;
 mod window_follow;

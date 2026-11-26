@@ -586,6 +586,15 @@ impl ServiceWorkspaces {
         self.service.workspaces()
     }
 
+    /// Hear every device's hello this build's peer protocol does not work with, by `hook`: what
+    /// tells the person which side updates ([`super::version_notice`]).
+    pub(crate) fn observing_versions(
+        &self,
+        hook: std::sync::Arc<tilo_peer_state::direct::Versions>,
+    ) {
+        self.copies().observing_versions(hook);
+    }
+
     /// What the service's workspaces keep for their people.
     pub(crate) fn people(&self) -> tilo_person_services::PersonServices {
         tilo_person_services::PersonServices::of(self.copies())

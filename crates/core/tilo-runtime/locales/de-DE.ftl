@@ -118,3 +118,16 @@ unlock-code = Code auf seinem Bildschirm
 unlock-gone = Das fragende Gerät wartet nicht mehr
 unlock-unanswered = Niemand hat rechtzeitig geantwortet, daher wurde das Gerät nicht entsperrt
 boot-unlock-no-root-device = Keines deiner Geräte, die deine Identität bewahren, ist gerade erreichbar. Schalte eines ein, verbinde es mit dem Internet und melde dich an, dann versuche es noch einmal.
+
+# Ein anderes Gerät der Person spricht eine Peer-Protokollversion, mit der dieses nicht
+# zusammenarbeitet: $device ist der Name, den ihr Verzeichnis ihm gibt. Aktualisieren muss die
+# Seite, die zurückliegt.
+system-update-app-name = Updates
+version-mismatch-updating-title = { $device } hat ein neueres Tilo
+version-mismatch-updating-body = Dieser Rechner aktualisiert und startet neu, sobald der Bildschirm eine Weile gesperrt ist.
+version-mismatch-needs-update-title = { $device } muss aktualisieren
+version-mismatch-needs-update-body = Aktualisiere Tilo dort, dann arbeiten beide wieder zusammen.
+version-mismatch-unknown-updating-title = Ein anderes Gerät hat ein neueres Tilo
+version-mismatch-unknown-updating-body = Dieser Rechner aktualisiert und startet neu, sobald der Bildschirm eine Weile gesperrt ist.
+version-mismatch-unknown-needs-update-title = Ein anderes Gerät muss aktualisieren
+version-mismatch-unknown-needs-update-body = Aktualisiere Tilo dort, dann arbeiten beide wieder zusammen.

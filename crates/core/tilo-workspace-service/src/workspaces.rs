@@ -1062,6 +1062,9 @@ struct WorkspacesInner {
     /// list before it is a member device's, by workspace and device
     /// ([`tilo_peer_state::direct::LinkScope::lists_itself`]).
     listing_themselves: std::sync::Mutex<std::collections::BTreeSet<(WorkspaceId, [u8; 32])>>,
+    /// What hears a device's hello this build's peer protocol does not work with
+    /// ([`Workspaces::observing_versions`]): the daemon tells the person which side updates.
+    versions: std::sync::Arc<std::sync::Mutex<Vec<std::sync::Arc<tilo_peer_state::direct::Versions>>>>,
     /// The agent sessions this device serves, present on it while each connection lasts.
     agent_sessions: personal::AgentSessions,
     /// What the workspaces kept here hold, read and written in process.
@@ -1601,6 +1604,7 @@ impl Workspaces {
                 direct,
                 link_remotes: std::sync::Mutex::default(),
                 listing_themselves: std::sync::Mutex::default(),
+                versions: std::sync::Arc::default(),
                 agent_sessions: personal::AgentSessions::default(),
                 records,
                 member: member::Members::default(),
@@ -2777,6 +2781,12 @@ impl Workspaces {
     async fn absorb(&self, workspace: &str, author: [u8; 32], body: &[u8]) -> Result<(), String> {
         self.absorb_carried(workspace, author, body, Carried::Kept)
             .await
+    }
+
+    /// Hear every device's hello this build's peer protocol does not work with, by `hook`: the
+    /// daemon tells the person which side updates, once for each device and version.
+    pub fn observing_versions(&self, hook: std::sync::Arc<tilo_peer_state::direct::Versions>) {
+        self.inner.versions.lock_recover().push(hook);
     }
 
     /// How many times this device's workspaces replayed what the store keeps
