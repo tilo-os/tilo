@@ -24,7 +24,8 @@ invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event",
 invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event", args = { title = "Dinner at Jonas and Priya's", at = "${MON+5}T19:00:00Z", minutes = 180 } }
 
 [[situation.steps]]
-perform = { target = "NavList", semantic_target = "key:week", action = "activate" }
+# A place in the sidebar is a row of its list, which it publishes as `key:item:<place>`.
+perform = { target = "key:item:week", action = "activate" }
 
 [[situation]]
 name = "agenda"
@@ -43,7 +44,7 @@ invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event",
 invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_event", args = { title = "Train back", at = "${TODAY+3}T17:05:00Z", minutes = 145 } }
 
 [[situation.steps]]
-perform = { target = "NavList", semantic_target = "key:agenda", action = "activate" }
+perform = { target = "key:item:agenda", action = "activate" }
 
 [[situation]]
 name = "tasks"
@@ -65,7 +66,7 @@ invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", 
 invoke = { resource = "{{feedback.value.id}}", action = "check_task", args = { done = true } }
 
 [[situation.steps]]
-perform = { target = "NavList", semantic_target = "key:tasks", action = "activate" }
+perform = { target = "key:item:tasks", action = "activate" }
 
 [[situation]]
 name = "month"

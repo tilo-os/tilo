@@ -141,7 +141,8 @@ invoke = { resource = "{{wen.value.id}}", action = "add_phone", args = { number 
 invoke = { resource = "{{wen.value.id}}", action = "favorite", args = { on = true } }
 
 [[situation.steps]]
-perform = { target = "NavList", semantic_target = "key:is:favorites", action = "activate" }
+# A place in the sidebar is a row of its list, which it publishes as `key:item:<place>`.
+perform = { target = "key:item:is:favorites", action = "activate" }
 
 [[situation]]
 name = "new-contact"
