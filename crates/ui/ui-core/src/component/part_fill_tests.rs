@@ -8,10 +8,10 @@
     reason = "in a test these are the assertion"
 )]
 
+use crate::component_testing::given;
 use crate::headless::Driver;
 use crate::widget::arrange::{Fit, Sizing};
 use crate::{widget::Card, widget::CardProps, widget::Fitted};
-use crate::component_testing::given;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Element;
 use tilo_ui_base::{component::Component, component::Described};

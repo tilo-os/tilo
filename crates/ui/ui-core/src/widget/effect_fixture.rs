@@ -3,9 +3,10 @@
 //! decide (asking the person, or refusing), where a toolkit closure is never gated.
 
 #![allow(
+    dead_code,
     clippy::unwrap_used,
     clippy::disallowed_methods,
-    reason = "test fixture: a failure is the assertion, and the probe paints through the widget contract"
+    reason = "test fixture: a failure is the assertion, the probe paints through the widget contract, and a test-support build hands another crate's tests only some of it"
 )]
 
 use super::Button;

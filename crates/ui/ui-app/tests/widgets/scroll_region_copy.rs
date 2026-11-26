@@ -16,13 +16,20 @@
     reason = "test scenes and pixel tallies: failures are the assertion"
 )]
 
-use super::*;
-use crate::app::{App, AppSurface, SurfaceDamage};
-use tilo_ui_base::offscreen::OffscreenRenderer;
-use tilo_ui_base::widget::Widget;
-
 /// A transcript painted line by line inside a scroll region, as a chat or
 /// a calculator's history paints its content.
+use tilo_ui::app::{App, AppSurface, SurfaceDamage};
+use tilo_ui::widget::internals::scroll_region::*;
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
+use vello::Scene;
+use vello::kurbo::Rect;
+use vello::kurbo::RoundedRect;
+use vello::kurbo::Vec2;
+use vello::peniko::Fill;
+use winit::event::MouseScrollDelta;
+use winit::event::WindowEvent;
 struct Transcript {
     region: ScrollRegion,
     rect: Rect,
@@ -156,7 +163,7 @@ fn scroll(theme: &Theme, scale: f64, edge_fade: bool, runs: &[(f64, usize)]) -> 
         ScrollRegion::vertical()
     };
     let mut app = App::new_with_controlled_inputs(
-        crate::state::State::new(),
+        tilo_ui::state::State::new(),
         Box::new(Transcript {
             region,
             rect: Rect::ZERO,

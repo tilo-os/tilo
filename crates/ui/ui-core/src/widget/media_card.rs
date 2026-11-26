@@ -855,6 +855,14 @@ fn paint_badge(ctx: &mut PaintCtx<'_>, m: &MediaMetrics, art: Rect, badge: Media
     }
 }
 
+/// The badge strip a card face paints over its art, on a theme's own metrics: what a test
+/// outside this crate paints and reads the ink of.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn paint_badge_for_theme(ctx: &mut PaintCtx<'_>, art: Rect, badge: MediaBadge<'_>) {
+    paint_badge(ctx, &MediaMetrics::new(ctx.theme), art, badge);
+}
+
 /// Where a retained card's art comes from.
 pub enum MediaSource {
     Image(peniko::ImageData),
@@ -2318,6 +2326,3 @@ impl Widget for MediaGrid {
         "MediaGrid"
     }
 }
-
-#[cfg(test)]
-mod tests;

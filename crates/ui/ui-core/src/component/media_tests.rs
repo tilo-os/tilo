@@ -7,6 +7,7 @@
     reason = "in a test these are the assertion"
 )]
 
+use crate::component_testing::*;
 use crate::headless::Driver;
 use crate::testing::harness;
 use crate::{
@@ -16,7 +17,6 @@ use crate::{
     widget::QrProps, widget::QrWidget,
 };
 use std::sync::Arc;
-use crate::component_testing::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;

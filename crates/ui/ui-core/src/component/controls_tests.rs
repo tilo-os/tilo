@@ -7,6 +7,7 @@
     reason = "in a test these are the assertion"
 )]
 
+use crate::component_testing::*;
 use crate::testing::harness;
 use crate::{
     widget::Checkbox, widget::CheckboxProps, widget::Dropdown, widget::DropdownProps,
@@ -14,7 +15,6 @@ use crate::{
     widget::Stepper, widget::StepperProps, widget::Toggle, widget::ToggleGroup,
     widget::ToggleGroupProps, widget::ToggleProps, widget::ViewTabs, widget::ViewTabsProps,
 };
-use crate::component_testing::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::widget::Widget;
 use tilo_ui_base::{component::Component, component::Described, component::Value};

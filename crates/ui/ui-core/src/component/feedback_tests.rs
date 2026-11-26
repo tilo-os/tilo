@@ -7,13 +7,13 @@
     reason = "in a test these are the assertion"
 )]
 
+use crate::component_testing::*;
 use crate::testing::harness;
 use crate::{
     widget::Badge, widget::BadgeProps, widget::Breadcrumb, widget::BreadcrumbProps,
     widget::DisclosureRow, widget::DisclosureRowProps, widget::StatGroup, widget::StatGroupProps,
     widget::Toolbar, widget::ToolbarProps,
 };
-use crate::component_testing::*;
 use tilo_ui_base::component::*;
 use tilo_ui_base::widget::Widget;
 

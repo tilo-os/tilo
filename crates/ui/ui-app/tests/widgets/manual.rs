@@ -1,12 +1,12 @@
-use crate::app::driver::Driver;
-use crate::headless::InspectionNode;
-use crate::widget::{Button, Column, Field, Form, FormSection, Row, Text, TextInput};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use taffy::AvailableSpace;
 use taffy::Size;
 use taffy::TaffyTree;
+use tilo_ui::app::driver::Driver;
+use tilo_ui::headless::InspectionNode;
+use tilo_ui::widget::{Button, Column, Field, Form, FormSection, Row, Text, TextInput};
 use tilo_ui_base::Theme;
 use tilo_ui_base::widget::Element;
 use tilo_ui_base::widget::LayoutInfo;
@@ -18,7 +18,6 @@ use vello::Scene;
 use vello::kurbo::Affine;
 use vello::kurbo::Point;
 use vello::kurbo::Rect;
-
 fn find<'a>(node: &'a InspectionNode, id: &str) -> &'a InspectionNode {
     fn search<'a>(node: &'a InspectionNode, id: &str) -> Option<&'a InspectionNode> {
         if node.test_id.as_deref() == Some(id) {
@@ -42,10 +41,10 @@ fn fixed(child: Element) -> Manual {
 fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
     fn fractional_button_allocation_drives_inspection_semantics_and_click() {
         let mut harness = Driver::new(
-            crate::State::new(),
+            tilo_ui::State::new(),
             Box::new(fixed(Box::new(
                 Button::new("action", "A very long action title")
-                    .on_click(crate::testing::record_click("clicked")),
+                    .on_click(tilo_ui::testing::record_click("clicked")),
             ))),
             (400, 300),
         );
@@ -65,7 +64,7 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
             accesskit::Rect::new(10.0, 21.0, 131.0, 61.0)
         );
         harness.click_at(70.0, 40.0);
-        assert_eq!(crate::testing::clicks("clicked"), 1);
+        assert_eq!(tilo_ui::testing::clicks("clicked"), 1);
     }
 
     fn measures_real_wrapping_container_and_form_subtrees() {
@@ -83,7 +82,7 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
     })
     .child(Box::new(Column::new().with_no_padding().push(Box::new(Text::new("A long paragraph that must wrap onto several lines when constrained to a narrow column.")))))
     .child(Box::new(Form::new().section(FormSection::new("Profile").field(Field::new("Long account recovery email address", TextInput::local().with_id("email"))).field(Field::new("Name", TextInput::local().with_id("name"))))));
-        let harness = Driver::new(crate::State::new(), Box::new(region), (600, 500));
+        let harness = Driver::new(tilo_ui::State::new(), Box::new(region), (600, 500));
         assert!(
             seen.borrow()
                 .iter()
@@ -100,20 +99,20 @@ fn manual_allocation_measures_real_subtrees_and_drives_semantics() {
         for child in [
             Box::new(
                 Column::new().with_no_padding().push(Box::new(
-                    crate::widget::Container::new()
+                    tilo_ui::widget::Container::new()
                         .with_no_padding()
                         .with_size(250.0, 90.0),
                 )),
             ) as Element,
             Box::new(
                 Row::new().no_wrap().push(Box::new(
-                    crate::widget::Container::new()
+                    tilo_ui::widget::Container::new()
                         .with_no_padding()
                         .with_size(250.0, 90.0),
                 )),
             ) as Element,
         ] {
-            let harness = Driver::new(crate::State::new(), Box::new(fixed(child)), (400, 300));
+            let harness = Driver::new(tilo_ui::State::new(), Box::new(fixed(child)), (400, 300));
             let snapshot = harness.inspection();
             assert_eq!(snapshot.root.children[0].rect, [10.0, 21.0, 121.0, 40.0]);
             let info = serde_json::to_value(snapshot).unwrap();
@@ -256,7 +255,7 @@ fn manual_layout_errors_reject_invalid_geometry_admission_and_duplicates() {
             })
         })
         .child(Box::new(Column::new().push(Box::new(Text::new("Content")))));
-        let harness = Driver::new(crate::State::new(), Box::new(region), (400, 200));
+        let harness = Driver::new(tilo_ui::State::new(), Box::new(region), (400, 200));
         let snapshot = harness.inspection();
         let Some(LayoutInfo::Manual(info)) = snapshot.root.layout else {
             panic!("manual info")
@@ -363,9 +362,9 @@ fn manual_overflow_is_painted_inspected_and_clipped_per_axis() {
             })
         })
         .child(Box::new(
-            crate::widget::Scrollable::new_vertical().with_child(Box::new(inner)),
+            tilo_ui::widget::Scrollable::new_vertical().with_child(Box::new(inner)),
         ));
-        let harness = Driver::new(crate::State::new(), Box::new(region), (300, 200));
+        let harness = Driver::new(tilo_ui::State::new(), Box::new(region), (300, 200));
         let snapshot = harness.inspection();
         let Some(LayoutInfo::Manual(info)) = snapshot.root.layout else {
             panic!("manual info")
@@ -481,8 +480,10 @@ fn retained_resize_reallocates_a_filling_region_both_ways() {
             height: 40.0,
         })
     })
-    .child(Box::new(crate::widget::Container::new().with_no_padding()));
-    let mut harness = Driver::new(crate::State::new(), Box::new(region), (400, 200));
+    .child(Box::new(
+        tilo_ui::widget::Container::new().with_no_padding(),
+    ));
+    let mut harness = Driver::new(tilo_ui::State::new(), Box::new(region), (400, 200));
     for width in [600_u32, 300, 800] {
         harness.resize((width, 200)).unwrap();
         assert!(

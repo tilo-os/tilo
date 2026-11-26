@@ -5,17 +5,14 @@
 
 #![allow(clippy::unwrap_used, reason = "test: a failure is the assertion")]
 
+/// Where a press lands on the control a person finds by its name.
+use ::collaboration::permissions::{MemberId, PermissionContext, Role};
 use std::cell::Cell;
 use std::rc::Rc;
-
-use ::collaboration::permissions::{MemberId, PermissionContext, Role};
 use tilo_actions::ActionBinding;
-use vello::kurbo::{Point, Rect};
-
-use crate::app::driver::Driver;
+use tilo_ui::app::driver::Driver;
 use tilo_ui_base::widget::Element;
-
-/// Where a press lands on the control a person finds by its name.
+use vello::kurbo::{Point, Rect};
 type Aim = fn(Rect) -> Point;
 
 fn centre(bounds: Rect) -> Point {
@@ -28,12 +25,12 @@ fn before_a_viewer<I: 'static>(
 ) -> (Driver, Rc<Cell<usize>>) {
     let ran = Rc::new(Cell::new(0));
     let counted = Rc::clone(&ran);
-    let root = crate::widget::effect_fixture::sends_through(
+    let root = tilo_ui::widget::effect_fixture::sends_through(
         move || counted.set(counted.get() + 1),
         control,
     );
     let mut driver = Driver::new_with_theme(
-        crate::State::new(),
+        tilo_ui::State::new(),
         root,
         (600, 400),
         tilo_ui_base::theme::Theme::dark(),
@@ -102,7 +99,7 @@ fn a_refused_checkbox_says_why_and_keeps_its_mark() {
     refused_out_loud(
         |binding| {
             Box::new(
-                crate::widget::Checkbox::given(false)
+                tilo_ui::widget::Checkbox::given(false)
                     .with_label("Send")
                     .on_action(binding),
             )
@@ -116,7 +113,7 @@ fn a_refused_switch_says_why() {
     refused_out_loud(
         |binding| {
             Box::new(
-                crate::widget::Toggle::given("send", false)
+                tilo_ui::widget::Toggle::given("send", false)
                     .with_label("Send")
                     .on_action(binding),
             )
@@ -129,7 +126,9 @@ fn a_refused_switch_says_why() {
 fn a_refused_menu_item_says_why() {
     refused_out_loud(
         |binding| {
-            Box::new(crate::widget::RowMenu::new("more", "More for Outbox").action("Send", binding))
+            Box::new(
+                tilo_ui::widget::RowMenu::new("more", "More for Outbox").action("Send", binding),
+            )
         },
         &[("More for Outbox", centre), ("Send", centre)],
     );
@@ -140,10 +139,10 @@ fn a_refused_segment_says_why() {
     refused_out_loud(
         |binding| {
             Box::new(
-                crate::widget::ToggleGroup::new(
+                tilo_ui::widget::ToggleGroup::new(
                     vec![
-                        crate::widget::Segment::new("Hold"),
-                        crate::widget::Segment::new("Send"),
+                        tilo_ui::widget::Segment::new("Hold"),
+                        tilo_ui::widget::Segment::new("Send"),
                     ],
                     0,
                 )
@@ -159,7 +158,7 @@ fn a_refused_link_says_why() {
     refused_out_loud(
         |binding| {
             Box::new(
-                crate::widget::Link::new("https://example.org")
+                tilo_ui::widget::Link::new("https://example.org")
                     .with_label("Send")
                     .on_action(binding),
             )
@@ -171,7 +170,7 @@ fn a_refused_link_says_why() {
 #[test]
 fn a_refused_chip_says_why() {
     refused_out_loud(
-        |binding| Box::new(crate::widget::Chip::new("Send").on_action(binding)),
+        |binding| Box::new(tilo_ui::widget::Chip::new("Send").on_action(binding)),
         &[("Send", centre)],
     );
 }
@@ -181,7 +180,7 @@ fn a_refused_toolbar_command_says_why() {
     refused_out_loud(
         |binding| {
             Box::new(
-                crate::widget::Toolbar::new(crate::widget::toolbar::Orientation::Horizontal)
+                tilo_ui::widget::Toolbar::new(tilo_ui::widget::toolbar::Orientation::Horizontal)
                     .push_button("Send", || {})
                     .with_action(binding),
             )
@@ -195,13 +194,13 @@ fn a_refused_colour_swatch_says_why() {
     refused_out_loud(
         |binding| {
             Box::new(
-                crate::widget::ColorSwatchPicker::new(
+                tilo_ui::widget::ColorSwatchPicker::new(
                     [
-                        crate::widget::ColorSwatch::named(
+                        tilo_ui::widget::ColorSwatch::named(
                             vello::peniko::Color::from_rgb8(0x20, 0x60, 0xd0),
                             "Blue",
                         ),
-                        crate::widget::ColorSwatch::named(
+                        tilo_ui::widget::ColorSwatch::named(
                             vello::peniko::Color::from_rgb8(0xd0, 0x30, 0x30),
                             "Send",
                         ),
@@ -225,7 +224,7 @@ fn a_refused_slider_sends_the_value_pressed_and_stays() {
     refused_out_loud(
         |binding| {
             Box::new(
-                crate::widget::Slider::new("send", "")
+                tilo_ui::widget::Slider::new("send", "")
                     .with_accessible_name("Send")
                     .on_action(binding),
             )
@@ -240,7 +239,7 @@ fn a_refused_slider_sends_the_value_pressed_and_stays() {
 fn a_refused_dropdown_sends_the_choice_and_keeps_its_own() {
     let (mut driver, ran) = before_a_viewer(|binding| {
         Box::new(
-            crate::widget::Dropdown::new(vec!["Hold".to_owned(), "Send".to_owned()], "")
+            tilo_ui::widget::Dropdown::new(vec!["Hold".to_owned(), "Send".to_owned()], "")
                 .with_selected("Hold")
                 .with_accessible_name("Outbox")
                 .on_action(binding),
@@ -250,7 +249,7 @@ fn a_refused_dropdown_sends_the_choice_and_keeps_its_own() {
     press(&mut driver, "Outbox", centre);
     assert!(
         driver
-            .with_widget_mut::<crate::widget::Dropdown, _>(|dropdown| dropdown.is_open())
+            .with_widget_mut::<tilo_ui::widget::Dropdown, _>(|dropdown| dropdown.is_open())
             .unwrap(),
         "the chooser opens for the person's choice"
     );
@@ -276,7 +275,7 @@ fn a_refused_number_step_says_why_and_keeps_the_number() {
     refused_out_loud(
         |binding| {
             Box::new(
-                crate::widget::NumberInput::new(1.0)
+                tilo_ui::widget::NumberInput::new(1.0)
                     .with_accessible_name("Copies")
                     .on_action(binding),
             )
@@ -289,7 +288,7 @@ fn a_refused_number_step_says_why_and_keeps_the_number() {
 fn a_refused_text_edit_says_why_and_keeps_the_text() {
     let (mut driver, ran) = before_a_viewer(|binding| {
         Box::new(
-            crate::widget::TextInput::new(Vec::new())
+            tilo_ui::widget::TextInput::new(Vec::new())
                 .with_accessible_name("Note")
                 .on_action(binding),
         )
@@ -350,11 +349,11 @@ fn relays(sent: Rc<Cell<usize>>) -> Element {
         queued: None,
         sent,
         child: Box::new(
-            crate::widget::Column::new()
+            tilo_ui::widget::Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
                 .push(Box::new(
-                    crate::widget::Button::new("relay", "Relay").on_action(relay),
+                    tilo_ui::widget::Button::new("relay", "Relay").on_action(relay),
                 )),
         ),
     })
@@ -366,14 +365,42 @@ impl tilo_ui_base::widget::Widget for Relays {
         dyn tilo_ui_base::widget::resources::PublishesResources,
         dyn tilo_ui_base::widget::ResourceOperations
     );
-    crate::testing::delegate_widget_methods!(
-        child: sync,
-        build_layout,
-        apply_layout,
-        draw,
-        handle_event,
-        get_rect
-    );
+    fn sync(
+        &mut self,
+        doc: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
+        self.child.sync(doc, path);
+    }
+    fn build_layout(
+        &mut self,
+        tree: &mut taffy::TaffyTree<()>,
+        theme: &tilo_ui_base::theme::Theme,
+        nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
+    ) -> taffy::NodeId {
+        self.child.build_layout(tree, theme, nodes)
+    }
+    fn apply_layout(
+        &mut self,
+        tree: &taffy::TaffyTree<()>,
+        node: taffy::NodeId,
+        origin: vello::kurbo::Point,
+    ) {
+        self.child.apply_layout(tree, node, origin);
+    }
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
+        self.child.draw(ctx);
+    }
+    fn handle_event(
+        &mut self,
+        event: &winit::event::WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
+        self.child.handle_event(event, ctx);
+    }
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        self.child.get_rect()
+    }
     fn name(&self) -> &str {
         "Relay fixture"
     }
@@ -430,7 +457,20 @@ impl tilo_ui_base::widget::controls::ActionControls for Relays {
     }
 }
 
-crate::testing::test_app_widget!(Relays, "Relay fixture");
+impl tilo_ui::widget::AppWidget for Relays {
+    fn app_kind(&self) -> tilo_ui::widget::AppKind {
+        tilo_ui::widget::AppKind::Editor
+    }
+    fn app_title(&self) -> &str {
+        "Relay fixture"
+    }
+    fn app_icon(&self) -> tilo_ui::widget::IconDescriptor {
+        tilo_ui::widget::IconDescriptor::Glyph("T")
+    }
+    fn permission_hint(&self) -> Option<tilo_ui::widget::AppKind> {
+        None
+    }
+}
 
 /// An agent's call that goes on to press an action the person would be asked about is refused for
 /// the agent: the press is the agent's, not the person's, so the person is never asked about it,
@@ -440,7 +480,7 @@ crate::testing::test_app_widget!(Relays, "Relay fixture");
 fn an_agent_s_call_to_a_refused_action_never_asks_the_workspace() {
     let sent = Rc::new(Cell::new(0));
     let mut driver = Driver::new_with_theme(
-        crate::State::new(),
+        tilo_ui::State::new(),
         relays(Rc::clone(&sent)),
         (600, 400),
         tilo_ui_base::theme::Theme::dark(),

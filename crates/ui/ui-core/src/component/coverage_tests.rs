@@ -10,9 +10,9 @@ use tilo_component_scan as component_scan;
 use vello::kurbo::{Point, Rect};
 
 use crate::component_catalogue::TOOLKIT;
+use crate::component_testing::given;
 use crate::component_tests::{given_with_views, sample};
 use crate::headless::Driver;
-use crate::component_testing::given;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::counts::asking_for_layout;
 use tilo_ui_base::{component::Registry, component::Value};

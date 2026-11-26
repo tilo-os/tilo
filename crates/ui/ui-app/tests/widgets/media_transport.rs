@@ -1,13 +1,18 @@
 //! The media transport in a NavShell's band.
 
-use super::*;
-use crate::app::driver::Driver;
-use crate::state::State;
-use crate::{widget::NavShell, widget::Text};
+use std::collections::HashMap;
+use tilo_actions::ActionBinding;
+use tilo_ui::app::driver::Driver;
+use tilo_ui::state::State;
+use tilo_ui::widget::internals::media_transport::{Metrics, layout_for_test};
+use tilo_ui::widget::media_transport::*;
+use tilo_ui::{widget::NavShell, widget::Text};
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::ContentKind;
+use tilo_ui_base::widget::Widget;
 use vello::kurbo::Point;
+use vello::kurbo::Rect;
 use winit::event::{ElementState, MouseButton, WindowEvent};
-
 fn playing() -> TransportState {
     TransportState {
         title: "Song".into(),
@@ -336,9 +341,9 @@ fn the_volume_is_reachable_at_every_width() {
 fn the_knob_at_either_end_clears_the_times() {
     let mut m = Metrics::of(&Theme::dark());
     m.time = 32.0;
-    let reach = crate::widget::SliderFace::overhang();
+    let reach = tilo_ui::widget::SliderFace::overhang();
     for width in [360.0, 900.0, 1400.0, 3440.0] {
-        let (form, rects, _) = layout(&playing(), &handed(&actions()), &m, width);
+        let (form, rects, _) = layout_for_test(&playing(), &handed_for_test(&actions()), &m, width);
         let scrub = rects[SCRUBBER];
         assert!(
             scrub.x0 - reach >= rects[ELAPSED].x1 + m.related - 0.5,
@@ -379,7 +384,8 @@ fn the_band_fits_every_window_width() {
         "volume-menu",
     ];
     for width in [320.0, 390.0, 480.0, 768.0, 1280.0, 1920.0, 3440.0] {
-        let (form, rects, height) = layout(&playing(), &handed(&actions()), &m, width);
+        let (form, rects, height) =
+            layout_for_test(&playing(), &handed_for_test(&actions()), &m, width);
         for (index, rect) in rects.iter().enumerate() {
             if rect.area() <= 0.0 {
                 continue;
@@ -410,7 +416,7 @@ fn the_band_fits_every_window_width() {
 /// manual region: its controls are placed by the band's own policy, never by a plain flow.
 #[test]
 fn a_declared_transport_hands_the_window_its_bands_layout() {
-    use crate::widget::{DeclaredTransport, TransportTriggers};
+    use tilo_ui::widget::{DeclaredTransport, TransportTriggers};
     let triggers = TransportTriggers {
         play_pause: None,
         previous: None,
@@ -471,7 +477,7 @@ fn a_declared_transport_hands_the_window_its_bands_layout() {
 /// length — never a clock the view has to keep in step with.
 #[test]
 fn a_declared_transport_plays_its_source_and_shows_the_engines_place() {
-    use crate::widget::{DeclaredTransport, MediaTransportProps};
+    use tilo_ui::widget::{DeclaredTransport, MediaTransportProps};
     use tilo_ui_base::component::Described;
 
     let engine = media::MediaEngine::new_synthesized();

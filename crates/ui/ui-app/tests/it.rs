@@ -28,9 +28,20 @@
     clippy::wildcard_imports,
     reason = "a moved widget test opens the toolkit's names with one prelude and uses a subset"
 )]
+#![allow(
+    clippy::doc_markdown,
+    clippy::map_unwrap_or,
+    clippy::ref_as_ptr,
+    clippy::similar_names,
+    clippy::unnecessary_wraps,
+    reason = "a widget test builds its probe fixtures and scenes by hand; the shapes are the assertion, not a library a caller keeps"
+)]
 
 #[path = "support/mod.rs"]
 mod support;
+
+#[path = "widgets.rs"]
+mod widgets;
 
 #[path = "accessibility_geometry.rs"]
 mod accessibility_geometry;

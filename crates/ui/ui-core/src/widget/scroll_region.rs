@@ -1027,10 +1027,6 @@ impl ScrollRegion {
 mod capture_tests;
 
 #[cfg(test)]
-#[path = "scroll_region/copy_tests.rs"]
-mod copy_tests;
-
-#[cfg(test)]
 mod tests {
     use super::*;
 

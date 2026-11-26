@@ -933,8 +933,6 @@ pub(crate) mod control_result_probe;
 #[cfg(any(test, feature = "test-support"))]
 pub mod effect_fixture;
 pub mod keyboard_map;
-#[cfg(test)]
-mod refused_press_tests;
 pub use {
     keyboard_map::KeyboardMap, keyboard_map::KeyboardMapInput, keyboard_map::KeyboardMapKey,
     keyboard_map::KeyboardMapSelection,
@@ -950,3 +948,22 @@ pub use {
 // The helpers a widget's own tests share with the app runner's tests.
 #[cfg(any(test, feature = "test-support"))]
 pub use context_menu_area::test_support as context_menu_area_test_support;
+
+/// The widget modules' own surfaces: what a widget's tests saw as `super::*` while they lived
+/// inside it. The tests that drive the app runner live in `tilo-ui-app` now, and reach the same
+/// items here; nothing outside a test builds against this.
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+pub mod internals {
+    pub mod media_transport {
+        pub use crate::widget::media_transport::metrics_local::{Form, Metrics, layout_for_test};
+        pub use crate::widget::media_transport::*;
+    }
+    pub mod primitives {
+        pub use crate::widget::primitives::surfaces_component::*;
+        pub use crate::widget::primitives::*;
+    }
+    pub mod scroll_region {
+        pub use crate::widget::scroll_region::*;
+    }
+}

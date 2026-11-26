@@ -1,9 +1,15 @@
-use super::*;
-use crate::app::driver::Driver;
-use crate::headless::InspectionNode;
 use std::cell::Cell;
 use std::rc::Rc;
-
+use tilo_ui::app::driver::Driver;
+use tilo_ui::headless::InspectionNode;
+use tilo_ui::widget::media_card::*;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::MediaAspect;
+use vello::kurbo::Point;
+use vello::kurbo::Rect;
 fn rect(node: &InspectionNode) -> Rect {
     let [x, y, w, h] = node.rect;
     Rect::new(x, y, x + w, y + h)
@@ -49,7 +55,7 @@ tilo_test_env::scenario! {
 
     phase overlay_badges_paint_legible_ink_in_every_theme;
     {
-        use crate::color::contrast_ratio;
+        use tilo_ui::color::contrast_ratio;
         use tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST;
 
         let mut text = TextRenderer::new();
@@ -58,7 +64,6 @@ tilo_test_env::scenario! {
             let theme = Theme::named(name).expect("every shipped theme resolves");
             for reduce_transparency in [false, true] {
                 let theme = theme.clone().with_reduce_transparency(reduce_transparency);
-                let metrics = MediaMetrics::new(&theme);
                 let live_fill = theme.tokens.colors.semantic.danger;
                 let live_ink =
                     theme
@@ -75,9 +80,8 @@ tilo_test_env::scenario! {
                     ),
                 ] {
                     let mut scene = vello::Scene::new();
-                    paint_badge(
+                    paint_badge_for_theme(
                         &mut PaintCtx::new(&mut scene, vello::kurbo::Affine::IDENTITY, &mut text, &theme),
-                        &metrics,
                         art,
                         badge,
                     );
@@ -96,9 +100,8 @@ tilo_test_env::scenario! {
                     );
                 }
                 let mut progress = vello::Scene::new();
-                paint_badge(
+                paint_badge_for_theme(
                     &mut PaintCtx::new(&mut progress, vello::kurbo::Affine::IDENTITY, &mut text, &theme),
-                    &metrics,
                     art,
                     MediaBadge::Progress(0.5),
                 );
@@ -134,7 +137,7 @@ fn text_blocks_line_up_across_a_row() {
         MediaCard::new("c", MediaSource::Placeholder).title("Blue"),
     ];
     let harness = Driver::new_with_theme(
-        crate::State::new(),
+        tilo_ui::State::new(),
         Box::new(MediaGrid::new(cards)),
         (900, 800),
         Theme::dark(),
@@ -162,7 +165,7 @@ fn columns_come_from_the_width_and_the_text_scale() {
             .map(|i| MediaCard::new(format!("m{i}"), MediaSource::Placeholder).title("Album"))
             .collect();
         let harness = Driver::new_with_theme(
-            crate::State::new(),
+            tilo_ui::State::new(),
             Box::new(MediaGrid::new(cards)),
             (width, 2000),
             Theme::dark(),
@@ -189,7 +192,7 @@ fn a_card_activates_and_its_hover_action_is_its_own() {
         .on_hover_action(Icon::Play, "Play", move || p.set(p.get() + 1))
         .on_open(move || o.set(o.get() + 1));
     let mut harness = Driver::new_with_theme(
-        crate::State::new(),
+        tilo_ui::State::new(),
         Box::new(MediaGrid::new(vec![card])),
         (300, 600),
         Theme::dark(),
@@ -205,7 +208,7 @@ fn a_card_activates_and_its_hover_action_is_its_own() {
 #[test]
 fn creator_avatar_loads_through_the_shared_store_and_scales_with_metadata() {
     use std::sync::Arc;
-    let bytes = crate::png::encode_rgba8(2, 2, &[180; 16]).unwrap();
+    let bytes = tilo_ui::png::encode_rgba8(2, 2, &[180; 16]).unwrap();
     let fetch: tilo_ui_base::image_store::Fetcher = Arc::new(move |_| Some(bytes.clone()));
     let store = tilo_ui_base::ImageStore::new(&fetch);
     assert!(store.get("https://example.test/creator.png").is_none());
@@ -224,7 +227,7 @@ fn creator_avatar_loads_through_the_shared_store_and_scales_with_metadata() {
             .creator("Ada Lovelace", "ada")
             .creator_image_url(store.clone(), "https://example.test/creator.png");
         let mut harness = Driver::new_with_theme(
-            crate::State::new(),
+            tilo_ui::State::new(),
             Box::new(card),
             (400, 600),
             theme.clone(),

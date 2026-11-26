@@ -54,6 +54,8 @@ taffy = { workspace = true, features = ["content_size"] }
 tempfile.workspace = true
 uuid.workspace = true
 vello.workspace = true
+# The draw-tag counts a card's paint asserts on.
+vello_encoding.workspace = true
 winit.workspace = true
 
 [[test]]

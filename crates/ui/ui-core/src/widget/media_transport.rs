@@ -140,84 +140,108 @@ pub enum TransportEvent {
     OpenPlaying,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Form {
-    Compact,
-    /// Wide, with the volume a mute toggle only.
-    #[default]
-    Wide,
-    WideWithVolume,
-}
+/// What this module's own tests measure and paint with, which the widget tests
+/// that live in `tilo-ui-app` read too: the type as the module defines it, at a
+/// visibility a test outside the crate can name.
+pub(crate) mod metrics_local {
+    use super::{
+        ButtonFace, CHILDREN, ControlSize, MediaSize, Rect, TextRole, Theme, TransportControl,
+        TransportFace, TransportState, layout,
+    };
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Metrics {
-    control: f64,
-    play: f64,
-    skip: f64,
-    caption: f64,
-    song: f64,
-    time: f64,
-    large: f64,
-    small: f64,
-    group: f64,
-    section: f64,
-    sibling: f64,
-    related: f64,
-    tight: f64,
-    swipe: f64,
-}
+    /// How wide a band is, which picks the controls it shows.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub enum Form {
+        Compact,
+        /// Wide, with the volume a mute toggle only.
+        #[default]
+        Wide,
+        WideWithVolume,
+    }
 
-impl Metrics {
-    fn of(theme: &Theme) -> Self {
-        let rhythm = &theme.tokens.spacing.rhythm;
-        let line = |role| f64::from(theme.text(role).line_height_px());
-        Self {
-            control: ButtonFace::height(ControlSize::Regular, theme),
-            play: TransportFace::side(TransportControl::PlayPause { playing: false }, theme),
-            skip: TransportFace::side(TransportControl::Next, theme),
-            caption: line(TextRole::Caption),
-            song: line(TextRole::Body) + line(TextRole::Caption),
-            time: 0.0,
-            large: MediaSize::Large.extent(theme),
-            small: MediaSize::Small.extent(theme),
-            group: f64::from(rhythm.group),
-            section: f64::from(rhythm.section),
-            sibling: f64::from(rhythm.sibling),
-            related: f64::from(rhythm.related),
-            tight: f64::from(rhythm.tight),
-            swipe: 2.0 * f64::from(theme.tokens.metrics.min_pointer_target),
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub struct Metrics {
+        pub control: f64,
+        pub play: f64,
+        pub skip: f64,
+        pub caption: f64,
+        pub song: f64,
+        pub time: f64,
+        pub large: f64,
+        pub small: f64,
+        pub group: f64,
+        pub section: f64,
+        pub sibling: f64,
+        pub related: f64,
+        pub tight: f64,
+        pub swipe: f64,
+    }
+
+    impl Metrics {
+        pub fn of(theme: &Theme) -> Self {
+            let rhythm = &theme.tokens.spacing.rhythm;
+            let line = |role| f64::from(theme.text(role).line_height_px());
+            Self {
+                control: ButtonFace::height(ControlSize::Regular, theme),
+                play: TransportFace::side(TransportControl::PlayPause { playing: false }, theme),
+                skip: TransportFace::side(TransportControl::Next, theme),
+                caption: line(TextRole::Caption),
+                song: line(TextRole::Body) + line(TextRole::Caption),
+                time: 0.0,
+                large: MediaSize::Large.extent(theme),
+                small: MediaSize::Small.extent(theme),
+                group: f64::from(rhythm.group),
+                section: f64::from(rhythm.section),
+                sibling: f64::from(rhythm.sibling),
+                related: f64::from(rhythm.related),
+                tight: f64::from(rhythm.tight),
+                swipe: 2.0 * f64::from(theme.tokens.metrics.min_pointer_target),
+            }
+        }
+
+        /// The scrubber's row: a caption line, never under a comfortable
+        /// pointer target.
+        pub fn scrub(&self) -> f64 {
+            self.caption.max(self.section + self.related)
+        }
+
+        pub fn form(&self, width: f64) -> Form {
+            if width < 2.0 * self.large {
+                Form::Compact
+            } else if width < 3.0 * self.large {
+                Form::Wide
+            } else {
+                Form::WideWithVolume
+            }
+        }
+
+        pub fn top(&self, form: Form) -> f64 {
+            let control = self.control.max(self.play);
+            if form == Form::Compact {
+                control.max(self.song)
+            } else {
+                control
+            }
+        }
+
+        pub fn height(&self, form: Form) -> f64 {
+            2.0 * self.sibling + self.top(form) + self.tight + self.scrub()
         }
     }
-
-    /// The scrubber's row: a caption line, never under a comfortable
-    /// pointer target.
-    fn scrub(&self) -> f64 {
-        self.caption.max(self.section + self.related)
-    }
-
-    fn form(&self, width: f64) -> Form {
-        if width < 2.0 * self.large {
-            Form::Compact
-        } else if width < 3.0 * self.large {
-            Form::Wide
-        } else {
-            Form::WideWithVolume
-        }
-    }
-
-    fn top(&self, form: Form) -> f64 {
-        let control = self.control.max(self.play);
-        if form == Form::Compact {
-            control.max(self.song)
-        } else {
-            control
-        }
-    }
-
-    fn height(&self, form: Form) -> f64 {
-        2.0 * self.sibling + self.top(form) + self.tight + self.scrub()
+    /// The bands a transport lays its controls in at `width`: what a test outside this crate
+    /// reads.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn layout_for_test(
+        state: &TransportState,
+        handed: &[bool; CHILDREN],
+        m: &Metrics,
+        width: f64,
+    ) -> (Form, [Rect; CHILDREN], f64) {
+        layout(state, handed, m, width)
     }
 }
+use metrics_local::{Form, Metrics};
 
 #[derive(Default)]
 struct Shared {
@@ -1094,15 +1118,34 @@ const PREVIOUS: usize = 5;
 const PLAY: usize = 6;
 const NEXT: usize = 7;
 const REPEAT: usize = 8;
+#[cfg(not(any(test, feature = "test-support")))]
 const ELAPSED: usize = 9;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub const ELAPSED: usize = 9;
+#[cfg(not(any(test, feature = "test-support")))]
 const SCRUBBER: usize = 10;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub const SCRUBBER: usize = 10;
+#[cfg(not(any(test, feature = "test-support")))]
 const TOTAL: usize = 11;
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub const TOTAL: usize = 11;
 const QUEUE: usize = 12;
 const MUTE: usize = 13;
 const VOLUME: usize = 14;
 const MORE: usize = 15;
 const VOLUME_MENU: usize = 16;
 const CHILDREN: usize = 17;
+
+/// Which controls a band was handed, as a test outside this crate reads it.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn handed_for_test(actions: &TransportActions) -> [bool; CHILDREN] {
+    handed(actions)
+}
 
 fn handed(actions: &TransportActions) -> [bool; CHILDREN] {
     std::array::from_fn(|index| match index {
@@ -1958,7 +2001,3 @@ impl tilo_ui_base::widget::identity::concrete::Decorator for MediaTransport {
         "MediaTransport"
     }
 }
-
-#[cfg(test)]
-#[path = "media_transport_tests.rs"]
-mod tests;

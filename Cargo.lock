@@ -21546,6 +21546,7 @@ dependencies = [
  "tilo-ui",
  "tilo-ui-base",
  "tilo-vello",
+ "tilo-vello-encoding",
  "tilo-wasm-aot",
  "tilo-winit",
  "uuid",

@@ -606,9 +606,6 @@ mod widget_layout_tests;
 #[path = "widget/manual/ownership_tests.rs"]
 mod widget_manual_ownership_tests;
 #[cfg(test)]
-#[path = "widget/manual/tests.rs"]
-mod widget_manual_tests;
-#[cfg(test)]
 #[path = "widget/native_view/tests.rs"]
 mod widget_native_view_tests;
 #[cfg(test)]
