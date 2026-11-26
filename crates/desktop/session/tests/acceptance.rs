@@ -248,7 +248,11 @@ fn step_5_an_inline_edit_of_a_placed_record_commits() {
     });
     let edited = "Groceries and lemons";
     assert!(
-        session.a11y_perform(place, field, &tilo_ui_base::a11y::Action::SetValue(edited.to_owned())),
+        session.a11y_perform(
+            place,
+            field,
+            &tilo_ui_base::a11y::Action::SetValue(edited.to_owned())
+        ),
         "the place takes the edit its field offers"
     );
 

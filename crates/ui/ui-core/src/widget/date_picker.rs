@@ -20,9 +20,9 @@ use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
 #[path = "date_picker_component.rs"]
 mod component;
-use tilo_ui_base::widget::Widget;
 use crate::widget::text::centered_text_top;
 pub use component::DatePickerProps;
+use tilo_ui_base::widget::Widget;
 
 /// Six rows covers every possible month layout — a 31-day month starting
 /// on Sunday is the worst case, needing 6 rows to fit the spill-in/out
@@ -271,8 +271,11 @@ impl DatePicker {
             .disc_for
             .is_some_and(|(day, month)| day != self.selected && month == self.month_view);
         if slides {
-            let timing =
-                ListChange::MOVE.timing(Direction::Enter, motion, tilo_ui_base::motion::input_source());
+            let timing = ListChange::MOVE.timing(
+                Direction::Enter,
+                motion,
+                tilo_ui_base::motion::input_source(),
+            );
             self.disc.set(target, timing, now);
             if let Some(until) = self.disc.settles_at() {
                 tilo_ui_base::motion::want_frames_until(until);
@@ -745,8 +748,9 @@ impl DatePicker {
         let text_color = tokens.colors.text_primary;
 
         let (y, m) = self.month_view;
-        let header_label =
-            tilo_ui_base::format::month_heading(jiff::civil::Date::new(y, m, 1).unwrap_or(self.selected));
+        let header_label = tilo_ui_base::format::month_heading(
+            jiff::civil::Date::new(y, m, 1).unwrap_or(self.selected),
+        );
         // Every line in the picker is centred on its *measured* height; the
         // font size alone sat the 12 px labels 1.5 px low in each band.
         let (label_w, label_h) = text_renderer.measure_style(&header_label, None, &text_style);
@@ -763,8 +767,14 @@ impl DatePicker {
 
         let edge = f64::from(tokens.metrics.icon_sm);
         for (button, icon) in [
-            (self.prev_button_rect, tilo_ui_base::icons::Icon::ChevronLeft),
-            (self.next_button_rect, tilo_ui_base::icons::Icon::ChevronRight),
+            (
+                self.prev_button_rect,
+                tilo_ui_base::icons::Icon::ChevronLeft,
+            ),
+            (
+                self.next_button_rect,
+                tilo_ui_base::icons::Icon::ChevronRight,
+            ),
         ] {
             let centre =
                 vello::kurbo::Point::new(button.center().x, self.rect.y0 + HEADER_HEIGHT / 2.0);
@@ -911,11 +921,11 @@ fn day_disc(cell: Rect) -> vello::kurbo::Circle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::presence::PresenceCtx;
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use taffy::prelude::TaffyMaxContent;
+    use tilo_ui_base::presence::PresenceCtx;
 
     tilo_test_env::scenario! {
         /// A date picker: its month, selection, semantics and bindings.

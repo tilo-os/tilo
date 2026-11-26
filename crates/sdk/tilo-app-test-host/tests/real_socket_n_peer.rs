@@ -12,8 +12,10 @@
 //!
 
 use crate::support_collab::{TypedBroker, change_carrying, changes_of};
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PresencePayload};
 use tilo_ui_base::presence::PresenceKey;
+use tilo_ui_base::{
+    collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PresencePayload,
+};
 
 #[test]
 fn n_peer_fanout_and_per_peer_attribution() {

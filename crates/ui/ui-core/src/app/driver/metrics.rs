@@ -5,8 +5,8 @@
 
 use super::Driver;
 use crate::profiling::{FrameProfiler, FrameTiming};
-use tilo_ui_base::widget::Widget;
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::widget::Widget;
 
 /// What one completed layout pass did with its layout tree.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

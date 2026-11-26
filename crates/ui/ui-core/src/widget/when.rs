@@ -7,8 +7,11 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
 use super::arrange::Fit;
-use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::Element, widget::ModelPath, widget::StructureChange, widget::TaffyTreeExt, widget::Widget};
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{
+    widget::AppModel, widget::Decorator, widget::Element, widget::ModelPath,
+    widget::StructureChange, widget::TaffyTreeExt, widget::Widget,
+};
 
 #[derive(Default)]
 #[tilo_ui_base::component::not_a_component(
@@ -33,7 +36,11 @@ impl Widget for Absent {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        taffy.widget_leaf(tilo_ui_base::widget::layout::removed_from_flow(), node_map, self)
+        taffy.widget_leaf(
+            tilo_ui_base::widget::layout::removed_from_flow(),
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, origin: Point) {

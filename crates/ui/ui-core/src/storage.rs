@@ -22,12 +22,12 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-pub use tilo_ui_base::settings_source::ChangeOrigin;
 use settings_model::{DeviceClass, Scope, SettingsSchema};
 /// Whether this thread may wait on storage.
 pub use tilo_files::waiting;
 pub use tilo_files::{Dir, FsError};
 pub use tilo_paths::{AppPaths, Location};
+pub use tilo_ui_base::settings_source::ChangeOrigin;
 
 /// One app's private file areas.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -697,7 +697,9 @@ pub fn parse_settings(text: &str) -> Map<String, Value> {
 /// The settings of the profile at `root`, for code that compares two profiles.
 #[must_use]
 pub fn settings_at(root: &Path) -> Map<String, Value> {
-    tilo_ui_base::settings_source::SettingsSource::load(&*tilo_ui_base::settings_source::profile_source(root))
+    tilo_ui_base::settings_source::SettingsSource::load(
+        &*tilo_ui_base::settings_source::profile_source(root),
+    )
 }
 
 /// This app's secrets in the store the current host provides.
@@ -734,7 +736,8 @@ mod tests {
         let chosen = serde_json::json!({"appearance": {"mode": "dark"}});
         let chosen = chosen.as_object().cloned().unwrap_or_default();
         let second = tilo_ui_base::settings_source::HostDocument::new(chosen, |_| Ok(()));
-        let _other = tilo_ui_base::settings_source::scoped_source(Some(std::sync::Arc::new(second)));
+        let _other =
+            tilo_ui_base::settings_source::scoped_source(Some(std::sync::Arc::new(second)));
         assert!(
             cached.refresh(),
             "the document installed in the other's place is a version of its own"

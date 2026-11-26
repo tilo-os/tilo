@@ -25,7 +25,8 @@ pub(super) fn resolve_published_action(
     }
     let forest = tilo_ui_base::widget::resources::shared_resources(widget, doc);
     let mut found = shared_target(&forest, Some(binding), address)?;
-    let Some(publisher) = capability::<dyn tilo_ui_base::widget::resources::PublishesResources>(widget)
+    let Some(publisher) =
+        capability::<dyn tilo_ui_base::widget::resources::PublishesResources>(widget)
     else {
         return Some(found);
     };

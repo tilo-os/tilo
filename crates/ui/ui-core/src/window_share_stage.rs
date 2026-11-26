@@ -20,12 +20,15 @@ use winit::event::{ElementState, TouchPhase, WindowEvent};
 use super::{LiveView, VIEW, Views, placed as place_of, view_transform};
 use crate::hosted_window::HostedWindow;
 
+use crate::time::Instant;
+use crate::window_share::{EmbedState, ResourceView};
+use crate::{widget::TileContent, widget::TileHost};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::time::Instant;
-use crate::{widget::TileContent, widget::TileHost};
-use tilo_ui_base::{widget::AppModel, widget::DrawChild, widget::Edits, widget::EventCtx, widget::ModelPath, widget::StructureChange, widget::TaffyTreeExt, widget::Widget};
-use crate::window_share::{EmbedState, ResourceView};
+use tilo_ui_base::{
+    widget::AppModel, widget::DrawChild, widget::Edits, widget::EventCtx, widget::ModelPath,
+    widget::StructureChange, widget::TaffyTreeExt, widget::Widget,
+};
 
 /// How many views deep a view worked in may show views of its own.
 const NESTED: u8 = 2;
@@ -855,7 +858,9 @@ fn lay_out(host: &mut TileHost, theme: &Theme, text: &mut TextRenderer) -> bool 
     // unaliased for both calls.
     let solved = unsafe {
         bindings.rebuild(&*host, &taffy, child, &nodes);
-        tilo_ui_base::widget::compute_widget_layout(&mut taffy, root, available, &nodes, &bindings, text)
+        tilo_ui_base::widget::compute_widget_layout(
+            &mut taffy, root, available, &nodes, &bindings, text,
+        )
     };
     if solved.is_err() {
         return false;

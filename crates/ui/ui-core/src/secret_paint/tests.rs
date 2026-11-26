@@ -1,7 +1,7 @@
+use crate::{widget::Column, widget::Row};
 use tilo_ui_base::secret_paint::*;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::{widget::Column, widget::Row};
 use tilo_ui_base::widget::Widget;
 use vello::Scene;
 use vello::kurbo::Affine;

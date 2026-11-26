@@ -6,15 +6,15 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use tilo_ui_base::motion::Appearing;
 
-use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::TextRole;
 use crate::widget::find_bar::{FindAbilities, FindMode, FindOptions};
 use crate::widget::floating_surface;
 use crate::widget::{
     Button, ButtonFace, Checkbox, CheckboxFace, ControlSize, SearchField, SegmentedFace,
     ToggleGroup,
 };
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 use super::tr;
 use tilo_ui_base::widget::DrawChild;
@@ -403,8 +403,11 @@ fn paint_choices(
                 Checkbox::paint(scene, transform, theme, &face);
                 let label = choice.label();
                 let (_, lh) = text.measure_style(&label, None, &style);
-                let ty =
-                    tilo_ui_base::text_metrics::centered_text_top(rect.y0, rect.height(), f64::from(lh));
+                let ty = tilo_ui_base::text_metrics::centered_text_top(
+                    rect.y0,
+                    rect.height(),
+                    f64::from(lh),
+                );
                 let tx = check.x1 + f64::from(theme.tokens.spacing.s2);
                 text.draw_style(
                     scene,

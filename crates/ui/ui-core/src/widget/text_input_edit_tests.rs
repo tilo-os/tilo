@@ -5,10 +5,13 @@ use super::super::*;
 use super::draw_to_populate;
 use super::drive;
 use super::mods;
-use tilo_ui_base::{synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release, synthetic_input::named_key};
 use crate::testing::Dispatch;
 use automerge::ObjType;
 use automerge::transaction::Transactable as _;
+use tilo_ui_base::{
+    synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press,
+    synthetic_input::mouse_release, synthetic_input::named_key,
+};
 
 tilo_test_env::scenario! {
     /// Editing a field: its primitives, its accessibility, and its bound text.

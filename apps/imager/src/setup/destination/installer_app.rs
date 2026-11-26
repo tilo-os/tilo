@@ -24,8 +24,11 @@ use tilo_ui_base::i18n::ArgValue;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::Rhythm;
 use tilo_ui_base::tokens::typography::TextRole;
-use ui::{widget::Dropdown, widget::ListRow, widget::Property, widget::PropertyList, widget::Row, widget::Spinner, widget::Stepper, widget::Text, widget::TextInput};
 use tilo_ui_base::{widget::DrawChild as _, widget::Spacer, widget::Widget};
+use ui::{
+    widget::Dropdown, widget::ListRow, widget::Property, widget::PropertyList, widget::Row,
+    widget::Spinner, widget::Stepper, widget::Text, widget::TextInput,
+};
 
 use install_profile_model::{
     FILESYSTEMS, valid_full_name, valid_hostname, valid_locale, valid_timezone_name, valid_username,
@@ -81,7 +84,9 @@ fn storage_text(key: &str) -> String {
         key,
         &[(
             "minimum",
-            tilo_ui_base::i18n::ArgValue::Text(tilo_ui_base::format::memory(imager_backend::MIN_TARGET_BYTES)),
+            tilo_ui_base::i18n::ArgValue::Text(tilo_ui_base::format::memory(
+                imager_backend::MIN_TARGET_BYTES,
+            )),
         )],
     )
 }
@@ -1566,7 +1571,10 @@ impl InstallerApp {
                     PREFLIGHT_FAIL_PREFIX,
                     CATALOG.t_args(
                         "imager-installer-preflight-failed",
-                        &[("detail", tilo_ui_base::i18n::ArgValue::Text(error.to_string()))],
+                        &[(
+                            "detail",
+                            tilo_ui_base::i18n::ArgValue::Text(error.to_string()),
+                        )],
                     ),
                 ),
             };
@@ -2294,7 +2302,10 @@ impl InstallerApp {
         crate::setup::strings::t_args(
             "installer-storage-allocation-summary",
             &[
-                ("capacity", tilo_ui_base::format::memory(plan.free_size_bytes).into()),
+                (
+                    "capacity",
+                    tilo_ui_base::format::memory(plan.free_size_bytes).into(),
+                ),
                 ("remaining", tilo_ui_base::format::memory(remaining).into()),
                 ("details", Self::alongside_capacity_summary(plan).into()),
             ],
@@ -2305,8 +2316,14 @@ impl InstallerApp {
         crate::setup::strings::t_args(
             "installer-storage-alongside-capacity",
             &[
-                ("root", tilo_ui_base::format::memory(plan.root_size_bytes).into()),
-                ("total", tilo_ui_base::format::memory(plan.free_size_bytes).into()),
+                (
+                    "root",
+                    tilo_ui_base::format::memory(plan.root_size_bytes).into(),
+                ),
+                (
+                    "total",
+                    tilo_ui_base::format::memory(plan.free_size_bytes).into(),
+                ),
             ],
         )
     }

@@ -2,9 +2,9 @@
 //! it, and never loses it past its own edges.
 
 use super::*;
-use tilo_ui_base::{component::Described, component::Event, component::Intent};
 use crate::headless::Driver;
 use tilo_ui_base::synthetic_input;
+use tilo_ui_base::{component::Described, component::Event, component::Intent};
 
 /// A page of the size a slide has, standing in the stage as the editor's does.
 fn stage() -> Stage {
@@ -104,7 +104,10 @@ fn the_slide_zooms_and_pans_without_losing_its_edges() {
 
 /// A stage holding `count` boxes a hundred page pixels apart, whose choosing and moving it
 /// reports on `queue`.
-fn boxes_props(queue: &tilo_ui_base::Intents<tilo_ui_base::component::Fired>, count: i64) -> StageProps {
+fn boxes_props(
+    queue: &tilo_ui_base::Intents<tilo_ui_base::component::Fired>,
+    count: i64,
+) -> StageProps {
     let pins = (0..count)
         .map(|index| StagePinProps {
             key: format!("box-{index}"),

@@ -1,13 +1,12 @@
 //! Versioned, serializable UI object graphs compiled into ordinary widgets. The graph is
 //! a source format, not a second rendering system.
 
-use tilo_ui_base::LocalState;
-use tilo_ui_base::theme::Theme;
 use crate::time::SystemTime;
-use tilo_ui_base::tokens::TextRole;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
-use crate::{widget::Button, widget::ButtonRole, widget::Checkbox, widget::Column, widget::Container, widget::Row, widget::Scrollable, widget::Text, widget::TextInput, widget::Toggle, widget::labeled_check, widget::labeled_field};
-use tilo_ui_base::{widget::Element, widget::Spacer, widget::Widget};
+use crate::{
+    widget::Button, widget::ButtonRole, widget::Checkbox, widget::Column, widget::Container,
+    widget::Row, widget::Scrollable, widget::Text, widget::TextInput, widget::Toggle,
+    widget::labeled_check, widget::labeled_field,
+};
 use automerge::{AutoCommit, ObjId};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -17,6 +16,11 @@ use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::LocalState;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use tilo_ui_base::{widget::Element, widget::Spacer, widget::Widget};
 use vello::kurbo::Rect;
 
 /// Directory of live `*.json` screen graphs.
@@ -727,7 +731,10 @@ fn widget_state_snapshot(widget: &dyn Widget) -> HashMap<String, Option<String>>
     let mut states = HashMap::new();
     fn walk(widget: &dyn Widget, states: &mut HashMap<String, Option<String>>) {
         if let Some(id) = widget.test_id() {
-            states.insert(id.to_owned(), tilo_ui_base::widget::undo_points::get_state(widget));
+            states.insert(
+                id.to_owned(),
+                tilo_ui_base::widget::undo_points::get_state(widget),
+            );
         }
         widget.for_each_child(&mut |child| walk(child, states));
     }
@@ -964,8 +971,12 @@ impl UiGraphHandle {
         let mut guard = self.inner.write().map_err(|_| UiGraphError::Poisoned)?;
         let state = &mut *guard;
         let (from, to) = match request {
-            tilo_ui_base::widget::undo_access::UndoRequest::Undo => (&mut state.undo, &mut state.redo),
-            tilo_ui_base::widget::undo_access::UndoRequest::Redo => (&mut state.redo, &mut state.undo),
+            tilo_ui_base::widget::undo_access::UndoRequest::Undo => {
+                (&mut state.undo, &mut state.redo)
+            }
+            tilo_ui_base::widget::undo_access::UndoRequest::Redo => {
+                (&mut state.redo, &mut state.undo)
+            }
         };
         if from.is_empty() {
             return Ok(false);
@@ -1451,7 +1462,11 @@ impl tilo_ui_base::widget::ResourceOperations for LiveUi {
             return Ok(None);
         }
         self.invoke_graph_operation(request.type_id, request.payload)
-            .map(|output| Some(tilo_ui_base::widget::ResourceOperationStart::Completed(output)))
+            .map(|output| {
+                Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
+                    output,
+                ))
+            })
     }
 }
 
@@ -1562,7 +1577,10 @@ fn focused_widget_snapshot(widget: &dyn Widget) -> Option<(String, Option<String
     if widget.is_focused()
         && let Some(id) = widget.test_id()
     {
-        return Some((id.to_owned(), tilo_ui_base::widget::undo_points::get_state(widget)));
+        return Some((
+            id.to_owned(),
+            tilo_ui_base::widget::undo_points::get_state(widget),
+        ));
     }
     widget
         .children()

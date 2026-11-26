@@ -5,8 +5,8 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, ActionFailure, InvocationId, InvocationUpdate};
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 use tilo_ui_base::widget::Collaborative as _;
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 
 use tilo_ui_base::arriving::Arrival;
 

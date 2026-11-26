@@ -70,9 +70,9 @@ tilo_test_env::scenario! {
 
 use tilo_ui::State;
 use tilo_ui::headless::Driver;
+use tilo_ui::widget::{Button, Column, Container, Text, TextInput};
 use tilo_ui_base::local_state::LocalState;
 use tilo_ui_base::theme::Theme;
-use tilo_ui::widget::{Button, Column, Container, Text, TextInput};
 
 fn editor_driver(text: &LocalState<String>, fill: bool, scale: f32) -> Driver {
     let mut scroll = Scrollable::new_vertical().fill_parent_height();

@@ -13,14 +13,14 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Shape as _, Stroke
 use vello::peniko::{Color, Fill};
 
 use crate::color_compat::ColorCompat;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::TextRole;
 use crate::widget::chart_data::{ChartLink, ChartNode, graph_items};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
 
 #[derive(Clone, Debug)]
 pub struct SankeyStyle {

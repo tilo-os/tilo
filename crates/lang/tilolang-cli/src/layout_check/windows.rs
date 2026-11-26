@@ -6,8 +6,8 @@ use std::path::Path;
 use std::rc::Rc;
 
 use super::stage;
-use ui::kurbo::Rect;
 use tilo_ui_base::widget::Widget;
+use ui::kurbo::Rect;
 
 fn packages() -> (String, Rc<stage::Packages>) {
     let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
@@ -299,7 +299,12 @@ fn painted(staged: &stage::Staged, rect: Rect, viewport: (usize, usize)) -> usiz
     assert!(!rgba.is_empty(), "the frame renders");
     let device = rgba.len() / 4;
     let scale = ((device / (wide * tall)) as f64).sqrt().round().max(1.0) as usize;
-    let ground = tilo_ui_base::Theme::light().tokens.colors.surfaces.content.to_rgba8();
+    let ground = tilo_ui_base::Theme::light()
+        .tokens
+        .colors
+        .surfaces
+        .content
+        .to_rgba8();
     let ground = [ground.r, ground.g, ground.b];
     let mut inked = 0;
     for y in (rect.y0 as usize * scale)..(rect.y1 as usize * scale) {
@@ -440,7 +445,10 @@ fn divider_rules(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<String
 /// The rows the window of `staged` laid out, as the person has them: a list keeps the row of an
 /// item under the swipe the item has, not among its children.
 fn list_rows(staged: &stage::Staged) -> Vec<&ui::widget::ListRow> {
-    fn collect<'a>(root: &'a dyn tilo_ui_base::widget::Widget, out: &mut Vec<&'a ui::widget::ListRow>) {
+    fn collect<'a>(
+        root: &'a dyn tilo_ui_base::widget::Widget,
+        out: &mut Vec<&'a ui::widget::ListRow>,
+    ) {
         if let Some(row) = root
             .as_any()
             .and_then(|widget| widget.downcast_ref::<ui::widget::ListRow>())
@@ -652,7 +660,8 @@ fn the_traditional_desktop_stands_as_a_person_reads_it() {
     {
         // Gone before the next window is staged: one window stands at a time, as when each part
         // was a test of its own.
-        let mut shell = the_traditional_desktop(&app, &packages, (1280, 800), tilo_ui_base::Theme::light());
+        let mut shell =
+            the_traditional_desktop(&app, &packages, (1280, 800), tilo_ui_base::Theme::light());
         its_windows_show_their_apps_content_under_one_bar_each(&shell);
         its_people_are_called_by_their_names_never_their_ids(&mut shell);
     }
@@ -1754,8 +1763,13 @@ fn a_catch_up_hangs_inside_the_window_it_belongs_to(
         .expect("the window's header says what changed in it");
     away.press(&window.key, false)
         .expect("the window's mark opens its catch-up");
-    away.lay_out((1280, 800), tilo_ui_base::Theme::light(), input_at((1280, 800)), 1.0)
-        .expect("the app lays out with its catch-up open");
+    away.lay_out(
+        (1280, 800),
+        tilo_ui_base::Theme::light(),
+        input_at((1280, 800)),
+        1.0,
+    )
+    .expect("the app lays out with its catch-up open");
     let wide = floating_rect(&away, "Popover").unwrap_or_else(|| {
         fn all(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
             out.push(format!("{} {:?}", node.widget, node.test_id));
@@ -1821,7 +1835,12 @@ fn a_task_that_changed_since_you_looked_says_so_on_its_page() {
     )
     .expect("the scenario stages");
     changed
-        .lay_out((1280, 800), tilo_ui_base::Theme::light(), input_at((1280, 800)), 1.0)
+        .lay_out(
+            (1280, 800),
+            tilo_ui_base::Theme::light(),
+            input_at((1280, 800)),
+            1.0,
+        )
         .expect("the app lays out");
     let composed = changed.composed().expect("the window composed its view");
     let window = window_mark(&composed).unwrap_or_else(|| {
@@ -1846,7 +1865,12 @@ fn a_task_that_changed_since_you_looked_says_so_on_its_page() {
         .press(&window.key, false)
         .expect("the page's mark opens its catch-up");
     changed
-        .lay_out((1280, 800), tilo_ui_base::Theme::light(), input_at((1280, 800)), 1.0)
+        .lay_out(
+            (1280, 800),
+            tilo_ui_base::Theme::light(),
+            input_at((1280, 800)),
+            1.0,
+        )
         .expect("the page lays out with its catch-up open");
     let wide = floating_rect(&changed, "Popover").expect("the catch-up hangs over the window");
     assert!(
@@ -2309,7 +2333,11 @@ fn a_narrow_channels_mark_opens_its_catch_up() {
         )
         .expect("the scenario stages");
         channels
-            .lay_out_moving((320, 568), tilo_ui_base::Theme::light(), input_at((320, 568)))
+            .lay_out_moving(
+                (320, 568),
+                tilo_ui_base::Theme::light(),
+                input_at((320, 568)),
+            )
             .expect("the app lays out");
         // The header names the channel it shows: the row gives the title the room the word
         // needs, and the mark beside it gives up its names for one face instead of cutting it
@@ -2399,7 +2427,12 @@ fn a_catch_up_row_counts_the_messages_a_step_holds_in_its_sentence() {
     )
     .expect("the scenario stages");
     thread
-        .lay_out((1280, 800), tilo_ui_base::Theme::light(), input_at((1280, 800)), 1.0)
+        .lay_out(
+            (1280, 800),
+            tilo_ui_base::Theme::light(),
+            input_at((1280, 800)),
+            1.0,
+        )
         .expect("the app lays out");
     let mark = shown_floating_rect(&thread, "ChangeMark").expect("the header shows its mark");
     thread
@@ -2438,8 +2471,13 @@ fn a_task_two_people_changed_names_them_both_in_its_catch_up() {
         &[],
     )
     .expect("the scenario stages");
-    page.lay_out((1280, 800), tilo_ui_base::Theme::light(), input_at((1280, 800)), 1.0)
-        .expect("the app lays out");
+    page.lay_out(
+        (1280, 800),
+        tilo_ui_base::Theme::light(),
+        input_at((1280, 800)),
+        1.0,
+    )
+    .expect("the app lays out");
     let window = {
         let composed = page.composed().expect("the page composes");
         window_mark(&composed).expect("the page says what changed since the person looked")

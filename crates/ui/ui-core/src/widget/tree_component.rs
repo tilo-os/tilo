@@ -22,12 +22,20 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 use std::rc::Rc;
 
-use tilo_ui_base::{component::Accepts, component::Component, component::Described, component::Event, component::PartType, component::Person, component::ResourceId, component::SharedRows, component::Source, component::Value};
-use tilo_ui_base::icons::Icon;
-use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
-use tilo_ui_base::selection::KeySelection;
 use crate::widget::nav_list::NavigationSource;
-use crate::{widget::Button, widget::ButtonProps, widget::ChangeMarkProps, widget::HoverToolbar, widget::ListModel, widget::ListRow, widget::MenuItem, widget::MenuItemProps, widget::TreeMarks, widget::TreeRow, widget::VirtualList};
+use crate::{
+    widget::Button, widget::ButtonProps, widget::ChangeMarkProps, widget::HoverToolbar,
+    widget::ListModel, widget::ListRow, widget::MenuItem, widget::MenuItemProps, widget::TreeMarks,
+    widget::TreeRow, widget::VirtualList,
+};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::selection::KeySelection;
+use tilo_ui_base::{
+    component::Accepts, component::Component, component::Described, component::Event,
+    component::PartType, component::Person, component::ResourceId, component::SharedRows,
+    component::Source, component::Value,
+};
+use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
 use tilo_ui_base::{widget::Decorator, widget::Element, widget::Press, widget::Widget};
 
 use crate::widget::virtual_list::by_hand;
@@ -1210,7 +1218,9 @@ impl ListModel for TreeRows {
         tilo_ui_base::arriving::Arrival::Ready(())
     }
 
-    fn poll_changes(&mut self) -> Vec<tilo_ui_base::collection_transition::ListModelChange<String>> {
+    fn poll_changes(
+        &mut self,
+    ) -> Vec<tilo_ui_base::collection_transition::ListModelChange<String>> {
         let Rows::Rendered(remote) = &self.rows else {
             return Vec::new();
         };
@@ -1657,11 +1667,11 @@ impl NavigationSource for DescribedTreeView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::Theme;
     use crate::app::driver::Driver;
-    use tilo_ui_base::{component::BoundValue, component::Fired, component::Intent};
     use crate::headless::InspectionNode;
     use crate::widget::TreeMove;
+    use tilo_ui_base::Theme;
+    use tilo_ui_base::{component::BoundValue, component::Fired, component::Intent};
 
     fn node(
         key: &str,
@@ -2012,7 +2022,11 @@ mod tests {
         let queue = tilo_ui_base::Intents::default();
         for select in [
             Event::None,
-            Event::View(Intent::new(&tilo_ui_base::Intents::default(), "tree", "select")),
+            Event::View(Intent::new(
+                &tilo_ui_base::Intents::default(),
+                "tree",
+                "select",
+            )),
         ] {
             let tree = tree_of(
                 vec![
@@ -2048,8 +2062,8 @@ mod tests {
     fn a_branch_row_keeps_its_box_and_words_on_its_depths_column() {
         use crate::app::driver::Driver;
         use crate::headless::InspectionNode;
-        use tilo_ui_base::theme::Theme;
         use crate::widget::TREE_INDENT;
+        use tilo_ui_base::theme::Theme;
         use tilo_ui_base::{widget::LayoutInfo, widget::RowLayout};
 
         let queue = tilo_ui_base::Intents::default();
@@ -2236,10 +2250,10 @@ mod tests {
     /// its corner are controls of the row, reached and worked under the one node it is.
     #[test]
     fn a_trees_row_holds_the_controls_it_shows() {
-        use tilo_ui_base::a11y::Action;
         use crate::app::driver::Driver;
-        use tilo_ui_base::theme::Theme;
         use accesskit::Role as AkRole;
+        use tilo_ui_base::a11y::Action;
+        use tilo_ui_base::theme::Theme;
 
         let queue = tilo_ui_base::Intents::default();
         let mut props = node("a", None, true, &queue);
@@ -2539,16 +2553,20 @@ mod tests {
             self.at(id).map(|_| id.to_owned())
         }
 
-        fn take_changes(&mut self) -> Vec<tilo_ui_base::collection_transition::ListModelChange<String>> {
+        fn take_changes(
+            &mut self,
+        ) -> Vec<tilo_ui_base::collection_transition::ListModelChange<String>> {
             if self.changed.is_empty() {
                 return Vec::new();
             }
-            vec![tilo_ui_base::collection_transition::ListModelChange::RowsChanged {
-                keys: std::mem::take(&mut self.changed)
-                    .into_iter()
-                    .map(|row| row.key)
-                    .collect(),
-            }]
+            vec![
+                tilo_ui_base::collection_transition::ListModelChange::RowsChanged {
+                    keys: std::mem::take(&mut self.changed)
+                        .into_iter()
+                        .map(|row| row.key)
+                        .collect(),
+                },
+            ]
         }
 
         fn has_changes(&self) -> bool {
@@ -2601,7 +2619,9 @@ mod tests {
             fn components(
                 &mut self,
                 _part: &str,
-                _read: &mut dyn FnMut(&mut dyn tilo_ui_base::component::Source) -> Result<(), String>,
+                _read: &mut dyn FnMut(
+                    &mut dyn tilo_ui_base::component::Source,
+                ) -> Result<(), String>,
             ) -> Result<usize, String> {
                 Ok(0)
             }

@@ -6,12 +6,12 @@ use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use taffy::{NodeId, TaffyTree};
 
-use ui_core::vello::kurbo::{Point, Rect};
 use tilo_ui_base::widget::DrawChild;
-use tilo_ui_base::{widget::Element, widget::Widget};
-use ui_core::winit::event::WindowEvent;
-use ui_core::taffy;
 use tilo_ui_base::{LocalState, Theme};
+use tilo_ui_base::{widget::Element, widget::Widget};
+use ui_core::taffy;
+use ui_core::vello::kurbo::{Point, Rect};
+use ui_core::winit::event::WindowEvent;
 
 type BuildPart<K> = Box<dyn Fn(&K, &Rc<()>) -> Element>;
 

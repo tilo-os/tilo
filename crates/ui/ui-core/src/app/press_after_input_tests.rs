@@ -9,8 +9,11 @@ use std::rc::Rc;
 use vello::kurbo::{Point, Rect};
 
 use crate::floating_surface::FloatingSurfaceHostMessage;
-use tilo_ui_base::{synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release};
 use crate::window_targets::TargetAction;
+use tilo_ui_base::{
+    synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press,
+    synthetic_input::mouse_release,
+};
 
 use super::App;
 use super::framework_history_tests::{app_with_root, layout};

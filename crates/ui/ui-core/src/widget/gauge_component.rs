@@ -1,7 +1,7 @@
 //! [`ProgressRing`] and [`BarGauge`] as described components.
 
-use tilo_ui_base::{component::Component, component::Described};
 use tilo_ui_base::widget::Tone;
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::{
     BarGauge, Fillcolor, GaugeStyle, GaugeThresholds, ProgressRing, ProgressRingSize, RingFill,

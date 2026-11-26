@@ -9,7 +9,10 @@ use std::rc::Rc;
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use tilo_ui_base::{widget::DrawChild, widget::ResourceOperation, widget::ResourceOperationStart, widget::Spacer, widget::Widget};
+use tilo_ui_base::{
+    widget::DrawChild, widget::ResourceOperation, widget::ResourceOperationStart, widget::Spacer,
+    widget::Widget,
+};
 
 /// The record the rows act on.
 pub(crate) const MENU_ROW_RESOURCE: &str = "test:menu";

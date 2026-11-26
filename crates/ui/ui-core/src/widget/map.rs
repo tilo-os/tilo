@@ -32,14 +32,20 @@ use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartItem, component::PartViews, component::ResourceId, component::Source};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PartItem,
+    component::PartViews, component::ResourceId, component::Source,
+};
 use tilo_ui_base::{gesture::GesturePhase, gesture::TouchGestureArena, gesture::TouchGestureEvent};
 
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::widget::composition_parts::Parts;
-use tilo_ui_base::{widget::Element, widget::Manual, widget::ManualInvalidation, widget::MeasureConstraint, widget::Widget, widget::WidgetLayoutError};
+use tilo_ui_base::{
+    widget::Element, widget::Manual, widget::ManualInvalidation, widget::MeasureConstraint,
+    widget::Widget, widget::WidgetLayoutError,
+};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -467,8 +473,7 @@ impl PartItem for MapPinProps {
         tilo_ui_base::component::Accepts::Component(MapPinProps::NAME.into())
     }
 
-    fn read_all(
-        source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
+    fn read_all(source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
         let mut out = Vec::new();
         let mut failed: Option<String> = None;
         source.components(part, &mut |child| match MapPinProps::from_source(child) {
@@ -1042,15 +1047,16 @@ impl Map {
         let (north, west) = mercator_unproject(camera.to_canvas(corner, corner));
         let (south, east) =
             mercator_unproject(camera.to_canvas(corner, Point::new(self.rect.x1, self.rect.y1)));
-        self.rest.fire(Some(tilo_ui_base::component::Value::List(vec![
-            tilo_ui_base::component::Value::Float(latitude),
-            tilo_ui_base::component::Value::Float(longitude),
-            tilo_ui_base::component::Value::Float(camera.zoom),
-            tilo_ui_base::component::Value::Float(north),
-            tilo_ui_base::component::Value::Float(south),
-            tilo_ui_base::component::Value::Float(east),
-            tilo_ui_base::component::Value::Float(west),
-        ])));
+        self.rest
+            .fire(Some(tilo_ui_base::component::Value::List(vec![
+                tilo_ui_base::component::Value::Float(latitude),
+                tilo_ui_base::component::Value::Float(longitude),
+                tilo_ui_base::component::Value::Float(camera.zoom),
+                tilo_ui_base::component::Value::Float(north),
+                tilo_ui_base::component::Value::Float(south),
+                tilo_ui_base::component::Value::Float(east),
+                tilo_ui_base::component::Value::Float(west),
+            ])));
     }
 
     /// The closest and furthest the camera draws this map back and in: a canvas keeps
@@ -1164,13 +1170,14 @@ impl Map {
         let pin = self.item_of(pin);
         let at = self.camera.to_canvas(self.rect.origin(), self.cursor);
         self.point_at(at);
-        self.context.fire(Some(tilo_ui_base::component::Value::List(vec![
-            tilo_ui_base::component::Value::Text(pin),
-            tilo_ui_base::component::Value::List(vec![
-                tilo_ui_base::component::Value::Int(at.x.round() as i64),
-                tilo_ui_base::component::Value::Int(at.y.round() as i64),
-            ]),
-        ])));
+        self.context
+            .fire(Some(tilo_ui_base::component::Value::List(vec![
+                tilo_ui_base::component::Value::Text(pin),
+                tilo_ui_base::component::Value::List(vec![
+                    tilo_ui_base::component::Value::Int(at.x.round() as i64),
+                    tilo_ui_base::component::Value::Int(at.y.round() as i64),
+                ]),
+            ])));
     }
 
     /// Tell the shell's control hints ([`crate::control_hints`]) where the edges that resize the
@@ -1528,7 +1535,9 @@ impl Map {
             let index = views.len();
             let view = std::mem::replace(
                 &mut self.pins[index].2,
-                Box::new(tilo_ui_base::widget::Spacer::token(tilo_ui_base::tokens::SpacingStep::S0)),
+                Box::new(tilo_ui_base::widget::Spacer::token(
+                    tilo_ui_base::tokens::SpacingStep::S0,
+                )),
             );
             views.push(view);
         }
@@ -1700,9 +1709,9 @@ impl Map {
                         tilo_ui_base::component::Value::Text(
                             items.get(&key).cloned().unwrap_or_else(|| key.clone()),
                         ),
-                        tilo_ui_base::component::Value::List(vec![tilo_ui_base::component::Value::Int(
-                            i64::from(height),
-                        )]),
+                        tilo_ui_base::component::Value::List(vec![
+                            tilo_ui_base::component::Value::Int(i64::from(height)),
+                        ]),
                     ])));
                 }
             }
@@ -1864,7 +1873,9 @@ impl Described for Map {
             }
             let view: Element = match pin.body.into_iter().next() {
                 Some(body) => body,
-                None => Box::new(tilo_ui_base::widget::Spacer::token(tilo_ui_base::tokens::SpacingStep::S0)),
+                None => Box::new(tilo_ui_base::widget::Spacer::token(
+                    tilo_ui_base::tokens::SpacingStep::S0,
+                )),
             };
             map = map.pin(pin.key, place, view);
         }
@@ -2096,7 +2107,9 @@ impl PartViews for Map {
                     hug: false,
                     grows: false,
                 },
-                Box::new(tilo_ui_base::widget::Spacer::token(tilo_ui_base::tokens::SpacingStep::S0)),
+                Box::new(tilo_ui_base::widget::Spacer::token(
+                    tilo_ui_base::tokens::SpacingStep::S0,
+                )),
             ),
         );
         if let Some(region) = self.region_mut() {
@@ -2111,7 +2124,9 @@ impl PartViews for Map {
         if let Some(pin) = self.editing {
             self.put_pin_view(
                 pin,
-                Box::new(tilo_ui_base::widget::Spacer::token(tilo_ui_base::tokens::SpacingStep::S0)),
+                Box::new(tilo_ui_base::widget::Spacer::token(
+                    tilo_ui_base::tokens::SpacingStep::S0,
+                )),
             );
             return;
         }
@@ -2269,8 +2284,12 @@ impl Map {
         let Some(hint) = self.shown_hint() else {
             return;
         };
-        let style = theme.tokens.typography.style(tilo_ui_base::tokens::TextRole::Body);
-        let face = crate::widget::TextLineFace::styled(hint, &style, tilo_ui_base::tokens::TextRole::Body);
+        let style = theme
+            .tokens
+            .typography
+            .style(tilo_ui_base::tokens::TextRole::Body);
+        let face =
+            crate::widget::TextLineFace::styled(hint, &style, tilo_ui_base::tokens::TextRole::Body);
         let mut ctx = tilo_ui_base::paint::PaintCtx::new(scene, transform, text, theme);
         face.paint(&mut ctx, self.rect, theme.text_tertiary);
     }
@@ -2347,10 +2366,11 @@ impl Map {
         );
         if self.faulted != Some((failed, shown)) {
             self.faulted = Some((failed, shown));
-            self.fault.fire(Some(tilo_ui_base::component::Value::List(vec![
-                tilo_ui_base::component::Value::Int(failed),
-                tilo_ui_base::component::Value::Int(shown),
-            ])));
+            self.fault
+                .fire(Some(tilo_ui_base::component::Value::List(vec![
+                    tilo_ui_base::component::Value::Int(failed),
+                    tilo_ui_base::component::Value::Int(shown),
+                ])));
         }
     }
 
@@ -2607,8 +2627,11 @@ impl Map {
             let (marker_index, at) = kept[index];
             let (_, _, _, _, name, _, _) = &self.markers[marker_index];
             let Some(name) = name else { continue };
-            let face =
-                crate::widget::TextLineFace::styled(name, &style, tilo_ui_base::tokens::TextRole::Caption);
+            let face = crate::widget::TextLineFace::styled(
+                name,
+                &style,
+                tilo_ui_base::tokens::TextRole::Caption,
+            );
             let (width, height) = face.measure(text);
             let left = at.x + MARKER_RADIUS + MARKER_RING + 4.0;
             let rect = Rect::new(left, at.y - height / 2.0, left + width, at.y + height / 2.0);
@@ -2741,7 +2764,9 @@ impl Map {
                             Some(from) if grows => tilo_ui_base::motion::WindowMotion::grown_pose(
                                 progress, drawn, from, motion,
                             ),
-                            _ => tilo_ui_base::motion::WindowMotion::content_pose(progress, drawn, motion),
+                            _ => tilo_ui_base::motion::WindowMotion::content_pose(
+                                progress, drawn, motion,
+                            ),
                         };
                         (index, drawn, pose)
                     })
@@ -2976,15 +3001,18 @@ impl Map {
                         crate::control_hints::performed::note(
                             crate::control_hints::performed::Performed::ResizedWindow,
                         );
-                        self.resize.fire(Some(tilo_ui_base::component::Value::List(vec![
-                            tilo_ui_base::component::Value::Text(self.item_of(drag.key)),
-                            tilo_ui_base::component::Value::List(vec![
-                                tilo_ui_base::component::Value::Int((rect.width() / zoom).round() as i64),
-                                tilo_ui_base::component::Value::Int(
-                                    ((rect.height() - band) / zoom).round() as i64,
-                                ),
-                            ]),
-                        ])));
+                        self.resize
+                            .fire(Some(tilo_ui_base::component::Value::List(vec![
+                                tilo_ui_base::component::Value::Text(self.item_of(drag.key)),
+                                tilo_ui_base::component::Value::List(vec![
+                                    tilo_ui_base::component::Value::Int(
+                                        (rect.width() / zoom).round() as i64,
+                                    ),
+                                    tilo_ui_base::component::Value::Int(
+                                        ((rect.height() - band) / zoom).round() as i64,
+                                    ),
+                                ]),
+                            ])));
                     }
                 }
                 self.dirty = true;
@@ -3078,12 +3106,13 @@ impl Map {
                         from.y.max(to.y),
                     );
                     self.point_at(rect.origin());
-                    self.frame.fire(Some(tilo_ui_base::component::Value::List(vec![
-                        tilo_ui_base::component::Value::Int(rect.x0.round() as i64),
-                        tilo_ui_base::component::Value::Int(rect.y0.round() as i64),
-                        tilo_ui_base::component::Value::Int(rect.width().round() as i64),
-                        tilo_ui_base::component::Value::Int(rect.height().round() as i64),
-                    ])));
+                    self.frame
+                        .fire(Some(tilo_ui_base::component::Value::List(vec![
+                            tilo_ui_base::component::Value::Int(rect.x0.round() as i64),
+                            tilo_ui_base::component::Value::Int(rect.y0.round() as i64),
+                            tilo_ui_base::component::Value::Int(rect.width().round() as i64),
+                            tilo_ui_base::component::Value::Int(rect.height().round() as i64),
+                        ])));
                 } else {
                     self.point_at(from);
                     // A click on a marker opens what the marker is; the map reports nothing of
@@ -3096,10 +3125,11 @@ impl Map {
                         return;
                     }
                     if self.enabled {
-                        self.press.fire(Some(tilo_ui_base::component::Value::List(vec![
-                            tilo_ui_base::component::Value::Int(from.x.round() as i64),
-                            tilo_ui_base::component::Value::Int(from.y.round() as i64),
-                        ])));
+                        self.press
+                            .fire(Some(tilo_ui_base::component::Value::List(vec![
+                                tilo_ui_base::component::Value::Int(from.x.round() as i64),
+                                tilo_ui_base::component::Value::Int(from.y.round() as i64),
+                            ])));
                     }
                     if self.focus.is_some() {
                         let (latitude, longitude) = mercator_unproject(from);
@@ -3208,7 +3238,9 @@ impl Widget for Map {
             || self.rest_due.is_some()
             || self.glide.is_some_and(|glide| glide.is_gliding(now))
             || self.pins_moving(now)
-            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
+                self.for_each_child(visit)
+            })
     }
 
     fn name(&self) -> &'static str {
@@ -3446,7 +3478,11 @@ impl Widget for Map {
         change
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.dirty = true;
         for child in &mut self.parts.children {
             child.sync(state, path);
@@ -3457,7 +3493,11 @@ impl Widget for Map {
     /// gliding are laid out again on each frame they run, the one they land on included, so the
     /// windows in the pins' wells stand where the pins are drawn. A pin arriving or leaving is
     /// drawn in its pose, which lays nothing out.
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let now = tilo_ui_base::motion::frame_now();
         let gliding = self
             .placed
@@ -3509,13 +3549,14 @@ impl Widget for Map {
                 }
                 let at = self.camera.to_canvas(self.rect.origin(), landed.pointer);
                 self.point_at(at);
-                self.drop.fire(Some(tilo_ui_base::component::Value::List(vec![
-                    tilo_ui_base::component::Value::Resource(resource),
-                    tilo_ui_base::component::Value::List(vec![
-                        tilo_ui_base::component::Value::Int(at.x.round() as i64),
-                        tilo_ui_base::component::Value::Int(at.y.round() as i64),
-                    ]),
-                ])));
+                self.drop
+                    .fire(Some(tilo_ui_base::component::Value::List(vec![
+                        tilo_ui_base::component::Value::Resource(resource),
+                        tilo_ui_base::component::Value::List(vec![
+                            tilo_ui_base::component::Value::Int(at.x.round() as i64),
+                            tilo_ui_base::component::Value::Int(at.y.round() as i64),
+                        ]),
+                    ])));
                 changed = true;
             }
         }

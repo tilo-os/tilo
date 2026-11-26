@@ -8,16 +8,19 @@
 //! [`ViewCx::upkeep`](super::ViewCx::upkeep) around what it lays out, so it
 //! never needs a widget of its own to do it.
 
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 use ui_core::application_view::{
     ApplicationFocusRestore, ApplicationLocalView, ApplicationViewState,
 };
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 
 use tilo_ui_base::theme::AppearanceIntent;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{
+    widget::AppModel, widget::Collaborative, widget::Decorator, widget::Element, widget::ModelPath,
+    widget::Widget,
+};
 use ui_core::time::Instant;
 use ui_core::view::ThawError;
-use tilo_ui_base::widget::DrawChild;
-use tilo_ui_base::{widget::AppModel, widget::Collaborative, widget::Decorator, widget::Element, widget::ModelPath, widget::Widget};
 
 type Hook = Box<dyn FnMut()>;
 type Ask = Box<dyn Fn() -> bool>;

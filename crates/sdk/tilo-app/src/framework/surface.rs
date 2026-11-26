@@ -11,11 +11,11 @@ use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use tilo_resource::{Effect, NoEffect, Resource, SearchEntry};
 use tilo_ui_base::PresencePayload;
-use ui_core::automerge::transaction::Transactable as _;
-use ui_core::automerge::{AutoCommit, ObjId};
 use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use tilo_ui_base::presence::PresenceKey;
 use tilo_ui_base::{widget::Decorator, widget::Widget};
+use ui_core::automerge::transaction::Transactable as _;
+use ui_core::automerge::{AutoCommit, ObjId};
 
 use super::controls::Actions;
 use super::dispatch::Dispatcher;
@@ -942,7 +942,9 @@ impl ResourceOperations for HostedSurface {
         // shows over it (a dialog) answer theirs too.
         if decorates_routing(surface) {
             surface.for_each_child(&mut |child| {
-                handlers.extend(tilo_ui_base::host_operation::resource_operation_handlers(child));
+                handlers.extend(tilo_ui_base::host_operation::resource_operation_handlers(
+                    child,
+                ));
             });
         }
         handlers
@@ -1121,7 +1123,10 @@ impl tilo_ui_base::widget::resources::PublishesResources for HostedSurface {
         &self,
         doc: &AutoCommit,
     ) -> tilo_ui_base::widget::ActionDirectoryInvocationDomain {
-        tilo_ui_base::widget::resources::action_directory_invocation_domain(self.driver.surface(), doc)
+        tilo_ui_base::widget::resources::action_directory_invocation_domain(
+            self.driver.surface(),
+            doc,
+        )
     }
 
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::ResourceSpec> {

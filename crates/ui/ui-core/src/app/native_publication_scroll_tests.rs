@@ -39,7 +39,11 @@ impl tilo_ui_base::widget::Decorator for PublicationProbeRoot {
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         self.view_only && matches!(event, WindowEvent::MouseWheel { .. })
     }
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.syncs.set(self.syncs.get() + 1);
         self.inner.sync(state, path);
     }

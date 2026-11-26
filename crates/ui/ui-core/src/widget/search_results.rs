@@ -1,7 +1,7 @@
 //! `SearchResultsView` — the shared results overlay for Tilo global search.
 
-use tilo_ui_base::widget::ModelPath;
 use std::collections::HashMap;
+use tilo_ui_base::widget::ModelPath;
 
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -12,18 +12,18 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat as _;
-use tilo_ui_base::paint::PaintCtx;
 use crate::search::{
     ActivationModifier, CommandRow, PREVIEW_BODY_LINES, PREVIEW_LINES, SearchGroup, SearchPreview,
     SearchResult, SearchRow,
 };
+use crate::widget::data_table::{text_band, type_line_height};
+use crate::widget::floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
+use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
-use crate::widget::data_table::{text_band, type_line_height};
-use crate::widget::floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
 
 #[path = "search_results/command_row.rs"]
 mod command_row;
@@ -1476,9 +1476,9 @@ fn draw_template(
                 rect.center().y + thumb_h / 2.0,
             );
             let corner = f64::from(theme.tokens.radii.detail);
-            let drawn = thumbnail
-                .as_ref()
-                .is_some_and(|image| tilo_ui_base::icons::draw_app_image(scene, transform, thumb, image));
+            let drawn = thumbnail.as_ref().is_some_and(|image| {
+                tilo_ui_base::icons::draw_app_image(scene, transform, thumb, image)
+            });
             if !drawn {
                 let well = tilo_ui_base::tokens::colors::Colors::hairline_on(
                     tilo_ui_base::chrome::shell::panel_ground(theme),
@@ -1873,7 +1873,10 @@ impl Widget for SearchResultsView {
         }
         Some(
             AccessNode::new(Role::List)
-                .with_name(tilo_ui_base::i18n::widget_format("widget-search-results", &[]))
+                .with_name(tilo_ui_base::i18n::widget_format(
+                    "widget-search-results",
+                    &[],
+                ))
                 .with_children(children),
         )
     }
@@ -1882,9 +1885,9 @@ impl Widget for SearchResultsView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::presence::PresenceCtx;
     use crate::search::SearchRegistry;
     use crate::testing::dispatch;
+    use tilo_ui_base::presence::PresenceCtx;
 
     /// Relative luminance of the composited pixel at (`x`, `y`).
     #[allow(

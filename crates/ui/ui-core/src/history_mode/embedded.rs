@@ -5,9 +5,9 @@
     reason = "private implementation module shares its enclosing host types"
 )]
 use super::*;
-use tilo_ui_base::{widget::Widget, widget::bound_nodes::BoundNodeMap};
 use std::collections::{HashMap, HashSet};
 use taffy::{NodeId, TaffyTree};
+use tilo_ui_base::{widget::Widget, widget::bound_nodes::BoundNodeMap};
 use winit::event::{ElementState, WindowEvent};
 
 pub(crate) use crate::focus_navigation::FocusRestrictions;
@@ -290,8 +290,9 @@ pub(crate) unsafe fn move_focus(
     bindings: &BoundNodeMap,
     tree: &TaffyTree<()>,
 ) -> bool {
-    let mut captured =
-        unsafe { tilo_ui_base::widget::layout::CompositionFocus::capture(current, nodes, bindings) };
+    let mut captured = unsafe {
+        tilo_ui_base::widget::layout::CompositionFocus::capture(current, nodes, bindings)
+    };
     let mut suspended = false;
     let mut resumed = false;
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
@@ -328,9 +329,14 @@ pub(crate) unsafe fn move_focus(
                 .unwrap_or(false)
             {
                 let _ = unsafe {
-                    tilo_ui_base::widget::bound_nodes::mutate_bound_node(bindings, nodes, node, |widget| {
-                        widget.set_focus(false);
-                    })
+                    tilo_ui_base::widget::bound_nodes::mutate_bound_node(
+                        bindings,
+                        nodes,
+                        node,
+                        |widget| {
+                            widget.set_focus(false);
+                        },
+                    )
                 };
             }
         }

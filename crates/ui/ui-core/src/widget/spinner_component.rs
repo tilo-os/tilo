@@ -1,7 +1,7 @@
 //! [`Spinner`] as a described component.
 
-use tilo_ui_base::{component::Component, component::Described};
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::Spinner;
 

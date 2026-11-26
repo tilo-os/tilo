@@ -11,13 +11,13 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::GroupRow;
-use tilo_ui_base::{edge_autoscroll, edge_autoscroll::EdgeAutoscroll};
 use crate::time::Instant;
 use crate::widget::edge_resize::{
     Border, DraggedWindow, EdgeDrag, EdgeGrab, ResizeMode, WindowEdge, border_owner,
 };
 use crate::{widget::RESIZE_HANDLE_PX, widget::WindowGroup};
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{edge_autoscroll, edge_autoscroll::EdgeAutoscroll};
 
 /// How deep the band along the display's edge is in which an edge resize
 /// scrolls the strip. Shallower than the strip's gutter

@@ -2,10 +2,10 @@
 //! chooser, screen-reader speech) resolve through the current process's
 //! services, so a process that records effects sees every one of them.
 
-use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 use tilo_ui::clipboard::ClipboardTarget;
 use tilo_ui::portal::{PickRequest, PortalOutcome};
 use tilo_ui::process::{self, ProcessServices};
+use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 
 #[test]
 fn toolkit_entry_points_reach_the_recording_process() {

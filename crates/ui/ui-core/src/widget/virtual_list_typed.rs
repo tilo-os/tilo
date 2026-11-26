@@ -12,11 +12,11 @@ use std::rc::Rc;
 use vello::kurbo::{Point, Rect};
 
 use super::{ListModel, RowBuild, TreeMarks, TreeRow, VecListModel, VirtualRows};
+use crate::{widget::MenuItem, widget::RowGroup};
 use tilo_ui_base::arriving::Arrival;
 use tilo_ui_base::collection_transition::ListModelChange;
-use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
 use tilo_ui_base::selection::KeySelection;
-use crate::{widget::MenuItem, widget::RowGroup};
+use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
 use tilo_ui_base::{widget::Element, widget::Widget};
 
 trait KeyValue {
@@ -255,7 +255,9 @@ impl<M: ListModel> std::ops::DerefMut for VirtualList<M> {
     }
 }
 
-impl<M: ListModel + 'static> tilo_ui_base::widget::identity::concrete::Decorator for VirtualList<M> {
+impl<M: ListModel + 'static> tilo_ui_base::widget::identity::concrete::Decorator
+    for VirtualList<M>
+{
     type Inner = VirtualRows;
 
     fn inner(&self) -> &VirtualRows {
@@ -274,7 +276,10 @@ impl<M: ListModel + 'static> tilo_ui_base::widget::identity::concrete::Decorator
         self.rows.provide(request);
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
         self.rows.provide_mut(request);
     }
 

@@ -482,7 +482,9 @@ impl Widget for HistoryHost {
             self.panel_motion.snap(false);
         }
         let slide = if side {
-            let progress = self.panel_motion.progress(tilo_ui_base::motion::frame_now());
+            let progress = self
+                .panel_motion
+                .progress(tilo_ui_base::motion::frame_now());
             tilo_ui_base::motion::PanelSlide::shown(progress, self.panel_rect.width())
         } else {
             self.panel_rect.width()
@@ -683,7 +685,8 @@ impl Widget for HistoryHost {
         self.rect
     }
     fn needs_animation_frame(&self) -> bool {
-        self.panel_motion.is_moving(tilo_ui_base::motion::frame_now())
+        self.panel_motion
+            .is_moving(tilo_ui_base::motion::frame_now())
             || self
                 .children()
                 .into_iter()

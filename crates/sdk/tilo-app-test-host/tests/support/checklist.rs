@@ -3,8 +3,8 @@
 
 #![allow(dead_code, reason = "each test uses part of the app")]
 
-use tilo_ui_base::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
+use tilo_ui_base::i18n::EmbeddedCatalog;
 
 /// The app's labels: the field a task's title is typed into, its box, and
 /// what the app is called in a window.

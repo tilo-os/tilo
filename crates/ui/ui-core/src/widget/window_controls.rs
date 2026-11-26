@@ -318,7 +318,10 @@ impl WindowControls {
                     .danger
                     .with_alpha(CLOSE_RING_ALPHA * tilo_ui_base::num::f32_of_f64(ring)),
                 WindowControl::Minimize | WindowControl::Maximize => {
-                    tilo_ui_base::tokens::Colors::hairline_on(ground, scale_alpha(HOVER_TINT_ALPHA, ring))
+                    tilo_ui_base::tokens::Colors::hairline_on(
+                        ground,
+                        scale_alpha(HOVER_TINT_ALPHA, ring),
+                    )
                 }
             };
             if ring > 0.0 {
@@ -333,7 +336,10 @@ impl WindowControls {
             // rest, the face lit under the pointer — never a colour picked
             // here.
             let ink = theme.tokens.colors.ink_on_any(
-                &[ground, tilo_ui_base::tokens::colors::composite(colour, ground)],
+                &[
+                    ground,
+                    tilo_ui_base::tokens::colors::composite(colour, ground),
+                ],
                 theme.tokens.colors.text_primary,
                 tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST,
             );

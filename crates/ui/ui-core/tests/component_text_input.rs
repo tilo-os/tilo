@@ -6,9 +6,9 @@ use tilo_ui::application::{AppComponent, LaunchTarget, ProcessContext, RestoreIn
 use tilo_ui::headless::Driver;
 use tilo_ui::launch::LaunchError;
 use tilo_ui::ui_graph::{UiDocument, UiDocumentExt as _, UiNode, UiTextRole, UiTextSource};
+use tilo_ui::winit::event::{ElementState, Ime, MouseButton, WindowEvent};
 use tilo_ui::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
 use tilo_ui_base::widget::Widget;
-use tilo_ui::winit::event::{ElementState, Ime, MouseButton, WindowEvent};
 
 use crate::support::application::{ProbeHarness, definition, editor_permissions, runner_inputs};
 
@@ -36,7 +36,11 @@ impl Widget for Page {
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         vec![self.0.as_mut()]
     }
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.0.sync(state, path);
     }
     fn update(

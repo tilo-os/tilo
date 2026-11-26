@@ -11,8 +11,8 @@ use std::cell::Cell;
 
 use winit::event::WindowEvent;
 
-use tilo_ui_base::{component::Component, component::Described, component::PartViews};
 use crate::widget::Interaction;
+use tilo_ui_base::{component::Component, component::Described, component::PartViews};
 use tilo_ui_base::{widget::Element, widget::EventCtx, widget::Widget};
 
 thread_local! {
@@ -105,7 +105,9 @@ impl InState {
     }
 
     fn nothing() -> Element {
-        Box::new(tilo_ui_base::widget::Spacer::token(tilo_ui_base::tokens::SpacingStep::S0))
+        Box::new(tilo_ui_base::widget::Spacer::token(
+            tilo_ui_base::tokens::SpacingStep::S0,
+        ))
     }
 }
 
@@ -156,10 +158,9 @@ impl tilo_ui_base::widget::Decorator for InState {
     /// Hidden, with what it holds: a reader and the keyboard's order meet the live control, never
     /// its picture.
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
-        let mut node = self
-            .content
-            .accessibility()
-            .unwrap_or_else(|| tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group));
+        let mut node = self.content.accessibility().unwrap_or_else(|| {
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
+        });
         node.state.hidden = true;
         node.state.focusable = false;
         Some(node)

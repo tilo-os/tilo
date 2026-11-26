@@ -5,14 +5,14 @@ use crate::framework::ViewCx;
 use std::cell::Cell;
 use tilo_resource::Resource;
 use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{Theme, text_render::TextRenderer};
+use ui_core::automerge::AutoCommit;
 use ui_core::vello::{
     Scene,
     kurbo::{Affine, Rect},
     peniko::Color,
 };
-use tilo_ui_base::widget::DrawChild;
-use ui_core::automerge::AutoCommit;
-use tilo_ui_base::{Theme, text_render::TextRenderer};
 
 pub(crate) type DrawPast = fn(AutoCommit, Rect, &mut Scene, Affine, &Theme) -> Result<(), String>;
 

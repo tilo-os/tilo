@@ -208,7 +208,13 @@ pub struct SessionLink {
     /// The person's answers to their asked records, in order: each the workspace the record is
     /// in, the record's own action and its arguments by name, which the session runs on the
     /// device's dispatch at that workspace's invocations ([`SessionLink::take_answers`]).
-    answers: RefCell<Vec<(String, ActionAddress, serde_json::Map<String, serde_json::Value>)>>,
+    answers: RefCell<
+        Vec<(
+            String,
+            ActionAddress,
+            serde_json::Map<String, serde_json::Value>,
+        )>,
+    >,
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
     served: Cell<u64>,
@@ -331,7 +337,11 @@ impl SessionLink {
     /// The person's answers to their asked records since the session last took them.
     pub fn take_answers(
         &self,
-    ) -> Vec<(String, ActionAddress, serde_json::Map<String, serde_json::Value>)> {
+    ) -> Vec<(
+        String,
+        ActionAddress,
+        serde_json::Map<String, serde_json::Value>,
+    )> {
         let answers = std::mem::take(&mut *self.answers.borrow_mut());
         self.served
             .set(self.served.get().wrapping_add(answers.len() as u64));
@@ -1524,7 +1534,8 @@ impl tilo_session_core::surfaces::Published for ShellPart {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError>
+    {
         self.input = true;
         tilo_session_core::surfaces::Published::invoke(&mut self.widgets, address, arguments, look)
     }
@@ -1555,7 +1566,11 @@ impl tilo_session_core::surfaces::Published for ShellPart {
         tilo_session_core::surfaces::Published::a11y_name(&self.widgets)
     }
 
-    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &tilo_ui_base::a11y::Action) -> bool {
+    fn a11y_action(
+        &mut self,
+        target: ui::accesskit::NodeId,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         self.input = true;
         tilo_session_core::surfaces::Published::a11y_action(&mut self.widgets, target, action)
     }
@@ -1726,9 +1741,10 @@ fn drawn_text(widget: &dyn tilo_ui_base::widget::Widget, text: &str) -> Option<D
         .flatten()
         .any(|said| said.contains(text));
         held.then(|| {
-            access
-                .bounds
-                .map_or_else(|| widget.get_rect(), tilo_ui_base::a11y::AccessBounds::to_rect)
+            access.bounds.map_or_else(
+                || widget.get_rect(),
+                tilo_ui_base::a11y::AccessBounds::to_rect,
+            )
         })
     }
     fn walk(

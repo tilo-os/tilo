@@ -6,9 +6,9 @@
 //! instead.
 use super::paint::{labelled_face, layered};
 use super::{Affine, CONTROL_PX, LOCATION_ICON_PX, Point, Rect, Scene, TextRenderer, Theme};
+use crate::window_toolbar::ToolbarNotice;
 use tilo_ui_base::motion::Appearing;
 use tilo_ui_base::{tokens::EffectiveMotion, tokens::TextRole};
-use crate::window_toolbar::ToolbarNotice;
 
 const MAX_LINES: usize = 2;
 

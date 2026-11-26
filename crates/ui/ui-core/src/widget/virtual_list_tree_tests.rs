@@ -7,9 +7,9 @@ use std::rc::Rc;
 
 use automerge::AutoCommit;
 
-use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
 use crate::testing::Dispatch;
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
 
 /// A model whose rows name the row they stand under, as a list of subtasks does: the rows keep
 /// the model's order, and a parent need not be the row above. `groups` are the headings its rows
@@ -1313,10 +1313,10 @@ impl ListModel for OpenableTree {
 
 #[test]
 fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
-    use tilo_ui_base::a11y::Action;
     use crate::app::driver::Driver;
     use crate::widget::{Checkbox, Column, TextInput};
     use accesskit::Role as AkRole;
+    use tilo_ui_base::a11y::Action;
 
     let done = tilo_ui_base::LocalState::new(false);
     let state = done.clone();
@@ -1463,9 +1463,9 @@ impl ListModel for ArrivingNested {
 #[test]
 fn a_branch_on_its_way_offers_nothing_to_fold_until_it_arrives() {
     use crate::app::driver::Driver;
-    use tilo_ui_base::{arriving::GRACE, arriving::MIN_SHOWN};
     use crate::time::testing::with_monotonic_time;
     use crate::widget::ListRow;
+    use tilo_ui_base::{arriving::GRACE, arriving::MIN_SHOWN};
 
     let t0 = crate::time::now();
     let ready = Rc::new(Cell::new(false));

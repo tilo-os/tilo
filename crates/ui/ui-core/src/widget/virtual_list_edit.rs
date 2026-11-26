@@ -118,7 +118,11 @@ impl VirtualRows {
         self.rename = None;
     }
 
-    fn rename_rect(&self, index: usize, key: &ListKey) -> Option<(Rect, tilo_ui_base::tokens::TextRole)> {
+    fn rename_rect(
+        &self,
+        index: usize,
+        key: &ListKey,
+    ) -> Option<(Rect, tilo_ui_base::tokens::TextRole)> {
         if let Some(placed) = self
             .mounted
             .iter()

@@ -6,12 +6,12 @@
 use tilo_ui_base::i18n::widget_text;
 use vello::kurbo::{Point, Rect};
 
+use crate::widget::{Interaction, ListRowFace, RowLeading};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::{Interaction, ListRowFace, RowLeading};
 
 /// One document a person can open from the list: what it is called, what it is, and the
 /// target a press on it answers.

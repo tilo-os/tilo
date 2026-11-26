@@ -1,8 +1,8 @@
 //! The window's own furniture in the row its app draws, as widgets of the window.
 use super::WindowGroup;
-use tilo_ui_base::widget::Widget;
 use crate::widget::window_header::RowControl;
 use taffy::{NodeId, TaffyTree};
+use tilo_ui_base::widget::Widget;
 use vello::kurbo::Rect;
 
 pub(crate) struct HeldControl {
@@ -207,7 +207,8 @@ impl WindowGroup {
                 continue;
             }
             let target = self.held_controls[index].kind().target();
-            ran |= self.perform_held_furniture_action(target, &tilo_ui_base::a11y::Action::Activate)
+            ran |= self
+                .perform_held_furniture_action(target, &tilo_ui_base::a11y::Action::Activate)
                 == Some(true);
         }
         ran

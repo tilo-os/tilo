@@ -3,8 +3,8 @@
 //! "fit to viewport" reset. Interaction state (zoom, pan, drag origin) lives on the widget
 //! directly; CRDT reflection is out of scope.
 
-use tilo_ui_base::num::f32_of_f64;
 use std::collections::HashMap;
+use tilo_ui_base::num::f32_of_f64;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;

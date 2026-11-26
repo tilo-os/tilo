@@ -23,9 +23,9 @@ use winit::keyboard::{Key, NamedKey};
 
 use tilo_ui_base::dnd::DRAG_START_THRESHOLD_PX;
 
+use crate::widget::arrange::{Part, Stack};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::Rhythm;
-use crate::widget::arrange::{Part, Stack};
 use tilo_ui_base::{widget::Decorator, widget::DrawChild, widget::Element, widget::Widget};
 
 /// What a `DragSource` carries on the drag bus: the kind its payload is written as, so a target
@@ -269,7 +269,11 @@ impl Decorator for DragSource {
         &mut self.column
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let changed = self.column.update(state, path);
         changed | self.dirty
     }

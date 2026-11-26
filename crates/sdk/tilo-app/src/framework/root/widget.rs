@@ -5,20 +5,22 @@
 
 use std::collections::HashSet;
 
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
+use tilo_ui_base::widget::Decorated;
+use tilo_ui_base::widget::resources::PublishesResources;
+use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
+use tilo_ui_base::{widget::capability::Request, widget::capability::RequestMut};
+use tilo_ui_base::{
+    widget::controls::ActionControls, widget::controls::AttributedControlInvocation,
+};
 use ui_core::application_view::{ApplicationFocusRestore, ApplicationLocalView};
 use ui_core::automerge::AutoCommit;
 use ui_core::bound_dispatch::BoundWidget;
-use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use ui_core::resource::ResourceSaveStatus;
 use ui_core::search::capability::SearchSource;
 use ui_core::view::ThawError;
-use tilo_ui_base::widget::Decorated;
-use tilo_ui_base::{widget::capability::Request, widget::capability::RequestMut};
-use tilo_ui_base::{widget::controls::ActionControls, widget::controls::AttributedControlInvocation};
 use ui_core::widget::empty_state::PaintedEmptyStates;
-use tilo_ui_base::widget::resources::PublishesResources;
 use ui_core::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
-use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
 
 /// What the root widget asks of the root of one resource type: the view it
 /// shows, the widget methods the root answers itself, and the capabilities it
@@ -43,7 +45,11 @@ pub(crate) trait RootModel:
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool;
     fn resource_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner>;
     fn sync(&mut self, state: &AppModel, path: &ModelPath);
-    fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, path: &ui_core::automerge::ObjId);
+    fn settle(
+        &mut self,
+        edits: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &ui_core::automerge::ObjId,
+    );
     fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>);
     fn needs_redraw(&self) -> bool;
     /// The window's save status the root says in the window's bar.
@@ -202,7 +208,10 @@ pub(crate) trait RootControls {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
+        result: &Result<
+            tilo_ui_base::host_operation::ResourceOperationStart,
+            tilo_actions::ApiError,
+        >,
     );
     fn has_pending_control_invocation(&self) -> bool;
 }
@@ -307,7 +316,11 @@ impl Decorator for RootWidget {
         self.0.sync(state, path);
     }
 
-    fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
+    fn settle(
+        &mut self,
+        edits: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &ui_core::automerge::ObjId,
+    ) {
         self.0.settle(edits, path);
     }
 
@@ -495,7 +508,10 @@ impl AppWidget for RootWidget {
     /// layout), never below phone width.
     fn min_window_width(&self) -> Option<f64> {
         let phone = f64::from(tilo_ui_base::tokens::Metrics::BASE.window_min_width);
-        Some(tilo_ui_base::widget::minimum_window_width(self).map_or(phone, |width| width.max(phone)))
+        Some(
+            tilo_ui_base::widget::minimum_window_width(self)
+                .map_or(phone, |width| width.max(phone)),
+        )
     }
 
     fn resource_save_status(&mut self, status: ResourceSaveStatus) -> bool {
@@ -669,7 +685,10 @@ impl ActionControls for RootWidget {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
+        result: &Result<
+            tilo_ui_base::host_operation::ResourceOperationStart,
+            tilo_actions::ApiError,
+        >,
     ) {
         self.0.on_control_invocation_result(address, result);
     }

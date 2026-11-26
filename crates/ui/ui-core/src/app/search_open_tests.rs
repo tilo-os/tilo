@@ -5,13 +5,13 @@
 
 use super::*;
 use crate::search::SearchResult;
-use tilo_ui_base::widget::TaffyTreeExt;
-use crate::widget::search_request::{ScopeDecl, SearchRequest, search_button};
 use crate::widget::Button;
-use tilo_ui_base::widget::Widget;
+use crate::widget::search_request::{ScopeDecl, SearchRequest, search_button};
 use automerge::AutoCommit;
 use std::collections::HashMap;
 use tilo_actions::{ActionSpec, ResourceSpec};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 /// Mail stand-in: anchors are paths under their folder.
 struct Mailbox;

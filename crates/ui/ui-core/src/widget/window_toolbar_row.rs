@@ -9,7 +9,6 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::widget::Widget;
 use super::autocomplete::{Suggestion, SuggestionList};
 use super::breadcrumb::Breadcrumb;
 use super::context_menu::{ContextMenu, MenuItem};
@@ -18,12 +17,13 @@ use super::toggle_group::{SegmentedFace, ToggleGroup};
 use super::window_controls::{ButtonFace, CONTROL_GAP, CONTROL_PX, paint_icon_button};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::motion::CrossFade;
+use tilo_ui_base::widget::Widget;
 
+use crate::time::Instant;
+use crate::window_toolbar::{ToolbarEvent, WindowToolbar};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::time::Instant;
 use tilo_ui_base::{tokens::MotionSource, tokens::TextRole};
-use crate::window_toolbar::{ToolbarEvent, WindowToolbar};
 
 mod access;
 mod layout;
@@ -64,9 +64,11 @@ const VIEWS_SIZE: super::ControlSize = super::ControlSize::Small;
 const SECTION_GAP: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64;
 const LOCATION_ICON_PX: f64 = tilo_ui_base::tokens::Metrics::BASE.icon_control as f64;
 /// The least a location that names nothing takes: below it the bar keeps its buttons.
-pub(crate) const MIN_LOCATION_PX: f64 = tilo_ui_base::tokens::Metrics::BASE.location_min_width as f64;
+pub(crate) const MIN_LOCATION_PX: f64 =
+    tilo_ui_base::tokens::Metrics::BASE.location_min_width as f64;
 /// The width a location's edited field measures its text in, so its padding stays its own.
-const FIELD_LOCATION_PX: f64 = tilo_ui_base::tokens::Metrics::BASE.location_comfortable_width as f64;
+const FIELD_LOCATION_PX: f64 =
+    tilo_ui_base::tokens::Metrics::BASE.location_comfortable_width as f64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum MenuEntry {

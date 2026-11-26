@@ -6,11 +6,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::State;
-use tilo_ui_base::a11y::Action;
 use crate::app::driver::Driver;
+use crate::{widget::Badge, widget::Checkbox, widget::Column, widget::Slider, widget::Toggle};
+use tilo_ui_base::a11y::Action;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::MotionSource;
-use crate::{widget::Badge, widget::Checkbox, widget::Column, widget::Slider, widget::Toggle};
 use tilo_ui_base::widget::Widget;
 
 #[derive(Clone, Copy)]

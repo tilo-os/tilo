@@ -11,10 +11,10 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use tilo_ui_base::widget::Element;
 use ui_core::vello::kurbo::Rect;
 use ui_core::widget::context_menu::{ContextMenu, MenuItem};
 use ui_core::{widget::Chip as ChipWidget, widget::Row};
-use tilo_ui_base::widget::Element;
 
 use super::engine::QueryResults;
 use super::kind::{FilterKind, Item, KindDecl, filters};

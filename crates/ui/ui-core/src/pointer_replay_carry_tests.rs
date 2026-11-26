@@ -2,10 +2,10 @@
 //! equivalent control in its place, and only there; and the headless host replays a pointer a relayout
 //! slid a control under.
 
-use tilo_ui_base::i18n::widget_text;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::i18n::widget_text;
 
 use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect, Vec2};
@@ -14,8 +14,8 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::headless::Driver;
 use tilo_ui_base::icons::Icon;
 
-use tilo_ui_base::theme::Theme;
 use crate::widget::PaintedTargets;
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::EventCtx, widget::TaffyTreeExt as _, widget::Widget};
 
 type Clicks = Rc<RefCell<Vec<&'static str>>>;

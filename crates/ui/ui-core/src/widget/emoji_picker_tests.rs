@@ -1,7 +1,7 @@
-use tilo_ui_base::text_render::TextRenderer;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
+use tilo_ui_base::text_render::TextRenderer;
 use vello::Scene;
 use vello::kurbo::Affine;
 
@@ -9,8 +9,14 @@ use winit::keyboard::ModifiersState;
 
 use super::*;
 use tilo_ui_base::{emoji_catalogue::EmojiCatalogue, emoji_catalogue::EmojiInfo};
-use tilo_ui_base::{synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release, synthetic_input::named_key};
-use tilo_ui_base::{workspace_emoji::Adding, workspace_emoji::CustomEmoji, workspace_emoji::EmojiSource, workspace_emoji::WorkspaceEmoji};
+use tilo_ui_base::{
+    synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press,
+    synthetic_input::mouse_release, synthetic_input::named_key,
+};
+use tilo_ui_base::{
+    workspace_emoji::Adding, workspace_emoji::CustomEmoji, workspace_emoji::EmojiSource,
+    workspace_emoji::WorkspaceEmoji,
+};
 
 struct Fake;
 

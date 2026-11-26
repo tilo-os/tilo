@@ -7,8 +7,8 @@
 //! into the invocation's output.
 
 use tilo_actions::InvocationUpdate;
-use ui::search::system::{ResourceKind, rank_fields};
 use tilo_ui_base::text_match::FieldWeight;
+use ui::search::system::{ResourceKind, rank_fields};
 
 use crate::i18n::{t, t_args};
 use crate::model::{Hit, LaunchPlace, Source, Target};

@@ -33,9 +33,11 @@ use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
 
-use tilo_ui_base::tokens::TextRole;
 use tilo_ui::widget::{Column, Container, Divider, Row, Text};
-use tilo_ui_base::{FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign};
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{
+    FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign,
+};
 
 const LOGICAL_WIDTH: u32 = 1160;
 

@@ -22,9 +22,9 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::headless::Driver;
 use crate::state::State;
-use tilo_ui_base::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::{widget::Banner, widget::Button, widget::Column, widget::Container, widget::TextInput};
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 const WIDTH: u32 = 200;
@@ -385,9 +385,9 @@ fn a_driver_runs_a_window_on_a_default_test_thread_stack() {
 #[test]
 fn a_text_field_shows_the_text_cursor_through_the_shared_rule() {
     use winit::window::CursorIcon;
-    let root = Column::new().push(Box::new(TextInput::new(vec![tilo_ui_base::PathSegment::Field(
-        "draft".into(),
-    )])));
+    let root = Column::new().push(Box::new(TextInput::new(vec![
+        tilo_ui_base::PathSegment::Field("draft".into()),
+    ])));
     let mut driver = Driver::new(State::new(), Box::new(root), (240, 160));
     driver.relayout();
     let over = (1..80)

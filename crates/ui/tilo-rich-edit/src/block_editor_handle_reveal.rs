@@ -53,7 +53,9 @@ impl BlockEditor {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 if self.rect.contains(ctx.logical(position)) {
-                    self.handle_reveal.fade.wake(tilo_ui_base::motion::frame_now());
+                    self.handle_reveal
+                        .fade
+                        .wake(tilo_ui_base::motion::frame_now());
                     if self.handle_reveal.drawn < 1.0 {
                         self.dirty = true;
                     }
@@ -104,7 +106,9 @@ impl BlockEditor {
     pub(super) fn handles_need_frame(&self) -> bool {
         let reveal = &self.handle_reveal;
         let held = self.hovered_drag_handle().is_some();
-        reveal.fade.fading_at(tilo_ui_base::motion::frame_now(), held)
+        reveal
+            .fade
+            .fading_at(tilo_ui_base::motion::frame_now(), held)
             && (!reveal.reduce_motion || reveal.drawn > 0.0)
     }
 
@@ -121,7 +125,8 @@ impl BlockEditor {
 
     pub(super) fn handle_fade_end(&self) -> Option<Instant> {
         let fade = &self.handle_reveal.fade;
-        fade.fade_end().filter(|end| *end > tilo_ui_base::motion::frame_now())
+        fade.fade_end()
+            .filter(|end| *end > tilo_ui_base::motion::frame_now())
     }
 
     /// Retire a fade that has run its course: the handles are gone, and if

@@ -1036,7 +1036,12 @@ fn a_screen_reader_hears_what_the_screen_says_before_the_workspace_synced() {
     let waiting = Widget::accessibility(&empty).unwrap();
     assert_eq!(
         waiting.name.as_deref(),
-        Some(tilo_ui_base::workspace_sync::waiting().unwrap().title.as_str())
+        Some(
+            tilo_ui_base::workspace_sync::waiting()
+                .unwrap()
+                .title
+                .as_str()
+        )
     );
     assert!(waiting.name.as_deref().unwrap().contains("Lounge"));
     assert!(waiting.state.busy, "the connecting state is on its way");

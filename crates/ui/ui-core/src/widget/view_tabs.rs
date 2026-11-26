@@ -1,7 +1,7 @@
 //! Switching what a window's content shows: [`ViewTabs`].
 use super::toggle_group::{Segment, SegmentedStyle, ToggleGroup};
-use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 use crate::widget::ControlSize;
+use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 
 /// Tabs that switch the view of a window's content.
 ///

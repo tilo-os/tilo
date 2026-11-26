@@ -18,13 +18,13 @@ use std::rc::Rc;
 use tilo_resource::{ActionKey, Binds, Resource};
 use tilo_ui_base::LocalState;
 use tilo_ui_base::icons::Icon;
-use ui_core::peniko::Color;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::tokens::PresenceHue;
+use tilo_ui_base::{widget::Element, widget::Tone};
+use ui_core::peniko::Color;
 use ui_core::widget::arrange::Stack as Arranged;
 use ui_core::widget::mention_picker::MentionCandidate;
 use ui_core::{widget::Button, widget::ButtonRole, widget::Chip};
-use tilo_ui_base::{widget::Element, widget::Tone};
 
 use super::ViewCx;
 use tilo_resource::MemberId;

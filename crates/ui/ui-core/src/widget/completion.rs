@@ -3,8 +3,8 @@
 
 use std::ops::Range;
 
-use tilo_ui_base::icons::Icon;
 use crate::widget::autocomplete::{RowRole, Suggestion};
+use tilo_ui_base::icons::Icon;
 
 pub const MAX_ROWS: usize = 50;
 

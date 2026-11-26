@@ -22,8 +22,8 @@ use tilo_sheets::invite::InviteState;
 use tilo_sheets::shortcut_guide::GuideState;
 use tilo_sheets::uninstall::UninstallState;
 use tilo_sheets::workspace_settings::WorkspaceSettingsState;
-use ui::application::{ApplicationDefinition, ComponentRunnerInputs, prepare_private_surface};
 use tilo_ui_base::host_operation::ResourceOperationStart;
+use ui::application::{ApplicationDefinition, ComponentRunnerInputs, prepare_private_surface};
 use ui::vello::kurbo::Rect;
 
 use crate::Session;
@@ -311,7 +311,11 @@ impl<S: SheetState> Published for Sheet<S> {
         Published::a11y_name(&self.host)
     }
 
-    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &tilo_ui_base::a11y::Action) -> bool {
+    fn a11y_action(
+        &mut self,
+        target: ui::accesskit::NodeId,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         self.drawn() && Published::a11y_action(&mut self.host, target, action)
     }
 

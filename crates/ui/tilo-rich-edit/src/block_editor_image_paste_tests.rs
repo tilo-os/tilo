@@ -8,12 +8,18 @@ use ui::testing::Dispatch;
 use winit::keyboard::ModifiersState;
 
 fn ctrl_v(editor: &mut BlockEditor, doc: &mut AutoCommit) -> bool {
-    let event =
-        tilo_ui_base::synthetic_input::key_event(Key::Character("v".into()), None, ElementState::Pressed);
+    let event = tilo_ui_base::synthetic_input::key_event(
+        Key::Character("v".into()),
+        None,
+        ElementState::Pressed,
+    );
     let handled = Dispatch::new()
         .modifiers(ModifiersState::CONTROL)
         .doc(doc)
-        .send(editor, &tilo_ui_base::synthetic_input::keyboard_input(event))
+        .send(
+            editor,
+            &tilo_ui_base::synthetic_input::keyboard_input(event),
+        )
         .handled;
     editor.sync(doc, &ROOT);
     handled
@@ -193,10 +199,14 @@ fn a_pasted_picture_names_itself_as_one_gesture_with_its_edit() {
         "b",
         crate::BlockEditorProps {
             rich: tilo_ui_base::component::Bound {
-                edits: Some(tilo_ui_base::component::Intent::new(&queue, "b", "richtext")),
+                edits: Some(tilo_ui_base::component::Intent::new(
+                    &queue, "b", "richtext",
+                )),
                 ..tilo_ui_base::component::Bound::default()
             },
-            image: tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(&queue, "b", "image")),
+            image: tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(
+                &queue, "b", "image",
+            )),
             ..crate::BlockEditorProps::default()
         },
     );

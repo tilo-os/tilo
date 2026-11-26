@@ -10,15 +10,18 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::color_compat::ColorCompat;
+use crate::widget::activation::Activation;
 use tilo_ui_base::icons::Icon;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use tilo_ui_base::{tokens::colors::NON_TEXT_MIN_CONTRAST, tokens::colors::ON_FILL_MIN_CONTRAST, tokens::colors::SMALL_TEXT_MIN_CONTRAST, tokens::colors::mix8};
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Tone;
 use tilo_ui_base::widget::Widget;
-use crate::widget::activation::Activation;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::{
+    tokens::colors::NON_TEXT_MIN_CONTRAST, tokens::colors::ON_FILL_MIN_CONTRAST,
+    tokens::colors::SMALL_TEXT_MIN_CONTRAST, tokens::colors::mix8,
+};
 
 pub(crate) const TINT_FILL: f32 = 0.15;
 pub(crate) const TINT_EDGE: f32 = 0.38;
@@ -557,7 +560,8 @@ pub(crate) fn paint_pill(
         ChipLead::Face(colour) => {
             let side = metrics.face();
             let face = Rect::from_center_size(Point::new(x + side / 2.0, cy), (side, side));
-            let mut ctx = tilo_ui_base::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+            let mut ctx =
+                tilo_ui_base::paint::PaintCtx::new(scene, transform, text_renderer, theme);
             match pill.face {
                 Some(who) => tilo_ui_base::widget::avatar_face::AvatarFace::of(who),
                 None => tilo_ui_base::widget::avatar_face::AvatarFace::new(pill.label, pill.label),
@@ -707,7 +711,8 @@ impl Chip {
     #[must_use]
     pub fn reference(label: impl Into<String>, id: &str) -> Self {
         let label = label.into();
-        let name = tilo_ui_base::i18n::widget_format("reference-open", &[("label", label.clone().into())]);
+        let name =
+            tilo_ui_base::i18n::widget_format("reference-open", &[("label", label.clone().into())]);
         Self::new_owned(label)
             .with_id(format!("reference:{id}"))
             .with_lead(REFERENCE_LEAD)
@@ -1260,7 +1265,12 @@ impl Widget for Chip {
             }
             Some(mark) => {
                 if mark.is_on() != chosen {
-                    mark.set(chosen, theme.motion(), tilo_ui_base::motion::input_source(), now);
+                    mark.set(
+                        chosen,
+                        theme.motion(),
+                        tilo_ui_base::motion::input_source(),
+                        now,
+                    );
                 }
                 mark.is_moving(now).then(|| mark.level(now))
             }
@@ -1432,7 +1442,10 @@ impl Widget for Chip {
                     tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button)
                         .with_key(REMOVE_KEY)
                         .with_action_target(format!("{}/remove", self.activation.id()))
-                        .with_name(format!("{} {name}", tilo_ui_base::i18n::widget_text("Remove")))
+                        .with_name(format!(
+                            "{} {name}",
+                            tilo_ui_base::i18n::widget_text("Remove")
+                        ))
                         .with_bounds(self.remove_hit_rect()),
                 ]),
         )
@@ -1525,7 +1538,9 @@ impl tilo_ui_base::widget::controls::ActionControls for Chip {
         let control_id = self.activation.id();
         bindings.extend(self.remove_press.metadata(control_id));
         for child in tilo_ui_base::widget::Widget::children(self) {
-            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(child));
+            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(
+                child,
+            ));
         }
         bindings
     }
@@ -1544,8 +1559,8 @@ impl tilo_ui_base::widget::controls::ActionControls for Chip {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::presence::PresenceCtx;
     use crate::testing::dispatch;
+    use tilo_ui_base::presence::PresenceCtx;
 
     /// A chip in a bar's row: whatever it says, its row is 60 high.
     fn lay_out(w: &mut dyn Widget) {

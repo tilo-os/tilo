@@ -18,8 +18,12 @@ impl App {
             return false;
         };
         match request {
-            tilo_ui_base::a11y::AccessibilityRequest::TextScale(factor) => self.set_text_scale(factor),
-            tilo_ui_base::a11y::AccessibilityRequest::HighContrast(on) => self.set_high_contrast(on),
+            tilo_ui_base::a11y::AccessibilityRequest::TextScale(factor) => {
+                self.set_text_scale(factor)
+            }
+            tilo_ui_base::a11y::AccessibilityRequest::HighContrast(on) => {
+                self.set_high_contrast(on)
+            }
             tilo_ui_base::a11y::AccessibilityRequest::ScreenReader(on) => {
                 self.set_screen_reader_enabled(on);
             }
@@ -87,7 +91,10 @@ impl App {
 
     /// Override platform HIG conventions for a native shell or deterministic
     /// cross-platform test. Ordinary apps use the host default.
-    pub fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
+    pub fn set_platform_conventions(
+        &mut self,
+        conventions: tilo_ui_base::platform::PlatformConventions,
+    ) {
         let _entry = self.enter_wake_scope();
         if self.input.platform == conventions {
             return;
@@ -209,7 +216,10 @@ impl App {
     /// Feed a key event to the screen reader chord. `true` when it toggled
     /// the screen reader, which then consumes the event.
     fn handle_screen_reader_chord(&mut self, event: &WindowEvent) -> bool {
-        use tilo_ui_base::{screen_reader_chord::ChordEvent, screen_reader_chord::ChordKey, screen_reader_chord::ChordModifiers};
+        use tilo_ui_base::{
+            screen_reader_chord::ChordEvent, screen_reader_chord::ChordKey,
+            screen_reader_chord::ChordModifiers,
+        };
         match event {
             WindowEvent::Focused(false) => {
                 // Releases arrive at whoever has focus next.
@@ -294,7 +304,8 @@ impl App {
         if let Some(observer) = self.accessibility.on_screen_reader_chord.as_mut() {
             observer(on);
         } else if self.watch_system_settings {
-            let origin = tilo_ui_base::settings_source::ChangeOrigin::local(SCREEN_READER_CHORD_ORIGIN);
+            let origin =
+                tilo_ui_base::settings_source::ChangeOrigin::local(SCREEN_READER_CHORD_ORIGIN);
             let mut leaf = serde_json::Map::new();
             leaf.insert(
                 settings_model::accessibility::SCREEN_READER_KEY.to_owned(),
@@ -501,7 +512,9 @@ impl App {
         // Keep canonical anchors intact. Resolve against each presented layout,
         // never retain an arrival-time layout id across a rebuild.
         let interaction = match &payload {
-            tilo_ui_base::collaboration::PresencePayload::Interaction(update) => Some((**update).clone()),
+            tilo_ui_base::collaboration::PresencePayload::Interaction(update) => {
+                Some((**update).clone())
+            }
             _ => None,
         };
         match self
@@ -725,7 +738,9 @@ impl App {
                     &self.bindings,
                     &self.layout.node_map,
                     node,
-                    |widget| tilo_ui_base::widget::undo_access::set_undo_status(widget, &mut status),
+                    |widget| {
+                        tilo_ui_base::widget::undo_access::set_undo_status(widget, &mut status)
+                    },
                 )
             };
         }
@@ -861,9 +876,11 @@ impl App {
                 .focused_node
                 .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
             self.focus_history.stable_metadata = self.focused_node.and_then(|id| {
-                self.inspect_node(id, |widget| tilo_ui_base::widget::undo_points::get_state(widget))
-                    .ok()
-                    .flatten()
+                self.inspect_node(id, |widget| {
+                    tilo_ui_base::widget::undo_points::get_state(widget)
+                })
+                .ok()
+                .flatten()
             });
         }
         if changed || history_changed || invalidate {
@@ -1140,7 +1157,12 @@ impl App {
         // A live region without an accessible name can't be tracked stably
         // across frames, so it's skipped.
         let mut regions = LiveRegionScan(Vec::new());
-        tilo_ui_base::a11y_walk::walk::<true, _>(&mut regions, self.root_widget.as_ref(), None, &mut ());
+        tilo_ui_base::a11y_walk::walk::<true, _>(
+            &mut regions,
+            self.root_widget.as_ref(),
+            None,
+            &mut (),
+        );
         let seen = regions.0;
 
         let mut current_keys = std::collections::HashSet::new();
@@ -1268,8 +1290,10 @@ impl App {
                 .actions
                 .iter()
                 .find(|spec| {
-                    tilo_ui_base::accesskit_bridge::resource_action_node_id(resource.id.as_str(), &spec.id)
-                        == target
+                    tilo_ui_base::accesskit_bridge::resource_action_node_id(
+                        resource.id.as_str(),
+                        &spec.id,
+                    ) == target
                 })
                 .map(|spec| tilo_actions::ActionAddress::new(resource.id.as_str(), &spec.id))
                 .or_else(|| Self::find_resource_action(&resource.children, target))
@@ -2094,10 +2118,12 @@ impl App {
             // native accessibility. Resolve only current admissions;
             // an expired alias must never fall back to a raw layout id.
             let exported = self.bindings.exported_nodes(&self.layout.node_map);
-            let Some(tilo_ui_base::accesskit_bridge::A11yTarget::Widget(taffy_id)) = exported.resolve(
-                self.root_widget.as_ref(),
-                accesskit::NodeId(taffy_raw.saturating_add(1)),
-            ) else {
+            let Some(tilo_ui_base::accesskit_bridge::A11yTarget::Widget(taffy_id)) = exported
+                .resolve(
+                    self.root_widget.as_ref(),
+                    accesskit::NodeId(taffy_raw.saturating_add(1)),
+                )
+            else {
                 return Ok(false);
             };
             // A target the control publishes for itself is its own action: one it declines is
@@ -2304,7 +2330,10 @@ mod history_sweep_tests;
 
 /// What the box with no menu around it calls the control `node` describes: the target of
 /// its own control of the same name, which its keys and pointer reach as well.
-fn box_control(described: &tilo_ui_base::a11y::AccessNode, node: &accesskit::Node) -> Option<String> {
+fn box_control(
+    described: &tilo_ui_base::a11y::AccessNode,
+    node: &accesskit::Node,
+) -> Option<String> {
     described.children.iter().find_map(|child| {
         child
             .action_target

@@ -1,5 +1,8 @@
 use super::*;
-use crate::{widget::Actions, widget::Button, widget::Field, widget::Form, widget::FormSection, widget::TextInput};
+use crate::{
+    widget::Actions, widget::Button, widget::Field, widget::Form, widget::FormSection,
+    widget::TextInput,
+};
 use tilo_ui_base::{widget::LabelPlacement, widget::LayoutInfo};
 
 fn form_layout(app: &mut App, width: u32) {

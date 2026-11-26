@@ -31,10 +31,10 @@ use jiff::civil::Date;
 use vello::kurbo::Rect;
 use vello::peniko::Color;
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use crate::widget::TimelineDensity;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::TimelineDensity;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 
 /// A quarter hour: the default slot a drag snaps to.
 pub const SNAP_MIN: i64 = 15;

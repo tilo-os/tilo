@@ -1,8 +1,8 @@
 //! [`TrackTimeline`] as a described component: the tracks, spans and markers a view hands it, and
 //! the changes a person's hand on it reports back.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event};
 use crate::widget::Ink;
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 use super::widget::{Marker, Span, Track, TrackTimeline};
 

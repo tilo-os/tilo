@@ -1,8 +1,8 @@
 //! The search launcher as a described component.
 
-use tilo_ui_base::{component::Component, component::Described, component::ResourceId};
 use crate::widget::Button;
 use tilo_ui_base::widget::Decorator;
+use tilo_ui_base::{component::Component, component::Described, component::ResourceId};
 
 use crate::widget::search_request::{ScopeDecl, SearchRequest, search_button};
 

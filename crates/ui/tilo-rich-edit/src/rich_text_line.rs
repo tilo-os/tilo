@@ -4,13 +4,13 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use tilo_sort::CompactSort as _;
-use ui::widget::document_line::DocumentLine as _;
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use ui::widget::document_line::DocumentLine as _;
 
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
-use ui::color_compat::ColorCompat;
 use tilo_ui_base::{richtext::RichSpan, richtext::inline_emoji};
+use ui::color_compat::ColorCompat;
 use ui::widget::document_line::SingleLineAttributes;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -22,11 +22,11 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use ui::widget::TextInput;
 use ui::widget::code_editor::TokenKind;
 use ui::widget::markdown_input;
 use ui::widget::marks::{self, Mark, MarkSegment, MarkSpan, PageId};
-use ui::widget::TextInput;
-use tilo_ui_base::widget::Widget;
 
 /// A stored run size is in points, the unit every document codec writes; the
 /// toolkit draws in logical pixels at 96 dpi.
@@ -230,7 +230,10 @@ pub struct RunLook {
     pub color: Option<[u8; 3]>,
 }
 
-#[tilo_ui_base::component::not_a_component(part, "the line `ui.RichTextLine` edits its bound text in")]
+#[tilo_ui_base::component::not_a_component(
+    part,
+    "the line `ui.RichTextLine` edits its bound text in"
+)]
 pub struct RichTextLine {
     inner: TextInput,
     /// At most one signal in flight per frame; new signals overwrite the slot.
@@ -1573,7 +1576,9 @@ impl RichTextLine {
                         image_width * image_h.max(1) as f32 / image_w.max(1) as f32
                     },
                 )
-                .min(max_height.map_or(f32::INFINITY, |max| tilo_ui_base::num::f32_of_u32(max.max(1))));
+                .min(max_height.map_or(f32::INFINITY, |max| {
+                    tilo_ui_base::num::f32_of_u32(max.max(1))
+                }));
             return Size {
                 width,
                 height: source_height
@@ -2529,7 +2534,9 @@ mod tests {
     /// wrapped or not, marked or not; it stops once the workspace drops it.
     #[test]
     fn a_workspace_emoji_draws_as_its_picture_until_the_workspace_drops_it() {
-        use tilo_ui_base::{richtext::inline_emoji::testing::Fixed, richtext::inline_emoji::testing::workspace};
+        use tilo_ui_base::{
+            richtext::inline_emoji::testing::Fixed, richtext::inline_emoji::testing::workspace,
+        };
         let draws_picture = |scene: &Scene| {
             scene
                 .encoding()
@@ -2568,7 +2575,8 @@ mod tests {
                 "wrap {wrap}, marked {marked}"
             );
             let rects = line.mark_rects(&theme, emoji.clone());
-            let advance = f64::from(tilo_ui_base::richtext::inline_emoji::ADVANCE_EM * line.font_size);
+            let advance =
+                f64::from(tilo_ui_base::richtext::inline_emoji::ADVANCE_EM * line.font_size);
             assert_eq!(rects.len(), 1);
             assert!(
                 (rects[0].width() - advance).abs() < 0.5,

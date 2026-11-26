@@ -297,7 +297,9 @@ impl Driver {
         // own API answers: the call runs again on the view it then stands on.
         let started = tilo_ui_base::widget::resource_operation::laying_out_first(|| invoke(self));
         match started {
-            Err(error) if tilo_ui_base::widget::resource_operation::asks_to_lay_out_first(&error) => {
+            Err(error)
+                if tilo_ui_base::widget::resource_operation::asks_to_lay_out_first(&error) =>
+            {
                 self.relayout();
                 invoke(self)
             }

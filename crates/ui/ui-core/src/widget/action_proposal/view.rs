@@ -5,9 +5,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::{ActionProposal, DiffTag, MAX_DIFF_LINES, ProposalDecision, ProposalTarget, titled};
+use crate::widget::{Button, ButtonRole, Column, Text};
 use tilo_ui_base::i18n::ArgValue;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::{Button, ButtonRole, Column, Text};
 
 pub struct ActionProposalView<R: tilo_resource::Resource> {
     proposal: ActionProposal,

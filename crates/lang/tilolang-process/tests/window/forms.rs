@@ -107,7 +107,9 @@ fn submit(app: &mut TestApp<TlApp>, label: &str) -> Option<((), bool)> {
     accessible(app)
         .into_iter()
         .rev()
-        .find(|node| node.role == tilo_ui_base::a11y::Role::Button && node.name.as_deref() == Some(label))
+        .find(|node| {
+            node.role == tilo_ui_base::a11y::Role::Button && node.name.as_deref() == Some(label)
+        })
         .map(|node| ((), !node.state.disabled))
 }
 
@@ -204,7 +206,9 @@ fn picking_a_day_asks_until_when_and_runs_once_the_day_reads() {
     choose(&mut app, "Book a haircut", "Pick date…");
     let shown = accessible(&mut app)
         .into_iter()
-        .find(|node| node.role == tilo_ui_base::a11y::Role::TextInput && node.name.as_deref() == Some("Due"))
+        .find(|node| {
+            node.role == tilo_ui_base::a11y::Role::TextInput && node.name.as_deref() == Some("Due")
+        })
         .and_then(|node| node.value);
     assert_eq!(
         shown.as_deref(),
@@ -244,12 +248,13 @@ fn the_task_pages_assignee_opens_the_people_to_pick_from() {
     let row = bounds_of(&mut app, "Book a haircut", None).expect("the task shows");
     click(&mut app, row.center());
     // The page keeps one person field for who does the task, showing nobody yet.
-    let chip = bounds_of(&mut app, "No one", Some(tilo_ui_base::a11y::Role::Button)).unwrap_or_else(|| {
-        panic!(
-            "the page offers who does the task: {:?}",
-            all_names(&mut app)
-        )
-    });
+    let chip = bounds_of(&mut app, "No one", Some(tilo_ui_base::a11y::Role::Button))
+        .unwrap_or_else(|| {
+            panic!(
+                "the page offers who does the task: {:?}",
+                all_names(&mut app)
+            )
+        });
     click(&mut app, chip.center());
     let names = all_names(&mut app);
     assert!(
@@ -267,7 +272,10 @@ fn shots() {
     std::fs::create_dir_all(&dir).unwrap();
     let _settled = tilo_ui_base::motion::testing::settled();
     for (size, viewport) in [("desktop", DESKTOP), ("phone", PHONE)] {
-        for (shade, theme) in [("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())] {
+        for (shade, theme) in [
+            ("light", tilo_ui_base::Theme::light()),
+            ("dark", tilo_ui_base::Theme::dark()),
+        ] {
             let mut app = staged(viewport);
             app.harness().set_theme(theme);
             settle(&mut app);

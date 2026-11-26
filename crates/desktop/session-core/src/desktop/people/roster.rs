@@ -73,7 +73,9 @@ fn clock(at: u64, read: fn(&tilo_ui_base::format::UnixSecs) -> String) -> String
 /// second apart.
 fn clock_millis(at: u64) -> String {
     i64::try_from(at)
-        .map(|millis| tilo_ui_base::format::time_of_with_millis(&tilo_ui_base::format::UnixMillis(millis)))
+        .map(|millis| {
+            tilo_ui_base::format::time_of_with_millis(&tilo_ui_base::format::UnixMillis(millis))
+        })
         .unwrap_or_default()
 }
 

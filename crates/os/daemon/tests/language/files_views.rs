@@ -108,7 +108,11 @@ fn read_in_zone(mtime: u64, zone: tilo_ui_base::format::TimeZone) -> String {
 }
 
 /// The time `mtime` as `zone` reads it with `region`.
-fn read_with(region: tilo_ui_base::format::RegionFormats, mtime: u64, zone: tilo_ui_base::format::TimeZone) -> String {
+fn read_with(
+    region: tilo_ui_base::format::RegionFormats,
+    mtime: u64,
+    zone: tilo_ui_base::format::TimeZone,
+) -> String {
     let at = tilo_ui_base::format::Timestamp::from_millisecond(i64::try_from(mtime).unwrap())
         .expect("a time")
         .to_zoned(zone)
@@ -183,7 +187,8 @@ async fn agent_reads(session: &Session<'_>, workspace: &str, wanted: &str) -> St
 /// The time on the person's page for `kept` formats and `mtime`, as their page reads what the
 /// workspace keeps of them: the zone they chose, else their browser's.
 fn on_the_page(kept: &formats::Formats, mtime: u64, browser: &str) -> String {
-    let region = tilo_ui_base::format::RegionFormats::from_section(kept.formats.clone().unwrap_or_default());
+    let region =
+        tilo_ui_base::format::RegionFormats::from_section(kept.formats.clone().unwrap_or_default());
     let zone = tilo_ui_base::format::TimeZone::get(kept.chosen_zone.as_deref().unwrap_or(browser))
         .unwrap_or(tilo_ui_base::format::TimeZone::UTC);
     read_with(region, mtime, zone)

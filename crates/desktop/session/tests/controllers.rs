@@ -34,7 +34,9 @@ use tilo_session::{Options, Session, SessionConfig};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::shortcut_guide::{Guide, Modality};
 use tilo_ui_base::ControllerFamily;
-use tilo_ui_base::{input::ControllerButton, input::KeyLegend, input::KeyboardBinding, input::KeyboardModifier};
+use tilo_ui_base::{
+    input::ControllerButton, input::KeyLegend, input::KeyboardBinding, input::KeyboardModifier,
+};
 
 /// What a key sends, evdev codes.
 const KEY_ESCAPE: u32 = 1;

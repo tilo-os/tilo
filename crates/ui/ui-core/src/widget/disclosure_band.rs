@@ -9,11 +9,13 @@ use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Point, Rect};
 
+use crate::widget::floating_surface::DetachedContent;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
-use crate::widget::floating_surface::DetachedContent;
-use tilo_ui_base::{widget::BandMotion, widget::Element, widget::TaffyTreeExt, widget::Widget, widget::layout_rect};
+use tilo_ui_base::{
+    widget::BandMotion, widget::Element, widget::TaffyTreeExt, widget::Widget, widget::layout_rect,
+};
 
 #[path = "disclosure_band_component.rs"]
 mod component;
@@ -127,7 +129,11 @@ impl DisclosureBand {
 impl Widget for DisclosureBand {
     tilo_ui_base::described!();
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let changed = self.child.update(state, path);
         if self.band.layout_moved(true) {
             tilo_ui_base::widget::note_layout_moved();

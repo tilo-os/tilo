@@ -318,8 +318,11 @@ fn dev_reload_replaces_a_baked_translation_in_place() {
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(directory.join("en-US.ftl"), "document-heading = After\n").unwrap();
-    tilo_ui_base::i18n::I18nManager::install_system("en-US", &[("en-US", "document-heading = Before\n")])
-        .expect("baked catalog installs");
+    tilo_ui_base::i18n::I18nManager::install_system(
+        "en-US",
+        &[("en-US", "document-heading = Before\n")],
+    )
+    .expect("baked catalog installs");
     assert_eq!(
         tilo_ui_base::i18n::I18nManager::lookup_plain("document-heading"),
         "Before"
@@ -335,10 +338,10 @@ fn dev_reload_replaces_a_baked_translation_in_place() {
 #[cfg(test)]
 #[test]
 fn dev_checkpoint_restores_document_and_route() {
-    use tilo_ui_base::theme::Theme;
     use crate::widget::Button;
-    use tilo_ui_base::{widget::RouteHandle, widget::Router};
     use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
+    use tilo_ui_base::theme::Theme;
+    use tilo_ui_base::{widget::RouteHandle, widget::Router};
 
     let directory =
         std::env::temp_dir().join(format!("tilo-dev-checkpoint-{}", std::process::id()));

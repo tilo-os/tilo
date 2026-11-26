@@ -9,14 +9,16 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
 #[path = "number_input_component.rs"]
 mod component;
-use tilo_ui_base::widget::TaffyTreeExt;
-use tilo_ui_base::widget::Widget;
-use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
-use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingKind, widget::ControlBindingMetadata};
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use crate::widget::{TextInput, TextInputKind};
 pub use component::NumberInputProps;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    widget::ActionEmitter, widget::ControlBindingKind, widget::ControlBindingMetadata,
+};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};

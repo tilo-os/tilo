@@ -5,9 +5,9 @@
 use vello::kurbo::{Point, Rect};
 
 use super::{ListRowFace, RowGeometry, RowLeading, RowMetrics, RowValue};
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
-use tilo_ui_base::theme::Theme;
 use crate::widget::BadgeFace;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 
 /// Where a row led by a mark — a glyph or a face — starts its text, past the left edge of
 /// its rect: the content edge, the mark's slot and the gap to the text.
@@ -678,7 +678,8 @@ impl ListRowFace<'_> {
             return width.min(cap);
         }
         self.meta.map_or(0.0, |meta| {
-            let shown = text.elide_to_width_style(meta, tilo_ui_base::num::f32_of_f64(cap), &m.meta);
+            let shown =
+                text.elide_to_width_style(meta, tilo_ui_base::num::f32_of_f64(cap), &m.meta);
             f64::from(text.measure_style(&shown, None, &m.meta).0)
         })
     }
@@ -823,7 +824,11 @@ impl ListRowFace<'_> {
 
 /// Where a row draws the box it leads with, in `slot` (its leading column): first in the column,
 /// with the glyph after it where the row says what kind of thing it is.
-pub(super) fn checkbox_box(slot: Rect, icon: Option<tilo_ui_base::icons::Icon>, m: &RowMetrics) -> Rect {
+pub(super) fn checkbox_box(
+    slot: Rect,
+    icon: Option<tilo_ui_base::icons::Icon>,
+    m: &RowMetrics,
+) -> Rect {
     match icon {
         Some(_) => Rect::new(
             slot.x0,

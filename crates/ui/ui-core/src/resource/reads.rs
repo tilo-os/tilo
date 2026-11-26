@@ -1,8 +1,10 @@
 //! What a component's pass reads of the resource store: each record it reads, followed until its
 //! frontier moves.
 
-use tilo_ui_base::{component_inputs::Key, component_inputs::Reads, component_inputs::fold, component_inputs::probe};
 use crate::wake::WakeHandle;
+use tilo_ui_base::{
+    component_inputs::Key, component_inputs::Reads, component_inputs::fold, component_inputs::probe,
+};
 
 /// Run `pass` as the pass of the component `owner` names, gathering what it reads outside the
 /// component, the records it reads of the store among them.

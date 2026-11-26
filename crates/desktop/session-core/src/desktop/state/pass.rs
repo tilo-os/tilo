@@ -70,7 +70,10 @@ impl DesktopPass {
     }
 
     /// The keys the platform names its chords with, which search shows.
-    pub fn set_platform_conventions(&mut self, platform: tilo_ui_base::platform::PlatformConventions) {
+    pub fn set_platform_conventions(
+        &mut self,
+        platform: tilo_ui_base::platform::PlatformConventions,
+    ) {
         self.platform = platform;
     }
 
@@ -929,7 +932,9 @@ impl DesktopPass {
             // thread.
             Target::Open { uri, fallback } => {
                 #[cfg(target_arch = "wasm32")]
-                if let Err(error) = tilo_ui_base::platform::try_os_open(fallback.as_deref().unwrap_or(&uri)) {
+                if let Err(error) =
+                    tilo_ui_base::platform::try_os_open(fallback.as_deref().unwrap_or(&uri))
+                {
                     shared.say(ui::window_toolbar::ToolbarNotice::new(
                         error.to_string(),
                         ui::widget::toast::ToastKind::Error,

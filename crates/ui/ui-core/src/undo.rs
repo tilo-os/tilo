@@ -2,7 +2,15 @@
 //! [`State`](crate::state::State) / [`UndoLog`](collab_types::history::UndoLog), and the host
 //! ([`App`](crate::app::App)) drives it from Ctrl+Z.
 
-pub use tilo_ui_base::{widget::undo_access::CommittedActions, widget::undo_access::LocalUndo, widget::undo_access::LocalUndoStatus, widget::undo_access::UndoAccess, widget::undo_access::UndoControl, widget::undo_access::UndoRequest, widget::undo_access::UndoStatus, widget::undo_access::handle_local_undo_request, widget::undo_access::keeps_undo_step_open, widget::undo_access::local_undo_status, widget::undo_access::set_undo_status, widget::undo_access::shortcut, widget::undo_access::take_committed_action, widget::undo_access::take_undo_request};
+pub use tilo_ui_base::{
+    widget::undo_access::CommittedActions, widget::undo_access::LocalUndo,
+    widget::undo_access::LocalUndoStatus, widget::undo_access::UndoAccess,
+    widget::undo_access::UndoControl, widget::undo_access::UndoRequest,
+    widget::undo_access::UndoStatus, widget::undo_access::handle_local_undo_request,
+    widget::undo_access::keeps_undo_step_open, widget::undo_access::local_undo_status,
+    widget::undo_access::set_undo_status, widget::undo_access::shortcut,
+    widget::undo_access::take_committed_action, widget::undo_access::take_undo_request,
+};
 
 /// Turn the actions a widget dispatched during the last event into exactly one undo
 /// boundary. `root` and the `node_map` pointers must point at widgets that are alive for
@@ -102,9 +110,12 @@ pub(crate) unsafe fn record_dispatched_action_bound(
         } else {
             // SAFETY: each unique live node is visited only once this sweep.
             if let Ok(Some(before)) = unsafe {
-                tilo_ui_base::widget::bound_nodes::mutate_bound_node(bindings, nodes, node, |widget| {
-                    tilo_ui_base::widget::undo_access::take_committed_action(widget)
-                })
+                tilo_ui_base::widget::bound_nodes::mutate_bound_node(
+                    bindings,
+                    nodes,
+                    node,
+                    |widget| tilo_ui_base::widget::undo_access::take_committed_action(widget),
+                )
             } {
                 brackets.push(before);
             }

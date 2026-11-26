@@ -1,12 +1,12 @@
 use super::*;
-use tilo_ui_base::widget::TaffyTreeExt;
-use crate::widget::modal_dialog::ModalDialog;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use crate::widget::Button;
-use tilo_ui_base::widget::Widget;
+use crate::widget::modal_dialog::ModalDialog;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 struct TwoKids {
     kids: Vec<Box<dyn Widget>>,

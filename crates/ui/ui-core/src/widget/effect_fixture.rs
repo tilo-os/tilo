@@ -100,9 +100,11 @@ impl tilo_ui_base::widget::ResourceOperations for Sends {
             return Ok(None);
         }
         (self.sent)();
-        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui_base::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
 }
 

@@ -1,9 +1,9 @@
 use super::*;
-use tilo_ui_base::widget::TaffyTreeExt;
 use crate::widget::Button;
-use tilo_ui_base::widget::Element;
 use std::cell::Cell;
 use std::rc::Rc;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::widget::TaffyTreeExt;
 
 /// Legacy composition deliberately does not report its breakpoint changes.
 struct ResponsiveRoot {
@@ -457,9 +457,11 @@ fn resize_restores_editor_identity_selection_and_focus() {
                 Some("editor")
             );
             assert_eq!(
-                app.inspect_node(node, |widget| tilo_ui_base::widget::undo_points::get_state(widget))
-                    .unwrap()
-                    .as_deref(),
+                app.inspect_node(node, |widget| tilo_ui_base::widget::undo_points::get_state(
+                    widget
+                ))
+                .unwrap()
+                .as_deref(),
                 Some("5:b:1")
             );
             assert_eq!(
@@ -561,9 +563,9 @@ fn resize_restores_editor_identity_selection_and_focus() {
                     .unwrap()
             );
             assert_eq!(
-                app.inspect_node(focused, |widget| tilo_ui_base::widget::undo_points::get_state(
-                    widget
-                ))
+                app.inspect_node(focused, |widget| {
+                    tilo_ui_base::widget::undo_points::get_state(widget)
+                })
                 .unwrap()
                 .as_deref(),
                 Some("5:b:1")
@@ -602,9 +604,9 @@ fn resize_restores_editor_identity_selection_and_focus() {
             Some("outside")
         );
         assert_eq!(
-            app.inspect_node(focused, |widget| tilo_ui_base::widget::undo_points::get_state(
-                widget
-            ))
+            app.inspect_node(focused, |widget| {
+                tilo_ui_base::widget::undo_points::get_state(widget)
+            })
             .unwrap()
             .as_deref(),
             Some("0"),

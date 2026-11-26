@@ -6,8 +6,8 @@
 //! hands it to every `ui.WebView` it builds, so the address a view names (`uri`) is the only
 //! thing that crosses the wire and no live engine does. An app that draws its own page hands
 //! its engine in, and reads that engine's events itself.
-use tilo_ui_base::{component::Component, component::Described, component::Event};
 use crate::webview::SharedEngine;
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 use super::WebView;
 

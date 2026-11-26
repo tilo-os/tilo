@@ -21,8 +21,8 @@ use std::collections::BTreeMap;
 use tilo_actions::ActionDescriptor;
 use tilo_actions::remote::downloaded_apps::{self as wire, DownloadedApp, DownloadedKind};
 use tilo_ui_base::icons::Icon;
-use ui::search::system::ResourceKind;
 use tilo_ui_base::text_match::FieldWeight;
+use ui::search::system::ResourceKind;
 
 use crate::i18n::{t, t_args};
 use crate::model::{DESKTOP_APP, Hit, InvokeTarget, LaunchPlace, Source, Target};

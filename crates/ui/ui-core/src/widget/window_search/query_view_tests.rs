@@ -5,10 +5,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
-use tilo_ui_base::tokens::MotionSource;
 use crate::widget::find_bar::FindOptions;
 use crate::widget::search_field::Filterable;
-use crate::{widget::Column, widget::InPlace, widget::SearchDriver, widget::Text, widget::WindowSearch};
+use crate::{
+    widget::Column, widget::InPlace, widget::SearchDriver, widget::Text, widget::WindowSearch,
+};
+use tilo_ui_base::tokens::MotionSource;
 use tilo_ui_base::widget::Widget;
 
 const ROWS: [&str; 4] = ["Ada's change", "Bo's change", "Ada again", "Cy's change"];

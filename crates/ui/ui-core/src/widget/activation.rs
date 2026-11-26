@@ -123,7 +123,9 @@ impl Activation {
         match event {
             tilo_ui_base::component::Event::None => self.clear_event(),
             tilo_ui_base::component::Event::Action(binding) => self.set_action(binding),
-            tilo_ui_base::component::Event::View(intent) => self.set_open(Box::new(intent.sender())),
+            tilo_ui_base::component::Event::View(intent) => {
+                self.set_open(Box::new(intent.sender()))
+            }
         }
     }
 
@@ -713,7 +715,11 @@ impl PaintedTargets {
             .collect()
     }
 
-    pub fn perform_action(&mut self, action: &tilo_ui_base::a11y::Action, key_path: &[u64]) -> bool {
+    pub fn perform_action(
+        &mut self,
+        action: &tilo_ui_base::a11y::Action,
+        key_path: &[u64],
+    ) -> bool {
         let Some(&key) = key_path.first() else {
             return false;
         };
@@ -728,7 +734,11 @@ impl PaintedTargets {
         self.perform_semantic_action(action, &id)
     }
 
-    pub fn perform_semantic_action(&mut self, action: &tilo_ui_base::a11y::Action, target: &str) -> bool {
+    pub fn perform_semantic_action(
+        &mut self,
+        action: &tilo_ui_base::a11y::Action,
+        target: &str,
+    ) -> bool {
         match action {
             tilo_ui_base::a11y::Action::Activate => self.activate(target),
             tilo_ui_base::a11y::Action::Focus => {
@@ -791,7 +801,8 @@ mod tests {
 
     fn send(targets: &mut PaintedTargets, event: &WindowEvent) -> bool {
         let mut tree = taffy::TaffyTree::<()>::new();
-        let node = tilo_ui_base::widget::TaffyTreeExt::leaf_node(&mut tree, taffy::Style::default());
+        let node =
+            tilo_ui_base::widget::TaffyTreeExt::leaf_node(&mut tree, taffy::Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = automerge::AutoCommit::new();

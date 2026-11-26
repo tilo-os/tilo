@@ -5,9 +5,9 @@ use vello::kurbo::Point;
 use winit::event::TouchPhase;
 
 use super::*;
-use tilo_ui_base::{component::Event, component::Fired, component::Intent};
 use crate::time::testing::with_monotonic_time;
 use crate::time::{Duration, Instant, now};
+use tilo_ui_base::{component::Event, component::Fired, component::Intent};
 
 const WIDTH: f32 = 400.0;
 

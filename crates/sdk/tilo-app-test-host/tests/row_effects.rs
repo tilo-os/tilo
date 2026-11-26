@@ -595,14 +595,16 @@ struct RowPublishingApp;
 
 /// This test's own words: the catalogue the framework reads the effect's
 /// labels and parameter descriptions from at publication.
-static CATALOG: tilo_ui_base::i18n::EmbeddedCatalog =
-    tilo_ui_base::i18n::EmbeddedCatalog::new("en-US", &[("en-US", include_str!("locales/en-US.ftl"))])
-        .with_language_pack(tilo_ui_base::i18n::LanguagePack {
-            id: env!("CARGO_PKG_NAME"),
-            locales: &["en-US"],
-            source_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/tests/locales"),
-        })
-        .with_system_locale();
+static CATALOG: tilo_ui_base::i18n::EmbeddedCatalog = tilo_ui_base::i18n::EmbeddedCatalog::new(
+    "en-US",
+    &[("en-US", include_str!("locales/en-US.ftl"))],
+)
+.with_language_pack(tilo_ui_base::i18n::LanguagePack {
+    id: env!("CARGO_PKG_NAME"),
+    locales: &["en-US"],
+    source_dir: concat!(env!("CARGO_MANIFEST_DIR"), "/tests/locales"),
+})
+.with_system_locale();
 
 thread_local! {
     static RAN: std::cell::RefCell<Vec<JobEffect>> = const { std::cell::RefCell::new(Vec::new()) };

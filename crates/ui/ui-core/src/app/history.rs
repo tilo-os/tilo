@@ -11,8 +11,8 @@ use super::*;
 use crate::history_mode::api::HISTORY_OPERATION;
 #[cfg(feature = "model")]
 use crate::history_mode::frame::FrameworkInputFrame;
-use tilo_ui_base::widget::Widget;
 use crate::widget::search_request::SEARCH_OPERATION;
+use tilo_ui_base::widget::Widget;
 
 impl App {
     #[cfg(feature = "model")]
@@ -127,9 +127,9 @@ impl App {
         {
             let _ = crate::bound_dispatch::drain_control_invocations(self.root_widget.as_mut());
         }
-        while tilo_ui_base::widget::controls::take_control_invocation(self.root_widget.as_mut()).is_some()
-        {
-        }
+        while tilo_ui_base::widget::controls::take_control_invocation(self.root_widget.as_mut())
+            .is_some()
+        {}
     }
     #[cfg(feature = "model")]
     pub(super) fn capture_history_entry(&mut self) {

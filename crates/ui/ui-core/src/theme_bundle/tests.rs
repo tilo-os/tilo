@@ -1,7 +1,7 @@
 //! Theme bundles: a document and the painter modules it names, loaded, registered and
 //! drawn through the one host; and the Bauhaus theme as shipped.
-use tilo_ui_base::theme::Theme;
 use tilo_ui_base::part_paint::wasm;
+use tilo_ui_base::theme::Theme;
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -11,12 +11,12 @@ use tilo_theme_sdk::wire;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
-use tilo_ui_base::theme_bundle::*;
-use tilo_ui_base::{part_paint::PainterSet, part_paint::PartPainter as _};
-use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::tokens::SurfaceRole;
 use crate::{widget::Button, widget::ButtonRole};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme_bundle::*;
+use tilo_ui_base::tokens::SurfaceRole;
 use tilo_ui_base::widget::Widget as _;
+use tilo_ui_base::{part_paint::PainterSet, part_paint::PartPainter as _};
 
 const BAUHAUS: &str = include_str!("../../../themes/bauhaus/theme.json");
 
@@ -106,10 +106,9 @@ tilo_test_env::scenario! {
 
 #[test]
 fn the_bauhaus_theme_is_legible_and_draws_through_the_host() {
-    assert!(tilo_ui_base::part_paint::register_painter_set(PainterSet::new(
-        "bauhaus",
-        Arc::new(Bauhaus)
-    )));
+    assert!(tilo_ui_base::part_paint::register_painter_set(
+        PainterSet::new("bauhaus", Arc::new(Bauhaus))
+    ));
     let document: tilo_ui_base::theme::ThemeDocument = serde_json::from_str(BAUHAUS).unwrap();
     assert_eq!(document.validate(), Ok(()));
     assert!(document.findings().is_empty(), "{:?}", document.findings());
@@ -183,7 +182,8 @@ fn staging_places_only_the_bundle_files_a_theme_names() {
     // A document naming only built-in sets carries no module, and the one staged before is gone.
     std::fs::write(
         source.path().join(DOCUMENT),
-        serde_json::to_string(&tilo_ui_base::theme::Preset::Dark.document()).expect("the theme writes"),
+        serde_json::to_string(&tilo_ui_base::theme::Preset::Dark.document())
+            .expect("the theme writes"),
     )
     .expect("the document");
     stage(source.path(), dest.path()).expect("the bundle stages again");

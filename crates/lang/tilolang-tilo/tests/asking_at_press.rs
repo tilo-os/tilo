@@ -247,7 +247,9 @@ fn answers(called: &Called) -> Vec<String> {
                 panic!("the shell called only the record's resolve: {call:?}");
             };
             assert_eq!(action.as_str(), "resolve", "{call:?}");
-            let record = target.as_ref().expect("the call names the record it answers");
+            let record = target
+                .as_ref()
+                .expect("the call names the record it answers");
             assert!(
                 tilolang::is_invocation_type(&record.ty),
                 "the call is on an asked record: {call:?}"

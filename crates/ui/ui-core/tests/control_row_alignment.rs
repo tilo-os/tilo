@@ -16,10 +16,14 @@ use std::collections::HashMap;
 
 use tilo_ui::State;
 use tilo_ui::headless::Driver;
+use tilo_ui::widget::toggle_group::Segment;
+use tilo_ui::{
+    widget::Button, widget::Checkbox, widget::Chip, widget::Container, widget::Dropdown,
+    widget::NumberInput, widget::Row, widget::SearchField, widget::TextInput, widget::Toggle,
+    widget::ToggleGroup,
+};
 use tilo_ui_base::presence::PathSegment;
 use tilo_ui_base::theme::Theme;
-use tilo_ui::widget::toggle_group::Segment;
-use tilo_ui::{widget::Button, widget::Checkbox, widget::Chip, widget::Container, widget::Dropdown, widget::NumberInput, widget::Row, widget::SearchField, widget::TextInput, widget::Toggle, widget::ToggleGroup};
 use tilo_ui_base::widget::Widget;
 use vello::kurbo::Rect;
 

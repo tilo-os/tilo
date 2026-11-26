@@ -1,7 +1,7 @@
 use automerge::ReadDoc;
 use automerge::transaction::Transactable;
-use tilo_ui_base::permissions::MemberId;
 use tilo_ui::state::State;
+use tilo_ui_base::permissions::MemberId;
 
 tilo_test_env::scenario! {
     fn undo_is_scoped_by_author_and_brackets_each_action;

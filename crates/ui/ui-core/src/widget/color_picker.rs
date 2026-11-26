@@ -2,21 +2,21 @@
 //! it leaves the widget rect (see `wants_pointer_capture`).
 
 use crate::color_compat::ColorCompat;
+use crate::widget::ButtonRole;
 use tilo_ui_base::i18n::widget_text;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::ButtonRole;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
 #[path = "color_picker_component.rs"]
 mod component;
-use tilo_ui_base::widget::Widget;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use crate::widget::{Button, ButtonFace, ColorSwatch, ColorSwatchFace};
 use crate::widget::{TextInput, TextInputKind};
 pub use component::ColorPickerProps;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
@@ -225,8 +225,9 @@ impl ColorPicker {
     /// Create a colour picker following a colour held as its hex text: `fallback` until the
     /// text names one.
     pub fn from_text_state(state: &tilo_ui_base::LocalState<String>, fallback: Color) -> Self {
-        let (color, binding) =
-            tilo_ui_base::widget::binding::derived(state, move |text| parse_hex(text).unwrap_or(fallback));
+        let (color, binding) = tilo_ui_base::widget::binding::derived(state, move |text| {
+            parse_hex(text).unwrap_or(fallback)
+        });
         let mut picker = Self::new(color);
         picker.local_state = Some(binding);
         picker
@@ -1068,7 +1069,8 @@ impl Widget for ColorPicker {
             return false;
         };
         let mut style = current.clone();
-        style.size.height = Dimension::length(tilo_ui_base::num::f32_of_f64(self.content_height(width)));
+        style.size.height =
+            Dimension::length(tilo_ui_base::num::f32_of_f64(self.content_height(width)));
         if style == *current {
             return false;
         }
@@ -1574,8 +1576,8 @@ fn parse_hex(s: &str) -> Option<Color> {
 mod tests {
     use super::*;
     use crate::testing::dispatch;
-    use tilo_ui_base::theme::Theme;
     use automerge::AutoCommit;
+    use tilo_ui_base::theme::Theme;
 
     fn picker_at(initial: Color, origin: Point) -> ColorPicker {
         let mut p = ColorPicker::new(initial);
@@ -2112,7 +2114,11 @@ mod tests {
     }
 
     fn key(p: &mut ColorPicker, named: NamedKey) {
-        let ev = tilo_ui_base::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
+        let ev = tilo_ui_base::synthetic_input::key_event(
+            Key::Named(named),
+            None,
+            ElementState::Pressed,
+        );
         dispatch(p, &tilo_ui_base::synthetic_input::keyboard_input(ev));
     }
 }

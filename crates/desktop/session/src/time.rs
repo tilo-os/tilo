@@ -149,9 +149,7 @@ impl Synchronised {
 }
 
 impl Served {
-    pub(crate) fn new(
-            wake: &tilo_service::Wake,
-    ) -> Self {
+    pub(crate) fn new(wake: &tilo_service::Wake) -> Self {
         Self {
             published: Time::default(),
             // Asked before the loop: an app reads it beside the time from its first frame.

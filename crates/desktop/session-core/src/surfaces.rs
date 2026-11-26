@@ -11,8 +11,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use ui::device_local_api::SharedApi;
 use tilo_ui_base::host_operation::ResourceOperationStart;
+use ui::device_local_api::SharedApi;
 use ui::tilo_actions::{ActionAddress, Actor, ApiError, ResourceSpec};
 
 /// A picture of a window, as a surface answers with one: the address it is
@@ -196,7 +196,11 @@ pub trait Published {
     /// Perform the accessibility action `action` on `target`, as a client
     /// asked for it: exactly the path of a key or a press on the node.
     /// Whether the node was there to act on.
-    fn a11y_action(&mut self, _target: ui::accesskit::NodeId, _action: &tilo_ui_base::a11y::Action) -> bool {
+    fn a11y_action(
+        &mut self,
+        _target: ui::accesskit::NodeId,
+        _action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         false
     }
 

@@ -1,7 +1,4 @@
 use crate::floating_surface::FloatingSurfaceWidgetExt as _;
-use tilo_ui_base::gpu::RenderContext;
-#[cfg(feature = "native")]
-use tilo_ui_base::platform::resolve_app_id;
 #[cfg(feature = "native")]
 use crate::render_thread::RenderThreadHandle;
 #[cfg(feature = "native")]
@@ -9,12 +6,15 @@ use crate::render_thread::timing::{MainStage, MainStages, record_main_stage};
 #[cfg(feature = "native")]
 use crate::render_thread::{FrameOutcome, RenderRequest};
 #[cfg(feature = "native")]
+use std::sync::{Arc, mpsc};
+use taffy::AvailableSpace;
+use tilo_ui_base::gpu::RenderContext;
+#[cfg(feature = "native")]
+use tilo_ui_base::platform::resolve_app_id;
+#[cfg(feature = "native")]
 use tilo_ui_base::widget::AudiencePresentationWidgetExt as _;
 #[cfg(feature = "native")]
 use tilo_ui_base::widget::FullscreenWidgetExt as _;
-#[cfg(feature = "native")]
-use std::sync::{Arc, mpsc};
-use taffy::AvailableSpace;
 #[cfg(feature = "native")]
 use vello::{Renderer, RendererOptions, peniko::Color};
 use vello::{Scene, kurbo::Affine, kurbo::Point};
@@ -252,22 +252,26 @@ impl From<accesskit_winit::Event> for UserEvent {
         }
     }
 }
-#[cfg(feature = "model")]
-use tilo_ui_base::{collaboration::ActionDirectoryRequest, collaboration::CollabEvent, collaboration::CollabRequest, collaboration::CollaborationManager, collaboration::PresencePayload};
 use crate::focus_navigation::Direction;
+use crate::state::State;
+use crate::time::Duration;
+use crate::time::Instant;
+use taffy::{NodeId, TaffyTree};
 use tilo_ui_base::ime::ImeWindowState;
 #[cfg(feature = "model")]
 use tilo_ui_base::permissions::PermissionContext;
 use tilo_ui_base::presence::PresenceCtx;
 #[cfg(feature = "model")]
 use tilo_ui_base::presence::PresenceKey;
-use crate::state::State;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::time::Duration;
-use crate::time::Instant;
 use tilo_ui_base::widget::Widget;
-use taffy::{NodeId, TaffyTree};
+#[cfg(feature = "model")]
+use tilo_ui_base::{
+    collaboration::ActionDirectoryRequest, collaboration::CollabEvent,
+    collaboration::CollabRequest, collaboration::CollaborationManager,
+    collaboration::PresencePayload,
+};
 use vello::kurbo::Rect as KurboRect;
 
 /// Cached [`crate::process::RunnerDiagnostics::perf_log`] check
@@ -1915,9 +1919,9 @@ impl App {
             let Some(delta_json) = delta.encode() else {
                 continue;
             };
-            self.collaboration
-                .manager
-                .send(tilo_ui_base::collaboration::CollabRequest::PublishSearchIndex { delta_json });
+            self.collaboration.manager.send(
+                tilo_ui_base::collaboration::CollabRequest::PublishSearchIndex { delta_json },
+            );
         }
     }
 
@@ -2032,7 +2036,10 @@ impl App {
     /// the shell-ui channel: the workspace's temperature and the person's
     /// colour. A window the shell never told stays neutral and keeps the
     /// colour it started with. Returns whether the theme changed.
-    pub fn set_window_appearance(&mut self, appearance: tilo_ui_base::theme::WindowAppearance) -> bool {
+    pub fn set_window_appearance(
+        &mut self,
+        appearance: tilo_ui_base::theme::WindowAppearance,
+    ) -> bool {
         if appearance == self.accessibility.window {
             return false;
         }
@@ -2213,8 +2220,15 @@ impl App {
         if let Some(scale) = comforts.ui_scale {
             self.accessibility.ui_scale = scale;
         }
-        self.theme_schedule = Theme::automatic_schedule_from(&tilo_ui_base::settings_source::load())
-            .map(|schedule| (schedule, schedule.is_night(tilo_ui_base::theme::local_moment())));
+        self.theme_schedule =
+            Theme::automatic_schedule_from(&tilo_ui_base::settings_source::load()).map(
+                |schedule| {
+                    (
+                        schedule,
+                        schedule.is_night(tilo_ui_base::theme::local_moment()),
+                    )
+                },
+            );
         let settings = tilo_ui_base::screen_reader::settings();
         self.set_screen_reader_enabled(
             settings.enabled || crate::process::environment().accessibility.screen_reader,
@@ -2358,9 +2372,11 @@ impl App {
                 .focused_node
                 .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
             self.focus_history.stable_metadata = self.focused_node.and_then(|id| {
-                self.inspect_node(id, |widget| tilo_ui_base::widget::undo_points::get_state(widget))
-                    .ok()
-                    .flatten()
+                self.inspect_node(id, |widget| {
+                    tilo_ui_base::widget::undo_points::get_state(widget)
+                })
+                .ok()
+                .flatten()
             });
         }
     }
@@ -2499,9 +2515,11 @@ impl App {
                 None
             } else {
                 self.focused_node.and_then(|id| {
-                    self.inspect_node(id, |widget| tilo_ui_base::widget::undo_points::get_state(widget))
-                        .ok()
-                        .flatten()
+                    self.inspect_node(id, |widget| {
+                        tilo_ui_base::widget::undo_points::get_state(widget)
+                    })
+                    .ok()
+                    .flatten()
                 })
             };
             (idx, state, self.root_widget.take_focus_reset())
@@ -2713,7 +2731,8 @@ impl App {
             };
         }
         self.invalidate_widget_resource_cache();
-        self.window.minimum_width = tilo_ui_base::widget::minimum_window_width(self.root_widget.as_ref());
+        self.window.minimum_width =
+            tilo_ui_base::widget::minimum_window_width(self.root_widget.as_ref());
     }
 
     /// The narrowest the window's layout works at, in logical pixels, as of the last build of its tree
@@ -3203,9 +3222,11 @@ pub(crate) mod control_fixture_tests {
             self.log
                 .borrow_mut()
                 .push(serde_json::from_slice(request.payload).unwrap());
-            Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
+            Ok(Some(
+                tilo_ui_base::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ),
+            ))
         }
     }
 
@@ -3221,10 +3242,15 @@ pub(crate) mod control_fixture_tests {
             domain: &tilo_ui_base::ControlDomain,
             attachment: tilo_ui_base::control_domain::DomainAttachment,
         ) {
-            tilo_ui_base::widget::controls::attach_controls(self.child.as_mut(), domain, attachment);
+            tilo_ui_base::widget::controls::attach_controls(
+                self.child.as_mut(),
+                domain,
+                attachment,
+            );
             if self.output.borrow().is_none() {
-                *self.output.borrow_mut() =
-                    Some(domain.producer(tilo_ui_base::ControlProducerDiscipline::Fifo { limit: 64 }));
+                *self.output.borrow_mut() = Some(
+                    domain.producer(tilo_ui_base::ControlProducerDiscipline::Fifo { limit: 64 }),
+                );
             }
         }
     }

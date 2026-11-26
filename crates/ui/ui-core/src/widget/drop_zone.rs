@@ -13,11 +13,13 @@ use winit::event::WindowEvent;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
 
-use tilo_ui_base::{text_render::ParagraphAlign, text_render::TextRenderer, text_render::TextStyle};
+use crate::widget::Button;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
-use crate::widget::Button;
+use tilo_ui_base::{
+    text_render::ParagraphAlign, text_render::TextRenderer, text_render::TextStyle,
+};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[derive(Clone, Debug)]
@@ -514,7 +516,9 @@ impl tilo_ui_base::widget::controls::ActionControls for DropZone {
     fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         let mut bindings = Vec::new();
         for child in Widget::children(self) {
-            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(child));
+            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(
+                child,
+            ));
         }
         bindings
     }

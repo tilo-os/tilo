@@ -17,8 +17,8 @@ use std::path::PathBuf;
 use tilo_ui::app::driver::Driver;
 use tilo_ui::composition::Composed;
 use tilo_ui::composition::page::{Page, document};
-use tilo_ui_base::icons::Icon;
 use tilo_ui::widget::{Button, Column, IconSize, IconWidget, MenuItem, Row, Text};
+use tilo_ui_base::icons::Icon;
 
 /// The menus, each on its own button: rows with glyphs and without, a long label, a separator, a
 /// destructive row that asks first, one with a shortcut, toggles and a nested menu.

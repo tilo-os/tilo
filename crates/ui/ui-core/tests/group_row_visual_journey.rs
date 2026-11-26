@@ -17,10 +17,13 @@ use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 use crate::support::render::{pixel_hash, write_png};
+use tilo_ui::{
+    widget::AppKind, widget::GroupRow, widget::TabDescriptor, widget::TileContent,
+    widget::WindowGroup, widget::WindowWidth,
+};
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use tilo_ui::{widget::AppKind, widget::GroupRow, widget::TabDescriptor, widget::TileContent, widget::WindowGroup, widget::WindowWidth};
 use tilo_ui_base::widget::Widget;
 
 fn make_group(id: u64, tabs: &[(u64, &str, AppKind)]) -> WindowGroup {
@@ -317,7 +320,11 @@ fn group_row_maximize_and_reorder_paint_visibly() {
                 &taffy,
                 tilo_ui_base::synthetic_input::cursor_moved(grab.x, grab.y),
             );
-            dispatch(&mut row, &taffy, tilo_ui_base::synthetic_input::mouse_press());
+            dispatch(
+                &mut row,
+                &taffy,
+                tilo_ui_base::synthetic_input::mouse_press(),
+            );
             dispatch(
                 &mut row,
                 &taffy,

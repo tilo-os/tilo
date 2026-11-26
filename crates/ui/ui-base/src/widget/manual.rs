@@ -725,4 +725,3 @@ fn set_style(
     tree.set_style(node, style)?;
     Ok(true)
 }
-

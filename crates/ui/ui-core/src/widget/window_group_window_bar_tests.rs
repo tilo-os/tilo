@@ -1,6 +1,6 @@
 use super::*;
-use tilo_ui_base::tokens::TextRole;
 use crate::widget::AppKind;
+use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::TaffyTreeExt;
 
 struct Page {
@@ -540,7 +540,11 @@ impl Widget for ShellApp {
         vec![&mut self.shell]
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         self.shell.update(state, path)
     }
 }
@@ -988,7 +992,11 @@ impl tilo_ui_base::widget::Decorator for MenuApp {
         &mut self.content
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.heard
             .borrow_mut()
             .extend(crate::window_toolbar::take_events());

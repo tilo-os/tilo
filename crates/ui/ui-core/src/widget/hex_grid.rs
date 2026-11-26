@@ -11,11 +11,11 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use crate::widget::scrollbar::{PressOutcome, Scrollbar};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::ScrollMetrics;
-use crate::widget::scrollbar::{PressOutcome, Scrollbar};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[path = "hex_grid/hex_grid_component.rs"]

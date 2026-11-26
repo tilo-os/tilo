@@ -1,11 +1,14 @@
 //! [`DisclosureRow`] as a described component.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartViews, component::Person, component::Value};
+use crate::widget::SignalLevel;
+use crate::widget::arrange::{Arranged, FlexLayout, Part, Stack};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::tokens::Rhythm;
-use crate::widget::arrange::{Arranged, FlexLayout, Part, Stack};
-use crate::widget::SignalLevel;
 use tilo_ui_base::widget::Element;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PartViews,
+    component::Person, component::Value,
+};
 
 use super::{DisclosureRow, Leading};
 

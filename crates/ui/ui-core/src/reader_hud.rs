@@ -10,11 +10,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::Color;
 
+use crate::widget::color_swatch::ColorSwatchFace;
+use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize, floating_surface};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::widget::color_swatch::ColorSwatchFace;
-use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize, floating_surface};
 
 /// The swatch index in [`HudAction::Highlight`] indexes into the `swatches` slice passed to
 /// [`SelectionHud::draw`]; the caller maps it back to its own colour model.

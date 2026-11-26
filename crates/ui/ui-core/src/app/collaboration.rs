@@ -110,8 +110,10 @@ impl App {
             -> Result<crate::application::AppComponent, crate::launch::LaunchError>,
         launched: bool,
     ) -> Result<Self, crate::launch::LaunchError> {
-        use tilo_ui_base::{collaboration::native_initial, collaboration::native_initial::NativeConstruction};
         use crate::launch::{LaunchError, LaunchRecovery};
+        use tilo_ui_base::{
+            collaboration::native_initial, collaboration::native_initial::NativeConstruction,
+        };
         let scope = crate::wake::WakeScope::new();
         let _entry = scope.enter();
         let construction = NativeConstruction::enter_component(collaboration, scope)
@@ -297,7 +299,10 @@ impl App {
         workspace: tilo_ui_base::presence::PresenceKey,
         status: Option<&collab_types::presence::LiveStatus>,
     ) -> bool {
-        if !matches!(workspace, tilo_ui_base::presence::PresenceKey::Workspace { .. }) {
+        if !matches!(
+            workspace,
+            tilo_ui_base::presence::PresenceKey::Workspace { .. }
+        ) {
             return false;
         }
         let (text, automatic) = status.map_or_else(
@@ -435,8 +440,9 @@ impl App {
             .ok()
             .flatten()
         });
-        let draft = focused
-            .or_else(|| tilo_ui_base::presence::capability::composing_draft(self.root_widget.as_ref()));
+        let draft = focused.or_else(|| {
+            tilo_ui_base::presence::capability::composing_draft(self.root_widget.as_ref())
+        });
         if let Some((key, payload)) = self.presence.composing.look(draft, crate::time::now()) {
             self.broadcast_presence(key, payload);
         }
@@ -445,7 +451,8 @@ impl App {
     /// Unlike focus presence, this is polled on the root regardless of
     /// focus.
     fn broadcast_location_presence(&mut self) {
-        let current = tilo_ui_base::presence::capability::presence_payload(self.root_widget.as_ref());
+        let current =
+            tilo_ui_base::presence::capability::presence_payload(self.root_widget.as_ref());
         if current != self.presence.last_location {
             if let Some((key, payload)) = current.clone() {
                 self.broadcast_presence(key, payload);
@@ -826,8 +833,7 @@ impl App {
     fn collab_event_updates_app_presentation(event: &CollabEvent) -> bool {
         !matches!(
             event,
-            CollabEvent::NativeMediaCommandResult { .. }
-                | CollabEvent::WorkspaceControl { .. }
+            CollabEvent::NativeMediaCommandResult { .. } | CollabEvent::WorkspaceControl { .. }
         )
     }
     fn apply_collab_presence_event(&mut self, event: CollabEvent) {
@@ -1097,10 +1103,12 @@ impl App {
         if self
             .collaboration
             .manager
-            .try_send(tilo_ui_base::collaboration::CollabRequest::ResourceCommand {
-                request_id,
-                command,
-            })
+            .try_send(
+                tilo_ui_base::collaboration::CollabRequest::ResourceCommand {
+                    request_id,
+                    command,
+                },
+            )
             .is_ok()
         {
             self.collaboration.members_request = Some(request_id);

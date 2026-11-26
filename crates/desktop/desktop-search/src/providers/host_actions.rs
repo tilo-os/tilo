@@ -131,7 +131,10 @@ impl HostActions {
             subtitle: crate::availability::name_for(&row.app_id).map(str::to_owned),
             facts: Vec::new(),
             score,
-            icon: action.icon.as_deref().and_then(tilo_ui_base::icons::Icon::from_name),
+            icon: action
+                .icon
+                .as_deref()
+                .and_then(tilo_ui_base::icons::Icon::from_name),
             target: Target::Invoke(Box::new(target)),
         })
     }

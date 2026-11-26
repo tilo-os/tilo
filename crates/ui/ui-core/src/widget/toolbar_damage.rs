@@ -8,8 +8,8 @@ use vello::kurbo::{Affine, Rect, Vec2};
 use vello::peniko::Color;
 
 use super::{Target, Toolbar, ToolbarItem};
-use tilo_ui_base::{scroll_copy::Piece, scroll_copy::Showing, scroll_copy::Since};
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{scroll_copy::Piece, scroll_copy::Showing, scroll_copy::Since};
 
 pub(super) type BarShown = Showing<BarLook>;
 

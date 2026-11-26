@@ -589,7 +589,9 @@ fn a_resize_across_the_threshold_lands_in_the_layout_its_rect_asks_for() {
     let docked = geometry(&h);
     assert_eq!(docked.sidebar, SidebarPlacement::Docked);
     let point = docked.content_column.center();
-    h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(point.x, point.y));
+    h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(
+        point.x, point.y,
+    ));
     h.dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_press());
     assert!(geometry(&h).content_column.x0 > 0.0);
 
@@ -624,7 +626,9 @@ fn under_reduced_motion_a_resize_switched_layout_stands_at_once() {
     let mut h = harness(shell, 1280, 700, theme);
     settle(&mut h, 1280, 700);
     let point = geometry(&h).content_column.center();
-    h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(point.x, point.y));
+    h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(
+        point.x, point.y,
+    ));
     h.dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_press());
     h.relayout_at((400, 700)).expect("narrow");
     let shell = h.root::<NavShell>();
@@ -855,7 +859,9 @@ fn an_open_drawer_floats_over_the_content_without_a_scrim() {
 
     let seen = content_events.events();
     let point = Point::new(g.sidebar_column.x1 + 40.0, 300.0);
-    h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(point.x, point.y));
+    h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(
+        point.x, point.y,
+    ));
     let handled = h.dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_press());
     assert!(handled);
     assert!(!h.root::<NavShell>().is_sidebar_open());
@@ -967,8 +973,10 @@ fn escape_pops_the_apps_page_stack() {
         h.root::<NavShell>().can_go_back(),
         "the page has a way back"
     );
-    let esc =
-        tilo_ui_base::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+    let esc = tilo_ui_base::synthetic_input::key_input(
+        &Key::Named(NamedKey::Escape),
+        ElementState::Pressed,
+    );
     assert!(h.dispatch_to_root(&esc), "Escape is the way back");
     settle(&mut h, 1280, 800);
     assert!(!can.get(), "the app's page stack popped");
@@ -1038,11 +1046,16 @@ fn a_toggle_that_lands_at_once_reaches_the_screen() {
     let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
     h.root_mut::<NavShell>()
-        .set_platform_conventions(PlatformConventions::new(tilo_ui_base::platform::Platform::Linux));
+        .set_platform_conventions(PlatformConventions::new(
+            tilo_ui_base::platform::Platform::Linux,
+        ));
     settle(&mut h, 1280, 800);
     let open = geometry(&h).sidebar_column.width();
     assert!(open > 0.0);
-    let key = tilo_ui_base::synthetic_input::key_input(&Key::Character("L".into()), ElementState::Pressed);
+    let key = tilo_ui_base::synthetic_input::key_input(
+        &Key::Character("L".into()),
+        ElementState::Pressed,
+    );
     let modifiers = winit::event::Modifiers::from(
         winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
     );
@@ -1741,7 +1754,9 @@ fn narrowing_keeps_the_explicit_or_last_interacted_content_pane() {
         assert!(geometry(&h).overview_column.width() > 0.0);
         if clicked {
             let point = geometry(&h).overview_column.center();
-            h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(point.x, point.y));
+            h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(
+                point.x, point.y,
+            ));
             h.dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_press());
         } else {
             h.root_mut::<NavShell>().show(NavPane::Overview);
@@ -1766,7 +1781,9 @@ fn narrowing_keeps_the_list_an_app_showed_and_its_actions_answer() {
     let list = geometry(&h).overview_column;
     assert!(list.width() > 0.0 && list.x0 >= 0.0, "{list:?}");
     let point = list.center();
-    h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(point.x, point.y));
+    h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(
+        point.x, point.y,
+    ));
     h.dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_press());
     h.dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_release());
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
@@ -2148,7 +2165,10 @@ impl tilo_ui_base::widget::Decorator for ResumableContent {
         }
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
         if request.wants::<dyn tilo_ui_base::widget::Continuable>() {
             request.provide::<dyn tilo_ui_base::widget::Continuable>(self);
         }

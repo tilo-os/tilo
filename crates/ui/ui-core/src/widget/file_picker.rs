@@ -19,11 +19,11 @@ pub mod semantic;
 use places::default_places;
 use reading::{Kind, Real};
 
-use tilo_ui_base::widget::ModelPath;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::widget::ModelPath;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -31,24 +31,26 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use tilo_ui_base::{icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX, icons::draw_icon, icons::icon_for_path};
+use tilo_ui_base::{
+    icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX, icons::draw_icon, icons::icon_for_path,
+};
 
-use tilo_ui_base::selection::SelectionModel;
-use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::TextRole;
 use crate::widget::ButtonRole;
-use tilo_ui_base::widget::DrawChild;
-use tilo_ui_base::widget::TaffyTreeExt;
 use crate::widget::file_table::{
     FileColumn, FileRow, FileTable, FileTableInputs, FileTableMetrics, NameCell,
     paint_icon_and_name,
 };
 use crate::{widget::Breadcrumb, widget::SearchField, widget::TextInput};
-use tilo_ui_base::widget::Widget;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::Arc;
+use tilo_ui_base::selection::SelectionModel;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 /// Token-derived sizes the picker lays out with. Resolved from the theme in
 /// `build_layout` and refreshed at paint, cached because
@@ -3129,8 +3131,10 @@ impl FilePicker {
             Some(text_w),
             &heading_style,
         );
-        let body =
-            tilo_ui_base::i18n::widget_format("widget-filepicker-replace-body", &[("name", name.into())]);
+        let body = tilo_ui_base::i18n::widget_format(
+            "widget-filepicker-replace-body",
+            &[("name", name.into())],
+        );
         text_renderer.draw_style(
             scene,
             &body,
@@ -3173,10 +3177,9 @@ impl FilePicker {
                 x + m.app_icon,
                 top + (band + m.app_icon) / 2.0,
             );
-            let drawn = requester
-                .image
-                .as_ref()
-                .is_some_and(|image| tilo_ui_base::icons::draw_app_image(scene, transform, icon, image));
+            let drawn = requester.image.as_ref().is_some_and(|image| {
+                tilo_ui_base::icons::draw_app_image(scene, transform, icon, image)
+            });
             if !drawn {
                 draw_icon(
                     scene,
@@ -3329,7 +3332,10 @@ impl FilePicker {
                 scene.fill(
                     Fill::NonZero,
                     transform,
-                    tilo_ui_base::tokens::Colors::hairline_on(ground, tilo_ui_base::chrome::HAIRLINE_ALPHA),
+                    tilo_ui_base::tokens::Colors::hairline_on(
+                        ground,
+                        tilo_ui_base::chrome::HAIRLINE_ALPHA,
+                    ),
                     None,
                     &shape,
                 );
@@ -3691,7 +3697,11 @@ impl FilePicker {
         }
     }
 
-    fn forward_to_fields(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    fn forward_to_fields(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
         let mut handled = false;
         let mut inner = tilo_ui_base::widget::EventCtx {
             handled: &mut handled,
@@ -3728,8 +3738,10 @@ impl FilePicker {
             self.hover_place = new_place;
             *ctx.handled = true;
         }
-        let moved =
-            tilo_ui_base::synthetic_input::cursor_moved(p.x * ctx.scale_factor, p.y * ctx.scale_factor);
+        let moved = tilo_ui_base::synthetic_input::cursor_moved(
+            p.x * ctx.scale_factor,
+            p.y * ctx.scale_factor,
+        );
         let _ = self.table.handle_event(&moved, ctx);
         if self.location.is_none() {
             self.crumbs.handle_event(&moved, ctx);

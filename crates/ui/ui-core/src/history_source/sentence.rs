@@ -6,8 +6,8 @@ use tilo_actions::ActionContext;
 use tilo_actions::remote::workspace_activity as wire;
 use tilo_history::{FluentArgs, Messages, Reader};
 
-use tilo_ui_base::i18n::I18nManager;
 use crate::widget::history::{AuthorRelation, HistoryAuthor};
+use tilo_ui_base::i18n::I18nManager;
 
 /// The catalogues installed on this thread, which include the app's own.
 ///
@@ -198,7 +198,10 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
     let mut parts = Vec::with_capacity(6);
     match writer {
         collab_types::history::authors::AttributedWriter::Agent { .. } => {
-            parts.push(tilo_ui_base::i18n::widget_format("history-writer-agent", &[]));
+            parts.push(tilo_ui_base::i18n::widget_format(
+                "history-writer-agent",
+                &[],
+            ));
             // The agent itself when it is the author, then the session's own title.
             if author.relation == AuthorRelation::Software {
                 parts.push(author.name.clone());
@@ -214,7 +217,10 @@ pub fn attribution_hover(author: &HistoryAuthor) -> Option<String> {
             }
         }
         collab_types::history::authors::AttributedWriter::Program(_) => {
-            parts.push(tilo_ui_base::i18n::widget_format("history-writer-program", &[]));
+            parts.push(tilo_ui_base::i18n::widget_format(
+                "history-writer-program",
+                &[],
+            ));
             if !label.trim().is_empty() {
                 parts.push(label.to_owned());
             }
@@ -240,11 +246,17 @@ pub(crate) fn acted_for(author: &HistoryAuthor) -> Option<String> {
         return None;
     }
     if author.for_reader {
-        return Some(tilo_ui_base::i18n::widget_format("history-acted-for-you", &[]));
+        return Some(tilo_ui_base::i18n::widget_format(
+            "history-acted-for-you",
+            &[],
+        ));
     }
     let person = author.attribution.as_ref()?.on_behalf_of_name.as_deref()?;
     (!person.trim().is_empty() && person.trim() != author.name.trim()).then(|| {
-        tilo_ui_base::i18n::widget_format("history-acted-for", &[("person", person.to_owned().into())])
+        tilo_ui_base::i18n::widget_format(
+            "history-acted-for",
+            &[("person", person.to_owned().into())],
+        )
     })
 }
 
@@ -464,10 +476,10 @@ impl tilo_history::Labels for ThreadLabels {
 
 #[cfg(test)]
 mod tests {
-    use tilo_ui_base::I18nManager;
     use tilo_actions::{
         ActionContext, ActionKey, ActionResource, Did, EditOp, FieldEdit, PathStep, Scalar,
     };
+    use tilo_ui_base::I18nManager;
 
     /// A step that edits `title` of a workbook, with the value it set (`new`)
     /// when the step carried one.

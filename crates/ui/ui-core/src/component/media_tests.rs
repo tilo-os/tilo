@@ -7,15 +7,20 @@
     reason = "in a test these are the assertion"
 )]
 
-use tilo_ui_base::component::testing::*;
-use tilo_ui_base::component::*;
-use tilo_ui_base::{component::Component, component::Described, component::PropType};
 use crate::headless::Driver;
 use crate::testing::harness;
-use tilo_ui_base::theme::Theme;
-use crate::{widget::CodeEditor, widget::CodeEditorProps, widget::DescribedCards, widget::DropZone, widget::DropZoneProps, widget::Image, widget::ImageProps, widget::MediaCardProps, widget::MediaGrid, widget::MediaGridProps, widget::PagePreview, widget::PagePreviewProps, widget::QrProps, widget::QrWidget};
-use tilo_ui_base::widget::Widget;
+use crate::{
+    widget::CodeEditor, widget::CodeEditorProps, widget::DescribedCards, widget::DropZone,
+    widget::DropZoneProps, widget::Image, widget::ImageProps, widget::MediaCardProps,
+    widget::MediaGrid, widget::MediaGridProps, widget::PagePreview, widget::PagePreviewProps,
+    widget::QrProps, widget::QrWidget,
+};
 use std::sync::Arc;
+use tilo_ui_base::component::testing::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{component::Component, component::Described, component::PropType};
 
 fn picture(src: &str) -> Value {
     Value::Picture(tilo_ui_graph::component::Picture {

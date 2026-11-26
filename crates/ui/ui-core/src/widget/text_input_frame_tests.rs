@@ -8,9 +8,12 @@ use super::drive;
 use super::mods;
 use super::suggesting_field;
 use super::x_for_byte;
-use tilo_ui_base::{synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::named_key};
 use crate::testing::dispatch;
 use tilo_ui_base::text_edit::SUGGESTION_SETTLE;
+use tilo_ui_base::{
+    synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press,
+    synthetic_input::named_key,
+};
 
 tilo_test_env::scenario! {
     fn a_field_shapes_measures_and_lays_out_its_text;

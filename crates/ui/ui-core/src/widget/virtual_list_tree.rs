@@ -14,11 +14,11 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::{ListKey, VirtualRows};
 use super::{RowGroup, RowStance};
-use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
 
-pub const TREE_INDENT: f64 =
-    (tilo_ui_base::tokens::Metrics::BASE.icon_sm + tilo_ui_base::tokens::Spacing::BASE.rhythm.related) as f64;
+pub const TREE_INDENT: f64 = (tilo_ui_base::tokens::Metrics::BASE.icon_sm
+    + tilo_ui_base::tokens::Spacing::BASE.rhythm.related) as f64;
 const TREE_DEPTH_GUARD: u32 = 64;
 
 #[derive(Clone, Copy)]
@@ -365,10 +365,12 @@ impl VirtualRows {
             .mounted
             .iter()
             .find(|row| row.index == index && row.state == super::MountedRowState::Ready)?;
-        tilo_ui_base::widget::capability::capability::<dyn super::RowActionRects>(row.widget.as_ref())?
-            .row_action_rects()
-            .get(action)
-            .copied()
+        tilo_ui_base::widget::capability::capability::<dyn super::RowActionRects>(
+            row.widget.as_ref(),
+        )?
+        .row_action_rects()
+        .get(action)
+        .copied()
     }
 
     pub fn fold_row(&mut self, key: &ListKey, folded: bool) -> bool {

@@ -1,17 +1,17 @@
 #[cfg(feature = "model")]
 use tilo_ui_base::permissions::PermissionScope;
-use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 #[path = "slider_component.rs"]
 mod component;
-use tilo_ui_base::widget::TaffyTreeExt;
-use tilo_ui_base::widget::Widget;
-use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
-use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingMetadata};
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 pub use component::SliderProps;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingMetadata};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -290,7 +290,10 @@ impl Slider {
 
     fn effective_motion(&self) -> tilo_ui_base::tokens::EffectiveMotion {
         self.motion.unwrap_or_else(|| {
-            tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), false)
+            tilo_ui_base::tokens::EffectiveMotion::new(
+                tilo_ui_base::tokens::Motion::default(),
+                false,
+            )
         })
     }
 
@@ -419,10 +422,11 @@ impl Slider {
             return nearest;
         }
         match self.step {
-            Some(step) => {
-                tilo_ui_base::num::snap_decimal(min + ((value - min) / step).round() * step, &[min, step])
-                    .clamp(min, max)
-            }
+            Some(step) => tilo_ui_base::num::snap_decimal(
+                min + ((value - min) / step).round() * step,
+                &[min, step],
+            )
+            .clamp(min, max),
             None => value,
         }
     }
@@ -757,7 +761,9 @@ impl Slider {
                     tilo_ui_base::widget::input_provenance::Input::Starting
                 };
                 let value = self.value;
-                let _ = tilo_ui_base::widget::input_provenance::with_input(input, || action.emit(value));
+                let _ = tilo_ui_base::widget::input_provenance::with_input(input, || {
+                    action.emit(value)
+                });
             } else if let Some(binding) = self
                 .binding
                 .as_mut()
@@ -943,7 +949,10 @@ impl Slider {
                 ),
                 (
                     knob_radius + 2.0,
-                    tilo_ui_base::tokens::colors::Colors::hairline_on(unfilled, tilo_ui_base::chrome::GLOW_ALPHA),
+                    tilo_ui_base::tokens::colors::Colors::hairline_on(
+                        unfilled,
+                        tilo_ui_base::chrome::GLOW_ALPHA,
+                    ),
                 ),
             ] {
                 scene.stroke(
@@ -1278,7 +1287,13 @@ impl Widget for Slider {
         }
         tilo_ui_base::widget::draw_over(
             self,
-            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
     }
 
@@ -1345,7 +1360,11 @@ impl Widget for Slider {
                 if *element_state == ElementState::Pressed
                     && self.hit_band().contains(self.last_cursor)
                 {
-                    self.press_at(self.last_cursor, tilo_ui_base::tokens::MotionSource::Pointer, ctx);
+                    self.press_at(
+                        self.last_cursor,
+                        tilo_ui_base::tokens::MotionSource::Pointer,
+                        ctx,
+                    );
                 } else if *element_state == ElementState::Released
                     && self.is_dragging
                     && !self.touch.is_active()
@@ -2317,7 +2336,10 @@ mod tests {
             present(&mut s, &theme);
             Widget::set_focus(&mut s, true);
             tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Keyboard);
-            dispatch(&mut s, &tilo_ui_base::synthetic_input::named_key(NamedKey::End));
+            dispatch(
+                &mut s,
+                &tilo_ui_base::synthetic_input::named_key(NamedKey::End),
+            );
             assert_eq!(s.value, 1.0);
             present(&mut s, &theme);
             assert_eq!(s.thumb.get(t0), 1.0, "a key lands");
@@ -2342,17 +2364,19 @@ mod tests {
     #[test]
     fn a_drag_goes_on_through_a_view_that_rebuilds_on_every_value() {
         use super::Slider;
-        use tilo_ui_base::widget::Widget;
         use std::cell::Cell;
         use std::rc::Rc;
+        use tilo_ui_base::widget::Widget;
         use winit::event::TouchPhase::{Ended, Moved, Started};
 
         fn built(level: &Rc<Cell<f64>>, rebuilt: &Rc<Cell<bool>>) -> Slider {
             let (level, rebuilt) = (Rc::clone(level), Rc::clone(rebuilt));
-            Slider::from_state(&tilo_ui_base::LocalState::new(level.get())).on_change(move |value| {
-                level.set(value);
-                rebuilt.set(true);
-            })
+            Slider::from_state(&tilo_ui_base::LocalState::new(level.get())).on_change(
+                move |value| {
+                    level.set(value);
+                    rebuilt.set(true);
+                },
+            )
         }
         fn view(
             d: &mut crate::app::driver::Driver,

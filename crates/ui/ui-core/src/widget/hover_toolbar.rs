@@ -9,11 +9,11 @@ use winit::event::WindowEvent;
 
 use tilo_ui_base::{motion::Presence, motion::Transient};
 
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{tokens::MotionSource, tokens::Rhythm};
-use tilo_ui_base::widget::DrawChild;
 use crate::widget::arrange::{Align, At, Layers, Row, Stack};
 use crate::widget::context_menu_area::focus_within;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{tokens::MotionSource, tokens::Rhythm};
 use tilo_ui_base::{widget::Decorator, widget::Element, widget::EventCtx, widget::Widget};
 
 /// Where a row's controls stand.
@@ -206,7 +206,10 @@ impl HoverToolbar {
         let want = self.hovered || self.focused;
         let now = tilo_ui_base::motion::frame_now();
         if want != self.presence.is_open() {
-            let motion = theme.map_or_else(tilo_ui_base::tokens::EffectiveMotion::default, Theme::motion);
+            let motion = theme.map_or_else(
+                tilo_ui_base::tokens::EffectiveMotion::default,
+                Theme::motion,
+            );
             let source = if self.hovered {
                 MotionSource::Pointer
             } else {
@@ -269,7 +272,8 @@ impl Decorator for HoverToolbar {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.presence.is_moving(tilo_ui_base::motion::frame_now()) || self.layers.needs_animation_frame()
+        self.presence.is_moving(tilo_ui_base::motion::frame_now())
+            || self.layers.needs_animation_frame()
     }
 
     fn set_interaction_environment(

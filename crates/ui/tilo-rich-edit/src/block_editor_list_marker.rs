@@ -5,9 +5,9 @@ use std::sync::Arc;
 use vello::kurbo::{Circle, Point, Rect};
 
 use crate::rich_text_line::RichTextLine;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextScaling, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextScaling, text_render::TextStyle};
 
 use super::CHECKBOX_SIZE_PX;
 

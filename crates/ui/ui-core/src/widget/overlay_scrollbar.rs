@@ -9,10 +9,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
 
-use tilo_ui_base::widget::ScrollMetrics;
 use super::scrollbar::{BarFade, PressOutcome, Scrollbar, thumb_color};
 use crate::color_compat::ColorCompat;
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::ScrollMetrics;
 
 /// A vertical overlay scroll bar.
 #[derive(Debug)]

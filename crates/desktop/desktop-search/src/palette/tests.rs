@@ -1161,8 +1161,8 @@ fn bound_keys(action: ShortcutAction) -> (String, String) {
         .get(&action)
         .unwrap_or_else(|| panic!("{action:?} is bound"))
         .clone();
-    let painted =
-        tilo_ui_base::keycaps::active().chord(chord.modifiers.iter().map(String::as_str), &chord.key);
+    let painted = tilo_ui_base::keycaps::active()
+        .chord(chord.modifiers.iter().map(String::as_str), &chord.key);
     (chord.display(), painted)
 }
 

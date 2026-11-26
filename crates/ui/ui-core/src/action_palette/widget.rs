@@ -4,8 +4,8 @@ use super::{
     ActionPalette, HashMap, ModelPath, NodeId, Point, Rect, Size, Style, TaffyTree, Theme, Widget,
     WindowEvent,
 };
-use tilo_ui_base::i18n::widget_text;
 use crate::widget::SearchField;
+use tilo_ui_base::i18n::widget_text;
 
 /// What names the palette's field and what its description adds, whichever rows the palette is over: a
 /// step collecting an action's argument is asked in the action words, which a description would only
@@ -124,7 +124,10 @@ impl Widget for ActionPalette {
     fn is_layout_dirty(&self) -> bool {
         !self.hosts_rows()
     }
-    fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
+    fn set_platform_conventions(
+        &mut self,
+        conventions: tilo_ui_base::platform::PlatformConventions,
+    ) {
         if self.hosts_rows() {
             self.set_host_platform(conventions);
         }

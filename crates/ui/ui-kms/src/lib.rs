@@ -22,9 +22,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use ui::time::Instant;
 
 use rustix::event::{EventfdFlags, PollFd, PollFlags};
-use ui::app::{AppSurface, SurfaceDamage};
-use ui::App;
 use tilo_ui_base::{InputDevice as Device, InteractionEnvironment};
+use ui::App;
+use ui::app::{AppSurface, SurfaceDamage};
 use winit::event::TouchPhase;
 
 pub use display::{Display, DisplayError};

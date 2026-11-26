@@ -1,8 +1,11 @@
 //! [`Toolbar`] and its parts as described components.
 
-use tilo_ui_base::{component::Accepts, component::Component, component::Described, component::Event, component::PartItem, component::Source};
-use tilo_ui_base::icons::Icon;
 use crate::widget::MenuItemProps;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{
+    component::Accepts, component::Component, component::Described, component::Event,
+    component::PartItem, component::Source,
+};
 
 use super::{Orientation, Toolbar, ToolbarItem};
 
@@ -108,8 +111,7 @@ impl PartItem for ToolbarPart {
         )
     }
 
-    fn read_all(
-        source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
+    fn read_all(source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
         let kinds = source.part_kinds(part);
         let mut parts = Vec::with_capacity(kinds.len());
         let mut index = 0usize;

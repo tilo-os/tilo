@@ -59,7 +59,10 @@ pub(crate) fn right_click(app: &mut impl Driven, (x, y): (f64, f64)) {
     let harness = app.harness();
     harness.send(&tilo_ui_base::synthetic_input::cursor_moved(x, y));
     for state in [ElementState::Pressed, ElementState::Released] {
-        harness.send(&tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Right));
+        harness.send(&tilo_ui_base::synthetic_input::mouse_input(
+            state,
+            MouseButton::Right,
+        ));
     }
     harness.relayout();
 }
@@ -141,7 +144,10 @@ pub(crate) fn rows(app: &mut impl Driven) -> Vec<(String, [f64; 4], bool)> {
 /// Chooses the sidebar's place `label`, as a person does: a row a change takes out of the
 /// place it stood in is read where it went.
 pub(crate) fn choose(app: &mut impl Driven, label: &str) {
-    fn place<'a>(node: &'a tilo_ui_base::a11y::AccessNode, label: &str) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
+    fn place<'a>(
+        node: &'a tilo_ui_base::a11y::AccessNode,
+        label: &str,
+    ) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
         if node.role == tilo_ui_base::a11y::Role::TreeItem && node.answers_to(label) {
             return Some(node);
         }

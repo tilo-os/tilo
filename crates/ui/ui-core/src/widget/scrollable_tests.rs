@@ -2,15 +2,15 @@
 //! frames it asks for.
 
 use super::*;
-use tilo_ui_base::presence::PresenceCtx;
 use crate::testing::TestLeaf;
 use crate::testing::{Dispatch, dispatch};
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::widget::TaffyTreeExt;
-use tilo_ui_base::{widget::Element, widget::Widget};
 use std::cell::Cell;
 use std::rc::Rc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{widget::Element, widget::Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
@@ -882,9 +882,9 @@ tilo_test_env::scenario! {
 
 #[test]
 fn field_validation_focus_reveal_fits_context_or_prioritises_protected_input() {
+    use crate::State;
     use crate::app::driver::Driver;
     use crate::widget::{Field, TextInput, TextInputKind};
-    use crate::State;
     use tilo_ui_base::LocalState;
 
     fn named<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
@@ -1367,8 +1367,8 @@ fn persistent_overflow_bar_paints_before_input_and_after_idle_without_ticks() {
 #[test]
 fn a_scroll_that_shows_its_bar_paints_it_while_it_overflows_without_input() {
     use crate::app::driver::Driver;
-    use tilo_ui_base::component::Described;
     use crate::widget::{Column, Text};
+    use tilo_ui_base::component::Described;
     let theme = Theme::dark();
     for shows_bar in [true, false] {
         let mut content = Column::new().with_no_padding().with_intrinsic_height();

@@ -640,7 +640,9 @@ pub fn actor_label(actor: &tilo_actions::Actor) -> String {
             tilo_ui_base::i18n::I18nManager::window_locale().as_str(),
         ),
         // Someone with no identity in the workspace has no name in it.
-        Actor::Visitor(_) => tilo_ui_base::i18n::I18nManager::lookup_plain("history-author-visitor"),
+        Actor::Visitor(_) => {
+            tilo_ui_base::i18n::I18nManager::lookup_plain("history-author-visitor")
+        }
     }
 }
 

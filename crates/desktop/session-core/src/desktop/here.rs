@@ -624,7 +624,8 @@ impl HereState {
         let colors = self.colors();
         let mut names = HashMap::new();
         for member in self.members.iter().flatten().chain(self.own.as_ref()) {
-            let label = tilo_ui_base::presence::person_label(member_name(member).unwrap_or_default());
+            let label =
+                tilo_ui_base::presence::person_label(member_name(member).unwrap_or_default());
             names.insert(
                 member.publisher.clone(),
                 (label, color_in(&colors, &member.publisher)),
@@ -690,7 +691,9 @@ impl HereState {
                     .and_then(|user| self.person(user))
                     .unwrap_or_else(|| {
                         (
-                            tilo_ui_base::presence::person_label(member_name(member).unwrap_or_default()),
+                            tilo_ui_base::presence::person_label(
+                                member_name(member).unwrap_or_default(),
+                            ),
                             color_in(&colors, &member.publisher),
                         )
                     });
@@ -857,7 +860,10 @@ impl HereState {
             if let Some(person) = self.user_of(&wave.id) {
                 presence.bounce(
                     MemberId::person(person),
-                    tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), false),
+                    tilo_ui_base::tokens::EffectiveMotion::new(
+                        tilo_ui_base::tokens::Motion::default(),
+                        false,
+                    ),
                     now,
                 );
             }

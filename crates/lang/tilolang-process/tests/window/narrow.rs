@@ -3,12 +3,12 @@
 //! window asking for no frames.
 
 use tilo_app_test_host::TestApp;
+use tilo_ui_base::tokens::MotionSource;
+use tilo_ui_base::{motion::Direction, motion::Drill};
 use tilolang_process::window::app::TlApp;
 use ui::headless::{Driver, FrameSchedule};
-use tilo_ui_base::{motion::Direction, motion::Drill};
 use ui::time::testing::with_monotonic_time;
 use ui::time::{Instant, now};
-use tilo_ui_base::tokens::MotionSource;
 
 const NARROW: (u32, u32) = (420, 860);
 

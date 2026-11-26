@@ -17,8 +17,8 @@
 //! ([`Settings::changing_in_place`]).
 
 use settings_store::index;
-use ui::search::system::{ResourceKind, provider_score};
 use tilo_ui_base::text_match::FieldWeight;
+use ui::search::system::{ResourceKind, provider_score};
 
 use crate::model::{Hit, InvokeTarget, Source, Target};
 

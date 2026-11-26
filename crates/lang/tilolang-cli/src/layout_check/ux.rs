@@ -14,9 +14,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use tilo_app_window::{UiNode, Value};
 use tilo_ui_base::a11y::Role;
+use tilo_ui_base::{widget::LayoutInfo, widget::RowLayout};
 use ui::headless::InspectionNode;
 use ui::kurbo::Rect;
-use tilo_ui_base::{widget::LayoutInfo, widget::RowLayout};
 
 use super::audit::{Kind, Problem};
 
@@ -1174,8 +1174,9 @@ mod tests {
 
     fn selected(widget: &str, id: &str, rect: [f64; 4], role: Role) -> InspectionNode {
         let mut node = node(widget, id, rect, Some(role));
-        node.semantics =
-            Some(AccessNode::new(role).with_state(tilo_ui_base::a11y::AccessState::new().selected(true)));
+        node.semantics = Some(
+            AccessNode::new(role).with_state(tilo_ui_base::a11y::AccessState::new().selected(true)),
+        );
         node
     }
 
@@ -1965,8 +1966,9 @@ mod tests {
     /// An item held open where it stands: the row of the list, below its top edge.
     fn opened(id: &str, rect: [f64; 4], role: Role) -> InspectionNode {
         let mut row = node("ListItem", id, rect, Some(role));
-        row.semantics =
-            Some(AccessNode::new(role).with_state(tilo_ui_base::a11y::AccessState::new().expanded(true)));
+        row.semantics = Some(
+            AccessNode::new(role).with_state(tilo_ui_base::a11y::AccessState::new().expanded(true)),
+        );
         row
     }
 

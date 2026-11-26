@@ -18,8 +18,8 @@
 //! the device has, nothing blocked.
 
 use app_catalogue::{CatalogueEntry, Source as Origin};
-use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 use tilo_ui_base::text_match::FieldWeight;
+use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
 use crate::model::{Hit, InvokeTarget, LaunchPlace, Source, Target};
 

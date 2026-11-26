@@ -149,10 +149,7 @@ impl Press {
         }
     }
 
-    pub fn refresh_availability(
-        &self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) -> bool {
+    pub fn refresh_availability(&self, allowed: &HashSet<tilo_actions::ActionAddress>) -> bool {
         let Some(action) = &self.action else {
             return false;
         };

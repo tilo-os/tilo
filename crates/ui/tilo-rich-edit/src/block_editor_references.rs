@@ -13,8 +13,11 @@ use super::{BlockEditor, Pages};
 use crate::block_editor::{ImageInserter, PictureIn};
 use crate::block_editor_body::BodyBinding;
 use crate::slash_menu::SlashHostCommand;
-use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Event, component::Link, component::Value};
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+    component::Link, component::Value,
+};
 use ui::widget::link_popover::PageEntry;
 use ui::widget::marks::{MentionColors, MentionPaint};
 
@@ -966,10 +969,10 @@ mod tests {
     use vello::kurbo::{Affine, Point};
 
     use super::*;
-    use tilo_ui_base::{component::Fired, component::Intent};
     use tilo_ui_base::presence::PresenceCtx;
     use tilo_ui_base::text_render::TextRenderer;
     use tilo_ui_base::widget::Widget as _;
+    use tilo_ui_base::{component::Fired, component::Intent};
 
     const TASK: &str = r#"{"app":"so.tilo.lang.board","id":"tl:so.tilo.lang.board:d/f:t1","kind":"tl.so.tilo.lang.board.Task"}"#;
     const SECRET: &str =

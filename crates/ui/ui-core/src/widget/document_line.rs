@@ -7,11 +7,11 @@ use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
+use crate::time::Instant;
 use tilo_ui_base::richtext::RichSpan;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::text_selection::TextPosition;
 use tilo_ui_base::theme::Theme;
-use crate::time::Instant;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 
 use super::TextInput;
 pub use super::text_input::{SingleLineAttributes, TextAccessibilityState};

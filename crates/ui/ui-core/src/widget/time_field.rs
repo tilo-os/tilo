@@ -4,12 +4,14 @@ use std::rc::Rc;
 
 use jiff::civil::Time;
 
-use tilo_ui_base::icons::Icon;
 use crate::widget::arrange::Stack;
-use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled, widget::binding::derived};
 use crate::widget::date_field::time_in;
 use crate::{widget::Button, widget::ButtonRole, widget::TimePicker};
+use tilo_ui_base::icons::Icon;
 use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
+use tilo_ui_base::{
+    widget::binding::BoxedBinding, widget::binding::Pulled, widget::binding::derived,
+};
 
 #[path = "time_field_component.rs"]
 mod component;

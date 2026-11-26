@@ -15,14 +15,19 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartViews};
-use tilo_ui_base::{fullscreen::FullscreenRequest, fullscreen::FullscreenTarget};
-use tilo_ui_base::{motion::Presence, motion::Transient};
+use crate::{widget::Button, widget::ButtonRole, widget::ControlSize};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::MotionSource;
 use tilo_ui_base::widget::identity::concrete::Decorator;
-use crate::{widget::Button, widget::ButtonRole, widget::ControlSize};
-use tilo_ui_base::{widget::DrawChild, widget::Element, widget::EventCtx, widget::FullscreenProvider, widget::TaffyTreeExt, widget::Widget, widget::layout_rect};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PartViews,
+};
+use tilo_ui_base::{fullscreen::FullscreenRequest, fullscreen::FullscreenTarget};
+use tilo_ui_base::{motion::Presence, motion::Transient};
+use tilo_ui_base::{
+    widget::DrawChild, widget::Element, widget::EventCtx, widget::FullscreenProvider,
+    widget::TaffyTreeExt, widget::Widget, widget::layout_rect,
+};
 
 /// Which screen the window fills while the view is presented.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -202,7 +207,10 @@ impl Decorator for Fullscreen {
         self.body.provide(request);
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
         if request.wants::<dyn FullscreenProvider>() {
             request.provide::<dyn FullscreenProvider>(self);
             return;

@@ -2,11 +2,11 @@
 //! those survive a reorder while their key stays visible.
 
 use crate::time::Instant;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
 use std::ops::Range;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use taffy::style_helpers::percent;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -20,14 +20,21 @@ use std::rc::Rc;
 use tilo_ui_base::arriving::Arrival;
 use tilo_ui_base::collection_transition::ListModelChange;
 
-use tilo_ui_base::{reorder::DropCandidate, reorder::DropPlacement, reorder::DropTarget, reorder::ReorderController, reorder::ReorderDrop};
-use tilo_ui_base::selection::KeySelection;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{virtual_viewport::DragScroller, virtual_viewport::ScrollAlignment, virtual_viewport::SparseAnchor, virtual_viewport::SparseVirtualViewport, virtual_viewport::WheelStep};
-use tilo_ui_base::widget::ScrollMetrics;
+use crate::widget::ArrivingRows;
 use crate::widget::rows::RowStep;
 use crate::widget::scrollbar::{PressOutcome, Scrollbar};
-use crate::widget::ArrivingRows;
+use tilo_ui_base::selection::KeySelection;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::ScrollMetrics;
+use tilo_ui_base::{
+    reorder::DropCandidate, reorder::DropPlacement, reorder::DropTarget,
+    reorder::ReorderController, reorder::ReorderDrop,
+};
+use tilo_ui_base::{
+    virtual_viewport::DragScroller, virtual_viewport::ScrollAlignment,
+    virtual_viewport::SparseAnchor, virtual_viewport::SparseVirtualViewport,
+    virtual_viewport::WheelStep,
+};
 use tilo_ui_base::{widget::Element, widget::TaffyTreeExt, widget::Widget};
 
 #[path = "virtual_list_groups.rs"]
@@ -582,7 +589,8 @@ impl VirtualRows {
             lead: 0.0,
             chevron_column: 0.0,
             disclosure: f64::from(
-                tilo_ui_base::tokens::Metrics::BASE.icon_sm + tilo_ui_base::tokens::Spacing::BASE.rhythm.related,
+                tilo_ui_base::tokens::Metrics::BASE.icon_sm
+                    + tilo_ui_base::tokens::Spacing::BASE.rhythm.related,
             ),
             lift: f64::from(tilo_ui_base::tokens::Spacing::BASE.s2),
             painted_lifts: Vec::new(),
@@ -2742,7 +2750,9 @@ impl Widget for VirtualRows {
         self.scroll
             .momentum
             .give_needs_frame(tilo_ui_base::motion::frame_now())
-            || self.arrivals.needs_redraw(tilo_ui_base::motion::frame_now())
+            || self
+                .arrivals
+                .needs_redraw(tilo_ui_base::motion::frame_now())
             || self.rename_needs_redraw()
             || self.menu_needs_redraw()
             || tilo_ui_base::widget::defaults::needs_redraw(&|visit| self.for_each_child(visit))
@@ -2757,7 +2767,13 @@ impl Widget for VirtualRows {
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         tilo_ui_base::widget::defaults::draw_overlay(
             self.children_mut(),
-            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
         self.paint_menu(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
@@ -2824,11 +2840,13 @@ impl Widget for VirtualRows {
     }
 
     fn layout_info(&self) -> Option<tilo_ui_base::widget::LayoutInfo> {
-        Some(tilo_ui_base::widget::LayoutInfo::List(tilo_ui_base::widget::ListLayout {
-            heads_rows: groups::group_of(&*self.model, 0, self.tail_title.as_deref()).is_some(),
-            lead: tilo_ui_base::num::f32_of_f64(self.viewport.edges().0),
-            pill: self.pill_layout(),
-        }))
+        Some(tilo_ui_base::widget::LayoutInfo::List(
+            tilo_ui_base::widget::ListLayout {
+                heads_rows: groups::group_of(&*self.model, 0, self.tail_title.as_deref()).is_some(),
+                lead: tilo_ui_base::num::f32_of_f64(self.viewport.edges().0),
+                pill: self.pill_layout(),
+            },
+        ))
     }
 
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {

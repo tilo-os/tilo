@@ -181,7 +181,10 @@ fn a_band_with_another_key_arrives_as_the_one_before_leaves() {
         tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         rebuild(&mut d, Some(details("bluetooth")));
         assert!(
-            matches!(band(&d), Some(tilo_ui_base::widget::Disclosing::Band { .. })),
+            matches!(
+                band(&d),
+                Some(tilo_ui_base::widget::Disclosing::Band { .. })
+            ),
             "another section arrives rather than taking the place of the one before"
         );
         assert!(

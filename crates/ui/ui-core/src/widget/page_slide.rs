@@ -101,7 +101,12 @@ impl PageSlide {
     }
 
     /// Draw `page` under `pose`, clipped to `clip`.
-    fn draw_posed(page: &mut Element, pose: Pose, clip: Rect, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
+    fn draw_posed(
+        page: &mut Element,
+        pose: Pose,
+        clip: Rect,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
+    ) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -127,7 +132,8 @@ impl PageSlide {
     /// Where the page it shows is drawn: its box, and past its foot what follows a band on its
     /// way in the page.
     fn shown_rect(&self) -> Rect {
-        let grows = tilo_ui_base::widget::Widget::disclosing(self).map_or(0.0, |moving| moving.reach(0.0));
+        let grows =
+            tilo_ui_base::widget::Widget::disclosing(self).map_or(0.0, |moving| moving.reach(0.0));
         self.rect
             .with_size((self.rect.width(), self.rect.height() + grows))
     }
@@ -261,7 +267,13 @@ impl Decorator for PageSlide {
                     page,
                     pose,
                     if clip.width() > 0.0 { clip } else { *rect },
-                    &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
+                    &mut tilo_ui_base::draw::DrawCtx::new(
+                        scene,
+                        transform,
+                        text,
+                        theme,
+                        env.clone(),
+                    ),
                 );
             }
         } else if self.leaving.take().is_some() {
@@ -335,7 +347,10 @@ impl Drop for PageSlide {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let page = std::mem::replace(&mut self.page, Box::new(tilo_ui_base::widget::Spacer::new()));
+        let page = std::mem::replace(
+            &mut self.page,
+            Box::new(tilo_ui_base::widget::Spacer::new()),
+        );
         tilo_ui_base::motion::keep(
             std::mem::take(&mut self.kept_as),
             Some(self.rect),

@@ -6,29 +6,31 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use tilo_resource::{Invoke, Reader, Resource};
+use tilo_ui_base::i18n::EmbeddedCatalog;
+use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::{
+    permissions::ActionKind, permissions::LivePermissions, permissions::PermissionScope,
+};
 use ui_core::application::{
     AppComponent, ApplicationDefinition, ComponentBehaviour, ComponentFactory, LaunchTarget,
     ProcessContext, RestoreInput,
 };
-use tilo_ui_base::i18n::EmbeddedCatalog;
 use ui_core::launch::LaunchError;
-use tilo_ui_base::permissions::MemberId;
-use tilo_ui_base::{permissions::ActionKind, permissions::LivePermissions, permissions::PermissionScope};
 use ui_core::resource::{DocumentId, ResourceType};
 use ui_core::storage::AppStorage;
 use ui_core::widget::IconDescriptor;
-use tilo_ui_base::widget::Element;
 
 // Launching (live windows, captures, headless drives, test hosts) discovers
 // native presentation and profiles; a browser host prepares components itself.
 #[cfg(not(target_arch = "wasm32"))]
 use {
+    tilo_ui_base::permissions::{PermissionContext, Role},
     ui_core::application::{
         ApplicationOwner, Capture, ComponentRunnerInputs, NativeProcess, PreparedComponentInputs,
     },
     ui_core::headless::Driver,
     ui_core::launch::{LaunchArgs, LaunchSpec},
-    tilo_ui_base::permissions::{PermissionContext, Role},
     ui_core::resource::DocumentCheckout,
 };
 
@@ -1046,7 +1048,8 @@ type WorkspaceArrival =
     tilo_ui_base::arriving::Arriving<(), tilo_ui_base::workspace_sync::WorkspaceUnreachable>;
 
 /// The documents a window's app declared, as the window waits for them.
-type DeclaredArrival = tilo_ui_base::arriving::Arriving<(), tilo_ui_base::workspace_sync::RecordNotHere>;
+type DeclaredArrival =
+    tilo_ui_base::arriving::Arriving<(), tilo_ui_base::workspace_sync::RecordNotHere>;
 
 /// The window's view, once what it waits for arrived: the workspace's holdings and the
 /// documents the app's declarations opened.
@@ -1069,7 +1072,10 @@ fn arrived_content<A: ResourceApp>(
 
 /// Whether the workspace's holdings are still on their way.
 fn workspace_pending(
-    holdings: &tilo_ui_base::arriving::Arriving<(), tilo_ui_base::workspace_sync::WorkspaceUnreachable>,
+    holdings: &tilo_ui_base::arriving::Arriving<
+        (),
+        tilo_ui_base::workspace_sync::WorkspaceUnreachable,
+    >,
 ) -> bool {
     holdings.with(|workspace| workspace.ready().is_none())
 }
@@ -1495,7 +1501,8 @@ fn start_resource(
             .in_private(context.is_private())
             .in_embedded(context.is_embedded())
             .awaiting_workspace(
-                matches!(target, LaunchTarget::PrimaryNew).then(tilo_ui_base::workspace_sync::holdings),
+                matches!(target, LaunchTarget::PrimaryNew)
+                    .then(tilo_ui_base::workspace_sync::holdings),
             ),
     };
     if let Some(file) = &file {
@@ -1639,7 +1646,10 @@ fn document_content(context: &mut ProcessContext) -> Result<(), LaunchError> {
     let link = tilo_ui_base::collaboration::document_content::ContentLink::of_window();
     // The window keeps its content link: another window of the app on this thread
     // reads its own, never this one's queue of wants.
-    tilo_ui_base::collaboration::document_content::keep_link(&context.wake_handle(), Arc::clone(&link));
+    tilo_ui_base::collaboration::document_content::keep_link(
+        &context.wake_handle(),
+        Arc::clone(&link),
+    );
     // Whatever carries the record's content for the process (a browser
     // page's replication) asks for and hands over this window's too, and
     // what it stores is sealed for the members of the record's workspace.

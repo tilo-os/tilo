@@ -33,14 +33,14 @@ use winit::event::{ElementState, KeyEvent, Modifiers, RawKeyEvent, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, NativeKeyCode, PhysicalKey};
 
 use tilo_rich_edit::slash_menu::SlashMenu;
+use tilo_ui::widget::Dropdown;
+use tilo_ui::widget::autocomplete::{Autocomplete, Suggestion};
+use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
 use tilo_ui_base::offscreen::OffscreenRenderer;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use tilo_ui::widget::Dropdown;
 use tilo_ui_base::widget::Widget;
-use tilo_ui::widget::autocomplete::{Autocomplete, Suggestion};
-use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
 
 const CANVAS_W: u32 = 480;
 const CANVAS_H: u32 = 360;

@@ -5,9 +5,12 @@
 )]
 
 use super::*;
-use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release, synthetic_input::named_key};
 use crate::testing::dispatch;
 use automerge::AutoCommit;
+use tilo_ui_base::{
+    synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release,
+    synthetic_input::named_key,
+};
 
 fn delivery() -> Vec<RadioOption> {
     vec![

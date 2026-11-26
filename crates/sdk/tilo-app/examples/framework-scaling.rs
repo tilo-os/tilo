@@ -84,13 +84,13 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use tilo_app::framework::testing::{drive_live_embedded, drive_live_window};
-use tilo_ui_base::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::profiling::observe;
 use tilo_app::time::Instant;
 use tilo_app::winit::dpi::{PhysicalPosition, PhysicalSize};
 use tilo_app::winit::event::{DeviceId, WindowEvent};
 use tilo_app::winit::window::CursorIcon;
+use tilo_ui_base::i18n::EmbeddedCatalog;
 use tilo_ui_base::widget::DrawChild;
 
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
@@ -314,8 +314,11 @@ fn publication(tasks: u32) -> Result<Publication, Box<dyn std::error::Error>> {
         .map(|_| {
             let before = HELD.load(Ordering::Relaxed);
             let start = Instant::now();
-            let published =
-                tilo_ui_base::widget::resources::resources_for(app.harness().root_widget(), None, &doc);
+            let published = tilo_ui_base::widget::resources::resources_for(
+                app.harness().root_widget(),
+                None,
+                &doc,
+            );
             let elapsed = millis(start);
             held = HELD.load(Ordering::Relaxed).saturating_sub(before);
             resources = count(&published);
@@ -499,8 +502,8 @@ fn keys_to_time() -> u32 {
 /// Type into the draft of the live window. A frame runs between press and
 /// release, as on a display: a key is held for longer than a frame lasts.
 fn keystrokes(app: &mut tilo_app::App) -> Result<Keystrokes, String> {
-    use tilo_ui_base::synthetic_input::key_input;
     use tilo_app::winit::event::ElementState;
+    use tilo_ui_base::synthetic_input::key_input;
     let key = tilo_app::winit::keyboard::Key::Character("a".into());
     app.init_layout();
     host_frame(app);
@@ -636,8 +639,8 @@ const PEER_AT: [f32; 2] = [420.0, 360.0];
 )]
 fn scrolling(app: &mut tilo_app::App, step: f64, copying: bool, peer: bool) -> Scrolling {
     use tilo_app::app::{AppSurface, SurfaceDamage};
-    use tilo_ui_base::offscreen::OffscreenRenderer;
     use tilo_app::winit::event::{MouseScrollDelta, TouchPhase};
+    use tilo_ui_base::offscreen::OffscreenRenderer;
     let size = Surface.inner_size();
     let background = app.theme.tokens.colors.surfaces.content;
     let mut damage = if copying {
@@ -833,10 +836,13 @@ fn host_section(
 )]
 fn hosted_scrolling(tile: &mut tilo_app::app::EmbeddedApp, step: f64, copying: bool) -> Scrolling {
     use tilo_app::app::AppSurface as _;
-    use tilo_ui_base::offscreen::OffscreenRenderer;
-    use tilo_ui_base::{scene_parts::DrawBounds, scene_parts::damage, scene_parts::damage_with_copies, scene_parts::present_copies};
-    use tilo_ui_base::widget::Widget as _;
     use tilo_app::winit::event::{MouseScrollDelta, TouchPhase};
+    use tilo_ui_base::offscreen::OffscreenRenderer;
+    use tilo_ui_base::widget::Widget as _;
+    use tilo_ui_base::{
+        scene_parts::DrawBounds, scene_parts::damage, scene_parts::damage_with_copies,
+        scene_parts::present_copies,
+    };
     let size = Surface.inner_size();
     tile.set_accepts_scroll_copies(copying);
     let mut text = tilo_ui_base::text_render::TextRenderer::new();
@@ -846,9 +852,9 @@ fn hosted_scrolling(tile: &mut tilo_app::app::EmbeddedApp, step: f64, copying: b
     let _ = taffy.compute_layout(
         node,
         tilo_app::taffy::Size {
-            width: tilo_app::taffy::AvailableSpace::Definite(tilo_ui_base::num::f32_of_f64(f64::from(
-                size.width,
-            ))),
+            width: tilo_app::taffy::AvailableSpace::Definite(tilo_ui_base::num::f32_of_f64(
+                f64::from(size.width),
+            )),
             height: tilo_app::taffy::AvailableSpace::Definite(tilo_ui_base::num::f32_of_f64(
                 f64::from(size.height),
             )),

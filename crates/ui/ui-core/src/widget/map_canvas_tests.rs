@@ -217,7 +217,8 @@ fn an_answer_grows_out_of_where_it_was_asked() {
     );
     let end = tilo_ui_base::motion::WindowMotion::grown_pose(1.0, rect, from, motion);
     assert!(end.is_rest(), "it rests at its place");
-    let reduced = tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), true);
+    let reduced =
+        tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), true);
     let still = tilo_ui_base::motion::WindowMotion::grown_pose(0.3, rect, from, reduced);
     assert_eq!(
         still.transform,

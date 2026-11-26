@@ -78,6 +78,8 @@ impl NavShell {
             back: self.can_go_back() || self.drawer_open(),
             forward: false,
         };
-        own.or(tilo_ui_base::widget::defaults::nav_availability(self.children()))
+        own.or(tilo_ui_base::widget::defaults::nav_availability(
+            self.children(),
+        ))
     }
 }

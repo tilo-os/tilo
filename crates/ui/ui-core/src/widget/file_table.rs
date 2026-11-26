@@ -16,13 +16,13 @@ use winit::event::WindowEvent;
 
 use tilo_ui_base::{icons::LUCIDE_DEFAULT_STROKE_PX, icons::draw_icon, icons::icon_for_path};
 
+use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable, text_band, type_line_height};
 use tilo_ui_base::selection::SelectionModel;
-use tilo_ui_base::{text_render::TextKind, text_render::TextRenderer};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::widget::Widget;
-use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable, text_band, type_line_height};
+use tilo_ui_base::{text_render::TextKind, text_render::TextRenderer};
 
 /// One row of a file list: a file or a folder.
 pub trait FileRow: 'static {
@@ -731,8 +731,10 @@ impl<R: FileRow> FileTable<R> {
         let Some(table) = self.table.as_mut() else {
             return;
         };
-        let moved =
-            tilo_ui_base::synthetic_input::cursor_moved(at.x * ctx.scale_factor, at.y * ctx.scale_factor);
+        let moved = tilo_ui_base::synthetic_input::cursor_moved(
+            at.x * ctx.scale_factor,
+            at.y * ctx.scale_factor,
+        );
         let mut handled = false;
         let mut focus = None;
         let mut inner = tilo_ui_base::widget::EventCtx {

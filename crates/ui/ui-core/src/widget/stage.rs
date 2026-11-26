@@ -26,12 +26,18 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartItem, component::PartViews, component::Source, component::Value};
+use crate::widget::MenuPart;
+use crate::widget::context_menu::{ContextMenu, MenuItem};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::composition_parts::Parts;
-use crate::widget::context_menu::{ContextMenu, MenuItem};
-use crate::widget::MenuPart;
-use tilo_ui_base::{widget::DrawChild, widget::Element, widget::Manual, widget::MeasureConstraint, widget::Widget, widget::WidgetLayoutError};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PartItem,
+    component::PartViews, component::Source, component::Value,
+};
+use tilo_ui_base::{
+    widget::DrawChild, widget::Element, widget::Manual, widget::MeasureConstraint, widget::Widget,
+    widget::WidgetLayoutError,
+};
 
 /// How close to a place's trailing or bottom edge a press grabs it, in logical pixels: the same
 /// reach a canvas's places keep, so the pips of a slide are as easy to hit as a window's edge.
@@ -168,8 +174,7 @@ impl PartItem for StagePinProps {
         tilo_ui_base::component::Accepts::Component(StagePinProps::NAME.into())
     }
 
-    fn read_all(
-        source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
+    fn read_all(source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
         let mut out = Vec::new();
         let mut failed: Option<String> = None;
         source.components(part, &mut |child| match StagePinProps::from_source(child) {
@@ -774,7 +779,10 @@ impl Stage {
         if menu.items().is_empty() {
             return false;
         }
-        menu.open_at([tilo_ui_base::num::f32_of_f64(at.x), tilo_ui_base::num::f32_of_f64(at.y)]);
+        menu.open_at([
+            tilo_ui_base::num::f32_of_f64(at.x),
+            tilo_ui_base::num::f32_of_f64(at.y),
+        ]);
         self.menu = menu;
         self.menu_pin = Some(index);
         self.dirty = true;
@@ -783,7 +791,11 @@ impl Stage {
 
     /// Route `event` to the open menu. Returns whether it consumed it; a press outside closes
     /// the menu and falls through to the places.
-    fn route_menu(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
+    fn route_menu(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         if !self.menu.is_open() {
             return false;
         }
@@ -1139,7 +1151,11 @@ impl Widget for Stage {
         self.name.as_deref()
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {
             changed |= child.update(state, path);
@@ -1147,7 +1163,11 @@ impl Widget for Stage {
         changed
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for child in &mut self.parts.children {
             child.sync(state, path);
         }
@@ -1398,9 +1418,10 @@ impl Widget for Stage {
         }
         // The stage's own open menu stands above the places, in the window's own pixels.
         if self.menu.is_open() {
-            self.menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-                scene, transform, text, theme, env,
-            ));
+            self.menu
+                .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                    scene, transform, text, theme, env,
+                ));
         }
     }
 
@@ -1798,7 +1819,10 @@ impl Widget for Stage {
         !self.still && !self.pins.is_empty()
     }
 
-    fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
+    fn set_platform_conventions(
+        &mut self,
+        conventions: tilo_ui_base::platform::PlatformConventions,
+    ) {
         self.platform = conventions;
     }
 

@@ -22,7 +22,10 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::Rhythm;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::widget::layout::Styles;
-use tilo_ui_base::{widget::AppModel, widget::Element, widget::ModelPath, widget::StructureChange, widget::TaffyTreeExt, widget::Widget};
+use tilo_ui_base::{
+    widget::AppModel, widget::Element, widget::ModelPath, widget::StructureChange,
+    widget::TaffyTreeExt, widget::Widget,
+};
 use tilo_ui_base::{widget::Length, widget::WidthClass};
 
 /// What a layout reads of the theme: the `rem`, the rhythm gaps and a control's least side,
@@ -1038,9 +1041,10 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
             .rev()
             .filter(|(index, _)| !self.layout.hidden(*index))
             .find(|(_, part)| part.element.get_rect().contains(point))
-            .map_or(tilo_ui_base::interaction::TouchClaim::Pointer, |(_, part)| {
-                part.element.touch_claim(point)
-            })
+            .map_or(
+                tilo_ui_base::interaction::TouchClaim::Pointer,
+                |(_, part)| part.element.touch_claim(point),
+            )
     }
 
     fn handle_event(
@@ -1145,7 +1149,10 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
     /// control answers to the least target the window offers.
     fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
         self.interaction = environment;
-        tilo_ui_base::widget::defaults::set_interaction_environment(self.children_mut(), environment);
+        tilo_ui_base::widget::defaults::set_interaction_environment(
+            self.children_mut(),
+            environment,
+        );
     }
 
     fn take_structure_dirty(&mut self) -> bool {

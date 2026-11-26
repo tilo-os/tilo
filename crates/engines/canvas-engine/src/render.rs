@@ -13,13 +13,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tilo_ui_base::num::f32_of_f64;
 
-use tilo_ui_base::TextRenderer;
 use tilo_ui::vello::Scene;
 use tilo_ui::vello::kurbo::{Affine, BezPath, Cap, Join, PathEl, Point, Rect, Shape as _, Stroke};
 use tilo_ui::vello::peniko::{
     BlendMode, Color, ColorStop, Compose, Extend, Fill, Gradient as PenikoGradient, ImageBrush,
     ImageData, Mix,
 };
+use tilo_ui_base::TextRenderer;
 use tilo_wet_media::{
     Blend, Canvas, ColourField, Engines, FieldKind, Fill as WetFill, Heightfield, LayerPainter,
     Mark as WetMark, Painted, Pigment, Settings, Stroke as WetStroke, StrokePoint as WetPoint,

@@ -344,8 +344,8 @@ impl ResourceApp for RewriterApp {
 /// Select the whole field and run its text action from the context menu,
 /// as the person does; the request the surface takes.
 fn request_shout(app: &mut TestApp<RewriterApp>) -> tilo_app::widget::TextActionRequest {
-    use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_input};
     use tilo_app::winit::event::{ElementState, MouseButton};
+    use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_input};
     let harness = app.harness();
     harness.set_modifiers(&["ctrl".into()]);
     harness.key("a");

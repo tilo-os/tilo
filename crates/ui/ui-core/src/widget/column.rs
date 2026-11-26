@@ -1,15 +1,18 @@
 use super::flow::{Flow, flow_builders, flow_capabilities, flow_widget_methods};
+use taffy::style_helpers::{length, percent};
+use taffy::{NodeId, Style, TaffyTree};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
-use taffy::style_helpers::{length, percent};
-use taffy::{NodeId, Style, TaffyTree};
 
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent layout flags model orthogonal sizing choices"
 )]
-#[tilo_ui_base::component::not_a_component(layout, "the language's `stack` (`column` is its older name)")]
+#[tilo_ui_base::component::not_a_component(
+    layout,
+    "the language's `stack` (`column` is its older name)"
+)]
 pub struct Column {
     flow: Flow,
     extra_left_padding: f32,
@@ -325,9 +328,9 @@ impl tilo_ui_base::widget::controls::ActionControls for Column {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::text_render::TextRenderer;
     use crate::widget::{Container, Row, Text};
     use std::collections::HashMap;
+    use tilo_ui_base::text_render::TextRenderer;
     use vello::Scene;
     use vello::kurbo::{Affine, Point};
     use vello_encoding::DrawTag;

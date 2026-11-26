@@ -1,7 +1,7 @@
 //! Toolkit-owned host for a small app's typed resource/action surface. Apps provide their
 //! retained root, one discoverable resource, and an immediate operation closure.
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::collections::HashMap;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use crate::automerge::{AutoCommit, ObjId};
 use crate::kurbo::Rect;
@@ -10,7 +10,9 @@ use crate::tilo_actions::{
     ActionBinding, ActionBindingError, ActionContract, ActionOutput, ActionParam, ActionSpec,
     EncodedAction, ExecutionMode, OperationKind, ParamType, ResourceSpec, ResultSpec,
 };
-use tilo_ui_base::{widget::ResourceOperation, widget::ResourceOperationStart, widget::TaffyTreeExt, widget::Widget};
+use tilo_ui_base::{
+    widget::ResourceOperation, widget::ResourceOperationStart, widget::TaffyTreeExt, widget::Widget,
+};
 
 pub const OPERATION_TYPE: &str = "tilo.app.operation";
 
@@ -282,7 +284,10 @@ pub fn form(root: Box<dyn Widget>, form: ActionForm) -> Box<dyn Widget> {
 
 type Immediate = Box<dyn FnMut(&[u8]) -> Result<ActionOutput, String>>;
 
-#[tilo_ui_base::component::not_a_component(framework, "hosts a resource's actions for the framework")]
+#[tilo_ui_base::component::not_a_component(
+    framework,
+    "hosts a resource's actions for the framework"
+)]
 pub struct ResourceActionHost {
     root: Box<dyn Widget>,
     resource: ResourceSpec,

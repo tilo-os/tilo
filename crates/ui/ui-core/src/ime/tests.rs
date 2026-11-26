@@ -1,6 +1,6 @@
-use tilo_ui_base::ime::ImeSurroundingText;
-use tilo_ui_base::Widget;
 use crate::widget::TextInput;
+use tilo_ui_base::Widget;
+use tilo_ui_base::ime::ImeSurroundingText;
 
 tilo_test_env::scenario! {
     fn the_keyboard_is_told_the_fields_text_purpose_and_selection;

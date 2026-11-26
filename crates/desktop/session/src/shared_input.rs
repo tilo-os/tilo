@@ -1372,7 +1372,8 @@ fn carried_formats(formats: &[String]) -> Vec<String> {
     formats
         .iter()
         .filter(|format| {
-            !tilo_ui_base::dnd::is_file_mime(format) && format.as_str() != ui::clipboard::SECRET_MIME
+            !tilo_ui_base::dnd::is_file_mime(format)
+                && format.as_str() != ui::clipboard::SECRET_MIME
         })
         .take(MAX_CARRIED_OFFERS)
         .cloned()

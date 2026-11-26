@@ -3,15 +3,20 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
+use crate::widget::arrange::Stack;
+use crate::{
+    widget::Button, widget::ButtonRole, widget::PopoverButton, widget::Text, widget::TextInput,
+    widget::When,
+};
+use tilo_actions::Actor;
 use tilo_ui_base::LocalState;
 use tilo_ui_base::component::Person;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::arrange::Stack;
-use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled, widget::binding::derived};
-use crate::{widget::Button, widget::ButtonRole, widget::PopoverButton, widget::Text, widget::TextInput, widget::When};
 use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
-use tilo_actions::Actor;
+use tilo_ui_base::{
+    widget::binding::BoxedBinding, widget::binding::Pulled, widget::binding::derived,
+};
 
 #[path = "person_field_component.rs"]
 mod component;
@@ -95,7 +100,9 @@ impl PersonField {
         people: Vec<Person>,
         me: Option<Person>,
     ) -> Self {
-        let (who, binding) = derived(state, |text: &String| tilo_ui_base::component::actor_of_text(text));
+        let (who, binding) = derived(state, |text: &String| {
+            tilo_ui_base::component::actor_of_text(text)
+        });
         let mut field = Self::new(id, who.as_ref(), people, me);
         field.bound = Some(binding);
         field

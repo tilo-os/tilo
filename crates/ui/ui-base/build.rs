@@ -172,9 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Without an explicit input list Cargo watches the whole package, so a
     // documentation or test edit needlessly rebuilds the toolkit and relinks
     // every app using it. The font fixture and the icon sources are the script's only inputs.
-    for source in [
-        "tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex",
-    ] {
+    for source in ["tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf.hex"] {
         println!("cargo::rerun-if-changed={source}");
     }
     emit_hex_fixture(

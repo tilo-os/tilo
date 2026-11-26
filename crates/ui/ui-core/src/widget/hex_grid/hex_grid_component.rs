@@ -133,7 +133,9 @@ impl Described for HexGrid {
                 press.fire(Some(tilo_ui_base::component::Value::List(vec![
                     tilo_ui_base::component::Value::Text(at.to_string()),
                     tilo_ui_base::component::Value::Text(column.name().to_owned()),
-                    tilo_ui_base::component::Value::Text(if extend { "shift" } else { "" }.to_owned()),
+                    tilo_ui_base::component::Value::Text(
+                        if extend { "shift" } else { "" }.to_owned(),
+                    ),
                 ])));
             }) as Box<dyn FnMut(usize, HexColumn, bool)>
         });

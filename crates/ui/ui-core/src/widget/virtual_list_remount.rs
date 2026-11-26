@@ -148,7 +148,8 @@ impl VirtualRows {
             };
             // The list's own offset is snapped where it places them; a row's top within it
             // stands on a device pixel too, whatever offset the rows were laid out from.
-            let top = tilo_ui_base::widget::layout::snap_to_device_pixels(top + self.band_gap(index));
+            let top =
+                tilo_ui_base::widget::layout::snap_to_device_pixels(top + self.band_gap(index));
             let Some(current) = taffy.style_of(child) else {
                 continue;
             };
@@ -232,7 +233,10 @@ impl VirtualRows {
     /// where an earlier placement put them: a pointer meets only those near
     /// it, unless one holds it.
     pub(super) fn rows_reached(&self, event: &winit::event::WindowEvent) -> Range<usize> {
-        match (&self.placed, tilo_ui_base::widget::layout::at_a_place(event)) {
+        match (
+            &self.placed,
+            tilo_ui_base::widget::layout::at_a_place(event),
+        ) {
             (Some(_), true)
                 if !self
                     .mounted

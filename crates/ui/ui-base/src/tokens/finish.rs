@@ -211,9 +211,7 @@ impl Finish {
     /// The Glass set with
     /// `[blur, tint, saturation, refraction, edge_highlight, specular]`, for tests.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn glass(
-        [blur, tint, saturation, refraction, edge_highlight, specular]: [f32; 6],
-    ) -> Self {
+    pub fn glass([blur, tint, saturation, refraction, edge_highlight, specular]: [f32; 6]) -> Self {
         Self::builtin(
             builtin::glass_set(),
             &[

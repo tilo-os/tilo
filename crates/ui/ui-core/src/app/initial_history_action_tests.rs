@@ -23,9 +23,11 @@ impl tilo_ui_base::widget::ResourceOperations for InitialHistoryProbe {
         _: &automerge::ObjId,
     ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         self.0.set(self.0.get().saturating_add(1));
-        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui_base::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
 }
 impl tilo_ui_base::widget::controls::ActionControls for InitialHistoryProbe {

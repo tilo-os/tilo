@@ -6,9 +6,9 @@
 use std::sync::Arc;
 
 use super::*;
-use tilo_ui_base::a11y::Action;
 use crate::app::driver::Driver;
 use crate::state::State;
+use tilo_ui_base::a11y::Action;
 use tilo_ui_base::theme::Theme;
 
 fn harness(width: u32) -> Driver {

@@ -9,9 +9,9 @@
 )]
 
 use crate::headless::Driver;
+use crate::widget::NavShell;
 use tilo_ui_base::interaction::InteractionEnvironment;
 use tilo_ui_base::theme::Theme;
-use crate::widget::NavShell;
 
 fn still() -> Theme {
     Theme::dark().with_reduce_motion(true)

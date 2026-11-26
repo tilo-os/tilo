@@ -3244,7 +3244,9 @@ impl Hosted {
         self.store.serve(Some(invocation.0.to_string()));
         // Each change keeps the call its caller signed, as a change made for a caller must: every
         // device reading the record checks that caller asked for it, and with which key.
-        let signed = context.as_deref().and_then(|context| context.signed.clone());
+        let signed = context
+            .as_deref()
+            .and_then(|context| context.signed.clone());
         self.store.serve_signed(signed.clone());
         let serving = Serving {
             invocation,

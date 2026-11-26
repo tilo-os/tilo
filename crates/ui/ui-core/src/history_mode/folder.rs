@@ -17,9 +17,9 @@ use std::rc::Rc;
 
 use fs_protocol::files::{FileDocumentId, TreeChunk};
 
+use crate::HistoryEntry;
 use crate::history_source::folder::FolderChange;
 use crate::history_source::verbs::HistoryEdit;
-use crate::HistoryEntry;
 use tilo_ui_base::HistoryEntryId;
 
 /// What History needs of the folder it lists: the tree's changes as rows, a number that

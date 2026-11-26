@@ -11,8 +11,8 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use tilo_ui_base::icons::Icon;
-use tilo_ui_base::{motion::Disclose, motion::Presence};
 use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::{motion::Disclose, motion::Presence};
 
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
@@ -103,11 +103,17 @@ impl DisclosureState {
     }
 
     fn progress(&self) -> f64 {
-        self.0.borrow().reveal.progress(tilo_ui_base::motion::frame_now())
+        self.0
+            .borrow()
+            .reveal
+            .progress(tilo_ui_base::motion::frame_now())
     }
 
     fn is_moving(&self) -> bool {
-        self.0.borrow().reveal.is_moving(tilo_ui_base::motion::frame_now())
+        self.0
+            .borrow()
+            .reveal
+            .is_moving(tilo_ui_base::motion::frame_now())
     }
 
     fn body_height(&self) -> f64 {
@@ -518,7 +524,10 @@ impl DisclosureRow {
     fn reveal_layout(&self) -> (f32, bool) {
         let shut = !self.state.is_open() && !self.state.is_moving();
         let revealed = Disclose::reveal(self.progress(), self.state.body_height()).height;
-        (tilo_ui_base::num::f32_of_f64(self.header_px + revealed), shut)
+        (
+            tilo_ui_base::num::f32_of_f64(self.header_px + revealed),
+            shut,
+        )
     }
 
     fn reveal_unlaid(&self) -> bool {
@@ -603,9 +612,11 @@ impl DisclosureRow {
             let natural = f64::from(ctx.text.measure_style(&self.side, None, &style).0);
             let spare = Self::side_width(natural, text.width());
             let start = text.x1 - spare;
-            let shown =
-                ctx.text
-                    .elide_to_width_style(&self.side, tilo_ui_base::num::f32_of_f64(spare), &style);
+            let shown = ctx.text.elide_to_width_style(
+                &self.side,
+                tilo_ui_base::num::f32_of_f64(spare),
+                &style,
+            );
             let top = self.face().title_top(text, ctx.text, theme);
             ctx.text.draw_style(
                 ctx.scene,
@@ -747,7 +758,9 @@ impl Widget for DisclosureRow {
                 style.position = taffy::Position::Absolute;
                 style.inset = taffy::Rect {
                     left: taffy::LengthPercentageAuto::auto(),
-                    right: taffy::LengthPercentageAuto::length(tilo_ui_base::num::f32_of_f64(icon + gap)),
+                    right: taffy::LengthPercentageAuto::length(tilo_ui_base::num::f32_of_f64(
+                        icon + gap,
+                    )),
                     top: taffy::LengthPercentageAuto::length(0.0),
                     bottom: taffy::LengthPercentageAuto::auto(),
                 };
@@ -765,10 +778,9 @@ impl Widget for DisclosureRow {
                 height: taffy::Dimension::length(height),
             },
             padding: taffy::Rect {
-                left: taffy::LengthPercentage::length(tilo_ui_base::num::f32_of_f64(Self::text_inset(
-                    self.leading.as_ref(),
-                    theme,
-                ))),
+                left: taffy::LengthPercentage::length(tilo_ui_base::num::f32_of_f64(
+                    Self::text_inset(self.leading.as_ref(), theme),
+                )),
                 right: taffy::LengthPercentage::length(0.0),
                 top: taffy::LengthPercentage::length(tilo_ui_base::num::f32_of_f64(header)),
                 bottom: taffy::LengthPercentage::length(0.0),
@@ -831,13 +843,19 @@ impl Widget for DisclosureRow {
     /// its own.
     fn layout_needs_measure(&self) -> bool {
         self.reveal_unlaid()
-            || tilo_ui_base::widget::defaults::layout_needs_measure(&|visit| self.for_each_child(visit))
-                .unwrap_or(false)
+            || tilo_ui_base::widget::defaults::layout_needs_measure(&|visit| {
+                self.for_each_child(visit)
+            })
+            .unwrap_or(false)
     }
 
     /// A reveal in progress moves what the row lays out: the window is laid
     /// out again on each of its frames.
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         if self.reveal_unlaid() {
             tilo_ui_base::widget::note_layout_moved();
         }

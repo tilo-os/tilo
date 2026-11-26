@@ -19,12 +19,12 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 
+use crate::widget::scrollbar::{PressOutcome, Scrollbar};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::widget::ScrollMetrics;
 use tilo_ui_base::widget::TaffyTreeExt;
-use crate::widget::scrollbar::{PressOutcome, Scrollbar};
 use tilo_ui_base::{widget::Element, widget::Widget};
 
 pub const DEFAULT_MIN_ZOOM: f64 = 0.25;
@@ -1396,7 +1396,11 @@ impl crate::content_zoom::ContentZoom for DocumentViewport {
 }
 
 impl DocumentViewport {
-    fn route_to_child(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    fn route_to_child(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
         let (Content::Widget(c), Some(taffy), Some(node)) = (
             &mut self.content,
             self.inner_taffy.as_ref(),

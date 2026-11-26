@@ -4,13 +4,13 @@
 use super::card::{self, Contents, Frame, Look};
 use super::coach::{Coach, Phase, Timing};
 use super::{HintSpec, Learned, Quiet};
-use tilo_ui_base::{a11y::AccessNode, a11y::Politeness, a11y::Role};
-use tilo_ui_base::{motion::Beckon, motion::stage};
+use crate::time::Instant;
+use crate::widget::floating_surface::PopoverSide;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::time::Instant;
 use tilo_ui_base::tokens::EffectiveMotion;
-use crate::widget::floating_surface::PopoverSide;
+use tilo_ui_base::{a11y::AccessNode, a11y::Politeness, a11y::Role};
+use tilo_ui_base::{motion::Beckon, motion::stage};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke, Vec2};
 use vello::peniko::Fill;

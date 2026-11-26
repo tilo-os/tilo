@@ -10,10 +10,10 @@ use std::rc::Rc;
 use tilo_session_core::surface::ShellSurface as _;
 
 use tilo_session::platform::surfaces::{Placement, WidgetSurface};
+use tilo_ui_base::{widget::TaffyTreeExt as _, widget::Widget};
 use ui::kurbo::Rect;
 use ui::peniko::{Color, Fill};
 use ui::taffy::{NodeId, Style, TaffyTree};
-use tilo_ui_base::{widget::TaffyTreeExt as _, widget::Widget};
 
 /// Where the part rests.
 const PART: Rect = Rect::new(40.0, 20.0, 140.0, 80.0);
@@ -67,7 +67,10 @@ impl Widget for Fader {
         ui::lift::lifted(
             scene,
             transform,
-            (tilo_ui_base::scene_parts::PartKey::new("test.part", 0), PART),
+            (
+                tilo_ui_base::scene_parts::PartKey::new("test.part", 0),
+                PART,
+            ),
             ui::lift::Pose::faded(self.opacity.get()),
             |scene, transform| scene.fill(Fill::NonZero, transform, Color::WHITE, None, &PART),
         );

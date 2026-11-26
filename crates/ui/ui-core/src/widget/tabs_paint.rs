@@ -66,8 +66,8 @@ impl TabBar {
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.drag_lift_duration = theme.tokens.motion.durations.fast();
         self.painted_labels.borrow_mut().clear();
-        self.busy_drawn =
-            (!self.busy_since.is_empty()).then(|| self.busy_pose_at(tilo_ui_base::motion::frame_now()));
+        self.busy_drawn = (!self.busy_since.is_empty())
+            .then(|| self.busy_pose_at(tilo_ui_base::motion::frame_now()));
         if self.tab_rects.len() != self.tabs.len() {
             return;
         }
@@ -150,7 +150,10 @@ impl TabBar {
                 self.toolbar_row.lay_out(rect);
             }
             let area = self.rect.union(self.toolbar_row.row()).inflate(2.0, 2.0);
-            let key = tilo_ui_base::scene_parts::PartKey::new("ui.window-toolbar-row", &self.group_id_tag);
+            let key = tilo_ui_base::scene_parts::PartKey::new(
+                "ui.window-toolbar-row",
+                &self.group_id_tag,
+            );
             let row = &mut self.toolbar_row;
             tilo_ui_base::scene_parts::part(
                 scene,
@@ -298,7 +301,12 @@ impl TabBar {
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         if self.replays(transform, theme, &env) {
             if let Some(painted) = self.painted.as_ref() {
-                tilo_ui_base::scene_parts::append(scene, &painted.scene, painted.parts.as_ref(), None);
+                tilo_ui_base::scene_parts::append(
+                    scene,
+                    &painted.scene,
+                    painted.parts.as_ref(),
+                    None,
+                );
             }
             return;
         }
@@ -351,7 +359,8 @@ impl TabBar {
                 let now = crate::time::now();
                 let turn = if self.busy_turns(id, now) {
                     // In indicator steps: the arc turns 30 times a second.
-                    let t = tilo_ui_base::animation::indicator_elapsed(busy_epoch(), now).as_secs_f64();
+                    let t =
+                        tilo_ui_base::animation::indicator_elapsed(busy_epoch(), now).as_secs_f64();
                     t.fract() * std::f64::consts::TAU
                 } else {
                     0.0

@@ -4,10 +4,10 @@
 //! `RemoteCursorOverlay` actually renders from.
 
 use tilo_ui::app::App;
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::MemberId};
-use tilo_ui_base::presence::user_color;
 use tilo_ui::state::State;
 use tilo_ui::widget::Container;
+use tilo_ui_base::presence::user_color;
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::MemberId};
 
 fn new_headless_app() -> App {
     // A trivial leaf is enough — this test never runs a frame, it just

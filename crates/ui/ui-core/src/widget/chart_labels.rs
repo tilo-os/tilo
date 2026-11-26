@@ -4,9 +4,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Color;
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 
 /// The labels already placed in one chart, and the bounds every label must
 /// stay inside.

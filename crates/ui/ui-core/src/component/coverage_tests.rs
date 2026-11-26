@@ -9,12 +9,12 @@ use taffy::{NodeId, Style, TaffyTree};
 use tilo_component_scan as component_scan;
 use vello::kurbo::{Point, Rect};
 
-use crate::component_tests::{given, given_with_views, sample};
-use tilo_ui_base::{component::Registry, component::Value};
 use crate::component_catalogue::TOOLKIT;
+use crate::component_tests::{given, given_with_views, sample};
 use crate::headless::Driver;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::counts::asking_for_layout;
+use tilo_ui_base::{component::Registry, component::Value};
 use tilo_ui_base::{widget::Element, widget::TaffyTreeExt as _, widget::Widget};
 
 fn scan() -> component_scan::Scan {

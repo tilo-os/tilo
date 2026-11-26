@@ -1,13 +1,13 @@
 use super::*;
-use tilo_ui_base::widget::TaffyTreeExt;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use crate::widget::Button;
-use tilo_ui_base::widget::Widget;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tilo_actions::{Action, ActionError, ActionSpec, Doc, ResourceSpec};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use winit::event::{ElementState, KeyEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
@@ -178,9 +178,11 @@ impl tilo_ui_base::widget::ResourceOperations for Viewer {
         _: &automerge::ObjId,
     ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         self.0.set(self.0.get() + 1);
-        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui_base::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
 }
 
@@ -370,9 +372,9 @@ fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
     );
     assert_eq!(app.focused_node, Some(editor));
     assert_eq!(
-        app.inspect_node(editor, |widget| tilo_ui_base::widget::undo_points::get_state(
-            widget
-        ))
+        app.inspect_node(editor, |widget| {
+            tilo_ui_base::widget::undo_points::get_state(widget)
+        })
         .unwrap(),
         Some("0:b:1".into()),
         "Shift+Left extends the editor selection instead of moving host focus"
@@ -676,7 +678,10 @@ tilo_test_env::scenario! {
 
 #[test]
 fn native_history_discovery_tracks_the_same_focused_local_undo_api() {
-    use tilo_ui_base::{widget::undo_access::LocalUndo, widget::undo_access::LocalUndoStatus, widget::undo_access::UndoRequest, widget::undo_access::UndoStatus};
+    use tilo_ui_base::{
+        widget::undo_access::LocalUndo, widget::undo_access::LocalUndoStatus,
+        widget::undo_access::UndoRequest, widget::undo_access::UndoStatus,
+    };
     struct Native {
         history: std::rc::Rc<std::cell::RefCell<Option<LocalUndoStatus>>>,
         calls: std::rc::Rc<std::cell::RefCell<Vec<UndoRequest>>>,
@@ -695,7 +700,12 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_api() {
     }
     impl Widget for Native {
         tilo_ui_base::provides!(dyn LocalUndo, dyn tilo_ui_base::widget::ResourceOperations);
-        fn sync(&mut self, _: &tilo_ui_base::widget::AppModel, _: &tilo_ui_base::widget::ModelPath) {}
+        fn sync(
+            &mut self,
+            _: &tilo_ui_base::widget::AppModel,
+            _: &tilo_ui_base::widget::ModelPath,
+        ) {
+        }
         fn name(&self) -> &str {
             "Native history fixture"
         }

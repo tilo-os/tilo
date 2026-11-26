@@ -241,7 +241,10 @@ impl App {
         if let Some(revision) = revision.as_ref() {
             let mut aliases: HashMap<
                 Option<uuid::Uuid>,
-                (tilo_ui_base::collaboration::RouteSpec, HashMap<String, String>),
+                (
+                    tilo_ui_base::collaboration::RouteSpec,
+                    HashMap<String, String>,
+                ),
             > = HashMap::new();
             for address in snapshot.actions.keys() {
                 match self.actions.bound_publication.target(address) {
@@ -756,8 +759,11 @@ fn is_connection_without_reports(error: &runtime_collab::LocalDocumentActionErro
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PeerTransport, collaboration::RouteSpec};
     use std::cell::RefCell;
+    use tilo_ui_base::{
+        collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PeerTransport,
+        collaboration::RouteSpec,
+    };
 
     struct Peer(Rc<RefCell<Vec<CollabRequest>>>);
     impl PeerTransport for Peer {

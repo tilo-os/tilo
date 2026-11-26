@@ -6,7 +6,10 @@
 //! offsets) is built from, never grown again by the reader's text scale, so a caller that scales an
 //! expression scales all of it together.
 
-use tilo_ui_base::{text_render::FontChoice, text_render::TextKind, text_render::TextRenderer, text_render::TextStyle, text_render::UI_MATH_FAMILY};
+use tilo_ui_base::{
+    text_render::FontChoice, text_render::TextKind, text_render::TextRenderer,
+    text_render::TextStyle, text_render::UI_MATH_FAMILY,
+};
 
 use super::model::{Node, Row, Slot};
 

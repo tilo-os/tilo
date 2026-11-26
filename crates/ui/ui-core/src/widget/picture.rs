@@ -7,8 +7,8 @@ use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Compose, Fill, Mix};
 
 use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::{theme::Look, theme::Theme};
 use tilo_ui_base::theme_document::PresetDesign;
+use tilo_ui_base::{theme::Look, theme::Theme};
 use tilo_ui_base::{tokens::Emphasis, tokens::PresenceHue, tokens::TextRole};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -1768,4 +1768,3 @@ macro_rules! embedded_catalog {
         }
     };
 }
-

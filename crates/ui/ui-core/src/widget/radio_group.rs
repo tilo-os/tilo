@@ -8,15 +8,15 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
-use tilo_ui_base::i18n::widget_text;
-use tilo_ui_base::{num::f32_of_f64, num::f64_of_usize};
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::TextRole;
 use crate::widget::checkbox::{BOX_EDGE, LABEL_GAP};
 use crate::widget::{CheckGlyph, CheckMotion, CheckPose, CheckboxFace};
 use crate::{widget::Checkbox, widget::Interaction};
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::{num::f32_of_f64, num::f64_of_usize};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::{widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
 
 #[path = "radio_group_component.rs"]

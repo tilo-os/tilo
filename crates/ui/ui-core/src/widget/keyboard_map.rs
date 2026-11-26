@@ -1,11 +1,14 @@
 //! A physical keyboard map. Geometry and XKB legends are provided by the device's native
 //! compiler; focused pressed keys are private paint state.
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role, text_render::TextRenderer, theme::Theme, tokens::TextRole, widget::EventCtx, widget::TaffyTreeExt, widget::Widget};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_lock::MutexRecover as _;
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::{
+    a11y::AccessNode, a11y::AccessState, a11y::Role, text_render::TextRenderer, theme::Theme,
+    tokens::TextRole, widget::EventCtx, widget::TaffyTreeExt, widget::Widget,
+};
 use vello::{
     Scene,
     kurbo::{Affine, BezPath, Point, Rect, Stroke},
@@ -116,7 +119,10 @@ impl KeyboardMapInput {
 /// Theme-aware map of an explicitly selected physical model. It observes
 /// only ordinary focused window events, never global devices or document edits.
 #[derive(Clone)]
-#[tilo_ui_base::component::not_a_component(system, "the keyboard settings' map of a physical model")]
+#[tilo_ui_base::component::not_a_component(
+    system,
+    "the keyboard settings' map of a physical model"
+)]
 pub struct KeyboardMap {
     keys: Vec<KeyboardMapKey>,
     model_size: Size<f64>,
@@ -455,7 +461,9 @@ impl KeyboardMap {
                 .unwrap_or_default();
             let legend = symbols
                 .into_iter()
-                .map(|symbol| tilo_ui_base::keycaps::active().native_symbol(&symbol.name, &symbol.text))
+                .map(|symbol| {
+                    tilo_ui_base::keycaps::active().native_symbol(&symbol.name, &symbol.text)
+                })
                 .collect::<Vec<_>>()
                 .join(" ");
             vec![legend]
@@ -725,7 +733,10 @@ impl Widget for KeyboardMap {
 
 /// Action-bound inspection over the shared physical map. Keyboard presses
 /// never select an inspector or publish entered text.
-#[tilo_ui_base::component::not_a_component(system, "the keyboard settings' map of a physical model")]
+#[tilo_ui_base::component::not_a_component(
+    system,
+    "the keyboard settings' map of a physical model"
+)]
 pub struct KeyboardMapSelection {
     map: KeyboardMap,
     action: Option<tilo_ui_base::widget::ActionEmitter<String>>,

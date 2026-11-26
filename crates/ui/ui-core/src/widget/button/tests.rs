@@ -1,10 +1,10 @@
 use super::*;
-use tilo_ui_base::tokens::TextRole;
 use automerge::AutoCommit;
+use tilo_ui_base::tokens::TextRole;
 
-use tilo_ui_base::widget::Widget;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tilo_ui_base::widget::Widget;
 
 /// An effect on the person's own device runs for a guest (an Editor) and
 /// even a Viewer without asking anyone; a Viewer's click on one reaching
@@ -627,7 +627,9 @@ fn disabled_faces_are_neutral_and_reject_input() {
                 );
                 assert_eq!(
                     border,
-                    Some(tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.raised)),
+                    Some(tilo_ui_base::surface::edge_on(
+                        theme.tokens.colors.surfaces.raised
+                    )),
                     "{name} {style:?}: disabled face keeps the derived rest edge, no semantic fill"
                 );
                 let ratio = contrast_ratio(fg, bg);

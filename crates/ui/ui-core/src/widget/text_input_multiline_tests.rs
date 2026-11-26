@@ -8,9 +8,9 @@ use super::layout_height;
 use super::ml_input;
 use super::mods;
 use super::shaped_row;
-use tilo_ui_base::{synthetic_input::char_key, synthetic_input::named_key};
 use automerge::ObjType;
 use automerge::transaction::Transactable as _;
+use tilo_ui_base::{synthetic_input::char_key, synthetic_input::named_key};
 
 tilo_test_env::scenario! {
     fn a_multiline_field_edits_wraps_and_moves_by_visual_lines;

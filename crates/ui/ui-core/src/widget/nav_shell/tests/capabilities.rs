@@ -1,6 +1,6 @@
 use super::*;
-use tilo_ui_base::component::Described;
 use crate::widget::{FilterCount, Filterable};
+use tilo_ui_base::component::Described;
 
 fn labelled(id: &'static str, label: &str, icon: Icon) -> Element {
     Box::new(Button::new(id, label).with_icon(icon).on_open(|| {}))
@@ -1071,7 +1071,11 @@ fn a_popover_owned_by_a_header_button_hears_the_pointer_first() {
         button: MouseButton::Left,
     });
     assert_eq!(events.get(), 1, "the popover's owner heard the press");
-    assert_eq!(content_events.events(), before, "the column under it did not");
+    assert_eq!(
+        content_events.events(),
+        before,
+        "the column under it did not"
+    );
 }
 
 struct Filtered {

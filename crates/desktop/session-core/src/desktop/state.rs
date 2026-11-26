@@ -20,8 +20,8 @@ use tilo_desktop_model::{
     GroupId, IdMinter, Layout, StripId, Tab, TabId, TileContent, Workspace, WorkspaceId,
 };
 use tilo_ui_base::collaboration::PresencePayload;
-use ui::kurbo::{Point, Rect};
 use tilo_ui_base::presence::PresenceKey;
+use ui::kurbo::{Point, Rect};
 use ui::time::Duration;
 use ui::widget::TileHost;
 

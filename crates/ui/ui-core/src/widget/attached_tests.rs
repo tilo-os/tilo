@@ -76,9 +76,11 @@ impl Source for Node {
     fn event(&mut self, name: &str) -> Event {
         match self.events.iter().find(|(event, _)| *event == name) {
             Some((_, Some((on, action)))) => bound(on, action),
-            Some((_, None)) => {
-                Event::View(tilo_ui_base::component::Intent::new(&self.queue, &self.key, name))
-            }
+            Some((_, None)) => Event::View(tilo_ui_base::component::Intent::new(
+                &self.queue,
+                &self.key,
+                name,
+            )),
             None => Event::None,
         }
     }

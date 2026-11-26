@@ -2,21 +2,21 @@ use tilo_ui_base::icons;
 use tilo_ui_base::num::f32_of_f64;
 
 use crate::floating_surface::FloatingSurfaceProvider;
-use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::theme::Theme;
 use crate::time::{Duration, Instant};
-use tilo_ui_base::widget::DrawChild;
-use tilo_ui_base::widget::TaffyTreeExt;
 use crate::widget::edge_resize::{WidthLimits, WindowEdge};
 use crate::widget::tabs::close_fade;
 use crate::widget::window_controls::WindowControl;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use crate::{widget::TabBar, widget::TabDescriptor, widget::TileContent, widget::TileHost};
-use tilo_ui_base::widget::Widget;
 use automerge::AutoCommit;
 use std::collections::HashMap;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
@@ -1368,7 +1368,10 @@ impl WindowGroup {
     /// bar and tile take their widths. The row sets the window's own node
     /// style (from [`Self::own_style`]). Returns `false` when the window
     /// must be built again.
-    pub(crate) fn remount_in_row(&mut self, remount: &mut tilo_ui_base::widget::Remount<'_>) -> bool {
+    pub(crate) fn remount_in_row(
+        &mut self,
+        remount: &mut tilo_ui_base::widget::Remount<'_>,
+    ) -> bool {
         if self.node.is_none() || self.laid_shape != Some(self.layout_shape()) {
             return false;
         }
@@ -1839,13 +1842,14 @@ impl WindowGroup {
             ));
         }
         if self.shows_its_bar() {
-            self.search.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                env.clone(),
-            ));
+            self.search
+                .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    env.clone(),
+                ));
         }
     }
 
@@ -2506,26 +2510,28 @@ impl WindowGroup {
             return;
         };
         let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == visual.tab_id) else {
-            self.bar.draw_drag_ghost(&mut tilo_ui_base::draw::DrawCtx::new(
-                scene,
-                transform,
-                tr,
-                theme,
-                env.clone(),
-            ));
+            self.bar
+                .draw_drag_ghost(&mut tilo_ui_base::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    env.clone(),
+                ));
             return;
         };
         let source = host.get_rect();
         if source.width() <= 0.0 || source.height() <= 0.0 {
             // Inactive hosts intentionally have no layout until selected.
             // Keep the carried handle visible without waking/rendering them.
-            self.bar.draw_drag_ghost(&mut tilo_ui_base::draw::DrawCtx::new(
-                scene,
-                transform,
-                tr,
-                theme,
-                env.clone(),
-            ));
+            self.bar
+                .draw_drag_ghost(&mut tilo_ui_base::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    tr,
+                    theme,
+                    env.clone(),
+                ));
             return;
         }
 
@@ -2564,13 +2570,14 @@ impl WindowGroup {
         host.set_focused(was_focused);
         scene.pop_layer();
 
-        self.bar.draw_drag_ghost(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            tr,
-            theme,
-            env.clone(),
-        ));
+        self.bar
+            .draw_drag_ghost(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                tr,
+                theme,
+                env.clone(),
+            ));
     }
 }
 
@@ -2670,7 +2677,13 @@ impl FloatingSurfaceProvider for WindowGroup {
         for (_, host) in &mut self.hosts {
             FloatingSurfaceProvider::draw_floating_surfaces(
                 &mut **host,
-                &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+                &mut tilo_ui_base::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    env.clone(),
+                ),
             );
         }
         self.draw_tab_drag_visual(&mut tilo_ui_base::draw::DrawCtx::new(
@@ -2682,7 +2695,11 @@ impl FloatingSurfaceProvider for WindowGroup {
         ));
     }
 
-    fn draw_floating_surface(&mut self, id: &str, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) -> bool {
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
+    ) -> bool {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2693,7 +2710,13 @@ impl FloatingSurfaceProvider for WindowGroup {
             FloatingSurfaceProvider::draw_floating_surface(
                 &mut **host,
                 id,
-                &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+                &mut tilo_ui_base::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    env.clone(),
+                ),
             )
         })
     }
@@ -2783,10 +2806,10 @@ impl Widget for WindowGroup {
         &mut self,
         action: tilo_ui_base::widget::PrimaryScrollAction,
     ) -> tilo_ui_base::widget::PrimaryScrollResult {
-        self.active_host_mut()
-            .map_or(tilo_ui_base::widget::PrimaryScrollResult::Unsupported, |host| {
-                host.apply_primary_vertical_scroll(action)
-            })
+        self.active_host_mut().map_or(
+            tilo_ui_base::widget::PrimaryScrollResult::Unsupported,
+            |host| host.apply_primary_vertical_scroll(action),
+        )
     }
 
     // Modal capture and presentation polling follow visible content, never inactive tabs.
@@ -2802,7 +2825,10 @@ impl Widget for WindowGroup {
             .min()
     }
 
-    fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
+    fn set_platform_conventions(
+        &mut self,
+        conventions: tilo_ui_base::platform::PlatformConventions,
+    ) {
         self.bar.set_platform_conventions(conventions);
         for child in self
             .hosts
@@ -2895,13 +2921,14 @@ impl Widget for WindowGroup {
             ));
         }
         if self.shows_its_bar() {
-            self.search.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                env.clone(),
-            ));
+            self.search
+                .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    env.clone(),
+                ));
         }
         if self.navigation_bar_visible() {
             self.bar.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
@@ -3536,7 +3563,9 @@ impl Widget for WindowGroup {
             .is_some_and(|fade| fade.is_moving(tilo_ui_base::motion::frame_now()));
         let size_label_fading = self.size_label_fade.is_some_and(|(released, ..)| {
             crate::time::now().saturating_duration_since(released)
-                < tilo_ui_base::tokens::Durations::default().fast().saturating_mul(2)
+                < tilo_ui_base::tokens::Durations::default()
+                    .fast()
+                    .saturating_mul(2)
         });
         tab_fade
             || size_label_fading

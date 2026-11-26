@@ -14,9 +14,9 @@ fn rewrite(path: &std::path::Path, contents: impl AsRef<[u8]>) {
         .set_modified(before + std::time::Duration::from_secs(1))
         .unwrap();
 }
-use tilo_ui_base::{a11y::Action, a11y::Role};
 use automerge::transaction::Transactable;
 use automerge::{ObjType, ROOT};
+use tilo_ui_base::{a11y::Action, a11y::Role};
 
 #[test]
 fn graph_checked_controls_share_view_values_without_document_writes() {
@@ -532,7 +532,9 @@ fn routed_graph_buttons_publish_navigation_and_leave_the_document_alone() {
 
 #[test]
 fn navigation_to_an_unknown_registered_screen_is_disabled() {
-    fn find_missing(node: &crate::headless::InspectionNode) -> Option<&tilo_ui_base::a11y::AccessNode> {
+    fn find_missing(
+        node: &crate::headless::InspectionNode,
+    ) -> Option<&tilo_ui_base::a11y::AccessNode> {
         node.semantics
             .as_ref()
             .filter(|semantics| semantics.name.as_deref() == Some("Missing"))

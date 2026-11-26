@@ -10,11 +10,15 @@ use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use winit::event::WindowEvent;
 
-use tilo_ui_base::{widget::identity::AsDynWidget, widget::identity::stand_in};
-use tilo_ui_base::{widget::AppModel, widget::EventCtx, widget::LayoutInfo, widget::ManualPolicy, widget::ModelPath, widget::PrimaryScrollAction, widget::PrimaryScrollRegion, widget::PrimaryScrollResult, widget::Widget, widget::capability};
+use crate::time::Instant;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::time::Instant;
+use tilo_ui_base::{
+    widget::AppModel, widget::EventCtx, widget::LayoutInfo, widget::ManualPolicy,
+    widget::ModelPath, widget::PrimaryScrollAction, widget::PrimaryScrollRegion,
+    widget::PrimaryScrollResult, widget::Widget, widget::capability,
+};
+use tilo_ui_base::{widget::identity::AsDynWidget, widget::identity::stand_in};
 
 tilo_ui_base::concrete_decorator_widget!(super::nav_list::NavList);
 tilo_ui_base::concrete_decorator_widget!(super::media_transport::MediaTransport);

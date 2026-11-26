@@ -1,11 +1,11 @@
 //! `ActivityTimeline` — the history pane, grouped.
 
-use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
-use tilo_ui_base::num::f64_of_usize;
 use crate::time::SystemTime;
 use crate::widget::ChipLead;
 use std::collections::{HashMap, HashSet};
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::num::f64_of_usize;
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 
 use taffy::NodeId;
 use vello::Scene;
@@ -14,9 +14,6 @@ use vello::peniko::Color;
 use winit::event::{MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
-use tilo_ui_base::theme::Theme;
 use crate::widget::history::{
     HistoryAuthor, HistoryEntry, HistoryEntryId, HistoryFilter, format_relative_time,
 };
@@ -25,9 +22,12 @@ use crate::widget::history_group::{
     GroupNameRequest, GroupingConfig, HistoryGroup, NamedRange, group_entries,
 };
 use crate::widget::name_field::{NameField, NameFieldOutcome, fit as fit_text};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 
-use tilo_ui_base::tokens::TextRole;
 use crate::widget::EntryKind;
+use tilo_ui_base::tokens::TextRole;
 
 pub const ROW_HEIGHT: f64 = 40.0;
 pub const GROUP_ROW_HEIGHT: f64 = 52.0;
@@ -83,8 +83,9 @@ fn author_face(
     author: &HistoryAuthor,
     colour: Color,
 ) -> tilo_ui_base::widget::avatar_face::AvatarFace<'_> {
-    let face = tilo_ui_base::widget::avatar_face::AvatarFace::new(&author.name, &author.identity_short)
-        .presence(colour);
+    let face =
+        tilo_ui_base::widget::avatar_face::AvatarFace::new(&author.name, &author.identity_short)
+            .presence(colour);
     if author.relation == crate::widget::history::AuthorRelation::Software {
         face.agent()
     } else {
@@ -3884,7 +3885,9 @@ impl ActivityTimeline {
             return;
         }
         let dy = match delta {
-            MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * tilo_ui_base::widget::wheel::line_of_wheel(),
+            MouseScrollDelta::LineDelta(_, y) => {
+                -f64::from(*y) * tilo_ui_base::widget::wheel::line_of_wheel()
+            }
             MouseScrollDelta::PixelDelta(pp) => -pp.y,
         };
         let new_scroll = (self.scroll_y + dy).clamp(0.0, self.max_scroll());

@@ -42,21 +42,21 @@ mod widget;
 mod window_bar;
 #[cfg(feature = "model")]
 mod workspace_side;
-use tilo_ui_base::a11y::AccessNode;
 use crate::headless::{
     AccessibilityAudit, InspectionNode, InspectionSnapshot, NativeAppAudit, NativeAppIssue,
     SemanticExpectation,
 };
-#[cfg(feature = "model")]
-use tilo_ui_base::permissions::PermissionContext;
-use tilo_ui_base::presence::PresenceCtx;
 use crate::state::State;
-use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::widget::Widget;
 pub use apps_a::{WindowBarNotice, WindowBarNoticeButton};
 #[cfg(feature = "model")]
 pub use palette::FollowedView;
+use tilo_ui_base::a11y::AccessNode;
+#[cfg(feature = "model")]
+use tilo_ui_base::permissions::PermissionContext;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 pub use wake::OwedSettle;
 #[cfg(feature = "model")]
 pub use workspace_side::{ProvidedInvocation, ServedProvider, ShownHost};
@@ -663,7 +663,10 @@ impl Driver {
     ///
     /// # Errors
     /// As [`Self::relayout_at`].
-    pub fn resize(&mut self, viewport: (u32, u32)) -> Result<(), tilo_ui_base::widget::WidgetLayoutError> {
+    pub fn resize(
+        &mut self,
+        viewport: (u32, u32),
+    ) -> Result<(), tilo_ui_base::widget::WidgetLayoutError> {
         if self.surface.viewport.get() == viewport {
             return Ok(());
         }
@@ -1552,7 +1555,10 @@ impl Driver {
     }
 
     /// The platform whose conventions the app follows (its command key, its shortcuts).
-    pub fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
+    pub fn set_platform_conventions(
+        &mut self,
+        conventions: tilo_ui_base::platform::PlatformConventions,
+    ) {
         self.app.set_platform_conventions(conventions);
         self.run_frame();
     }
@@ -2012,8 +2018,8 @@ impl Driver {
     /// Certify the laid-out app against the action-native contract.
     #[must_use]
     pub fn native_app_audit(&self) -> NativeAppAudit {
-        use tilo_ui_base::widget::ControlBindingKind;
         use std::collections::HashSet;
+        use tilo_ui_base::widget::ControlBindingKind;
         let mut resources = self.resources();
         // Shared chrome invokes the host's own APIs rather than the app's: search, and History
         // where the window serves one. A control bound to either is not stale.
@@ -2606,7 +2612,9 @@ impl Driver {
             self.invoke_resource_as(actor, address, &argument, approval)
         });
         let started = match started {
-            Err(error) if tilo_ui_base::widget::resource_operation::asks_to_lay_out_first(&error) => {
+            Err(error)
+                if tilo_ui_base::widget::resource_operation::asks_to_lay_out_first(&error) =>
+            {
                 self.relayout();
                 self.invoke_resource_as(actor, address, &argument, approval)
             }
@@ -2657,7 +2665,10 @@ impl Driver {
     ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let sent = self.peer_requests().len();
         let started = self.invoke_action(address, arguments, approval)?;
-        if matches!(started, tilo_ui_base::widget::ResourceOperationStart::Completed(_)) {
+        if matches!(
+            started,
+            tilo_ui_base::widget::ResourceOperationStart::Completed(_)
+        ) {
             return Ok(started);
         }
         // What the app handed its peer before running it is answered in the frames after the
@@ -2696,9 +2707,9 @@ impl Driver {
             .into_iter()
             .find(tilo_actions::InvocationUpdate::is_terminal);
         match ended {
-            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
-                Ok(tilo_ui_base::widget::ResourceOperationStart::Completed(output))
-            }
+            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(
+                tilo_ui_base::widget::ResourceOperationStart::Completed(output),
+            ),
             Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
                 Err(jobs::failure_refusal(address, error))
             }
@@ -2915,8 +2926,9 @@ impl Driver {
     /// have all run.
     #[must_use]
     pub fn controls_settled(&self) -> bool {
-        !tilo_ui_base::widget::controls::has_pending_control_invocation(self.app.root_widget.as_ref())
-            && !self.app.actions.bound_calls_running()
+        !tilo_ui_base::widget::controls::has_pending_control_invocation(
+            self.app.root_widget.as_ref(),
+        ) && !self.app.actions.bound_calls_running()
     }
 
     /// Why what was done last did not run, as the window says it at the control used: none when
@@ -3315,6 +3327,8 @@ pub(crate) fn semantic_action_from_wire(
         Wire::ScrollIntoView => tilo_ui_base::a11y::Action::ScrollIntoView,
         Wire::ShowContextMenu => tilo_ui_base::a11y::Action::ShowContextMenu,
         Wire::SetValue(value) => tilo_ui_base::a11y::Action::SetValue(value),
-        Wire::SetSelection { anchor, focus } => tilo_ui_base::a11y::Action::SetSelection { anchor, focus },
+        Wire::SetSelection { anchor, focus } => {
+            tilo_ui_base::a11y::Action::SetSelection { anchor, focus }
+        }
     }
 }

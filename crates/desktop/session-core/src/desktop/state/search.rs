@@ -853,7 +853,10 @@ pub fn commands(
             id: format!("{HOST_PREFIX}{}", action.id),
             title: action.title.clone(),
             subtitle: action.subtitle.clone(),
-            icon: action.icon.as_deref().and_then(tilo_ui_base::icons::Icon::from_name),
+            icon: action
+                .icon
+                .as_deref()
+                .and_then(tilo_ui_base::icons::Icon::from_name),
             unasked: action.unasked && !action.destructive,
         })
         .collect();

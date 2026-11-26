@@ -11,11 +11,13 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::color_compat::ColorCompat as _;
 use tilo_ui_base::dnd::DRAG_START_THRESHOLD_PX;
 
+use crate::widget::virtual_list::ListModel as _;
+use crate::{
+    widget::CardWidth, widget::Column, widget::Container, widget::Row, widget::Scrollable,
+};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::Rhythm;
 use tilo_ui_base::widget::DrawChild;
-use crate::widget::virtual_list::ListModel as _;
-use crate::{widget::CardWidth, widget::Column, widget::Container, widget::Row, widget::Scrollable};
 use tilo_ui_base::{widget::Element, widget::EventCtx, widget::Widget};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -511,7 +513,9 @@ impl tilo_ui_base::widget::controls::ActionControls for Board {
             bindings.push(drops.metadata(control));
         }
         for child in Widget::children(self) {
-            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(child));
+            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(
+                child,
+            ));
         }
         bindings
     }
@@ -541,15 +545,22 @@ impl tilo_ui_base::widget::Decorator for Board {
     }
 
     fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
-        if self.drops.is_some() && request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
+        if self.drops.is_some()
+            && request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>()
+        {
             request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
             return;
         }
         self.row.provide(request);
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
-        if self.drops.is_some() && request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
+        if self.drops.is_some()
+            && request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>()
+        {
             request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
             return;
         }
@@ -591,11 +602,9 @@ impl tilo_ui_base::widget::Decorator for Board {
         }
         let gutter = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
         let leading = Widget::get_rect(self).x0;
-        out.extend(
-            Widget::children(&self.row)
-                .iter()
-                .map(|list| tilo_ui_base::num::f32_of_f64(Widget::get_rect(*list).x0 - leading - gutter)),
-        );
+        out.extend(Widget::children(&self.row).iter().map(|list| {
+            tilo_ui_base::num::f32_of_f64(Widget::get_rect(*list).x0 - leading - gutter)
+        }));
     }
 
     fn build_layout(
@@ -957,8 +966,9 @@ mod tests {
         let mut host = harness(listed(10_000, &built));
         // Before its first layout a list holds the cards of a tall screen; then the nine or so
         // 60 tall cards its 600 tall pane shows, with a margin either side. However long it is.
-        let tall_screen = (tilo_ui_base::virtual_viewport::UNPLACED_VIEWPORT / f64::from(card_estimate()))
-            .ceil() as usize;
+        let tall_screen = (tilo_ui_base::virtual_viewport::UNPLACED_VIEWPORT
+            / f64::from(card_estimate()))
+        .ceil() as usize;
         let opened = built.get();
         assert!(
             opened <= 2 * (tall_screen + 3 * 10 + 16),

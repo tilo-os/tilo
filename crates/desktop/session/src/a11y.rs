@@ -32,10 +32,10 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use tilo_service::Wake;
 use tilo_session_core::surfaces::{Shared, Surfaces};
+use tilo_ui_base::accesskit_bridge::accesskit_action_to_ours;
 use ui::accesskit::{
     ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, TreeUpdate,
 };
-use tilo_ui_base::accesskit_bridge::accesskit_action_to_ours;
 use ui::window_targets::TargetAction;
 
 use crate::Session;

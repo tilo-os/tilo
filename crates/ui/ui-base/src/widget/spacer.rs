@@ -185,4 +185,3 @@ impl crate::widget::permission::PermissionGuarded for Spacer {
         self.permission_scope.clone()
     }
 }
-

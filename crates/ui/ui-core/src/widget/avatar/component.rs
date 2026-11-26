@@ -2,8 +2,8 @@
 
 use vello::peniko::Color;
 
-use tilo_ui_base::{component::Component, component::Described, component::Person};
 use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{component::Component, component::Described, component::Person};
 
 use super::{Avatar, PresenceStatus};
 

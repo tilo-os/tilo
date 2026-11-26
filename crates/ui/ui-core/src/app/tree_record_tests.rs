@@ -1,7 +1,7 @@
 use super::framework_history_tests::RoutedOwners;
 use crate::app::document_routes::Handoff;
-use tilo_ui_base::collaboration::CollabRequest;
 use automerge::{ROOT, transaction::Transactable as _};
+use tilo_ui_base::collaboration::CollabRequest;
 
 /// Part `index` of the workspace's messages, written with `text` as an
 /// action that creates it does.

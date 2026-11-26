@@ -287,7 +287,9 @@ pub(super) fn mount(
         local_person: MemberId::person(author),
         records: records.clone(),
         checkout: checkout.clone(),
-        permissions: tilo_ui_base::permissions::SharedPermissions::new(PermissionContext::permissive()),
+        permissions: tilo_ui_base::permissions::SharedPermissions::new(
+            PermissionContext::permissive(),
+        ),
         author: MemberId::person(author),
         operation_context: std::rc::Rc::default(),
         writes_as_author,

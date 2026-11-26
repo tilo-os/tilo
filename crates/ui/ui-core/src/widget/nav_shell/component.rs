@@ -1,7 +1,10 @@
 //! [`NavShell`] as a described component.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartViews, component::PropType, component::Type, component::Value};
 use tilo_ui_base::widget::Element;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PartViews,
+    component::PropType, component::Type, component::Value,
+};
 
 use super::{Column, ContentKind, InspectorCollapse, NavPane, NavShell, SidebarCollapse};
 

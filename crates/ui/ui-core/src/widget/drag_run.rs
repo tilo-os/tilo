@@ -13,10 +13,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use tilo_ui_base::{dnd::DRAG_START_THRESHOLD_PX, dnd::DragPayload};
 
+use crate::widget::arrange::{Align, Distribute, Grid, Row as FlexRow, Stack as FlexStack};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::Rhythm;
-use crate::widget::arrange::{Align, Distribute, Grid, Row as FlexRow, Stack as FlexStack};
 
 use tilo_ui_base::component::PartViews;
 use tilo_ui_base::widget::DrawChild;
@@ -1330,8 +1330,8 @@ mod tests {
                 .into_iter()
                 .enumerate()
             {
-                let mut button =
-                    Button::icon_only(key, tilo_ui_base::icons::Icon::Bell, key).role(ButtonRole::Plain);
+                let mut button = Button::icon_only(key, tilo_ui_base::icons::Icon::Bell, key)
+                    .role(ButtonRole::Plain);
                 if index == 2 {
                     button = button.with_count(BadgeContent::Count(12), ChipStyle::default());
                 }
@@ -1346,7 +1346,8 @@ mod tests {
             let mut running = FlexRow::row().gap(Rhythm::Sibling);
             for key in ["chat", "notes"] {
                 running = running.push(Box::new(
-                    Button::icon_only(key, tilo_ui_base::icons::Icon::Bell, key).role(ButtonRole::Plain),
+                    Button::icon_only(key, tilo_ui_base::icons::Icon::Bell, key)
+                        .role(ButtonRole::Plain),
                 ));
             }
             Box::new(

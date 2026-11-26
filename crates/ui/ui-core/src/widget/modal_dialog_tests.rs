@@ -3,10 +3,10 @@
 //! and the retained dialog's input, accessibility and top-layer contract.
 
 use super::*;
-use tilo_ui_base::a11y::contrast_ratio;
 use crate::widget::Text;
 use std::cell::Cell;
 use std::rc::Rc;
+use tilo_ui_base::a11y::contrast_ratio;
 use vello_encoding::DrawTag;
 
 const VIEWPORT: Rect = Rect::new(0.0, 0.0, 1600.0, 1000.0);
@@ -1672,8 +1672,8 @@ fn what_stands_behind_an_open_sheet_never_takes_its_input() {
 /// the entrance; a key opens it at once.
 #[test]
 fn a_dialog_arrives_from_its_centre_and_a_rebuilt_one_does_not_replay_it() {
-    use tilo_ui_base::motion::note_source;
     use crate::time::testing::with_monotonic_time;
+    use tilo_ui_base::motion::note_source;
     use tilo_ui_base::tokens::MotionSource;
     let theme = Theme::dark();
     let t0 = crate::time::now();
@@ -1743,9 +1743,9 @@ fn a_dialog_arrives_from_its_centre_and_a_rebuilt_one_does_not_replay_it() {
 
 #[test]
 fn a_shared_appearance_arrives_once_and_leaves_until_it_is_gone() {
-    use tilo_ui_base::{motion::Appearance, motion::note_source};
     use crate::time::testing::with_monotonic_time;
     use tilo_ui_base::tokens::MotionSource;
+    use tilo_ui_base::{motion::Appearance, motion::note_source};
     let theme = Theme::dark();
     let t0 = crate::time::now();
     let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);

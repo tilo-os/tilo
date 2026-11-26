@@ -199,7 +199,9 @@ impl tilo_ui_base::widget::Decorator for MenuButton {
         state: &mut tilo_ui_base::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
-        if matches!(action, tilo_ui_base::a11y::Action::Activate) && Widget::is_enabled(&self.button) {
+        if matches!(action, tilo_ui_base::a11y::Action::Activate)
+            && Widget::is_enabled(&self.button)
+        {
             if self.menu.is_open() {
                 self.menu.close();
             } else {
@@ -240,7 +242,13 @@ impl tilo_ui_base::widget::Decorator for MenuButton {
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         Widget::draw_overlay(
             &mut self.button,
-            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
         if let Some(window) = env.viewport {
             self.window = Some(window);
@@ -250,13 +258,14 @@ impl tilo_ui_base::widget::Decorator for MenuButton {
         {
             self.menu.reanchor(Widget::get_rect(&self.button), window);
         }
-        self.menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            env.clone(),
-        ));
+        self.menu
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
     }
 
     // A host reaches its menu button in a tree it does not own (a shell
@@ -324,7 +333,10 @@ impl tilo_ui_base::widget::Decorator for MenuButton {
         }
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
         if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
             request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
         } else if request.wants::<dyn tilo_ui_base::widget::resources::PublishesResources>() {
@@ -352,7 +364,9 @@ impl tilo_ui_base::widget::ResourceOperations for MenuButton {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         let mut handlers =
             tilo_ui_base::widget::resource_operation::resource_operation_handlers(&self.button);
-        handlers.extend(tilo_ui_base::widget::resource_operation::resource_operation_handlers(&self.menu));
+        handlers.extend(
+            tilo_ui_base::widget::resource_operation::resource_operation_handlers(&self.menu),
+        );
         handlers
     }
 
@@ -362,9 +376,12 @@ impl tilo_ui_base::widget::ResourceOperations for MenuButton {
         doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
-        if let Some(started) =
-            tilo_ui_base::widget::resource_operation::start_operation(&mut self.button, op, doc, path)?
-        {
+        if let Some(started) = tilo_ui_base::widget::resource_operation::start_operation(
+            &mut self.button,
+            op,
+            doc,
+            path,
+        )? {
             return Ok(Some(started));
         }
         tilo_ui_base::widget::resource_operation::start_operation(&mut self.menu, op, doc, path)
@@ -413,7 +430,9 @@ impl tilo_ui_base::widget::controls::ActionControls for MenuButton {
 
     fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         let mut bindings = tilo_ui_base::widget::controls::control_action_bindings(&self.button);
-        bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(&self.menu));
+        bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(
+            &self.menu,
+        ));
         bindings
     }
 
@@ -421,7 +440,13 @@ impl tilo_ui_base::widget::controls::ActionControls for MenuButton {
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
-        tilo_ui_base::widget::controls::refresh_control_action_availability(&mut self.button, allowed);
-        tilo_ui_base::widget::controls::refresh_control_action_availability(&mut self.menu, allowed);
+        tilo_ui_base::widget::controls::refresh_control_action_availability(
+            &mut self.button,
+            allowed,
+        );
+        tilo_ui_base::widget::controls::refresh_control_action_availability(
+            &mut self.menu,
+            allowed,
+        );
     }
 }

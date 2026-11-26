@@ -34,9 +34,9 @@ use tilo_session::platform::fabric::{
 };
 use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError};
 use tilo_session::{Options, Service, Session};
+use tilo_ui_base::host_operation::ResourceOperationStart;
 use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
 use tilo_workspace_service::workspaces::person_workspace::speaker::SpeakerEndpoint;
-use tilo_ui_base::host_operation::ResourceOperationStart;
 
 /// A laptop's radios in memory.
 #[derive(Default)]

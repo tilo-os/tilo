@@ -7,12 +7,17 @@
     reason = "in a test these are the assertion"
 )]
 
+use crate::testing::harness;
+use crate::{
+    widget::Checkbox, widget::CheckboxProps, widget::Dropdown, widget::DropdownProps,
+    widget::NumberInput, widget::NumberInputProps, widget::Slider, widget::SliderProps,
+    widget::Stepper, widget::StepperProps, widget::Toggle, widget::ToggleGroup,
+    widget::ToggleGroupProps, widget::ToggleProps, widget::ViewTabs, widget::ViewTabsProps,
+};
 use tilo_ui_base::component::testing::*;
 use tilo_ui_base::component::*;
-use tilo_ui_base::{component::Component, component::Described, component::Value};
-use crate::testing::harness;
-use crate::{widget::Checkbox, widget::CheckboxProps, widget::Dropdown, widget::DropdownProps, widget::NumberInput, widget::NumberInputProps, widget::Slider, widget::SliderProps, widget::Stepper, widget::StepperProps, widget::Toggle, widget::ToggleGroup, widget::ToggleGroupProps, widget::ToggleProps, widget::ViewTabs, widget::ViewTabsProps};
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{component::Component, component::Described, component::Value};
 
 tilo_test_env::scenario! {
     fn the_controls_read_their_props_and_report_what_a_person_does;

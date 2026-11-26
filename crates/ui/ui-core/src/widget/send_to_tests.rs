@@ -30,7 +30,8 @@ fn send(send_to: &mut SendToBox, event: &WindowEvent) -> bool {
 
 /// Give `send_to` a key with `modifiers` held.
 fn key(send_to: &mut SendToBox, key: Key, modifiers: Modifiers) -> bool {
-    let event = tilo_ui_base::synthetic_input::key_event(key, None, winit::event::ElementState::Pressed);
+    let event =
+        tilo_ui_base::synthetic_input::key_event(key, None, winit::event::ElementState::Pressed);
     send_held(
         send_to,
         &tilo_ui_base::synthetic_input::keyboard_input(event),
@@ -73,7 +74,10 @@ fn tab(send_to: &mut SendToBox, shift: bool) -> bool {
 /// Type `text` into the field the keyboard is in.
 fn type_text(send_to: &mut SendToBox, text: &str) {
     for ch in text.chars() {
-        send(send_to, &tilo_ui_base::synthetic_input::char_key(&ch.to_string()));
+        send(
+            send_to,
+            &tilo_ui_base::synthetic_input::char_key(&ch.to_string()),
+        );
     }
 }
 
@@ -784,7 +788,9 @@ fn a_reports_box_carries_its_files_as_chips_the_person_may_take_off() {
         "each stands as a chip of its own"
     );
     // The picture is taken off its chip, as a screen reader takes it off.
-    assert!(send_to.perform_semantic_action("send-to:subject:2", &tilo_ui_base::a11y::Action::Activate));
+    assert!(
+        send_to.perform_semantic_action("send-to:subject:2", &tilo_ui_base::a11y::Action::Activate)
+    );
     type_text(&mut send_to, "The send button does nothing");
     send_to.send();
     let requests = crate::shared_selection::take_send_to();

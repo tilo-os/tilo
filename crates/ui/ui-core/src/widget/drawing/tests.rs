@@ -1,9 +1,9 @@
 use vello::kurbo::{Point, Rect};
 
 use super::{Anchor, Drawing, Ink, Shape, Weight};
-use tilo_ui_base::{component::PropType, component::Value};
-use tilo_ui_base::theme::Theme;
 use crate::time::Duration;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{component::PropType, component::Value};
 use tilo_ui_base::{tokens::EffectiveMotion, tokens::Motion, tokens::TextRole};
 
 /// The `to` of the drawing's second arc as drawn at `at`.
@@ -336,8 +336,8 @@ tilo_test_env::scenario! {
 /// preview can show a theme other than the one in use; a name no theme has follows the window.
 #[test]
 fn a_named_theme_draws_in_its_colours() {
-    use tilo_ui_base::component::Described as _;
     use crate::widget::DrawingProps;
+    use tilo_ui_base::component::Described as _;
 
     let preview = |theme: Option<&str>| {
         Drawing::from_props(

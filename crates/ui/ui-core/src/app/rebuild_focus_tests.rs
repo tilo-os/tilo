@@ -1,8 +1,8 @@
 use super::*;
-use tilo_ui_base::widget::ModelPath;
-use tilo_ui_base::widget::TaffyTreeExt;
 use crate::widget::{Button, Text, TextInput};
 use automerge::AutoCommit;
+use tilo_ui_base::widget::ModelPath;
+use tilo_ui_base::widget::TaffyTreeExt;
 use vello::kurbo::Rect;
 
 /// Recreates its children on every `build_layout`: the focused

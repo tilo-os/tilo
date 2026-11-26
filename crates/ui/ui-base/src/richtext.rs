@@ -1140,11 +1140,7 @@ impl RichTextLayout {
     /// whose top stands in a band wraps to the width that band leaves and starts where its left
     /// inset puts it. The rows are laid out again at those widths, so the row tops and the ink
     /// reach cached above no longer hold.
-    pub fn set_row_bands(
-        &mut self,
-        fs: &mut FontSystem,
-        bands: &crate::text_render::RowBands,
-    ) {
+    pub fn set_row_bands(&mut self, fs: &mut FontSystem, bands: &crate::text_render::RowBands) {
         if self.buffer.row_bands() == bands {
             return;
         }

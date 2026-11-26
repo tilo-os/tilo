@@ -18,8 +18,8 @@ use tilo_session_core::surface::{Scroll, ShellSurface, SurfaceLayer};
 
 use tilo_onboarding_session::view::OnboardingView;
 use tilo_session_core::surfaces::{Published, through_api};
-use ui::device_local_api::SharedApi;
 use tilo_ui_base::host_operation::ResourceOperationStart;
+use ui::device_local_api::SharedApi;
 
 use crate::clock_wait::{ClockWait, ClockWaitStep};
 use crate::controls::SessionCommand;
@@ -315,7 +315,11 @@ impl Published for Setup {
         Published::a11y_name(self.widgets())
     }
 
-    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &tilo_ui_base::a11y::Action) -> bool {
+    fn a11y_action(
+        &mut self,
+        target: ui::accesskit::NodeId,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         self.up() && Published::a11y_action(self.widgets_mut(), target, action)
     }
 

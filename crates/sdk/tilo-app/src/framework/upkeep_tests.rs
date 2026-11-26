@@ -5,8 +5,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use ui_core::automerge::{AutoCommit, ROOT};
 use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
+use ui_core::automerge::{AutoCommit, ROOT};
 
 use super::*;
 

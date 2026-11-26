@@ -1,8 +1,8 @@
 //! [`ControlRow`] as a described component.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event};
 use crate::{widget::ControlRow, widget::Row};
 use tilo_ui_base::widget::Element;
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 /// A selectable row of a short list whose items carry their own controls.
 #[derive(Component, Default)]

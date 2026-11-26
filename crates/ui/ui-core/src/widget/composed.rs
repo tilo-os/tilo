@@ -6,10 +6,13 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use tilo_ui_base::widget::DrawChild;
-use tilo_ui_base::{widget::AppModel, widget::Element, widget::EventCtx, widget::ModelPath, widget::Widget, widget::layout_rect};
 use tilo_ui_base::i18n::I18nManager;
 use tilo_ui_base::interaction::InteractionEnvironment;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{
+    widget::AppModel, widget::Element, widget::EventCtx, widget::ModelPath, widget::Widget,
+    widget::layout_rect,
+};
 
 use tilo_ui_base::theme::Theme;
 

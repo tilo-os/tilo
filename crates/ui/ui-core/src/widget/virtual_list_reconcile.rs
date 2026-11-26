@@ -354,9 +354,9 @@ impl VirtualRows {
                             .as_any()
                             .is_some_and(|any| any.is::<crate::widget::ListRow>())
                         || (self.delegate_selection
-                            && tilo_ui_base::widget::capability::capability::<dyn super::RowSelectionSink>(
-                                row.widget.as_ref(),
-                            )
+                            && tilo_ui_base::widget::capability::capability::<
+                                dyn super::RowSelectionSink,
+                            >(row.widget.as_ref())
                             .is_some()))
             });
             let mut row = match previous {

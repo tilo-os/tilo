@@ -2,8 +2,8 @@
 //! screen the shell's shared layout tree is rooted at.
 
 use super::*;
-use tilo_ui_base::widget::TaffyTreeExt;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -48,13 +48,14 @@ impl Widget for DialogApp {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.dialog.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            env.clone(),
-        ));
+        self.dialog
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         self.seen.set(self.dialog.dialog_rect());
     }
     fn name(&self) -> &'static str {

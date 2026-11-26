@@ -1,11 +1,11 @@
 use super::*;
 use crate::app::driver::Driver;
-use tilo_ui_base::chrome::SelectionState;
 use crate::state::State;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::widget::Widget;
 use crate::widget::nav_list::nav_row::{NavRowFace, NavSectionFace};
 use std::cell::RefCell as Cell2;
+use tilo_ui_base::chrome::SelectionState;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 use vello::kurbo::Rect;
 use winit::event::ElementState;
 use winit::keyboard::{Key, NamedKey};
@@ -1403,8 +1403,8 @@ fn places(
     select: tilo_ui_base::component::Event,
     add: Option<tilo_ui_base::component::OfferedAction>,
 ) -> NavList {
-    use tilo_ui_base::component::Described;
     use crate::widget::{NavEntry, NavItemProps, NavListProps, NavSectionProps};
+    use tilo_ui_base::component::Described;
     let inbox = NavItemProps {
         key: "inbox".into(),
         label: "Inbox".into(),
@@ -2017,7 +2017,10 @@ fn bound_row_and_section_buttons_run_their_actions_with_the_row() {
             NavAction::new("archive", Icon::Archive, "Archive"),
             tilo_ui_base::widget::test_string_action_binding(),
         )
-        .section_action("new-folder", tilo_ui_base::widget::test_string_action_binding());
+        .section_action(
+            "new-folder",
+            tilo_ui_base::widget::test_string_action_binding(),
+        );
     let mut h = unowned(list);
     let work = list_of(&h).row_rect("work").expect("work");
     let s2 = f64::from(Theme::dark().tokens.spacing.s2);
@@ -2026,7 +2029,12 @@ fn bound_row_and_section_buttons_run_their_actions_with_the_row() {
     let bindings = tilo_ui_base::widget::controls::control_action_bindings(list_of(&h));
     let bound: Vec<&str> = bindings
         .iter()
-        .filter(|binding| matches!(binding.kind, tilo_ui_base::widget::ControlBindingKind::Action(_)))
+        .filter(|binding| {
+            matches!(
+                binding.kind,
+                tilo_ui_base::widget::ControlBindingKind::Action(_)
+            )
+        })
         .map(|binding| binding.control_id.as_str())
         .collect();
     assert!(
@@ -2117,7 +2125,10 @@ fn bound_check_rename_and_delete_run_their_actions() {
         bindings
             .iter()
             .any(|binding| binding.control_id.starts_with("key:")
-                && matches!(binding.kind, tilo_ui_base::widget::ControlBindingKind::Action(_))),
+                && matches!(
+                    binding.kind,
+                    tilo_ui_base::widget::ControlBindingKind::Action(_)
+                )),
         "a bound check is the checkable row's control: {bindings:?}"
     );
 }
@@ -2157,9 +2168,9 @@ fn a_zero_count_is_no_count() {
 // choosing one runs what the view bound, without the host's menu.
 #[test]
 fn a_rows_own_menu_opens_where_it_stands_and_runs_its_command() {
-    use tilo_ui_base::{component::Event, component::Fired, component::Intent};
     use crate::widget::MenuItemProps;
     use crate::widget::attached::MenuPart;
+    use tilo_ui_base::{component::Event, component::Fired, component::Intent};
     use winit::event::MouseButton;
 
     let queue = tilo_ui_base::Intents::<Fired>::default();

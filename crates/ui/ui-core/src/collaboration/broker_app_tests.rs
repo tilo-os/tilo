@@ -3,8 +3,14 @@
 //! runs against the collab crate's fake broker
 //! (`collaboration::test_support`).
 
-use tilo_ui_base::{collaboration::test_support::Captures, collaboration::test_support::FakeBroker, collaboration::test_support::eventually, collaboration::test_support::manager_on, collaboration::test_support::manager_on_resource_route, collaboration::test_support::ordinary_manager, collaboration::test_support::stand_up_fake_broker, collaboration::test_support::wake_channel};
 use std::sync::Arc;
+use tilo_ui_base::{
+    collaboration::test_support::Captures, collaboration::test_support::FakeBroker,
+    collaboration::test_support::eventually, collaboration::test_support::manager_on,
+    collaboration::test_support::manager_on_resource_route,
+    collaboration::test_support::ordinary_manager,
+    collaboration::test_support::stand_up_fake_broker, collaboration::test_support::wake_channel,
+};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -266,7 +272,11 @@ fn held_directory_observation(refused: bool) {
     let (scope, wakes) = wake_channel();
     let _entry = scope.enter();
     let (fd, captures, worker) = stand_up_fake_broker(broker);
-    let manager = manager_on(fd, &tilo_ui_base::collaboration::local_app_id(), Uuid::new_v4());
+    let manager = manager_on(
+        fd,
+        &tilo_ui_base::collaboration::local_app_id(),
+        Uuid::new_v4(),
+    );
     let mut app = crate::App::with_collaboration_manager(
         crate::State::new(),
         Box::new(crate::widget::Button::new("complete", "Complete").on_open(|| {})),

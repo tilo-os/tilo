@@ -4,12 +4,12 @@
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
-use tilo_ui_base::{icons, icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX};
+use crate::widget::{BadgeFace, BarControlFace, ChipStyle};
 use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::{BadgeFace, BarControlFace, ChipStyle};
+use tilo_ui_base::{icons, icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum StatusPart {

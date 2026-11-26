@@ -297,11 +297,23 @@ fn wizard_semantics_labels_live_regions_and_keyboard_order() {
     assert!(browse < next);
     let mut host = TestHost::capture(Some("customize"));
     for (id, role) in [
-        ("imager.profile.hostname", tilo_ui_base::a11y::Role::TextInput),
+        (
+            "imager.profile.hostname",
+            tilo_ui_base::a11y::Role::TextInput,
+        ),
         ("imager.profile.locale", tilo_ui_base::a11y::Role::ComboBox),
-        ("imager.profile.timezone", tilo_ui_base::a11y::Role::ComboBox),
-        ("imager.profile.keyboard", tilo_ui_base::a11y::Role::ComboBox),
-        ("imager.profile.filesystem", tilo_ui_base::a11y::Role::ComboBox),
+        (
+            "imager.profile.timezone",
+            tilo_ui_base::a11y::Role::ComboBox,
+        ),
+        (
+            "imager.profile.keyboard",
+            tilo_ui_base::a11y::Role::ComboBox,
+        ),
+        (
+            "imager.profile.filesystem",
+            tilo_ui_base::a11y::Role::ComboBox,
+        ),
     ] {
         host.harness()
             .expect(&ui::headless::SemanticExpectation::named(id).role(role))
@@ -369,7 +381,11 @@ fn step_rail_keeps_six_stations_inside_the_viewport() {
         assert!(bounds.x0 >= 0.0 && bounds.x1 <= f64::from(viewport.0));
         assert!(
             bounds.height()
-                >= f64::from(Theme::dark().text(tilo_ui_base::TextRole::Caption).line_height_px()),
+                >= f64::from(
+                    Theme::dark()
+                        .text(tilo_ui_base::TextRole::Caption)
+                        .line_height_px()
+                ),
             "the passive progress label fits its measured line"
         );
         assert!(

@@ -34,7 +34,11 @@ impl crate::floating_surface::FloatingSurfaceProvider for FocusProbe {
             .push((id.map(|id| format!("ime:{id}")), false));
     }
 
-    fn draw_floating_surface(&mut self, id: &str, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) -> bool {
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
+    ) -> bool {
         #[allow(
             unused_variables,
             unused_mut,
@@ -78,7 +82,10 @@ impl crate::floating_surface::FloatingSurfaceProvider for FocusProbe {
         }
         accepted
     }
-    fn floating_surface_ime(&self, id: &str) -> Option<(tilo_ui_base::ime::InputContent, KurboRect)> {
+    fn floating_surface_ime(
+        &self,
+        id: &str,
+    ) -> Option<(tilo_ui_base::ime::InputContent, KurboRect)> {
         (id == "a").then_some((
             tilo_ui_base::ime::InputContent::TEXT,
             KurboRect::new(-700.0, 500.0, -699.0, 520.0),

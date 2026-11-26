@@ -2,9 +2,9 @@ use std::thread;
 use std::time::Duration;
 
 use crate::support_collab::TypedBroker;
-use ui_core::app::App;
 use tilo_ui_base::collaboration::PresencePayload;
 use tilo_ui_base::presence::PresenceKey;
+use ui_core::app::App;
 use ui_core::state::State;
 use ui_core::widget::Container;
 

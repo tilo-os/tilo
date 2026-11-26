@@ -959,7 +959,10 @@ fn a_change_that_cannot_be_saved_says_so_and_can_be_retried() {
         });
     assert_eq!(
         fixture.app.document_sync_status().as_deref(),
-        Some(tilo_ui_base::i18n::I18nManager::lookup_plain("history-local-action-not-saved").as_str())
+        Some(
+            tilo_ui_base::i18n::I18nManager::lookup_plain("history-local-action-not-saved")
+                .as_str()
+        )
     );
     assert!(fixture.app.has_unsaved_changes_to_retry());
     // The header shows Retry beside the message: the window's own action.
@@ -1031,7 +1034,8 @@ fn the_header_retry_button_runs_the_windows_retry() {
 /// edit lands at once.
 #[test]
 fn edits_on_a_connection_that_admits_no_reports_land_and_say_history_misses_them() {
-    let unrecorded = tilo_ui_base::i18n::I18nManager::lookup_plain("history-local-action-unrecorded");
+    let unrecorded =
+        tilo_ui_base::i18n::I18nManager::lookup_plain("history-local-action-unrecorded");
     let (mut fixture, sent) = capturing_fixture();
     let address = capture_address(&mut fixture);
     let heads = |fixture: &ActionFixture| {
@@ -1098,10 +1102,11 @@ fn a_local_report_follows_the_executed_child_owner_and_never_another_connection(
     fixture.app.collaboration.manager =
         CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
     fixture.app.local_author = fixture.bindings[0].author.clone();
-    fixture.app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
-        route: fixture.bindings[0].broker_route().unwrap(),
-        epoch: uuid::Uuid::new_v4(),
-    });
+    fixture.app.actions.bound_broker_route_for_test =
+        Some(tilo_ui_base::collaboration::AcceptedRoute {
+            route: fixture.bindings[0].broker_route().unwrap(),
+            epoch: uuid::Uuid::new_v4(),
+        });
     for binding in &fixture.bindings {
         fixture
             .app

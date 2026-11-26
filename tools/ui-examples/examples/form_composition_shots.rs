@@ -2,10 +2,15 @@
 //! `cargo run -p ui-examples --example form-composition-shots -- /tmp/form-composition`
 use std::path::PathBuf;
 use tilo_ui::headless::Driver;
+use tilo_ui::widget::ButtonRole;
+use tilo_ui::{
+    widget::Actions, widget::Button, widget::Checkbox, widget::Column, widget::Container,
+    widget::Dropdown, widget::Field, widget::Form, widget::FormPage, widget::FormSection,
+    widget::Page, widget::Property, widget::PropertyList, widget::Row, widget::Scrollable,
+    widget::Section, widget::Text, widget::TextInput, widget::Toggle,
+};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use tilo_ui::widget::ButtonRole;
-use tilo_ui::{widget::Actions, widget::Button, widget::Checkbox, widget::Column, widget::Container, widget::Dropdown, widget::Field, widget::Form, widget::FormPage, widget::FormSection, widget::Page, widget::Property, widget::PropertyList, widget::Row, widget::Scrollable, widget::Section, widget::Text, widget::TextInput, widget::Toggle};
 use tilo_ui_base::{widget::Density, widget::Element, widget::LabelPlacement};
 
 const NAME: &str = "Full name";

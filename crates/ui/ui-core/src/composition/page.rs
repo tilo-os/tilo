@@ -434,14 +434,15 @@ fn call_into(element: &mut Element, node: &Composed) {
             .as_deref()
             .is_some_and(|live| live.ends_with("/screen"));
         if screen {
-            pill.own
-                .push_str(&tilo_ui_base::icons::glyph_svg(tilo_ui_base::icons::Icon::ScreenShare));
+            pill.own.push_str(&tilo_ui_base::icons::glyph_svg(
+                tilo_ui_base::icons::Icon::ScreenShare,
+            ));
         }
         let mut muted = Element::new("span");
         muted.attr("class", "tilo-call-muted");
-        muted
-            .own
-            .push_str(&tilo_ui_base::icons::glyph_svg(tilo_ui_base::icons::Icon::MicOff));
+        muted.own.push_str(&tilo_ui_base::icons::glyph_svg(
+            tilo_ui_base::icons::Icon::MicOff,
+        ));
         pill.children.push(muted);
         let mut words = Element::new("span");
         words.own.push_str(&escape(name));
@@ -756,9 +757,9 @@ impl Page {
                 // A labelled button that opens a menu ends in its down chevron, as the app paints
                 // it: it reads as a choice, not an action.
                 if access.role == Role::Button && access.state.expanded.is_some() {
-                    element
-                        .own
-                        .push_str(&tilo_ui_base::icons::glyph_svg(tilo_ui_base::icons::Icon::ChevronDown));
+                    element.own.push_str(&tilo_ui_base::icons::glyph_svg(
+                        tilo_ui_base::icons::Icon::ChevronDown,
+                    ));
                 }
             }
             (Shows::Call, _) => call_into(&mut element, node),
@@ -1186,9 +1187,9 @@ fn drawn_into(element: &mut Element, access: &AccessNode, drawn: &tilo_ui_base::
     );
     // A row that opens a nested menu ends in its chevron, in place of its trailing text.
     if access.state.expanded.is_some() {
-        element
-            .own
-            .push_str(&tilo_ui_base::icons::glyph_svg(tilo_ui_base::icons::Icon::ChevronRight));
+        element.own.push_str(&tilo_ui_base::icons::glyph_svg(
+            tilo_ui_base::icons::Icon::ChevronRight,
+        ));
     } else if let Some(trailing) = drawn.trailing.as_deref().filter(|text| !text.is_empty()) {
         let _ = write!(
             element.own,
@@ -1523,7 +1524,8 @@ fn appear_style(layer: &Composed) -> String {
     let anchor = Point::new(anchor[0], anchor[1]);
     let origin = Appear::origin(surface, anchor);
     // The tokens' own motion, never reduced: the stylesheet decides whether it moves.
-    let moving = tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), false);
+    let moving =
+        tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), false);
     let start = Appear::coming(0.0, Direction::Enter, surface, anchor, moving);
     format!(
         "transform-origin:{:.1}px {:.1}px;--tilo-appear-from:translate({:.1}px,{:.1}px) scale({:.3});",
@@ -1596,23 +1598,24 @@ pub fn theme_css(theme: &tilo_ui_base::Theme) -> String {
     let fast = motion.tokens().durations.fast();
     let (_, settle) = tilo_ui_base::motion::ControlChange::SHOW.css_entrance(motion, |p| p);
     let appear = tilo_ui_base::motion::Appear::SPEC;
-    let (appear_time, appear_curve, appear_props, held_curve, held_rise) = if motion.still()
-        || motion.reduced()
-    {
-        let (time, curve) = appear.css_entrance(motion, |p| p);
-        (time, curve.clone(), "opacity", curve, 0.0)
-    } else {
-        let (time, opacity) = appear.css_entrance(motion, |p| tilo_ui_base::motion::Appear::arriving(p).0);
-        let (_, transform) = appear.css_entrance(motion, |p| tilo_ui_base::motion::Appear::arriving(p).1);
-        let (_, held) = appear.css_entrance(motion, tilo_ui_base::motion::Appear::holding);
-        (
-            time,
-            format!("{opacity},{transform}"),
-            "opacity,transform",
-            held,
-            tilo_ui_base::motion::Appear::HELD_RISE,
-        )
-    };
+    let (appear_time, appear_curve, appear_props, held_curve, held_rise) =
+        if motion.still() || motion.reduced() {
+            let (time, curve) = appear.css_entrance(motion, |p| p);
+            (time, curve.clone(), "opacity", curve, 0.0)
+        } else {
+            let (time, opacity) =
+                appear.css_entrance(motion, |p| tilo_ui_base::motion::Appear::arriving(p).0);
+            let (_, transform) =
+                appear.css_entrance(motion, |p| tilo_ui_base::motion::Appear::arriving(p).1);
+            let (_, held) = appear.css_entrance(motion, tilo_ui_base::motion::Appear::holding);
+            (
+                time,
+                format!("{opacity},{transform}"),
+                "opacity,transform",
+                held,
+                tilo_ui_base::motion::Appear::HELD_RISE,
+            )
+        };
     let motion_props = format!(
         "--tilo-fade:{}ms;--tilo-move:{}ms;--tilo-settle:{settle};--tilo-appear-time:{}ms;--tilo-appear-curve:{appear_curve};--tilo-appear-props:{appear_props};--tilo-held-curve:{held_curve};--tilo-held-rise:{held_rise}px;",
         motion.fade(fast).as_millis(),

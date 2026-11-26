@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use tilo_ui_base::gpu::RenderContext;
 use tilo_ui::vello::wgpu;
 use tilo_ui::winit::{
     application::ApplicationHandler,
@@ -11,6 +10,7 @@ use tilo_ui::winit::{
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
 };
+use tilo_ui_base::gpu::RenderContext;
 
 #[derive(Default)]
 struct Probe {

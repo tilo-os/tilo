@@ -1,21 +1,21 @@
+use crate::widget::ControlSize;
+use crate::widget::Interaction;
+use crate::widget::badge::{BadgeMetrics, CountBadge};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_ui_base::component::Person;
 use tilo_ui_base::i18n::widget_text;
 use tilo_ui_base::num::f32_of_f64;
 use tilo_ui_base::paint::PaintCtx;
 #[cfg(feature = "model")]
 use tilo_ui_base::permissions::PermissionScope;
-use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST;
 use tilo_ui_base::widget::ActionEmitter;
-use crate::widget::ControlSize;
-use crate::widget::Interaction;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
-use crate::widget::badge::{BadgeMetrics, CountBadge};
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::Tone};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -145,7 +145,9 @@ fn theme_key(theme: &Theme) -> ThemeKey {
         colors.semantic.danger,
         colors.intent.accent_ink,
         theme.tokens.radii.control.to_bits(),
-        theme.painter(tilo_ui_base::tokens::SurfaceRole::Control).id(),
+        theme
+            .painter(tilo_ui_base::tokens::SurfaceRole::Control)
+            .id(),
     )
 }
 
@@ -220,7 +222,9 @@ impl Button {
             in_window_bar: false,
             last_state: (false, false, false, true),
             last_theme: None,
-            motion: tilo_ui_base::part_paint::PartMotion::new(tilo_ui_base::part_paint::States::REST),
+            motion: tilo_ui_base::part_paint::PartMotion::new(
+                tilo_ui_base::part_paint::States::REST,
+            ),
             painted_hit: None,
         }
     }
@@ -875,7 +879,10 @@ tilo_ui_base::choice!(ButtonRole, "ButtonRole", {
 /// Glyphs authored as one closed outline, so a toggle that is on draws them
 /// filled (a starred item, a pinned one).
 fn fills_when_on(icon: tilo_ui_base::icons::Icon) -> bool {
-    matches!(icon, tilo_ui_base::icons::Icon::Star | tilo_ui_base::icons::Icon::Pin)
+    matches!(
+        icon,
+        tilo_ui_base::icons::Icon::Star | tilo_ui_base::icons::Icon::Pin
+    )
 }
 
 type FaceColors = (
@@ -1250,8 +1257,8 @@ impl FaceContent<'_> {
         if self.label.is_empty() && self.hint.is_none() && self.detail.is_none() {
             if !self.faces.is_empty() {
                 let pad = if self.flush { 0.0 } else { metrics.pad_x };
-                let group =
-                    tilo_ui_base::presence::FaceStack::in_face(height).group_width(self.faces.len());
+                let group = tilo_ui_base::presence::FaceStack::in_face(height)
+                    .group_width(self.faces.len());
                 return (group + 2.0 * pad).ceil();
             }
             return height;
@@ -1264,7 +1271,8 @@ impl FaceContent<'_> {
             width += metrics.icon + metrics.icon_gap;
         }
         if !self.faces.is_empty() {
-            width += tilo_ui_base::presence::FaceStack::in_face(height).group_width(self.faces.len())
+            width += tilo_ui_base::presence::FaceStack::in_face(height)
+                .group_width(self.faces.len())
                 + metrics.icon_gap;
         }
         if !self.label.is_empty() {
@@ -1656,7 +1664,11 @@ impl FacePaint<'_> {
         let edge = if bordered {
             None
         } else if self.field && self.role == ButtonRole::Secondary {
-            edge.or_else(|| Some(tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.raised)))
+            edge.or_else(|| {
+                Some(tilo_ui_base::surface::edge_on(
+                    theme.tokens.colors.surfaces.raised,
+                ))
+            })
         } else {
             edge
         };
@@ -1954,7 +1966,10 @@ impl<'a> ButtonFace<'a> {
                 menu: false,
             },
             metrics,
-            moment: tilo_ui_base::part_paint::Moment::settled(container_states(self.interact, self.on)),
+            moment: tilo_ui_base::part_paint::Moment::settled(container_states(
+                self.interact,
+                self.on,
+            )),
         }
     }
 }
@@ -2118,7 +2133,9 @@ impl Button {
 
     fn takes(&self, point: Point) -> bool {
         match &self.painted_hit {
-            Some(hit) => tilo_ui_base::part_paint::hit_contains(hit, point - self.rect.origin().to_vec2()),
+            Some(hit) => {
+                tilo_ui_base::part_paint::hit_contains(hit, point - self.rect.origin().to_vec2())
+            }
             None => self.hit_rect().contains(point),
         }
     }
@@ -2501,7 +2518,8 @@ impl Widget for Button {
         // A button only its host places has no node for the solver to
         // measure: the host sizes it, however hidden or unplaced it is.
         self.solver_placed
-            && (self.layout_dirty || self.i18n_revision != tilo_ui_base::i18n::I18nManager::revision())
+            && (self.layout_dirty
+                || self.i18n_revision != tilo_ui_base::i18n::I18nManager::revision())
     }
 
     /// The solver measured the face it asked for, whether or not this frame

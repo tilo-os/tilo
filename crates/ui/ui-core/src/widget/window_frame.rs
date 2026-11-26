@@ -27,18 +27,22 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartViews};
-use tilo_ui_base::icons::Icon;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{tokens::Rhythm, tokens::SpacingStep, tokens::TextRole};
-use tilo_ui_base::widget::DrawChild;
-use tilo_ui_base::widget::Length;
 use crate::widget::arrange::{Align, At, Fit, Layers, Part, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
 use crate::widget::tabs::{TAB_BAR_HEIGHT, TabBar, TabStrip};
 use crate::widget::window_controls::WindowControls;
 use crate::widget::window_header::header_row::HeaderRowMetrics;
-use crate::{widget::IconSize, widget::IconWidget, widget::Text, widget::WindowBar, widget::WindowBarPart};
+use crate::{
+    widget::IconSize, widget::IconWidget, widget::Text, widget::WindowBar, widget::WindowBarPart,
+};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Length;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PartViews,
+};
+use tilo_ui_base::{tokens::Rhythm, tokens::SpacingStep, tokens::TextRole};
 use tilo_ui_base::{widget::Decorator, widget::Element, widget::Spacer, widget::Widget};
 
 /// A window on a shell: the window surface with its edge and shadow, holding the
@@ -956,7 +960,8 @@ impl Decorator for WindowFrame {
     /// Whether the window is arriving, going or moving: what asks for frames while it does,
     /// and what its own content asks for.
     fn needs_animation_frame(&self) -> bool {
-        self.placed.is_moving(tilo_ui_base::motion::frame_now()) || self.layers.needs_animation_frame()
+        self.placed.is_moving(tilo_ui_base::motion::frame_now())
+            || self.layers.needs_animation_frame()
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
@@ -1117,9 +1122,9 @@ impl WindowFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::{component::Described, component::Event, component::ResourceId};
-    use tilo_ui_base::presence::PresenceCtx;
     use crate::widget::{TabItemProps, TabStrip, TabStripProps};
+    use tilo_ui_base::presence::PresenceCtx;
+    use tilo_ui_base::{component::Described, component::Event, component::ResourceId};
     use vello::Scene;
     use vello::kurbo::Affine;
 
@@ -1231,7 +1236,8 @@ mod tests {
         let rect = Rect::new(40.0, 40.0, 200.0, 160.0);
         for theme in [Theme::dark(), Theme::light()] {
             let front = rendered(&theme, true, rect);
-            let (r, g, b, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(&front, 240, 120, 39);
+            let (r, g, b, _) =
+                tilo_ui_base::offscreen::OffscreenRenderer::sample(&front, 240, 120, 39);
             let accent = theme.tokens.colors.window_edge_focused().to_rgba8();
             let near = |seen: u8, want: u8| (i32::from(seen) - i32::from(want)).abs() <= 12;
             assert!(
@@ -1614,7 +1620,10 @@ mod tests {
             frame.as_mut(),
             &tilo_ui_base::synthetic_input::cursor_moved(bar.center().x, bar.center().y),
         );
-        send(frame.as_mut(), &tilo_ui_base::synthetic_input::mouse_press());
+        send(
+            frame.as_mut(),
+            &tilo_ui_base::synthetic_input::mouse_press(),
+        );
         assert!(
             queue.take().is_empty(),
             "a window on its way out takes no press"
@@ -1643,7 +1652,10 @@ mod tests {
             },
             false,
         );
-        let reduced = tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), true);
+        let reduced = tilo_ui_base::tokens::EffectiveMotion::new(
+            tilo_ui_base::tokens::Motion::default(),
+            true,
+        );
         for motion in [still, reduced] {
             let mut frame = WindowFrame::from_props(
                 "w",
@@ -1742,7 +1754,10 @@ mod tests {
         );
         for step in 1..=4 {
             let dy = 12.0 * f64::from(step);
-            send(&tilo_ui_base::synthetic_input::cursor_moved(from_x, from_y + dy));
+            send(&tilo_ui_base::synthetic_input::cursor_moved(
+                from_x,
+                from_y + dy,
+            ));
         }
         let in_flight = drag_bus::current();
         let target = Rect::new(60.0, 200.0, 400.0, 320.0);
@@ -1853,7 +1868,10 @@ mod tests {
         );
         for step in 1..=4 {
             let dx = 12.0 * f64::from(step);
-            send(&tilo_ui_base::synthetic_input::cursor_moved(from_x + dx, from_y));
+            send(&tilo_ui_base::synthetic_input::cursor_moved(
+                from_x + dx,
+                from_y,
+            ));
         }
         let in_flight = drag_bus::current();
         let target = Rect::new(60.0, 200.0, 400.0, 320.0);

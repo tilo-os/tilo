@@ -323,8 +323,8 @@ fn read_resources(driver: &Driver) -> Vec<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::headless::parse_spec;
     use crate::State;
+    use crate::headless::parse_spec;
     use tilo_ui_base::Theme;
 
     fn field(value: &str) -> Driver {

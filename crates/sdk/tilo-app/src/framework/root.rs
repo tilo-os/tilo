@@ -11,22 +11,22 @@ use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use crate::runner::{with_native_presentations, with_view_operations};
 use tilo_resource::{Resource, SearchEntry};
 use tilo_ui_base::PresencePayload;
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart};
+use tilo_ui_base::presence::PresenceKey;
+use tilo_ui_base::{LocalState, Theme};
+use tilo_ui_base::{permissions::LivePermissions, permissions::PermissionScope};
+use tilo_ui_base::{widget::Element, widget::Widget};
+use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
 use ui_core::application_view::{
     ApplicationFocusRestore, ApplicationLocalView, ApplicationViewState,
 };
 use ui_core::automerge::AutoCommit;
-use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart};
-use tilo_ui_base::{permissions::LivePermissions, permissions::PermissionScope};
-use tilo_ui_base::presence::PresenceKey;
 use ui_core::resource::ResourceSaveStatus;
 use ui_core::search::SearchProvider;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::Affine;
 use ui_core::view::ThawError;
-use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
 use ui_core::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
-use tilo_ui_base::{widget::Element, widget::Widget};
-use tilo_ui_base::{LocalState, Theme};
 
 use super::dispatch::DispatchCore;
 use super::rows::{find, join, outside_document};
@@ -266,9 +266,11 @@ impl ui_core::widget::WindowHistory for ResourceRoot {
         control: ui_core::widget::HistoryControl,
     ) -> Result<(), String> {
         with_app_view_mut(&mut self.content, |view| {
-            tilo_ui_base::widget::capability::capability_mut::<dyn ui_core::widget::WindowHistory>(view)
-                .ok_or("History is unavailable")?
-                .invoke_window_history_control(control)
+            tilo_ui_base::widget::capability::capability_mut::<dyn ui_core::widget::WindowHistory>(
+                view,
+            )
+            .ok_or("History is unavailable")?
+            .invoke_window_history_control(control)
         })
     }
 }
@@ -1481,7 +1483,11 @@ impl RootModel for ResourceRoot {
         self.sync_over(state, path);
     }
 
-    fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
+    fn settle(
+        &mut self,
+        edits: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &ui_core::automerge::ObjId,
+    ) {
         self.typed.apply_settlements(edits);
         self.content.settle(edits, path);
         self.storage.settle();
@@ -2009,7 +2015,8 @@ impl tilo_ui_base::widget::Collaborative for ResourceRoot {
         let mut requests =
             tilo_ui_base::widget::Collaborative::take_collab_requests(self.share.remote_mut());
         if let Some(actions) = self.shown_to_ask() {
-            requests.push(tilo_ui_base::collaboration::CollabRequest::DecideShownActions { actions });
+            requests
+                .push(tilo_ui_base::collaboration::CollabRequest::DecideShownActions { actions });
         }
         if let Some(mut api) = self.dispatch.opener.api() {
             requests.extend(tilo_ui_base::widget::Collaborative::take_collab_requests(
@@ -2431,7 +2438,12 @@ impl RootPublishes for ResourceRoot {
                 None => Some(serde_json::json!({ "minted": minted })),
             };
         }
-        tilo_ui_base::widget::resources::document_action_result(self.app_view(), doc, address, changes)
+        tilo_ui_base::widget::resources::document_action_result(
+            self.app_view(),
+            doc,
+            address,
+            changes,
+        )
     }
 }
 
@@ -2553,7 +2565,8 @@ impl tilo_ui_base::widget::presence_topology::Presences for ResourceRoot {
         &self,
         doc: &ui_core::automerge::AutoCommit,
     ) -> Vec<tilo_ui_base::widget::ViewPresence> {
-        let mut shown = tilo_ui_base::widget::presence_topology::presences(self.content.as_ref(), doc);
+        let mut shown =
+            tilo_ui_base::widget::presence_topology::presences(self.content.as_ref(), doc);
         for landed in self.typed.landed_presences(self.dispatch.app_id()) {
             if !shown.iter().any(|view| view.presence == landed.presence) {
                 shown.push(landed);
@@ -2563,7 +2576,10 @@ impl tilo_ui_base::widget::presence_topology::Presences for ResourceRoot {
     }
 
     fn set_remote_only(&mut self, remote_only: bool) {
-        tilo_ui_base::widget::presence_topology::set_remote_only(self.content.as_mut(), remote_only);
+        tilo_ui_base::widget::presence_topology::set_remote_only(
+            self.content.as_mut(),
+            remote_only,
+        );
     }
 }
 

@@ -2,8 +2,8 @@
 //! the narrowed column until they pass its bottom, and take the whole width again below it.
 
 use super::*;
-use ui::testing::Dispatch;
 use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
+use ui::testing::Dispatch;
 use winit::event::MouseButton;
 
 /// One visual row of a line: where its words start and end, and which bytes they are.
@@ -43,7 +43,8 @@ impl FloatEditor {
             .any(|block| standalone_markdown_image(block.text()).is_some());
         editor.set_blocks(blocks);
         let bytes = ui::png::encode_rgba8(200, 200, &vec![200; 200 * 200 * 4]).unwrap();
-        let fetch: tilo_ui_base::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
+        let fetch: tilo_ui_base::image_store::Fetcher =
+            std::sync::Arc::new(move |_| Some(bytes.clone()));
         editor.set_image_store(Some(tilo_ui_base::ImageStore::new(&fetch)));
         if has_picture {
             assert!(

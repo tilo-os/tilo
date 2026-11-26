@@ -1,8 +1,8 @@
 //! [`StatusLine`] and [`ObjectHeader`] as described components.
 
-use tilo_ui_base::{component::Component, component::Described, component::Person};
-use tilo_ui_base::icons::Icon;
 use crate::widget::list_row::RowStatus;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{component::Component, component::Described, component::Person};
 
 use super::{ObjectHeader, ObjectLead, StatusLine};
 

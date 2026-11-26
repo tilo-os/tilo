@@ -2,6 +2,7 @@
 
 use vello::kurbo::{Point, Rect, Size};
 
+use crate::widget::{ChipFace, ChipLead};
 use tilo_ui_base::format;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
@@ -9,7 +10,6 @@ use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::Tone;
-use crate::widget::{ChipFace, ChipLead};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AttachmentKind {

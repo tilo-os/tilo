@@ -344,7 +344,9 @@ impl PeopleDevice {
         actions.push(PersonAction {
             id: PAIR_DEVICE.to_owned(),
             title: crate::i18n::t("profile-action-pair-device"),
-            icon: tilo_ui_base::icons::Icon::MonitorSmartphone.name().to_owned(),
+            icon: tilo_ui_base::icons::Icon::MonitorSmartphone
+                .name()
+                .to_owned(),
             group: "devices".to_owned(),
         });
         // Everything that acts as the person, and taking any of it back.
@@ -1110,7 +1112,9 @@ fn clock(at: u64, read: fn(&tilo_ui_base::format::UnixSecs) -> String) -> String
 /// second apart.
 fn clock_millis(at: u64) -> String {
     i64::try_from(at)
-        .map(|millis| tilo_ui_base::format::time_of_with_millis(&tilo_ui_base::format::UnixMillis(millis)))
+        .map(|millis| {
+            tilo_ui_base::format::time_of_with_millis(&tilo_ui_base::format::UnixMillis(millis))
+        })
         .unwrap_or_default()
 }
 

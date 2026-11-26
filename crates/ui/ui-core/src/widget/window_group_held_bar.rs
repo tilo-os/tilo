@@ -1,7 +1,7 @@
 //! The window's bar held by the row its app draws.
 use super::WindowGroup;
-use tilo_ui_base::widget::Widget;
 use crate::widget::window_controls::{ControlsState, WindowControl};
+use tilo_ui_base::widget::Widget;
 use vello::kurbo::Point;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 

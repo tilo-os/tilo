@@ -5,13 +5,13 @@
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 
-use tilo_ui_base::{icons::LUCIDE_DEFAULT_STROKE_PX, icons::draw_icon};
+use crate::widget::completion::Candidate;
 use tilo_ui_base::num::f32_of_f64;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::completion::Candidate;
+use tilo_ui_base::{icons::LUCIDE_DEFAULT_STROKE_PX, icons::draw_icon};
 
 /// Paint `candidate`'s card beside `drawer`, inside `viewport`: on the trailing side where it
 /// fits, otherwise the leading side; nothing where neither fits.

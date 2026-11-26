@@ -34,7 +34,8 @@ pub(super) fn field_after_enter(tree: &UiNode, key: &str) -> Option<String> {
                 description.bindings.iter().any(|binding| {
                     matches!(
                         binding.ty,
-                        tilo_ui_base::component::Type::Text | tilo_ui_base::component::Type::RichText
+                        tilo_ui_base::component::Type::Text
+                            | tilo_ui_base::component::Type::RichText
                     )
                 })
             })
@@ -104,7 +105,10 @@ pub(super) fn shortcut_action_where(
     declared_within(node, pressed)
 }
 
-fn declared_action(node: &UiNode, pressed: &tilo_ui_base::platform::Shortcut) -> Option<(String, String)> {
+fn declared_action(
+    node: &UiNode,
+    pressed: &tilo_ui_base::platform::Shortcut,
+) -> Option<(String, String)> {
     // A control that cannot be pressed now does not answer its key either: a click on it does
     // nothing.
     let disabled = node.props.contains_key("enabled") && !crate::reconcile::flag(node, "enabled");
@@ -157,7 +161,10 @@ fn offered_within(value: &Value, pressed: &tilo_ui_base::platform::Shortcut) -> 
     }
 }
 
-fn declared_within(node: &UiNode, pressed: &tilo_ui_base::platform::Shortcut) -> Option<(String, String)> {
+fn declared_within(
+    node: &UiNode,
+    pressed: &tilo_ui_base::platform::Shortcut,
+) -> Option<(String, String)> {
     declared_action(node, pressed).or_else(|| {
         node.children
             .iter()
@@ -173,7 +180,9 @@ pub(super) fn declares(node: &UiNode, pressed: &tilo_ui_base::platform::Shortcut
     );
     one || match node.props.get("keys") {
         Some(Value::List(keys)) => keys.iter().any(|key| match key {
-            Value::Text(key) => tilo_ui_base::platform::Shortcut::from(key.as_str()).same_press(pressed),
+            Value::Text(key) => {
+                tilo_ui_base::platform::Shortcut::from(key.as_str()).same_press(pressed)
+            }
             _ => false,
         }),
         _ => false,
@@ -223,7 +232,10 @@ pub(super) fn takes_typing(widget: &dyn Widget) -> bool {
 /// the end of a list, where the app's key puts the person instead of making an empty item. It
 /// answers before any control: a header or bar button that names the same key leads the person to
 /// the entry the app wrote for it.
-pub(super) fn focus_field(node: &UiNode, pressed: &tilo_ui_base::platform::Shortcut) -> Option<String> {
+pub(super) fn focus_field(
+    node: &UiNode,
+    pressed: &tilo_ui_base::platform::Shortcut,
+) -> Option<String> {
     if text_field(node) && declares(node, pressed) {
         return Some(node.key.clone());
     }
@@ -232,7 +244,10 @@ pub(super) fn focus_field(node: &UiNode, pressed: &tilo_ui_base::platform::Short
         .find_map(|child| focus_field(child, pressed))
 }
 
-pub(super) fn shortcut_declared(node: &UiNode, key: &str) -> Option<tilo_ui_base::platform::Shortcut> {
+pub(super) fn shortcut_declared(
+    node: &UiNode,
+    key: &str,
+) -> Option<tilo_ui_base::platform::Shortcut> {
     let control = node.kind == crate::adapter::kind("Button")
         || node.kind == crate::adapter::kind("MenuItem");
     if control

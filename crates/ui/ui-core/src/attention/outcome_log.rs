@@ -120,7 +120,10 @@ impl Entry {
                 "attention-because",
                 &[
                     ("about", tilo_ui_base::i18n::ArgValue::from(about.clone())),
-                    ("because", tilo_ui_base::i18n::ArgValue::from(because.clone())),
+                    (
+                        "because",
+                        tilo_ui_base::i18n::ArgValue::from(because.clone()),
+                    ),
                 ],
             ),
         }

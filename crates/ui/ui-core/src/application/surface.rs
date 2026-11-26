@@ -8,7 +8,9 @@ use super::{
 };
 use crate::application_view::InstanceViewStore;
 use crate::launch::LaunchError;
-use tilo_ui_base::{permissions::MemberId, permissions::PermissionContext, permissions::SharedPermissions};
+use tilo_ui_base::{
+    permissions::MemberId, permissions::PermissionContext, permissions::SharedPermissions,
+};
 
 /// Prepare `definition` as one of the shell surface apps (the
 /// bar, the banners, Quick Settings, a sheet): as `person` on `device`, its

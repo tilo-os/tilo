@@ -663,7 +663,10 @@ decorator_trait! {
     }
 }
 
-#[::tilo_ui_base::component::not_a_component(framework, "the host names what a view's control does")]
+#[::tilo_ui_base::component::not_a_component(
+    framework,
+    "the host names what a view's control does"
+)]
 pub struct Identified {
     content: Element,
     identity: String,
@@ -749,4 +752,3 @@ impl Decorator for Identified {
         node
     }
 }
-

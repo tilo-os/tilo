@@ -10,30 +10,33 @@
 //! text scale. Selection is the lift (HIG §9.3), and rows sit edge to edge, with no rule
 //! between them.
 
-use tilo_ui_base::i18n::widget_text;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use tilo_ui_base::i18n::widget_text;
 
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
-use tilo_ui_base::{chrome::RowJoin, chrome::SelectionState};
 use tilo_ui_base::component::Person;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::{chrome::RowJoin, chrome::SelectionState};
 
-use tilo_ui_base::{text_render::FontChoice, text_render::TextRenderer};
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::TextRole;
-use tilo_ui_base::tokens::colors::PresenceHue;
 use crate::widget::activation::{Activation, Interaction};
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::tokens::colors::PresenceHue;
+use tilo_ui_base::{text_render::FontChoice, text_render::TextRenderer};
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{Color, ImageData};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use tilo_ui_base::widget::avatar_face::AvatarFace;
 use crate::{widget::ChipStyle, widget::Fact, widget::MediaArt, widget::MediaSource};
-use tilo_ui_base::{widget::ActionEmitter, widget::DrawChild, widget::Element, widget::MediaAspect, widget::TaffyTreeExt, widget::Tone, widget::Widget};
+use tilo_ui_base::widget::avatar_face::AvatarFace;
+use tilo_ui_base::{
+    widget::ActionEmitter, widget::DrawChild, widget::Element, widget::MediaAspect,
+    widget::TaffyTreeExt, widget::Tone, widget::Widget,
+};
 
 /// Who made what a row shows, as the fields the row paints: the person's face and
 /// their name, then what wrote for them — an agent, an app, a program — as a chip
@@ -158,7 +161,8 @@ pub fn badge_column_width(text: &mut TextRenderer, theme: &Theme, badges: &[&str
 fn row_fill(theme: &Theme, selected: bool, hovered: bool) -> Option<Color> {
     let state = SelectionState::new(selected, hovered, false);
     (selected || hovered).then(|| {
-        tilo_ui_base::chrome::selection_tier_on(theme, state, theme.tokens.colors.surfaces.content).fill
+        tilo_ui_base::chrome::selection_tier_on(theme, state, theme.tokens.colors.surfaces.content)
+            .fill
     })
 }
 
@@ -2085,7 +2089,11 @@ impl ListRow {
             (geo.second_right - geo.text_x).max(0.0)
         });
         let lines = text
-            .wrap_lines(secondary, &metrics.secondary, tilo_ui_base::num::f32_of_f64(width))
+            .wrap_lines(
+                secondary,
+                &metrics.secondary,
+                tilo_ui_base::num::f32_of_f64(width),
+            )
             .len();
         Some(lines.clamp(1, usize::from(self.secondary_line_count)) as u8)
     }
@@ -2096,40 +2104,43 @@ impl ListRow {
         let metrics = self.metrics.as_ref()?;
         let theme = self.theme.as_ref()?;
         let band = self.text_band();
-        Some(tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
-            self.with_face(|face| {
-                let geo = face.geometry(band, metrics, text, theme);
-                let content_right = band.x1 - metrics.bleed;
-                let mut facts_left = content_right;
-                if let Some(right) = geo.marks_right {
-                    facts_left = facts_left.min(right - face.marks_width(metrics));
-                }
-                if let Some(count_right) = geo.count_right {
-                    facts_left = facts_left.min(count_right);
-                }
-                if let Some(avatar) = geo.avatar {
-                    facts_left = facts_left.min(avatar.x0);
-                }
-                if self.value.is_some() {
-                    facts_left = facts_left.min(geo.value_right);
-                }
-                if let Some(trailing) = geo.trailing {
-                    facts_left = facts_left.min(trailing.x0);
-                }
-                facts_left = facts_left.min(geo.meta_left).max(geo.text_right);
-                tilo_ui_base::widget::RowLayout {
-                    depth: self.depth,
-                    content_left: tilo_ui_base::num::f32_of_f64(geo.leading.x0),
-                    text_x: tilo_ui_base::num::f32_of_f64(geo.text_x),
-                    text_right: tilo_ui_base::num::f32_of_f64(geo.text_right),
-                    facts_left: tilo_ui_base::num::f32_of_f64(facts_left),
-                    content_right: tilo_ui_base::num::f32_of_f64(content_right),
-                    marks_left: geo
-                        .marks_right
-                        .map(|right| tilo_ui_base::num::f32_of_f64(right - face.marks_width(metrics))),
-                }
-            })
-        }))
+        Some(tilo_ui_base::text_render::with_layout_renderer(
+            theme,
+            |text| {
+                self.with_face(|face| {
+                    let geo = face.geometry(band, metrics, text, theme);
+                    let content_right = band.x1 - metrics.bleed;
+                    let mut facts_left = content_right;
+                    if let Some(right) = geo.marks_right {
+                        facts_left = facts_left.min(right - face.marks_width(metrics));
+                    }
+                    if let Some(count_right) = geo.count_right {
+                        facts_left = facts_left.min(count_right);
+                    }
+                    if let Some(avatar) = geo.avatar {
+                        facts_left = facts_left.min(avatar.x0);
+                    }
+                    if self.value.is_some() {
+                        facts_left = facts_left.min(geo.value_right);
+                    }
+                    if let Some(trailing) = geo.trailing {
+                        facts_left = facts_left.min(trailing.x0);
+                    }
+                    facts_left = facts_left.min(geo.meta_left).max(geo.text_right);
+                    tilo_ui_base::widget::RowLayout {
+                        depth: self.depth,
+                        content_left: tilo_ui_base::num::f32_of_f64(geo.leading.x0),
+                        text_x: tilo_ui_base::num::f32_of_f64(geo.text_x),
+                        text_right: tilo_ui_base::num::f32_of_f64(geo.text_right),
+                        facts_left: tilo_ui_base::num::f32_of_f64(facts_left),
+                        content_right: tilo_ui_base::num::f32_of_f64(content_right),
+                        marks_left: geo.marks_right.map(|right| {
+                            tilo_ui_base::num::f32_of_f64(right - face.marks_width(metrics))
+                        }),
+                    }
+                })
+            },
+        ))
     }
 
     /// The row as the face it draws, read by the list that builds it and by its tests.
@@ -2448,9 +2459,10 @@ impl ListRow {
             return None;
         }
         let band = self.text_band();
-        Some(tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
-            self.with_face(|face| face.leading_rect(band, text, theme))
-        }))
+        Some(tilo_ui_base::text_render::with_layout_renderer(
+            theme,
+            |text| self.with_face(|face| face.leading_rect(band, text, theme)),
+        ))
     }
 
     /// The person's click on the row's check. One whose action they may not run keeps its mark,
@@ -2639,7 +2651,11 @@ impl Widget for ListRow {
         }
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         if let Some(binding) = &mut self.check_binding
             && let tilo_ui_base::widget::binding::Pulled::Value(checked) = binding.pull(state, path)
             && let Some(Leading::Checkbox { checked: shown, .. }) = &mut self.leading
@@ -2664,7 +2680,11 @@ impl Widget for ListRow {
         }
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         self.trailing
             .as_mut()
             .is_some_and(|trailing| trailing.element.update(state, path))
@@ -2914,7 +2934,13 @@ impl Widget for ListRow {
         });
         tilo_ui_base::widget::draw_over(
             self,
-            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
         if let Some(trailing) = &mut self.trailing {
             trailing
@@ -3179,7 +3205,9 @@ impl Widget for ListRow {
     /// Frames only while its leading checkbox is on its way.
     fn needs_animation_frame(&self) -> bool {
         self.check.is_moving(tilo_ui_base::motion::frame_now())
-            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
+                self.for_each_child(visit)
+            })
     }
 
     fn mark_drawn(&mut self) {
@@ -3315,7 +3343,10 @@ impl Widget for ListRow {
             let mut args = fluent::FluentArgs::new();
             args.set("title", node.name.clone().unwrap_or_default());
             let mut box_node = AccessNode::new(Role::Checkbox)
-                .with_name(tilo_ui_base::i18n::widget_text_with("list-row-check", Some(&args)))
+                .with_name(tilo_ui_base::i18n::widget_text_with(
+                    "list-row-check",
+                    Some(&args),
+                ))
                 .with_action_target(format!("{id}/check"))
                 .with_bounds(rect.into())
                 .with_state(

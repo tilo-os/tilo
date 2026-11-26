@@ -37,4 +37,3 @@ impl Drop for SecretPaint {
         PAINTED.with(|painted| painted.set(outer || painted.get()));
     }
 }
-

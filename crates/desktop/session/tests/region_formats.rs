@@ -72,7 +72,8 @@ fn a_region_the_person_changes_reaches_the_sessions_own_formats() {
     // on a later pass, though the session started with Monday.
     choose("Sunday", "H12");
     when(&mut session, || {
-        tilo_ui_base::format::region::current().first_day == tilo_ui_base::format::region::FirstDayOfWeek::Sunday
+        tilo_ui_base::format::region::current().first_day
+            == tilo_ui_base::format::region::FirstDayOfWeek::Sunday
     });
     assert_eq!(
         tilo_ui_base::clock::hour_minute(14, 5),
@@ -88,9 +89,13 @@ fn a_region_the_person_changes_reaches_the_sessions_own_formats() {
     // And back: their region is read again, not kept from the day the session started.
     choose("Monday", "H24");
     when(&mut session, || {
-        tilo_ui_base::format::region::current().first_day == tilo_ui_base::format::region::FirstDayOfWeek::Monday
+        tilo_ui_base::format::region::current().first_day
+            == tilo_ui_base::format::region::FirstDayOfWeek::Monday
     });
-    assert_eq!(tilo_ui_base::format::first_weekday(), jiff::civil::Weekday::Monday);
+    assert_eq!(
+        tilo_ui_base::format::first_weekday(),
+        jiff::civil::Weekday::Monday
+    );
     assert_eq!(tilo_ui_base::clock::hour_minute(14, 5), "14:05");
     tilo_ui_base::format::region::install(before);
 }

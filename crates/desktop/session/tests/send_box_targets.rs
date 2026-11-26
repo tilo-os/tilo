@@ -11,7 +11,8 @@ use tilo_session_core::surfaces::Published as _;
 /// A session-hosted app window with no menu of its own, drawn on the desktop: the window carries
 /// the send-to box itself.
 fn window() -> AppProcess {
-    let content = ui::widget::Column::new().push(Box::new(tilo_ui_base::widget::Spacer::fixed(200.0)));
+    let content =
+        ui::widget::Column::new().push(Box::new(tilo_ui_base::widget::Spacer::fixed(200.0)));
     let mut host = AppProcess::new(
         ui::App::new(ui::State::new(), Box::new(content)),
         Placement {

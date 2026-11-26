@@ -783,8 +783,11 @@ fn asked(update: &ui::tilo_actions::InvocationUpdate) -> bool {
 /// refuses one before it reaches the workspace.
 mod access {
     use collaboration::RouteSpec;
+    use tilo_ui_base::{
+        permissions::policy::MemberAccess, permissions::policy::Role,
+        permissions::policy::WorkspacePolicy,
+    };
     use tilolang_process::hosted::Spec;
-    use tilo_ui_base::{permissions::policy::MemberAccess, permissions::policy::Role, permissions::policy::WorkspacePolicy};
 
     use super::super::{Session, TASKS, Window, find, task_in_workspace};
 

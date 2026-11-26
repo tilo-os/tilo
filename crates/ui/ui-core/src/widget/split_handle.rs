@@ -83,7 +83,9 @@ impl SplitRatio {
     /// Follow a pointer at `along` on an extent from `start` that is
     /// `extent` long; returns whether it moved.
     pub fn follow(&mut self, along: f64, start: f64, extent: f64) -> bool {
-        self.set(tilo_ui_base::num::f32_of_f64((along - start) / extent.max(1.0)))
+        self.set(tilo_ui_base::num::f32_of_f64(
+            (along - start) / extent.max(1.0),
+        ))
     }
 
     #[must_use]

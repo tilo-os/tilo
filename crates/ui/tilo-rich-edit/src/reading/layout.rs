@@ -9,10 +9,13 @@
 //! [`TextRenderer`] is available) and is cached per [`LayoutKey`]; it only
 //! recomputes when the chapter, content width, or a typography setting changes.
 
-use tilo_ui_base::{text_render::paging::Kind as PageKind, text_render::paging::Paginator, text_render::paging::Piece};
-use tilo_ui_base::{text_render::FontChoice, text_render::TextRenderer, text_render::TextWeight};
-use ui::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
 use tilo_ui_base::{discretionary_hyphen_breaks, line_break_opportunities};
+use tilo_ui_base::{text_render::FontChoice, text_render::TextRenderer, text_render::TextWeight};
+use tilo_ui_base::{
+    text_render::paging::Kind as PageKind, text_render::paging::Paginator,
+    text_render::paging::Piece,
+};
+use ui::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
 use unicode_bidi::{BidiInfo, Level};
 
 use super::model::{Block, ReadingStyle, Span};

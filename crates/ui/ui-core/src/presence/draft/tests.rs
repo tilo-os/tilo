@@ -1,10 +1,10 @@
-use tilo_ui_base::presence::draft::*;
-use tilo_ui_base::permissions::MemberId;
-use tilo_ui_base::{presence::PresenceCtx, presence::capability};
 use crate::time::Duration;
+use tilo_ui_base::collaboration::PresencePayload;
+use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::presence::COMPOSING_LINGER;
 use tilo_ui_base::presence::PresenceKey;
-use tilo_ui_base::collaboration::PresencePayload;
+use tilo_ui_base::presence::draft::*;
+use tilo_ui_base::{presence::PresenceCtx, presence::capability};
 
 fn channel() -> PresenceKey {
     PresenceKey::resource("so.tilo.chat", "channel-1", "TextChannel")
@@ -81,9 +81,7 @@ fn field(kind: tilo_actions::OperationKind) -> crate::widget::TextInput {
             tilo_actions::ActionParam::required("text", tilo_actions::ParamType::Text, "Text"),
             "Message",
             tilo_actions::ExecutionLocus::ClientLocal,
-            |text| {
-                tilo_actions::EncodedAction::encode_operation("chat.send", &text).expect("text")
-            },
+            |text| tilo_actions::EncodedAction::encode_operation("chat.send", &text).expect("text"),
         ),
         kind => ActionSpec::operation("send", "Send", kind, "chat.search", &()).expect("unit"),
     };

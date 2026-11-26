@@ -432,7 +432,10 @@ pub(crate) fn resource_bounds(
     bindings: &[tilo_ui_base::widget::ControlBindingMetadata],
     address: &tilo_actions::ActionAddress,
 ) -> Option<(vello::kurbo::Rect, u64)> {
-    let resource = tree.node(&tilo_ui_base::a11y::SemanticId(format!("r:{}", address.resource)))?;
+    let resource = tree.node(&tilo_ui_base::a11y::SemanticId(format!(
+        "r:{}",
+        address.resource
+    )))?;
     if !resource.durable_identity || resource.action(&address.action).is_none() {
         return None;
     }

@@ -29,12 +29,12 @@ use tilo_ui_base::icons::Icon;
 use tilo_ui_base::local_state::LocalBinding;
 use tilo_ui_base::paint::PaintCtx;
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use crate::widget::control_size::ControlSize;
+use crate::{widget::Button, widget::ButtonFace, widget::ButtonRole};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
-use crate::widget::control_size::ControlSize;
-use crate::{widget::Button, widget::ButtonFace, widget::ButtonRole};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget, widget::layout_rect};
 
 mod component;
@@ -1263,7 +1263,11 @@ impl Widget for Banner {
         dyn tilo_ui_base::widget::ResourceOperations,
         dyn tilo_ui_base::widget::controls::ActionControls
     );
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let before = self.visible();
         self.poll_source();
         let mut changed = false;
@@ -1282,7 +1286,11 @@ impl Widget for Banner {
         changed
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.poll_source();
         if self.dismiss_requested.take() {
             self.dismiss_now();
@@ -1438,7 +1446,9 @@ impl Widget for Banner {
     /// rest.
     fn needs_animation_frame(&self) -> bool {
         self.band.needs_frame(self.visible())
-            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
+                self.for_each_child(visit)
+            })
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
@@ -1668,7 +1678,9 @@ impl tilo_ui_base::widget::controls::ActionControls for Banner {
             .into_iter()
             .collect();
         for child in Widget::children(self) {
-            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(child));
+            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(
+                child,
+            ));
         }
         bindings
     }

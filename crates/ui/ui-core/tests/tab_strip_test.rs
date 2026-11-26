@@ -2,9 +2,11 @@
 //! the bar's, it reports what the person did with them as the view's own events,
 //! and it draws nothing of its own.
 
-use tilo_ui_base::{component::Described, component::Event, component::Person, component::ResourceId};
-use tilo_ui_base::tokens::PresenceHue;
 use tilo_ui::widget::{TabItemProps, TabStrip, TabStripProps, pack_point, unpack_point};
+use tilo_ui_base::tokens::PresenceHue;
+use tilo_ui_base::{
+    component::Described, component::Event, component::Person, component::ResourceId,
+};
 
 fn tab(key: &str, title: &str) -> TabItemProps {
     TabItemProps {
@@ -158,9 +160,9 @@ fn the_strip_lays_out_as_the_window_bars_does() {
 /// its bar marked, so a view hears the pill it was pressed for without asking for reports.
 #[test]
 fn a_press_on_a_pill_is_the_views_event_in_the_same_pass() {
-    use tilo_ui_base::{component::Fired, component::Intent, component::Value};
     use tilo_ui::widget::Column;
     use tilo_ui_base::widget::Element;
+    use tilo_ui_base::{component::Fired, component::Intent, component::Value};
 
     let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
     let mut given = props(vec![tab("a", "A"), tab("b", "B")], 0);

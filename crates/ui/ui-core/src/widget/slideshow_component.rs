@@ -3,10 +3,10 @@
 //! the view's; the advance is a frame's, never a change to the workspace.
 
 use super::{ImageViewerProps, PictureSource, ZoomableImage};
-use tilo_ui_base::widget::Widget;
-use tilo_ui_base::{component::Component, component::Described, component::Event};
 use crate::pictures::Pictures;
 use crate::time::{Duration, Instant};
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 /// How long a picture stays when the view names no time: five seconds.
 const DEFAULT_SECONDS: f64 = 5.0;
@@ -72,12 +72,20 @@ impl Widget for Slideshow {
         Some(self)
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.image.sync(state, path);
         self.tick();
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let moved = self.image.update(state, path);
         self.tick();
         moved || self.asked

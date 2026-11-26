@@ -26,14 +26,17 @@ use vello::peniko::{Color, Fill};
 use crate::support::render::write_png;
 use std::sync::Arc;
 use tilo_ui::color::contrast_ratio;
+use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
 use tilo_ui_base::offscreen::OffscreenRenderer;
-use tilo_ui_base::{part_paint::backdrop::BackdropFrame, part_paint::backdrop::BackdropRecording, part_paint::backdrop::layer_scene};
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{tokens::colors::ON_FILL_MIN_CONTRAST, tokens::colors::SMALL_TEXT_MIN_CONTRAST};
 use tilo_ui_base::widget::Widget;
-use tilo_ui::widget::context_menu::{ContextMenu, MenuItem};
+use tilo_ui_base::{
+    part_paint::backdrop::BackdropFrame, part_paint::backdrop::BackdropRecording,
+    part_paint::backdrop::layer_scene,
+};
+use tilo_ui_base::{tokens::colors::ON_FILL_MIN_CONTRAST, tokens::colors::SMALL_TEXT_MIN_CONTRAST};
 
 const CANVAS_W: u32 = 480;
 const CANVAS_H: u32 = 600;

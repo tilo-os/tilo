@@ -10,7 +10,9 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Value};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
 
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::DrawChild, widget::EventCtx, widget::TaffyTreeExt, widget::Widget};

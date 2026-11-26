@@ -7,9 +7,9 @@ use std::rc::Rc;
 
 use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::{ResourceRef, ToApp, Value};
+use tilo_ui_base::interaction::InteractionEnvironment;
 use tilolang_tilo::runtime::value::{ResourceRef as RuntimeRef, Value as RuntimeValue};
 use ui::headless::Driver;
-use tilo_ui_base::interaction::InteractionEnvironment;
 
 /// The motion a read window is allowed before it is a finding: two seconds of frames at the pace a
 /// live window presents them, counted in frames so a loaded machine reads the same window a quiet
@@ -747,9 +747,10 @@ mod tests {
             .harness()
             .render_png(&captures.join(format!("{name}-before.png")));
         let applied = staged.harness_mut().update_presence(|presence| {
-            presence
-                .names
-                .insert(tilo_ui_base::permissions::MemberId::person("scribe"), "Ada".into());
+            presence.names.insert(
+                tilo_ui_base::permissions::MemberId::person("scribe"),
+                "Ada".into(),
+            );
             presence
                 .apply_interaction(event.clone())
                 .expect("a well-formed interaction applies")
@@ -1142,7 +1143,9 @@ mod tests {
     /// The window says it stands on `label`, a form the press opened.
     fn shows_dialog(node: &ui::headless::InspectionNode, label: &str) -> bool {
         fn within(access: &tilo_ui_base::a11y::AccessNode, label: &str) -> bool {
-            if access.role == tilo_ui_base::a11y::Role::Dialog && access.name.as_deref() == Some(label) {
+            if access.role == tilo_ui_base::a11y::Role::Dialog
+                && access.name.as_deref() == Some(label)
+            {
                 return true;
             }
             access.children.iter().any(|child| within(child, label))
@@ -1859,8 +1862,8 @@ mod tests {
                 );
                 // The document lists the task's subtasks, and the list keeps each of them as a
                 // row of its own beside it.
-                let outline =
-                    named(root, &[tilo_ui_base::a11y::Role::Tree], "Subtasks").expect("the task's outline");
+                let outline = named(root, &[tilo_ui_base::a11y::Role::Tree], "Subtasks")
+                    .expect("the task's outline");
                 for subtask in [
                     "Find the last service date",
                     "Ask whether Tuesday morning works",
@@ -1961,8 +1964,12 @@ mod tests {
                 staged.press(&id, false).expect("the row presses");
             }
             let root = &staged.harness().inspection().root;
-            let heading = named(root, &[tilo_ui_base::a11y::Role::Heading { level: 2 }], "Subtasks")
-                .unwrap_or_else(|| panic!("the section names itself at {width}×{height}"));
+            let heading = named(
+                root,
+                &[tilo_ui_base::a11y::Role::Heading { level: 2 }],
+                "Subtasks",
+            )
+            .unwrap_or_else(|| panic!("the section names itself at {width}×{height}"));
             let outline = named(root, &[tilo_ui_base::a11y::Role::Tree], "Subtasks")
                 .unwrap_or_else(|| panic!("the section lists its steps at {width}×{height}"));
             for step in steps {
@@ -2163,7 +2170,8 @@ mod tests {
     /// in the field at its head, which a reader sees as the field's value.
     fn page_shows(node: &ui::headless::InspectionNode, label: &str) -> bool {
         node.semantics.as_ref().is_some_and(|access| {
-            access.role == tilo_ui_base::a11y::Role::TextInput && access.value.as_deref() == Some(label)
+            access.role == tilo_ui_base::a11y::Role::TextInput
+                && access.value.as_deref() == Some(label)
         }) || node.children.iter().any(|child| page_shows(child, label))
     }
 
@@ -2199,7 +2207,10 @@ mod tests {
     }
 
     /// The rows of a list or a tree, as the window reads them.
-    const ROWS: &[tilo_ui_base::a11y::Role] = &[tilo_ui_base::a11y::Role::ListItem, tilo_ui_base::a11y::Role::TreeItem];
+    const ROWS: &[tilo_ui_base::a11y::Role] = &[
+        tilo_ui_base::a11y::Role::ListItem,
+        tilo_ui_base::a11y::Role::TreeItem,
+    ];
 
     /// How many nodes the window shows named `label` in one of `roles`.
     fn count_named(

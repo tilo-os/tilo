@@ -28,16 +28,21 @@
 use std::collections::HashMap;
 
 use tilo_ui::State;
+use tilo_ui::headless::{Driver, InspectionNode};
+use tilo_ui::search::{SearchGroup, SearchResult};
+use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use tilo_ui::{
+    widget::Banner, widget::Button, widget::Chart, widget::Column, widget::DescribedTreeView,
+    widget::ListRowFace, widget::SearchResultsView, widget::Section, widget::SectionHeader,
+    widget::Series, widget::StatGroup, widget::StatTile, widget::Text, widget::TreeViewNodeProps,
+    widget::TreeViewProps, widget::Trend,
+};
 use tilo_ui_base::TextRole;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Element;
 use tilo_ui_base::{chrome::disclosure_gutter, chrome::row_bleed};
 use tilo_ui_base::{component::Described, component::ResourceId};
-use tilo_ui::headless::{Driver, InspectionNode};
-use tilo_ui_base::icons::Icon;
-use tilo_ui::search::{SearchGroup, SearchResult};
-use tilo_ui_base::theme::Theme;
-use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
-use tilo_ui::{widget::Banner, widget::Button, widget::Chart, widget::Column, widget::DescribedTreeView, widget::ListRowFace, widget::SearchResultsView, widget::Section, widget::SectionHeader, widget::Series, widget::StatGroup, widget::StatTile, widget::Text, widget::TreeViewNodeProps, widget::TreeViewProps, widget::Trend};
-use tilo_ui_base::widget::Element;
 use vello::kurbo::Rect;
 
 // Pinned widget defaults the regions below are built from.

@@ -85,7 +85,8 @@ impl App {
             .as_deref()
             .zip(self.actions.published_surface.as_ref())
             .map(|(descriptors, state)| (state, descriptors));
-        let (delta, state) = tilo_ui_base::collaboration::SurfacePublication::next(prior, &descriptors);
+        let (delta, state) =
+            tilo_ui_base::collaboration::SurfacePublication::next(prior, &descriptors);
         // A surface the transport did not take is retried on the next frame.
         if delta.is_empty()
             || self

@@ -4,14 +4,14 @@
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
-use tilo_ui_base::{motion::CrossFade, motion::recent_input, motion::want_frames_until};
-use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::text_render::TextStyle;
 use crate::time::Instant;
-use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 use crate::widget::media_card::{MediaArt, paint_art_tile};
 use crate::{widget::SliderFace, widget::TextStackFace, widget::TransportArt};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextStyle;
 use tilo_ui_base::widget::Tone;
+use tilo_ui_base::{motion::CrossFade, motion::recent_input, motion::want_frames_until};
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
 pub use crate::widget::slider::paint_held_readout;
 

@@ -72,11 +72,12 @@ impl DataTableCore {
         let inserts = changes
             .iter()
             .any(|change| matches!(change, TableModelChange::RowsInserted { .. }));
-        let source = tilo_ui_base::collection_transition::RowMotions::<RowIdentity>::caused_by_hand(
-            tilo_ui_base::motion::frame_now(),
-            self.reduce_motion,
-        )
-        .filter(|_| structural && !resets && !self.moving.drawn.is_empty());
+        let source =
+            tilo_ui_base::collection_transition::RowMotions::<RowIdentity>::caused_by_hand(
+                tilo_ui_base::motion::frame_now(),
+                self.reduce_motion,
+            )
+            .filter(|_| structural && !resets && !self.moving.drawn.is_empty());
         self.moving
             .rows
             .capture(self.moving.drawn.iter().copied(), inserts, source);
@@ -87,11 +88,12 @@ impl DataTableCore {
     /// shown before came from off-screen (or is new) and fades in at its
     /// slot.
     pub(super) fn capture_reorder_motion(&mut self) {
-        let source = tilo_ui_base::collection_transition::RowMotions::<RowIdentity>::caused_by_hand(
-            tilo_ui_base::motion::frame_now(),
-            self.reduce_motion,
-        )
-        .filter(|_| !self.moving.drawn.is_empty());
+        let source =
+            tilo_ui_base::collection_transition::RowMotions::<RowIdentity>::caused_by_hand(
+                tilo_ui_base::motion::frame_now(),
+                self.reduce_motion,
+            )
+            .filter(|_| !self.moving.drawn.is_empty());
         self.moving
             .rows
             .capture(self.moving.drawn.iter().copied(), true, source);
@@ -153,7 +155,11 @@ impl DataTableCore {
 impl Drop for DataTableCore {
     fn drop(&mut self) {
         if self.moving.bound && !self.test_id.is_empty() {
-            tilo_ui_base::motion::keep(self.test_id.clone(), None, std::mem::take(&mut self.moving));
+            tilo_ui_base::motion::keep(
+                self.test_id.clone(),
+                None,
+                std::mem::take(&mut self.moving),
+            );
         }
     }
 }

@@ -10,11 +10,13 @@
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use super::*;
-use tilo_ui_base::a11y::Role;
-use tilo_ui_base::{component::Described, component::Event, component::Fired, component::Intent, component::Value};
-use tilo_ui_base::theme::Theme;
 use crate::widget::Ink;
+use tilo_ui_base::a11y::Role;
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    component::Described, component::Event, component::Fired, component::Intent, component::Value,
+};
 use vello::kurbo::{Point, Rect};
 
 fn area() -> Rect {
@@ -25,7 +27,12 @@ fn on(queue: &tilo_ui_base::Intents<Fired>, key: &str, event: &str) -> Event {
     Event::View(Intent::new(queue, key, event))
 }
 
-fn span(queue: &tilo_ui_base::Intents<Fired>, key: &str, start: f64, length: f64) -> TimelineSpanProps {
+fn span(
+    queue: &tilo_ui_base::Intents<Fired>,
+    key: &str,
+    start: f64,
+    length: f64,
+) -> TimelineSpanProps {
     TimelineSpanProps {
         key: key.into(),
         label: Some(key.to_uppercase()),

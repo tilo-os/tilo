@@ -17,10 +17,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
 use crate::support::render::{pixel_hash, write_png};
+use tilo_ui::{
+    widget::AppKind, widget::TabDescriptor, widget::TileContent, widget::WindowGroup,
+    widget::WindowWidth,
+};
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use tilo_ui::{widget::AppKind, widget::TabDescriptor, widget::TileContent, widget::WindowGroup, widget::WindowWidth};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 fn make_window_group() -> WindowGroup {

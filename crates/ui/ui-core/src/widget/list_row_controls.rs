@@ -70,7 +70,9 @@ impl ActionControls for ListRow {
             bindings.extend(swipe.press.metadata(format!("{id}/swipe")));
         }
         for child in Widget::children(self) {
-            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(child));
+            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(
+                child,
+            ));
         }
         bindings
     }

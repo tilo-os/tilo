@@ -26,13 +26,13 @@ use vello::peniko::Fill;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 #[path = "stepper_component.rs"]
 mod component;
-use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 pub use component::StepperProps;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// The resolved geometry of a stepper in `theme`.
 #[derive(Clone, Debug)]
@@ -750,7 +750,9 @@ impl tilo_ui_base::widget::controls::ActionControls for Stepper {
     fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         self.enabled_stations()
             .into_iter()
-            .map(|index| tilo_ui_base::widget::ControlBindingMetadata::semantic(self.station_id(index)))
+            .map(|index| {
+                tilo_ui_base::widget::ControlBindingMetadata::semantic(self.station_id(index))
+            })
             .collect()
     }
 }

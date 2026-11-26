@@ -8,8 +8,10 @@ impl super::App {
     /// widgets create its own view (Writer: caret at the document end).
     /// Idempotent. Returns whether a view was newly created.
     pub fn join_presence(&mut self, presence: &tilo_actions::PresenceId) -> bool {
-        let joined =
-            tilo_ui_base::widget::presence_topology::join_presence(self.root_widget.as_mut(), presence);
+        let joined = tilo_ui_base::widget::presence_topology::join_presence(
+            self.root_widget.as_mut(),
+            presence,
+        );
         if joined {
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
@@ -19,7 +21,10 @@ impl super::App {
 
     /// Drop a presence's view (its run ended). Idempotent.
     pub fn leave_presence(&mut self, presence: &tilo_actions::PresenceId) {
-        tilo_ui_base::widget::presence_topology::leave_presence(self.root_widget.as_mut(), presence);
+        tilo_ui_base::widget::presence_topology::leave_presence(
+            self.root_widget.as_mut(),
+            presence,
+        );
         self.invalidate_widget_resource_cache();
         self.needs_sync = true;
     }
@@ -43,6 +48,9 @@ impl super::App {
 
     /// Current presence of every remote presence this app holds a view for.
     pub fn presences(&self) -> Vec<tilo_ui_base::widget::ViewPresence> {
-        tilo_ui_base::widget::presence_topology::presences(self.root_widget.as_ref(), &self.state.doc)
+        tilo_ui_base::widget::presence_topology::presences(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+        )
     }
 }

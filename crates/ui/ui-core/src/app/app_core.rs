@@ -284,8 +284,10 @@ impl App {
             return false;
         };
         let path = &self.state.root;
-        let answered =
-            history.answer_own_controls(&mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc), path);
+        let answered = history.answer_own_controls(
+            &mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
+            path,
+        );
         answered > 0
     }
 

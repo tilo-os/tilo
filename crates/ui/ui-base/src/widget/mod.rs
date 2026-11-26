@@ -1,7 +1,13 @@
 mod contract;
 #[cfg(feature = "model")]
 pub use contract::AppActivation;
-pub use {contract::COMPACT_BELOW, contract::EXPANDED_BELOW, contract::FIT_EPS, contract::HYSTERESIS, contract::Length, contract::MEDIUM_BELOW, contract::MediaAspect, contract::PAGE_FRACTION, contract::PrimaryScrollAction, contract::PrimaryScrollRegion, contract::PrimaryScrollResult, contract::RowLeadingShape, contract::RowShape, contract::ScrollAxis, contract::ScrollMetrics, contract::SkeletonShape, contract::TooltipSide, contract::Widget, contract::WidthClass};
+pub use {
+    contract::COMPACT_BELOW, contract::EXPANDED_BELOW, contract::FIT_EPS, contract::HYSTERESIS,
+    contract::Length, contract::MEDIUM_BELOW, contract::MediaAspect, contract::PAGE_FRACTION,
+    contract::PrimaryScrollAction, contract::PrimaryScrollRegion, contract::PrimaryScrollResult,
+    contract::RowLeadingShape, contract::RowShape, contract::ScrollAxis, contract::ScrollMetrics,
+    contract::SkeletonShape, contract::TooltipSide, contract::Widget, contract::WidthClass,
+};
 mod action_directory_identity;
 pub mod bound_nodes;
 pub mod component_walk;
@@ -9,12 +15,17 @@ pub mod input_provenance;
 pub mod undo_access;
 pub mod undo_points;
 pub mod wheel;
-pub use {wheel::PhaselessWheel, wheel::WHEEL_GESTURE_GAP, wheel::line_of_wheel, wheel::sideways_travel};
+pub use {
+    wheel::PhaselessWheel, wheel::WHEEL_GESTURE_GAP, wheel::line_of_wheel, wheel::sideways_travel,
+};
 pub mod action_emitter;
 pub mod disclosing;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
 pub use action_emitter::ActionEmitter;
-pub use {disclosing::BandMotion, disclosing::Ghosts, disclosing::content_box, disclosing::follower_shifts, disclosing::place_bands, disclosing::route_to_shifted_children};
+pub use {
+    disclosing::BandMotion, disclosing::Ghosts, disclosing::content_box,
+    disclosing::follower_shifts, disclosing::place_bands, disclosing::route_to_shifted_children,
+};
 pub use {disclosing::Disclosing, disclosing::Placement, disclosing::event_offset};
 pub mod resource_operation;
 // The raw operation protocol between the host and the toolkit's own widgets,
@@ -22,18 +33,23 @@ pub mod resource_operation;
 pub use resource_operation::resource_operation_handlers;
 #[cfg(feature = "model")]
 pub use resource_operation::start_operation_refused;
-pub use {resource_operation::ResourceOperation, resource_operation::ResourceOperationStart, resource_operation::ResourceOperations, resource_operation::local_resource_operation_handlers, resource_operation::poll_resource_operation, resource_operation::start_in_children, resource_operation::start_operation};
+pub use {
+    resource_operation::ResourceOperation, resource_operation::ResourceOperationStart,
+    resource_operation::ResourceOperations, resource_operation::local_resource_operation_handlers,
+    resource_operation::poll_resource_operation, resource_operation::start_in_children,
+    resource_operation::start_operation,
+};
 
-pub use {crate::draw::DrawCtx, crate::draw::DrawEnv};
 #[cfg(feature = "model")]
 pub use crate::presence::PresenceKey;
 pub use crate::text_render::TextRenderer;
 pub use crate::theme::Theme;
-pub use {automerge::AutoCommit, automerge::ObjId};
-pub use {taffy::NodeId, taffy::TaffyTree};
 pub use vello::Scene;
 pub use vello::kurbo::Affine;
 pub use winit::event::WindowEvent;
+pub use {crate::draw::DrawCtx, crate::draw::DrawEnv};
+pub use {automerge::AutoCommit, automerge::ObjId};
+pub use {taffy::NodeId, taffy::TaffyTree};
 
 use crate::time::Instant;
 pub use std::collections::HashMap;
@@ -1448,7 +1464,10 @@ pub mod defaults;
 pub mod document_effects;
 pub mod identity;
 pub use crate::pen::PenSample;
-pub use {identity::Decorated, identity::DecoratedMut, identity::Decorator, identity::Identified, identity::register_node};
+pub use {
+    identity::Decorated, identity::DecoratedMut, identity::Decorator, identity::Identified,
+    identity::register_node,
+};
 
 pub mod layout;
 mod offered;
@@ -1461,17 +1480,35 @@ pub use reach::find_mut;
 #[cfg(debug_assertions)]
 mod paint_pass;
 pub use layout::counts;
-pub use {layout::AuthoredExtent, layout::DeviceScaleGuard, layout::ExtentSizing, layout::SkippedFrames, layout::WidgetLayoutError, layout::compute_widget_layout, layout::device_scale, layout::enter_device_scale, layout::insets, layout::insets_all, layout::insets_xy, layout::layout_clip, layout::placing_again, layout::solve_built_layout, layout::take_unsettled_layout, layout::take_unsettled_report, layout::text_control_height, layout::with_layout_clip};
 #[cfg(debug_assertions)]
 pub use paint_pass::painting;
+pub use {
+    layout::AuthoredExtent, layout::DeviceScaleGuard, layout::ExtentSizing, layout::SkippedFrames,
+    layout::WidgetLayoutError, layout::compute_widget_layout, layout::device_scale,
+    layout::enter_device_scale, layout::insets, layout::insets_all, layout::insets_xy,
+    layout::layout_clip, layout::placing_again, layout::solve_built_layout,
+    layout::take_unsettled_layout, layout::take_unsettled_report, layout::text_control_height,
+    layout::with_layout_clip,
+};
 
 mod cached_paint;
 pub use cached_paint::CachedPaint;
 pub mod composition_parts;
 pub mod layout_info;
-pub use {layout_info::Density, layout_info::Effective, layout_info::FieldLayout, layout_info::FormLayout, layout_info::HeaderRowLayout, layout_info::HeaderRows, layout_info::LabelPlacement, layout_info::LayoutInfo, layout_info::LayoutOrigin, layout_info::ListLayout, layout_info::ListPillLayout, layout_info::ManualConflict, layout_info::ManualLayout, layout_info::PageLayout, layout_info::RowLayout, layout_info::ScrollDirection, layout_info::ScrollLayout, layout_info::SectionLayout, layout_info::ShellLayout, layout_info::SidebarPosition, layout_info::TextLayout};
+pub use {
+    layout_info::Density, layout_info::Effective, layout_info::FieldLayout,
+    layout_info::FormLayout, layout_info::HeaderRowLayout, layout_info::HeaderRows,
+    layout_info::LabelPlacement, layout_info::LayoutInfo, layout_info::LayoutOrigin,
+    layout_info::ListLayout, layout_info::ListPillLayout, layout_info::ManualConflict,
+    layout_info::ManualLayout, layout_info::PageLayout, layout_info::RowLayout,
+    layout_info::ScrollDirection, layout_info::ScrollLayout, layout_info::SectionLayout,
+    layout_info::ShellLayout, layout_info::SidebarPosition, layout_info::TextLayout,
+};
 pub mod manual;
-pub use {manual::ChildMeasurement, manual::Manual, manual::ManualContext, manual::ManualInvalidation, manual::ManualPolicy, manual::MeasureConstraint};
+pub use {
+    manual::ChildMeasurement, manual::Manual, manual::ManualContext, manual::ManualInvalidation,
+    manual::ManualPolicy, manual::MeasureConstraint,
+};
 pub mod router;
 pub use {router::RouteError, router::RouteHandle, router::RouteSnapshot, router::Router};
 
@@ -1519,14 +1556,23 @@ pub mod aim;
 pub use aim::Trajectory;
 pub mod hover_intent;
 pub use hover_intent::EdgeAim;
-pub mod panic_scope;
 pub mod cursor;
+pub mod panic_scope;
 
-pub use {tilo_image_codec::curve::CurvePoint, tilo_image_codec::curve::normalised as curve_points, tilo_image_codec::curve::value_at as curve_value_at};
+pub use {
+    tilo_image_codec::curve::CurvePoint, tilo_image_codec::curve::normalised as curve_points,
+    tilo_image_codec::curve::value_at as curve_value_at,
+};
 pub mod native_view;
-pub use {native_view::NativeView, native_view::NativeViewAccessibility, native_view::NativeViewBackend, native_view::NativeViewGeometry, native_view::NativeViewHost, native_view::NativeViewInput};
+pub use {
+    native_view::NativeView, native_view::NativeViewAccessibility, native_view::NativeViewBackend,
+    native_view::NativeViewGeometry, native_view::NativeViewHost, native_view::NativeViewInput,
+};
 pub mod avatar_face;
-pub use {avatar_face::AvatarFace, avatar_face::AvatarSize, avatar_face::PresenceStatus, avatar_face::initials_for_name};
+pub use {
+    avatar_face::AvatarFace, avatar_face::AvatarSize, avatar_face::PresenceStatus,
+    avatar_face::initials_for_name,
+};
 
 /// A box a widget paints text into, whose own box cannot hold that text: the height the text
 /// takes at the width of its box, the width the box gives it, and what it says. Rows a box lays
@@ -1575,4 +1621,3 @@ pub use tone::Tone;
 #[cfg(feature = "model")]
 pub use collab_types::ArtifactKind;
 pub use tilo_actions::HistoryEntryId;
-

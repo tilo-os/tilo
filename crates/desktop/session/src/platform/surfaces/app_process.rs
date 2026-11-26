@@ -244,7 +244,8 @@ impl Published for AppProcess {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         _look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError>
+    {
         // Through the app's own API, as every caller on this device.
         let api = self.api.clone();
         self.revision = self.revision.wrapping_add(1);
@@ -262,7 +263,8 @@ impl Published for AppProcess {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         _look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError>
+    {
         let api = self.api.clone();
         self.revision = self.revision.wrapping_add(1);
         through_api_as(&api, Some(actor), address, arguments, || {
@@ -282,7 +284,11 @@ impl Published for AppProcess {
         self.name.clone()
     }
 
-    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &tilo_ui_base::a11y::Action) -> bool {
+    fn a11y_action(
+        &mut self,
+        target: ui::accesskit::NodeId,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         self.act(target, action);
         true
     }
@@ -359,7 +365,9 @@ impl Published for AppProcess {
     ) -> Result<(), String> {
         let verb = match action {
             ui::window_targets::TargetAction::Activate => tilo_ui_base::a11y::Action::Activate,
-            ui::window_targets::TargetAction::ShowContextMenu => tilo_ui_base::a11y::Action::ShowContextMenu,
+            ui::window_targets::TargetAction::ShowContextMenu => {
+                tilo_ui_base::a11y::Action::ShowContextMenu
+            }
         };
         let node = self
             .app

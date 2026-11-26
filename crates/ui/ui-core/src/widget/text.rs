@@ -1,16 +1,23 @@
+use automerge::{AutoCommit, ObjId};
+use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_ui_base::i18n::ArgValue;
 use tilo_ui_base::i18n::widget_text;
 #[cfg(feature = "model")]
 use tilo_ui_base::permissions::PermissionScope;
-use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
-use tilo_ui_base::{text_render::FIGURE_TAGS, text_render::FontChoice, text_render::HangingPunctuation, text_render::Hyphenation, text_render::NumericStyle, text_render::OpenTypeTag, text_render::OpticalSizing, text_render::ParagraphAlign, text_render::PreparedText, text_render::TextKind, text_render::TextLayoutConstraints, text_render::TextLayoutEngine, text_render::TextRenderer, text_render::TextScaling, text_render::TextStyle, text_render::TextWeight, text_render::TextWrapMode};
 use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{tokens::TextRole, tokens::Typography};
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
+use tilo_ui_base::{
+    text_render::FIGURE_TAGS, text_render::FontChoice, text_render::HangingPunctuation,
+    text_render::Hyphenation, text_render::NumericStyle, text_render::OpenTypeTag,
+    text_render::OpticalSizing, text_render::ParagraphAlign, text_render::PreparedText,
+    text_render::TextKind, text_render::TextLayoutConstraints, text_render::TextLayoutEngine,
+    text_render::TextRenderer, text_render::TextScaling, text_render::TextStyle,
+    text_render::TextWeight, text_render::TextWrapMode,
+};
+use tilo_ui_base::{tokens::TextRole, tokens::Typography};
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
-use automerge::{AutoCommit, ObjId};
-use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Point};
 
 // One retained input per Text, with a bounded owned payload. Renderer cache
@@ -393,22 +400,22 @@ impl Text {
             Hyphenation::Auto(language) => language.capacity(),
             _ => 0,
         };
-        let payload_bytes = label
-            .len()
-            .saturating_add(family_bytes)
-            .saturating_add(language_bytes)
-            .saturating_add(
-                style
-                    .font_features
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<tilo_ui_base::text_render::OpenTypeFeature>()),
-            )
-            .saturating_add(
-                style
-                    .font_variations
-                    .capacity()
-                    .saturating_mul(std::mem::size_of::<tilo_ui_base::text_render::FontVariation>()),
-            );
+        let payload_bytes =
+            label
+                .len()
+                .saturating_add(family_bytes)
+                .saturating_add(language_bytes)
+                .saturating_add(
+                    style
+                        .font_features
+                        .capacity()
+                        .saturating_mul(std::mem::size_of::<
+                            tilo_ui_base::text_render::OpenTypeFeature,
+                        >()),
+                )
+                .saturating_add(style.font_variations.capacity().saturating_mul(
+                    std::mem::size_of::<tilo_ui_base::text_render::FontVariation>(),
+                ));
         if self.layout_engine.is_none()
             && !matches!(style.hyphenation, Hyphenation::Custom(_))
             && payload_bytes <= PREPARED_TEXT_PAYLOAD_LIMIT
@@ -1134,7 +1141,13 @@ impl Widget for Text {
         self.face.append(scene, transform, self.rect);
         tilo_ui_base::widget::draw_over(
             self,
-            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
     }
 

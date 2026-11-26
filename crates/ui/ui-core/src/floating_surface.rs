@@ -972,7 +972,9 @@ impl FloatingPlacement {
             return transform;
         }
         let progress = self.handoff_progress_override.unwrap_or_else(|| {
-            settle_progress(tilo_ui_base::motion::frame_now().saturating_duration_since(motion.started))
+            settle_progress(
+                tilo_ui_base::motion::frame_now().saturating_duration_since(motion.started),
+            )
         });
         let amount = (1.0 - progress).powi(2) * motion.strength;
         if amount <= f64::EPSILON {
@@ -1006,8 +1008,9 @@ impl FloatingPlacement {
                 motion.started.set(Some(crate::time::now()));
                 return motion.from;
             };
-            let eased =
-                settle_progress(tilo_ui_base::motion::frame_now().saturating_duration_since(started));
+            let eased = settle_progress(
+                tilo_ui_base::motion::frame_now().saturating_duration_since(started),
+            );
             Rect::new(
                 motion.from.x0 + (motion.to.x0 - motion.from.x0) * eased,
                 motion.from.y0 + (motion.to.y0 - motion.from.y0) * eased,
@@ -2410,7 +2413,9 @@ mod tests {
 
             let params = tilo_theme_sdk::wire::params_answer(&[]);
             let answer = tilo_theme_sdk::wire::paint_answer(Some(
-                &tilo_ui_base::part_paint::PaintedPart::new(tilo_ui_base::part_paint::PartScene::new()),
+                &tilo_ui_base::part_paint::PaintedPart::new(
+                    tilo_ui_base::part_paint::PartScene::new(),
+                ),
             ));
             let data = |bytes: &[u8]| {
                 let mut text = String::new();
@@ -2442,8 +2447,8 @@ mod tests {
         let compiled = tempfile::tempdir().expect("a compiled store");
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("TILO_COMPILED_MODULES", compiled.path());
-        let mut document =
-            serde_json::to_value(tilo_ui_base::theme::Preset::Dark.document()).expect("the theme writes");
+        let mut document = serde_json::to_value(tilo_ui_base::theme::Preset::Dark.document())
+            .expect("the theme writes");
         document["material"]["window"] = serde_json::json!({ "painter": SET });
         std::fs::write(
             bundle.path().join(tilo_ui_base::theme_bundle::DOCUMENT),

@@ -112,7 +112,11 @@ fn row(app: &mut App, place: &str) -> (f64, f64) {
             tilo_ui_base::synthetic_input::cursor_moved(middle.0, height / 2.0),
             false,
         );
-        app.surface_input(&Window, tilo_ui_base::synthetic_input::mouse_wheel(0.0, lines), false);
+        app.surface_input(
+            &Window,
+            tilo_ui_base::synthetic_input::mouse_wheel(0.0, lines),
+            false,
+        );
         rest(app);
     }
     panic!("the sidebar never brings {place} into the window");
@@ -148,7 +152,11 @@ fn named(app: &App, role: tilo_ui_base::a11y::Role, name: &str) -> Option<(f64, 
 
 /// One press at `(x, y)`, and the frames after it.
 fn press(app: &mut App, (x, y): (f64, f64)) {
-    app.surface_input(&Window, tilo_ui_base::synthetic_input::cursor_moved(x, y), false);
+    app.surface_input(
+        &Window,
+        tilo_ui_base::synthetic_input::cursor_moved(x, y),
+        false,
+    );
     mouse(app, ElementState::Pressed);
     mouse(app, ElementState::Released);
     rest(app);
@@ -162,7 +170,11 @@ fn one_press_on_a_place_shows_its_page() {
         for (turn, place) in PLACES.iter().rev().enumerate() {
             let framed = turn % 2 == 1;
             let (x, y) = row(app, place);
-            app.surface_input(&Window, tilo_ui_base::synthetic_input::cursor_moved(x, y), false);
+            app.surface_input(
+                &Window,
+                tilo_ui_base::synthetic_input::cursor_moved(x, y),
+                false,
+            );
             if framed {
                 frame(app);
             }
@@ -179,11 +191,19 @@ fn one_press_on_a_place_shows_its_page() {
         // A press on the next place before the page of the last one arrived.
         for (first, then) in [("Controls", "Data"), ("Media", "Backlog")] {
             let (x, y) = row(app, first);
-            app.surface_input(&Window, tilo_ui_base::synthetic_input::cursor_moved(x, y), false);
+            app.surface_input(
+                &Window,
+                tilo_ui_base::synthetic_input::cursor_moved(x, y),
+                false,
+            );
             mouse(app, ElementState::Pressed);
             mouse(app, ElementState::Released);
             let (x, y) = row(app, then);
-            app.surface_input(&Window, tilo_ui_base::synthetic_input::cursor_moved(x, y), false);
+            app.surface_input(
+                &Window,
+                tilo_ui_base::synthetic_input::cursor_moved(x, y),
+                false,
+            );
             mouse(app, ElementState::Pressed);
             frame(app);
             mouse(app, ElementState::Released);

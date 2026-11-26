@@ -1,9 +1,9 @@
 use super::*;
 use crate::app::driver::Driver;
 use crate::headless::InspectionNode;
-use tilo_ui_base::theme::Theme;
 use crate::widget::ButtonRole;
 use crate::widget::TextInput;
+use tilo_ui_base::theme::Theme;
 
 fn fixture() -> Element {
     Box::new(

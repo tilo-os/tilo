@@ -2,8 +2,8 @@
 
 use media::Source;
 
-use tilo_ui_base::{component::Component, component::Described, component::Event};
 use crate::widget::{MediaTransport, TransportArt, TransportFeed, TransportRepeat, TransportState};
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 use super::media_transport::TransportTriggers;
 use tilo_ui_base::widget::DrawChild;
@@ -329,17 +329,19 @@ impl DeclaredTransport {
                 .is_none_or(|measured| (duration - measured).abs() >= 500.0)
             {
                 self.measured = Some(duration);
-                self.length
-                    .fire(Some(tilo_ui_base::component::Value::Float(duration / 1000.0)));
+                self.length.fire(Some(tilo_ui_base::component::Value::Float(
+                    duration / 1000.0,
+                )));
             }
         }
         self.declared.playing = playing;
         self.feed.show(self.declared.clone());
         if let Some(reason) = failed {
-            self.fail.fire(Some(tilo_ui_base::component::Value::List(vec![
-                tilo_ui_base::component::Value::Text(reason),
-                tilo_ui_base::component::Value::Float(position / 1000.0),
-            ])));
+            self.fail
+                .fire(Some(tilo_ui_base::component::Value::List(vec![
+                    tilo_ui_base::component::Value::Text(reason),
+                    tilo_ui_base::component::Value::Float(position / 1000.0),
+                ])));
         }
         if ended && !self.ended_told {
             self.ended_told = true;
@@ -358,9 +360,10 @@ impl DeclaredTransport {
             };
             if due && position > 0.0 {
                 self.told = Some(position);
-                self.progress.fire(Some(tilo_ui_base::component::Value::Float(
-                    (position / duration).clamp(0.0, 1.0),
-                )));
+                self.progress
+                    .fire(Some(tilo_ui_base::component::Value::Float(
+                        (position / duration).clamp(0.0, 1.0),
+                    )));
             }
         }
     }
@@ -450,12 +453,20 @@ impl tilo_ui_base::widget::Widget for DeclaredTransport {
         Some(self)
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.pump();
         self.band.sync(state, path);
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         self.band.update(state, path)
     }
 
@@ -463,7 +474,10 @@ impl tilo_ui_base::widget::Widget for DeclaredTransport {
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
         theme: &tilo_ui_base::theme::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
+        node_map: &mut std::collections::HashMap<
+            taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> taffy::NodeId {
         self.band.build_layout(taffy, theme, node_map)
     }
@@ -498,7 +512,10 @@ impl tilo_ui_base::widget::Widget for DeclaredTransport {
     /// The band is this widget's one layout child: the window reaches it (and the manual
     /// region its controls are placed in) through this, never only through the controls
     /// themselves.
-    fn for_each_layout_child(&self, visitor: &mut dyn FnMut(&dyn tilo_ui_base::widget::Widget)) -> bool {
+    fn for_each_layout_child(
+        &self,
+        visitor: &mut dyn FnMut(&dyn tilo_ui_base::widget::Widget),
+    ) -> bool {
         visitor(&self.band);
         true
     }

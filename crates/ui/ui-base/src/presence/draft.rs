@@ -55,4 +55,3 @@ impl DraftSaid {
         Some((key, PresencePayload::Composing { composing: true }))
     }
 }
-

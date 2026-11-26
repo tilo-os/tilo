@@ -23,7 +23,9 @@ use std::sync::Arc;
 
 use tilo_files::native::Watched;
 use tilo_session_core::desktop::state::{DesktopHandle, HostAction};
-use tilo_ui_base::{local_identity::LocalIdentity, local_identity::LocalIdentitySource, local_identity::PhotoSource};
+use tilo_ui_base::{
+    local_identity::LocalIdentity, local_identity::LocalIdentitySource, local_identity::PhotoSource,
+};
 
 use crate::platform::notice::Notices;
 
@@ -200,7 +202,9 @@ pub fn install() {
             watched.on_change(|| {
                 RECORD_GENERATION.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             });
-            tilo_ui_base::local_identity::install_source(Some(Arc::new(WatchedLocalIdentity(watched))));
+            tilo_ui_base::local_identity::install_source(Some(Arc::new(WatchedLocalIdentity(
+                watched,
+            ))));
         }
         Err(error) => tracing::warn!(%error, "cannot watch the person's identity"),
     }

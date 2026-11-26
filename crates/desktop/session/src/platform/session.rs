@@ -2799,7 +2799,8 @@ impl Session {
             crate::a11y::Place::App(instance) => {
                 // The window runs it on its own loop, exactly as its own assistive client would:
                 // the request is written to its shell-ui connection on this pass.
-                let (action, data) = tilo_ui_base::accesskit_bridge::ours_action_to_accesskit(action, target);
+                let (action, data) =
+                    tilo_ui_base::accesskit_bridge::ours_action_to_accesskit(action, target);
                 self.shared.windows.borrow_mut().push_action(
                     instance,
                     ui::accesskit::ActionRequest {

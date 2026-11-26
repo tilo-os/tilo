@@ -1,12 +1,12 @@
 use super::*;
 use crate::bound_dispatch::ToolkitPart as _;
 use crate::history_mode::*;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use automerge::{ROOT, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 #[path = "peer_delivery_tests.rs"]
 mod peer_delivery;
@@ -127,11 +127,13 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
             State::new(),
             Box::new(crate::widget::Text::new("root")),
         );
-        let installed = tilo_ui_base::collaboration::RouteSpec::app("installed-app", uuid::Uuid::new_v4());
-        app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
-            route: installed.clone(),
-            epoch: uuid::Uuid::new_v4(),
-        });
+        let installed =
+            tilo_ui_base::collaboration::RouteSpec::app("installed-app", uuid::Uuid::new_v4());
+        app.actions.bound_broker_route_for_test =
+            Some(tilo_ui_base::collaboration::AcceptedRoute {
+                route: installed.clone(),
+                epoch: uuid::Uuid::new_v4(),
+            });
         let mut foreign = installed;
         foreign.document = Some("foreign-record".into());
         let mut incoming = automerge::AutoCommit::new();
@@ -324,8 +326,11 @@ fn owned_routes_isolate_documents_and_admit_only_owned_bytes() {
             "fixture.observer",
         );
         let mut app = App::new_with_controlled_inputs(State::new(), probe.root);
-        let foreign =
-            tilo_ui_base::collaboration::RouteSpec::document("foreign", uuid::Uuid::new_v4(), "other");
+        let foreign = tilo_ui_base::collaboration::RouteSpec::document(
+            "foreign",
+            uuid::Uuid::new_v4(),
+            "other",
+        );
         let mut doc = automerge::AutoCommit::new();
         doc.put(ROOT, "body", "foreign").unwrap();
         let envelope = routed_document(
@@ -518,13 +523,14 @@ impl RoutedOwners {
         let mut app = App::new_with_controlled_inputs(state, Box::new(root));
         let (manager, hold_join) = CollaborationManager::connected_holding_joins_for_test();
         app.collaboration.manager = manager;
-        app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
-            route: tilo_ui_base::collaboration::RouteSpec::app(
-                "outer-shell",
-                uuid::Uuid::parse_str(workspace).unwrap(),
-            ),
-            epoch: uuid::Uuid::new_v4(),
-        });
+        app.actions.bound_broker_route_for_test =
+            Some(tilo_ui_base::collaboration::AcceptedRoute {
+                route: tilo_ui_base::collaboration::RouteSpec::app(
+                    "outer-shell",
+                    uuid::Uuid::parse_str(workspace).unwrap(),
+                ),
+                epoch: uuid::Uuid::new_v4(),
+            });
         app.refresh_document_routes();
         // The fake broker admits each route join asynchronously, and a route
         // refuses documents until its document mode is resolved.
@@ -821,10 +827,11 @@ impl RoutedPrimary {
             Box::new(crate::widget::BoundAppWidget::new(component)),
         );
         app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-        app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
-            route: binding.broker_route().unwrap(),
-            epoch: uuid::Uuid::new_v4(),
-        });
+        app.actions.bound_broker_route_for_test =
+            Some(tilo_ui_base::collaboration::AcceptedRoute {
+                route: binding.broker_route().unwrap(),
+                epoch: uuid::Uuid::new_v4(),
+            });
         app.refresh_document_routes();
         Self {
             app,
@@ -2251,7 +2258,10 @@ impl tilo_ui_base::widget::Widget for PaletteHistoryOwner {
         nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
     ) -> taffy::NodeId {
         let node = self.text.build_layout(tree, theme, nodes);
-        nodes.insert(node, std::ptr::from_mut::<dyn tilo_ui_base::widget::Widget>(self));
+        nodes.insert(
+            node,
+            std::ptr::from_mut::<dyn tilo_ui_base::widget::Widget>(self),
+        );
         node
     }
     fn apply_layout(
@@ -2313,9 +2323,11 @@ impl tilo_ui_base::widget::ResourceOperations for PaletteHistoryOwner {
             .lock()
             .unwrap()
             .push((type_id.to_owned(), payload.to_vec()));
-        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui_base::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
 }
 

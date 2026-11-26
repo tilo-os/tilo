@@ -3,9 +3,9 @@
 //! [`ResourceSpec`]s, each exporting the [`ActionSpec`]s Ctrl+K offers.
 
 use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
+use tilo_sort::CompactSort as _;
 use tilo_ui_base::i18n::widget_text;
 use tilo_ui_base::widget::ModelPath;
-use tilo_sort::CompactSort as _;
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -21,18 +21,18 @@ use crate::search::{
     Facet, FacetFilter, PagePoll, PendingToken, SearchCursor, SearchProvider, SearchQuery,
     SearchResult,
 };
-use tilo_ui_base::{text_match::FieldWeight, text_match::ListIndex};
-use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::widget::DrawChild;
 use crate::widget::search_request::ScopeDecl;
 use crate::{widget::SearchField, widget::SearchResultsView};
-use tilo_ui_base::widget::Widget;
 use tilo_actions::{
     ActionContext, ActionInput, EncodedAction, OperationKind, ResourceSpec, flatten,
 };
 #[cfg(test)]
 use tilo_actions::{ActionRegistry, ActionTransport, Dispatched};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{text_match::FieldWeight, text_match::ListIndex};
 
 /// The group header for the focused app's exported actions.
 pub const ACTIONS_KIND: &str = "Actions";
@@ -507,7 +507,10 @@ impl ActionPalette {
             field: field_source
                 .build()
                 .control_size(FIELD_SIZE)
-                .with_placeholder(&tilo_ui_base::i18n::widget_format("action-palette-query", &[])),
+                .with_placeholder(&tilo_ui_base::i18n::widget_format(
+                    "action-palette-query",
+                    &[],
+                )),
             results: Box::new(
                 SearchResultsView::new()
                     .with_empty_text("No matches")
@@ -702,7 +705,11 @@ impl ActionPalette {
         format!("palette-answer:{}:{part}", self.request_generation)
     }
     fn drain_command(&mut self, doc: &mut tilo_ui_base::widget::Edits<'_>, path: &ObjId) {
-        tilo_ui_base::widget::controls::start_pending_control_invocations(&mut self.controls, doc, path);
+        tilo_ui_base::widget::controls::start_pending_control_invocations(
+            &mut self.controls,
+            doc,
+            path,
+        );
         match self.command.take() {
             Some(true) => {
                 self.focus_part(0);
@@ -875,7 +882,10 @@ impl ActionPalette {
             .field_source
             .build()
             .control_size(FIELD_SIZE)
-            .with_placeholder(&tilo_ui_base::i18n::widget_format("action-palette-query", &[]));
+            .with_placeholder(&tilo_ui_base::i18n::widget_format(
+                "action-palette-query",
+                &[],
+            ));
         field.set_scope_token(self.scope.as_ref().map(scope_token_label));
         field
     }
@@ -1015,7 +1025,12 @@ impl ActionPalette {
         }
         let (anchor, focus) = self.field.selection_anchor_focus_or_caret();
         Some(QueryField {
-            fingerprint: tilo_ui_base::ime::edit_fingerprint(self.field.value(), anchor, focus, key),
+            fingerprint: tilo_ui_base::ime::edit_fingerprint(
+                self.field.value(),
+                anchor,
+                focus,
+                key,
+            ),
             secret: content.is_secret(),
             multiline: self.field.ime_multiline(),
         })
@@ -1199,13 +1214,12 @@ impl ActionPalette {
             return false;
         };
         let Some(address) = address else {
-            return binding
-                .permissions
-                .borrow()
-                .check(&tilo_ui_base::permissions::PermissionScope::app(
+            return binding.permissions.borrow().check(
+                &tilo_ui_base::permissions::PermissionScope::app(
                     &binding.app_id,
                     tilo_ui_base::permissions::ActionKind::Read,
-                ));
+                ),
+            );
         };
         let resource = provider.resolve_action_resource(address).or_else(|| {
             self.bound_resources
@@ -1232,7 +1246,10 @@ impl ActionPalette {
         provider: &dyn SearchProvider,
         binding: Option<&crate::bound_dispatch::CallbackBinding>,
         hits: Vec<SearchResult>,
-    ) -> Vec<(SearchResult, Option<tilo_ui_base::permissions::PermissionContext>)> {
+    ) -> Vec<(
+        SearchResult,
+        Option<tilo_ui_base::permissions::PermissionContext>,
+    )> {
         hits.into_iter()
             .filter_map(|hit| {
                 let Some(binding) = binding else {
@@ -1348,7 +1365,10 @@ impl ActionPalette {
 
     fn merge_provider_page(
         &mut self,
-        results: Vec<(SearchResult, Option<tilo_ui_base::permissions::PermissionContext>)>,
+        results: Vec<(
+            SearchResult,
+            Option<tilo_ui_base::permissions::PermissionContext>,
+        )>,
         binding: Option<&crate::bound_dispatch::CallbackBinding>,
         provider: usize,
     ) -> usize {
@@ -3426,7 +3446,11 @@ mod tests {
     }
 
     fn enter_key() -> KeyEvent {
-        tilo_ui_base::synthetic_input::key_event(Key::Named(NamedKey::Enter), None, ElementState::Pressed)
+        tilo_ui_base::synthetic_input::key_event(
+            Key::Named(NamedKey::Enter),
+            None,
+            ElementState::Pressed,
+        )
     }
 
     fn enter() -> WindowEvent {

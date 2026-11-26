@@ -1,8 +1,8 @@
 //! [`ImageViewer`] as a described component: a picture to pan and zoom.
 
-use tilo_ui_base::{component::Component, component::Described};
 use crate::pictures::{Pictures, Shown};
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::{ImageViewer, PictureSource};
 use tilo_ui_base::widget::DrawChild;
@@ -111,14 +111,22 @@ impl Widget for ZoomableImage {
         Some(self)
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.take_picture();
         if let Some(viewer) = &mut self.viewer {
             viewer.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let arrived = self.take_picture();
         let forwarded = self
             .viewer
@@ -275,7 +283,8 @@ mod tests {
             "data:image/png;base64,{}",
             base64::engine::general_purpose::STANDARD.encode(&png)
         );
-        let fetch: tilo_ui_base::image_store::Fetcher = std::sync::Arc::new(move |_| Some(png.clone()));
+        let fetch: tilo_ui_base::image_store::Fetcher =
+            std::sync::Arc::new(move |_| Some(png.clone()));
         let pictures = Pictures::new(tilo_ui_base::ImageStore::new(&fetch));
         let props = ImageViewerProps {
             image: PictureSource { src },

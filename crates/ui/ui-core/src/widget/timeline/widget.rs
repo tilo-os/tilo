@@ -12,15 +12,15 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 use tilo_ui_base::{component::Event, component::Value};
 use tilo_ui_base::{motion::Direction, motion::MotionValue};
-use tilo_ui_base::paint::PaintCtx;
 
+use crate::widget::Scrollable;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::MotionSource;
-use crate::widget::Scrollable;
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 use super::Ghost;
@@ -203,7 +203,8 @@ impl Timeline {
                 theme.motion(),
                 MotionSource::Pointer,
             );
-            self.slide.set(0.0, timing, tilo_ui_base::motion::frame_now());
+            self.slide
+                .set(0.0, timing, tilo_ui_base::motion::frame_now());
         }
     }
 
@@ -787,8 +788,9 @@ impl Timeline {
     #[cfg(test)]
     pub(crate) fn layout_for(&mut self, area: Rect, theme: &Theme) {
         self.theme = Some(theme.clone());
-        let tokens =
-            tilo_ui_base::text_render::with_layout_renderer(theme, |text| TimelineTokens::of(theme, text));
+        let tokens = tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
+            TimelineTokens::of(theme, text)
+        });
         self.tokens = Some(tokens);
         self.rect = area;
         self.drag = None;
@@ -1134,7 +1136,8 @@ impl Widget for Timeline {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.slide.is_moving(tilo_ui_base::motion::frame_now()) || self.scroll.needs_animation_frame()
+        self.slide.is_moving(tilo_ui_base::motion::frame_now())
+            || self.scroll.needs_animation_frame()
     }
 
     /// Wake at the next whole minute while the now line is shown, so it is repainted when it

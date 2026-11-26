@@ -13,14 +13,19 @@ use std::rc::Rc;
 
 use crate::{UiNode, Value};
 use tilo_ui_base::LocalState;
-use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
 use tilo_ui_base::widget::Length;
+use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
+use tilo_ui_base::{widget::AvatarSize, widget::Element, widget::Spacer};
 use ui::widget::arrange::{
     Align, At, Collapse, Distribute, Fit, Grid, Layers, Navigation, Page, Part, Row, Side, Split,
     Stack,
 };
-use ui::{widget::Avatar, widget::Button, widget::ButtonRole, widget::Checkbox, widget::Container, widget::ControlSize, widget::Divider, widget::Dropdown, widget::EmptyState, widget::Field, widget::FormSection, widget::Scrollable, widget::Section, widget::Segment, widget::Text, widget::Toggle, widget::ToggleGroup, widget::labeled_check};
-use tilo_ui_base::{widget::AvatarSize, widget::Element, widget::Spacer};
+use ui::{
+    widget::Avatar, widget::Button, widget::ButtonRole, widget::Checkbox, widget::Container,
+    widget::ControlSize, widget::Divider, widget::Dropdown, widget::EmptyState, widget::Field,
+    widget::FormSection, widget::Scrollable, widget::Section, widget::Segment, widget::Text,
+    widget::Toggle, widget::ToggleGroup, widget::labeled_check,
+};
 
 use crate::adapter::{Adapter, NodeSource};
 use crate::pane::Pane;
@@ -1486,7 +1491,9 @@ impl Reconciler {
     /// would say, each value as its type shows it (a day as the day fact).
     fn suggestion(&mut self, node: &UiNode) -> Element {
         let author = match prop(node, "author") {
-            Some(Value::Actor(who)) => tilo_ui_base::component::Person::new(who.id.clone(), who.name.clone()),
+            Some(Value::Actor(who)) => {
+                tilo_ui_base::component::Person::new(who.id.clone(), who.name.clone())
+            }
             other => tilo_ui_base::component::Person::named(other.map(display).unwrap_or_default()),
         };
         let says = crate::i18n::word(
@@ -2329,7 +2336,10 @@ fn holder_shape(node: &UiNode) -> Vec<PartShape> {
     shape
 }
 
-fn collect_panes<'a>(widget: &'a mut dyn tilo_ui_base::widget::Widget, out: &mut Vec<&'a mut Pane>) {
+fn collect_panes<'a>(
+    widget: &'a mut dyn tilo_ui_base::widget::Widget,
+    out: &mut Vec<&'a mut Pane>,
+) {
     if widget.as_any().is_some_and(<dyn std::any::Any>::is::<Pane>) {
         if let Some(pane) = widget
             .as_any_mut()
@@ -2398,7 +2408,9 @@ mod tests {
         container
             .children()
             .iter()
-            .map(|child| std::ptr::from_ref::<dyn tilo_ui_base::widget::Widget>(*child).cast::<()>() as usize)
+            .map(|child| {
+                std::ptr::from_ref::<dyn tilo_ui_base::widget::Widget>(*child).cast::<()>() as usize
+            })
             .collect()
     }
 
@@ -2492,7 +2504,9 @@ mod tests {
         collect_panes(built.as_mut(), &mut panes);
         let before: Vec<usize> = panes
             .iter()
-            .map(|pane| std::ptr::from_ref::<dyn tilo_ui_base::widget::Widget>(*pane).cast::<()>() as usize)
+            .map(|pane| {
+                std::ptr::from_ref::<dyn tilo_ui_base::widget::Widget>(*pane).cast::<()>() as usize
+            })
             .collect();
         assert_eq!(before.len(), 2, "both controls sit in a pane");
         // The time moves: both panes stay, and each reconciles in place.
@@ -2505,7 +2519,9 @@ mod tests {
         collect_panes(updated.as_mut(), &mut panes);
         let after: Vec<usize> = panes
             .iter()
-            .map(|pane| std::ptr::from_ref::<dyn tilo_ui_base::widget::Widget>(*pane).cast::<()>() as usize)
+            .map(|pane| {
+                std::ptr::from_ref::<dyn tilo_ui_base::widget::Widget>(*pane).cast::<()>() as usize
+            })
             .collect();
         assert_eq!(after, before, "both keep their pane");
     }
@@ -2726,7 +2742,9 @@ mod tests {
 
     /// The built view as a window shows it: the window's place fills the surface the host gives
     /// the window, and the view takes the room that place gives it.
-    fn window_content(built: Box<dyn tilo_ui_base::widget::Widget>) -> Box<dyn tilo_ui_base::widget::Widget> {
+    fn window_content(
+        built: Box<dyn tilo_ui_base::widget::Widget>,
+    ) -> Box<dyn tilo_ui_base::widget::Widget> {
         Box::new(
             ui::widget::Container::new()
                 .with_no_padding()

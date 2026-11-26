@@ -553,7 +553,10 @@ impl Member {
             caret_key: serde_json::to_vec(&tilo_ui_base::PresenceKey::Widget {
                 path: vec![tilo_ui_base::PathSegment::Field("body".into())],
             })?,
-            pointer_key: serde_json::to_string(&tilo_ui_base::PresenceKey::tile_pointer(&workspace.uuid, 1))?,
+            pointer_key: serde_json::to_string(&tilo_ui_base::PresenceKey::tile_pointer(
+                &workspace.uuid,
+                1,
+            ))?,
             _dialer: dialer,
             _running: running,
         })

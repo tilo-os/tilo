@@ -638,11 +638,9 @@ impl App {
         {
             self.request_close();
         }
-        while let Some(intent) =
-            self.close_admission.dialog.as_mut().and_then(|dialog| {
-                tilo_ui_base::widget::controls::take_control_invocation(dialog.as_mut())
-            })
-        {
+        while let Some(intent) = self.close_admission.dialog.as_mut().and_then(|dialog| {
+            tilo_ui_base::widget::controls::take_control_invocation(dialog.as_mut())
+        }) {
             let result = self
                 .invoke_history_address_local(&intent.address, None)
                 .unwrap_or_else(|| Err(tilo_actions::ApiError::Unknown(intent.address.clone())));
@@ -658,9 +656,9 @@ impl App {
             && self.close_admission.save_broker_request.is_some()
             && !self.collaboration.manager.is_connected()
         {
-            self.close_admission.save_result = Some(Err(tilo_ui_base::i18n::I18nManager::lookup_plain(
-                "close-broker-disconnected",
-            )));
+            self.close_admission.save_result = Some(Err(
+                tilo_ui_base::i18n::I18nManager::lookup_plain("close-broker-disconnected"),
+            ));
         }
         if let Some(result) = self.close_admission.save_result.take() {
             self.close_admission.save_waiting = false;
@@ -737,7 +735,8 @@ impl App {
                 }
                 Key::Named(NamedKey::Enter | NamedKey::Space) => {
                     if let Some(node) = self.focused_node {
-                        let _ = self.perform_node_action(node, &tilo_ui_base::a11y::Action::Activate);
+                        let _ =
+                            self.perform_node_action(node, &tilo_ui_base::a11y::Action::Activate);
                         handled = true;
                     }
                 }
@@ -834,7 +833,11 @@ mod tests {
             dyn tilo_ui_base::widget::ResourceOperations
         );
 
-        fn sync(&mut self, doc: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+        fn sync(
+            &mut self,
+            doc: &tilo_ui_base::widget::AppModel,
+            path: &tilo_ui_base::widget::ModelPath,
+        ) {
             self.text.sync(doc, path);
         }
         fn build_layout(
@@ -902,9 +905,11 @@ mod tests {
                 return Err("Save dialog cancelled".into());
             }
             self.document.as_ref().unwrap().set(false);
-            Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
+            Ok(Some(
+                tilo_ui_base::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ),
+            ))
         }
     }
 
@@ -974,7 +979,10 @@ mod tests {
             .clone();
         assert!(
             tilo_actions::api::resolve(
-                &tilo_ui_base::widget::resources::resources(app.root_widget.as_ref(), &app.state.doc),
+                &tilo_ui_base::widget::resources::resources(
+                    app.root_widget.as_ref(),
+                    &app.state.doc
+                ),
                 &document.save,
             )
             .is_some(),
@@ -1019,7 +1027,9 @@ mod tests {
             self.stopping.load(std::sync::atomic::Ordering::SeqCst)
                 && self.handed_over.load(std::sync::atomic::Ordering::SeqCst)
         }
-        fn resume_invocations(&mut self) -> Result<(), tilo_ui_base::collaboration::TransportError> {
+        fn resume_invocations(
+            &mut self,
+        ) -> Result<(), tilo_ui_base::collaboration::TransportError> {
             self.stopping
                 .store(false, std::sync::atomic::Ordering::SeqCst);
             self.resumed
@@ -1060,12 +1070,14 @@ mod tests {
         let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root));
         let ends: Ends = Default::default();
         app.collaboration.manager =
-            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(Invocations {
-                stopping: ends.0.clone(),
-                handed_over: ends.1.clone(),
-                answered: ends.2.clone(),
-                resumed: std::sync::Arc::default(),
-            }));
+            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(
+                Invocations {
+                    stopping: ends.0.clone(),
+                    handed_over: ends.1.clone(),
+                    answered: ends.2.clone(),
+                    resumed: std::sync::Arc::default(),
+                },
+            ));
         assert!(app.collaboration.manager.is_connected());
         (app, saves, ends)
     }
@@ -1306,12 +1318,14 @@ mod tests {
         let handed_over = std::sync::Arc::new(AtomicBool::new(false));
         let resumed = std::sync::Arc::new(AtomicBool::new(false));
         app.collaboration.manager =
-            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(Invocations {
-                stopping: stopping.clone(),
-                handed_over: handed_over.clone(),
-                answered: std::sync::Arc::default(),
-                resumed: resumed.clone(),
-            }));
+            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(
+                Invocations {
+                    stopping: stopping.clone(),
+                    handed_over: handed_over.clone(),
+                    answered: std::sync::Arc::default(),
+                    resumed: resumed.clone(),
+                },
+            ));
         // The broker holds nothing more for this window: stopping ends its invocations.
         handed_over.store(true, SeqCst);
 
@@ -1469,9 +1483,7 @@ mod tests {
         > {
             let (answer, receipt) = std::sync::mpsc::sync_channel(1);
             self.barriers.lock().unwrap().push(answer);
-            Ok(tilo_ui_base::collaboration::DocumentPublicationReceipt::new(
-                receipt,
-            ))
+            Ok(tilo_ui_base::collaboration::DocumentPublicationReceipt::new(receipt))
         }
         fn document_publishable(&self, _: Option<&str>) -> bool {
             true
@@ -1520,10 +1532,13 @@ mod tests {
             }),
         );
         app.collaboration.manager = manager;
-        app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
-            route: tilo_ui_base::collaboration::RouteSpec::document(KEPT_APP, workspace, "shown"),
-            epoch: uuid::Uuid::new_v4(),
-        });
+        app.actions.bound_broker_route_for_test =
+            Some(tilo_ui_base::collaboration::AcceptedRoute {
+                route: tilo_ui_base::collaboration::RouteSpec::document(
+                    KEPT_APP, workspace, "shown",
+                ),
+                epoch: uuid::Uuid::new_v4(),
+            });
         app.refresh_document_routes();
         (app, store, record, lifetime)
     }
@@ -1557,7 +1572,9 @@ mod tests {
         use crate::resource::ResourceSaveStatus::{Saved, Saving};
         let workspace = Workspace::default();
         let (mut app, store, record, _lifetime) = window_on_record(
-            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(workspace.clone())),
+            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(
+                workspace.clone(),
+            )),
         );
         assert_eq!(
             status(&store, &record),
@@ -1599,11 +1616,13 @@ mod tests {
     /// workspace took it.
     #[test]
     fn a_close_the_workspace_refused_keeps_the_window_and_its_edit() {
-        use tilo_ui_base::collaboration::DocumentPublicationError::Refused;
         use crate::resource::ResourceSaveStatus::{Failed, Saved};
+        use tilo_ui_base::collaboration::DocumentPublicationError::Refused;
         let workspace = Workspace::default();
         let (mut app, store, record, _lifetime) = window_on_record(
-            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(workspace.clone())),
+            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(
+                workspace.clone(),
+            )),
         );
         type_into(&store, &record, "typed before closing");
         app.pump_document_routes();
@@ -1696,7 +1715,9 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
         let workspace = Workspace::default();
         let (mut app, store, record, _lifetime) = window_on_record(
-            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(workspace.clone())),
+            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(
+                workspace.clone(),
+            )),
         );
         type_into(&store, &record, "written with no window");
         let ended = std::sync::Arc::new(AtomicBool::new(false));

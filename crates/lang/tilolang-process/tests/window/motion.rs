@@ -133,7 +133,10 @@ fn rows(app: &mut TestApp<TlApp>) -> Vec<(String, [f64; 4])> {
 /// Chooses the sidebar's place `label`, as a person does: what is due before today waits in
 /// Today, and the inbox holds only what no day and no project sorts.
 fn open_place(app: &mut TestApp<TlApp>, label: &str) {
-    fn place<'a>(node: &'a tilo_ui_base::a11y::AccessNode, label: &str) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
+    fn place<'a>(
+        node: &'a tilo_ui_base::a11y::AccessNode,
+        label: &str,
+    ) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
         if node.role == tilo_ui_base::a11y::Role::TreeItem
             && node
                 .name

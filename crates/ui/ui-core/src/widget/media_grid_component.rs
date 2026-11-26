@@ -5,16 +5,19 @@ use std::cell::Cell;
 use std::ops::Range;
 use std::rc::Rc;
 
-use tilo_ui_base::arriving::Arrival;
-use tilo_ui_base::collection_transition::ListModelChange;
-use tilo_ui_base::{component::Accepts, component::Component, component::Described, component::Event, component::PartType, component::ResourceId, component::SharedRows, component::Source};
-use tilo_ui_base::icons::Icon;
 use crate::pictures::Pictures;
-use tilo_ui_base::tokens::Rhythm;
 use crate::widget::arrange::{Fit, Part, Row, Sizing};
 use crate::widget::media_card::{CardSlot, MediaSize};
 use crate::widget::virtual_list::ListModel;
 use crate::{widget::MediaCard, widget::MediaGrid, widget::MediaSource, widget::VirtualList};
+use tilo_ui_base::arriving::Arrival;
+use tilo_ui_base::collection_transition::ListModelChange;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::tokens::Rhythm;
+use tilo_ui_base::{
+    component::Accepts, component::Component, component::Described, component::Event,
+    component::PartType, component::ResourceId, component::SharedRows, component::Source,
+};
 use tilo_ui_base::{widget::Element, widget::MediaAspect};
 
 // The `MediaAspect` choice is declared beside the enum, in `media_card.rs`.
@@ -443,9 +446,9 @@ impl Described for MediaGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::component::RowSource;
     use std::cell::RefCell;
     use std::collections::BTreeSet;
+    use tilo_ui_base::component::RowSource;
 
     /// A host rendering ten thousand cards, recording which cards it is asked for: the grid's
     /// rows are what it renders, so the cards it is asked for are the cards laid out.

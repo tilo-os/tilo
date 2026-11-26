@@ -1,8 +1,8 @@
 //! The reveal kernel every collapsible panel shares: `NavShell`'s sidebar and inspector,
 //! and the headless [`crate::widget::SidebarDrawer`].
 
-use tilo_ui_base::{motion::Direction, motion::MotionValue, motion::PanelSlide};
 use crate::time::Instant;
+use tilo_ui_base::{motion::Direction, motion::MotionValue, motion::PanelSlide};
 use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
 /// How a sidebar resolves at the current width.

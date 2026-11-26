@@ -12,11 +12,11 @@ use tilo_resource::{
 use tilo_ui_base::LocalState;
 use tilo_ui_base::arriving::Arriving;
 use tilo_ui_base::i18n::LabelKey;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::widget::SkeletonShape;
 use ui_core::resource::ResourceSaveStatus;
 use ui_core::widget::ArrivingView;
-use tilo_ui_base::widget::SkeletonShape;
 use ui_core::{widget::Button, widget::Checkbox, widget::Text, widget::TextInput};
-use tilo_ui_base::widget::Element;
 
 use super::controls::{ActionControl, Actions};
 use super::dispatch::{Dispatcher, Submit};

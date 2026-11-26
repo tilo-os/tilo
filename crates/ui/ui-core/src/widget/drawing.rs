@@ -13,8 +13,8 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::ColorCompat;
 use crate::color::to_rgb8;
-use tilo_ui_base::{motion::Direction, motion::Feel, motion::MotionValue, motion::Reading};
 use tilo_ui_base::paint::with_alpha_scaled;
+use tilo_ui_base::{motion::Direction, motion::Feel, motion::MotionValue, motion::Reading};
 
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;

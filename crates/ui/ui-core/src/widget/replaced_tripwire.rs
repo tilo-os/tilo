@@ -10,7 +10,9 @@ use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
 use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{widget::AppModel, widget::EventCtx, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
+use tilo_ui_base::{
+    widget::AppModel, widget::EventCtx, widget::ModelPath, widget::TaffyTreeExt, widget::Widget,
+};
 
 const REACHED: &str = "a replaced widget was reached through a layout map that was not rebuilt";
 
@@ -48,7 +50,10 @@ impl Widget for Tripwire {
     fn provide<'a>(&'a self, _request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
         self.check();
     }
-    fn provide_mut<'a>(&'a mut self, _request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(
+        &'a mut self,
+        _request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
         self.check();
     }
     fn build_layout(
@@ -100,7 +105,10 @@ impl Widget for Tripwire {
     }
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.check();
-        Some(tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button).with_name("Tripwire"))
+        Some(
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button)
+                .with_name("Tripwire"),
+        )
     }
 
     fn needs_redraw(&self) -> bool {

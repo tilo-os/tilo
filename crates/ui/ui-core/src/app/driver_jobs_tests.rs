@@ -20,9 +20,9 @@ use tilo_actions::{
     ResourceSpec,
 };
 
-use tilo_ui_base::collaboration::CollabRequest;
 use crate::headless::Driver;
 use crate::state::State;
+use tilo_ui_base::collaboration::CollabRequest;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::ResourceOperationStart, widget::TaffyTreeExt as _, widget::Widget};
 

@@ -19,8 +19,12 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 use crate::{ResourceRef, UiNode, Value};
-use tilo_ui_base::{component::Accepts, component::Bound, component::BoundValue, component::Catalogue, component::Description, component::Event, component::Fired, component::Intent, component::Merge, component::Source, component::Type, component::Value as Prop};
 use tilo_ui_base::widget::Element;
+use tilo_ui_base::{
+    component::Accepts, component::Bound, component::BoundValue, component::Catalogue,
+    component::Description, component::Event, component::Fired, component::Intent,
+    component::Merge, component::Source, component::Type, component::Value as Prop,
+};
 
 #[cfg(test)]
 use crate::pane::Pane;
@@ -370,7 +374,11 @@ impl Adapter {
     /// What an event carries, as the runtime's value, in the parts the component describes: a move
     /// names the row that moved and the row it lands at, and the one a parameter of an option takes
     /// is handed over as an option — none where the part holds no row.
-    fn event_value(&self, value: &Prop, event: &tilo_ui_base::component::EventDescription) -> Option<Value> {
+    fn event_value(
+        &self,
+        value: &Prop,
+        event: &tilo_ui_base::component::EventDescription,
+    ) -> Option<Value> {
         match (value, &event.value, &event.at) {
             (Prop::List(parts), Some(first), Some(at)) => {
                 let typed: Option<Vec<Value>> = parts
@@ -639,7 +647,9 @@ impl<'a> NodeSource<'a> {
                 tilo_ui_base::widget::Tone::Warning => "warning",
                 tilo_ui_base::widget::Tone::Success => "success",
                 tilo_ui_base::widget::Tone::Info => "info",
-                tilo_ui_base::widget::Tone::Neutral | tilo_ui_base::widget::Tone::Presence(_) => "neutral",
+                tilo_ui_base::widget::Tone::Neutral | tilo_ui_base::widget::Tone::Presence(_) => {
+                    "neutral"
+                }
             };
             return Some(Prop::Choice(case.to_owned()));
         }
@@ -729,9 +739,11 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
             Prop::Resource(reference.id.clone())
         }
         (Type::Icon, Value::Text(name)) => Prop::Icon(name.replace('_', "-")),
-        (Type::Picture, Value::Picture(picture)) => Prop::Picture(tilo_ui_base::component::Picture {
-            src: picture.src.clone(),
-        }),
+        (Type::Picture, Value::Picture(picture)) => {
+            Prop::Picture(tilo_ui_base::component::Picture {
+                src: picture.src.clone(),
+            })
+        }
         (Type::File, Value::File(file)) => Prop::File(file.clone()),
         // A moment reaches the component as the instant it is, never as text read the person's way:
         // the component decides how to show it.

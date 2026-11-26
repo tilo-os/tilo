@@ -20,7 +20,9 @@ pub fn too_small() -> String {
         "installer-blocked-disk-too-small",
         &[(
             "minimum",
-            tilo_ui_base::i18n::ArgValue::Text(tilo_ui_base::format::memory(imager_backend::MIN_TARGET_BYTES)),
+            tilo_ui_base::i18n::ArgValue::Text(tilo_ui_base::format::memory(
+                imager_backend::MIN_TARGET_BYTES,
+            )),
         )],
     )
 }
@@ -174,7 +176,11 @@ mod tests {
             let mut row = disk_row(&disk(), &control, false);
             let mut doc = AutoCommit::new();
 
-            crate::setup::destination::press(&mut row, &tilo_ui_base::a11y::Action::Activate, &mut doc);
+            crate::setup::destination::press(
+                &mut row,
+                &tilo_ui_base::a11y::Action::Activate,
+                &mut doc,
+            );
             assert!(
                 presses.take().map(|press| press.effect)
                     == Some(DestinationEffect::SelectDisk {

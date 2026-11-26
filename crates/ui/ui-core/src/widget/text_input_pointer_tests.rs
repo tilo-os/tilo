@@ -9,9 +9,12 @@ use super::ml_input;
 use super::mods;
 use super::test_node;
 use super::x_for_byte;
-use tilo_ui_base::{synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release, synthetic_input::named_key};
 use automerge::ObjType;
 use automerge::transaction::Transactable as _;
+use tilo_ui_base::{
+    synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press,
+    synthetic_input::mouse_release, synthetic_input::named_key,
+};
 
 /// The one action the test binding names, allowed.
 fn answered() -> std::collections::HashSet<tilo_actions::ActionAddress> {

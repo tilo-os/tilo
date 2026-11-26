@@ -863,10 +863,12 @@ fn a_window_opened_in_a_served_windows_place_is_served_by_its_host() {
     let counted = std::rc::Rc::clone(&served);
     tilo_ui_base::ImageStore::serve_window(
         &component.callback_binding().lifetime,
-        std::rc::Rc::new(move |max_dimension, _: &tilo_ui_base::image_store::ServedWindow| {
-            counted.set(counted.get() + 1);
-            tilo_ui_base::ImageStore::host_driven_with_max_dimension(max_dimension).0
-        }),
+        std::rc::Rc::new(
+            move |max_dimension, _: &tilo_ui_base::image_store::ServedWindow| {
+                counted.set(counted.get() + 1);
+                tilo_ui_base::ImageStore::host_driven_with_max_dimension(max_dimension).0
+            },
+        ),
     );
     let (context, _) = component
         .reopener()
@@ -892,11 +894,14 @@ fn a_window_opened_in_a_served_windows_place_is_served_by_its_host() {
 /// once the window it replaced closed, and loads when the bytes arrive there.
 #[test]
 fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
-    use tilo_ui_base::{collaboration::document_content::ContentLink, collaboration::document_content::DocumentContent};
-    use tilo_ui_base::{image_store::HostImageLoader, image_store::ServedWindow};
     use std::cell::RefCell;
     use std::rc::Rc;
     use std::sync::Arc;
+    use tilo_ui_base::{
+        collaboration::document_content::ContentLink,
+        collaboration::document_content::DocumentContent,
+    };
+    use tilo_ui_base::{image_store::HostImageLoader, image_store::ServedWindow};
 
     let host = ProbeHarness::new();
     // The host's loaders, each with the window it draws for, as a page keeps them.
@@ -918,7 +923,8 @@ fn a_successor_window_asks_for_its_pictures_on_its_own_content_requests() {
     tilo_ui_base::ImageStore::serve_window(
         &first.wake_handle(),
         Rc::new(move |max_dimension, drawn_for: &ServedWindow| {
-            let (store, loader) = tilo_ui_base::ImageStore::host_driven_with_max_dimension(max_dimension);
+            let (store, loader) =
+                tilo_ui_base::ImageStore::host_driven_with_max_dimension(max_dimension);
             page.borrow_mut().push((loader, drawn_for.clone()));
             store
         }),

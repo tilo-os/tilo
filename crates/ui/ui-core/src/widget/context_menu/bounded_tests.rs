@@ -1,7 +1,9 @@
 use super::*;
-use tilo_ui_base::{synthetic_input::mouse_press, synthetic_input::mouse_release, synthetic_input::named_key};
 use crate::testing::dispatch;
 use std::collections::HashMap;
+use tilo_ui_base::{
+    synthetic_input::mouse_press, synthetic_input::mouse_release, synthetic_input::named_key,
+};
 
 fn cursor_at(p: Point) -> WindowEvent {
     tilo_ui_base::synthetic_input::cursor_moved(p.x, p.y)

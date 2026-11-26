@@ -10,8 +10,8 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::*;
-use tilo_ui_base::{component::Described, component::Event, component::Fired, component::Intent};
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{component::Described, component::Event, component::Fired, component::Intent};
 use tilo_ui_base::{widget::Spacer, widget::Widget};
 
 /// A `Fullscreen` laid out in its own tree, as a window lays its root out, which every event is

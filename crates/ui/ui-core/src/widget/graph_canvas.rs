@@ -1,9 +1,9 @@
 //! Retained graph composition: real controls on Manual, decorative themed edges.
-use tilo_ui_base::widget::composition_parts::Parts;
-use tilo_ui_base::{widget::Element, widget::Manual, widget::MeasureConstraint, widget::Widget};
-use tilo_ui_base::Theme;
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::Theme;
+use tilo_ui_base::widget::composition_parts::Parts;
+use tilo_ui_base::{widget::Element, widget::Manual, widget::MeasureConstraint, widget::Widget};
 use vello::kurbo::{BezPath, Point, Rect, Stroke};
 
 /// One domain-owned node's placement and ordinary retained content.
@@ -145,7 +145,8 @@ impl GraphCanvas {
     #[must_use]
     pub fn with_title(mut self, title: Option<String>) -> Self {
         if let Some(title) = &title {
-            let heading = super::Text::new(title).with_role(tilo_ui_base::tokens::TextRole::Heading);
+            let heading =
+                super::Text::new(title).with_role(tilo_ui_base::tokens::TextRole::Heading);
             self.parts.children.insert(0, Box::new(heading));
         }
         self.title = title;

@@ -4,8 +4,8 @@
 //! kinds and commands) and the [`LinkPopover`](crate::widget::LinkPopover) (page links) are
 //! this menu over their own row values.
 
-use tilo_ui_base::i18n::widget_text;
 use std::collections::HashMap;
+use tilo_ui_base::i18n::widget_text;
 
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -13,10 +13,9 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::widget::autocomplete::{Suggestion, SuggestionList};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{query_text::QueryComposition, query_text::QueryEventChange, query_text::QueryInk, query_text::QueryView};
-use tilo_ui_base::{text_match::FieldWeight, text_match::ListIndex};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::text_selection::Selection;
 use tilo_ui_base::theme::Theme;
@@ -24,7 +23,11 @@ use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::ModelPath;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
-use crate::widget::autocomplete::{Suggestion, SuggestionList};
+use tilo_ui_base::{
+    query_text::QueryComposition, query_text::QueryEventChange, query_text::QueryInk,
+    query_text::QueryView,
+};
+use tilo_ui_base::{text_match::FieldWeight, text_match::ListIndex};
 
 const FILTER_HEIGHT: f64 = 32.0;
 const FILTER_GAP: f64 = 4.0;

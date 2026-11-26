@@ -281,9 +281,11 @@ fn composer_window() -> App {
     let send = format!("chat.Channel{}send", '\u{1f}');
     let field = crate::testing::OwnedText::new(
         "draft",
-        crate::widget::TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field("draft".into())])
-            .with_id("draft")
-            .with_accessible_name("Message #general"),
+        crate::widget::TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field(
+            "draft".into(),
+        )])
+        .with_id("draft")
+        .with_accessible_name("Message #general"),
     );
     let button = crate::widget::Button::icon_only("send", tilo_ui_base::icons::Icon::Send, "Send");
     let row = crate::widget::Row::new()

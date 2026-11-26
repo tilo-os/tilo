@@ -1,6 +1,8 @@
 //! [`Stepper`] as a described component.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Value};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
 
 use super::Stepper;
 

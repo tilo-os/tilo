@@ -10,9 +10,9 @@ use super::super::window_toolbar_row::{LocationLift, PickerText, paint_picker};
 use super::{
     NONE_CHOSEN, Orientation, Segment, SegmentedFace, SegmentedStyle, StripMetrics, ToggleGroup,
 };
+use crate::widget::ControlSize;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::widget::ControlSize;
 use tilo_ui_base::widget::Widget;
 
 pub(super) fn labels_fit(width: f64, naturals: &[(f64, f64)]) -> bool {
@@ -76,9 +76,9 @@ impl SegmentedFace<'_> {
     fn folded_label(&self) -> std::borrow::Cow<'_, str> {
         match self.items.get(self.selected) {
             Some(item) if self.selected != NONE_CHOSEN => std::borrow::Cow::Borrowed(item.label),
-            _ => {
-                std::borrow::Cow::Owned(tilo_ui_base::i18n::I18nManager::lookup_plain("segmented-choose"))
-            }
+            _ => std::borrow::Cow::Owned(tilo_ui_base::i18n::I18nManager::lookup_plain(
+                "segmented-choose",
+            )),
         }
     }
 
@@ -116,7 +116,10 @@ impl ToggleGroup {
     /// The folded strip as a reader meets it: one picker that says what it holds, and, while its
     /// menu is open, the choices that menu offers. Its bounds are the picker's face, never the
     /// shares the folded segments no longer paint.
-    pub(super) fn folded_accessibility(&self, name: Option<String>) -> tilo_ui_base::a11y::AccessNode {
+    pub(super) fn folded_accessibility(
+        &self,
+        name: Option<String>,
+    ) -> tilo_ui_base::a11y::AccessNode {
         use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let open = self.menu.is_open();
         let picker = AccessNode::new(Role::ComboBox)
@@ -166,9 +169,9 @@ impl ToggleGroup {
             Some(segment) if self.selected != NONE_CHOSEN => {
                 std::borrow::Cow::Borrowed(segment.label.as_str())
             }
-            _ => {
-                std::borrow::Cow::Owned(tilo_ui_base::i18n::I18nManager::lookup_plain("segmented-choose"))
-            }
+            _ => std::borrow::Cow::Owned(tilo_ui_base::i18n::I18nManager::lookup_plain(
+                "segmented-choose",
+            )),
         }
     }
 
@@ -305,8 +308,10 @@ mod tests {
 
     use super::super::Segment;
     use super::*;
-    use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release};
     use crate::testing::dispatch;
+    use tilo_ui_base::{
+        synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release,
+    };
 
     const LABELS: [&str; 5] = ["Cut", "Dissolve", "Fade", "Dip to black", "Wipe"];
 

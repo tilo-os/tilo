@@ -27,9 +27,9 @@ use media::playback_bridge::{CollectionOutput, PlaybackBridge};
 use media::playback_cast::transport::ProjectorTransport;
 use media::playback_sink::SystemSinkFactory;
 use tilo_app_window::AppWindow;
-use tilolang_tilo::bundle::Bundle;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::Widget};
+use tilolang_tilo::bundle::Bundle;
 
 /// The variable the launcher sets for a window whose instance a tilolang host runs.
 pub const HOSTED_ENV: &str = "TILO_TILOLANG_HOSTED";

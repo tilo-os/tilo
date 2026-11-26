@@ -4,10 +4,10 @@ use super::theme_repaint_tests::{layout, paint};
 use super::*;
 use crate::widget::find_bar::{FindMatch, FindOptions, Findable};
 use crate::{widget::InPlace, widget::SearchDriver};
-use tilo_ui_base::widget::TaffyTreeExt;
 use std::cell::Cell;
 use std::rc::Rc;
 use taffy::Style;
+use tilo_ui_base::widget::TaffyTreeExt;
 use vello::kurbo::Rect;
 
 /// A document that replaces as its own editors do: the replacement waits

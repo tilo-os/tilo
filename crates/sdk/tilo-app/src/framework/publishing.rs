@@ -14,9 +14,11 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 
 use tilo_resource::{ActionDecl, Resource, SearchEntry};
+use tilo_ui_base::{
+    widget::AppModel, widget::Decorator, widget::Element, widget::ModelPath, widget::Widget,
+};
 use ui_core::search::SearchQuery;
 use ui_core::widget::AppProcessIntent;
-use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::Element, widget::ModelPath, widget::Widget};
 
 use super::effect::EffectStatus;
 use super::rows::LiveRow;

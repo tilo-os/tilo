@@ -24,7 +24,9 @@ impl RootControls for ResourceRoot {
         &mut self,
     ) -> Option<tilo_ui_base::widget::controls::AttributedControlInvocation> {
         let taken = self.dispatch.take_attributed().or_else(|| {
-            tilo_ui_base::widget::controls::take_attributed_control_invocation(self.content.as_mut())
+            tilo_ui_base::widget::controls::take_attributed_control_invocation(
+                self.content.as_mut(),
+            )
         });
         if let Some((invocation, _)) = &taken {
             self.share.note_view_invocation(invocation);
@@ -38,7 +40,10 @@ impl RootControls for ResourceRoot {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
+        result: &Result<
+            tilo_ui_base::host_operation::ResourceOperationStart,
+            tilo_actions::ApiError,
+        >,
     ) {
         // The host delivers feedback to the exact emitting document owner;
         // forwarding stops at nested owner boundaries. Its children may have

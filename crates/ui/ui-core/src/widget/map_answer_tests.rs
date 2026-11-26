@@ -5,8 +5,8 @@
 //! role.
 
 use super::*;
-use tilo_ui_base::Theme;
 use crate::widget::primitives::SurfaceLevel;
+use tilo_ui_base::Theme;
 
 fn theme() -> Theme {
     Theme::dark()

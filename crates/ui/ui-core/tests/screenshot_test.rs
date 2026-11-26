@@ -122,10 +122,10 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
             // at the actual widget pipeline.
             use std::collections::HashMap;
             use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+            use tilo_ui::widget::Container;
             use tilo_ui_base::presence::PresenceCtx;
             use tilo_ui_base::text_render::TextRenderer;
             use tilo_ui_base::theme::Theme;
-            use tilo_ui::widget::Container;
             use tilo_ui_base::widget::Widget;
 
             let (w, h) = (160, 80);
@@ -199,10 +199,10 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
         fn tab_bar_renders_pills_inside_six_px_insets() {
             use std::collections::HashMap;
             use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+            use tilo_ui::{widget::TabBar, widget::TabDescriptor};
             use tilo_ui_base::presence::PresenceCtx;
             use tilo_ui_base::text_render::TextRenderer;
             use tilo_ui_base::theme::Theme;
-            use tilo_ui::{widget::TabBar, widget::TabDescriptor};
             use tilo_ui_base::widget::Widget;
 
             // 240 wide leaves width for the first 96 px min-width pill + gap;

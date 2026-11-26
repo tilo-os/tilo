@@ -2,7 +2,10 @@
 
 use tilo_ui_graph::component::{CaseDescription, EnumDescription, FieldDescription};
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::PropType, component::Type, component::Value};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PropType,
+    component::Type, component::Value,
+};
 
 use super::{Anchor, Drawing, Ink, Meaning, Shape, Weight};
 use tilo_ui_base::tokens::TextRole;
@@ -126,7 +129,10 @@ impl Described for Drawing {
             self.layout_dirty = true;
         }
         self.feel = props.motion;
-        self.theme = props.theme.as_deref().and_then(tilo_ui_base::theme::Theme::named);
+        self.theme = props
+            .theme
+            .as_deref()
+            .and_then(tilo_ui_base::theme::Theme::named);
         self.set_shapes(props.shapes);
         self.meaning = props.meaning;
         self.label = props.label;

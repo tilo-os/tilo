@@ -4,11 +4,11 @@
 use vello::kurbo::Rect;
 use vello::peniko::Color;
 
-use tilo_ui_base::{component::Component, component::PropType, component::Type, component::Value};
+use crate::widget::nav_list::nav_row::nav_row_height;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::nav_list::nav_row::nav_row_height;
+use tilo_ui_base::{component::Component, component::PropType, component::Type, component::Value};
 
 #[must_use]
 pub fn height(theme: &Theme) -> f64 {
@@ -322,14 +322,19 @@ impl tilo_ui_base::widget::Widget for SectionDivider {
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
         theme: &Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
+        node_map: &mut std::collections::HashMap<
+            taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> taffy::NodeId {
         use tilo_ui_base::widget::TaffyTreeExt as _;
         let style = taffy::Style {
             flex_shrink: 0.0,
             size: taffy::Size {
                 width: taffy::style_helpers::percent(1.0_f32),
-                height: taffy::style_helpers::length(tilo_ui_base::num::f32_of_f64(Self::height(theme))),
+                height: taffy::style_helpers::length(tilo_ui_base::num::f32_of_f64(Self::height(
+                    theme,
+                ))),
             },
             ..Default::default()
         };

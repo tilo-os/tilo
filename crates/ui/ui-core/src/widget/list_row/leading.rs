@@ -1,8 +1,8 @@
 //! What a row leads with: the builders that fill its leading column.
 
 use super::{Leading, ListRow};
-use tilo_ui_base::icons::Icon;
 use crate::widget::MediaSource;
+use tilo_ui_base::icons::Icon;
 use tilo_ui_base::widget::MediaAspect;
 use vello::peniko::{Color, ImageData};
 

@@ -4,7 +4,6 @@ use crate::application_view::{
     validate_identity,
 };
 use crate::launch::LaunchError;
-use tilo_ui_base::{permissions::MemberId, permissions::PermissionContext, permissions::PermissionScope, permissions::SharedPermissions};
 use crate::resource::{
     DocumentCheckout, DocumentId, ResourceOpenError, ResourceReservation, ResourceStore,
     ResourceType,
@@ -17,6 +16,10 @@ use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::{
+    permissions::MemberId, permissions::PermissionContext, permissions::PermissionScope,
+    permissions::SharedPermissions,
+};
 
 mod component_inputs;
 mod open_file;
@@ -430,7 +433,10 @@ impl Reopener {
         context.files.clone_from(&self.files);
         context.private = self.private;
         context.embedded = self.embedded;
-        tilo_ui_base::image_store::ImageStore::serve_successor(&self.window, &context.wake_handle());
+        tilo_ui_base::image_store::ImageStore::serve_successor(
+            &self.window,
+            &context.wake_handle(),
+        );
         Ok((context, target))
     }
 
@@ -1155,7 +1161,10 @@ impl ApplicationDefinition {
                 component.application_view = application;
             }
             component.prepared = true;
-            tilo_ui_base::image_store::window_built(&component.context.wake_handle(), component.content());
+            tilo_ui_base::image_store::window_built(
+                &component.context.wake_handle(),
+                component.content(),
+            );
             Ok(component)
         });
         drop(entry);
@@ -2065,7 +2074,9 @@ impl crate::search::SearchProvider for ComponentProvider {
             .flatten()
     }
 
-    fn action_directory_invocation_domain(&self) -> tilo_ui_base::widget::ActionDirectoryInvocationDomain {
+    fn action_directory_invocation_domain(
+        &self,
+    ) -> tilo_ui_base::widget::ActionDirectoryInvocationDomain {
         self.invoke(|provider| provider.action_directory_invocation_domain())
             .unwrap_or_default()
     }
@@ -2308,7 +2319,11 @@ mod bound_lifetime_tests {
     use taffy::{NodeId, TaffyTree};
     struct Root(Column);
     impl Widget for Root {
-        fn sync(&mut self, doc: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+        fn sync(
+            &mut self,
+            doc: &tilo_ui_base::widget::AppModel,
+            path: &tilo_ui_base::widget::ModelPath,
+        ) {
             self.0.sync(doc, path);
         }
         fn build_layout(

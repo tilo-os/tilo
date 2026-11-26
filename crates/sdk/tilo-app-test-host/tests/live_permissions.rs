@@ -3,12 +3,15 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_app_test_host::TestApp;
+use tilo_ui_base::widget::TaffyTreeExt;
 
 use tilo_app::framework::testing::TEST_WORKSPACE;
-use tilo_ui_base::{permissions::KindSet, permissions::PermissionContext, permissions::TreePath, permissions::policy};
 use tilo_app::prelude::*;
+use tilo_ui_base::{
+    permissions::KindSet, permissions::PermissionContext, permissions::TreePath,
+    permissions::policy,
+};
 
 use tilo_app::advanced::{NodeId, TaffyTree};
 #[derive(Model, Default, Debug, Clone, PartialEq)]

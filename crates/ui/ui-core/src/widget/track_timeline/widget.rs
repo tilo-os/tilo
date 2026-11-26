@@ -12,17 +12,17 @@ use vello::peniko::{Color, Fill, ImageBrush};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
-use tilo_ui_base::{component::Event, component::Value};
+use crate::widget::Ink;
+use crate::widget::scrollbar::{PressOutcome, Scrollbar};
 use tilo_ui_base::icons::Icon;
-use tilo_ui_base::{motion::Direction, motion::MotionValue};
-use tilo_ui_base::{paint::PaintCtx, paint::with_alpha_scaled};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{tokens::MotionSource, tokens::TextRole};
 use tilo_ui_base::widget::ScrollMetrics;
-use crate::widget::scrollbar::{PressOutcome, Scrollbar};
-use crate::widget::Ink;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::{component::Event, component::Value};
+use tilo_ui_base::{motion::Direction, motion::MotionValue};
+use tilo_ui_base::{paint::PaintCtx, paint::with_alpha_scaled};
+use tilo_ui_base::{tokens::MotionSource, tokens::TextRole};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 use super::{EDGE_GRAB, Geom, SNAP_REACH, on_grid, snap_target, tick_steps, timecode};
@@ -535,8 +535,9 @@ impl TrackTimeline {
         }
         let geom = self.geom();
         let gutter = self.scrollbar_h();
-        let rows_bottom =
-            geom.rect.y0 + geom.ruler_h + geom.track_h * tilo_ui_base::num::f64_of_usize(geom.tracks);
+        let rows_bottom = geom.rect.y0
+            + geom.ruler_h
+            + geom.track_h * tilo_ui_base::num::f64_of_usize(geom.tracks);
         let y0 = rows_bottom.min(self.rect.y1 - gutter).max(geom.rect.y0);
         if y0 + gutter > self.rect.y1 + 0.5 {
             return None;
@@ -1749,7 +1750,9 @@ impl TrackTimeline {
         Some(
             AccessNode::new(Role::Group)
                 .with_name(name)
-                .with_optional_description((!said.is_empty()).then(|| tilo_ui_base::format::list(&said)))
+                .with_optional_description(
+                    (!said.is_empty()).then(|| tilo_ui_base::format::list(&said)),
+                )
                 .with_key(Self::track_key(track))
                 .with_bounds(geom.row(row))
                 .with_children(children),
@@ -1757,7 +1760,12 @@ impl TrackTimeline {
     }
 
     /// Run `action` on the element `key` names.
-    fn act_on(&mut self, action: &tilo_ui_base::a11y::Action, key: u64, parent: Option<u64>) -> bool {
+    fn act_on(
+        &mut self,
+        action: &tilo_ui_base::a11y::Action,
+        key: u64,
+        parent: Option<u64>,
+    ) -> bool {
         use tilo_ui_base::a11y::Action;
         if key == Self::playhead_key() {
             self.focus = Some(Focus::Playhead);

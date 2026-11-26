@@ -4,8 +4,11 @@
 //! of an app that did not open, the row of a search that could not run), or, when nothing of it is
 //! left on the shell, told as a notice. Nothing else words a failure of the person's own action.
 
-use ui::{widget::AppKind, widget::AppWidget, widget::Button, widget::ButtonRole, widget::Column, widget::Container, widget::Text};
 use tilo_ui_base::{widget::Element, widget::Widget};
+use ui::{
+    widget::AppKind, widget::AppWidget, widget::Button, widget::ButtonRole, widget::Column,
+    widget::Container, widget::Text,
+};
 
 /// The button that tries the outcome's action again, for tests and assistive technology.
 pub const RETRY_ID: &str = "outcome-retry";

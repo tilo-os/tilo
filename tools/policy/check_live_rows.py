@@ -69,6 +69,7 @@ FRAMEWORK = (
     "crates/core/tilo-runtime/src/device/control",
     "crates/sdk/tilo-app",
     "crates/core/tilo-resource",
+    "crates/ui/ui-base",
     "crates/ui/ui-core",
 )
 SCOPES = ("apps", "crates", "tools")

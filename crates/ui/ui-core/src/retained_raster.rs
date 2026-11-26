@@ -7,7 +7,12 @@ use crate::cpu_raster;
 #[cfg(feature = "native")]
 use tilo_ui_base::damage::coalesce_regions;
 use tilo_ui_base::{damage::FineDamageRect, damage::area, damage::pixel_rect};
-use tilo_ui_base::{offscreen::damage_geometric_capacity_enabled, offscreen::damage_texture_extent, offscreen::damage_texture_geometric_needs_replacement, offscreen::damage_texture_geometric_width_extent, offscreen::damage_texture_height_extent, offscreen::damage_texture_needs_replacement};
+use tilo_ui_base::{
+    offscreen::damage_geometric_capacity_enabled, offscreen::damage_texture_extent,
+    offscreen::damage_texture_geometric_needs_replacement,
+    offscreen::damage_texture_geometric_width_extent, offscreen::damage_texture_height_extent,
+    offscreen::damage_texture_needs_replacement,
+};
 use vello::kurbo::Rect;
 use vello::peniko::Color;
 use vello::{RenderParams, Renderer, Scene};
@@ -109,7 +114,11 @@ fn tile_window(region: FineDamageRect) -> FineDamageRect {
 pub(crate) fn damage_windows(regions: &[FineDamageRect]) -> Vec<FineDamageRect> {
     let windows: Vec<FineDamageRect> = regions.iter().copied().map(tile_window).collect();
     if windows.len() > 128 {
-        return Vec::from_iter(windows.into_iter().reduce(tilo_ui_base::damage::damage_union));
+        return Vec::from_iter(
+            windows
+                .into_iter()
+                .reduce(tilo_ui_base::damage::damage_union),
+        );
     }
     tilo_ui_base::damage::merge_regions(windows, WINDOW_COST_PIXELS)
 }
@@ -213,7 +222,10 @@ impl RetainedRaster {
         mut renderer: Option<&mut Renderer>,
         target: RetainedTarget<'_>,
         frame: FrameContent<'_>,
-    ) -> (Result<u64, String>, Option<tilo_ui_base::backdrop::BackdropStats>) {
+    ) -> (
+        Result<u64, String>,
+        Option<tilo_ui_base::backdrop::BackdropStats>,
+    ) {
         // Floating surfaces over the blurred material: render, blur and
         // substitute each one's backdrop before the frame that draws it.
         let backdrop_stats = if frame.backdrop.is_empty() {
@@ -284,7 +296,10 @@ impl RetainedRaster {
         renderer: &mut Renderer,
         target: RetainedTarget<'_>,
         frame: FrameContent<'_>,
-    ) -> (Result<u64, String>, Option<tilo_ui_base::backdrop::BackdropStats>) {
+    ) -> (
+        Result<u64, String>,
+        Option<tilo_ui_base::backdrop::BackdropStats>,
+    ) {
         if frame.full_redraw
             || !frame.backdrop.is_empty()
             || !repaints_alone(frame.width, frame.height, frame.damage_regions)
@@ -1095,14 +1110,16 @@ impl RasterCheck {
                 "the full render read back empty".to_owned(),
             ));
         }
-        let (count, bounds) =
-            tilo_ui_base::offscreen::OffscreenRenderer::differing_beyond_aa(&kept, &rendered, width);
+        let (count, bounds) = tilo_ui_base::offscreen::OffscreenRenderer::differing_beyond_aa(
+            &kept, &rendered, width,
+        );
         let (inside, rows, kept_base, render_base) = if count == 0 {
             (0, Vec::new(), 0, 0)
         } else {
-            let positions = tilo_ui_base::offscreen::OffscreenRenderer::positions_differing_beyond_aa(
-                &kept, &rendered, width,
-            );
+            let positions =
+                tilo_ui_base::offscreen::OffscreenRenderer::positions_differing_beyond_aa(
+                    &kept, &rendered, width,
+                );
             let inside = bounds.map_or(0, |(x0, y0, x1, y1)| {
                 let (left, top) = (x0.saturating_add(8), y0.saturating_add(8));
                 let (right, bottom) = (x1.saturating_sub(8), y1.saturating_sub(8));

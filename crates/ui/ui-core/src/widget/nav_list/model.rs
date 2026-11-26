@@ -7,9 +7,9 @@ use std::rc::Rc;
 use vello::peniko::Color;
 
 use super::{NavItem, NavSection};
-use tilo_ui_base::icons::Icon;
 use crate::widget::nav_list::nav_row::NavCount;
 use crate::{widget::ListModel, widget::RowStatus};
+use tilo_ui_base::icons::Icon;
 use tilo_ui_base::widget::Tone;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -128,7 +128,8 @@ pub(super) fn narrow(items: &[NavItem], query: &str) -> Vec<NavItem> {
         .iter()
         .filter_map(|item| {
             let children = narrow(&item.children, query);
-            let by_label = tilo_ui_base::text_match::normalize_search_text(&item.label).contains(query);
+            let by_label =
+                tilo_ui_base::text_match::normalize_search_text(&item.label).contains(query);
             let by_term = if by_label {
                 None
             } else {

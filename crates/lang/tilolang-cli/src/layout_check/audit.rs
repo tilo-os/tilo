@@ -249,7 +249,10 @@ fn is_row(node: &InspectionNode) -> bool {
 /// lists.
 fn held_rows(node: &InspectionNode, out: &mut Vec<String>) {
     let holds_rows = node.semantics.as_ref().is_some_and(|semantics| {
-        matches!(semantics.role, tilo_ui_base::a11y::Role::List | tilo_ui_base::a11y::Role::Tree)
+        matches!(
+            semantics.role,
+            tilo_ui_base::a11y::Role::List | tilo_ui_base::a11y::Role::Tree
+        )
     });
     for child in &node.children {
         if holds_rows
@@ -879,7 +882,14 @@ pub fn indented_bodies(
     let target = min_target.unwrap_or_else(|| {
         f64::from(tilo_ui_base::interaction::InteractionEnvironment::POINTER.minimum_target())
     });
-    let lead = target + f64::from(theme.tokens.spacing.rhythm.get(tilo_ui_base::tokens::Rhythm::Related));
+    let lead = target
+        + f64::from(
+            theme
+                .tokens
+                .spacing
+                .rhythm
+                .get(tilo_ui_base::tokens::Rhythm::Related),
+        );
     let rem = f64::from(ui::widget::arrange::rem_of(theme));
     let mut out = Vec::new();
     let above = rect(root.rect);
@@ -1061,8 +1071,10 @@ impl Walk<'_> {
                 self.target(node, keys, own, min);
             }
         }
-        let placed_content = matches!(node.layout, Some(tilo_ui_base::widget::LayoutInfo::Manual(_)))
-            && scroller.down
+        let placed_content = matches!(
+            node.layout,
+            Some(tilo_ui_base::widget::LayoutInfo::Manual(_))
+        ) && scroller.down
             && scroller.across;
         let (inner_parent, inner_scroller) = if geometric && placed_content {
             (own, scroller)
@@ -1897,7 +1909,8 @@ impl Walk<'_> {
             }
             "NavList" => {
                 for place in &access.children {
-                    let Some(bounds) = place.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect) else {
+                    let Some(bounds) = place.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect)
+                    else {
                         continue;
                     };
                     if !has_area(bounds.intersect(clip)) {
@@ -2057,7 +2070,9 @@ impl Walk<'_> {
                 .value
                 .as_deref()
                 .and_then(|value| value.trim().parse::<u32>().ok()),
-            heading.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect),
+            heading
+                .bounds
+                .map(tilo_ui_base::a11y::AccessBounds::to_rect),
         ) else {
             return;
         };

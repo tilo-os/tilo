@@ -10,9 +10,9 @@ use std::cell::Cell;
 use tilo_app_test_host::TestApp;
 
 use tilo_app::framework::testing::{drive_live_window, drive_live_window_answered_late};
-use tilo_ui_base::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::profiling::observe;
+use tilo_ui_base::i18n::EmbeddedCatalog;
 
 use crate::support_checklist;
 use crate::support_checklist::Checklist;
@@ -169,8 +169,8 @@ fn draft_value(app: &tilo_app::App) -> Option<String> {
 /// shows: the key's press and release through `App::surface_input`, each
 /// followed by a host frame, since a key is held longer than a frame lasts.
 fn hosted_keystrokes(tasks: u32) -> Result<Vec<usize>, String> {
-    use tilo_ui_base::synthetic_input::key_input;
     use tilo_app::winit::event::ElementState;
+    use tilo_ui_base::synthetic_input::key_input;
     GENESIS_TASKS.set(tasks);
     // Keep the real hosted path, but hold monotonic time during this
     // input-only observation, so no deadline of the window's falls due
@@ -236,8 +236,8 @@ fn a_hosted_keystroke_publishes_at_most_twice() {
 
 #[test]
 fn an_overdue_save_status_frame_still_publishes_and_preserves_typed_content() {
-    use tilo_ui_base::synthetic_input::key_input;
     use tilo_app::winit::event::ElementState;
+    use tilo_ui_base::synthetic_input::key_input;
 
     let seen = tilo_app::time::testing::with_monotonic_time(tilo_app::time::now(), || {
         drive_live_window::<Keystrokes, _>(|app| {
@@ -304,8 +304,8 @@ enum Half {
 /// each key that `half` names, after a first key that moves the window to
 /// keyboard modality.
 fn hosted_frame_phases(tasks: u32, half: Half) -> Result<Vec<Phases>, String> {
-    use tilo_ui_base::synthetic_input::key_input;
     use tilo_app::winit::event::ElementState;
+    use tilo_ui_base::synthetic_input::key_input;
     GENESIS_TASKS.set(tasks);
     let observed = tilo_app::time::testing::with_monotonic_time(tilo_app::time::now(), || {
         drive_live_window_answered_late::<Keystrokes, _>(|app| {

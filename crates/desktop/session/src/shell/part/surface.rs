@@ -383,7 +383,10 @@ impl super::ShellPart {
 
 /// A shadow a floating window's card casts on the windows under it, as the compositor draws it
 /// round the card.
-fn frame_of(shadow: &tilo_ui_base::tokens::Shadow, radius: f64) -> tilo_session_core::surface::WindowFrame {
+fn frame_of(
+    shadow: &tilo_ui_base::tokens::Shadow,
+    radius: f64,
+) -> tilo_session_core::surface::WindowFrame {
     let colour = |color: vello::peniko::Color| color.to_rgba8().to_u8_array();
     tilo_session_core::surface::WindowFrame {
         radius,

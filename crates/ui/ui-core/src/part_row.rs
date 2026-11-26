@@ -8,17 +8,19 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use tilo_ui_base::tokens::MotionSource;
-use tilo_ui_base::widget::DrawChild;
 use crate::widget::search_request::SearchRequest;
 use crate::widget::tabs::TOOLBAR_ROW_HEIGHT;
 use crate::widget::window_controls::{
     CONTROL_GAP, CONTROL_PX, ControlsState, WindowControl, WindowControls,
 };
 use crate::widget::window_toolbar_row::ToolbarRow;
-use crate::{widget::HistoryControl, widget::InPlace, widget::WindowSearch, widget::WindowSearchRequest};
-use tilo_ui_base::widget::Widget;
 use crate::window_toolbar::{SearchOpening, ToolbarAction, ToolbarEvent, WindowToolbar};
+use crate::{
+    widget::HistoryControl, widget::InPlace, widget::WindowSearch, widget::WindowSearchRequest,
+};
+use tilo_ui_base::tokens::MotionSource;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Widget;
 
 /// What a press on the window's own part of the bar asked of the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,8 +212,12 @@ impl PartRow {
     ) -> f64 {
         let Some(place) = place else {
             if self.shown.take().is_some() {
-                self.row
-                    .show(WINDOW, None, theme.motion(), tilo_ui_base::motion::frame_now());
+                self.row.show(
+                    WINDOW,
+                    None,
+                    theme.motion(),
+                    tilo_ui_base::motion::frame_now(),
+                );
                 self.search.close(MotionSource::Pointer);
                 self.search.place(Rect::ZERO, 0.0);
                 self.repaint = true;
@@ -329,7 +335,9 @@ impl PartRow {
                 WindowSearchRequest::Open => {
                     self.open_search(host, MotionSource::Pointer, SearchOpening::Find);
                 }
-                WindowSearchRequest::Close => self.search.close(tilo_ui_base::motion::input_source()),
+                WindowSearchRequest::Close => {
+                    self.search.close(tilo_ui_base::motion::input_source())
+                }
                 WindowSearchRequest::Widen(_) => {
                     let query = self.search.query().to_owned();
                     self.search.close(tilo_ui_base::motion::input_source());
@@ -474,13 +482,14 @@ impl PartRow {
             theme,
             env.clone(),
         ));
-        self.search.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text,
-            theme,
-            env.clone(),
-        ));
+        self.search
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
     }
 
     /// Hand `event` to the row when it is the row's: a pointer over a part, over one of
@@ -844,9 +853,9 @@ fn search_area(rect: Rect, limit: f64) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
-    use tilo_ui_base::theme::Theme;
     use crate::widget::Column;
+    use tilo_ui_base::theme::Theme;
+    use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
 
     struct NoApp {
         root: Column,
@@ -911,7 +920,11 @@ mod tests {
             &input,
         );
         row.route(host, &tilo_ui_base::synthetic_input::mouse_press(), &input);
-        row.route(host, &tilo_ui_base::synthetic_input::mouse_release(), &input);
+        row.route(
+            host,
+            &tilo_ui_base::synthetic_input::mouse_release(),
+            &input,
+        );
     }
 
     #[test]

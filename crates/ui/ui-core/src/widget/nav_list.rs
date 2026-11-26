@@ -9,16 +9,19 @@ use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
 use self::nav_row::{NavCount, nav_row_height};
+use crate::widget::attached::MenuPart;
+use crate::{
+    widget::FilterCount, widget::Filterable, widget::ListModel, widget::RowStatus,
+    widget::VirtualList,
+};
+use model::{NavModel, NavRowData, NavRowKind, NavState};
+use row::{NavPaint, NavRow};
 use tilo_ui_base::LocalState;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::local_state::LocalBinding;
-use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
 use tilo_ui_base::widget::DrawChild;
-use crate::widget::attached::MenuPart;
-use crate::{widget::FilterCount, widget::Filterable, widget::ListModel, widget::RowStatus, widget::VirtualList};
+use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
 use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::Theme, widget::Tone};
-use model::{NavModel, NavRowData, NavRowKind, NavState};
-use row::{NavPaint, NavRow};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -1677,7 +1680,8 @@ impl NavList {
         let control = self.paint.borrow().focused_control.clone();
         if let Some(control) = control {
             if press
-                && self.perform_row_action(&control, &tilo_ui_base::a11y::Action::Activate) == Some(true)
+                && self.perform_row_action(&control, &tilo_ui_base::a11y::Action::Activate)
+                    == Some(true)
             {
                 return true;
             }
@@ -1784,7 +1788,11 @@ impl NavList {
     }
 
     /// Answer what assistive technology asks of a row's own controls.
-    fn perform_row_action(&mut self, target: &str, action: &tilo_ui_base::a11y::Action) -> Option<bool> {
+    fn perform_row_action(
+        &mut self,
+        target: &str,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> Option<bool> {
         use tilo_ui_base::a11y::Action;
         if matches!(action, Action::Focus) {
             let Some(key) = control_row(target) else {
@@ -1893,13 +1901,16 @@ impl RailExtent for NavList {
             return None;
         }
         let items = all_items(&self.sections);
-        Some(tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
-            crate::widget::nav_list::nav_row::rail_width_fitting(
-                theme,
-                text,
-                items.iter().map(|item| item.label.as_str()),
-            )
-        }))
+        Some(tilo_ui_base::text_render::with_layout_renderer(
+            theme,
+            |text| {
+                crate::widget::nav_list::nav_row::rail_width_fitting(
+                    theme,
+                    text,
+                    items.iter().map(|item| item.label.as_str()),
+                )
+            },
+        ))
     }
 }
 
@@ -1960,7 +1971,9 @@ impl AdaptiveNav for NavList {
 }
 
 /// The navigation sidebar `widget` is, when it is one ([`AdaptiveNav`]).
-pub(crate) fn adaptive(widget: &dyn tilo_ui_base::widget::Widget) -> Option<&(dyn AdaptiveNav + 'static)> {
+pub(crate) fn adaptive(
+    widget: &dyn tilo_ui_base::widget::Widget,
+) -> Option<&(dyn AdaptiveNav + 'static)> {
     tilo_ui_base::widget::capability::capability::<dyn AdaptiveNav>(widget)
 }
 
@@ -1994,7 +2007,8 @@ impl NavigationSource for NavList {
 /// Whether anything in `widget`'s subtree reported a navigation since the
 /// last ask (and forget it).
 pub(crate) fn take_navigation(widget: &mut dyn tilo_ui_base::widget::Widget) -> bool {
-    if let Some(source) = tilo_ui_base::widget::capability::capability_mut::<dyn NavigationSource>(widget)
+    if let Some(source) =
+        tilo_ui_base::widget::capability::capability_mut::<dyn NavigationSource>(widget)
     {
         return source.take_navigation();
     }
@@ -2079,7 +2093,10 @@ impl tilo_ui_base::widget::identity::concrete::Decorator for NavList {
         tilo_ui_base::widget::Widget::provide(&*self.list, request);
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
         if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
             request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
             return;
@@ -2111,10 +2128,14 @@ impl tilo_ui_base::widget::identity::concrete::Decorator for NavList {
             self.paint.borrow_mut().theme = theme.clone();
             self.list.update_model(|_| ());
         }
-        let node = tilo_ui_base::widget::Widget::build_layout(&mut *self.list, taffy, theme, node_map);
+        let node =
+            tilo_ui_base::widget::Widget::build_layout(&mut *self.list, taffy, theme, node_map);
         // The published owner is NavList, so host lookup and synthetic
         // accessibility routing must identify this same retained wrapper.
-        node_map.insert(node, std::ptr::from_mut::<dyn tilo_ui_base::widget::Widget>(self));
+        node_map.insert(
+            node,
+            std::ptr::from_mut::<dyn tilo_ui_base::widget::Widget>(self),
+        );
         if let Some(feed) = &self.feed {
             feed.publish_node(node);
         }
@@ -2467,7 +2488,10 @@ impl tilo_ui_base::widget::controls::ActionControls for NavList {
         }
         shared.bound.refresh_availability(allowed);
         drop(shared);
-        tilo_ui_base::widget::controls::refresh_control_action_availability(&mut *self.list, allowed);
+        tilo_ui_base::widget::controls::refresh_control_action_availability(
+            &mut *self.list,
+            allowed,
+        );
     }
 }
 

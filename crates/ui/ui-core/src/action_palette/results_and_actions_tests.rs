@@ -43,9 +43,10 @@ fn published_tree(actions: Vec<(&'static str, &'static str)>) -> Vec<ResourceSpe
 }
 
 fn search_palette(resources: &[ResourceSpec], provider: Box<dyn SearchProvider>) -> ActionPalette {
-    let mut palette = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
-        SearchField::with_language("en_US")
-    });
+    let mut palette =
+        ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("en_US")
+        });
     palette.load_open_resources(resources);
     palette.set_providers(vec![provider]);
     palette.open();

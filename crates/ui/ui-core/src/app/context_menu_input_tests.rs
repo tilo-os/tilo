@@ -55,7 +55,10 @@ fn send(app: &mut App, event: &winit::event::WindowEvent) {
 }
 
 fn right_click(app: &mut App, at: Point) {
-    send(app, &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y));
+    send(
+        app,
+        &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y),
+    );
     send(
         app,
         &tilo_ui_base::synthetic_input::mouse_input(
@@ -85,7 +88,10 @@ fn menu_row(app: &App, index: usize) -> Point {
 }
 
 fn press(app: &mut App, at: Point) {
-    send(app, &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y));
+    send(
+        app,
+        &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y),
+    );
     send(app, &tilo_ui_base::synthetic_input::mouse_press());
 }
 

@@ -58,7 +58,9 @@ pub(super) fn paint_row_failure(
     slot: vello::kurbo::Rect,
 ) {
     let tokens = &theme.tokens;
-    let style = tokens.typography.style(tilo_ui_base::tokens::TextRole::Caption);
+    let style = tokens
+        .typography
+        .style(tilo_ui_base::tokens::TextRole::Caption);
     let (_, text_h) = text_renderer.measure_style(label, None, &style);
     let top = super::centered_text_top(slot.y0, slot.height(), text_h);
     text_renderer.draw_style(

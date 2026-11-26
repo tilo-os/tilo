@@ -4,8 +4,8 @@
 
 use std::collections::HashMap;
 use tilo_ui_base::i18n::widget_text;
-use ui::widget::document_line::DocumentLine as _;
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use ui::widget::document_line::DocumentLine as _;
 
 use automerge::{ObjId, ObjType};
 use taffy::style_helpers::length;
@@ -19,14 +19,14 @@ use winit::keyboard::{Key, NamedKey};
 
 pub use crate::table_model::*;
 use crate::table_model::{DEFAULT_COL_W, MIN_COL_W, cell_key, cells_map, child_obj, col_width};
-use ui::color_compat::ColorCompat;
 use tilo_ui_base::paint::PaintCtx;
+use ui::color_compat::ColorCompat;
 
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
-use ui::widget::TextInput;
 use tilo_ui_base::widget::Widget;
+use ui::widget::TextInput;
 
 const LEFT_GUTTER: f64 = 24.0;
 const TOP_GUTTER: f64 = 24.0;
@@ -259,7 +259,9 @@ impl Table {
 
     pub(super) fn projected_caret(&self) -> Option<String> {
         let (row, column) = self.projected_focus()?;
-        tilo_ui_base::widget::undo_points::get_state(self.cells.get(self.projected_index(row, column)?)?)
+        tilo_ui_base::widget::undo_points::get_state(
+            self.cells.get(self.projected_index(row, column)?)?,
+        )
     }
 
     pub(super) fn restore_projected_caret(&mut self, state: &str) {
@@ -739,7 +741,10 @@ impl Table {
             scene.stroke(
                 &line,
                 transform,
-                tilo_ui_base::surface::edge_on_with(tk.colors.surfaces.raised, tilo_ui_base::chrome::GLOW_ALPHA),
+                tilo_ui_base::surface::edge_on_with(
+                    tk.colors.surfaces.raised,
+                    tilo_ui_base::chrome::GLOW_ALPHA,
+                ),
                 None,
                 &Line::new((gl, y), (gr, y)),
             );
@@ -1158,7 +1163,10 @@ impl Widget for Table {
             // surface (HIG §9.5), so they flip polarity on a light palette
             // instead of laying a white veneer over a white table.
             let fill = if is_header || r % 2 == 1 {
-                tilo_ui_base::tokens::colors::tier_on(tk.colors.surfaces.raised, tilo_ui_base::chrome::HAIRLINE_ALPHA)
+                tilo_ui_base::tokens::colors::tier_on(
+                    tk.colors.surfaces.raised,
+                    tilo_ui_base::chrome::HAIRLINE_ALPHA,
+                )
             } else {
                 continue;
             };
@@ -1235,8 +1243,10 @@ impl Widget for Table {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
                 if matches!(key_event.logical_key, Key::Named(NamedKey::Enter))
-                    && let Some(focused) =
-                        self.cells.iter().position(tilo_ui_base::widget::Widget::is_focused)
+                    && let Some(focused) = self
+                        .cells
+                        .iter()
+                        .position(tilo_ui_base::widget::Widget::is_focused)
                 {
                     let cols = self.n_cols().max(1);
                     let up = ctx.modifiers.state().shift_key();
@@ -1317,7 +1327,11 @@ impl Widget for Table {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.cells.iter().any(tilo_ui_base::widget::Widget::needs_redraw)
+        self.dirty
+            || self
+                .cells
+                .iter()
+                .any(tilo_ui_base::widget::Widget::needs_redraw)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
@@ -1326,7 +1340,11 @@ impl Widget for Table {
         }
     }
     fn is_layout_dirty(&self) -> bool {
-        self.structure_dirty || self.cells.iter().any(tilo_ui_base::widget::Widget::is_layout_dirty)
+        self.structure_dirty
+            || self
+                .cells
+                .iter()
+                .any(tilo_ui_base::widget::Widget::is_layout_dirty)
     }
 
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {

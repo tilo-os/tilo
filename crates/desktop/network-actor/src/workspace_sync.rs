@@ -224,7 +224,10 @@ mod tests {
             "who has to update stays said"
         );
         connecting(WS);
-        unavailable(WS, tilo_ui_base::workspace_sync::WorkspaceUnavailable::NoHolders);
+        unavailable(
+            WS,
+            tilo_ui_base::workspace_sync::WorkspaceUnavailable::NoHolders,
+        );
         assert_eq!(
             state(WS),
             Some(WorkspaceSyncState::Unavailable(
@@ -268,7 +271,10 @@ mod tests {
         connecting(WS);
         other_version(WS, 0);
         unreachable(WS);
-        unavailable(WS, tilo_ui_base::workspace_sync::WorkspaceUnavailable::NotRenewed);
+        unavailable(
+            WS,
+            tilo_ui_base::workspace_sync::WorkspaceUnavailable::NotRenewed,
+        );
         retrying(WS);
         assert_eq!(state(WS), Some(WorkspaceSyncState::Synced));
         forget(WS);

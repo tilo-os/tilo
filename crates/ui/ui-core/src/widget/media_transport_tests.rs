@@ -505,7 +505,8 @@ fn a_declared_transport_hands_the_window_its_bands_layout() {
         "the band's region reaches the window through the component"
     );
     let mut visited = 0;
-    let walked = tilo_ui_base::widget::Widget::for_each_layout_child(&transport, &mut |_| visited += 1);
+    let walked =
+        tilo_ui_base::widget::Widget::for_each_layout_child(&transport, &mut |_| visited += 1);
     assert!(
         walked && visited == 1,
         "the band itself is the layout child"
@@ -544,8 +545,8 @@ fn a_declared_transport_hands_the_window_its_bands_layout() {
 /// length — never a clock the view has to keep in step with.
 #[test]
 fn a_declared_transport_plays_its_source_and_shows_the_engines_place() {
-    use tilo_ui_base::component::Described;
     use crate::widget::{DeclaredTransport, MediaTransportProps};
+    use tilo_ui_base::component::Described;
 
     let engine = media::MediaEngine::new_synthesized();
     let props = MediaTransportProps {

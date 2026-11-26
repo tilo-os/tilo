@@ -15,7 +15,12 @@ fn find_test_id_mut<'a>(widget: &'a mut dyn Widget, id: &str) -> Option<&'a mut 
         .find_map(|child| find_test_id_mut(child, id))
 }
 
-fn perform(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str, action: &tilo_ui_base::a11y::Action) {
+fn perform(
+    app: &mut InstallerApp,
+    doc: &mut AutoCommit,
+    id: &str,
+    action: &tilo_ui_base::a11y::Action,
+) {
     let _ = build(app);
     let composed = app.composed.element_mut().expect("composed step");
     let control = find_test_id_mut(composed, id).unwrap_or_else(|| panic!("no control {id}"));
@@ -76,7 +81,10 @@ pub(super) fn disk_with_two_guided_extents() -> Disk {
     disk
 }
 
-fn reading(node: tilo_ui_base::a11y::AccessNode, text: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
+fn reading(
+    node: tilo_ui_base::a11y::AccessNode,
+    text: &str,
+) -> Option<tilo_ui_base::a11y::AccessNode> {
     if node.name.as_deref() == Some(text) || node.value.as_deref() == Some(text) {
         return Some(node);
     }

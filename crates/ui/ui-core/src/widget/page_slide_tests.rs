@@ -3,10 +3,10 @@
 
 use super::*;
 use crate::app::driver::Driver;
-use tilo_ui_base::component::Described;
 use crate::state::State;
 use crate::time::testing::with_monotonic_time;
 use crate::widget::{Column, Text};
+use tilo_ui_base::component::Described;
 
 fn rooted(column: Column) -> Driver {
     let mut d = Driver::for_root(State::new(), column, (640, 400), Theme::dark());

@@ -1,10 +1,10 @@
 //! The native system-search filter strip: paint, hit targets and accessibility.
 use super::ResourceKind;
-use tilo_ui_base::{num::f32_of_f64, num::f64_of_usize};
 use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{num::f32_of_f64, num::f64_of_usize};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 /// Toggle `kind` in the chip selection.
@@ -95,7 +95,9 @@ impl Default for SearchFilters {
             more_open: false,
             search_chip_rows: 1,
             search_filter_control_h: SELECTOR_HEIGHT_PX,
-            search_pointer_floor_h: f64::from(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target),
+            search_pointer_floor_h: f64::from(
+                tilo_ui_base::tokens::Metrics::BASE.min_pointer_target,
+            ),
             search_band_at_draw: Rect::ZERO,
 
             kinds: Vec::new(),
@@ -632,7 +634,11 @@ pub fn draw_filter_chip(
     } else {
         colors.text_dim
     };
-    let text_color = colors.ink_on(under, tone, tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST);
+    let text_color = colors.ink_on(
+        under,
+        tone,
+        tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST,
+    );
     // Control labels are medium weight (HIG §9.6); measured and drawn at the same weight
     // so the centring holds.
     let (lw, lh) = text_renderer.measure_style(

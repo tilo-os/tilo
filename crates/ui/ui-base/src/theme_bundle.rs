@@ -224,4 +224,3 @@ fn place(source: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()
     }
     std::fs::rename(&staged, dest)
 }
-

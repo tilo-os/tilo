@@ -115,7 +115,8 @@ impl App {
         complete.extend(semantics.action_resources());
         trace.finish(CacheResult::NotApplicable);
         let trace = self.trace_resource_stage(Stage::SurfaceValidation);
-        let mut operation_handlers = tilo_ui_base::widget::resource_operation_handlers(&*self.root_widget);
+        let mut operation_handlers =
+            tilo_ui_base::widget::resource_operation_handlers(&*self.root_widget);
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
         let violations = tilo_actions::validate_surface(
             &complete,
@@ -600,7 +601,8 @@ impl App {
                 }
             }
         }
-        if tilo_ui_base::widget::undo_access::local_undo_status(self.root_widget.as_ref()).is_some() {
+        if tilo_ui_base::widget::undo_access::local_undo_status(self.root_widget.as_ref()).is_some()
+        {
             let address = tilo_actions::ActionAddress::new("tilo.host:edit", "undo");
             if let Some(edit) = self.edit_resource_for(&address) {
                 resources.push(edit);
@@ -908,8 +910,10 @@ impl App {
                 .ambient_context(ambient_context),
         );
         drop(invoker_scope);
-        let continuation = if matches!(result, Ok(tilo_ui_base::widget::ResourceOperationStart::Accepted))
-        {
+        let continuation = if matches!(
+            result,
+            Ok(tilo_ui_base::widget::ResourceOperationStart::Accepted)
+        ) {
             None
         } else {
             // What the effect submitted is applied for its invoker before
@@ -1452,7 +1456,10 @@ impl App {
             Err(error) => Err(error.into_api()),
             Ok(started) => Ok(started),
         }?;
-        if matches!(started, tilo_ui_base::widget::ResourceOperationStart::Accepted) {
+        if matches!(
+            started,
+            tilo_ui_base::widget::ResourceOperationStart::Accepted
+        ) {
             self.actions.bound_invocations.insert(invocation, target);
         }
         Ok(started)
@@ -1561,7 +1568,10 @@ impl App {
         self.layout.layout_dirty = true;
         self.invalidate_widget_resource_cache();
         let started = started?;
-        if matches!(started, tilo_ui_base::widget::ResourceOperationStart::Accepted) {
+        if matches!(
+            started,
+            tilo_ui_base::widget::ResourceOperationStart::Accepted
+        ) {
             self.actions.bound_invocations.insert(id, target.clone());
             if invocation.is_none() {
                 self.actions
@@ -1752,7 +1762,8 @@ impl App {
                 resources.push(resource);
             }
         }
-        if tilo_ui_base::widget::undo_access::local_undo_status(self.root_widget.as_ref()).is_some() {
+        if tilo_ui_base::widget::undo_access::local_undo_status(self.root_widget.as_ref()).is_some()
+        {
             resources.extend(self.edit_resource_for(address));
         }
         #[cfg(feature = "native")]
@@ -1780,7 +1791,11 @@ impl App {
         if actor.member_id() == Some(&self.local_author) {
             match crate::bound_dispatch::admit_local_action(
                 &self.permission_ctx,
-                (&tilo_ui_base::collaboration::local_app_id(), resource, resolved),
+                (
+                    &tilo_ui_base::collaboration::local_app_id(),
+                    resource,
+                    resolved,
+                ),
                 typed_arguments.as_ref(),
                 argument,
             ) {
@@ -2040,14 +2055,19 @@ impl App {
                 }
             };
             if invocation.is_none()
-                && matches!(started, tilo_ui_base::widget::ResourceOperationStart::Accepted)
+                && matches!(
+                    started,
+                    tilo_ui_base::widget::ResourceOperationStart::Accepted
+                )
             {
                 self.actions
                     .local_invocations
                     .insert(operation_invocation, (address.clone(), kind));
             }
-            if matches!(started, tilo_ui_base::widget::ResourceOperationStart::Accepted)
-                || kind == tilo_actions::OperationKind::View
+            if matches!(
+                started,
+                tilo_ui_base::widget::ResourceOperationStart::Accepted
+            ) || kind == tilo_actions::OperationKind::View
             {
                 // Queued work and completed navigation apply their private
                 // presentation state in `sync`, even when the invocation

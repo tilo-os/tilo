@@ -7,12 +7,12 @@
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 
+use crate::time::Instant;
 use tilo_ui_base::collection_transition::RowMotions;
 use tilo_ui_base::draw::DrawEnv;
 use tilo_ui_base::motion::Feel;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::time::Instant;
 use tilo_ui_base::tokens::EffectiveMotion;
 use tilo_ui_base::{widget::Element, widget::Widget};
 

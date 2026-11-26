@@ -25,11 +25,13 @@
 //! `text_scaled_once/` there as visual evidence.
 
 use tilo_ui::State;
-use tilo_ui_base::TextRole;
 use tilo_ui::headless::{Driver, InspectionNode};
+use tilo_ui::{
+    widget::Avatar, widget::Breadcrumb, widget::ChipFace, widget::Column, widget::ShortcutRecorder,
+};
+use tilo_ui_base::TextRole;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use tilo_ui::{widget::Avatar, widget::Breadcrumb, widget::ChipFace, widget::Column, widget::ShortcutRecorder};
 use tilo_ui_base::{widget::AvatarSize, widget::Element};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};

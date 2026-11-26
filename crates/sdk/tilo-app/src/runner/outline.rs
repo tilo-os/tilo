@@ -8,9 +8,9 @@
 //! of leaving the caller wondering.
 
 use tilo_actions::ActionOutput;
+use tilo_ui_base::widget::Widget;
 use ui_core::automerge::AutoCommit;
 use ui_core::automerge::transaction::Transactable as _;
-use tilo_ui_base::widget::Widget;
 
 /// The `outline` payload's parameter naming an item to show before reading.
 pub(crate) const ANCHOR_PARAM: &str = "anchor";

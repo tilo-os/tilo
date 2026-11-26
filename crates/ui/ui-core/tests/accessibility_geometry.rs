@@ -9,10 +9,10 @@
 //! carries the test-wide lint allowances.
 
 use tilo_ui::State;
-use tilo_ui_base::{a11y::AccessNode, a11y::Action, a11y::Role};
 use tilo_ui::headless::{Driver, InspectionNode};
-use tilo_ui_base::theme::Theme;
 use tilo_ui::widget::{Dropdown, EmptyState};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{a11y::AccessNode, a11y::Action, a11y::Role};
 
 fn find<'a>(node: &'a AccessNode, matches: &dyn Fn(&AccessNode) -> bool) -> Option<&'a AccessNode> {
     if matches(node) {

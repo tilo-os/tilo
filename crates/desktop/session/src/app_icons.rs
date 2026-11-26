@@ -121,7 +121,10 @@ impl crate::Session {
             if self.window_artwork.get(&window.id) != Some(&source) {
                 let image = match window.icon.as_ref() {
                     Some(icon) => Some(window_art(window.id, icon)),
-                    None => window.app_id.as_deref().and_then(tilo_ui_base::icons::app_artwork),
+                    None => window
+                        .app_id
+                        .as_deref()
+                        .and_then(tilo_ui_base::icons::app_artwork),
                 };
                 self.shared.handle.set_window_artwork(window.id, image);
             }
@@ -573,7 +576,8 @@ fn dimension(edge: f32) -> Option<u32> {
     if !edge.is_finite() || edge < 1.0 {
         return Some(1);
     }
-    (edge <= f32::from(u16::try_from(tilo_ui_base::icons::MAX_DEVICE_PX).ok()?)).then_some(edge as u32)
+    (edge <= f32::from(u16::try_from(tilo_ui_base::icons::MAX_DEVICE_PX).ok()?))
+        .then_some(edge as u32)
 }
 
 #[cfg(test)]

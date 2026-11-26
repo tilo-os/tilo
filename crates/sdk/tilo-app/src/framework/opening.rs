@@ -13,11 +13,11 @@
 
 use std::cell::RefCell;
 
+use tilo_ui_base::widget::Widget;
 use ui_core::application::ComponentReplacement;
 use ui_core::launch::LaunchError;
 use ui_core::resource::{ResourceOpenError, ResourceOpening};
 use ui_core::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
-use tilo_ui_base::widget::Widget;
 
 use super::app::OpeningView;
 

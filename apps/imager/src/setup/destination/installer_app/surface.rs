@@ -1229,7 +1229,8 @@ impl InstallerApp {
                 if !tilo_ui_base::clipboard_available() {
                     return Err(t("installer-blocked-no-clipboard"));
                 }
-                let copy = tilo_ui_base::try_clipboard_copy_secret(key, RECOVERY_KEY_ON_CLIPBOARD_FOR);
+                let copy =
+                    tilo_ui_base::try_clipboard_copy_secret(key, RECOVERY_KEY_ON_CLIPBOARD_FOR);
                 if !self.recovery_key_copy.watch(copy) {
                     return Err("Could not copy the recovery key to the clipboard".into());
                 }

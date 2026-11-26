@@ -4,13 +4,13 @@
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
+use crate::widget::BarControlFace;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{presence::Face, presence::FaceStack};
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::BarControlFace;
+use tilo_ui_base::{presence::Face, presence::FaceStack};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 
 /// One bar chip's content and state, borrowed. Built by the caller each
 /// frame; [`Self::paint`] draws it and hands back where its parts landed.
@@ -311,9 +311,11 @@ impl<'a> BarChipFace<'a> {
             let style = Self::label_style(theme);
             let spare = (rect.x1 - Self::pad(theme) - trailing - x).max(0.0);
             let spare = self.label_width.map_or(spare, |most| spare.min(most));
-            let shown =
-                ctx.text
-                    .elide_to_width_style(self.label, tilo_ui_base::num::f32_of_f64(spare), &style);
+            let shown = ctx.text.elide_to_width_style(
+                self.label,
+                tilo_ui_base::num::f32_of_f64(spare),
+                &style,
+            );
             let (w, h) = ctx.text.measure_style(&shown, None, &style);
             if !shown.is_empty() {
                 ctx.text.draw_style(

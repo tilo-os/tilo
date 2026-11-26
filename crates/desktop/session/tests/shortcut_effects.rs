@@ -473,7 +473,9 @@ fn holding_super_shows_the_keys_and_letting_go_takes_them_away() {
     let search = groups
         .iter()
         .flat_map(|(_, hints)| hints)
-        .find(|hint| hint.keys.len() == 1 && hint.keys[0] == tilo_ui_base::keycaps::active().key("space"))
+        .find(|hint| {
+            hint.keys.len() == 1 && hint.keys[0] == tilo_ui_base::keycaps::active().key("space")
+        })
         .expect("Super+Space is search, as the table binds it");
     assert!(
         !search.label.is_empty(),

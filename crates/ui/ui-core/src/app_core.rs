@@ -235,7 +235,11 @@ impl AppTree<'_> {
     pub(crate) fn tooltips_at(
         &self,
         point: vello::kurbo::Point,
-    ) -> Vec<(vello::kurbo::Rect, String, tilo_ui_base::widget::TooltipSide)> {
+    ) -> Vec<(
+        vello::kurbo::Rect,
+        String,
+        tilo_ui_base::widget::TooltipSide,
+    )> {
         self.node_map
             .keys()
             .filter_map(|&node| {
@@ -444,7 +448,11 @@ impl crate::app::App {
     pub(crate) fn tooltip_target_at(
         &self,
         point: vello::kurbo::Point,
-    ) -> Option<(vello::kurbo::Rect, String, tilo_ui_base::widget::TooltipSide)> {
+    ) -> Option<(
+        vello::kurbo::Rect,
+        String,
+        tilo_ui_base::widget::TooltipSide,
+    )> {
         if !self.pointer_hovers() {
             return None;
         }
@@ -552,7 +560,8 @@ impl crate::app::App {
             ));
         parts.root.set_interaction_environment(parts.interaction);
         let mapped = parts.node_map.len();
-        let mut remount = tilo_ui_base::widget::Remount::new(parts.taffy, parts.theme, parts.node_map);
+        let mut remount =
+            tilo_ui_base::widget::Remount::new(parts.taffy, parts.theme, parts.node_map);
         let mut applied = parts.root.remount_children(&mut remount);
         // A widget the remount built may change its own parts in place as it is built (a part
         // view filled in as its component mounts): that change is carried out in the same remount.
@@ -727,7 +736,12 @@ impl crate::app::App {
         action: &tilo_ui_base::a11y::Action,
     ) -> Result<bool, crate::bound_dispatch::BoundDispatchError> {
         self.dispatch_node(node, |widget, doc, root| {
-            widget.perform_action(action, &[], &mut tilo_ui_base::widget::Edits::lend(doc), root)
+            widget.perform_action(
+                action,
+                &[],
+                &mut tilo_ui_base::widget::Edits::lend(doc),
+                root,
+            )
         })
     }
 

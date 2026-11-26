@@ -9,8 +9,8 @@
 //! opens.
 
 use serde::{Deserialize, Serialize};
-use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 use tilo_ui_base::text_match::FieldWeight;
+use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
 use crate::model::{Hit, LaunchPlace, Source, Target};
 

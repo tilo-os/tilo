@@ -8,17 +8,23 @@ use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::Rect;
 
-use tilo_ui_base::{arriving::Arrival, arriving::ArrivalClock, arriving::Arriving, arriving::Progress, arriving::Source, arriving::Step};
 use tilo_ui_base::motion::CrossFade;
 use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::{
+    arriving::Arrival, arriving::ArrivalClock, arriving::Arriving, arriving::Progress,
+    arriving::Source, arriving::Step,
+};
 
+use crate::time::Instant;
+use crate::{widget::Button, widget::ModelView, widget::SkeletonFace};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::time::Instant;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
-use crate::{widget::Button, widget::ModelView, widget::SkeletonFace};
-use tilo_ui_base::{widget::AppModel, widget::Element, widget::ModelPath, widget::SkeletonShape, widget::TaffyTreeExt, widget::Widget};
+use tilo_ui_base::{
+    widget::AppModel, widget::Element, widget::ModelPath, widget::SkeletonShape,
+    widget::TaffyTreeExt, widget::Widget,
+};
 
 /// The box a widget fills when it is the answer of a read: what an [`ArrivingView`] showing it must
 /// have reserved.
@@ -809,7 +815,9 @@ impl ArrivingView {
         if self.showing() != Showing::Answer {
             return;
         }
-        if let Some(own) = tilo_ui_base::widget::capability::capability::<dyn ReservedShape>(self.inner.child()) {
+        if let Some(own) =
+            tilo_ui_base::widget::capability::capability::<dyn ReservedShape>(self.inner.child())
+        {
             let reserved = self.shape.get();
             debug_assert!(
                 own.reserved_shape() == reserved,
@@ -890,7 +898,8 @@ impl Widget for ArrivingView {
             flex_shrink: 0.0,
             ..Default::default()
         };
-        let style = tilo_ui_base::widget::layout::filling(style, if shape.fills() { 1.0 } else { 0.0 });
+        let style =
+            tilo_ui_base::widget::layout::filling(style, if shape.fills() { 1.0 } else { 0.0 });
         taffy.widget_node(style, &[reserve, content], node_map, self)
     }
 

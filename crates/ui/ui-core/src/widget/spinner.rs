@@ -242,10 +242,10 @@ impl Widget for Spinner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::presence::PresenceCtx;
-    use tilo_ui_base::text_render::TextRenderer;
     use std::collections::HashMap;
     use taffy::prelude::TaffyMaxContent;
+    use tilo_ui_base::presence::PresenceCtx;
+    use tilo_ui_base::text_render::TextRenderer;
     use vello::Scene;
     use vello::kurbo::Affine;
     use vello_encoding::DrawTag;

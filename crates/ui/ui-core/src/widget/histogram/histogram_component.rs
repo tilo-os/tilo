@@ -1,8 +1,8 @@
 //! [`Histogram`] as a described component: raw samples binned into bars, which the builder hands
 //! back as a [`CartesianPlot`].
 
-use tilo_ui_base::{component::Component, component::Described};
 use tilo_ui_base::widget::Decorator;
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::{CartesianPlot, Histogram, HistogramNormalization};
 

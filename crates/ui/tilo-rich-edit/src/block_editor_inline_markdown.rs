@@ -398,8 +398,8 @@ mod tests {
     use winit::keyboard::{Key, NamedKey};
 
     use super::super::{Block, BlockEditor, CursorPlacement};
-    use ui::testing::Dispatch;
     use tilo_ui_base::widget::Widget;
+    use ui::testing::Dispatch;
     use ui::widget::marks::{Mark, MarkSpan};
 
     fn press(editor: &mut BlockEditor, doc: &mut AutoCommit, key: Key) {
@@ -409,9 +409,10 @@ mod tests {
             _ => None,
         };
         let event = tilo_ui_base::synthetic_input::key_event(key, text, ElementState::Pressed);
-        Dispatch::new()
-            .doc(doc)
-            .send(editor, &tilo_ui_base::synthetic_input::keyboard_input(event));
+        Dispatch::new().doc(doc).send(
+            editor,
+            &tilo_ui_base::synthetic_input::keyboard_input(event),
+        );
         editor.settle(&mut tilo_ui_base::widget::Edits::lend(doc), &ROOT);
         editor.sync(doc, &ROOT);
     }

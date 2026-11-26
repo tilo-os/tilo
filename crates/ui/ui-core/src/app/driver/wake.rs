@@ -110,7 +110,11 @@ mod tests {
     }
 
     impl Widget for Reader {
-        fn sync(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) {
+        fn sync(
+            &mut self,
+            _state: &tilo_ui_base::widget::AppModel,
+            _path: &tilo_ui_base::widget::ModelPath,
+        ) {
             self.syncs += 1;
             if let Some(landed) = &self.landed
                 && let Ok(value) = landed.try_recv()

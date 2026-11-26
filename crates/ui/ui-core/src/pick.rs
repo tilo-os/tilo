@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 use vello::kurbo::{Point, Rect};
 
-use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 
 /// A node a person can pick.
 #[derive(Clone, Debug, PartialEq)]
@@ -115,8 +115,12 @@ fn child_paths<'a>(widget: &'a dyn Widget, path: &str) -> Vec<(&'a dyn Widget, S
         .into_iter()
         .enumerate()
         .map(|(index, child)| {
-            let (_, path, _) =
-                tilo_ui_base::widget::widget_path(child, path, widget.child_path_name(index), &mut counts);
+            let (_, path, _) = tilo_ui_base::widget::widget_path(
+                child,
+                path,
+                widget.child_path_name(index),
+                &mut counts,
+            );
             (child, path)
         })
         .collect()
@@ -158,7 +162,9 @@ fn visit_at(
     }
     let mut pushed = false;
     if let Some(node) = &node {
-        let bounds = node.bounds.map_or(rect, tilo_ui_base::a11y::AccessBounds::to_rect);
+        let bounds = node
+            .bounds
+            .map_or(rect, tilo_ui_base::a11y::AccessBounds::to_rect);
         if nameable(node) && usable(bounds) && bounds.contains(point) {
             chain.push(target(path.clone(), node, bounds));
             pushed = true;
@@ -283,7 +289,9 @@ fn visit_within(
         return;
     }
     if let Some(node) = &node {
-        let bounds = node.bounds.map_or(rect, tilo_ui_base::a11y::AccessBounds::to_rect);
+        let bounds = node
+            .bounds
+            .map_or(rect, tilo_ui_base::a11y::AccessBounds::to_rect);
         if nameable(node) && usable(bounds) && encloses(area, bounds) {
             found.push(target(path, node, bounds));
             return;
@@ -364,13 +372,17 @@ pub fn capture(root: &dyn Widget, path: &str) -> Option<PickCapture> {
         }
         capture.role = Some(node.role);
         capture.kind.clone_from(&node.role_description);
-        capture.label = label(&node, node.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect));
+        capture.label = label(
+            &node,
+            node.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect),
+        );
         read_synthetic(&node, &mut capture.texts);
     } else {
         if let Some(node) = &node {
-            let rect = node
-                .bounds
-                .map_or_else(|| widget.get_rect(), tilo_ui_base::a11y::AccessBounds::to_rect);
+            let rect = node.bounds.map_or_else(
+                || widget.get_rect(),
+                tilo_ui_base::a11y::AccessBounds::to_rect,
+            );
             capture.role = Some(node.role);
             capture.kind.clone_from(&node.role_description);
             capture.label = label(node, Some(rect));
@@ -476,9 +488,10 @@ fn read_widget(widget: &dyn Widget, texts: &mut Vec<PickedText>, depth: usize) {
         if node.state.hidden {
             return;
         }
-        let rect = node
-            .bounds
-            .map_or_else(|| widget.get_rect(), tilo_ui_base::a11y::AccessBounds::to_rect);
+        let rect = node.bounds.map_or_else(
+            || widget.get_rect(),
+            tilo_ui_base::a11y::AccessBounds::to_rect,
+        );
         read_node(node, usable(rect).then_some(rect), texts);
         read_synthetic(node, texts);
     }

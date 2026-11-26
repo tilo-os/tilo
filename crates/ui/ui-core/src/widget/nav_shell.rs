@@ -2,11 +2,11 @@
 //! list beside the content, the content, and an optional inspector, laid out at
 //! `theme.tokens.metrics`.
 
-use tilo_ui_base::num::f64_of_usize;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::num::f64_of_usize;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -14,20 +14,27 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::time::Instant;
+use crate::widget::flap::{FlapState, SplitLayout};
+use crate::widget::window_header::header_row::HeaderRowMetrics;
+use crate::widget::window_header::{HistoryControl, WindowHeader};
+use crate::{
+    widget::Button, widget::ButtonRole, widget::DescribedList, widget::NavList, widget::SearchField,
+};
 use tilo_ui_base::LocalState;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::local_state::LocalBinding;
-use tilo_ui_base::{platform::HostShortcut, platform::PlatformConventions};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::time::Instant;
 use tilo_ui_base::tokens::BreakpointTracker;
-use crate::widget::flap::{FlapState, SplitLayout};
-use tilo_ui_base::{widget::manual::ManualContext, widget::manual::ManualInvalidation, widget::manual::ManualPolicy};
-use crate::widget::window_header::header_row::HeaderRowMetrics;
-use crate::widget::window_header::{HistoryControl, WindowHeader};
-use crate::{widget::Button, widget::ButtonRole, widget::DescribedList, widget::NavList, widget::SearchField};
-use tilo_ui_base::{widget::AppModel, widget::Element, widget::ModelPath, widget::StructureChange, widget::TaffyTreeExt, widget::Widget, widget::WidgetLayoutError};
+use tilo_ui_base::{platform::HostShortcut, platform::PlatformConventions};
+use tilo_ui_base::{
+    widget::AppModel, widget::Element, widget::ModelPath, widget::StructureChange,
+    widget::TaffyTreeExt, widget::Widget, widget::WidgetLayoutError,
+};
+use tilo_ui_base::{
+    widget::manual::ManualContext, widget::manual::ManualInvalidation, widget::manual::ManualPolicy,
+};
 
 mod back;
 mod band;
@@ -46,7 +53,6 @@ mod status_action;
 mod swap;
 mod window_header;
 mod window_toolbar;
-use tilo_ui_base::widget::ContentKind;
 use crate::widget::OverflowButton;
 #[cfg(test)]
 use crate::widget::toast::ToastKind;
@@ -58,6 +64,7 @@ pub use layout::NavGeometry;
 use layout::{layout_of, stack_index};
 pub use notices::HeldNotice;
 use sidebar_resize::AdaptiveSidebar;
+use tilo_ui_base::widget::ContentKind;
 use window_toolbar::Requests;
 pub use window_toolbar::{WINDOW_BACK, WINDOW_SIDEBAR, WindowBarLink};
 
@@ -2132,7 +2139,9 @@ impl NavShell {
     fn column_theme(&self, theme: &Theme, column: Option<Column>) -> Theme {
         match column {
             Some(Column::Sidebar) => match self.geometry.sidebar {
-                SidebarPlacement::Drawer => theme.on_ground(tilo_ui_base::chrome::panel_ground(theme)),
+                SidebarPlacement::Drawer => {
+                    theme.on_ground(tilo_ui_base::chrome::panel_ground(theme))
+                }
                 _ => theme.in_region(tilo_ui_base::surface::Region::Sidebar),
             },
             Some(Column::Inspector) => match self.geometry.inspector {
@@ -2369,8 +2378,8 @@ impl NavShell {
             return;
         }
         let now = tilo_ui_base::motion::frame_now();
-        let source =
-            tilo_ui_base::motion::recent_input(now).unwrap_or(tilo_ui_base::tokens::MotionSource::Action);
+        let source = tilo_ui_base::motion::recent_input(now)
+            .unwrap_or(tilo_ui_base::tokens::MotionSource::Action);
         // The content it shows now is what the window shows: on a narrow window, where the list
         // stands in front, it comes forward as a place chosen from that list does.
         if self.has_content() {
@@ -2621,7 +2630,10 @@ impl NavShell {
     fn paint(&mut self, f: &mut Frame<'_>) {
         let g = self.geometry.clone();
         let fade = unit_f32(self.fade.progress(tilo_ui_base::motion::frame_now()));
-        let content = unit_f32(self.content_fade.progress(tilo_ui_base::motion::frame_now()));
+        let content = unit_f32(
+            self.content_fade
+                .progress(tilo_ui_base::motion::frame_now()),
+        );
 
         let inspector_region =
             g.inspector == InspectorPlacement::Docked && g.inspector_column.width() > 0.0;
@@ -2965,7 +2977,10 @@ impl Widget for NavShell {
         }
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
         if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
             request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
         } else if request.wants::<dyn WindowHeader>() {
@@ -3373,18 +3388,20 @@ impl Widget for NavShell {
         let fit = inputs.fit.borrow();
         let mut rows: [Option<tilo_ui_base::widget::HeaderRowLayout>; 4] = [None; 4];
         for (index, (row, part)) in rows.iter_mut().zip(fit.iter()).enumerate() {
-            *row = part.header.map(|facts| tilo_ui_base::widget::HeaderRowLayout {
-                column: Column::ALL[index].key(),
-                title_needs: tilo_ui_base::num::f32_of_f64(facts.title_needs),
-                title_has: tilo_ui_base::num::f32_of_f64(facts.title_has),
-                free_beside_title: tilo_ui_base::num::f32_of_f64(facts.free_beside_title),
-                title_opens: self
-                    .headers
-                    .get(index)
-                    .is_none_or(|header| header.title.opens_within(facts.title_has)),
-                labelled_action: facts.labelled_action,
-                primary_shown: facts.primary_shown,
-            });
+            *row = part
+                .header
+                .map(|facts| tilo_ui_base::widget::HeaderRowLayout {
+                    column: Column::ALL[index].key(),
+                    title_needs: tilo_ui_base::num::f32_of_f64(facts.title_needs),
+                    title_has: tilo_ui_base::num::f32_of_f64(facts.title_has),
+                    free_beside_title: tilo_ui_base::num::f32_of_f64(facts.free_beside_title),
+                    title_opens: self
+                        .headers
+                        .get(index)
+                        .is_none_or(|header| header.title.opens_within(facts.title_has)),
+                    labelled_action: facts.labelled_action,
+                    primary_shown: facts.primary_shown,
+                });
         }
         let m = inputs.metrics;
         let beside = self.beside_sidebar();
@@ -3430,7 +3447,10 @@ impl Widget for NavShell {
             let target = self.sidebar_resize_target();
             handle
                 .accessibility()
-                .with_name(tilo_ui_base::i18n::widget_format("widget-sidebar-resize", &[]))
+                .with_name(tilo_ui_base::i18n::widget_format(
+                    "widget-sidebar-resize",
+                    &[],
+                ))
                 .with_action_target(target.clone())
                 .with_hashed_key(&target)
                 .with_bounds(self.geometry.resize_handle)
@@ -3501,7 +3521,9 @@ impl Widget for NavShell {
         self.animating
             || self.settling
             || self.fade.is_moving(tilo_ui_base::motion::frame_now())
-            || self.content_fade.is_moving(tilo_ui_base::motion::frame_now())
+            || self
+                .content_fade
+                .is_moving(tilo_ui_base::motion::frame_now())
             || self.painted_parts().any(Widget::needs_animation_frame)
     }
 
@@ -3550,7 +3572,10 @@ impl Widget for NavShell {
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if self.paint_dirty || self.animating || self.fade.is_moving(tilo_ui_base::motion::frame_now()) {
+        if self.paint_dirty
+            || self.animating
+            || self.fade.is_moving(tilo_ui_base::motion::frame_now())
+        {
             regions.push(self.rect);
         } else {
             self.for_each_owned(|child| child.collect_damage(regions));
@@ -3714,8 +3739,9 @@ fn button_mut(action: &mut dyn Widget) -> Option<*mut Button> {
     {
         return Some(std::ptr::from_mut(button));
     }
-    if let Some(inner) =
-        tilo_ui_base::widget::capability::capability_mut::<dyn tilo_ui_base::widget::DecoratedMut>(action)
+    if let Some(inner) = tilo_ui_base::widget::capability::capability_mut::<
+        dyn tilo_ui_base::widget::DecoratedMut,
+    >(action)
         && let Some(button) = button_mut(inner.decorated_mut())
     {
         return Some(button);
@@ -3824,7 +3850,9 @@ impl tilo_ui_base::widget::controls::ActionControls for NavShell {
     ) {
         self.for_each_owned_mut(|child| {
             if !tilo_ui_base::widget::component_walk::has_separate_document_owner(child) {
-                tilo_ui_base::widget::controls::on_control_invocation_result(child, address, result);
+                tilo_ui_base::widget::controls::on_control_invocation_result(
+                    child, address, result,
+                );
             }
         });
     }

@@ -12,14 +12,14 @@ use taffy::{NodeId, Style, TaffyTree};
 use tilo_resource::{Id, Resource};
 use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 
+use tilo_ui_base::Theme;
 use tilo_ui_base::text_render::TextRenderer;
-use ui_core::vello::kurbo::{Point, Rect};
-use ui_core::{widget::ContextMenu, widget::MenuItem};
 use tilo_ui_base::{widget::Element, widget::TaffyTreeExt, widget::Widget, widget::draw_child};
+use ui_core::taffy;
+use ui_core::vello::kurbo::{Point, Rect};
 use ui_core::winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use ui_core::winit::keyboard::{Key, NamedKey};
-use ui_core::taffy;
-use tilo_ui_base::Theme;
+use ui_core::{widget::ContextMenu, widget::MenuItem};
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
@@ -626,7 +626,11 @@ impl<R: Resource> Each<R> {
     }
 
     /// Route an event to the row menu. Returns whether it was consumed.
-    fn menu_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
+    fn menu_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.menu.cursor = ctx.logical(position);
         }
@@ -726,7 +730,10 @@ impl<R: Resource> Widget for Each<R> {
     // Inputs pushed down the tree reach every built row, mounted or not,
     // and rows built later, so a row mounted later shows the same as one
     // that always was.
-    fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
+    fn set_platform_conventions(
+        &mut self,
+        conventions: tilo_ui_base::platform::PlatformConventions,
+    ) {
         self.pushed.conventions = Some(conventions);
         for view in self.rows.iter_mut().filter_map(|row| row.view.as_mut()) {
             view.widget.set_platform_conventions(conventions);

@@ -206,9 +206,9 @@ fn outline_root(doc: &AutoCommit) -> Box<dyn Widget> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::widget::TaffyTreeExt;
     use std::collections::HashMap;
     use taffy::{NodeId, TaffyTree};
+    use tilo_ui_base::widget::TaffyTreeExt;
 
     /// A page that, like Notes, centres its column on the width its last layout gave it: the first pass
     /// builds at no width and asks to be built again.

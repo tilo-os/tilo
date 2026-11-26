@@ -99,7 +99,7 @@ class FormatsContractTests(unittest.TestCase):
         offending = 'pub fn f() -> String { format!("{h:02}:{m:02}") }\n'
         for relative in (
             "crates/ui/ui-base/src/format.rs",
-            "crates/ui/ui-core/src/format/dates.rs",
+            "crates/ui/ui-base/src/format/dates.rs",
             "apps/x/src/tests.rs",
             "apps/x/src/view.rs",
         ):

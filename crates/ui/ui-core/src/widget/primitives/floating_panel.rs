@@ -339,7 +339,11 @@ impl FloatingPanel {
 
     /// A drag of the trailing edge: taken by a press on it, followed while it moves, and told
     /// where it let go. Whether the event was the edge's.
-    fn resize_event(&mut self, event: &WindowEvent, ctx: &tilo_ui_base::widget::EventCtx<'_>) -> bool {
+    fn resize_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         use winit::event::{ElementState, MouseButton};
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -680,7 +684,11 @@ impl FloatingPanel {
 
 impl FloatingPanel {
     /// A drag of the header, as `event` takes it on: whether the event was the drag's.
-    fn drag_event(&mut self, event: &WindowEvent, ctx: &tilo_ui_base::widget::EventCtx<'_>) -> bool {
+    fn drag_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         use winit::event::{ElementState, MouseButton};
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -826,8 +834,12 @@ impl Widget for FloatingPanel {
             Some(place) => Style {
                 position: taffy::Position::Absolute,
                 inset: taffy::Rect {
-                    left: taffy::LengthPercentageAuto::length(tilo_ui_base::num::f32_of_f64(place.x)),
-                    top: taffy::LengthPercentageAuto::length(tilo_ui_base::num::f32_of_f64(place.y)),
+                    left: taffy::LengthPercentageAuto::length(tilo_ui_base::num::f32_of_f64(
+                        place.x,
+                    )),
+                    top: taffy::LengthPercentageAuto::length(tilo_ui_base::num::f32_of_f64(
+                        place.y,
+                    )),
                     right: taffy::LengthPercentageAuto::auto(),
                     bottom: taffy::LengthPercentageAuto::auto(),
                 },
@@ -947,7 +959,13 @@ impl Widget for FloatingPanel {
         pose.paint(scene, transform, bounds, |scene, transform| {
             self.paint_panel(
                 card,
-                &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+                &mut tilo_ui_base::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    env.clone(),
+                ),
             );
         });
     }
@@ -1078,8 +1096,10 @@ impl Widget for FloatingPanel {
 
     fn layout_needs_measure(&self) -> bool {
         self.width_changed || {
-            tilo_ui_base::widget::defaults::layout_needs_measure(&|visit| self.for_each_child(visit))
-                .unwrap_or_else(|| self.is_layout_dirty())
+            tilo_ui_base::widget::defaults::layout_needs_measure(&|visit| {
+                self.for_each_child(visit)
+            })
+            .unwrap_or_else(|| self.is_layout_dirty())
         }
     }
 
@@ -1213,7 +1233,8 @@ mod tests {
     fn a_shrinking_card_moves_inside_a_window_resized_once() {
         let start = crate::time::now();
         let spare = Rect::new(0.0, 0.0, 380.0, 436.0);
-        let mut panel = FloatingPanel::new(Box::new(tilo_ui_base::widget::Spacer::new())).fit_height();
+        let mut panel =
+            FloatingPanel::new(Box::new(tilo_ui_base::widget::Spacer::new())).fit_height();
         panel.rect = spare;
         panel.placed.snap(spare, false);
         let fit = panel.fit.as_mut().expect("it fits its page");
@@ -1227,8 +1248,9 @@ mod tests {
         );
         let mut heights = Vec::new();
         for frame in 1..=60 {
-            let _frame =
-                tilo_ui_base::motion::pin_frame_at(start + std::time::Duration::from_millis(16 * frame));
+            let _frame = tilo_ui_base::motion::pin_frame_at(
+                start + std::time::Duration::from_millis(16 * frame),
+            );
             let card = panel.card(tilo_ui_base::motion::frame_now());
             let window = Widget::preferred_window_size(&panel).map(|(_, height)| height);
             assert!(
@@ -1263,7 +1285,8 @@ mod tests {
     #[test]
     fn a_panel_arriving_asks_for_the_height_of_its_page() {
         let _frame = tilo_ui_base::motion::pin_frame();
-        let mut panel = FloatingPanel::new(Box::new(tilo_ui_base::widget::Spacer::new())).fit_height();
+        let mut panel =
+            FloatingPanel::new(Box::new(tilo_ui_base::widget::Spacer::new())).fit_height();
         let now = tilo_ui_base::motion::frame_now();
         let spare = Rect::new(0.0, 0.0, 380.0, 577.0);
         panel.rect = spare;

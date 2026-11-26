@@ -1,6 +1,9 @@
 //! [`DragRun`] as a described component: a run of items a person reorders by dragging one.
 
-use tilo_ui_base::{component::Accepts, component::Component, component::Described, component::Event, component::PartType, component::PartViews, component::ResourceId, component::Source};
+use tilo_ui_base::{
+    component::Accepts, component::Component, component::Described, component::Event,
+    component::PartType, component::PartViews, component::ResourceId, component::Source,
+};
 
 use super::drag_run::{DragDrop, DragRun, RunAxis, RunItem};
 
@@ -122,7 +125,9 @@ impl Described for DragRun {
                 .next()
                 // An item with no view of its own takes up nothing.
                 .unwrap_or_else(|| {
-                    Box::new(tilo_ui_base::widget::Spacer::token(tilo_ui_base::tokens::SpacingStep::S0))
+                    Box::new(tilo_ui_base::widget::Spacer::token(
+                        tilo_ui_base::tokens::SpacingStep::S0,
+                    ))
                 });
             activates.push((key.clone(), activate));
             run = run.push(RunItem {
@@ -197,7 +202,9 @@ impl Described for DragRun {
                 .next()
                 // An item with no view of its own takes up nothing.
                 .unwrap_or_else(|| {
-                    Box::new(tilo_ui_base::widget::Spacer::token(tilo_ui_base::tokens::SpacingStep::S0))
+                    Box::new(tilo_ui_base::widget::Spacer::token(
+                        tilo_ui_base::tokens::SpacingStep::S0,
+                    ))
                 });
             activates.push((key.clone(), activate));
             taken.push(RunItem {

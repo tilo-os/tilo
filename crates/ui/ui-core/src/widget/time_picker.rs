@@ -1,7 +1,7 @@
 //! `TimePicker` — three side-by-side vertical spinners for `HH : MM : SS`.
+use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_ui_base::i18n::widget_text;
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
-use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
@@ -12,8 +12,8 @@ use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::TaffyTreeExt;
 #[path = "time_picker_component.rs"]
 mod component;
-use tilo_ui_base::widget::Widget;
 pub use component::TimePickerProps;
+use tilo_ui_base::widget::Widget;
 
 const HOUR_MAX: u8 = 23;
 const MINSEC_MAX: u8 = 59;
@@ -346,7 +346,10 @@ impl TimePicker {
 
     /// Whether the person's clock reads 12-hour with an AM/PM token.
     fn twelve_hour() -> bool {
-        matches!(tilo_ui_base::clock::configured(), tilo_ui_base::clock::TimeStyle::H12)
+        matches!(
+            tilo_ui_base::clock::configured(),
+            tilo_ui_base::clock::TimeStyle::H12
+        )
     }
 
     pub fn intrinsic_size(&self) -> (f64, f64) {
@@ -977,7 +980,8 @@ mod tests {
     fn a_moment_on_the_minute_shows_no_seconds_spinner() {
         let at = time_of("09:30").expect("a time of day");
         assert_eq!((at.hours, at.minutes, at.seconds), (9, 30, None));
-        let picker = TimePicker::from_text_state(&tilo_ui_base::LocalState::new("09:30".to_owned()));
+        let picker =
+            TimePicker::from_text_state(&tilo_ui_base::LocalState::new("09:30".to_owned()));
         assert_eq!(
             picker.value().seconds,
             None,
@@ -998,7 +1002,11 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
             std::collections::HashMap::new();
-        let node = tp.build_layout(&mut taffy, &tilo_ui_base::theme::Theme::dark(), &mut node_map);
+        let node = tp.build_layout(
+            &mut taffy,
+            &tilo_ui_base::theme::Theme::dark(),
+            &mut node_map,
+        );
         let root = taffy.parent_node(Style::default(), &[node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)

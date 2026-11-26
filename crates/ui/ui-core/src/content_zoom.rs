@@ -4,8 +4,8 @@
 use winit::event::{ElementState, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, ModifiersState};
 
-use tilo_ui_base::platform::PlatformConventions;
 use crate::time::Instant;
+use tilo_ui_base::platform::PlatformConventions;
 
 /// The zoom levels every step moves between, as factors of the default.
 pub const LEVELS: [f32; 13] = [
@@ -348,7 +348,8 @@ pub trait ContentZoom {
 /// Offer `step` to the widgets under `widget`, depth first: the factor the first one that took it now
 /// shows.
 pub fn offer(widget: &mut dyn tilo_ui_base::widget::Widget, step: ZoomStep) -> Option<f32> {
-    if let Some(zoom) = tilo_ui_base::widget::capability::capability_mut::<dyn ContentZoom>(&mut *widget)
+    if let Some(zoom) =
+        tilo_ui_base::widget::capability::capability_mut::<dyn ContentZoom>(&mut *widget)
         && let Some(factor) = zoom.zoom_content(step)
     {
         return Some(factor);

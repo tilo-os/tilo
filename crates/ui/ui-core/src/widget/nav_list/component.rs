@@ -2,9 +2,12 @@
 
 use std::collections::HashMap;
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::OfferedAction, component::Person, component::ResourceId, component::Value};
-use tilo_ui_base::icons::Icon;
 use crate::widget::attached::MenuPart;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::OfferedAction,
+    component::Person, component::ResourceId, component::Value,
+};
 
 use super::{NavItem, NavList, NavSection};
 
@@ -406,7 +409,9 @@ const NAV_PARTS: [&str; 2] = ["NavItem", "NavSection"];
 /// A navigation list's places and sections, in order.
 impl tilo_ui_base::component::PartItem for NavEntry {
     fn accepts() -> tilo_ui_base::component::Accepts {
-        tilo_ui_base::component::Accepts::OneOf(NAV_PARTS.iter().map(|name| (*name).to_owned()).collect())
+        tilo_ui_base::component::Accepts::OneOf(
+            NAV_PARTS.iter().map(|name| (*name).to_owned()).collect(),
+        )
     }
 
     fn read_all(

@@ -12,13 +12,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::TextRole;
 use crate::widget::chart_geometry;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
 
 #[derive(Clone, Debug)]
 pub struct SunburstNode {
@@ -748,8 +748,11 @@ mod tests {
                 SunburstNode::new("reviews", "Code review", 14.0),
                 SunburstNode::new("design", "Design review", 6.0),
             ]),
-            SunburstNode::new("docs", "Docs", 0.0)
-                .with_children(vec![SunburstNode::new("notes", "Release notes", 9.0)]),
+            SunburstNode::new("docs", "Docs", 0.0).with_children(vec![SunburstNode::new(
+                "notes",
+                "Release notes",
+                9.0,
+            )]),
         ])
     }
 
@@ -757,7 +760,11 @@ mod tests {
     fn long_names_root() -> SunburstNode {
         SunburstNode::new("root", "Where the long names went", 0.0).with_children(vec![
             SunburstNode::new("platform", "Platform work that ran long", 0.0).with_children(vec![
-                SunburstNode::new("integration", "Integration tests for the desktop clients", 22.0),
+                SunburstNode::new(
+                    "integration",
+                    "Integration tests for the desktop clients",
+                    22.0,
+                ),
                 SunburstNode::new("migration", "Migration of the old calendar records", 14.0),
             ]),
             SunburstNode::new("people", "Talking to people about the release", 0.0).with_children(

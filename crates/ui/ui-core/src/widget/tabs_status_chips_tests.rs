@@ -2,12 +2,12 @@
 
 use super::super::tests::lay_out_at_width;
 use super::super::{TabBar, TabDescriptor};
+use automerge::AutoCommit;
+use tilo_desktop_model::ownership::OpenedBy;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
-use automerge::AutoCommit;
-use tilo_desktop_model::ownership::OpenedBy;
 use vello::Scene;
 use vello::kurbo::Affine;
 

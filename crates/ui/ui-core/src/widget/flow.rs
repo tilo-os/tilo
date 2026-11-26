@@ -3,6 +3,7 @@
 //! permission bindings, the theme-resolved spacing, and the subtree scene cache that
 //! replays a stable subtree as one append.
 
+use taffy::{NodeId, TaffyTree};
 #[cfg(feature = "model")]
 use tilo_ui_base::permissions::PermissionScope;
 use tilo_ui_base::presence::PathSegment;
@@ -10,7 +11,6 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::Rhythm;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::widget::Widget;
-use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
@@ -156,7 +156,10 @@ impl Flow {
             return None;
         }
         let gap = self.laid_gap;
-        let shifts = tilo_ui_base::widget::follower_shifts(self.children.iter().map(|child| &**child), |_| gap);
+        let shifts = tilo_ui_base::widget::follower_shifts(
+            self.children.iter().map(|child| &**child),
+            |_| gap,
+        );
         self.ghosts.shift(shifts, self.children.len())
     }
 
@@ -246,7 +249,8 @@ impl Flow {
     pub fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         #[cfg(test)]
         let _probe = crate::frame_probe::span("flow.apply");
-        (self.rect, self.paint_rect) = tilo_ui_base::widget::layout::flow_rects(taffy, node, origin);
+        (self.rect, self.paint_rect) =
+            tilo_ui_base::widget::layout::flow_rects(taffy, node, origin);
         if self.place_again(taffy) {
             return;
         }
@@ -765,7 +769,10 @@ macro_rules! flow_builders {
         /// Check this layout behind a permission scope.
         #[must_use]
         #[cfg(feature = "model")]
-        pub fn with_permission_scope(mut self, scope: tilo_ui_base::permissions::PermissionScope) -> Self {
+        pub fn with_permission_scope(
+            mut self,
+            scope: tilo_ui_base::permissions::PermissionScope,
+        ) -> Self {
             self.flow.permission_scope = Some(scope);
             self
         }

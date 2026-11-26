@@ -14,9 +14,9 @@ use std::rc::Rc;
 
 use crate::headless::Driver;
 use crate::part_row::WindowAction;
-use tilo_ui_base::widget::Widget;
 use crate::widget::tabs::TOOLBAR_ROW_HEIGHT;
 use crate::window_toolbar::{SearchOpening, ToolbarAction, ToolbarEvent, WindowToolbar};
+use tilo_ui_base::widget::Widget;
 
 const MUTE: &str = "window-toolbar-action:call-mute";
 
@@ -39,7 +39,11 @@ impl tilo_ui_base::widget::Decorator for CallApp {
         &mut self.content
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for event in crate::window_toolbar::take_events() {
             if event
                 == (ToolbarEvent::Action {
@@ -84,7 +88,10 @@ fn call_app() -> (Driver, Rc<RefCell<Vec<ToolbarEvent>>>) {
 
 /// The bar's part whose target is `target`.
 fn part(driver: &Driver, target: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
-    fn find(nodes: &[tilo_ui_base::a11y::AccessNode], target: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
+    fn find(
+        nodes: &[tilo_ui_base::a11y::AccessNode],
+        target: &str,
+    ) -> Option<tilo_ui_base::a11y::AccessNode> {
         nodes.iter().find_map(|node| {
             if node.action_target.as_deref() == Some(target) {
                 Some(node.clone())
@@ -231,7 +238,10 @@ fn a_window_that_draws_its_frame_has_one_bar_with_the_windows_controls() {
         );
     }
     driver
-        .perform_window_part("window-control-maximize", &tilo_ui_base::a11y::Action::Activate)
+        .perform_window_part(
+            "window-control-maximize",
+            &tilo_ui_base::a11y::Action::Activate,
+        )
         .expect("the control runs");
     assert!(driver.window_maximized(), "the window maximizes");
     assert_eq!(
@@ -294,7 +304,11 @@ impl tilo_ui_base::widget::Decorator for SortApp {
         &mut self.content
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for event in crate::window_toolbar::take_events() {
             self.heard.borrow_mut().push(event);
         }
@@ -425,7 +439,6 @@ fn a_part_of_an_unpresented_bar_is_refused_legibly() {
 
 // ---- every part of the bar gets its own place at every width ----
 
-use tilo_ui_base::a11y::AccessNode;
 use crate::widget::window_toolbar_row::{
     ACTION_TARGET_PREFIX, LEADING_TARGET_PREFIX, LOCATION_TARGET, OVERFLOW_TARGET,
     SEGMENT_TARGET_PREFIX, SIDEBAR_TARGET, VIEW_TARGET_PREFIX, VIEWS_MENU_TARGET,
@@ -433,6 +446,7 @@ use crate::widget::window_toolbar_row::{
 use crate::window_toolbar::{
     LocationSegment, ToolbarLocation, ToolbarNavigation, ToolbarView, ToolbarViews,
 };
+use tilo_ui_base::a11y::AccessNode;
 
 const BAR_WIDTHS: [u32; 12] = [
     320, 360, 390, 420, 480, 560, 640, 720, 840, 1024, 1280, 1440,

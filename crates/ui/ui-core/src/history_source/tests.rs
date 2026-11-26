@@ -12,10 +12,10 @@ use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, AutoCommit, ObjType, ROOT};
 
 use super::*;
-use tilo_ui_base::permissions::MemberId;
 use crate::state::State;
 use crate::widget::history::HistoryAuthor;
 use crate::widget::{ActivityTimeline, HistoryFilter};
+use tilo_ui_base::permissions::MemberId;
 
 /// A fixed clock so date-range assertions are deterministic.
 const T0: i64 = 1_780_000_000; // 2026-06-08T…, comfortably in the Tilo era.

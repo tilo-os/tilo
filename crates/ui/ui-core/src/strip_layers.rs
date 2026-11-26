@@ -463,7 +463,8 @@ fn strip_change(
     let (Some(old_parts), Some(new_parts)) = (old_parts, new_parts) else {
         return Change::Anywhere;
     };
-    let Ok(rects) = tilo_ui_base::scene_parts::damage(old_drawn, old_parts, new_drawn, new_parts) else {
+    let Ok(rects) = tilo_ui_base::scene_parts::damage(old_drawn, old_parts, new_drawn, new_parts)
+    else {
         return Change::Anywhere;
     };
     let (bx0, by0, bx1, by1) = band(blit, size);

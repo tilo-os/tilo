@@ -529,4 +529,3 @@ pub fn scroll_widget(root: &mut dyn Widget, scroll: &DrawnScroll, offset: f64) -
     }
     visit(root, scroll.widget, offset)
 }
-

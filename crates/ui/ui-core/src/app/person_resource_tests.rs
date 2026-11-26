@@ -386,7 +386,8 @@ fn owned_and_read(kind: &str) -> (StoredResource, StoredResource) {
 /// `Recording` transport that stands in for its broker.
 #[cfg(unix)]
 fn recording_window(app: &str, record: &StoredResource) -> (App, Arc<Mutex<Recording>>) {
-    let primary = tilo_ui_base::collaboration::RouteSpec::document(app, uuid::Uuid::new_v4(), "shown");
+    let primary =
+        tilo_ui_base::collaboration::RouteSpec::document(app, uuid::Uuid::new_v4(), "shown");
     let recording = Arc::new(Mutex::new(Recording {
         route: Some(primary.clone()),
         ..Recording::default()

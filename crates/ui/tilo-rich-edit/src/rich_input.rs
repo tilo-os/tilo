@@ -9,15 +9,18 @@ use tilo_ui_graph::rich::{Attr, Block, Embed, InlineView, RichText};
 use winit::event::WindowEvent;
 
 use crate::rich_text_line::RichTextLine;
-use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Event, component::Person, component::Value};
 use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+    component::Person, component::Value,
+};
+use tilo_ui_base::{widget::Decorator, widget::EventCtx, widget::Widget};
 use ui::widget::completion::{CompletionSource, Tier};
 use ui::widget::marks::{Mark, MarkSpan};
 use ui::widget::mention_picker::{self, MentionCandidate};
-use tilo_ui_base::{widget::Decorator, widget::EventCtx, widget::Widget};
 
 /// A field that types rich text, bound to what it edits: a reference a completion picks is
 /// written as a reference, which each reader renders as an inline view of what it names.
@@ -149,9 +152,12 @@ impl DrawerPeople {
             '@',
             vec![
                 Tier::new(speakers)
-                    .with_header(tilo_ui_base::i18n::widget_text("completion-in-conversation"))
+                    .with_header(tilo_ui_base::i18n::widget_text(
+                        "completion-in-conversation",
+                    ))
                     .with_limit(SPEAKERS),
-                Tier::new(members).with_header(tilo_ui_base::i18n::widget_text("completion-members")),
+                Tier::new(members)
+                    .with_header(tilo_ui_base::i18n::widget_text("completion-members")),
             ],
         ))
     }

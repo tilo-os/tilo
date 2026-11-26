@@ -29,11 +29,11 @@ use std::thread::JoinHandle;
 #[path = "render_timing.rs"]
 pub(crate) mod timing;
 
-use tilo_ui_base::gpu::RenderContext;
 #[cfg(test)]
 use crate::retained_raster::{DamageCache, rasterize_damage};
 pub use crate::retained_raster::{FrameContent, RetainedRaster, RetainedTarget};
 use tilo_lock::MutexRecover as _;
+use tilo_ui_base::gpu::RenderContext;
 use vello::kurbo::Rect;
 use vello::peniko::Color;
 use vello::util::RenderSurface;
@@ -1394,8 +1394,8 @@ mod admission_tests {
     #[test]
     fn occlusion_admission_keeps_payloads_probes_and_sibling_projections() {
         {
-            use tilo_ui_base::widget::Widget;
             use automerge::transaction::Transactable;
+            use tilo_ui_base::widget::Widget;
             // The primary is the sole owner of this retained root's update/sync;
             // auxiliary painting observes its Text projection rather than syncing.
             struct Root {
@@ -1410,7 +1410,11 @@ mod admission_tests {
                 ) -> bool {
                     self.pending.take().is_some()
                 }
-                fn sync(&mut self, doc: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+                fn sync(
+                    &mut self,
+                    doc: &tilo_ui_base::widget::AppModel,
+                    path: &tilo_ui_base::widget::ModelPath,
+                ) {
                     self.text.sync(doc, path);
                 }
                 fn build_layout(
@@ -1923,7 +1927,8 @@ mod retained_damage_tests {
     /// path and on the CPU path a software adapter takes.
     #[test]
     fn a_scroll_copy_then_its_damage_matches_a_full_render() {
-        let gpu = tilo_ui_base::offscreen::shared_gpu().expect("shared GPU context for the copy oracle");
+        let gpu =
+            tilo_ui_base::offscreen::shared_gpu().expect("shared GPU context for the copy oracle");
         let (device, queue) = (&gpu.device, &gpu.queue);
         let base_color = Color::from_rgb8(24, 26, 32);
         let before = scrolled_rows(0.0);
@@ -2032,7 +2037,8 @@ mod retained_damage_tests {
     /// worker must notice from the counters alone and repaint the whole surface.
     #[test]
     fn an_overflowed_frame_is_repainted_whole() {
-        let gpu = tilo_ui_base::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
+        let gpu = tilo_ui_base::offscreen::shared_gpu()
+            .expect("shared GPU context for the damage oracle");
         let device = &gpu.device;
         let queue = &gpu.queue;
         let options = || vello::RendererOptions {
@@ -2145,8 +2151,9 @@ mod retained_damage_tests {
             "the scene must overflow a fresh reservation, or this test proves nothing"
         );
         let presented = read(device, queue, &retained_texture);
-        let differing =
-            tilo_ui_base::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(&presented, &expected);
+        let differing = tilo_ui_base::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(
+            &presented, &expected,
+        );
         assert_eq!(
             differing, 0,
             "after {repaints} repaint(s) the presented frame still lacks {differing} pixels"
@@ -2158,7 +2165,8 @@ mod retained_damage_tests {
     /// and be presented with geometry missing, which the overflow repaint then never fixed.
     #[test]
     fn a_frame_reported_complete_is_complete() {
-        let gpu = tilo_ui_base::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
+        let gpu = tilo_ui_base::offscreen::shared_gpu()
+            .expect("shared GPU context for the damage oracle");
         let device = &gpu.device;
         let queue = &gpu.queue;
         let base_color = Color::from_rgb8(10, 10, 12);
@@ -2216,7 +2224,8 @@ mod retained_damage_tests {
 
     #[test]
     fn every_presented_frame_equals_a_full_render() {
-        let gpu = tilo_ui_base::offscreen::shared_gpu().expect("shared GPU context for the damage oracle");
+        let gpu = tilo_ui_base::offscreen::shared_gpu()
+            .expect("shared GPU context for the damage oracle");
         let device = &gpu.device;
         let queue = &gpu.queue;
         let options = || vello::RendererOptions {

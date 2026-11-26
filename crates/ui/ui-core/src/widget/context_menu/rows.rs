@@ -6,11 +6,14 @@ use vello::kurbo::{Point, Rect, Vec2};
 
 use super::emoji_row::{EmojiRow, ROW_SHARE};
 use super::{CAPTION_ROW_SHARE, MenuItem, SEPARATOR_HEIGHT, label_inset};
-use tilo_ui_base::{icons::AppImage, icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX, icons::draw_app_image, icons::draw_icon};
-use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::tokens::TextRole;
 use crate::widget::floating_list::{FloatingMetrics, FloatingRow, RowState};
 use crate::widget::floating_surface;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{
+    icons::AppImage, icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX, icons::draw_app_image,
+    icons::draw_icon,
+};
 
 /// One row of a menu, in the order the menu shows it.
 #[derive(Clone)]
@@ -193,7 +196,10 @@ fn paint_action(
     });
     let ink = if !enabled {
         colors
-            .on_surface_at(ground, tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
+            .on_surface_at(
+                ground,
+                tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+            )
             .ink_dim
     } else if let Some(ink) = armed_ink {
         ink
@@ -272,7 +278,10 @@ fn paint_action(
             ink
         } else {
             colors
-                .on_surface_at(ground, tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
+                .on_surface_at(
+                    ground,
+                    tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+                )
                 .ink_dim
         };
         ctx.text.draw_style(
@@ -300,7 +309,10 @@ fn paint_caption(
     let ink = theme
         .tokens
         .colors
-        .on_surface_at(ground, tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
+        .on_surface_at(
+            ground,
+            tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+        )
         .ink_dim;
     let text_x = if state.columns.gutter {
         content_x0 + f64::from(theme.tokens.metrics.icon_sm) + f64::from(theme.tokens.spacing.s2)

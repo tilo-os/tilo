@@ -1,9 +1,9 @@
 //! Shared, device-local close admission. Saving an external document still goes through its declared
 //! action; host chrome owns only the close decision.
 use crate::{widget::Button, widget::Column, widget::ModalDialog, widget::Text};
-use tilo_ui_base::widget::Widget;
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionAddress, ActionSpec, OperationKind, ResourceSpec};
+use tilo_ui_base::widget::Widget;
 
 /// An external editable document which cannot be replaced by an in-memory
 /// record flush or a lossy recovery export. `revision` identifies the exact
@@ -225,12 +225,15 @@ impl Admission {
                 ),
             ));
         }
-        let mut dialog = ModalDialog::new(tilo_ui_base::i18n::I18nManager::lookup_plain(title), content)
-            .open(true)
-            .dismiss_action(
-                tilo_actions::ActionBinding::unit_for(&resource, Choice::KeepEditing.id())
-                    .expect("host close unit action"),
-            );
+        let mut dialog = ModalDialog::new(
+            tilo_ui_base::i18n::I18nManager::lookup_plain(title),
+            content,
+        )
+        .open(true)
+        .dismiss_action(
+            tilo_actions::ActionBinding::unit_for(&resource, Choice::KeepEditing.id())
+                .expect("host close unit action"),
+        );
         dialog.set_platform_conventions(platform);
         let allowed = resource
             .actions

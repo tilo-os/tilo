@@ -74,7 +74,10 @@ impl Look<'_> {
 }
 
 /// What a notice of `mention` says: who mentioned the person, and where.
-fn notice_title(mention: &tilo_ui_base::mentions::Mention, name: &dyn Fn(&tilo_ui_base::MemberId) -> String) -> String {
+fn notice_title(
+    mention: &tilo_ui_base::mentions::Mention,
+    name: &dyn Fn(&tilo_ui_base::MemberId) -> String,
+) -> String {
     let who = mention
         .by
         .as_ref()
@@ -629,7 +632,12 @@ enum Fetched {
 /// something away where a mention of them stands; one the workspace held before this device
 /// followed it is taken as seen where it stands. So a large document's changes cost what they
 /// hold.
-fn fetch(from: &dyn Records, changed: &Changed, ask: &Ask, me: &BTreeSet<tilo_ui_base::MemberId>) -> Fetched {
+fn fetch(
+    from: &dyn Records,
+    changed: &Changed,
+    ask: &Ask,
+    me: &BTreeSet<tilo_ui_base::MemberId>,
+) -> Fetched {
     let (app, workspace, route) = (
         changed.app.as_str(),
         changed.workspace.as_str(),
@@ -715,7 +723,11 @@ impl Reads {
 
     /// Start the worker these reads are made on, reading for `me` and waking the session's loop
     /// through `wake` as each lands.
-    fn started(self, me: &BTreeSet<tilo_ui_base::MemberId>, wake: Option<tilo_service::Wake>) -> Self {
+    fn started(
+        self,
+        me: &BTreeSet<tilo_ui_base::MemberId>,
+        wake: Option<tilo_service::Wake>,
+    ) -> Self {
         #[cfg(target_os = "linux")]
         if let Way::Apart(from) = self.0 {
             use std::sync::{Arc, Mutex, PoisonError, mpsc};
@@ -796,7 +808,12 @@ impl Reads {
             reason = "the desktop's pending read takes the ask; a page's answers at once"
         )
     )]
-    fn fetch(&self, changed: &Changed, ask: Ask, me: &BTreeSet<tilo_ui_base::MemberId>) -> Poll<Fetched> {
+    fn fetch(
+        &self,
+        changed: &Changed,
+        ask: Ask,
+        me: &BTreeSet<tilo_ui_base::MemberId>,
+    ) -> Poll<Fetched> {
         match &self.0 {
             Way::Here(from) => Poll::Ready(fetch(from.as_ref(), changed, &ask, me)),
             #[cfg(target_os = "linux")]

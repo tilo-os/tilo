@@ -155,7 +155,9 @@ fn provider_at<W: Widget + ?Sized>(
             }
         });
     widget.for_each_child(&mut |child| {
-        if found.is_none() && !tilo_ui_base::widget::component_walk::has_separate_document_owner(child) {
+        if found.is_none()
+            && !tilo_ui_base::widget::component_walk::has_separate_document_owner(child)
+        {
             found = provider_at(child, false, binding, address);
         }
     });

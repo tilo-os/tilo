@@ -1,8 +1,11 @@
 //! Form composition that keeps visible and accessible labels in one contract.
 
-use super::{Autocomplete, Checkbox, ColorPicker, Column, DatePicker, Dropdown, NumberInput, Row, Slider, Text, TextInput, TimePicker, Toggle, ToggleGroup};
-use tilo_ui_base::widget::Widget;
+use super::{
+    Autocomplete, Checkbox, ColorPicker, Column, DatePicker, Dropdown, NumberInput, Row, Slider,
+    Text, TextInput, TimePicker, Toggle, ToggleGroup,
+};
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::Widget;
 
 #[path = "labelled_component.rs"]
 mod component;

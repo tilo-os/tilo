@@ -81,7 +81,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui::launch::shot_theme(&args),
         );
         match args.value("--input") {
-            Some("touch") => frame.set_interaction_environment(tilo_ui_base::InteractionEnvironment::TOUCH),
+            Some("touch") => {
+                frame.set_interaction_environment(tilo_ui_base::InteractionEnvironment::TOUCH)
+            }
             Some("pointer") | None => {}
             Some(other) => return Err(format!("unknown --input {other}: touch or pointer").into()),
         }

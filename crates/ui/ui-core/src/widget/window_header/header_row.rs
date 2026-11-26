@@ -27,10 +27,10 @@ use tilo_ui_base::num::f64_of_usize;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 
+use crate::widget::window_header::HistoryControl;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::window_header::HistoryControl;
 
 /// The header row's sizes, resolved against one theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -54,14 +54,20 @@ impl HeaderRowMetrics {
     /// [`Self::resolve_for`].
     #[must_use]
     pub fn resolve(theme: &Theme) -> Self {
-        Self::resolve_for(theme, tilo_ui_base::interaction::InteractionEnvironment::POINTER)
+        Self::resolve_for(
+            theme,
+            tilo_ui_base::interaction::InteractionEnvironment::POINTER,
+        )
     }
 
     /// The row for a person using `input`: a shell button is a square of the minimum target `input`
     /// needs, as an app's buttons are (a coarse pointer grows the face to it; a fine one keeps
     /// `min_pointer_target` and reaches the target through its hit rect).
     #[must_use]
-    pub fn resolve_for(theme: &Theme, input: tilo_ui_base::interaction::InteractionEnvironment) -> Self {
+    pub fn resolve_for(
+        theme: &Theme,
+        input: tilo_ui_base::interaction::InteractionEnvironment,
+    ) -> Self {
         let pointer = f64::from(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target);
         let pointer_chip = tilo_ui_base::widget::text_control_height(pointer, theme);
         let chip = if input.supports_hover() {
@@ -435,7 +441,8 @@ pub(crate) fn paint_title_in(
     let spare = (band.width() - pill_width).max(0.0);
     let shown = text.elide_to_width_style(title, f32_of_f64(spare), &style);
     let (w, line_h) = text.measure_style(&shown, None, &style);
-    let y = tilo_ui_base::text_metrics::centered_text_top(band.y0, band.height(), f64::from(line_h));
+    let y =
+        tilo_ui_base::text_metrics::centered_text_top(band.y0, band.height(), f64::from(line_h));
     text.draw_style(
         scene,
         &shown,
@@ -495,8 +502,9 @@ pub fn paint_history_control(
         return;
     }
     let name = tilo_ui_base::i18n::I18nManager::lookup_plain("history-mode-title");
-    let face = crate::widget::ButtonFace::icon_only(rect, tilo_ui_base::icons::Icon::History, &name)
-        .toggled(control.is_open())
-        .hovered(hovered);
+    let face =
+        crate::widget::ButtonFace::icon_only(rect, tilo_ui_base::icons::Icon::History, &name)
+            .toggled(control.is_open())
+            .hovered(hovered);
     crate::widget::Button::paint(scene, transform, text, theme, &face);
 }

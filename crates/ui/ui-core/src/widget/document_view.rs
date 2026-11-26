@@ -1,14 +1,17 @@
 //! Keyed, model-derived retained subtrees.
 
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use vello::kurbo::Rect;
 
 use tilo_ui_base::theme::Theme;
 
 use super::Text;
-use tilo_ui_base::{widget::Element, widget::FullscreenProvider, widget::FullscreenWidgetExt as _, widget::TaffyTreeExt, widget::Widget};
+use tilo_ui_base::{
+    widget::Element, widget::FullscreenProvider, widget::FullscreenWidgetExt as _,
+    widget::TaffyTreeExt, widget::Widget,
+};
 
 /// The style of the boundary node a [`ModelView`] puts around its child.
 ///
@@ -191,7 +194,10 @@ where
                 .as_ref()
                 .map(tilo_ui_base::ControlDomain::child);
         }
-        self.child_domain = self.scope_domain.as_ref().map(tilo_ui_base::ControlDomain::child);
+        self.child_domain = self
+            .scope_domain
+            .as_ref()
+            .map(tilo_ui_base::ControlDomain::child);
         self.child = (self.build)(&next, self.child_domain.as_ref());
         if let Some(domain) = &self.child_domain {
             tilo_ui_base::widget::controls::attach_controls(
@@ -439,7 +445,12 @@ where
         address: &tilo_actions::ActionAddress,
         changes: &[automerge::Patch],
     ) -> Option<serde_json::Value> {
-        tilo_ui_base::widget::resources::document_action_result(self.child.as_ref(), doc, address, changes)
+        tilo_ui_base::widget::resources::document_action_result(
+            self.child.as_ref(),
+            doc,
+            address,
+            changes,
+        )
     }
 }
 
@@ -467,7 +478,11 @@ where
         self.control_domain = Some(domain.clone());
         let scope = self.scope_domain.get_or_insert_with(|| domain.child());
         let child_domain = self.child_domain.get_or_insert_with(|| scope.child());
-        tilo_ui_base::widget::controls::attach_controls(self.child.as_mut(), child_domain, attachment);
+        tilo_ui_base::widget::controls::attach_controls(
+            self.child.as_mut(),
+            child_domain,
+            attachment,
+        );
     }
 }
 

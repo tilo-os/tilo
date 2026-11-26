@@ -13,7 +13,9 @@ fn bound_editor(focus: bool) -> BlockEditor {
         "box",
         crate::BlockEditorProps {
             rich: tilo_ui_base::component::Bound {
-                edits: Some(tilo_ui_base::component::Intent::new(&queue, "box", "richtext")),
+                edits: Some(tilo_ui_base::component::Intent::new(
+                    &queue, "box", "richtext",
+                )),
                 ..tilo_ui_base::component::Bound::default()
             },
             focus: Some(focus),
@@ -50,7 +52,10 @@ fn the_box_the_view_opens_for_editing_takes_the_keyboard() {
     );
     let handled = Dispatch::new()
         .doc(&mut doc)
-        .send(&mut opened, &tilo_ui_base::synthetic_input::keyboard_input(typed))
+        .send(
+            &mut opened,
+            &tilo_ui_base::synthetic_input::keyboard_input(typed),
+        )
         .handled;
     assert!(handled, "the typing reached the box the view opened");
 

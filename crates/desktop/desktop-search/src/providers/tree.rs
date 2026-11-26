@@ -10,8 +10,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, PoisonError, RwLock};
 
-use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 use tilo_ui_base::text_match::FieldWeight;
+use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
 use crate::model::{Hit, Source, Target};
 
@@ -176,7 +176,11 @@ impl Source for TreeFiles {
             .iter()
             .map(|file| vec![(file.name.clone(), FieldWeight::TITLE)])
             .collect();
-        let ranks = crate::rank::rank_rows(&tilo_ui_base::text_match::ListIndex::default(), needle, &names);
+        let ranks = crate::rank::rank_rows(
+            &tilo_ui_base::text_match::ListIndex::default(),
+            needle,
+            &names,
+        );
         let mut hits: Vec<Hit> = files
             .iter()
             .zip(ranks)

@@ -3,8 +3,8 @@
 //! read against the text it holds, so rows laid out and cut off are found rather than read as
 //! a line that never had anything to say.
 
-use ui::kurbo::Rect;
 use tilo_ui_base::widget::Widget;
+use ui::kurbo::Rect;
 
 use super::{EPSILON, Kind, Problem, has_area, size};
 
@@ -230,9 +230,10 @@ fn cut_text(
     text: &mut tilo_ui_base::TextRenderer,
     out: &mut Vec<Problem>,
 ) {
-    let Some(cut) = tilo_ui_base::widget::capability::capability_mut::<dyn tilo_ui_base::widget::TextFits>(widget)
-        .and_then(|fits| fits.cut_text(text))
-    else {
+    let Some(cut) = tilo_ui_base::widget::capability::capability_mut::<
+        dyn tilo_ui_base::widget::TextFits,
+    >(widget)
+    .and_then(|fits| fits.cut_text(text)) else {
         return;
     };
     out.push(Problem {
@@ -251,8 +252,9 @@ fn cut_text(
 /// bleed a row grows its own face by ([`ui::widget::RowLift`]), so a lift reaching further fills
 /// the gutters beside the row with the person's choice.
 fn selection_lifts(widget: &dyn Widget, keys: &[String], out: &mut Vec<Problem>) {
-    let Some(lifts) = tilo_ui_base::widget::capability::capability::<dyn ui::widget::PaintedRowLifts>(widget)
-        .map(ui::widget::PaintedRowLifts::painted_row_lifts)
+    let Some(lifts) =
+        tilo_ui_base::widget::capability::capability::<dyn ui::widget::PaintedRowLifts>(widget)
+            .map(ui::widget::PaintedRowLifts::painted_row_lifts)
     else {
         return;
     };
@@ -315,8 +317,9 @@ pub(super) fn chevron_off_line(chevron: ui::widget::virtual_list::RowChevron) ->
 /// A prompt a field painted wider than the line it prompts for: the text a person reads cut off
 /// mid-word at whatever the field's clip falls on ([`ui::widget::PlaceholderFit`]).
 fn prompt_fits(widget: &dyn Widget, keys: &[String], out: &mut Vec<Problem>) {
-    let Some(fit) = tilo_ui_base::widget::capability::capability::<dyn ui::widget::PlaceholderFit>(widget)
-        .and_then(ui::widget::PlaceholderFit::placeholder_fit)
+    let Some(fit) =
+        tilo_ui_base::widget::capability::capability::<dyn ui::widget::PlaceholderFit>(widget)
+            .and_then(ui::widget::PlaceholderFit::placeholder_fit)
     else {
         return;
     };

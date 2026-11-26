@@ -480,10 +480,7 @@ pub fn multi_click_interval() -> Duration {
 
 /// Override capture timing synchronously on this thread, restoring it even
 /// when a frame panics. Ordinary hosts keep the session preference.
-pub fn with_capture_multi_click_interval<T>(
-    interval: Duration,
-    capture: impl FnOnce() -> T,
-) -> T {
+pub fn with_capture_multi_click_interval<T>(interval: Duration, capture: impl FnOnce() -> T) -> T {
     struct Restore(Option<Duration>);
     impl Drop for Restore {
         fn drop(&mut self) {

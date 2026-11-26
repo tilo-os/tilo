@@ -5,10 +5,10 @@ use std::cell::Cell;
 
 use jiff::civil::DateTime;
 
-use tilo_ui_base::{component::Component, component::Described, component::Moment};
 use crate::time::{Duration, Instant};
-use tilo_ui_base::tokens::TextRole;
 use crate::widget::Text;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{component::Component, component::Described, component::Moment};
 use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
 
 const MINUTE: i64 = 60;

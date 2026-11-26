@@ -4,8 +4,8 @@
 //! the same entry as one in a window of its own.
 
 use super::*;
-use tilo_ui_base::{motion::input_source, motion::note_source};
 use tilo_ui_base::tokens::MotionSource;
+use tilo_ui_base::{motion::input_source, motion::note_source};
 use winit::keyboard::{Key, NamedKey};
 
 struct Window;

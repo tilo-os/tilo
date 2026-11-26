@@ -2,15 +2,12 @@
 use automerge::{AutoCommit, ObjId, ROOT, ReadDoc, transaction::Transactable};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use tilo_ui_base::TextRole;
 use tilo_ui::application::{
     AppComponent, ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
     RestoreInput,
 };
 use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
 use tilo_ui::launch::LaunchError;
-use tilo_ui_base::local_state::LocalState;
-use tilo_ui_base::{permissions::ActionKind, permissions::MemberId, permissions::PermissionContext, permissions::PermissionScope, permissions::SharedPermissions};
 use tilo_ui::resource::{
     DocumentAsk, DocumentCheckout, DocumentPort, DocumentRead, MemoryWorkspace, ResourceOwners,
     ResourceStore, ResourceType, Written,
@@ -18,8 +15,14 @@ use tilo_ui::resource::{
 use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
 use tilo_ui::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
-use tilo_ui_base::{widget::NativeViewLifecycle, widget::Widget};
+use tilo_ui_base::TextRole;
+use tilo_ui_base::local_state::LocalState;
+use tilo_ui_base::{
+    permissions::ActionKind, permissions::MemberId, permissions::PermissionContext,
+    permissions::PermissionScope, permissions::SharedPermissions,
+};
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use tilo_ui_base::{widget::NativeViewLifecycle, widget::Widget};
 
 pub const APP: &str = "so.tilo.application-probe";
 pub const DEVICE: &str = "D";
@@ -699,7 +702,8 @@ impl tilo_ui_base::host_operation::ResourceOperations for ProbeRoot {
         _: &ObjId,
     ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         let tilo_ui_base::host_operation::OperationRequest { kind, type_id, .. } = op.request();
-        if !tilo_ui_base::host_operation::local_resource_operation_handlers(self).contains(&type_id) {
+        if !tilo_ui_base::host_operation::local_resource_operation_handlers(self).contains(&type_id)
+        {
             return Ok(None);
         }
         if type_id == "probe.pending" {

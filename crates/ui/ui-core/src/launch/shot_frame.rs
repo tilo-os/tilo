@@ -1,16 +1,18 @@
 //! One offscreen frame of a widget, for app-specific screenshot handlers.
 //! [`LaunchSpec::shot_root`](super::LaunchSpec::shot_root) captures through the full headless harness.
 
-use tilo_ui_base::widget::DrawChild;
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
+use tilo_ui_base::widget::DrawChild;
 
 use taffy::prelude::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
+use crate::State;
 use crate::floating_surface::FloatingSurfaceWidgetExt;
+use tilo_ui_base::Theme;
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_ui_base::offscreen::OffscreenRenderer;
 #[cfg(feature = "model")]
@@ -18,8 +20,6 @@ use tilo_ui_base::permissions::PermissionContext;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::{widget::Widget, widget::WidgetLayoutError};
-use crate::State;
-use tilo_ui_base::Theme;
 
 /// The document, theme, text renderer and layout tree of one offscreen frame.
 pub struct ShotFrame {
@@ -188,9 +188,9 @@ impl ShotFrame {
     /// Composite the widget's top layer (open menus, popovers, modals) onto `scene` over the frame's
     /// window, as the live host does after the main pass and the window chrome.
     pub fn draw_overlay(&mut self, widget: &mut dyn Widget, scene: &mut Scene) {
-        let recording = tilo_ui_base::part_paint::backdrop::BackdropRecording::continuing(std::mem::take(
-            &mut self.backdrop,
-        ));
+        let recording = tilo_ui_base::part_paint::backdrop::BackdropRecording::continuing(
+            std::mem::take(&mut self.backdrop),
+        );
         tilo_ui_base::part_paint::backdrop::layer_scene(scene, 0);
         let previous = self.presence.push_viewport(self.window());
         widget.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
@@ -233,7 +233,9 @@ impl ShotFrame {
         let (w, h) = self.viewport;
         let mut renderer = OffscreenRenderer::new(w, h);
         renderer.set_backdrop(Some(std::sync::Arc::new(
-            tilo_ui_base::part_paint::backdrop::BackdropFrame::from_single_scene(self.backdrop.clone()),
+            tilo_ui_base::part_paint::backdrop::BackdropFrame::from_single_scene(
+                self.backdrop.clone(),
+            ),
         )));
         renderer.render_png(scene, background, out);
     }

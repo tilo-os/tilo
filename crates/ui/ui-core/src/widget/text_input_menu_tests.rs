@@ -6,11 +6,11 @@ use super::drive;
 use super::mods;
 use super::right_click;
 use super::suggesting_field;
-use tilo_ui_base::synthetic_input::cursor_moved;
 use crate::testing::dispatch;
+use std::time::Duration;
+use tilo_ui_base::synthetic_input::cursor_moved;
 use tilo_ui_base::text_edit::SUGGESTION_SETTLE;
 use tilo_ui_base::{text_selection::next_word_boundary, text_selection::prev_word_boundary};
-use std::time::Duration;
 
 /// A field laid out wide enough for a menu, holding `text`.
 fn menu_field(text: &str) -> TextInput {

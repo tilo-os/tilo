@@ -7,14 +7,9 @@ include!("application_handoff_tests.rs");
 include!("driver_peer_tests.rs");
 
 use super::*;
-use tilo_ui_base::a11y::SemanticId;
 use crate::a11y_tree::SemanticActionKind;
-use tilo_ui_base::component::Described;
 use crate::state::State;
-use tilo_ui_base::widget::TaffyTreeExt;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use crate::{widget::Button, widget::TreeViewNodeProps, widget::TreeViewProps};
-use tilo_ui_base::widget::Widget;
 use automerge::transaction::Transactable;
 use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
@@ -24,6 +19,11 @@ use tilo_actions::{
     Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, OperationKind,
     ResourceSpec,
 };
+use tilo_ui_base::a11y::SemanticId;
+use tilo_ui_base::component::Described;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum CounterAction {
@@ -1079,7 +1079,10 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert_eq!(context.source_invocation, Some(admitted_invocation));
         assert_eq!(
             app.state.peek_last_undo().and_then(|entry| entry.author),
-            Some(tilo_ui_base::permissions::MemberId::agent("Scribe", "restricted")),
+            Some(tilo_ui_base::permissions::MemberId::agent(
+                "Scribe",
+                "restricted"
+            )),
             "undo attribution and durable history use the same actor"
         );
     }
@@ -1282,7 +1285,10 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert_eq!(counter(&app), 1);
         assert_eq!(
             app.state.peek_last_undo().and_then(|entry| entry.author),
-            Some(tilo_ui_base::permissions::MemberId::agent("Scribe", "restricted"))
+            Some(tilo_ui_base::permissions::MemberId::agent(
+                "Scribe",
+                "restricted"
+            ))
         );
     }
 
@@ -1730,7 +1736,8 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
             .semantic_tree()
             .iter()
             .find(|node| {
-                node.role == tilo_ui_base::a11y::Role::TreeItem && node.name.as_deref() == Some("Child")
+                node.role == tilo_ui_base::a11y::Role::TreeItem
+                    && node.name.as_deref() == Some("Child")
             })
             .map(|node| node.id.clone())
             .expect("semantic child row");
@@ -1785,7 +1792,8 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
             .semantic_tree()
             .iter()
             .find(|node| {
-                node.role == tilo_ui_base::a11y::Role::TreeItem && node.name.as_deref() == Some("Root")
+                node.role == tilo_ui_base::a11y::Role::TreeItem
+                    && node.name.as_deref() == Some("Root")
             })
             .expect("root semantics after collapse");
         assert_eq!(root_semantics.state.expanded, Some(false));
@@ -1922,7 +1930,10 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
     assert_eq!(counter(&app), 1, "the effect's edit was applied");
     assert_eq!(
         app.state.peek_last_undo().and_then(|entry| entry.author),
-        Some(tilo_ui_base::permissions::MemberId::agent("Scribe", "restricted")),
+        Some(tilo_ui_base::permissions::MemberId::agent(
+            "Scribe",
+            "restricted"
+        )),
         "by the effect's invoker, not the person at the device"
     );
     assert!(
@@ -2267,8 +2278,8 @@ mod native_pty_wake_tests;
 /// a point guessed from it.
 #[test]
 fn a_table_row_does_what_an_assistive_technology_asks_of_it() {
-    use tilo_ui_base::a11y::Action;
     use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+    use tilo_ui_base::a11y::Action;
 
     #[derive(Clone)]
     struct Listed {

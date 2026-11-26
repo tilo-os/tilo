@@ -78,6 +78,7 @@ SCOPES += (
     Path("crates/ui/tilo-cpu-raster"),
     Path("crates/ui/tilo-formats"),
     Path("crates/ui/tilo-rich-edit"),
+    Path("crates/ui/ui-base"),
     Path("crates/ui/ui-core"),
     Path("crates/ui/ui-kms"),
     Path("crates/ui/ui-macros"),

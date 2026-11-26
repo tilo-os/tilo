@@ -3,8 +3,8 @@
 
 use tilo_ui_base::i18n::ArgValue;
 use tilo_ui_base::icons::Icon;
-use ui::{widget::Button, widget::ButtonRole, widget::Checkbox, widget::ControlSize};
 use tilo_ui_base::{widget::Element, widget::Widget};
+use ui::{widget::Button, widget::ButtonRole, widget::Checkbox, widget::ControlSize};
 
 use crate::setup::destination::control::{Control, is_activation_key};
 
@@ -243,7 +243,11 @@ mod tests {
             assert_eq!(button.test_id(), Some("reboot"));
 
             let mut doc = AutoCommit::new();
-            crate::setup::destination::press(&mut button, &tilo_ui_base::a11y::Action::Activate, &mut doc);
+            crate::setup::destination::press(
+                &mut button,
+                &tilo_ui_base::a11y::Action::Activate,
+                &mut doc,
+            );
             assert!(presses.take().map(|press| press.effect) == Some(DestinationEffect::Reboot));
             assert_eq!(doc.length(ROOT), 0);
             assert!(button.is_focused(), "AT activation must not steal focus");
@@ -270,7 +274,11 @@ mod tests {
             assert_eq!(node.state.checked, Some(true));
             assert_eq!(button.test_id(), Some("recovery_ack"));
             let mut doc = AutoCommit::new();
-            crate::setup::destination::press(&mut button, &tilo_ui_base::a11y::Action::ToggleCheck, &mut doc);
+            crate::setup::destination::press(
+                &mut button,
+                &tilo_ui_base::a11y::Action::ToggleCheck,
+                &mut doc,
+            );
             assert!(
                 presses.take().map(|press| press.effect)
                     == Some(DestinationEffect::SetRecoveryPromise {

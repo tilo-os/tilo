@@ -10,15 +10,15 @@ use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::{self, Brush, Fill, Gradient};
 use winit::event::WindowEvent;
 
+use crate::widget::activation::{Activation, Interaction};
+use crate::{widget::card_column_width, widget::card_columns};
 use tilo_ui_base::ImageStore;
-use tilo_ui_base::{icons::AppImage, icons::Icon};
 use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
-use crate::widget::activation::{Activation, Interaction};
-use crate::{widget::card_column_width, widget::card_columns};
+use tilo_ui_base::{icons::AppImage, icons::Icon};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::{widget::Element, widget::MediaAspect, widget::TaffyTreeExt, widget::Widget};
 
 /// Where a card stands in its grid, and the cell the grid reads the card the pointer is over
@@ -298,7 +298,8 @@ impl<'a> MediaCardFace<'a> {
         let title = tilo_ui_base::num::f64_of_usize(lines) * MediaMetrics::line(text, &m.title);
         let mut h = title;
         let meta_lines = self.meta.iter().flatten().count();
-        let metadata = tilo_ui_base::num::f64_of_usize(meta_lines) * MediaMetrics::line(text, &m.meta);
+        let metadata =
+            tilo_ui_base::num::f64_of_usize(meta_lines) * MediaMetrics::line(text, &m.meta);
         h += if self.creator.is_some() {
             metadata.max(m.creator_side)
         } else {
@@ -412,9 +413,11 @@ impl<'a> MediaCardFace<'a> {
             if let Some(title) = self.title {
                 let text_x = art.x1 + m.text_gap;
                 let room = (rect.x1 - text_x).max(1.0);
-                let line =
-                    ctx.text
-                        .elide_to_width_style(title, tilo_ui_base::num::f32_of_f64(room), &m.title);
+                let line = ctx.text.elide_to_width_style(
+                    title,
+                    tilo_ui_base::num::f32_of_f64(room),
+                    &m.title,
+                );
                 let title_line = MediaMetrics::line(ctx.text, &m.title);
                 let y = rect.y0 + ((rect.height() - title_line) / 2.0).max(0.0);
                 ctx.text(
@@ -459,7 +462,9 @@ impl<'a> MediaCardFace<'a> {
                 let mark_w = mark.map_or(0.0, |_| m.mark + m.mark_gap);
                 let line = ctx.text.elide_to_width_style(
                     meta,
-                    tilo_ui_base::num::f32_of_f64((f64::from(width) - mark_w - creator_inset).max(1.0)),
+                    tilo_ui_base::num::f32_of_f64(
+                        (f64::from(width) - mark_w - creator_inset).max(1.0),
+                    ),
                     &m.meta,
                 );
                 let x = start(ctx, &line, &m.meta, mark_w) + creator_inset;
@@ -584,7 +589,13 @@ fn paint_art(
     };
     match kind {
         MediaArt::Image(image) => {
-            tilo_ui_base::image_store::paint_image_cover(ctx.scene, ctx.transform, art, image, radius);
+            tilo_ui_base::image_store::paint_image_cover(
+                ctx.scene,
+                ctx.transform,
+                art,
+                image,
+                radius,
+            );
         }
         MediaArt::AppIcon(icon) => {
             neutral_tile(ctx);
@@ -621,7 +632,13 @@ fn paint_art(
                 ]
             };
             for (quad, image) in quads.iter().zip(images) {
-                tilo_ui_base::image_store::paint_image_cover(ctx.scene, ctx.transform, *quad, image, 0.0);
+                tilo_ui_base::image_store::paint_image_cover(
+                    ctx.scene,
+                    ctx.transform,
+                    *quad,
+                    image,
+                    0.0,
+                );
             }
             ctx.scene.pop_layer();
         }
@@ -683,7 +700,9 @@ fn paint_placeholder(
     let style = m
         .initials
         .clone()
-        .with_content_size(tilo_ui_base::num::f32_of_f64(side * PLACEHOLDER_INITIALS_SHARE));
+        .with_content_size(tilo_ui_base::num::f32_of_f64(
+            side * PLACEHOLDER_INITIALS_SHARE,
+        ));
     let (w, h) = ctx.text.measure_style(&initials, None, &style);
     ctx.text(
         &initials,
@@ -1233,7 +1252,11 @@ impl Widget for MediaCard {
         dyn crate::widget::ReservedShape
     );
 
-    fn sync(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
+    ) {
         if let Some(creator) = &mut self.creator
             && creator.image.is_none()
             && let Some((store, url)) = &creator.image_url
@@ -1524,7 +1547,9 @@ impl tilo_ui_base::widget::controls::ActionControls for MediaCard {
             bindings.push(emitter.metadata(format!("{}/action", self.activation.id())));
         }
         for child in tilo_ui_base::widget::Widget::children(self) {
-            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(child));
+            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(
+                child,
+            ));
         }
         bindings
     }
@@ -1728,7 +1753,11 @@ impl MediaGrid {
 
     /// A press with shift takes the cards from the one pressed last to the one pressed now; a
     /// press held and dragged over the cards takes the ones it sweeps. Whether it took the press.
-    fn range_event(&self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
+    fn range_event(
+        &self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         if self.select.is_none() {
             return false;
         }
@@ -2168,7 +2197,14 @@ impl Widget for MediaGrid {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(inner) = self.inner.as_mut() {
-            tilo_ui_base::widget::draw_child(&mut **inner, scene, transform, text_renderer, theme, &env);
+            tilo_ui_base::widget::draw_child(
+                &mut **inner,
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &env,
+            );
             return;
         }
         if matches!(self.mode, GridMode::Columns) {

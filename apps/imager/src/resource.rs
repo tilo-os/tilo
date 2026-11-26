@@ -546,7 +546,10 @@ mod tests {
     fn the_keyboard_chooser_commits_through_the_real_event_path() {
         let mut app = customizing();
         app.harness()
-            .perform_named("imager.profile.keyboard", &tilo_ui_base::a11y::Action::Focus)
+            .perform_named(
+                "imager.profile.keyboard",
+                &tilo_ui_base::a11y::Action::Focus,
+            )
             .unwrap();
         app.harness().key("Enter");
         app.harness().type_text("german");

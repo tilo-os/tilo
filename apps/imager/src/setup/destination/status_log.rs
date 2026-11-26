@@ -2,9 +2,9 @@
 
 use tilo_ui_base::a11y::Politeness;
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Element;
 use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
 use ui::{widget::Card, widget::Column, widget::Scrollable, widget::Text};
-use tilo_ui_base::widget::Element;
 
 const VISIBLE_LINES: u16 = 8;
 
@@ -49,7 +49,9 @@ pub fn status_log(lines: &[String], theme: &Theme) -> Element {
 mod tests {
     use super::*;
 
-    fn announced(widget: &dyn tilo_ui_base::widget::Widget) -> Option<tilo_ui_base::a11y::AccessNode> {
+    fn announced(
+        widget: &dyn tilo_ui_base::widget::Widget,
+    ) -> Option<tilo_ui_base::a11y::AccessNode> {
         if widget.test_id() == Some("installer.install-status") {
             return widget.accessibility();
         }

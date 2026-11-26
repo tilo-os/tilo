@@ -436,8 +436,8 @@ fn ctrl_and_a_wheel_notch_zooms_the_pins() {
     // first, and the lens stays what the person set — no gesture's zoom is undone by the next.
     let mut seen = before.width();
     for round in 1..=3 {
-        let _ =
-            harness.dispatch_to_root_with(&tilo_ui_base::synthetic_input::mouse_wheel(0.0, 1.0), &ctrl);
+        let _ = harness
+            .dispatch_to_root_with(&tilo_ui_base::synthetic_input::mouse_wheel(0.0, 1.0), &ctrl);
         harness.relayout();
         let now = laid(&harness, "one").width();
         assert!(

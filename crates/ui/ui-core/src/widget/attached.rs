@@ -4,9 +4,12 @@
 //! the view it stands in. A layout runs the menu a view places in it, around the whole layout
 //! ([`crate::widget::ContextMenuArea`]); a list item runs its row's menu, toolbar and swipe.
 
-use tilo_ui_base::{component::Accepts, component::Component, component::Event, component::PartItem, component::PartType, component::Source};
 use crate::{widget::MenuEntry, widget::MenuItemProps, widget::SwipeActionProps};
 use tilo_ui_base::widget::Element;
+use tilo_ui_base::{
+    component::Accepts, component::Component, component::Event, component::PartItem,
+    component::PartType, component::Source,
+};
 
 /// A rule between groups of a menu's commands.
 #[derive(Component, Default)]
@@ -105,8 +108,7 @@ impl PartItem for MenuPart {
         Accepts::OneOf(MENU_PARTS.iter().map(|name| (*name).to_owned()).collect())
     }
 
-    fn read_all(
-        source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
+    fn read_all(source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
         let kinds = source.part_kinds(part);
         let mut parts = Vec::with_capacity(kinds.len());
         let mut index = 0usize;

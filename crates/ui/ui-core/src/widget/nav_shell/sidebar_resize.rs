@@ -7,11 +7,11 @@
 use vello::kurbo::Rect;
 
 use super::{Inputs, Metrics, NavMode, NavShell, Resize};
+use crate::widget::flap::SplitLayout;
+use crate::widget::{SplitHandle, SplitOrientation, SplitRatio};
 use tilo_ui_base::interaction::InteractionEnvironment;
 use tilo_ui_base::num::f32_of_f64;
 use tilo_ui_base::theme::Theme;
-use crate::widget::flap::SplitLayout;
-use crate::widget::{SplitHandle, SplitOrientation, SplitRatio};
 
 /// The sidebar edge's own state beside the drag: the finger dragging it,
 /// and where the width the person chose is remembered ([`super::memory`]),

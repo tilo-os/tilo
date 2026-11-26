@@ -2,8 +2,8 @@
 //! large as the input the host has.
 
 use super::*;
-use tilo_ui_base::{component::Bound, component::Described};
 use tilo_ui_base::interaction::InteractionEnvironment;
+use tilo_ui_base::{component::Bound, component::Described};
 
 fn finger() -> f64 {
     f64::from(InteractionEnvironment::TOUCH.minimum_target())

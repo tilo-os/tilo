@@ -645,8 +645,8 @@ mod tests {
         }
     }
 
-    use tilo_ui_base::permissions::MemberId;
     use automerge::{ObjType, ROOT};
+    use tilo_ui_base::permissions::MemberId;
 
     fn text_body(state: &State, obj: &ObjId) -> String {
         state.doc.text(obj).unwrap_or_default()

@@ -8,8 +8,8 @@ use super::draw_with_theme;
 use super::drive;
 use super::middle_press;
 use super::mods;
-use tilo_ui_base::{synthetic_input::char_key, synthetic_input::named_key};
 use crate::testing::{Dispatch, dispatch};
+use tilo_ui_base::{synthetic_input::char_key, synthetic_input::named_key};
 
 tilo_test_env::scenario! {
     /// A field's metadata, state, caches and bindings.

@@ -3,10 +3,10 @@
 //! and the runs a sync rebuilds.
 use super::*;
 use taffy::{Size, TaffyTree};
-use ui::testing::dispatch;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use ui::testing::dispatch;
 use vello::Scene;
 use vello::kurbo::Affine;
 

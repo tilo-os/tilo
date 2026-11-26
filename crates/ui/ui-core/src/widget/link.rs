@@ -2,19 +2,19 @@
 //! activated by keyboard (Enter / Space), or triggered by an assistive-technology
 //! `Activate`.
 
-use tilo_ui_base::widget::ModelPath;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::widget::ModelPath;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 #[path = "link_component.rs"]
 mod component;
-use tilo_ui_base::widget::Widget;
 pub use component::LinkProps;
+use tilo_ui_base::widget::Widget;
 
 /// The key of the link's "Copy link" action in its accessibility tree: the one child a link
 /// adds beside itself, so a menu, a screen reader and an agent find the address to copy.

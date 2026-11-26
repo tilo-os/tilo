@@ -102,7 +102,11 @@ impl VirtualRows {
         let guide_color = tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.content);
         let _kept = tilo_ui_base::draw_cull::keep_scope(
             scene,
-            self.draw_keep(tilo_ui_base::scroll_copy::on_screen(frame_transform), opacity, now),
+            self.draw_keep(
+                tilo_ui_base::scroll_copy::on_screen(frame_transform),
+                opacity,
+                now,
+            ),
         );
         let focused = self.focused_key.as_ref().filter(|_| self.is_focused);
         for (((row, (row_rect, growing)), selection), (dy, alpha)) in self
@@ -128,8 +132,9 @@ impl VirtualRows {
                     .as_any_mut()
                     .and_then(|any| any.downcast_mut::<crate::widget::ListRow>())
                     .is_some_and(|list_row| {
-                        let around = content
-                            .get_or_insert_with(|| tilo_ui_base::widget::Widget::get_rect(list_row));
+                        let around = content.get_or_insert_with(|| {
+                            tilo_ui_base::widget::Widget::get_rect(list_row)
+                        });
                         let lift_box = super::lift::selection_around(row_rect, *around, lift_bleed);
                         list_row.set_lift_box(Some(lift_box));
                         crate::widget::RowSelectionSink::take_selection(list_row, selection);

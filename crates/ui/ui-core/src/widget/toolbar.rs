@@ -1,10 +1,10 @@
 //! The toolbar: a measured strip of commands with a shared `ContextMenu` for overflow, so every
 //! command stays reachable however narrow the window. The extent cache is the sole source for
 //! intrinsic sizing, fitting and placement.
-use tilo_ui_base::{num::f32_of_f64, num::f64_of_usize};
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::{num::f32_of_f64, num::f64_of_usize};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -20,15 +20,15 @@ mod damage;
 #[cfg(test)]
 #[path = "toolbar_touch_tests.rs"]
 mod touch_tests;
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Action, a11y::Role};
-use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::TextRole;
-use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 pub use component::{
     ToolbarButtonProps, ToolbarPart, ToolbarProps, ToolbarSeparatorProps, ToolbarSpacerProps,
 };
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Action, a11y::Role};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Orientation {
@@ -1229,18 +1229,21 @@ impl tilo_ui_base::widget::controls::ActionControls for Toolbar {
                         let _ = action.attach(domain, attachment);
                     }
                 }
-                ToolbarItem::Element(element) => {
-                    tilo_ui_base::widget::controls::attach_controls(element.as_mut(), domain, attachment)
-                }
+                ToolbarItem::Element(element) => tilo_ui_base::widget::controls::attach_controls(
+                    element.as_mut(),
+                    domain,
+                    attachment,
+                ),
                 _ => {}
             }
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.items.iter_mut().find_map(|item| match item {
-            ToolbarItem::Button(command) => {
-                command.action.as_mut().and_then(tilo_ui_base::widget::ActionEmitter::take)
-            }
+            ToolbarItem::Button(command) => command
+                .action
+                .as_mut()
+                .and_then(tilo_ui_base::widget::ActionEmitter::take),
             ToolbarItem::Element(element) => {
                 tilo_ui_base::widget::controls::take_control_invocation(element.as_mut())
             }
@@ -1304,7 +1307,10 @@ impl Widget for Toolbar {
 
     tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls,);
 
-    fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
+    fn set_platform_conventions(
+        &mut self,
+        conventions: tilo_ui_base::platform::PlatformConventions,
+    ) {
         Widget::set_platform_conventions(&mut self.menu, conventions);
         for item in &mut self.items {
             if let ToolbarItem::Element(element) = item {
@@ -1650,13 +1656,14 @@ impl Widget for Toolbar {
                 env.clone(),
             ));
         }
-        self.menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text,
-            theme,
-            env.clone(),
-        ));
+        self.menu
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if (self.focused || self.traps_focus())
@@ -1813,7 +1820,10 @@ impl Widget for Toolbar {
             self.layout_dirty = true;
             self.measured_scale = None;
         }
-        tilo_ui_base::widget::defaults::set_interaction_environment(self.children_mut(), environment);
+        tilo_ui_base::widget::defaults::set_interaction_environment(
+            self.children_mut(),
+            environment,
+        );
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.items
@@ -2402,10 +2412,10 @@ mod tests {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
-    use tilo_ui_base::presence::PresenceCtx;
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use tilo_ui_base::presence::PresenceCtx;
     use winit::event::DeviceId;
 
     fn settle(tb: &mut Toolbar, width: f32, height: f32, scale: f32) {
@@ -2482,7 +2492,8 @@ mod lifecycle_tests {
         )
     }
     fn key_event(key: NamedKey) -> WindowEvent {
-        let event = tilo_ui_base::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
+        let event =
+            tilo_ui_base::synthetic_input::key_event(Key::Named(key), None, ElementState::Pressed);
         WindowEvent::KeyboardInput {
             device_id: winit::event::DeviceId::dummy(),
             event,
@@ -2834,11 +2845,11 @@ mod lifecycle_tests {
 #[cfg(test)]
 mod command_state_tests {
     use super::*;
-    use tilo_ui_base::icons::Icon;
-    use tilo_ui_base::presence::PresenceCtx;
     use crate::testing::dispatch;
     use std::cell::Cell;
     use std::rc::Rc;
+    use tilo_ui_base::icons::Icon;
+    use tilo_ui_base::presence::PresenceCtx;
     use winit::event::DeviceId;
 
     fn lay(tb: &mut Toolbar, width: f64) {

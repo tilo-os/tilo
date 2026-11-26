@@ -21,8 +21,8 @@ fn external_navigation_omits_bar_from_layout_and_semantics_but_retains_tabs() {
 }
 #[test]
 fn external_windows_paint_to_their_border_without_spilling_into_neighbors() {
-    use tilo_ui_base::offscreen::OffscreenRenderer;
     use taffy::prelude::TaffyMaxContent;
+    use tilo_ui_base::offscreen::OffscreenRenderer;
     let theme = Theme::dark();
     let mut renderer = OffscreenRenderer::new(400, 300);
     for focused in [false, true] {
@@ -82,8 +82,8 @@ fn external_windows_paint_to_their_border_without_spilling_into_neighbors() {
     reason = "sample points are small positive pixel coordinates"
 )]
 fn a_resting_pointer_lights_the_whole_edge_that_will_change() {
-    use tilo_ui_base::offscreen::OffscreenRenderer;
     use taffy::prelude::TaffyMaxContent;
+    use tilo_ui_base::offscreen::OffscreenRenderer;
     let theme = Theme::dark();
     let mut renderer = OffscreenRenderer::new(400, 300);
     let mut render = |group: &mut WindowGroup| {
@@ -399,9 +399,7 @@ fn inactive_tabs_remain_in_lifecycle_history_and_resource_traversal() {
     crate::component_lifecycle::finish_admitted_close(&mut group);
     crate::history_mode::capability::visit_framework_history(&group, &mut |_, _| {});
     crate::history_mode::capability::visit_framework_history_mut(&mut group, &mut |_, _| {});
-    assert!(tilo_ui_base::widget::controls::has_pending_control_invocation(
-        &group
-    ));
+    assert!(tilo_ui_base::widget::controls::has_pending_control_invocation(&group));
 
     assert!(
         !group.has_pending_visual_work(),
@@ -467,7 +465,11 @@ impl crate::widget::app_widget::AppWidget for Starting {
     }
 }
 
-fn group_opening(title: &str, presented: bool, from: tilo_ui_base::arriving::Source) -> WindowGroup {
+fn group_opening(
+    title: &str,
+    presented: bool,
+    from: tilo_ui_base::arriving::Source,
+) -> WindowGroup {
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
         TabDescriptor::new(1, title),
         TileContent::App(Box::new(Starting { presented, from })),
@@ -873,10 +875,10 @@ fn tab_bar_requests_reorder_search_and_pin_keep_hosts_aligned() {
     }
 
     {
-        use tilo_ui_base::theme::Theme;
         use std::collections::HashMap;
         use taffy::Style;
         use taffy::prelude::TaffyMaxContent;
+        use tilo_ui_base::theme::Theme;
         use winit::event::Modifiers;
         use winit::keyboard::{Key, ModifiersState, SmolStr};
 
@@ -1021,10 +1023,10 @@ fn closing_tab_hosts_fade_out_and_the_last_one_closes_the_group() {
         }
 
         {
-            use tilo_ui_base::theme::Theme;
             use std::collections::HashMap;
             use taffy::Style;
             use taffy::prelude::TaffyMaxContent;
+            use tilo_ui_base::theme::Theme;
 
             let mut g = make_group();
             let theme = Theme::dark();
@@ -1082,10 +1084,10 @@ fn closing_tab_hosts_fade_out_and_the_last_one_closes_the_group() {
         // sequence the prune, so if `closing_at` never flips the group
         // stays around as an empty shell forever.
         {
-            use tilo_ui_base::theme::Theme;
             use std::collections::HashMap;
             use taffy::Style;
             use taffy::prelude::TaffyMaxContent;
+            use tilo_ui_base::theme::Theme;
 
             let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
                 TabDescriptor::new(1, "solo"),

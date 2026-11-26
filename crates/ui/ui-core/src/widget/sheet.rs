@@ -5,8 +5,8 @@
 //! the grid reports the changes a person makes as events. Only the rows and columns on screen are
 //! laid out and painted, so a sheet of a hundred thousand cells costs its window.
 
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 use std::collections::{HashMap, HashSet};
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 
 use taffy::TaffyTree;
 use vello::kurbo::{Line, Point, Rect, Stroke};
@@ -14,15 +14,15 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, Ime, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::widget::find_bar::{FindMatch, FindOptions, Findable};
+use crate::widget::scrollbar::Scrollbar;
 use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{surface::Region, surface::edge_on};
-use tilo_ui_base::{text_edit::EditCore, text_edit::Motion};
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::ScrollMetrics;
-use crate::widget::find_bar::{FindMatch, FindOptions, Findable};
-use crate::widget::scrollbar::Scrollbar;
+use tilo_ui_base::{surface::Region, surface::edge_on};
+use tilo_ui_base::{text_edit::EditCore, text_edit::Motion};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use tilo_ui_base::{widget::EventCtx, widget::NodeId, widget::TaffyTreeExt, widget::Widget};
 
 /// A zero-based cell: its column, then its row.
@@ -868,7 +868,9 @@ impl Sheet {
                 if text.eq_ignore_ascii_case("c") {
                     self.events
                         .copy
-                        .fire(Some(tilo_ui_base::component::Value::Text(self.copy_selection())));
+                        .fire(Some(tilo_ui_base::component::Value::Text(
+                            self.copy_selection(),
+                        )));
                     return true;
                 }
                 if text.eq_ignore_ascii_case("x") {
@@ -1302,12 +1304,12 @@ impl Widget for Sheet {
                         let width = (point.x - body.x0 - start + self.scroll_x).max(f64::from(16));
                         self.widths.insert(column, width);
                         self.dirty = true;
-                        self.events
-                            .resized_column
-                            .fire(Some(tilo_ui_base::component::Value::List(vec![
+                        self.events.resized_column.fire(Some(
+                            tilo_ui_base::component::Value::List(vec![
                                 tilo_ui_base::component::Value::Text(col_letters(column)),
                                 tilo_ui_base::component::Value::Text(format!("{width:.0}")),
-                            ])));
+                            ]),
+                        ));
                     }
                     Some(Drag::ResizeRow(row)) => {
                         let body = self.body();
@@ -2021,8 +2023,11 @@ impl Findable for Sheet {
 #[cfg(test)]
 mod window_tests {
     use super::*;
-    use tilo_ui_base::{component::Described, component::Event, component::Fired, component::Intent, component::Value};
     use crate::widget::InPlace;
+    use tilo_ui_base::{
+        component::Described, component::Event, component::Fired, component::Intent,
+        component::Value,
+    };
 
     fn cell(reference: &str, text: &str) -> SheetCell {
         SheetCell {

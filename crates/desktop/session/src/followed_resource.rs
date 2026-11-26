@@ -14,7 +14,9 @@ use tilo_actions::remote::{
 use tilo_lock::MutexRecover as _;
 use tilo_resource::{Invoke, Resource};
 use tilo_session_client::daemon_documents::DaemonShell;
-use tilo_ui_base::{permissions::PermissionContext, permissions::PermissionScope, permissions::TreePath};
+use tilo_ui_base::{
+    permissions::PermissionContext, permissions::PermissionScope, permissions::TreePath,
+};
 
 /// How long a follow waits for a write before it asks again.
 const FOLLOW_WAIT_MS: u32 = 25_000;

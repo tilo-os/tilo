@@ -3,8 +3,8 @@
 //! message.
 
 use super::*;
-use tilo_ui_base::presence::capability::PublishesPresence;
 use crate::shared_selection::{SharedSelection, set_send_host_available};
+use tilo_ui_base::presence::capability::PublishesPresence;
 
 /// A list whose third row is selected.
 struct SelectedRow;

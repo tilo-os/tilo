@@ -1,7 +1,7 @@
 //! The production native action API, not a parallel snapshot helper.
 use super::*;
-use tilo_ui_base::Role;
 use tilo_app_test_host::TestApp;
+use tilo_ui_base::Role;
 use ui_core::automerge::transaction::Transactable;
 
 fn review(app: &mut TestApp<BoardApp>, version: &str, paths: &[String]) -> Value {

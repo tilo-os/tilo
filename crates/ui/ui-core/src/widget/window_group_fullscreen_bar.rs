@@ -46,7 +46,8 @@ impl WindowGroup {
             && let Ok(mut bar_style) = taffy.style(bar).cloned()
         {
             bar_style.position = taffy::Position::Absolute;
-            bar_style.inset.top = taffy::LengthPercentageAuto::length(tilo_ui_base::num::f32_of_f64(top));
+            bar_style.inset.top =
+                taffy::LengthPercentageAuto::length(tilo_ui_base::num::f32_of_f64(top));
             bar_style.inset.left = taffy::LengthPercentageAuto::length(0.0);
             bar_style.size.width = Dimension::percent(1.0);
             let _ = taffy.set_style(bar, bar_style);

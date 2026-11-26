@@ -278,15 +278,17 @@ impl crate::app::App {
         // Every control of a long list is asked its entry rank: the scope of the component they
         // belong to is held for the walk, not opened and closed for each of them.
         let tree = self.tree();
-        let mut sweep = tilo_ui_base::widget::bound_nodes::NodeSweep::new(tree.bindings, tree.node_map);
+        let mut sweep =
+            tilo_ui_base::widget::bound_nodes::NodeSweep::new(tree.bindings, tree.node_map);
         order
             .iter()
             .copied()
             .filter_map(|node| {
                 // SAFETY: the host owns this stable tree; no target reference escapes.
-                let rank = unsafe { sweep.inspect(node, tilo_ui_base::widget::keyboard_entry_rank) }
-                    .ok()
-                    .flatten()?;
+                let rank =
+                    unsafe { sweep.inspect(node, tilo_ui_base::widget::keyboard_entry_rank) }
+                        .ok()
+                        .flatten()?;
                 Some((rank, node))
             })
             .min_by_key(|(rank, _)| *rank)

@@ -14,8 +14,11 @@ use tilo_actions::ActionSpec;
 use tilo_resource::Resource;
 use tilo_search::{FieldWeight, ListIndex};
 use tilo_ui_base::icons::Icon;
-use ui_core::{widget::Button, widget::ButtonRole, widget::Column, widget::ControlSize, widget::Row, widget::Text, widget::Toggle};
 use tilo_ui_base::widget::Element;
+use ui_core::{
+    widget::Button, widget::ButtonRole, widget::Column, widget::ControlSize, widget::Row,
+    widget::Text, widget::Toggle,
+};
 
 use super::super::Actions;
 

@@ -11,8 +11,8 @@
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
-use tilo_ui_base::widget::TaffyTreeExt;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Blob, Color, Fill, ImageBrush, ImageData as PenikoImage};

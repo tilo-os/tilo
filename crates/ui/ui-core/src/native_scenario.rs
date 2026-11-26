@@ -111,10 +111,13 @@ impl Input {
                     .collect()
             }
             Self::Find {} => {
-                let command = match tilo_ui_base::platform::PlatformConventions::default().platform() {
-                    tilo_ui_base::platform::Platform::MacOs => winit::keyboard::ModifiersState::SUPER,
-                    _ => winit::keyboard::ModifiersState::CONTROL,
-                };
+                let command =
+                    match tilo_ui_base::platform::PlatformConventions::default().platform() {
+                        tilo_ui_base::platform::Platform::MacOs => {
+                            winit::keyboard::ModifiersState::SUPER
+                        }
+                        _ => winit::keyboard::ModifiersState::CONTROL,
+                    };
                 let key = winit::keyboard::Key::Character("f".into());
                 vec![
                     winit::event::WindowEvent::ModifiersChanged(command.into()),

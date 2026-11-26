@@ -262,7 +262,9 @@ impl MenuEntry {
         let opens = Rc::clone(&picker);
         let fires = pick.clone();
         let run = Rc::new(move || match chosen.borrow_mut().take() {
-            Some(Chosen::Emoji(emoji)) => fires.fire(Some(tilo_ui_base::component::Value::Text(emoji))),
+            Some(Chosen::Emoji(emoji)) => {
+                fires.fire(Some(tilo_ui_base::component::Value::Text(emoji)))
+            }
             Some(Chosen::More) => opens.set(true),
             None => {}
         }) as Rc<dyn Fn()>;
@@ -416,7 +418,10 @@ macro_rules! over_content {
     }};
 }
 
-#[tilo_ui_base::component::not_a_component(part, "what the `ui.ContextMenu` attachment wraps its view in")]
+#[tilo_ui_base::component::not_a_component(
+    part,
+    "what the `ui.ContextMenu` attachment wraps its view in"
+)]
 pub struct ContextMenuArea {
     content: Element,
     entries: ContentMenuEntries,
@@ -799,7 +804,9 @@ impl tilo_ui_base::widget::ResourceOperations for ContextMenuArea {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         let mut handlers = tilo_ui_base::widget::resource_operation_handlers(self.content.as_ref());
         if self.menu.is_open() {
-            handlers.extend(tilo_ui_base::widget::resource_operation_handlers(&self.menu));
+            handlers.extend(tilo_ui_base::widget::resource_operation_handlers(
+                &self.menu,
+            ));
         }
         handlers
     }
@@ -810,7 +817,9 @@ impl tilo_ui_base::widget::ResourceOperations for ContextMenuArea {
         doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
-        if let Some(started) = tilo_ui_base::widget::start_operation(self.content.as_mut(), op, doc, path)? {
+        if let Some(started) =
+            tilo_ui_base::widget::start_operation(self.content.as_mut(), op, doc, path)?
+        {
             return Ok(Some(started));
         }
         if self.menu.is_open() {
@@ -883,7 +892,11 @@ impl tilo_ui_base::widget::Decorator for ContextMenuArea {
 
     /// What the content offers can change in its update (a row the host answered with): a menu
     /// that waited for it opens in the same frame it comes, without waiting for another layout.
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let changed = self.content.update(state, path);
         let opened = if let Some((anchor, at_pointer)) = self.pending {
             self.open_over(anchor, at_pointer)
@@ -1056,21 +1069,23 @@ impl tilo_ui_base::widget::Decorator for ContextMenuArea {
             // have changed: the menu stands where what opened it is now.
             self.place_menu();
         }
-        self.content.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            env.clone(),
-        ));
+        self.content
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         // The menu paints in the overlay pass, over everything.
-        self.menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            env.clone(),
-        ));
+        self.menu
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         if let Some((anchor, pick)) = self.picker_wanted.take() {
             let mut picker = super::EmojiPicker::framed();
             let viewport = self.viewport.unwrap_or_else(|| self.content.get_rect());
@@ -1165,13 +1180,19 @@ impl tilo_ui_base::widget::controls::ActionControls for ContextMenuArea {
     /// A row pressed before the menu closed hands its invocation over here.
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         tilo_ui_base::widget::controls::take_control_invocation(&mut *self.content)
-            .or_else(|| self.presses.iter().find_map(tilo_ui_base::widget::Press::take))
+            .or_else(|| {
+                self.presses
+                    .iter()
+                    .find_map(tilo_ui_base::widget::Press::take)
+            })
             .or_else(|| tilo_ui_base::widget::controls::take_control_invocation(&mut self.menu))
     }
 
     fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         let mut bindings = tilo_ui_base::widget::controls::control_action_bindings(&*self.content);
-        bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(&self.menu));
+        bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(
+            &self.menu,
+        ));
         bindings
     }
 
@@ -1179,11 +1200,17 @@ impl tilo_ui_base::widget::controls::ActionControls for ContextMenuArea {
         &mut self,
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
-        tilo_ui_base::widget::controls::refresh_control_action_availability(&mut *self.content, allowed);
+        tilo_ui_base::widget::controls::refresh_control_action_availability(
+            &mut *self.content,
+            allowed,
+        );
         for press in &self.presses {
             press.refresh_availability(allowed);
         }
-        tilo_ui_base::widget::controls::refresh_control_action_availability(&mut self.menu, allowed);
+        tilo_ui_base::widget::controls::refresh_control_action_availability(
+            &mut self.menu,
+            allowed,
+        );
     }
 }
 
@@ -1207,7 +1234,8 @@ mod tests {
     /// What the entry just chosen ran: the typed action it names, taken from the press the area
     /// keeps for it.
     fn chosen_action(area: &mut ContextMenuArea) -> Option<String> {
-        tilo_ui_base::widget::controls::take_control_invocation(area).map(|ran| ran.address.action.clone())
+        tilo_ui_base::widget::controls::take_control_invocation(area)
+            .map(|ran| ran.address.action.clone())
     }
 
     fn opening_menu() -> (ContextMenuArea, Point) {
@@ -1356,7 +1384,11 @@ mod tests {
                 Some("context-menu:item:1"),
             );
             harness
-                .perform_semantic_named("Link", Some(&target), &tilo_ui_base::a11y::Action::Activate)
+                .perform_semantic_named(
+                    "Link",
+                    Some(&target),
+                    &tilo_ui_base::a11y::Action::Activate,
+                )
                 .expect("the link's copy row is reachable");
             assert_eq!(
                 clipboard.text(ClipboardTarget::Clipboard).as_deref(),
@@ -1443,7 +1475,10 @@ mod tests {
         assert_eq!(listed.last().copied(), picker_at, "the picker stands last");
         let index = listed.len() - 1;
         assert_eq!(
-            tilo_ui_base::a11y_child_route::rect(&area, &tilo_ui_base::a11y_child_route::encode(&[index], None)),
+            tilo_ui_base::a11y_child_route::rect(
+                &area,
+                &tilo_ui_base::a11y_child_route::encode(&[index], None)
+            ),
             Some(place),
             "the index names the picker, where it stands over the menu"
         );
@@ -1535,7 +1570,9 @@ mod tests {
             .item_rect(1)
             .expect("the second entry is laid out")
             .center();
-        harness.send(&tilo_ui_base::synthetic_input::cursor_moved(second.x, second.y));
+        harness.send(&tilo_ui_base::synthetic_input::cursor_moved(
+            second.x, second.y,
+        ));
         assert_eq!(
             harness.root::<ContextMenuArea>().menu().hovered(),
             Some(1),
@@ -1595,7 +1632,11 @@ mod tests {
             Some("context-menu:item:2"),
         );
         harness
-            .perform_semantic_named("MenuRows", Some(&target), &tilo_ui_base::a11y::Action::Activate)
+            .perform_semantic_named(
+                "MenuRows",
+                Some(&target),
+                &tilo_ui_base::a11y::Action::Activate,
+            )
             .expect("the entry is reachable");
         assert_eq!(
             *chosen.borrow(),
@@ -1889,7 +1930,8 @@ mod tests {
         );
         harness.relayout();
         let at = Point::new(100.0, 100.0);
-        let press = tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
+        let press =
+            tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
         crate::widget::context_menu::note_input(&press);
         harness.send(&tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y));
         harness.send(&press);

@@ -10,8 +10,8 @@
 
 use crate::headless::Driver;
 use crate::state::State;
-use tilo_ui_base::theme::Theme;
 use crate::widget::{Column, TextInput};
+use tilo_ui_base::theme::Theme;
 
 const VIEW: (u32, u32) = (400, 240);
 

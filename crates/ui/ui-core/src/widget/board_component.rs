@@ -3,10 +3,18 @@
 
 use std::collections::HashMap;
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartItem, component::ResourceId, component::Source, component::Value};
+use crate::{
+    widget::Card, widget::CardBody, widget::CardProps, widget::ContextMenuArea, widget::MenuEntry,
+    widget::MenuItemProps, widget::SectionHeader,
+};
 use tilo_ui_base::icons::Icon;
-use crate::{widget::Card, widget::CardBody, widget::CardProps, widget::ContextMenuArea, widget::MenuEntry, widget::MenuItemProps, widget::SectionHeader};
-use tilo_ui_base::{widget::Element, widget::Press, widget::Widget, widget::capability::capability_mut};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PartItem,
+    component::ResourceId, component::Source, component::Value,
+};
+use tilo_ui_base::{
+    widget::Element, widget::Press, widget::Widget, widget::capability::capability_mut,
+};
 
 use super::{Board, BoardDrop};
 
@@ -97,8 +105,7 @@ impl PartItem for BoardListProps {
         tilo_ui_base::component::Accepts::Component(BoardListProps::NAME.into())
     }
 
-    fn read_all(
-        source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
+    fn read_all(source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
         read_all(source, part, BoardListProps::from_source)
     }
 }
@@ -109,8 +116,7 @@ impl PartItem for BoardCardProps {
         tilo_ui_base::component::Accepts::Component(BoardCardProps::NAME.into())
     }
 
-    fn read_all(
-        source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
+    fn read_all(source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
         read_all(source, part, BoardCardProps::from_source)
     }
 }
@@ -399,11 +405,11 @@ mod tests {
     )]
 
     use super::*;
+    use crate::widget::Text;
     use tilo_ui_base::Intents;
-    use tilo_ui_base::{component::Fired, component::Intent};
     use tilo_ui_base::theme::Theme;
     use tilo_ui_base::tokens::Rhythm;
-    use crate::widget::Text;
+    use tilo_ui_base::{component::Fired, component::Intent};
 
     fn card_props(queue: &Intents<Fired>, key: &str) -> BoardCardProps {
         BoardCardProps {

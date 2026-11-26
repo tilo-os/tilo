@@ -8,9 +8,9 @@ use ui_core::peniko::Color;
 
 use tilo_resource::{MemberId, Origin};
 use tilo_ui_base::i18n::ArgValue;
+use tilo_ui_base::widget::Element;
 use tilo_ui_base::{tokens::PresenceHue, tokens::Rhythm, tokens::TextRole};
 use ui_core::{widget::Chip, widget::Container, widget::Link, widget::Row, widget::Text};
-use tilo_ui_base::widget::Element;
 
 use super::people::{Actor, People};
 
@@ -261,8 +261,8 @@ impl People {
 mod tests {
     use std::collections::HashMap;
 
-    use ui_core::accesskit::Role as AkRole;
     use tilo_ui_base::widget::Widget;
+    use ui_core::accesskit::Role as AkRole;
 
     use super::People;
 

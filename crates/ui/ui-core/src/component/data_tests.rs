@@ -8,14 +8,15 @@
     reason = "in a test these are the assertion"
 )]
 
-use tilo_ui_base::component::testing::*;
-use tilo_ui_base::component::*;
 use crate::headless::Driver;
 use crate::testing::harness;
+use tilo_ui_base::component::testing::*;
+use tilo_ui_base::component::*;
 use tilo_ui_base::widget::Widget;
 
 fn column(header: &str) -> Node {
-    Node::new("DataTableColumn", header, &tilo_ui_base::Intents::default()).prop("header", text(header))
+    Node::new("DataTableColumn", header, &tilo_ui_base::Intents::default())
+        .prop("header", text(header))
 }
 
 fn cell_node(column: &str, value: &str) -> Node {

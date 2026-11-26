@@ -2,10 +2,10 @@
 //! is typed reaches the app's document, and closing gives it back untouched.
 
 use super::*;
-use tilo_ui_base::{synthetic_input::char_key, synthetic_input::named_key};
 use crate::testing::Dispatch;
 use crate::widget::find_bar::{FindMatch, FindOptions, Findable};
 use crate::widget::{InPlace, SearchHandoff, SearchReach};
+use tilo_ui_base::{synthetic_input::char_key, synthetic_input::named_key};
 use winit::keyboard::{ModifiersState, NamedKey};
 
 #[derive(Default)]
@@ -325,7 +325,9 @@ fn bar_top_layer_tags(group: &mut WindowGroup) -> usize {
 
 #[test]
 fn a_host_that_paints_the_bars_top_layer_itself_paints_the_open_search_options() {
-    use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release};
+    use tilo_ui_base::{
+        synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release,
+    };
     let mut group = searchable_window();
     group.rect = Rect::new(0.0, 0.0, 900.0, 600.0);
     let mut find = Dispatch::new().modifiers(ModifiersState::CONTROL);

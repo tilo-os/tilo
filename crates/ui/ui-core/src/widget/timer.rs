@@ -15,9 +15,9 @@ use std::cell::Cell;
 use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
-use tilo_ui_base::{component::Component, component::Described, component::Event};
-use tilo_ui_base::theme::Theme;
 use crate::time::{Duration, Instant};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 use tilo_ui_base::{widget::TaffyTreeExt as _, widget::Widget};
 
 thread_local! {
@@ -134,7 +134,11 @@ impl Widget for Timer {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        taffy.widget_leaf(tilo_ui_base::widget::layout::removed_from_flow(), node_map, self)
+        taffy.widget_leaf(
+            tilo_ui_base::widget::layout::removed_from_flow(),
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -215,7 +219,9 @@ mod tests {
             every: 1.0,
             after: 0.0,
             restart: String::new(),
-            tick: Event::View(tilo_ui_base::component::Intent::new(&queue, "clock", "tick")),
+            tick: Event::View(tilo_ui_base::component::Intent::new(
+                &queue, "clock", "tick",
+            )),
         };
         (queue, Timer::new("clock", props))
     }
@@ -275,7 +281,9 @@ mod tests {
             every: 0.0,
             after: 0.15,
             restart: typed.to_owned(),
-            tick: Event::View(tilo_ui_base::component::Intent::new(&queue, "pause", "tick")),
+            tick: Event::View(tilo_ui_base::component::Intent::new(
+                &queue, "pause", "tick",
+            )),
         };
         let mut timer = Timer::new("pause", props("w"));
         let due = timer.next_wake_deadline().expect("it waits");

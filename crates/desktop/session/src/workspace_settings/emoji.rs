@@ -22,7 +22,10 @@ use tilo_session_core::desktop::i18n::{t, t_args};
 use tilo_session_core::desktop::people::PeopleNames;
 use tilo_session_core::desktop::workspace_settings::{self as domain, emoji_pane};
 use tilo_sheets::workspace_settings as sheet;
-use tilo_ui_base::{workspace_emoji::CustomEmoji, workspace_emoji::Small, workspace_emoji::WorkspaceEmoji, workspace_emoji::make_small};
+use tilo_ui_base::{
+    workspace_emoji::CustomEmoji, workspace_emoji::Small, workspace_emoji::WorkspaceEmoji,
+    workspace_emoji::make_small,
+};
 
 use crate::followed_resource::FollowedResource;
 

@@ -83,7 +83,8 @@ fn a_views_strip_shows_the_front_tabs_close_and_a_changed_tabs_dot_at_once() {
         )]
         let (x, y, ground_x) = (at.x as u32, at.y as u32, (pill.x0 + 3.0) as u32);
         let (r, ..) = tilo_ui_base::offscreen::OffscreenRenderer::sample(&rgba, 900, x, y);
-        let (ground, ..) = tilo_ui_base::offscreen::OffscreenRenderer::sample(&rgba, 900, ground_x, y);
+        let (ground, ..) =
+            tilo_ui_base::offscreen::OffscreenRenderer::sample(&rgba, 900, ground_x, y);
         assert!(
             i32::from(ground) - i32::from(r) > 40,
             "{what} is drawn at {at:?}: {r} on a ground of {ground}"

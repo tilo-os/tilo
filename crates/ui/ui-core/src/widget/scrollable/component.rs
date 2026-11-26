@@ -1,7 +1,7 @@
 //! [`Scrollable`] as a described component: a column's body that scrolls.
 
-use tilo_ui_base::{component::Component, component::Described, component::PartViews};
 use tilo_ui_base::widget::Element;
+use tilo_ui_base::{component::Component, component::Described, component::PartViews};
 
 use super::Scrollable;
 

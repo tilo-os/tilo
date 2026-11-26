@@ -438,7 +438,9 @@ impl<R: Resource> ResourceEnv<R> {
         read: tilo_actions::remote::ResourceReadRequest,
     ) -> tilo_ui_base::ResourceReadCall {
         if !self.run.mode.is_live() {
-            return tilo_ui_base::arriving::Arriving::pending(tilo_ui_base::arriving::Source::Local);
+            return tilo_ui_base::arriving::Arriving::pending(
+                tilo_ui_base::arriving::Source::Local,
+            );
         }
         let opener = self.dispatch.opener();
         let followed = opener.follow_resource(read);

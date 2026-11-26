@@ -1,7 +1,7 @@
 //! The show/hide control every single-line secret [`super::TextInput`] carries at its trailing
 //! edge.
-use tilo_ui_base::i18n::widget_text;
 use std::collections::HashMap;
+use tilo_ui_base::i18n::widget_text;
 
 use taffy::{Dimension, NodeId, Position, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect, RoundedRect};

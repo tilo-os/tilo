@@ -10,15 +10,20 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::widget::search_field::FilterCount;
+use crate::{
+    widget::Button, widget::ButtonFace, widget::ButtonRole, widget::ControlSize,
+    widget::SearchField, widget::SegmentedFace, widget::ToggleGroup,
+};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::platform::PlatformConventions;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::widget::capability::capability_mut;
-use crate::widget::search_field::FilterCount;
-use crate::{widget::Button, widget::ButtonFace, widget::ButtonRole, widget::ControlSize, widget::SearchField, widget::SegmentedFace, widget::ToggleGroup};
-use tilo_ui_base::{widget::AppModel, widget::Element, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
+use tilo_ui_base::{
+    widget::AppModel, widget::Element, widget::ModelPath, widget::TaffyTreeExt, widget::Widget,
+};
 
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
@@ -925,7 +930,11 @@ impl FindBar {
     }
 
     /// Route one event; `node` is the bar's own layout node (its fields have none).
-    pub fn route(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
+    pub fn route(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = ctx.logical(position);
             self.hover = self.part_at(self.last_cursor);
@@ -1571,7 +1580,9 @@ impl Widget for FindScope {
     fn needs_animation_frame(&self) -> bool {
         self.disclosure.is_moving()
             || self.layout_stale()
-            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
+                self.for_each_child(visit)
+            })
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1672,8 +1683,8 @@ impl Widget for FindScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::presence::PresenceCtx;
     use crate::testing::Dispatch;
+    use tilo_ui_base::presence::PresenceCtx;
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
@@ -1956,7 +1967,9 @@ mod tests {
             rect: Rect::ZERO,
         };
         let mut scope = FindScope::new(Box::new(page));
-        scope.set_platform_conventions(PlatformConventions::new(tilo_ui_base::platform::Platform::Linux));
+        scope.set_platform_conventions(PlatformConventions::new(
+            tilo_ui_base::platform::Platform::Linux,
+        ));
         scope
     }
 
@@ -2155,7 +2168,10 @@ mod tests {
         assert_eq!(harness.root::<FindScope>().bar.position(), Some((1, 1)));
         let replacement = field(&harness, &tr("find-bar-replace-placeholder"));
         harness
-            .perform_a11y_action(replacement, &tilo_ui_base::a11y::Action::SetValue("three".into()))
+            .perform_a11y_action(
+                replacement,
+                &tilo_ui_base::a11y::Action::SetValue("three".into()),
+            )
             .unwrap();
         assert_eq!(
             harness.root::<FindScope>().bar.replace_field.value(),
@@ -2175,8 +2191,8 @@ mod tests {
 #[cfg(test)]
 mod host_driven_tests {
     use super::*;
-    use tilo_ui_base::presence::PresenceCtx;
     use crate::testing::Dispatch;
+    use tilo_ui_base::presence::PresenceCtx;
 
     #[derive(Default)]
     struct Log {

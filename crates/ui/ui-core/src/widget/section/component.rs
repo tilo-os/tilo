@@ -4,9 +4,12 @@ use std::rc::Rc;
 
 use vello::kurbo::Point;
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartViews, component::Value};
 use crate::widget::Interaction;
 use tilo_ui_base::widget::Element;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PartViews,
+    component::Value,
+};
 
 use super::Section;
 

@@ -1,9 +1,12 @@
 use super::*;
 use crate::widget::ButtonRole;
-use crate::{widget::Actions, widget::Button, widget::Card, widget::CardGrid, widget::Column, widget::EmptyState, widget::Scrollable, widget::Text};
-use tilo_ui_base::widget::Element;
+use crate::{
+    widget::Actions, widget::Button, widget::Card, widget::CardGrid, widget::Column,
+    widget::EmptyState, widget::Scrollable, widget::Text,
+};
 use std::cell::Cell;
 use std::rc::Rc;
+use tilo_ui_base::widget::Element;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};

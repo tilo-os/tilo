@@ -6,8 +6,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
-use tilo_ui_base::{arriving::Arrival, arriving::Arriving, arriving::Source};
 use crate::widget::ArrivingView;
+use tilo_ui_base::{arriving::Arrival, arriving::Arriving, arriving::Source};
 use winit::event::{ElementState, Modifiers};
 use winit::keyboard::{Key, ModifiersState};
 

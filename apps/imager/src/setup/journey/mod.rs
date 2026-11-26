@@ -45,8 +45,15 @@ use tilo_ui_base::icons::Icon;
 use tilo_ui_base::theme::Theme;
 
 use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
-use ui::{widget::Button, widget::ButtonRole, widget::Card, widget::Container, widget::Field, widget::IconWidget, widget::ListRow, widget::NumberInput, widget::Row, widget::Text, widget::TextInput, widget::TextInputKind};
-use tilo_ui_base::{widget::AppModel, widget::DrawChild as _, widget::LabelPlacement, widget::ModelPath, widget::Spacer, widget::Widget};
+use tilo_ui_base::{
+    widget::AppModel, widget::DrawChild as _, widget::LabelPlacement, widget::ModelPath,
+    widget::Spacer, widget::Widget,
+};
+use ui::{
+    widget::Button, widget::ButtonRole, widget::Card, widget::Container, widget::Field,
+    widget::IconWidget, widget::ListRow, widget::NumberInput, widget::Row, widget::Text,
+    widget::TextInput, widget::TextInputKind,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -372,9 +379,18 @@ impl InstallerPreview {
                     Text::new(&t_args(
                         "installer-storage-btrfs-resize",
                         &[
-                            ("before", tilo_ui_base::format::memory(shrink.from_bytes).into()),
-                            ("after", tilo_ui_base::format::memory(shrink.to_bytes).into()),
-                            ("reserve", tilo_ui_base::format::memory(volume.reserve_bytes).into()),
+                            (
+                                "before",
+                                tilo_ui_base::format::memory(shrink.from_bytes).into(),
+                            ),
+                            (
+                                "after",
+                                tilo_ui_base::format::memory(shrink.to_bytes).into(),
+                            ),
+                            (
+                                "reserve",
+                                tilo_ui_base::format::memory(volume.reserve_bytes).into(),
+                            ),
                         ],
                     ))
                     .with_id("installer.storage.retained-resize"),
@@ -480,7 +496,10 @@ impl InstallerPreview {
                 "installer-preview-storage-shortfall",
                 &[
                     ("needed", tilo_ui_base::format::memory(*needed_bytes).into()),
-                    ("available", tilo_ui_base::format::memory(*available_bytes).into()),
+                    (
+                        "available",
+                        tilo_ui_base::format::memory(*available_bytes).into(),
+                    ),
                 ],
             ))));
         } else {
@@ -1851,9 +1870,13 @@ impl Widget for InstallerPreview {
             let arrived = slide.progress(now);
             let width = self.rect.width();
             let motion = theme.motion();
-            let incoming =
-                tilo_ui_base::motion::Drill::screen_pose(direction * (1.0 - arrived), width, motion);
-            let leaving = tilo_ui_base::motion::Drill::screen_pose(-direction * arrived, width, motion);
+            let incoming = tilo_ui_base::motion::Drill::screen_pose(
+                direction * (1.0 - arrived),
+                width,
+                motion,
+            );
+            let leaving =
+                tilo_ui_base::motion::Drill::screen_pose(-direction * arrived, width, motion);
             if let Some(outgoing) = &self.outgoing {
                 scene.append(outgoing, Some(leaving.applied_to(transform)));
             }

@@ -2,9 +2,9 @@
 
 use crate::bound_dispatch::local_target::LocalResourceTarget;
 use crate::bound_dispatch::{BoundActionTarget, ControlContinuationArguments};
+use tilo_actions::{ActionAddress, ApiError, ControlInvocation, InvocationId};
 use tilo_ui_base::widget::ResourceOperationStart;
 use tilo_ui_base::widget::controls::Origin;
-use tilo_actions::{ActionAddress, ApiError, ControlInvocation, InvocationId};
 
 use super::ResourceInvocation;
 
@@ -353,7 +353,9 @@ impl crate::app::App {
             .pop_front()
             .map(|intent| (intent, None, Origin::Person))
             .or_else(|| {
-                tilo_ui_base::widget::input_provenance::take_attributed_with_origin(self.host_root_mut())
+                tilo_ui_base::widget::input_provenance::take_attributed_with_origin(
+                    self.host_root_mut(),
+                )
             })
         {
             delivered = delivered.saturating_add(1);

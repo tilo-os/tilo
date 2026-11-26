@@ -7,9 +7,9 @@
 
 use std::cell::Cell;
 
-use tilo_ui_base::{component::Component, component::Described, component::Moment};
 use crate::time::{Duration, Instant};
 use crate::{widget::Column, widget::ProgressRing, widget::ProgressRingSize, widget::Text};
+use tilo_ui_base::{component::Component, component::Described, component::Moment};
 use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
 
 /// The seconds between readings.

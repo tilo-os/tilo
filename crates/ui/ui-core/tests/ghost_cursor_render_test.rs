@@ -9,9 +9,9 @@ use vello::Scene;
 use vello::peniko::Color;
 
 use tilo_ui_base::offscreen::OffscreenRenderer;
-use tilo_ui_base::{presence::PresenceCtx, presence::draw_remote_cursors};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{presence::PresenceCtx, presence::draw_remote_cursors};
 
 #[test]
 #[allow(

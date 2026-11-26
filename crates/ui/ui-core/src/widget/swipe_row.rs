@@ -8,12 +8,12 @@ use winit::event::{TouchPhase, WindowEvent};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::{motion::Direction, motion::MotionValue, motion::Snap};
 
+use crate::time::Instant;
+use crate::widget::SwipeActionProps;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::time::Instant;
-use tilo_ui_base::{tokens::MotionSource, tokens::TextRole};
 use tilo_ui_base::widget::DrawChild;
-use crate::widget::SwipeActionProps;
+use tilo_ui_base::{tokens::MotionSource, tokens::TextRole};
 use tilo_ui_base::{widget::Decorator, widget::Element, widget::EventCtx, widget::Widget};
 
 /// How far a released row must have moved, as a share of its width, for its action to run.
@@ -69,7 +69,10 @@ struct Drag {
     samples: [(f64, Instant); 2],
 }
 
-#[tilo_ui_base::component::not_a_component(part, "a row's swipe, from `ui.Swipe` and its `swipe` slot")]
+#[tilo_ui_base::component::not_a_component(
+    part,
+    "a row's swipe, from `ui.Swipe` and its `swipe` slot"
+)]
 pub struct SwipeRow {
     content: Element,
     leading: Option<Side>,
@@ -453,7 +456,8 @@ impl Decorator for SwipeRow {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.offset.is_moving(tilo_ui_base::motion::frame_now()) || self.content.needs_animation_frame()
+        self.offset.is_moving(tilo_ui_base::motion::frame_now())
+            || self.content.needs_animation_frame()
     }
 
     /// Rest what the frame drew.

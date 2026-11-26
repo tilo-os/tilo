@@ -1,9 +1,9 @@
 //! A window's content whose first frame is not drawn yet: the arrival model ([`tilo_ui_base::arriving`])
 //! at the scale of a tile.
-use tilo_ui_base::{arriving::ArrivalClock, arriving::Progress, arriving::Step};
-use tilo_ui_base::motion::CrossFade;
 use crate::time::Instant;
+use tilo_ui_base::motion::CrossFade;
 use tilo_ui_base::tokens::EffectiveMotion;
+use tilo_ui_base::{arriving::ArrivalClock, arriving::Progress, arriving::Step};
 
 #[derive(Clone)]
 pub(super) struct TileArrival {

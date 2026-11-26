@@ -4,10 +4,13 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::ResourceId, component::Value};
-use tilo_ui_base::widget::Widget;
 use crate::{widget::Card, widget::CardGrid, widget::CardWidth};
 use tilo_ui_base::widget::Element;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::ResourceId,
+    component::Value,
+};
 
 use super::Activation;
 

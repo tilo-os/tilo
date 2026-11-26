@@ -8,14 +8,14 @@ use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::Rect;
 
-use tilo_ui_base::{arriving::Arrival, arriving::ArrivalClock, arriving::Source, arriving::Step};
 use tilo_ui_base::motion::CrossFade;
 use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::{arriving::Arrival, arriving::ArrivalClock, arriving::Source, arriving::Step};
 
-use tilo_ui_base::theme::Theme;
 use crate::time::Instant;
-use tilo_ui_base::tokens::EffectiveMotion;
 use crate::{widget::ArrivalFace, widget::Showing};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::EffectiveMotion;
 use tilo_ui_base::{widget::Element, widget::SkeletonShape, widget::TaffyTreeExt, widget::Widget};
 
 #[derive(Clone, Debug)]

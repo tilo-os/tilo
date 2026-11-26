@@ -11,9 +11,9 @@
 
 use std::collections::HashMap;
 
+use tilo_ui_base::text_render::TextRenderer;
 use tilolang_process::window::app::TlApp;
 use ui::app::EmbeddedApp;
-use tilo_ui_base::text_render::TextRenderer;
 use ui::tilo_resource::profiling::{Sample, observe};
 use ui::winit::event::{ElementState, MouseButton};
 
@@ -203,7 +203,8 @@ fn switches(tile: &mut EmbeddedApp, text: &mut TextRenderer) {
                  frames, {}",
                 said(&scopes)
             );
-            let asking = tilo_ui_base::widget::counts::asking_for_layout(tile.app_mut().root_widget_mut());
+            let asking =
+                tilo_ui_base::widget::counts::asking_for_layout(tile.app_mut().root_widget_mut());
             assert!(
                 asking.is_empty(),
                 "a settled page asks for no layout: {asking:?}"

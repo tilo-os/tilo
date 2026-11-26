@@ -13,7 +13,8 @@ pub(super) fn body_size() -> f32 {
 pub(super) fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool {
     let mut sender = Dispatch::new().doc(doc);
     let moved = tilo_ui_base::synthetic_input::cursor_moved(x, y);
-    let press = tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
+    let press =
+        tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
     sender.send(ti, &moved).handled | sender.send(ti, &press).handled
 }
 
@@ -324,7 +325,10 @@ fn a_fields_first_change_is_reported_so_an_entry_makes_its_item() {
     assert_eq!(fired.len(), 1, "the first change is told: {fired:?}");
     assert_eq!(fired[0].key, "step-entry");
     assert_eq!(fired[0].event, "begin");
-    assert_eq!(fired[0].value, Some(tilo_ui_base::component::testing::text("C")));
+    assert_eq!(
+        fired[0].value,
+        Some(tilo_ui_base::component::testing::text("C"))
+    );
     // A further character is no first change: the item already exists.
     Dispatch::new()
         .doc(&mut doc)
@@ -353,8 +357,14 @@ fn a_field_reports_every_change_as_the_words_are_typed() {
     assert_eq!(fired.len(), 2, "every change is told: {fired:?}");
     assert_eq!(fired[0].key, "bar-search");
     assert_eq!(fired[0].event, "changed");
-    assert_eq!(fired[0].value, Some(tilo_ui_base::component::testing::text("n")));
-    assert_eq!(fired[1].value, Some(tilo_ui_base::component::testing::text("no")));
+    assert_eq!(
+        fired[0].value,
+        Some(tilo_ui_base::component::testing::text("n"))
+    );
+    assert_eq!(
+        fired[1].value,
+        Some(tilo_ui_base::component::testing::text("no"))
+    );
 }
 
 /// A field tells its listener when it loses the keyboard: an entry left empty is taken away, so no

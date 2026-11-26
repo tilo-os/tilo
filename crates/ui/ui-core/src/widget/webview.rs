@@ -1,8 +1,8 @@
 //! `WebView` — a leaf widget that displays the live output of a [`tilo_webview::WebViewEngine`]
 //! and forwards pointer, scroll and keyboard input into it.
+use std::sync::Arc;
 use tilo_ui_base::num::f32_of_f64;
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
-use std::sync::Arc;
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -11,12 +11,12 @@ use vello::peniko::{Blob, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
+use crate::widget::control_size::ControlSize;
 use tilo_ui_base::gesture::NavDirection;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
-use crate::widget::control_size::ControlSize;
 use tilo_webview::{
     KeyInput, KeyModifiers, MouseButton, NamedKey, SharedEngine, WebViewCommand, WebViewEvent,
 };
@@ -420,7 +420,8 @@ impl WebView {
         if !self.reports_events {
             return;
         }
-        let fire = |event: &tilo_ui_base::component::Event, value: tilo_ui_base::component::Value| {
+        let fire = |event: &tilo_ui_base::component::Event,
+                    value: tilo_ui_base::component::Value| {
             if let tilo_ui_base::component::Event::View(intent) = event {
                 intent.fire(Some(value));
             }
@@ -1200,7 +1201,11 @@ impl Widget for WebView {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.field_line_height = Some(ControlSize::Regular.height(theme));
-        taffy.widget_leaf(tilo_ui_base::widget::layout::natural_filling(), node_map, self)
+        taffy.widget_leaf(
+            tilo_ui_base::widget::layout::natural_filling(),
+            node_map,
+            self,
+        )
     }
 
     /// Where nothing gives it a height (a column that grows with what it holds), the page stands
@@ -1596,10 +1601,10 @@ impl tilo_ui_base::widget::ResourceOperations for WebView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::presence::PresenceCtx;
     use crate::testing::Dispatch;
     use automerge::AutoCommit;
     use std::sync::Arc;
+    use tilo_ui_base::presence::PresenceCtx;
     use tilo_webview::WebViewEngine; // send()/commands() on the concrete TestEngine
     use tilo_webview::test_engine::TestEngine;
     use winit::event::{ElementState, WindowEvent};
@@ -1845,7 +1850,10 @@ mod tests {
         fn wrapped(&self) -> Option<&tilo_webview::SharedEngine> {
             Some(&self.inner)
         }
-        fn handle_undo_request(&self, request: tilo_ui_base::widget::undo_access::UndoRequest) -> bool {
+        fn handle_undo_request(
+            &self,
+            request: tilo_ui_base::widget::undo_access::UndoRequest,
+        ) -> bool {
             self.requests
                 .lock()
                 .expect("native history fixture")

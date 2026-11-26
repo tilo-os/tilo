@@ -1,6 +1,9 @@
 //! The toolkit's widgets above its base: each one's module, and what it exports.
 
-#[allow(unused_imports, reason = "the base's widget contract, for the widgets declared here")]
+#[allow(
+    unused_imports,
+    reason = "the base's widget contract, for the widgets declared here"
+)]
 use tilo_ui_base::widget::*;
 
 #[cfg(test)]
@@ -10,17 +13,24 @@ pub(crate) use {test_controls::Unattached, test_controls::test_value_action_bind
 #[cfg(feature = "model")]
 pub mod action_proposal;
 #[cfg(feature = "model")]
-pub use {action_proposal::ActionProposal, action_proposal::ActionProposalView, action_proposal::DiffLine, action_proposal::DiffTag, action_proposal::ProposalDecision, action_proposal::ProposalTarget};
-pub mod search_request;
+pub use {
+    action_proposal::ActionProposal, action_proposal::ActionProposalView,
+    action_proposal::DiffLine, action_proposal::DiffTag, action_proposal::ProposalDecision,
+    action_proposal::ProposalTarget,
+};
 mod composed;
+pub mod search_request;
 pub use composed::Composed;
 pub mod decorator;
 pub mod document_offers;
 pub use {document_offers::DocumentOffer, document_offers::PaintedOffers};
+mod button;
 #[cfg(test)]
 pub(crate) mod replaced_tripwire;
-mod button;
-pub use {button::Button, button::ButtonFace, button::ButtonProps, button::ButtonRole, button::REST_BORDER_WIDTH, button::face_colors, button::focus_ring_reach};
+pub use {
+    button::Button, button::ButtonFace, button::ButtonProps, button::ButtonRole,
+    button::REST_BORDER_WIDTH, button::face_colors, button::focus_ring_reach,
+};
 mod control_size;
 pub use control_size::ControlSize;
 mod bool_control;
@@ -28,15 +38,24 @@ pub(crate) use bool_control::BoolAction;
 mod checkbox;
 #[cfg(test)]
 mod control_hand_on_tests;
-pub use {checkbox::CheckGlyph, checkbox::CheckMotion, checkbox::CheckPose, checkbox::Checkbox, checkbox::CheckboxFace, checkbox::CheckboxProps};
+pub use {
+    checkbox::CheckGlyph, checkbox::CheckMotion, checkbox::CheckPose, checkbox::Checkbox,
+    checkbox::CheckboxFace, checkbox::CheckboxProps,
+};
 mod column;
 pub use column::Column;
 mod composition;
 mod flow;
 mod form;
 mod form_composition;
-pub use {form::CheckControl, form::FormControl, form::Labelled, form::LabelledProps, form::labeled_check, form::labeled_field};
-pub use {form_composition::Field, form_composition::Form, form_composition::FormPage, form_composition::FormSection, form_composition::Page};
+pub use {
+    form::CheckControl, form::FormControl, form::Labelled, form::LabelledProps,
+    form::labeled_check, form::labeled_field,
+};
+pub use {
+    form_composition::Field, form_composition::Form, form_composition::FormPage,
+    form_composition::FormSection, form_composition::Page,
+};
 mod embedded;
 pub use embedded::Embedded;
 mod row;
@@ -44,7 +63,11 @@ pub use row::Row;
 mod face_motions;
 pub use face_motions::FaceMotions;
 mod toggle;
-pub use {toggle::SwitchMotion, toggle::SwitchPose, toggle::Toggle, toggle::ToggleColors, toggle::ToggleFace, toggle::ToggleProps, toggle::toggle_accessibility, toggle::toggle_face_colors};
+pub use {
+    toggle::SwitchMotion, toggle::SwitchPose, toggle::Toggle, toggle::ToggleColors,
+    toggle::ToggleFace, toggle::ToggleProps, toggle::toggle_accessibility,
+    toggle::toggle_face_colors,
+};
 mod stack;
 pub use stack::Stack;
 mod container;
@@ -60,7 +83,10 @@ pub use {link::Link, link::LinkProps};
 mod flap;
 pub use {flap::FlapState, flap::SplitLayout};
 mod bottom_sheet;
-pub use {bottom_sheet::BottomSheet, bottom_sheet::SheetDetent, bottom_sheet::SheetFrame, bottom_sheet::SheetGeometry, bottom_sheet::SheetInput};
+pub use {
+    bottom_sheet::BottomSheet, bottom_sheet::SheetDetent, bottom_sheet::SheetFrame,
+    bottom_sheet::SheetGeometry, bottom_sheet::SheetInput,
+};
 mod page_slide;
 pub use {page_slide::PageSlide, page_slide::PageSlideProps};
 mod fullscreen_view;
@@ -68,33 +94,71 @@ pub use {fullscreen_view::Fullscreen, fullscreen_view::FullscreenProps, fullscre
 mod stage;
 pub use {stage::Stage, stage::StagePinProps, stage::StageProps};
 mod sidebar;
-pub use {sidebar::DEFAULT_DRAWER_BREAKPOINT, sidebar::DEFAULT_DRAWER_DOCKED_WIDTH, sidebar::DEFAULT_DRAWER_WIDTH, sidebar::SidebarDrawer, sidebar::SidebarSide};
+pub use {
+    sidebar::DEFAULT_DRAWER_BREAKPOINT, sidebar::DEFAULT_DRAWER_DOCKED_WIDTH,
+    sidebar::DEFAULT_DRAWER_WIDTH, sidebar::SidebarDrawer, sidebar::SidebarSide,
+};
 mod nav_shell;
 #[cfg(feature = "native")]
 pub(crate) use nav_shell::memory::remember_for_app as remember_sidebar_widths_for_app;
 pub mod window_controls;
 pub mod window_header;
 pub(crate) mod window_toolbar_row;
-pub use {nav_shell::HeldNotice, nav_shell::InspectorFrame, nav_shell::InspectorLink, nav_shell::InspectorPlacement, nav_shell::NavGeometry, nav_shell::NavMode, nav_shell::NavPane, nav_shell::NavShell, nav_shell::NavShellProps, nav_shell::OverviewPlacement, nav_shell::SidebarPlacement, nav_shell::WINDOW_BACK, nav_shell::WINDOW_SIDEBAR, nav_shell::WindowBarLink};
-pub use {window_header::ColumnFrame, window_header::HISTORY_CONTROL_ID, window_header::HeaderStatus, window_header::HistoryControl, window_header::HistoryOpener, window_header::STATUS_ACTION_ID, window_header::StatusAction, window_header::WindowBar, window_header::WindowBarPart, window_header::WindowHeader, window_header::WindowHistory, window_header::WindowStatus, window_header::merged_row_holds_search, window_header::merged_row_width, window_header::merged_row_width_in};
+pub use {
+    nav_shell::HeldNotice, nav_shell::InspectorFrame, nav_shell::InspectorLink,
+    nav_shell::InspectorPlacement, nav_shell::NavGeometry, nav_shell::NavMode, nav_shell::NavPane,
+    nav_shell::NavShell, nav_shell::NavShellProps, nav_shell::OverviewPlacement,
+    nav_shell::SidebarPlacement, nav_shell::WINDOW_BACK, nav_shell::WINDOW_SIDEBAR,
+    nav_shell::WindowBarLink,
+};
+pub use {
+    window_header::ColumnFrame, window_header::HISTORY_CONTROL_ID, window_header::HeaderStatus,
+    window_header::HistoryControl, window_header::HistoryOpener, window_header::STATUS_ACTION_ID,
+    window_header::StatusAction, window_header::WindowBar, window_header::WindowBarPart,
+    window_header::WindowHeader, window_header::WindowHistory, window_header::WindowStatus,
+    window_header::merged_row_holds_search, window_header::merged_row_width,
+    window_header::merged_row_width_in,
+};
 mod nav_list;
 pub use nav_list::nav_row;
-pub use {nav_list::NavAction, nav_list::NavArt, nav_list::NavDrop, nav_list::NavEntry, nav_list::NavFeed, nav_list::NavItem, nav_list::NavItemProps, nav_list::NavItemStatus, nav_list::NavList, nav_list::NavListProps, nav_list::NavPerson, nav_list::NavSearchTerm, nav_list::NavSection, nav_list::NavSectionProps};
+pub use {
+    nav_list::NavAction, nav_list::NavArt, nav_list::NavDrop, nav_list::NavEntry,
+    nav_list::NavFeed, nav_list::NavItem, nav_list::NavItemProps, nav_list::NavItemStatus,
+    nav_list::NavList, nav_list::NavListProps, nav_list::NavPerson, nav_list::NavSearchTerm,
+    nav_list::NavSection, nav_list::NavSectionProps,
+};
 mod document_viewport;
-pub use {document_viewport::ContentDraw, document_viewport::DEFAULT_MAX_ZOOM, document_viewport::DEFAULT_MIN_ZOOM, document_viewport::DEFAULT_PADDING, document_viewport::DEFAULT_PAN_STEP, document_viewport::DocumentViewport, document_viewport::PAN_SLOP, document_viewport::SmallContentAlign, document_viewport::ViewportState, document_viewport::ViewportZoom};
+pub use {
+    document_viewport::ContentDraw, document_viewport::DEFAULT_MAX_ZOOM,
+    document_viewport::DEFAULT_MIN_ZOOM, document_viewport::DEFAULT_PADDING,
+    document_viewport::DEFAULT_PAN_STEP, document_viewport::DocumentViewport,
+    document_viewport::PAN_SLOP, document_viewport::SmallContentAlign,
+    document_viewport::ViewportState, document_viewport::ViewportZoom,
+};
 mod floating_window;
-pub use {floating_window::FloatingWindow, floating_window::MIN_HEIGHT, floating_window::MIN_WIDTH, floating_window::TITLE_BAR_HEIGHT};
+pub use {
+    floating_window::FloatingWindow, floating_window::MIN_HEIGHT, floating_window::MIN_WIDTH,
+    floating_window::TITLE_BAR_HEIGHT,
+};
 mod text;
 pub use {text::Text, text::TextProps};
 mod relative_time;
-pub use {relative_time::RelativeTime, relative_time::TimeProps, relative_time::clock_text, relative_time::next_change, relative_time::relative_text};
+pub use {
+    relative_time::RelativeTime, relative_time::TimeProps, relative_time::clock_text,
+    relative_time::next_change, relative_time::relative_text,
+};
 mod money;
 pub use {money::Money, money::MoneyProps};
 mod clock;
-pub use {clock::ClockProps, clock::ClockReading, clock::WallClock, clock::reading as clock_reading};
+pub use {
+    clock::ClockProps, clock::ClockReading, clock::WallClock, clock::reading as clock_reading,
+};
 mod countdown;
 mod timer;
-pub use {countdown::Countdown, countdown::CountdownProps, countdown::CountdownReading, countdown::reading as countdown_reading};
+pub use {
+    countdown::Countdown, countdown::CountdownProps, countdown::CountdownReading,
+    countdown::reading as countdown_reading,
+};
 pub use {timer::Timer, timer::TimerProps, timer::set_window_shown, timer::window_shown};
 mod when;
 pub use {when::Absent, when::Fitted, when::When, when::optional};
@@ -105,19 +169,43 @@ pub use columns::Columns;
 /// The layout primitives: `Stack`, `Row`, `Grid`, `Split`, `Page`, `Layers`.
 pub mod arrange;
 mod image;
-pub use {image::Image, image::ImageDecodeError, image::ImageFit, image::ImageProps, image::PictureSource};
+pub use {
+    image::Image, image::ImageDecodeError, image::ImageFit, image::ImageProps, image::PictureSource,
+};
 mod image_crop;
-pub use {image_crop::CropEditor, image_crop::CropSelection, image_crop::ImageCropEditor, image_crop::ImageCropEditorProps};
+pub use {
+    image_crop::CropEditor, image_crop::CropSelection, image_crop::ImageCropEditor,
+    image_crop::ImageCropEditorProps,
+};
 mod slider;
-pub use {slider::Slider, slider::SliderFace, slider::SliderProps, slider::SliderTouch, slider::SliderTouchStep, slider::paint_held_readout};
+pub use {
+    slider::Slider, slider::SliderFace, slider::SliderProps, slider::SliderTouch,
+    slider::SliderTouchStep, slider::paint_held_readout,
+};
 mod text_input;
-pub use {text_input::AccessoryAction, text_input::FieldFace, text_input::PlaceholderFit, text_input::PromptFit, text_input::SpanHighlighter, text_input::SpellingMenu, text_input::TextActionRequest, text_input::TextActionResult, text_input::TextInput, text_input::TextInputKind, text_input::TextInputProps, text_input::paint_invalid_edge, text_input::paint_preedit_underline};
+pub use {
+    text_input::AccessoryAction, text_input::FieldFace, text_input::PlaceholderFit,
+    text_input::PromptFit, text_input::SpanHighlighter, text_input::SpellingMenu,
+    text_input::TextActionRequest, text_input::TextActionResult, text_input::TextInput,
+    text_input::TextInputKind, text_input::TextInputProps, text_input::paint_invalid_edge,
+    text_input::paint_preedit_underline,
+};
 pub mod code_editor;
-pub use {code_editor::CodeEditor, code_editor::CodeEditorProps, code_editor::Highlighter, code_editor::HlState, code_editor::Language, code_editor::LineSpans, code_editor::Span, code_editor::TokenKind};
+pub use {
+    code_editor::CodeEditor, code_editor::CodeEditorProps, code_editor::Highlighter,
+    code_editor::HlState, code_editor::Language, code_editor::LineSpans, code_editor::Span,
+    code_editor::TokenKind,
+};
 mod editable_label;
-pub use {editable_label::EditOutcome, editable_label::EditableLabel, editable_label::EditableLabelProps};
+pub use {
+    editable_label::EditOutcome, editable_label::EditableLabel, editable_label::EditableLabelProps,
+};
 pub mod autocomplete;
-pub use {autocomplete::Autocomplete, autocomplete::AutocompleteOutcome, autocomplete::AutocompleteProps, autocomplete::CheckColumn, autocomplete::Suggester, autocomplete::Suggestion, autocomplete::SuggestionList, autocomplete::SuggestionProps};
+pub use {
+    autocomplete::Autocomplete, autocomplete::AutocompleteOutcome, autocomplete::AutocompleteProps,
+    autocomplete::CheckColumn, autocomplete::Suggester, autocomplete::Suggestion,
+    autocomplete::SuggestionList, autocomplete::SuggestionProps,
+};
 pub mod mention_picker;
 pub use {mention_picker::MentionCandidate, mention_picker::MentionQuery};
 pub mod completion;
@@ -125,7 +213,10 @@ pub(crate) mod completion_card;
 pub mod text_completion;
 pub use {text_completion::EmojiQuery, text_completion::TextCompletion};
 mod number_input;
-pub use {number_input::NumberInput, number_input::NumberInputProps, number_input::NumberStepperFace, number_input::StepperPart};
+pub use {
+    number_input::NumberInput, number_input::NumberInputProps, number_input::NumberStepperFace,
+    number_input::StepperPart,
+};
 pub mod marks;
 pub use {marks::Mark, marks::MarkSpan};
 pub mod document_line;
@@ -136,17 +227,31 @@ pub use filter_menu::FilterMenu;
 pub mod link_popover;
 pub use {link_popover::LinkPopover, link_popover::PageEntry};
 pub mod page_sidebar;
-pub use {page_sidebar::DeclaredRail, page_sidebar::PageSidebar, page_sidebar::PageSidebarEvent, page_sidebar::PageSidebarProps};
+pub use {
+    page_sidebar::DeclaredRail, page_sidebar::PageSidebar, page_sidebar::PageSidebarEvent,
+    page_sidebar::PageSidebarProps,
+};
 mod dropdown;
-pub use {dropdown::Dropdown, dropdown::DropdownFace, dropdown::DropdownProps, dropdown::FILTER_MIN_OPTIONS};
+pub use {
+    dropdown::Dropdown, dropdown::DropdownFace, dropdown::DropdownProps,
+    dropdown::FILTER_MIN_OPTIONS,
+};
 pub mod tabs;
-pub use {tabs::PresenceFaceProps, tabs::TabBar, tabs::TabDescriptor, tabs::TabFaceSpec, tabs::TabHolder, tabs::TabItemProps, tabs::TabMark, tabs::TabStrip, tabs::TabStripProps, tabs::draw_app_mark, tabs::pack_point, tabs::unpack_point};
+pub use {
+    tabs::PresenceFaceProps, tabs::TabBar, tabs::TabDescriptor, tabs::TabFaceSpec, tabs::TabHolder,
+    tabs::TabItemProps, tabs::TabMark, tabs::TabStrip, tabs::TabStripProps, tabs::draw_app_mark,
+    tabs::pack_point, tabs::unpack_point,
+};
 pub mod scrollbar;
 pub use {scrollbar::PressOutcome, scrollbar::Scrollbar, scrollbar::TrackMark};
 pub mod board;
-pub use {board::Board, board::BoardCardProps, board::BoardDrop, board::BoardListProps, board::BoardProps};
+pub use {
+    board::Board, board::BoardCardProps, board::BoardDrop, board::BoardListProps, board::BoardProps,
+};
 pub use {drag_bus::InFlight, drag_bus::Landed};
-pub use {drag_run::DragDrop, drag_run::DragRun, drag_run::RunAxis, drag_run::RunGroup, drag_run::RunItem};
+pub use {
+    drag_run::DragDrop, drag_run::DragRun, drag_run::RunAxis, drag_run::RunGroup, drag_run::RunItem,
+};
 pub use {drag_run_component::DragItemProps, drag_run_component::DragRunProps};
 pub use {drag_source::DragSource, drag_source::DragSourceProps, drag_source::RESOURCE_PAYLOAD};
 pub use {drop_target::DropTarget, drop_target::DropTargetProps};
@@ -156,7 +261,9 @@ pub mod drag_run;
 pub mod drag_run_component;
 pub mod drag_source;
 pub mod drop_target;
-pub use {drag::Axis as DragAxis, drag::DragController, drag::ListMetrics, drag::REORDER_THRESHOLD_PX};
+pub use {
+    drag::Axis as DragAxis, drag::DragController, drag::ListMetrics, drag::REORDER_THRESHOLD_PX,
+};
 mod scrollable;
 pub use {scrollable::ScrollProps, scrollable::Scrollable};
 mod scroll_region;
@@ -167,27 +274,66 @@ pub use overlay_scrollbar::OverlayScrollbar;
 #[cfg(feature = "model")]
 mod tile_host;
 #[cfg(feature = "model")]
-pub use {tile_host::TileContent, tile_host::TileHost, tile_host::hold_windows, tile_host::release_windows, tile_host::resource_unavailable_title};
+pub use {
+    tile_host::TileContent, tile_host::TileHost, tile_host::hold_windows,
+    tile_host::release_windows, tile_host::resource_unavailable_title,
+};
 mod app_widget;
 #[cfg(feature = "model")]
 pub(crate) use app_widget::BoundAppWidget;
-pub use {app_widget::AppCommand, app_widget::AppKind, app_widget::AppProcessIntent, app_widget::AppWidget, app_widget::HostShellAllow, app_widget::IconDescriptor, app_widget::WindowPublication};
+pub use {
+    app_widget::AppCommand, app_widget::AppKind, app_widget::AppProcessIntent,
+    app_widget::AppWidget, app_widget::HostShellAllow, app_widget::IconDescriptor,
+    app_widget::WindowPublication,
+};
 pub mod input_hint;
 pub mod shortcut_recorder;
-pub use {input_hint::InputDeviceGlyph, input_hint::InputHint, input_hint::InputHintProps, input_hint::LegendConventions};
+pub use {
+    input_hint::InputDeviceGlyph, input_hint::InputHint, input_hint::InputHintProps,
+    input_hint::LegendConventions,
+};
 pub mod canvas_navigation_hint;
 pub use {canvas_navigation_hint::CanvasNavigation, canvas_navigation_hint::CanvasNavigationHint};
 pub use {shortcut_recorder::ShortcutRecorder, shortcut_recorder::ShortcutRecorderProps};
 pub mod context_menu;
 pub mod floating_list;
-pub use {floating_list::FloatingList, floating_list::FloatingMetrics, floating_list::FloatingRow, floating_list::RowState};
+pub use {
+    floating_list::FloatingList, floating_list::FloatingMetrics, floating_list::FloatingRow,
+    floating_list::RowState,
+};
 pub mod floating_surface;
 pub mod primitives;
-pub use {context_menu::ContextMenu, context_menu::MenuButton, context_menu::MenuButtonProps, context_menu::MenuItem, context_menu::MenuItemProps, context_menu::MenuPick, context_menu::note_shift, context_menu::shift_held, context_menu::shift_skips_confirmation};
+pub use {
+    context_menu::ContextMenu, context_menu::MenuButton, context_menu::MenuButtonProps,
+    context_menu::MenuItem, context_menu::MenuItemProps, context_menu::MenuPick,
+    context_menu::note_shift, context_menu::shift_held, context_menu::shift_skips_confirmation,
+};
 mod row_menu;
 pub use chrome_body::paint_bar_body;
-pub use {primitives::BarChip, primitives::BarChipFace, primitives::BarChipLayout, primitives::BarChipProps, primitives::BarControlFace, primitives::DeclaredModal, primitives::DeclaredPanel, primitives::DeclaredPopover, primitives::DeclaredPopoverButton, primitives::DensityRegion, primitives::DisclosureGroup, primitives::DisclosureRow, primitives::DisclosureRowProps, primitives::DisclosureState, primitives::Fact, primitives::FactMark, primitives::FactProps, primitives::Facts, primitives::FactsFace, primitives::FactsProps, primitives::FloatingPanel, primitives::FloatingPanelFace, primitives::FloatingPanelLayout, primitives::FloatingPanelProps, primitives::IconButton, primitives::KeyHint, primitives::KeyHintProps, primitives::KeyHints, primitives::KeyHintsFace, primitives::KeyHintsProps, primitives::LinkKind, primitives::LinkStatus, primitives::ModalProps, primitives::NotificationListControl, primitives::NotificationListLayout, primitives::NotificationListRow, primitives::NotificationListView, primitives::NotificationRowControls, primitives::PopoverProps, primitives::StatusCluster, primitives::StatusClusterFace, primitives::StatusClusterLayout, primitives::StatusPart, primitives::Surface, primitives::SurfaceLevel, primitives::TextBlockFace, primitives::TextLineAlign, primitives::TextLineFace, primitives::TextStack, primitives::TextStackFace, primitives::TextStackProps, primitives::badge_label, primitives::badge_size, primitives::control_fill, primitives::control_radius, primitives::paint_control_row, primitives::paint_see_through, primitives::paint_severity_rail, primitives::paint_surface, primitives::paint_unread_badge, primitives::paint_window_card};
 pub use row_menu::RowMenu;
+pub use {
+    primitives::BarChip, primitives::BarChipFace, primitives::BarChipLayout,
+    primitives::BarChipProps, primitives::BarControlFace, primitives::DeclaredModal,
+    primitives::DeclaredPanel, primitives::DeclaredPopover, primitives::DeclaredPopoverButton,
+    primitives::DensityRegion, primitives::DisclosureGroup, primitives::DisclosureRow,
+    primitives::DisclosureRowProps, primitives::DisclosureState, primitives::Fact,
+    primitives::FactMark, primitives::FactProps, primitives::Facts, primitives::FactsFace,
+    primitives::FactsProps, primitives::FloatingPanel, primitives::FloatingPanelFace,
+    primitives::FloatingPanelLayout, primitives::FloatingPanelProps, primitives::IconButton,
+    primitives::KeyHint, primitives::KeyHintProps, primitives::KeyHints, primitives::KeyHintsFace,
+    primitives::KeyHintsProps, primitives::LinkKind, primitives::LinkStatus,
+    primitives::ModalProps, primitives::NotificationListControl,
+    primitives::NotificationListLayout, primitives::NotificationListRow,
+    primitives::NotificationListView, primitives::NotificationRowControls,
+    primitives::PopoverProps, primitives::StatusCluster, primitives::StatusClusterFace,
+    primitives::StatusClusterLayout, primitives::StatusPart, primitives::Surface,
+    primitives::SurfaceLevel, primitives::TextBlockFace, primitives::TextLineAlign,
+    primitives::TextLineFace, primitives::TextStack, primitives::TextStackFace,
+    primitives::TextStackProps, primitives::badge_label, primitives::badge_size,
+    primitives::control_fill, primitives::control_radius, primitives::paint_control_row,
+    primitives::paint_see_through, primitives::paint_severity_rail, primitives::paint_surface,
+    primitives::paint_unread_badge, primitives::paint_window_card,
+};
 pub mod context_menu_area;
 pub use {context_menu_area::ContextMenuArea, context_menu_area::MenuEntry};
 pub mod send_to;
@@ -198,48 +344,89 @@ pub use hover_toolbar::HoverToolbar;
 mod canvas_place;
 pub use {canvas_place::CanvasPlace, canvas_place::PLACE_BAND, canvas_place::PlaceProps};
 mod swipe_row;
-pub use {attached::Attachments, attached::ContextMenuProps, attached::EmojiBarProps, attached::HoverToolbarProps, attached::MenuPart, attached::MenuSeparatorProps, attached::SwipeProps};
+pub use {
+    attached::Attachments, attached::ContextMenuProps, attached::EmojiBarProps,
+    attached::HoverToolbarProps, attached::MenuPart, attached::MenuSeparatorProps,
+    attached::SwipeProps,
+};
 mod chat_parts;
-pub use {chat_parts::EmojiPickerButton, chat_parts::EmojiPickerProps, chat_parts::Quote, chat_parts::QuoteProps, chat_parts::ReactionsProps};
 pub use swipe_row::SwipeRow;
+pub use {
+    chat_parts::EmojiPickerButton, chat_parts::EmojiPickerProps, chat_parts::Quote,
+    chat_parts::QuoteProps, chat_parts::ReactionsProps,
+};
 mod pacer;
 pub use pacer::Pacer;
 pub mod data_table;
 pub mod sheet;
 pub(crate) mod sheet_component;
-pub use {sheet::Peer, sheet::Sheet, sheet::SheetCell, sheet::SheetSize};
 pub use sheet_component::SheetProps;
+pub use {sheet::Peer, sheet::Sheet, sheet::SheetCell, sheet::SheetSize};
 mod data_table_component;
-pub use {data_table_component::DataTableCellProps, data_table_component::DataTableColumnProps, data_table_component::DataTableProps, data_table_component::DataTableRowProps, data_table_component::DescribedTable};
+pub use {
+    data_table_component::DataTableCellProps, data_table_component::DataTableColumnProps,
+    data_table_component::DataTableProps, data_table_component::DataTableRowProps,
+    data_table_component::DescribedTable,
+};
 // The shell's window groups and strips, laid out over the desktop model's geometry.
 #[cfg(feature = "model")]
 mod window_group;
 #[cfg(feature = "model")]
-pub use {window_group::DEFAULT_STRIP_USABLE_PX, window_group::RESIZE_HANDLE_PX, window_group::WIDTH_FLOOR_PX, window_group::WIDTH_MAX_PERMILLE, window_group::WIDTH_MIN_PERMILLE, window_group::WIDTH_NARROW_PERMILLE, window_group::WIDTH_NORMAL_PERMILLE, window_group::WIDTH_WIDE_PERMILLE, window_group::WindowGroup, window_group::WindowGroupBounds, window_group::WindowWidth, window_group::max_group_px, window_group::min_group_px, window_group::permille_for_px};
+pub use {
+    window_group::DEFAULT_STRIP_USABLE_PX, window_group::RESIZE_HANDLE_PX,
+    window_group::WIDTH_FLOOR_PX, window_group::WIDTH_MAX_PERMILLE,
+    window_group::WIDTH_MIN_PERMILLE, window_group::WIDTH_NARROW_PERMILLE,
+    window_group::WIDTH_NORMAL_PERMILLE, window_group::WIDTH_WIDE_PERMILLE,
+    window_group::WindowGroup, window_group::WindowGroupBounds, window_group::WindowWidth,
+    window_group::max_group_px, window_group::min_group_px, window_group::permille_for_px,
+};
 pub mod edge_resize;
-pub use {edge_resize::EdgeGrab, edge_resize::ResizeMode, edge_resize::WidthLimits, edge_resize::WindowEdge};
+pub use {
+    edge_resize::EdgeGrab, edge_resize::ResizeMode, edge_resize::WidthLimits,
+    edge_resize::WindowEdge,
+};
 #[cfg(feature = "model")]
 mod resize_handle;
 #[cfg(feature = "model")]
-pub use {resize_handle::HANDLE_HIT_HALF_PX, resize_handle::HANDLE_SLOT_PX, resize_handle::HANDLE_VISIBLE_PX, resize_handle::ResizeHandle};
+pub use {
+    resize_handle::HANDLE_HIT_HALF_PX, resize_handle::HANDLE_SLOT_PX,
+    resize_handle::HANDLE_VISIBLE_PX, resize_handle::ResizeHandle,
+};
 mod overflow_button;
 pub(crate) use overflow_button::give_way;
 pub use {overflow_button::OverflowButton, overflow_button::plan as plan_overflow};
 #[cfg(feature = "model")]
 mod group_row;
 #[cfg(feature = "model")]
-pub use {group_row::CANVAS_ZOOM_MAX, group_row::CANVAS_ZOOM_MIN, group_row::CanvasView, group_row::CrossStripDetach, group_row::FLOAT_CARD_MARGIN, group_row::FLOAT_CARD_SIZE, group_row::FLOAT_SIZE, group_row::FloatAsk, group_row::GroupRow, group_row::GroupTopology, group_row::JUMP_PX_PER_DETENT, group_row::OutputSpan, group_row::Pan, group_row::STRIP_BOTTOM_GUTTER_PX, group_row::STRIP_EDGE_GUTTER_PX, group_row::STRIP_TOP_GAP_PX, group_row::StripSection, group_row::TabDropTarget, group_row::WheelJumpAccum, group_row::keep_float_inside, group_row::pan_within_canvas, group_row::wheel_jump_detents};
+pub use {
+    group_row::CANVAS_ZOOM_MAX, group_row::CANVAS_ZOOM_MIN, group_row::CanvasView,
+    group_row::CrossStripDetach, group_row::FLOAT_CARD_MARGIN, group_row::FLOAT_CARD_SIZE,
+    group_row::FLOAT_SIZE, group_row::FloatAsk, group_row::GroupRow, group_row::GroupTopology,
+    group_row::JUMP_PX_PER_DETENT, group_row::OutputSpan, group_row::Pan,
+    group_row::STRIP_BOTTOM_GUTTER_PX, group_row::STRIP_EDGE_GUTTER_PX,
+    group_row::STRIP_TOP_GAP_PX, group_row::StripSection, group_row::TabDropTarget,
+    group_row::WheelJumpAccum, group_row::keep_float_inside, group_row::pan_within_canvas,
+    group_row::wheel_jump_detents,
+};
 mod finger_path;
 pub mod tooltip;
 pub use {tooltip::Tooltip, tooltip::TooltipHost};
 pub mod permission_prompt;
 pub mod toast;
-pub use {permission_prompt::PROMPT_HEIGHT, permission_prompt::PermissionPrompt, permission_prompt::PromptChoice};
+pub use {
+    permission_prompt::PROMPT_HEIGHT, permission_prompt::PermissionPrompt,
+    permission_prompt::PromptChoice,
+};
 pub mod file_picker;
 pub mod file_table;
-pub use {file_picker::FilePicker, file_picker::FilePickerEntry, file_picker::FilePickerMode, file_picker::FilePickerOutcome};
+pub use {
+    file_picker::FilePicker, file_picker::FilePickerEntry, file_picker::FilePickerMode,
+    file_picker::FilePickerOutcome,
+};
 pub mod progress_bar;
-pub use {progress_bar::ProgressBar, progress_bar::ProgressBarFace, progress_bar::ProgressBarProps};
+pub use {
+    progress_bar::ProgressBar, progress_bar::ProgressBarFace, progress_bar::ProgressBarProps,
+};
 pub mod page_preview;
 pub use {page_preview::PagePreview, page_preview::PagePreviewProps};
 pub mod spinner;
@@ -249,46 +436,88 @@ pub mod date_picker;
 pub mod enum_field;
 pub mod person_field;
 pub use {date_field::DateField, date_field::DateFieldProps};
-pub use {date_picker::DateFeed, date_picker::DatePicker, date_picker::DatePickerProps, date_picker::DateShown, date_picker::ExternalDatePickerHit};
+pub use {
+    date_picker::DateFeed, date_picker::DatePicker, date_picker::DatePickerProps,
+    date_picker::DateShown, date_picker::ExternalDatePickerHit,
+};
 pub use {enum_field::EnumField, enum_field::EnumFieldProps, enum_field::EnumOptionProps};
 pub use {person_field::PersonField, person_field::PersonFieldProps};
 pub mod time_field;
 pub mod time_picker;
 pub mod timeline_density;
+pub use timeline_density::TimelineDensity;
 pub use {time_field::TimeField, time_field::TimeFieldProps};
 pub use {time_picker::TimePicker, time_picker::TimePickerProps, time_picker::TimeValue};
-pub use timeline_density::TimelineDensity;
 pub mod timeline;
 pub mod track_timeline;
-pub use {timeline::Ghost, timeline::MonthFace, timeline::MonthReport, timeline::MonthTarget, timeline::Timeline, timeline::TimelineFace, timeline::TimelineGeom, timeline::TimelineItem, timeline::TimelineItemProps, timeline::TimelineMode, timeline::TimelineProps, timeline::TimelineReport, timeline::TimelineTarget, timeline::TimelineText, timeline::TimelineTokens, timeline::TimelineTone};
-pub use {track_timeline::TimelineMarkerProps, track_timeline::TimelineSpanProps, track_timeline::TimelineTrackProps, track_timeline::TrackTimeline, track_timeline::TrackTimelineProps};
+pub use {
+    timeline::Ghost, timeline::MonthFace, timeline::MonthReport, timeline::MonthTarget,
+    timeline::Timeline, timeline::TimelineFace, timeline::TimelineGeom, timeline::TimelineItem,
+    timeline::TimelineItemProps, timeline::TimelineMode, timeline::TimelineProps,
+    timeline::TimelineReport, timeline::TimelineTarget, timeline::TimelineText,
+    timeline::TimelineTokens, timeline::TimelineTone,
+};
+pub use {
+    track_timeline::TimelineMarkerProps, track_timeline::TimelineSpanProps,
+    track_timeline::TimelineTrackProps, track_timeline::TrackTimeline,
+    track_timeline::TrackTimelineProps,
+};
 pub mod color_picker;
 pub mod color_swatch;
 mod curve_editor;
-pub use {color_picker::ColorPicker, color_picker::ColorPickerOutcome, color_picker::ColorPickerProps};
-pub use {color_swatch::ColorSwatch, color_swatch::ColorSwatchFace, color_swatch::ColorSwatchPicker, color_swatch::ColorSwatchPickerProps, color_swatch::SwatchPainter};
+pub use {
+    color_picker::ColorPicker, color_picker::ColorPickerOutcome, color_picker::ColorPickerProps,
+};
+pub use {
+    color_swatch::ColorSwatch, color_swatch::ColorSwatchFace, color_swatch::ColorSwatchPicker,
+    color_swatch::ColorSwatchPickerProps, color_swatch::SwatchPainter,
+};
 pub use {curve_editor::CurveEditor, curve_editor::CurveEditorProps};
 pub mod picture;
 pub mod picture_choice;
-pub use {picture_choice::ColourFilter, picture_choice::Picture, picture_choice::PictureChoice, picture_choice::PictureChoiceProps, picture_choice::PictureKind, picture_choice::PictureOption, picture_choice::PictureOptionProps, picture_choice::TouchpadGesture};
+pub use {
+    picture_choice::ColourFilter, picture_choice::Picture, picture_choice::PictureChoice,
+    picture_choice::PictureChoiceProps, picture_choice::PictureKind, picture_choice::PictureOption,
+    picture_choice::PictureOptionProps, picture_choice::TouchpadGesture,
+};
 pub mod radio_group;
-pub use {radio_group::RadioGroup, radio_group::RadioGroupProps, radio_group::RadioOption, radio_group::RadioProps};
+pub use {
+    radio_group::RadioGroup, radio_group::RadioGroupProps, radio_group::RadioOption,
+    radio_group::RadioProps,
+};
 pub mod shown;
 pub use {shown::InState, shown::InStateProps};
 pub mod popover;
-pub use {popover::PanelAlign, popover::Popover, popover::PopoverButton, popover::PopoverPrompt, popover::PopoverSide};
+pub use {
+    popover::PanelAlign, popover::Popover, popover::PopoverButton, popover::PopoverPrompt,
+    popover::PopoverSide,
+};
 pub mod emoji_picker;
 pub use {emoji_picker::EmojiPicker, emoji_picker::PickerEvent};
 mod emoji_pane_component;
 pub use {emoji_pane_component::EmojiPane, emoji_pane_component::EmojiPaneProps};
 pub mod reaction_strip;
-pub use {reaction_strip::ReactionStrip, reaction_strip::ReactionStripWidget, reaction_strip::ReactionToggle, reaction_strip::StripHit};
+pub use {
+    reaction_strip::ReactionStrip, reaction_strip::ReactionStripWidget,
+    reaction_strip::ReactionToggle, reaction_strip::StripHit,
+};
 pub mod modal_dialog;
-pub use {modal_dialog::ModalAction, modal_dialog::ModalDialog, modal_dialog::ModalEmphasis, modal_dialog::ModalHit, modal_dialog::ModalLayout, modal_dialog::ModalSheet, modal_dialog::ModalSpec, modal_dialog::SheetResponse};
+pub use {
+    modal_dialog::ModalAction, modal_dialog::ModalDialog, modal_dialog::ModalEmphasis,
+    modal_dialog::ModalHit, modal_dialog::ModalLayout, modal_dialog::ModalSheet,
+    modal_dialog::ModalSpec, modal_dialog::SheetResponse,
+};
 pub mod secret_prompt;
-pub use {secret_prompt::FieldRole, secret_prompt::FieldSpec, secret_prompt::NoticeTone, secret_prompt::Presentation, secret_prompt::PromptOutcome, secret_prompt::SecretAnswer, secret_prompt::SecretKind, secret_prompt::SecretPrompt};
+pub use {
+    secret_prompt::FieldRole, secret_prompt::FieldSpec, secret_prompt::NoticeTone,
+    secret_prompt::Presentation, secret_prompt::PromptOutcome, secret_prompt::SecretAnswer,
+    secret_prompt::SecretKind, secret_prompt::SecretPrompt,
+};
 pub mod toolbar;
-pub use {toolbar::Toolbar, toolbar::ToolbarButtonProps, toolbar::ToolbarPart, toolbar::ToolbarProps, toolbar::ToolbarSeparatorProps, toolbar::ToolbarSpacerProps};
+pub use {
+    toolbar::Toolbar, toolbar::ToolbarButtonProps, toolbar::ToolbarPart, toolbar::ToolbarProps,
+    toolbar::ToolbarSeparatorProps, toolbar::ToolbarSpacerProps,
+};
 pub mod undo_button;
 pub use undo_button::UndoButton;
 pub mod breadcrumb;
@@ -300,72 +529,148 @@ pub use {badge::Badge, badge::BadgeContent, badge::BadgeFace, badge::BadgeProps}
 pub mod icon;
 pub use {icon::IconProps, icon::IconSize, icon::IconWidget};
 pub mod signal_meter;
-pub use {signal_meter::SIGNAL_BARS, signal_meter::SignalLevel, signal_meter::SignalMeter, signal_meter::SignalMeterFace, signal_meter::SignalMeterProps};
+pub use {
+    signal_meter::SIGNAL_BARS, signal_meter::SignalLevel, signal_meter::SignalMeter,
+    signal_meter::SignalMeterFace, signal_meter::SignalMeterProps,
+};
 pub mod stroke_preview;
-pub use {stroke_preview::BrushCharacter, stroke_preview::StrokePreview, stroke_preview::StrokePreviewFace, stroke_preview::StrokePreviewProps};
+pub use {
+    stroke_preview::BrushCharacter, stroke_preview::StrokePreview,
+    stroke_preview::StrokePreviewFace, stroke_preview::StrokePreviewProps,
+};
 pub mod level_meter;
-pub use {level_meter::LevelMeter, level_meter::LevelMeterFace, level_meter::LevelMeterProps, level_meter::MeterState};
+pub use {
+    level_meter::LevelMeter, level_meter::LevelMeterFace, level_meter::LevelMeterProps,
+    level_meter::MeterState,
+};
 pub mod drawing;
-pub use {drawing::Drawing, drawing::DrawingProps, drawing::Ink, drawing::Meaning, drawing::Shape, drawing::Weight};
+pub use {
+    drawing::Drawing, drawing::DrawingProps, drawing::Ink, drawing::Meaning, drawing::Shape,
+    drawing::Weight,
+};
 pub mod hex_grid;
 pub use {hex_grid::HexColumn, hex_grid::HexGrid, hex_grid::HexGridProps};
 pub mod key_pad;
-pub use {key_pad::KeyPad, key_pad::KeyPadProps, key_pad::PadKey, key_pad::PadSize, key_pad::PadTone};
+pub use {
+    key_pad::KeyPad, key_pad::KeyPadProps, key_pad::PadKey, key_pad::PadSize, key_pad::PadTone,
+};
 pub mod diff_grid;
 pub use {diff_grid::DiffGrid, diff_grid::DiffGridProps, diff_grid::DiffSide};
 pub mod paint_surface;
 pub use {paint_surface::PaintSurface, paint_surface::PaintSurfaceProps};
 pub mod chart;
-pub use {chart::Chart, chart::ChartStyle, chart::RollingSeries, chart::Series, chart::Sparkline, chart::TrendCurve, chart::TrendFill, chart::TrendMarks, chart::TrendRange, chart::TrendStyle};
+pub use {
+    chart::Chart, chart::ChartStyle, chart::RollingSeries, chart::Series, chart::Sparkline,
+    chart::TrendCurve, chart::TrendFill, chart::TrendMarks, chart::TrendRange, chart::TrendStyle,
+};
 pub(crate) mod chart_data;
 pub(crate) mod chart_geometry;
 pub(crate) mod chart_labels;
 pub mod chart_readout;
-pub(crate) use {chart_data::ChartBranch, chart_data::hierarchy, chart_data::link_description, chart_data::node_description, chart_data::part_description};
-pub use {chart_data::ChartItem, chart_data::ChartLink, chart_data::ChartNode, chart_data::ChartPart, chart_data::GraphSelection};
+pub(crate) use {
+    chart_data::ChartBranch, chart_data::hierarchy, chart_data::link_description,
+    chart_data::node_description, chart_data::part_description,
+};
+pub use {
+    chart_data::ChartItem, chart_data::ChartLink, chart_data::ChartNode, chart_data::ChartPart,
+    chart_data::GraphSelection,
+};
 pub mod chart_legend;
 pub mod chart_navigation;
-pub use {chart_navigation::ChartNavAction, chart_navigation::ChartTouchAction, chart_navigation::ChartTouchTracker, chart_navigation::chart_nav_action, chart_navigation::moved_index as move_chart_index, chart_navigation::moved_item as move_chart_item};
+pub use {
+    chart_navigation::ChartNavAction, chart_navigation::ChartTouchAction,
+    chart_navigation::ChartTouchTracker, chart_navigation::chart_nav_action,
+    chart_navigation::moved_index as move_chart_index,
+    chart_navigation::moved_item as move_chart_item,
+};
 pub mod plot;
 pub use {plot::Plot, plot::PlotFrame, plot::PlotItem, plot::PlotMarks};
 pub mod cartesian_plot;
-pub use {cartesian_plot::AxisLabelFormat, cartesian_plot::AxisRange, cartesian_plot::AxisScale, cartesian_plot::AxisTick, cartesian_plot::CartesianAnimationStyle, cartesian_plot::CartesianAnnotation, cartesian_plot::CartesianAnnotationKind, cartesian_plot::CartesianBrush, cartesian_plot::CartesianBrushSelection, cartesian_plot::CartesianGesturePolicy, cartesian_plot::CartesianPan, cartesian_plot::CartesianPlot, cartesian_plot::CartesianPlotProps, cartesian_plot::CartesianRenderingStyle, cartesian_plot::CartesianStyle, cartesian_plot::CartesianTooltipAnchor, cartesian_plot::CartesianTooltipStyle, cartesian_plot::CartesianZoom, cartesian_plot::Curve, cartesian_plot::Marker, cartesian_plot::MarkerShape, cartesian_plot::PlotAxis, cartesian_plot::PlotDatum, cartesian_plot::PlotPoints, cartesian_plot::PlotSeries, cartesian_plot::SeriesKind};
+pub use {
+    cartesian_plot::AxisLabelFormat, cartesian_plot::AxisRange, cartesian_plot::AxisScale,
+    cartesian_plot::AxisTick, cartesian_plot::CartesianAnimationStyle,
+    cartesian_plot::CartesianAnnotation, cartesian_plot::CartesianAnnotationKind,
+    cartesian_plot::CartesianBrush, cartesian_plot::CartesianBrushSelection,
+    cartesian_plot::CartesianGesturePolicy, cartesian_plot::CartesianPan,
+    cartesian_plot::CartesianPlot, cartesian_plot::CartesianPlotProps,
+    cartesian_plot::CartesianRenderingStyle, cartesian_plot::CartesianStyle,
+    cartesian_plot::CartesianTooltipAnchor, cartesian_plot::CartesianTooltipStyle,
+    cartesian_plot::CartesianZoom, cartesian_plot::Curve, cartesian_plot::Marker,
+    cartesian_plot::MarkerShape, cartesian_plot::PlotAxis, cartesian_plot::PlotDatum,
+    cartesian_plot::PlotPoints, cartesian_plot::PlotSeries, cartesian_plot::SeriesKind,
+};
 pub mod pie_chart;
-pub use {pie_chart::PieChart, pie_chart::PieSlice, pie_chart::PieStyle, pie_chart::PieTooltipAnchor};
+pub use {
+    pie_chart::PieChart, pie_chart::PieSlice, pie_chart::PieStyle, pie_chart::PieTooltipAnchor,
+};
 pub mod polar_area_chart;
 pub use {polar_area_chart::PolarAreaChart, polar_area_chart::PolarAreaStyle};
 pub mod heatmap;
 pub use {heatmap::Heatmap, heatmap::HeatmapCell, heatmap::HeatmapStyle};
 pub mod histogram;
-pub use {histogram::Histogram, histogram::HistogramChart, histogram::HistogramNormalization, histogram::HistogramProps, histogram::HistogramScale};
+pub use {
+    histogram::Histogram, histogram::HistogramChart, histogram::HistogramNormalization,
+    histogram::HistogramProps, histogram::HistogramScale,
+};
 pub mod candlestick_chart;
-pub use {candlestick_chart::Candle, candlestick_chart::CandleObservation, candlestick_chart::CandlestickChart, candlestick_chart::CandlestickChartProps, candlestick_chart::CandlestickStyle};
+pub use {
+    candlestick_chart::Candle, candlestick_chart::CandleObservation,
+    candlestick_chart::CandlestickChart, candlestick_chart::CandlestickChartProps,
+    candlestick_chart::CandlestickStyle,
+};
 pub mod chord_chart;
-pub use {chord_chart::ChordChart, chord_chart::ChordChartProps, chord_chart::ChordSelection, chord_chart::ChordStyle};
+pub use {
+    chord_chart::ChordChart, chord_chart::ChordChartProps, chord_chart::ChordSelection,
+    chord_chart::ChordStyle,
+};
 pub mod treemap;
 pub use {treemap::Treemap, treemap::TreemapProps, treemap::TreemapStyle};
 pub mod radar_chart;
-pub use {radar_chart::RadarAxis, radar_chart::RadarChart, radar_chart::RadarLegendStyle, radar_chart::RadarSeries, radar_chart::RadarStyle};
+pub use {
+    radar_chart::RadarAxis, radar_chart::RadarChart, radar_chart::RadarLegendStyle,
+    radar_chart::RadarSeries, radar_chart::RadarStyle,
+};
 pub mod range_chart;
-pub use {range_chart::RangeBar, range_chart::RangeChart, range_chart::RangeChartProps, range_chart::RangeKind, range_chart::RangeSpan, range_chart::RangeStyle};
+pub use {
+    range_chart::RangeBar, range_chart::RangeChart, range_chart::RangeChartProps,
+    range_chart::RangeKind, range_chart::RangeSpan, range_chart::RangeStyle,
+};
 pub mod category_chart;
-pub use {category_chart::Category, category_chart::CategoryChart, category_chart::CategoryChartStyle, category_chart::CategoryLayout, category_chart::CategorySeries, category_chart::CategoryValue};
+pub use {
+    category_chart::Category, category_chart::CategoryChart, category_chart::CategoryChartStyle,
+    category_chart::CategoryLayout, category_chart::CategorySeries, category_chart::CategoryValue,
+};
 pub mod distribution_chart;
-pub use {distribution_chart::DistributionChart, distribution_chart::DistributionKind, distribution_chart::DistributionSeries, distribution_chart::DistributionStyle};
+pub use {
+    distribution_chart::DistributionChart, distribution_chart::DistributionKind,
+    distribution_chart::DistributionSeries, distribution_chart::DistributionStyle,
+};
 pub mod sankey;
-pub use {sankey::SankeyChart, sankey::SankeyChartProps, sankey::SankeySelection, sankey::SankeyStyle};
+pub use {
+    sankey::SankeyChart, sankey::SankeyChartProps, sankey::SankeySelection, sankey::SankeyStyle,
+};
 pub mod sunburst;
-pub use {sunburst::SunburstChart, sunburst::SunburstChartProps, sunburst::SunburstNode, sunburst::SunburstStyle};
+pub use {
+    sunburst::SunburstChart, sunburst::SunburstChartProps, sunburst::SunburstNode,
+    sunburst::SunburstStyle,
+};
 pub mod funnel_chart;
 pub use {funnel_chart::FunnelChart, funnel_chart::FunnelDirection, funnel_chart::FunnelStyle};
 pub mod gauge;
-pub use {gauge::BarGauge, gauge::BarGaugeProps, gauge::GaugeReading, gauge::GaugeStyle, gauge::GaugeThresholds, gauge::ProgressRing, gauge::ProgressRingFace, gauge::ProgressRingProps, gauge::ProgressRingSize, gauge::RingReading};
+pub use {
+    gauge::BarGauge, gauge::BarGaugeProps, gauge::GaugeReading, gauge::GaugeStyle,
+    gauge::GaugeThresholds, gauge::ProgressRing, gauge::ProgressRingFace, gauge::ProgressRingProps,
+    gauge::ProgressRingSize, gauge::RingReading,
+};
 pub mod function_plane;
 pub use function_plane::FunctionPlane;
 pub mod split_handle;
 pub use {split_handle::SplitHandle, split_handle::SplitOrientation, split_handle::SplitRatio};
 pub mod video_player;
-pub use {video_player::DeclaredVideo, video_player::PLAYBACK_RATES, video_player::VideoPlayer, video_player::VideoPlayerProps};
+pub use {
+    video_player::DeclaredVideo, video_player::PLAYBACK_RATES, video_player::VideoPlayer,
+    video_player::VideoPlayerProps,
+};
 pub mod terminal;
 pub use {terminal::Terminal, terminal::TerminalProps};
 pub mod webview;
@@ -377,30 +682,65 @@ pub use {image_viewer_component::ImageViewerProps, image_viewer_component::Zooma
 mod slideshow_component;
 pub use {slideshow_component::Slideshow, slideshow_component::SlideshowProps};
 mod tree_component;
-pub use {tree_component::DescribedTreeView, tree_component::RemovedNodes, tree_component::TREE_ROW_DOUBLE_HEIGHT, tree_component::TREE_ROW_HEIGHT, tree_component::TreeTone, tree_component::TreeViewNodeProps, tree_component::TreeViewProps, tree_component::TreeViewRowProps};
+pub use {
+    tree_component::DescribedTreeView, tree_component::RemovedNodes,
+    tree_component::TREE_ROW_DOUBLE_HEIGHT, tree_component::TREE_ROW_HEIGHT,
+    tree_component::TreeTone, tree_component::TreeViewNodeProps, tree_component::TreeViewProps,
+    tree_component::TreeViewRowProps,
+};
 mod row_selection;
 mod rows;
 pub mod virtual_list;
-pub use {virtual_list::AnyModel, virtual_list::DescribedList, virtual_list::DescribedRows, virtual_list::DuplicateListKey, virtual_list::ItemRow, virtual_list::ListEdges, virtual_list::ListItemProps, virtual_list::ListKey, virtual_list::ListModel, virtual_list::PaintedRowLifts, virtual_list::RowActionRects, virtual_list::RowBuild, virtual_list::RowContentBox, virtual_list::RowGroup, virtual_list::RowLift, virtual_list::RowRenameField, virtual_list::RowSelection, virtual_list::RowSelectionSink, virtual_list::TREE_INDENT, virtual_list::TreeMarks, virtual_list::TreeMove, virtual_list::TreeRow, virtual_list::VecListModel, virtual_list::VirtualList, virtual_list::VirtualListProps, virtual_list::VirtualRows, virtual_list::row_content_box};
+pub use {
+    virtual_list::AnyModel, virtual_list::DescribedList, virtual_list::DescribedRows,
+    virtual_list::DuplicateListKey, virtual_list::ItemRow, virtual_list::ListEdges,
+    virtual_list::ListItemProps, virtual_list::ListKey, virtual_list::ListModel,
+    virtual_list::PaintedRowLifts, virtual_list::RowActionRects, virtual_list::RowBuild,
+    virtual_list::RowContentBox, virtual_list::RowGroup, virtual_list::RowLift,
+    virtual_list::RowRenameField, virtual_list::RowSelection, virtual_list::RowSelectionSink,
+    virtual_list::TREE_INDENT, virtual_list::TreeMarks, virtual_list::TreeMove,
+    virtual_list::TreeRow, virtual_list::VecListModel, virtual_list::VirtualList,
+    virtual_list::VirtualListProps, virtual_list::VirtualRows, virtual_list::row_content_box,
+};
 mod activation;
 mod dismissal;
 #[cfg(feature = "model")]
 pub(crate) use activation::take_presses;
-pub use {activation::Interaction, activation::PaintedTargets, activation::paint_disabled, activation::paint_focus_ring};
+pub use {
+    activation::Interaction, activation::PaintedTargets, activation::paint_disabled,
+    activation::paint_focus_ring,
+};
 pub mod media_card;
 mod media_grid_component;
-pub use {media_card::ArtPainter, media_card::MediaArt, media_card::MediaBadge, media_card::MediaCard, media_card::MediaCardFace, media_card::MediaGrid, media_card::MediaSize, media_card::MediaSource, media_card::OwnedBadge, media_card::justified_rows};
-pub use {media_grid_component::DescribedCards, media_grid_component::MediaCardProps, media_grid_component::MediaGridProps};
+pub use {
+    media_card::ArtPainter, media_card::MediaArt, media_card::MediaBadge, media_card::MediaCard,
+    media_card::MediaCardFace, media_card::MediaGrid, media_card::MediaSize,
+    media_card::MediaSource, media_card::OwnedBadge, media_card::justified_rows,
+};
+pub use {
+    media_grid_component::DescribedCards, media_grid_component::MediaCardProps,
+    media_grid_component::MediaGridProps,
+};
 pub mod capture_button;
 pub use {capture_button::CaptureButtonFace, capture_button::CaptureKind};
 pub mod call_tile;
-pub use {call_tile::CallSource, call_tile::CallTile, call_tile::CallTileProps, call_tile::call_address, call_tile::call_slot};
+pub use {
+    call_tile::CallSource, call_tile::CallTile, call_tile::CallTileProps, call_tile::call_address,
+    call_tile::call_slot,
+};
 pub mod transport;
 pub use {transport::TransportControl, transport::TransportFace};
 pub mod media_transport;
 mod media_transport_component;
-pub use {media_transport::MediaTransport, media_transport::TransportActions, media_transport::TransportArt, media_transport::TransportEvent, media_transport::TransportFeed, media_transport::TransportRepeat, media_transport::TransportState, media_transport::TransportTriggers};
-pub use {media_transport_component::DeclaredTransport, media_transport_component::MediaTransportProps};
+pub use {
+    media_transport::MediaTransport, media_transport::TransportActions,
+    media_transport::TransportArt, media_transport::TransportEvent, media_transport::TransportFeed,
+    media_transport::TransportRepeat, media_transport::TransportState,
+    media_transport::TransportTriggers,
+};
+pub use {
+    media_transport_component::DeclaredTransport, media_transport_component::MediaTransportProps,
+};
 pub mod now_playing;
 pub use {now_playing::Scrub, now_playing::Song, now_playing::SongFace};
 pub mod drop_zone;
@@ -408,7 +748,10 @@ pub use {drop_zone::DropZone, drop_zone::DropZoneFace, drop_zone::DropZoneProps}
 pub mod file_open;
 pub use {file_open::FileOpenEvent, file_open::FileOpenSurface};
 pub mod skeleton;
-pub use {skeleton::Skeleton, skeleton::SkeletonFace, skeleton::SkeletonForm, skeleton::SkeletonProps, skeleton::skeleton_tone};
+pub use {
+    skeleton::Skeleton, skeleton::SkeletonFace, skeleton::SkeletonForm, skeleton::SkeletonProps,
+    skeleton::skeleton_tone,
+};
 pub mod backdrop;
 pub use {backdrop::Backdrop, backdrop::BackdropProps};
 pub mod arrival_failure;
@@ -416,63 +759,140 @@ pub use {arrival_failure::WindowFailure, arrival_failure::arrival_failure};
 pub mod arriving_rows;
 pub mod arriving_view;
 pub use {arriving_rows::ArrivingRows, arriving_rows::RowFade};
-pub use {arriving_view::ArrivalFace, arriving_view::ArrivingView, arriving_view::ArrivingViewOf, arriving_view::AwaitsContent, arriving_view::ReservedShape, arriving_view::Showing};
+pub use {
+    arriving_view::ArrivalFace, arriving_view::ArrivingView, arriving_view::ArrivingViewOf,
+    arriving_view::AwaitsContent, arriving_view::ReservedShape, arriving_view::Showing,
+};
 pub mod swapped;
 pub use swapped::Swapped;
 pub mod stepper;
 pub use {stepper::Stepper, stepper::StepperFace, stepper::StepperProps};
 pub mod property_list;
-pub use {property_list::Property, property_list::PropertyColumn, property_list::PropertyList, property_list::PropertyListFace, property_list::PropertyListProps, property_list::PropertyProps, property_list::PropertyRow, property_list::PropertyValue, property_list::property_label_column};
+pub use {
+    property_list::Property, property_list::PropertyColumn, property_list::PropertyList,
+    property_list::PropertyListFace, property_list::PropertyListProps,
+    property_list::PropertyProps, property_list::PropertyRow, property_list::PropertyValue,
+    property_list::property_label_column,
+};
 pub mod list_row;
-pub use {list_row::CARD_TITLE_LINES, list_row::CardBody, list_row::ControlRow, list_row::ControlRowProps, list_row::ListRow, list_row::ListRowFace, list_row::ListRowProps, list_row::RowAction, list_row::RowAuthor, list_row::RowLeading, list_row::RowShapeFace, list_row::RowStatus, list_row::RowValue, list_row::RowWriter, list_row::ShownChange, list_row::SwipeAction, list_row::SwipeActionProps, list_row::badge_column_width, list_row::mark_text_inset};
+pub use {
+    list_row::CARD_TITLE_LINES, list_row::CardBody, list_row::ControlRow,
+    list_row::ControlRowProps, list_row::ListRow, list_row::ListRowFace, list_row::ListRowProps,
+    list_row::RowAction, list_row::RowAuthor, list_row::RowLeading, list_row::RowShapeFace,
+    list_row::RowStatus, list_row::RowValue, list_row::RowWriter, list_row::ShownChange,
+    list_row::SwipeAction, list_row::SwipeActionProps, list_row::badge_column_width,
+    list_row::mark_text_inset,
+};
 pub mod toggle_group;
-pub use {toggle_group::Segment, toggle_group::SegmentProps, toggle_group::SegmentedFace, toggle_group::SegmentedStyle, toggle_group::SegmentedTouch, toggle_group::SegmentedTouchGroup, toggle_group::SegmentedTouchResult, toggle_group::ToggleGroup, toggle_group::ToggleGroupProps, toggle_group::ViewTabsProps, toggle_group::segment_colors};
+pub use {
+    toggle_group::Segment, toggle_group::SegmentProps, toggle_group::SegmentedFace,
+    toggle_group::SegmentedStyle, toggle_group::SegmentedTouch, toggle_group::SegmentedTouchGroup,
+    toggle_group::SegmentedTouchResult, toggle_group::ToggleGroup, toggle_group::ToggleGroupProps,
+    toggle_group::ViewTabsProps, toggle_group::segment_colors,
+};
 pub mod view_tabs;
 pub use view_tabs::ViewTabs;
 pub mod chrome_body;
-pub use {chrome_body::ChromeBody, chrome_body::ChromeEdge, chrome_body::ChromeProps, chrome_body::ChromeShape};
+pub use {
+    chrome_body::ChromeBody, chrome_body::ChromeEdge, chrome_body::ChromeProps,
+    chrome_body::ChromeShape,
+};
 pub mod docked;
 pub use {docked::Docked, docked::DockedProps};
 pub mod map;
-pub use {map::MAP_ZOOM_MAX, map::MAP_ZOOM_MIN, map::Map, map::MapCamera, map::MapMarkerKind, map::MapMarkerProps, map::MapPinProps, map::MapProps, map::MapTrackProps, map::MapTrackTone, map::PinPlace};
+pub use {
+    map::MAP_ZOOM_MAX, map::MAP_ZOOM_MIN, map::Map, map::MapCamera, map::MapMarkerKind,
+    map::MapMarkerProps, map::MapPinProps, map::MapProps, map::MapTrackProps, map::MapTrackTone,
+    map::PinPlace,
+};
 pub mod window_well;
 pub use {window_well::Wells, window_well::WindowWell, window_well::WindowWellProps};
 pub mod window_preview;
-pub use {window_preview::Previews, window_preview::WindowPreview, window_preview::WindowPreviewProps};
+pub use {
+    window_preview::Previews, window_preview::WindowPreview, window_preview::WindowPreviewProps,
+};
 pub mod window_frame;
 pub use {window_frame::WindowFrame, window_frame::WindowFrameProps};
 pub mod empty_state;
-pub use {empty_state::EmptyState, empty_state::EmptyStateContent, empty_state::EmptyStateLayout, empty_state::EmptyStateProps, empty_state::PaintedStack};
+pub use {
+    empty_state::EmptyState, empty_state::EmptyStateContent, empty_state::EmptyStateLayout,
+    empty_state::EmptyStateProps, empty_state::PaintedStack,
+};
 pub mod find_bar;
-pub use {find_bar::FindAbilities, find_bar::FindBar, find_bar::FindMatch, find_bar::FindMode, find_bar::FindOptions, find_bar::FindScope, find_bar::FindSession, find_bar::Findable, find_bar::OwnFind, find_bar::paint_find_match, find_bar::with_findable};
+pub use {
+    find_bar::FindAbilities, find_bar::FindBar, find_bar::FindMatch, find_bar::FindMode,
+    find_bar::FindOptions, find_bar::FindScope, find_bar::FindSession, find_bar::Findable,
+    find_bar::OwnFind, find_bar::paint_find_match, find_bar::with_findable,
+};
 pub mod search_field;
-pub use {search_field::FilterCount, search_field::Filterable, search_field::Filtered, search_field::SearchField, search_field::apply_filter, search_field::sync_filter, search_field::with_filterable};
+pub use {
+    search_field::FilterCount, search_field::Filterable, search_field::Filtered,
+    search_field::SearchField, search_field::apply_filter, search_field::sync_filter,
+    search_field::with_filterable,
+};
 pub mod window_search;
-pub use {window_search::InPlace, window_search::QueryView, window_search::Queryable, window_search::SearchDriver, window_search::SearchHandoff, window_search::SearchReach, window_search::SearchableWindow, window_search::WindowSearch, window_search::WindowSearchRequest, window_search::with_queryable};
+pub use {
+    window_search::InPlace, window_search::QueryView, window_search::Queryable,
+    window_search::SearchDriver, window_search::SearchHandoff, window_search::SearchReach,
+    window_search::SearchableWindow, window_search::WindowSearch,
+    window_search::WindowSearchRequest, window_search::with_queryable,
+};
 pub mod search_results;
 pub use search_results::SearchResultsView;
 pub mod stat_tile;
-pub use {stat_tile::StatGroup, stat_tile::StatGroupProps, stat_tile::StatTile, stat_tile::StatTileFace, stat_tile::StatTileProps, stat_tile::Trend};
+pub use {
+    stat_tile::StatGroup, stat_tile::StatGroupProps, stat_tile::StatTile, stat_tile::StatTileFace,
+    stat_tile::StatTileProps, stat_tile::Trend,
+};
 pub mod banner;
-pub use {banner::Banner, banner::BannerContent, banner::BannerHit, banner::BannerKind, banner::BannerNotice, banner::BannerProps};
+pub use {
+    banner::Banner, banner::BannerContent, banner::BannerHit, banner::BannerKind,
+    banner::BannerNotice, banner::BannerProps,
+};
 mod disclosure_band;
 pub use {disclosure_band::DisclosureBand, disclosure_band::DisclosureBandProps};
 pub mod chip;
-pub use {chip::Chip, chip::ChipColors, chip::ChipFace, chip::ChipLead, chip::ChipProps, chip::ChipStyle, chip::REFERENCE_LEAD};
+pub use {
+    chip::Chip, chip::ChipColors, chip::ChipFace, chip::ChipLead, chip::ChipProps, chip::ChipStyle,
+    chip::REFERENCE_LEAD,
+};
 pub mod change_mark;
 pub use {change_mark::ChangeMark, change_mark::ChangeMarkProps};
 pub mod conversation;
 pub use conversation::*;
 pub mod card;
-pub use {card::Actions, card::Card, card::CardFace, card::CardGrid, card::CardGridCardProps, card::CardGridProps, card::CardProps, card::CardWidth, card::DescribedCardGrid, card::card_column_width, card::card_columns};
+pub use {
+    card::Actions, card::Card, card::CardFace, card::CardGrid, card::CardGridCardProps,
+    card::CardGridProps, card::CardProps, card::CardWidth, card::DescribedCardGrid,
+    card::card_column_width, card::card_columns,
+};
 mod section;
-pub use {section::ObjectHeader, section::ObjectHeaderProps, section::Section, section::SectionHeader, section::SectionHeaderFace, section::SectionProps, section::StatusLine, section::StatusLineProps, section::band_height, section::heading_count};
+pub use {
+    section::ObjectHeader, section::ObjectHeaderProps, section::Section, section::SectionHeader,
+    section::SectionHeaderFace, section::SectionProps, section::StatusLine,
+    section::StatusLineProps, section::band_height, section::heading_count,
+};
 pub mod capture_studio;
-pub use {capture_studio::AudioCaptureMode, capture_studio::CaptureDestination, capture_studio::CaptureIntent, capture_studio::CaptureMode, capture_studio::CapturePreview, capture_studio::CaptureStudio, capture_studio::CaptureTarget, capture_studio::LiveCapture, capture_studio::PipLayout, capture_studio::RecordingCommand, capture_studio::RegionAnchor, capture_studio::ReplayCommand, capture_studio::ScreenshotCommand, capture_studio::ScreenshotKept, capture_studio::ScreenshotSendDevice, capture_studio::ScreenshotSendTarget, capture_studio::SourceMode};
+pub use {
+    capture_studio::AudioCaptureMode, capture_studio::CaptureDestination,
+    capture_studio::CaptureIntent, capture_studio::CaptureMode, capture_studio::CapturePreview,
+    capture_studio::CaptureStudio, capture_studio::CaptureTarget, capture_studio::LiveCapture,
+    capture_studio::PipLayout, capture_studio::RecordingCommand, capture_studio::RegionAnchor,
+    capture_studio::ReplayCommand, capture_studio::ScreenshotCommand,
+    capture_studio::ScreenshotKept, capture_studio::ScreenshotSendDevice,
+    capture_studio::ScreenshotSendTarget, capture_studio::SourceMode,
+};
 pub mod screenshot_markup;
 pub mod selection_handles;
-pub use {screenshot_markup::MarkupExport, screenshot_markup::MarkupStroke, screenshot_markup::MarkupTool, screenshot_markup::ScreenshotMarkup, screenshot_markup::ScreenshotMarkupCommand};
-pub use {selection_handles::Handle as SelectionHandle, selection_handles::SelectionHandles, selection_handles::TextGrip, selection_handles::TextGrips};
+pub use {
+    screenshot_markup::MarkupExport, screenshot_markup::MarkupStroke,
+    screenshot_markup::MarkupTool, screenshot_markup::ScreenshotMarkup,
+    screenshot_markup::ScreenshotMarkupCommand,
+};
+pub use {
+    selection_handles::Handle as SelectionHandle, selection_handles::SelectionHandles,
+    selection_handles::TextGrip, selection_handles::TextGrips,
+};
 // History's views: the timeline of a resource's changes, read from its history.
 #[cfg(feature = "model")]
 pub mod activity_timeline;
@@ -488,9 +908,18 @@ pub mod name_field;
 #[cfg(feature = "model")]
 pub use {activity_timeline::ActivityTimeline, activity_timeline::RowParts};
 #[cfg(feature = "model")]
-pub use {activity_timeline_component::ActivityArtifact, activity_timeline_component::ActivityEntryProps, activity_timeline_component::ActivityTimelineProps, activity_timeline_component::DescribedActivityTimeline};
+pub use {
+    activity_timeline_component::ActivityArtifact, activity_timeline_component::ActivityEntryProps,
+    activity_timeline_component::ActivityTimelineProps,
+    activity_timeline_component::DescribedActivityTimeline,
+};
 #[cfg(feature = "model")]
-pub use {history::AuthorRelation, history::EntryKind, history::EntryTarget, history::HistoryAttribution, history::HistoryAuthor, history::HistoryClassification, history::HistoryEntry, history::HistoryFilter, history::RedactionDisplay, history::format_relative_time, history::hue_to_rgb};
+pub use {
+    history::AuthorRelation, history::EntryKind, history::EntryTarget, history::HistoryAttribution,
+    history::HistoryAuthor, history::HistoryClassification, history::HistoryEntry,
+    history::HistoryFilter, history::RedactionDisplay, history::format_relative_time,
+    history::hue_to_rgb,
+};
 #[cfg(feature = "model")]
 pub use {history_face::EntryBody, history_face::EntryFace, history_face::HistoryEntryPresenter};
 pub mod qr;
@@ -501,16 +930,23 @@ pub use qr_component::QrProps;
 #[cfg(test)]
 mod a11y_tree_tests;
 #[cfg(test)]
+pub(crate) mod control_result_probe;
+#[cfg(test)]
 #[path = "control_touch_tests.rs"]
 mod control_touch_tests;
 #[cfg(test)]
-pub(crate) mod control_result_probe;
-#[cfg(test)]
 pub(crate) mod effect_fixture;
+pub mod keyboard_map;
 #[cfg(test)]
 mod refused_press_tests;
-pub mod keyboard_map;
-pub use {keyboard_map::KeyboardMap, keyboard_map::KeyboardMapInput, keyboard_map::KeyboardMapKey, keyboard_map::KeyboardMapSelection};
+pub use {
+    keyboard_map::KeyboardMap, keyboard_map::KeyboardMapInput, keyboard_map::KeyboardMapKey,
+    keyboard_map::KeyboardMapSelection,
+};
 /// Logical screen topology canvas shared by local and native peer displays.
 mod graph_canvas;
-pub use {graph_canvas::Connection, graph_canvas::GraphCanvas, graph_canvas::GraphCanvasConnection, graph_canvas::GraphCanvasNode, graph_canvas::GraphCanvasProps, graph_canvas::GraphNodeProps, graph_canvas::connection_description};
+pub use {
+    graph_canvas::Connection, graph_canvas::GraphCanvas, graph_canvas::GraphCanvasConnection,
+    graph_canvas::GraphCanvasNode, graph_canvas::GraphCanvasProps, graph_canvas::GraphNodeProps,
+    graph_canvas::connection_description,
+};

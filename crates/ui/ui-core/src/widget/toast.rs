@@ -1,18 +1,18 @@
 //! Transient notices and the notification card.
+use crate::time::Duration;
 use tilo_ui_base::i18n::widget_text;
 use tilo_ui_base::num::f32_of_f64;
-use crate::time::Duration;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
 
-use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::TextRole;
 use crate::widget::ButtonRole;
 use crate::widget::text_input::FieldFace;
 use crate::widget::{Button, ButtonFace, ControlSize};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 
 /// Toast cards have a fixed height and therefore paint each text field on a
 /// single baseline. Collapse all Unicode whitespace before measuring or
@@ -1632,7 +1632,10 @@ impl NoticeLayer {
     }
 
     fn motion(&self) -> tilo_ui_base::tokens::EffectiveMotion {
-        tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), self.reduce_motion)
+        tilo_ui_base::tokens::EffectiveMotion::new(
+            tilo_ui_base::tokens::Motion::default(),
+            self.reduce_motion,
+        )
     }
 
     fn button_at(&self, at: Point) -> Option<usize> {

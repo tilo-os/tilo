@@ -4,12 +4,14 @@
 //! here is the shared editor's, so these tests say what a slide box does and not what it might.
 
 use tilo_rich_edit::BlockEditor;
-use tilo_ui_base::{component::Described, component::Event, component::Fired, component::Intent, component::Value};
 use tilo_ui::headless::Driver;
+use tilo_ui::{State, accesskit, time, winit};
 use tilo_ui::{widget::Stage, widget::StagePinProps, widget::StageProps};
 use tilo_ui_base::widget::Widget;
-use tilo_ui::{State, accesskit, time, winit};
 use tilo_ui_base::{Intents, Theme, collaboration, font_catalog, synthetic_input, text_selection};
+use tilo_ui_base::{
+    component::Described, component::Event, component::Fired, component::Intent, component::Value,
+};
 
 const DEVICE: (u32, u32) = (800, 600);
 /// The page's own size, as a slide's is.

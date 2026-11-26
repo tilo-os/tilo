@@ -1,7 +1,10 @@
 use super::*;
-use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
-use tilo_ui_base::{synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release, synthetic_input::named_key};
 use crate::testing::{Dispatch, dispatch};
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
+use tilo_ui_base::{
+    synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press,
+    synthetic_input::mouse_release, synthetic_input::named_key,
+};
 use winit::keyboard::ModifiersState;
 
 fn typed(prompt: &mut SecretPrompt, text: &str) {

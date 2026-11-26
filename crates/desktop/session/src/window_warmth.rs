@@ -23,9 +23,9 @@ use tilo_desktop_model::ids::WorkspaceId;
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::desktop::warmth::WindowWarmth;
 use tilo_ui_base::Theme;
-use ui::floating_surface::HostNetworkStatus;
 use tilo_ui_base::tokens::PresenceHue;
 use tilo_ui_base::workspace_sync::WorkspaceSync;
+use ui::floating_surface::HostNetworkStatus;
 
 use crate::app_tabs::AppTabs;
 use crate::wallpapers::Wallpapers;

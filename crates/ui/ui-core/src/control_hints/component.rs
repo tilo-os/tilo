@@ -17,11 +17,13 @@ use super::coach::{MAX_SHOWINGS, Phase};
 use super::performed::{self, Performed};
 use super::shell::{HINTS, Signal};
 use super::{Gesture, HintLayer, HintLook, HintPlace, HintSpec, Learned, Quiet};
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Value};
-use tilo_ui_base::theme::Theme;
 use crate::time::{Duration, Instant};
-use tilo_ui_base::tokens::EffectiveMotion;
 use crate::widget::floating_surface::PopoverSide;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::EffectiveMotion;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// How long after search closes a window that appears counts as opened from it.

@@ -41,8 +41,12 @@ fn packages() -> Rc<Packages> {
 /// The window at `WINDOW`, laid out and at rest.
 fn open() -> Window {
     tilo_app_window::i18n::ensure();
-    let mut window = Window::open(APP, &packages(), Opening::new(WINDOW, tilo_ui_base::Theme::light()))
-        .expect("the window opens");
+    let mut window = Window::open(
+        APP,
+        &packages(),
+        Opening::new(WINDOW, tilo_ui_base::Theme::light()),
+    )
+    .expect("the window opens");
     settle(&mut window);
     window
 }
@@ -93,7 +97,9 @@ fn press(window: &mut Window, name: &str) {
 fn press_slide(window: &mut Window, number: &str) {
     let at = accessible(window)
         .into_iter()
-        .find(|node| node.role == tilo_ui_base::a11y::Role::ListItem && node.name.as_deref() == Some(number))
+        .find(|node| {
+            node.role == tilo_ui_base::a11y::Role::ListItem && node.name.as_deref() == Some(number)
+        })
         .and_then(|node| node.bounds)
         .unwrap_or_else(|| panic!("the rail offers slide {number}"));
     window

@@ -1886,7 +1886,10 @@ mod native_process_tests {
             let (manager, broker) = {
                 let _entry = scope.enter();
                 tilo_ui_base::collaboration::CollaborationManager::native_joining_fixture_for_test(
-                    tilo_ui_base::collaboration::RouteSpec::app(probe::APP, workspace.parse().unwrap()),
+                    tilo_ui_base::collaboration::RouteSpec::app(
+                        probe::APP,
+                        workspace.parse().unwrap(),
+                    ),
                     "probe",
                     automerge::AutoCommit::new().save(),
                     runtime_collab::WorkspaceStatus::Ready,

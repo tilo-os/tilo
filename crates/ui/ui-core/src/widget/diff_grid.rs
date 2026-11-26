@@ -12,13 +12,13 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
+use crate::widget::code_editor::{HlState, Language, LineSpans};
+use crate::widget::scrollbar::{PressOutcome, Scrollbar};
 use tilo_ui_base::paint::with_alpha_scaled;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::ScrollMetrics;
-use crate::widget::code_editor::{HlState, Language, LineSpans};
-use crate::widget::scrollbar::{PressOutcome, Scrollbar};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[path = "diff_grid/diff_grid_component.rs"]

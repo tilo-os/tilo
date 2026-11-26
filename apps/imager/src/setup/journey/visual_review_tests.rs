@@ -169,10 +169,11 @@ fn current_migrate_password_and_review_raster_matrix() {
                         visual_tests::body_scroll_geometry(preview).unwrap().0
                     })
                     .unwrap();
-                app.harness().send(&tilo_ui_base::synthetic_input::cursor_moved(
-                    body.x0 + 2.0,
-                    body.center().y,
-                ));
+                app.harness()
+                    .send(&tilo_ui_base::synthetic_input::cursor_moved(
+                        body.x0 + 2.0,
+                        body.center().y,
+                    ));
                 for _ in 0..40 {
                     app.harness().scroll(0.0, -10.0);
                 }

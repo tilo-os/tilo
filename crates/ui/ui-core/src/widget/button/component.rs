@@ -1,8 +1,10 @@
 //! [`Button`] as a described component.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Person};
-use tilo_ui_base::icons::Icon;
 use crate::widget::{ButtonRole, ControlSize};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Person,
+};
 
 use super::Button;
 use crate::{widget::BadgeContent, widget::ChipStyle};

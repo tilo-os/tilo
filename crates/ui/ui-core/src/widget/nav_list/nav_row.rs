@@ -9,12 +9,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 
-use tilo_ui_base::{chrome::shell::SelectionState, chrome::shell::paint_row_selection};
+use crate::{widget::BadgeFace, widget::ChipStyle, widget::RowStatus};
 use tilo_ui_base::icons::Icon;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::{widget::BadgeFace, widget::ChipStyle, widget::RowStatus};
+use tilo_ui_base::{chrome::shell::SelectionState, chrome::shell::paint_row_selection};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::{widget::AvatarFace, widget::Tone};
 
 /// How many items a navigation row is, beside its label.

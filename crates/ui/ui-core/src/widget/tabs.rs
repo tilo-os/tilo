@@ -1,23 +1,26 @@
 use crate::color_compat::ColorCompat;
-use tilo_ui_base::{dnd::DRAG_START_THRESHOLD_PX, dnd::DragPayload};
-use tilo_ui_base::{draw::DrawEnv, draw::MemberFace};
+use crate::time::{Duration, Instant};
+use crate::widget::AppKind;
+use crate::widget::window_header::HistoryControl;
+use std::collections::{HashMap, HashSet};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_ui_base::i18n::widget_text;
 use tilo_ui_base::icons;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::presence::PresenceKey;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use tilo_ui_base::theme::Theme;
-use crate::time::{Duration, Instant};
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::tokens::colors::Colors;
-use crate::widget::AppKind;
 use tilo_ui_base::widget::ModelPath;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
-use tilo_ui_base::{widget::hover_intent::HoverIntent, widget::hover_intent::Item as IntentItem, widget::hover_intent::Sample as IntentSample};
-use crate::widget::window_header::HistoryControl;
-use std::collections::{HashMap, HashSet};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::{dnd::DRAG_START_THRESHOLD_PX, dnd::DragPayload};
+use tilo_ui_base::{draw::DrawEnv, draw::MemberFace};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
+use tilo_ui_base::{
+    widget::hover_intent::HoverIntent, widget::hover_intent::Item as IntentItem,
+    widget::hover_intent::Sample as IntentSample,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 #[cfg(test)]
@@ -25,7 +28,9 @@ use winit::event::MouseButton;
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::{motion::Direction, motion::Disclose, motion::ListChange, motion::MotionSpec, motion::Snap};
+use tilo_ui_base::{
+    motion::Direction, motion::Disclose, motion::ListChange, motion::MotionSpec, motion::Snap,
+};
 
 #[path = "tabs_bar_layout.rs"]
 mod bar_layout;
@@ -56,11 +61,11 @@ mod tips;
 mod title_menu;
 #[path = "tabs_toolbar_row.rs"]
 mod toolbar_row;
-use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 pub(crate) use new_tab::{new_tab_control, new_tab_name, paint_new_tab};
 use pill_layout::{chip_rects, fit_pill_widths};
 pub use tabs_faces::TabFaceSpec;
 use tabs_faces::{FaceMetrics, PILL_MAX_FACES, PillFaces, paint_tab_face};
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
 /// Drop-target indicator line width; thin enough not to compete with pill chrome.
 const HOVER_DROP_LINE_PX: f64 = 1.5;
@@ -1742,7 +1747,8 @@ impl TabBar {
         let face_rect = |part: usize| {
             square_at(
                 Point::new(
-                    x0 + metrics.face / 2.0 + tilo_ui_base::num::f64_of_usize(part) * metrics.step(),
+                    x0 + metrics.face / 2.0
+                        + tilo_ui_base::num::f64_of_usize(part) * metrics.step(),
                     cy,
                 ),
                 metrics.face,
@@ -2555,7 +2561,11 @@ impl TabBar {
     /// How far the selection has moved to the pill it is on, `0..=1` at `now`: `1.0` at rest,
     /// the last pill's selection still fading out at the start of a move.
     #[must_use]
-    fn selection_progress(&self, now: Instant, motion: tilo_ui_base::tokens::EffectiveMotion) -> f64 {
+    fn selection_progress(
+        &self,
+        now: Instant,
+        motion: tilo_ui_base::tokens::EffectiveMotion,
+    ) -> f64 {
         let Some((_, _, started)) = self.selection_move else {
             return 1.0;
         };
@@ -4140,7 +4150,9 @@ impl Widget for TabBar {
                 if let Some(control) = self.history.get(&t.id).filter(|_| chips) {
                     node.children.push(
                         drawn(&self.history_rects, AccessNode::new(Role::ToggleButton))
-                            .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain("history-mode-title"))
+                            .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain(
+                                "history-mode-title",
+                            ))
                             .with_action_target(format!("tab-history:{}", t.id))
                             .with_state(AccessState {
                                 focusable: true,
@@ -4711,7 +4723,10 @@ impl TabBar {
         transform: Affine,
         theme: &Theme,
     ) -> Vec<Rect> {
-        if !self.keyboard_focus || self.toolbar_row.is_editing() || !tilo_ui_base::focus_visible::shown() {
+        if !self.keyboard_focus
+            || self.toolbar_row.is_editing()
+            || !tilo_ui_base::focus_visible::shown()
+        {
             return Vec::new();
         }
         let Some((idx, _)) = self
@@ -7135,7 +7150,11 @@ mod tests {
         clippy::cast_possible_truncation,
         reason = "test fixture dimensions are small literal px values"
     )]
-    pub(super) fn lay_out_at_width_with(b: &mut TabBar, width: f64, theme: &tilo_ui_base::theme::Theme) {
+    pub(super) fn lay_out_at_width_with(
+        b: &mut TabBar,
+        width: f64,
+        theme: &tilo_ui_base::theme::Theme,
+    ) {
         use std::collections::HashMap;
         use taffy::{AvailableSpace, Style};
 
@@ -7215,7 +7234,11 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
             std::collections::HashMap::new();
-        let node = b.build_layout(&mut taffy, &tilo_ui_base::theme::Theme::dark(), &mut node_map);
+        let node = b.build_layout(
+            &mut taffy,
+            &tilo_ui_base::theme::Theme::dark(),
+            &mut node_map,
+        );
         (taffy, node)
     }
 
@@ -7257,11 +7280,13 @@ mod tests {
 
     pub(super) fn send_key(b: &mut TabBar, key: Key, text: Option<&str>) -> bool {
         let (taffy, node) = built_layout(b);
-        let event = tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
-            key,
-            text.map(Into::into),
-            ElementState::Pressed,
-        ));
+        let event = tilo_ui_base::synthetic_input::keyboard_input(
+            tilo_ui_base::synthetic_input::key_event(
+                key,
+                text.map(Into::into),
+                ElementState::Pressed,
+            ),
+        );
         Dispatch::new().layout(&taffy, node).send(b, &event).handled
     }
 

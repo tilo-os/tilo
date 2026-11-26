@@ -89,9 +89,11 @@ impl Published for Mailbox {
         _look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         self.asked.borrow_mut().push(address.action.clone());
-        Ok(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        ))
+        Ok(
+            tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        )
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
@@ -753,10 +755,13 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
             _: &ActionAddress,
             _: &serde_json::Map<String, serde_json::Value>,
             _: &mut tilo_session_core::surfaces::Look<'_>,
-        ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
-            Ok(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            ))
+        ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>
+        {
+            Ok(
+                tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ),
+            )
         }
 
         fn accessible_labels(&mut self) -> Vec<String> {
@@ -889,10 +894,13 @@ fn the_open_brings_a_place_of_the_same_root_forward_rather_than_opening_a_second
             _: &ActionAddress,
             _: &serde_json::Map<String, serde_json::Value>,
             _: &mut tilo_session_core::surfaces::Look<'_>,
-        ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
-            Ok(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            ))
+        ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>
+        {
+            Ok(
+                tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ),
+            )
         }
 
         fn accessible_labels(&mut self) -> Vec<String> {

@@ -1,22 +1,22 @@
 //! Colour swatches: one named swatch type, one painter, one picker.
 
-use tilo_ui_base::widget::ModelPath;
 use std::collections::HashMap;
 use taffy::{NodeId, Style, TaffyTree};
+use tilo_ui_base::widget::ModelPath;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 #[path = "color_swatch_component.rs"]
 mod component;
-use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 pub use component::ColorSwatchPickerProps;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColorSwatch {
@@ -349,7 +349,10 @@ pub struct ColorSwatchPicker {
     /// Works out the swatches' colours from the theme they are drawn in.
     theme_colours: Option<Box<ThemeColours>>,
     /// The theme `theme_colours` last worked the colours out for.
-    coloured_for: Option<(tilo_ui_base::theme::ThemeDocument, tilo_ui_base::tokens::PresenceHue)>,
+    coloured_for: Option<(
+        tilo_ui_base::theme::ThemeDocument,
+        tilo_ui_base::tokens::PresenceHue,
+    )>,
     /// What the palette is called ("Accent"), said before the swatch a reader is on.
     name: Option<String>,
     /// The chosen ring's place: it slides from the swatch chosen before to the one chosen now.
@@ -417,8 +420,11 @@ impl ColorSwatchPicker {
             .is_some_and(|before| Some(before) != self.selected)
             && self.ring.target().area() > 0.0;
         if moved_from_another {
-            let timing =
-                ListChange::MOVE.timing(Direction::Enter, motion, tilo_ui_base::motion::input_source());
+            let timing = ListChange::MOVE.timing(
+                Direction::Enter,
+                motion,
+                tilo_ui_base::motion::input_source(),
+            );
             self.ring.set(target, timing, now);
             if let Some(until) = self.ring.settles_at() {
                 tilo_ui_base::motion::want_frames_until(until);
@@ -693,7 +699,9 @@ impl Widget for ColorSwatchPicker {
             // not draw in.
             align_self: Some(taffy::AlignSelf::FlexStart),
             min_size: taffy::Size {
-                width: taffy::Dimension::length(tilo_ui_base::num::f32_of_f64(self.cell - self.pad)),
+                width: taffy::Dimension::length(tilo_ui_base::num::f32_of_f64(
+                    self.cell - self.pad,
+                )),
                 height: taffy::Dimension::auto(),
             },
             max_size: taffy::Size {
@@ -956,9 +964,9 @@ impl Widget for ColorSwatchPicker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::presence::PresenceCtx;
     use crate::testing::dispatch;
     use automerge::AutoCommit;
+    use tilo_ui_base::presence::PresenceCtx;
 
     fn rgb(r: u8, g: u8, b: u8) -> Color {
         Color::from_rgb8(r, g, b)

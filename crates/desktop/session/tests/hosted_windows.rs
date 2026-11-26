@@ -27,11 +27,11 @@ use std::sync::Arc;
 use tilo_app_launch::Connects as _;
 use tilo_app_launch::{Launch, SessionEnvironment};
 use tilo_desktop_model::Workspace;
-use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_desktop_policy::Window;
 use tilo_session::app_tabs::ServiceLinks;
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Launches, Options, Session};
+use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::floating_surface::{
     FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
 };

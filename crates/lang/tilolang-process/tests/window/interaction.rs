@@ -186,7 +186,10 @@ fn shots() {
     std::fs::create_dir_all(&dir).unwrap();
     let _settled = tilo_ui_base::motion::testing::settled();
     for (size, viewport) in [("desktop", DESKTOP), ("phone", PHONE)] {
-        for (shade, theme) in [("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())] {
+        for (shade, theme) in [
+            ("light", tilo_ui_base::Theme::light()),
+            ("dark", tilo_ui_base::Theme::dark()),
+        ] {
             let mut app = staged(viewport);
             app.harness().set_theme(theme);
             settle(&mut app);
@@ -194,15 +197,17 @@ fn shots() {
             app.harness().render_png(&name("rest"));
             let row = last_message(&mut app);
             let (x, y) = center(row);
-            app.harness().send(&tilo_ui_base::synthetic_input::cursor_moved(x, y));
+            app.harness()
+                .send(&tilo_ui_base::synthetic_input::cursor_moved(x, y));
             app.harness().relayout();
             app.harness().render_png(&name("hover"));
             right_click(&mut app, (x, y));
             app.harness().relayout();
             app.harness().render_png(&name("menu"));
-            app.harness().send(&tilo_ui_base::synthetic_input::named_key(
-                ui::winit::keyboard::NamedKey::Escape,
-            ));
+            app.harness()
+                .send(&tilo_ui_base::synthetic_input::named_key(
+                    ui::winit::keyboard::NamedKey::Escape,
+                ));
             app.harness().relayout();
             app.harness()
                 .touch(9, ui::winit::event::TouchPhase::Started, x, y);

@@ -78,7 +78,10 @@ pub(super) struct SnapTiming {
 
 impl SnapTiming {
     pub(super) fn of(motion: tilo_ui_base::tokens::EffectiveMotion, source: MotionSource) -> Self {
-        let (spec, enter) = (tilo_ui_base::motion::Snap::SPEC, tilo_ui_base::motion::Direction::Enter);
+        let (spec, enter) = (
+            tilo_ui_base::motion::Snap::SPEC,
+            tilo_ui_base::motion::Direction::Enter,
+        );
         let timing = spec.timing(enter, motion, source);
         let settles = spec.settle_time(enter, motion, source);
         Self { timing, settles }

@@ -1,7 +1,9 @@
 //! [`Chip`] as a described component: a tag, a filter or a token in a pill.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Person};
 use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Person,
+};
 
 use super::ChipStyle;
 use super::{Chip, ChipLead};

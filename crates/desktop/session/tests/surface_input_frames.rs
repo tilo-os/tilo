@@ -12,8 +12,8 @@ use std::rc::Rc;
 use tilo_session_core::surface::{KeyModifiers, ShellSurface as _, SurfaceKey};
 
 use tilo_session::platform::surfaces::{Placement, WidgetSurface};
-use ui::taffy::{NodeId, Style, TaffyTree};
 use tilo_ui_base::{widget::EventCtx, widget::TaffyTreeExt as _, widget::Widget};
+use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::winit::event::{ElementState, WindowEvent};
 
 /// A control that keeps what it is typed, as a field does.

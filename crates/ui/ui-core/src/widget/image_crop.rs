@@ -1,8 +1,8 @@
 //! Shared direct-manipulation crop editor for scanner, Photos, and image tools.
 
-use tilo_ui_base::widget::ModelPath;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tilo_ui_base::widget::ModelPath;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -15,9 +15,9 @@ use crate::ColorCompat;
 use tilo_ui_base::LocalState;
 use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Action, a11y::Role};
 
+use crate::{widget::Image, widget::ImageFit};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
-use crate::{widget::Image, widget::ImageFit};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// Normalized source-image crop edges.

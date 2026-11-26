@@ -20,8 +20,8 @@ use vello::peniko::{Blob, Color, Fill, ImageBrush};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::pictures::Pictures;
-use tilo_ui_base::theme::Theme;
 use crate::widget::PictureSource;
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// The widest a stroke's brush may be, in artwork units.
@@ -482,8 +482,8 @@ pub use paint_surface_component::PaintSurfaceProps;
 #[cfg(test)]
 mod tests {
     use super::{PaintSurface, PaintSurfaceProps};
-    use tilo_ui_base::component::Described;
     use tilo_paint_strokes::Preset;
+    use tilo_ui_base::component::Described;
     use vello::kurbo::{Point, Rect};
 
     /// A surface 100 by 50 units, showing it at twice its size from (10, 20).

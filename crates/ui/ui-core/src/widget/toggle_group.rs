@@ -2,32 +2,34 @@
 //! one surface step off the track. `multiple` gives the multi-select form and `Tabs` the
 //! page tabs.
 
-use tilo_ui_base::num::f32_of_f64;
-use tilo_ui_base::num::f64_of_usize;
-use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
 use crate::widget::toolbar::Orientation;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::cell::Cell;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::num::f64_of_usize;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::{chrome::SelectionState, chrome::SelectionTier, chrome::selection_tier_on};
 use crate::color_compat::ColorCompat;
 use tilo_ui_base::icons::Icon;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST;
+use tilo_ui_base::{chrome::SelectionState, chrome::SelectionTier, chrome::selection_tier_on};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 #[path = "toggle_group_component.rs"]
 mod component;
 use crate::widget::ControlSize;
-use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingMetadata, widget::TaffyTreeExt, widget::Widget};
 pub use component::{SegmentProps, ToggleGroupProps, ViewTabsProps};
+use tilo_ui_base::{
+    widget::ActionEmitter, widget::ControlBindingMetadata, widget::TaffyTreeExt, widget::Widget,
+};
 
 #[path = "toggle_group_fold.rs"]
 mod fold;
@@ -59,7 +61,9 @@ impl Press {
     pub fn of(event: tilo_ui_base::component::Event) -> Self {
         match event {
             tilo_ui_base::component::Event::None => Self::Nothing,
-            tilo_ui_base::component::Event::Action(binding) => Self::Action(ActionEmitter::new(binding)),
+            tilo_ui_base::component::Event::Action(binding) => {
+                Self::Action(ActionEmitter::new(binding))
+            }
             tilo_ui_base::component::Event::View(intent) => Self::View(Box::new(intent.sender())),
         }
     }
@@ -1149,7 +1153,10 @@ pub fn segment_colors(
     let chosen = segment_tier(theme, style, SelectionState::active(true)).fill;
     let hover = segment_tier(theme, style, SelectionState::new(false, true, false)).fill;
     let quiet_ink = colors.ink_on_any(
-        &[ground, tilo_ui_base::tokens::colors::composite(hover, ground)],
+        &[
+            ground,
+            tilo_ui_base::tokens::colors::composite(hover, ground),
+        ],
         colors.text_dim,
         ON_FILL_MIN_CONTRAST,
     );
@@ -1999,8 +2006,11 @@ impl ToggleGroup {
             && self.thumb_for < self.segment_rects.len()
             && self.thumb.target().area() > 0.0;
         if chose_another {
-            let timing =
-                ListChange::MOVE.timing(Direction::Enter, motion, tilo_ui_base::motion::input_source());
+            let timing = ListChange::MOVE.timing(
+                Direction::Enter,
+                motion,
+                tilo_ui_base::motion::input_source(),
+            );
             self.thumb.set(target, timing, now);
             if let Some(until) = self.thumb.settles_at() {
                 tilo_ui_base::motion::want_frames_until(until);
@@ -2637,7 +2647,9 @@ impl ToggleGroup {
             return (0..self.segments.len())
                 .map(|index| ControlBindingMetadata {
                     control_id: self.segment_id(index),
-                    kind: tilo_ui_base::widget::ControlBindingKind::SemanticAction(self.segment_id(index)),
+                    kind: tilo_ui_base::widget::ControlBindingKind::SemanticAction(
+                        self.segment_id(index),
+                    ),
                 })
                 .collect();
         };

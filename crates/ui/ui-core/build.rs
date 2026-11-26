@@ -46,9 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // documentation or test edit needlessly rebuilds the toolkit and relinks
     // every app using it. These fixtures and the sources the component registry is
     // generated from are the script's only inputs.
-    for source in [
-        "tests/fixtures/test_image.png.hex",
-    ] {
+    for source in ["tests/fixtures/test_image.png.hex"] {
         println!("cargo::rerun-if-changed={source}");
     }
     emit_hex_fixture(

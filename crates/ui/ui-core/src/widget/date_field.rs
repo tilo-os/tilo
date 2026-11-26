@@ -5,11 +5,16 @@ use std::rc::Rc;
 
 use jiff::civil::{Date, Time};
 
-use tilo_ui_base::icons::Icon;
 use crate::widget::arrange::Stack;
-use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled, widget::binding::derived};
 use crate::{widget::Button, widget::ButtonRole, widget::DatePicker, widget::PopoverButton};
-use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::Element, widget::ModelPath, widget::Tone, widget::Widget};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{
+    widget::AppModel, widget::Decorator, widget::Element, widget::ModelPath, widget::Tone,
+    widget::Widget,
+};
+use tilo_ui_base::{
+    widget::binding::BoxedBinding, widget::binding::Pulled, widget::binding::derived,
+};
 
 #[path = "date_field_component.rs"]
 mod component;
@@ -136,7 +141,8 @@ impl DateField {
             return;
         }
         self.value = value;
-        self.shown.set(value.unwrap_or_else(tilo_ui_base::clock::today));
+        self.shown
+            .set(value.unwrap_or_else(tilo_ui_base::clock::today));
         self.show_label();
     }
 
@@ -311,7 +317,10 @@ fn field(
     // never the same name on both.
     let picker = DatePicker::from_state(shown)
         .with_today(today)
-        .with_accessible_name(tilo_ui_base::i18n::widget_format("date-field-calendar", &[]))
+        .with_accessible_name(tilo_ui_base::i18n::widget_format(
+            "date-field-calendar",
+            &[],
+        ))
         .on_choose(format!("{id}-calendar"), move |day| {
             on_day.set(Some(Some(day)))
         });

@@ -8,16 +8,16 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::WindowEvent;
 
+use crate::widget::floating_surface;
+use crate::widget::scroll_region::ScrollRegion;
+use crate::widget::spinner::Spinner;
+use crate::widget::{PanelAlign, PopoverSide};
 use tilo_ui_base::motion::Extent;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
-use crate::widget::floating_surface;
-use crate::widget::scroll_region::ScrollRegion;
-use crate::widget::spinner::Spinner;
-use crate::widget::{PanelAlign, PopoverSide};
 
 const DEFAULT_MAX_VISIBLE: usize = 8;
 
@@ -1138,7 +1138,13 @@ impl<R: FloatingRow> FloatingList<R> {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.paint_holding(scene, transform, text, theme, tilo_ui_base::motion::Pose::REST);
+        self.paint_holding(
+            scene,
+            transform,
+            text,
+            theme,
+            tilo_ui_base::motion::Pose::REST,
+        );
     }
 
     /// [`Self::paint`], its rows drawn under `rows` over the panel: an arriving menu's rows come
@@ -1263,7 +1269,9 @@ impl<R: FloatingRow> FloatingList<R> {
                 &tilo_ui_base::presence::PresenceCtx::default().draw_env(),
             );
             if theme.motion().loops() {
-                tilo_ui_base::motion::want_frames_until(now + crate::time::Duration::from_millis(100));
+                tilo_ui_base::motion::want_frames_until(
+                    now + crate::time::Duration::from_millis(100),
+                );
             }
         }
         scene.pop_layer();

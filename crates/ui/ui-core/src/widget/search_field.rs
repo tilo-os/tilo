@@ -1,9 +1,9 @@
 //! `SearchField` — the in-content filter: a field with a leading magnifier, an editable
 //! [`TextInput`], a trailing clear button and a reserved slot for the match count.
 
+use std::collections::HashMap;
 use tilo_ui_base::i18n::widget_text;
 use tilo_ui_base::widget::ModelPath;
-use std::collections::HashMap;
 
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -12,19 +12,19 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::widget::ControlSize;
+use crate::widget::search_request::{ScopeDecl, SearchOpener, SearchRequest};
+use crate::widget::text::centered_text_top;
+use crate::{widget::TextInput, widget::TextInputKind};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::platform::PlatformConventions;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
-use tilo_ui_base::widget::capability::capability_mut;
-use crate::widget::search_request::{ScopeDecl, SearchOpener, SearchRequest};
-use crate::widget::text::centered_text_top;
-use crate::widget::ControlSize;
 use tilo_ui_base::widget::TaffyTreeExt;
-use crate::{widget::TextInput, widget::TextInputKind};
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::capability::capability_mut;
 
 const ICON_GUTTER: f64 = 32.0;
 const CLEAR_GUTTER: f64 = 28.0;
@@ -208,8 +208,10 @@ impl SearchField {
     /// query to the platform search of this app, and the count slot is
     /// reserved so the text never runs under the count.
     pub fn filter() -> Self {
-        let mut field =
-            Self::new().with_placeholder(&tilo_ui_base::i18n::widget_format("search-field-filter", &[]));
+        let mut field = Self::new().with_placeholder(&tilo_ui_base::i18n::widget_format(
+            "search-field-filter",
+            &[],
+        ));
         field.escalation = Some(SearchRequest::this_app());
         field.reserve_count = true;
         field
@@ -229,7 +231,10 @@ impl SearchField {
                 input
                     .with_plain_chrome()
                     .with_kind(TextInputKind::Search)
-                    .with_placeholder(tilo_ui_base::i18n::widget_format("search-field-placeholder", &[])),
+                    .with_placeholder(tilo_ui_base::i18n::widget_format(
+                        "search-field-placeholder",
+                        &[],
+                    )),
             ),
             leading: Icon::Search,
             clearable: true,
@@ -354,9 +359,11 @@ impl SearchField {
 
     #[must_use]
     pub fn bound(mut self, path: &str) -> Self {
-        *self.input = TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field(path.to_owned())])
-            .with_plain_chrome()
-            .with_kind(TextInputKind::Search);
+        *self.input = TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field(
+            path.to_owned(),
+        )])
+        .with_plain_chrome()
+        .with_kind(TextInputKind::Search);
         self
     }
 
@@ -917,7 +924,10 @@ impl Widget for SearchField {
         Some(self)
     }
 
-    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls, SearchField);
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        SearchField
+    );
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
@@ -1023,7 +1033,8 @@ impl Widget for SearchField {
         if !self.embedded {
             let shape = RoundedRect::from_rect(self.rect, radius);
             let fill = theme.tokens.colors.surfaces.raised;
-            let bordered = tilo_ui_base::surface::control_face(scene, transform, &shape, fill, theme);
+            let bordered =
+                tilo_ui_base::surface::control_face(scene, transform, &shape, fill, theme);
             if theme.colors_are_forced() && !bordered {
                 let focused = self.input.is_focused();
                 scene.stroke(
@@ -1427,8 +1438,8 @@ impl Widget for Filtered {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::presence::PresenceCtx;
     use crate::testing::Dispatch;
+    use tilo_ui_base::presence::PresenceCtx;
 
     fn ctx_event(
         field: &mut SearchField,

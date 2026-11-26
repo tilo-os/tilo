@@ -5,8 +5,10 @@
 #[cfg(feature = "model")]
 use tilo_ui_base::permissions::PermissionScope;
 use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
+use tilo_ui_base::{
+    widget::ActionEmitter, widget::AppModel, widget::ControlBindingMetadata, widget::ModelPath,
+};
 use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
-use tilo_ui_base::{widget::ActionEmitter, widget::AppModel, widget::ControlBindingMetadata, widget::ModelPath};
 use vello::kurbo::Rect;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -273,7 +275,11 @@ impl BoolControl {
         }
     }
 
-    pub fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    pub fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
         if !self.enabled {
             return;
         }
@@ -403,7 +409,10 @@ macro_rules! bool_control_api {
 
         #[must_use]
         #[cfg(feature = "model")]
-        pub fn with_permission_scope(mut self, scope: tilo_ui_base::permissions::PermissionScope) -> Self {
+        pub fn with_permission_scope(
+            mut self,
+            scope: tilo_ui_base::permissions::PermissionScope,
+        ) -> Self {
             self.control.permission_scope = Some(scope);
             self
         }
@@ -490,7 +499,11 @@ macro_rules! bool_control_widget_methods {
             self.control.set_interaction_environment(environment);
         }
 
-        fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, root: &tilo_ui_base::widget::ModelPath) {
+        fn sync(
+            &mut self,
+            state: &tilo_ui_base::widget::AppModel,
+            root: &tilo_ui_base::widget::ModelPath,
+        ) {
             self.control.sync(state, root);
         }
 

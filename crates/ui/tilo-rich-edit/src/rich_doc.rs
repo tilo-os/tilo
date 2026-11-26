@@ -646,7 +646,9 @@ pub fn time_label(
         TimeShow::Countdown if ahead > 0 && ahead < 86_400 => {
             tilo_ui_base::format::timecode(u64::try_from(ahead).unwrap_or_default())
         }
-        TimeShow::Relative | TimeShow::Countdown if ahead > 0 => tilo_ui_base::format::relative_ahead(ahead),
+        TimeShow::Relative | TimeShow::Countdown if ahead > 0 => {
+            tilo_ui_base::format::relative_ahead(ahead)
+        }
         TimeShow::Relative | TimeShow::Countdown => tilo_ui_base::format::relative(-ahead),
     }
 }
@@ -790,9 +792,9 @@ fn relabel(view: &mut BlockView, label: impl Fn(&str, &str, &str) -> Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_graph::rich::{Attr, Block, Mark as RichMark, RichText};
     use tilo_ui_base::clock::TimeStyle;
     use tilo_ui_base::{format::DateStyle, format::Formats, format::RegionFormats};
+    use tilo_ui_graph::rich::{Attr, Block, Mark as RichMark, RichText};
 
     fn at(text: &str) -> jiff::Timestamp {
         text.parse().expect("a moment")

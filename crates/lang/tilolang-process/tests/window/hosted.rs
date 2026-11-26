@@ -18,6 +18,7 @@ use std::sync::Arc;
 use collaboration::{CollabRequest, CollaborationManager, RouteSpec};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
+use tilo_ui_base::widget::Widget;
 use tilolang_process::TilolangProcess;
 use tilolang_process::hosted::{Hosted, Spec};
 use tilolang_process::phrases::Phrases;
@@ -25,7 +26,6 @@ use tilolang_process::testing::{Broker, Inbox, Routed, Sent};
 use tilolang_process::window::hosted::HostedWindow;
 use tilolang_tilo::runtime::store::Store as _;
 use ui::headless::Driver;
-use tilo_ui_base::widget::Widget;
 
 use crate::settle::{self, Woken};
 
@@ -352,7 +352,10 @@ impl Window {
                 Self::live_input(app, tilo_ui_base::synthetic_input::named_key(key));
                 Self::live_input(
                     app,
-                    tilo_ui_base::synthetic_input::key_input(&Key::Named(key), ElementState::Released),
+                    tilo_ui_base::synthetic_input::key_input(
+                        &Key::Named(key),
+                        ElementState::Released,
+                    ),
                 );
             }
         }
@@ -385,7 +388,10 @@ impl Window {
                     other => Key::Character(other.into()),
                 };
                 app.set_surface_modifiers(held.into());
-                Self::live_input(app, tilo_ui_base::synthetic_input::key_press(key.clone(), None));
+                Self::live_input(
+                    app,
+                    tilo_ui_base::synthetic_input::key_press(key.clone(), None),
+                );
                 Self::live_input(
                     app,
                     tilo_ui_base::synthetic_input::key_input(&key, ElementState::Released),
@@ -398,8 +404,12 @@ impl Window {
     /// The pointer moved to `(x, y)` without pressing anything: where a person hovers.
     fn move_to(&mut self, x: f64, y: f64) {
         match self {
-            Self::Harness(window) => window.send(&tilo_ui_base::synthetic_input::cursor_moved(x, y)),
-            Self::Live(app) => Self::live_input(app, tilo_ui_base::synthetic_input::cursor_moved(x, y)),
+            Self::Harness(window) => {
+                window.send(&tilo_ui_base::synthetic_input::cursor_moved(x, y))
+            }
+            Self::Live(app) => {
+                Self::live_input(app, tilo_ui_base::synthetic_input::cursor_moved(x, y))
+            }
         }
     }
 
@@ -439,7 +449,10 @@ impl Window {
                 // The surface reports the modifiers held beside the key events.
                 app.set_surface_modifiers(held.into());
                 let key = Key::Character(key.into());
-                Self::live_input(app, tilo_ui_base::synthetic_input::key_press(key.clone(), None));
+                Self::live_input(
+                    app,
+                    tilo_ui_base::synthetic_input::key_press(key.clone(), None),
+                );
                 Self::live_input(
                     app,
                     tilo_ui_base::synthetic_input::key_input(&key, ElementState::Released),
@@ -656,7 +669,10 @@ impl Session {
     /// Bo at a window of `app` in Ada's workspace, made its editor: an editor asks before what
     /// leaves the workspace.
     fn bo_editing(app: &str, window: impl FnOnce(HostedWindow) -> Window) -> Self {
-        use tilo_ui_base::{permissions::policy::MemberAccess, permissions::policy::Role, permissions::policy::WorkspacePolicy};
+        use tilo_ui_base::{
+            permissions::policy::MemberAccess, permissions::policy::Role,
+            permissions::policy::WorkspacePolicy,
+        };
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let mut policy = WorkspacePolicy::new(route.cluster_id.to_string(), "ada");
         policy.members.insert("bo".to_owned(), Role::Editor);
@@ -669,7 +685,9 @@ impl Session {
     /// `person` at a harness window of `app` in a workspace whose members it knows, alone in it:
     /// what an app tells them reaches them as a notice, on every device of theirs.
     fn member(app: &str, person: &str) -> Self {
-        use tilo_ui_base::{permissions::policy::MemberAccess, permissions::policy::WorkspacePolicy};
+        use tilo_ui_base::{
+            permissions::policy::MemberAccess, permissions::policy::WorkspacePolicy,
+        };
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let policy = WorkspacePolicy::new(route.cluster_id.to_string(), person);
         let spec = Spec::new(app, route.cluster_id.to_string(), 1, person)
@@ -1098,9 +1116,9 @@ impl Session {
     /// Press the window bar's History, as the shell's bar hands the press to the window, and let
     /// the window settle.
     fn press_history(&mut self) {
-        let history = tilo_ui_base::widget::capability::capability_mut::<dyn ui::widget::WindowHistory>(
-            self.window.root(),
-        )
+        let history = tilo_ui_base::widget::capability::capability_mut::<
+            dyn ui::widget::WindowHistory,
+        >(self.window.root())
         .expect("the window offers its bar's History");
         let control = history
             .window_history_control()
@@ -2059,7 +2077,10 @@ fn shots() {
     };
     std::fs::create_dir_all(&dir).unwrap();
     let _settled = tilo_ui_base::motion::testing::settled();
-    for (shade, theme) in [("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())] {
+    for (shade, theme) in [
+        ("light", tilo_ui_base::Theme::light()),
+        ("dark", tilo_ui_base::Theme::dark()),
+    ] {
         let mut session = Session::rich();
         session.window.harness().set_theme(theme);
         new_note(&mut session, "Saturday");
@@ -2648,7 +2669,10 @@ fn palette_shots() {
     };
     std::fs::create_dir_all(&dir).unwrap();
     let _settled = tilo_ui_base::motion::testing::settled();
-    for (shade, theme) in [("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())] {
+    for (shade, theme) in [
+        ("light", tilo_ui_base::Theme::light()),
+        ("dark", tilo_ui_base::Theme::dark()),
+    ] {
         for (what, query) in [("palette", ""), ("palette-search", "new")] {
             let mut session = Session::tasks();
             session.window.harness().set_theme(theme.clone());
@@ -2677,7 +2701,11 @@ fn palette_shots() {
     }
 }
 
-type Shown = (String, Option<tilo_ui_base::icons::Icon>, Option<Vec<String>>);
+type Shown = (
+    String,
+    Option<tilo_ui_base::icons::Icon>,
+    Option<Vec<String>>,
+);
 
 /// What the window's own palette reads for `query`, row by row: the title it
 /// shows, the picture it paints and the chord it names.
@@ -2755,7 +2783,11 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
     assert_eq!(
         empty,
         vec![
-            ("Tasks".to_owned(), Some(tilo_ui_base::icons::Icon::Layers), None),
+            (
+                "Tasks".to_owned(),
+                Some(tilo_ui_base::icons::Icon::Layers),
+                None
+            ),
             (
                 "Copy link".to_owned(),
                 Some(tilo_ui_base::icons::Icon::Settings2),
@@ -2771,8 +2803,16 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
                 Some(tilo_ui_base::icons::Icon::FolderPlus),
                 None,
             ),
-            ("Undo".to_owned(), Some(tilo_ui_base::icons::Icon::Undo2), undo),
-            ("Redo".to_owned(), Some(tilo_ui_base::icons::Icon::Redo2), redo),
+            (
+                "Undo".to_owned(),
+                Some(tilo_ui_base::icons::Icon::Undo2),
+                undo
+            ),
+            (
+                "Redo".to_owned(),
+                Some(tilo_ui_base::icons::Icon::Redo2),
+                redo
+            ),
         ],
         "the empty window's palette"
     );

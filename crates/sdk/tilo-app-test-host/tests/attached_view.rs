@@ -2,14 +2,14 @@
 //! record, never drawn, every operation through the API a click takes, and
 //! the change it made flowing back to the person's window.
 
-use tilo_ui_base::collaboration::DocumentMutation;
 use tilo_app::framework::testing::TEST_WORKSPACE;
 use tilo_app::framework::{AttachedView, definition};
-use tilo_ui_base::{permissions::KindSet, permissions::PermissionContext, permissions::TreePath};
 use tilo_app::prelude::*;
 use tilo_app::resource::DocumentCheckout;
 use tilo_app::tilo_resource::profiling::observe;
 use tilo_app_test_host::TestApp;
+use tilo_ui_base::collaboration::DocumentMutation;
+use tilo_ui_base::{permissions::KindSet, permissions::PermissionContext, permissions::TreePath};
 
 use crate::kinds::{Tally, TallyApp};
 
@@ -855,7 +855,11 @@ struct Lookup {
 }
 
 impl Widget for Lookup {
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         // An answer is taken up before anything is asked, so the answer to
         // what this frame asks lands after it, in a frame of its own.
         if let Some(answer) = self

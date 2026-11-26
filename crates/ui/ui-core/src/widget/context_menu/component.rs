@@ -1,10 +1,13 @@
 //! A menu's commands and the button that opens them as described components.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::OfferedAction, component::PartItem, component::Person, component::ResourceId, component::Source};
+use crate::{widget::ButtonRole, widget::MenuEntry};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::text_render::FontChoice;
-use crate::{widget::ButtonRole, widget::MenuEntry};
 use tilo_ui_base::widget::Press;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::OfferedAction,
+    component::PartItem, component::Person, component::ResourceId, component::Source,
+};
 
 use super::{MenuButton, MenuItem};
 
@@ -172,8 +175,7 @@ impl PartItem for MenuItemProps {
         )
     }
 
-    fn read_all(
-        source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
+    fn read_all(source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
         let kinds = source.part_kinds(part);
         let mut read = Vec::with_capacity(kinds.len());
         let mut index = 0usize;
@@ -335,7 +337,9 @@ mod tests {
         let command = MenuItemProps {
             label: "Studio".to_owned(),
             link: Some("/w/studio/desktop".to_owned()),
-            choose: Event::View(tilo_ui_base::component::Intent::new(&queue, "row", "choose")),
+            choose: Event::View(tilo_ui_base::component::Intent::new(
+                &queue, "row", "choose",
+            )),
             ..MenuItemProps::default()
         }
         .into_item();

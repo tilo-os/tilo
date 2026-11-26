@@ -1,19 +1,19 @@
 //! [`Dropdown`] — a reusable, CRDT-backed single-select control.
 
-use tilo_ui_base::i18n::widget_text;
-use tilo_ui_base::num::f32_of_f64;
 use crate::widget::autocomplete::{Suggestion, SuggestionList};
-use tilo_ui_base::{widget::AppModel, widget::EventCtx, widget::ModelPath};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::{widget::AppModel, widget::EventCtx, widget::ModelPath};
 
 #[path = "dropdown_component.rs"]
 mod component;
-use tilo_ui_base::widget::TaffyTreeExt;
-use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
 pub use component::DropdownProps;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill};
@@ -21,12 +21,15 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey};
 
 use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{query_text::QueryComposition, query_text::QueryEventChange, query_text::QueryInk, query_text::QueryView};
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::text_selection::Selection;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    query_text::QueryComposition, query_text::QueryEventChange, query_text::QueryInk,
+    query_text::QueryView,
+};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingMetadata};
 
 /// Height of the closed control before the first layout: a Regular control.
@@ -610,12 +613,13 @@ impl Dropdown {
             self.list.forget_width();
         }
         self.field_height = self.control_size.height(theme);
-        let touch_minimum =
-            if self.interaction.pointer_precision == tilo_ui_base::interaction::PointerPrecision::Coarse {
-                f64::from(self.interaction.minimum_target())
-            } else {
-                0.0
-            };
+        let touch_minimum = if self.interaction.pointer_precision
+            == tilo_ui_base::interaction::PointerPrecision::Coarse
+        {
+            f64::from(self.interaction.minimum_target())
+        } else {
+            0.0
+        };
         self.field_height = self.field_height.max(touch_minimum);
         self.label_style = self.control_size.label_style(theme);
         self.caption_style = theme.text(TextRole::Caption);

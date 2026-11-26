@@ -1,22 +1,22 @@
 //! Time-series charts — [`Chart`] (a full line/area plot with grid lines, axis ticks and a legend) and
 //! [`Sparkline`] (a compact, chromeless variant for inline trend cells).
 
-use tilo_ui_base::num::f64_of_usize;
 use std::collections::HashMap;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::num::f64_of_usize;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Brush, Color, Fill, Gradient};
 
+use crate::widget::chart_legend::SeriesToggles;
+use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
+use crate::widget::chart_readout::{Highlight, Readout};
+use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
-use crate::widget::chart_legend::SeriesToggles;
-use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
-use crate::widget::chart_readout::{Highlight, Readout};
-use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
 
 /// Number of horizontal grid divisions (so `DIVISIONS + 1` rules).
 const GRID_DIVISIONS: usize = 4;

@@ -1,7 +1,9 @@
 //! [`Breadcrumb`] and its segments as described components.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::ResourceId};
 use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::ResourceId,
+};
 
 use super::Breadcrumb;
 

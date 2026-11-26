@@ -9,9 +9,9 @@ use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use tilo_ui_base::richtext::RichTextLayout;
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{text_edit::Edit, text_edit::EditCore};
 use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
-use tilo_ui_base::theme::Theme;
 
 /// A name is one line: control characters never enter it.
 fn name_char(character: char) -> bool {
@@ -124,7 +124,12 @@ impl NameField {
     /// Private equality for a deferred input into this shared name control.
     pub fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         (!self.core.has_preedit()).then(|| {
-            tilo_ui_base::ime::edit_fingerprint(&self.buffer, self.core.anchor(), self.core.caret(), key)
+            tilo_ui_base::ime::edit_fingerprint(
+                &self.buffer,
+                self.core.anchor(),
+                self.core.caret(),
+                key,
+            )
         })
     }
 

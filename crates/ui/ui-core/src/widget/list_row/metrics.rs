@@ -2,9 +2,9 @@
 //! off one theme, so the retained row and the immediate face measure alike.
 
 use tilo_ui_base::chrome::row_bleed;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 
 /// The resolved geometry of every row in `theme`: what the face paints and the retained row
 /// measures, from one place.

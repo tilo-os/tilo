@@ -4,9 +4,9 @@
 use super::App;
 use crate::host_chrome::edit::{EDIT_OPERATION, EDIT_RESOURCE, edit_resource};
 use crate::host_chrome::model::{self, HostCommand, RecentChange};
-use tilo_ui_base::platform::HostShortcut;
 #[cfg(feature = "model")]
 use crate::state::StateHistory as _;
+use tilo_ui_base::platform::HostShortcut;
 
 /// Changes whenever a host command's label, enabled state or presence may
 /// have, so the host chrome rebuilds only then.
@@ -76,8 +76,9 @@ impl App {
     }
 
     pub(super) fn refresh_local_undo_discovery(&mut self) -> bool {
-        let status = tilo_ui_base::widget::undo_access::local_undo_status(self.root_widget.as_ref())
-            .map(|s| s.key());
+        let status =
+            tilo_ui_base::widget::undo_access::local_undo_status(self.root_widget.as_ref())
+                .map(|s| s.key());
         if status == self.actions.local_history_status {
             return false;
         }
@@ -94,8 +95,10 @@ impl App {
         &mut self,
         request: tilo_ui_base::widget::undo_access::UndoRequest,
     ) -> bool {
-        if tilo_ui_base::widget::undo_access::handle_local_undo_request(self.root_widget.as_mut(), request)
-        {
+        if tilo_ui_base::widget::undo_access::handle_local_undo_request(
+            self.root_widget.as_mut(),
+            request,
+        ) {
             self.needs_sync = true;
             return true;
         }
@@ -109,7 +112,10 @@ impl App {
 
     /// Undo or redo in the focused document, for the local author.
     #[cfg(feature = "model")]
-    fn perform_document_undo(&mut self, request: tilo_ui_base::widget::undo_access::UndoRequest) -> bool {
+    fn perform_document_undo(
+        &mut self,
+        request: tilo_ui_base::widget::undo_access::UndoRequest,
+    ) -> bool {
         // Otherwise round-tripping document undo/redo loses caret position.
         let current_meta = tilo_ui_base::widget::undo_points::get_state(self.root_widget.as_ref());
         let current_focus_idx = self
@@ -276,8 +282,10 @@ impl App {
             framework_history_open: self.history_open(),
             palette: self.palette_presented(),
             focus: self.focused_node,
-            local_history: tilo_ui_base::widget::undo_access::local_undo_status(self.root_widget.as_ref())
-                .map(|s| s.key()),
+            local_history: tilo_ui_base::widget::undo_access::local_undo_status(
+                self.root_widget.as_ref(),
+            )
+            .map(|s| s.key()),
             resources: (
                 self.actions.resource_generation.get(),
                 self.actions.permission_generation.get(),

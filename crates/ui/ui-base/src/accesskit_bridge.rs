@@ -1228,4 +1228,3 @@ fn apply_state(ak: &mut AkNode, access: &AccessNode) {
         ak.set_invalid(accesskit::Invalid::True);
     }
 }
-

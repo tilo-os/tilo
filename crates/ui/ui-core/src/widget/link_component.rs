@@ -1,7 +1,9 @@
 //! [`Link`] as a described component.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::ResourceId};
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::ResourceId,
+};
 
 use super::Link;
 

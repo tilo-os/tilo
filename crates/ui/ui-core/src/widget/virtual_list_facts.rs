@@ -1,8 +1,11 @@
 //! What a [`super::DescribedList`] reads of an item beside building its row.
 
-use tilo_ui_base::{component::Component as _, component::Event, component::Moment, component::Person, component::ResourceId, component::Source};
 use crate::widget::ListRowProps;
 use tilo_ui_base::widget::Tone;
+use tilo_ui_base::{
+    component::Component as _, component::Event, component::Moment, component::Person,
+    component::ResourceId, component::Source,
+};
 
 use super::{DescribedRows, Held, ItemRow, ListItemProps};
 

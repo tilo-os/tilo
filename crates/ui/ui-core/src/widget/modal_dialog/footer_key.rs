@@ -1,10 +1,10 @@
 //! A footer action's focus node: its place in the window's keyboard focus order and its
 //! button in the accessibility tree.
 
-use tilo_ui_base::i18n::widget_text;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::i18n::widget_text;
 
 use super::{
     DialogAction, ModelPath, NodeId, Rect, Slot, Style, TaffyTree, TaffyTreeExt, Theme, Widget,

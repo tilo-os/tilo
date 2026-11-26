@@ -16,14 +16,14 @@ use super::nav_row::{
     nav_rail_item_height, nav_rail_row_height, nav_row_height, nav_row_layout, nav_section_height,
     nav_section_layout, paint_nav_row, paint_nav_section,
 };
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use crate::widget::row_selection::{RowSelection, RowSelectionSink};
+use crate::{widget::RowActionRects, widget::RowRenameField};
 use tilo_ui_base::chrome::SelectionState;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::interaction::InteractionEnvironment;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::row_selection::{RowSelection, RowSelectionSink};
-use crate::{widget::RowActionRects, widget::RowRenameField};
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Theme, widget::Widget};
 
 /// What every row of one list paints from beyond its own data: kept by the

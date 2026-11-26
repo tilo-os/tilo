@@ -1,8 +1,8 @@
 //! Keep the production layout tree alive between keystrokes. Rebuilding it would erase Taffy's
 //! intrinsic-size cache and conceal stale paragraph heights.
 use super::*;
-use ui::testing::Dispatch;
 use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
+use ui::testing::Dispatch;
 use winit::event::MouseButton;
 use winit::keyboard::ModifiersState;
 
@@ -434,8 +434,9 @@ fn assert_damage_pixels(before: &Scene, fixture: &RetainedEditor, sparse: bool) 
     // rasterizer renders a pixel ±1 depending on the rest of the encoding,
     // so retained paint (undamaged pixels kept from the earlier scene) is
     // compared as the GPU helper compares frames (see `tilo_ui_base::offscreen`).
-    let differing =
-        tilo_ui_base::offscreen::OffscreenRenderer::positions_differing_beyond_aa(&actual, &expected, 1200);
+    let differing = tilo_ui_base::offscreen::OffscreenRenderer::positions_differing_beyond_aa(
+        &actual, &expected, 1200,
+    );
     let spread = differing.iter().fold(None, |spread, &(x, y)| {
         Some(spread.map_or(
             (x, y, x, y),
@@ -1506,7 +1507,8 @@ fn blocks_measured_first_in_another_tree_are_placed_at_the_width_they_stand_at()
 #[test]
 fn text_shown_to_be_read_says_it_is_read_only() {
     let text_of = |fixture: &RetainedEditor| {
-        let document = tilo_ui_base::widget::Widget::accessibility(&*fixture.editor).expect("a document");
+        let document =
+            tilo_ui_base::widget::Widget::accessibility(&*fixture.editor).expect("a document");
         let row = document
             .children
             .iter()

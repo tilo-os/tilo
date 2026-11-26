@@ -238,8 +238,8 @@ mod tests {
     use winit::event::{DeviceId, MouseButton};
 
     use crate::headless::Driver;
-    use tilo_ui_base::theme::Theme;
     use crate::widget::Button;
+    use tilo_ui_base::theme::Theme;
     use tilo_ui_base::{widget::EventCtx, widget::TaffyTreeExt as _, widget::Widget};
 
     fn moved(x: f64, y: f64) -> WindowEvent {

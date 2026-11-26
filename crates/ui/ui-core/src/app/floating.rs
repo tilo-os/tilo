@@ -642,8 +642,10 @@ impl App {
 
     #[cfg(feature = "native")]
     fn take_native_process_intent(&mut self) -> Option<crate::widget::AppProcessIntent> {
-        tilo_ui_base::widget::capability::capability_mut::<dyn crate::AppWidget>(&mut *self.root_widget)?
-            .take_process_intent()
+        tilo_ui_base::widget::capability::capability_mut::<dyn crate::AppWidget>(
+            &mut *self.root_widget,
+        )?
+        .take_process_intent()
     }
 
     #[cfg(feature = "native")]
@@ -1247,9 +1249,9 @@ impl App {
         for message in messages {
             match &message {
                 FloatingSurfaceHostMessage::DeviceShellOperation { request, operation } => {
-                    let result = tilo_ui_base::widget::capability::capability_mut::<dyn crate::AppWidget>(
-                        &mut *self.root_widget,
-                    )
+                    let result = tilo_ui_base::widget::capability::capability_mut::<
+                        dyn crate::AppWidget,
+                    >(&mut *self.root_widget)
                     .ok_or_else(|| "Terminal is not available".to_string())
                     .and_then(|widget| widget.device_shell_operation(operation));
                     if let Some(client) = &mut self.floating.client {
@@ -1445,9 +1447,9 @@ impl App {
                         self.report_pointing = None;
                         let about =
                             crate::shared_selection::subtree_selection(self.root_widget.as_ref());
-                        let bounds = about
-                            .as_ref()
-                            .and_then(tilo_ui_base::shared_subject::SharedSelection::protocol_bounds);
+                        let bounds = about.as_ref().and_then(
+                            tilo_ui_base::shared_subject::SharedSelection::protocol_bounds,
+                        );
                         self.open_send_box(about, bounds, None, to, carried);
                     }
                 }
@@ -1735,11 +1737,11 @@ mod host_shell_allow_tests {
     #[cfg(unix)]
     #[test]
     fn a_point_of_the_window_is_answered_with_the_control_drawn_there() {
-        use tilo_ui_base::a11y::PointedControl;
         use crate::floating_surface::FloatingSurfaceClientMessage;
         use crate::widget::{Button, Column};
         use std::io::{Read, Write};
         use std::os::unix::net::UnixStream;
+        use tilo_ui_base::a11y::PointedControl;
         let (app_side, mut shell_side) = UnixStream::pair().unwrap();
         shell_side.set_nonblocking(true).unwrap();
         let root = Column::new()

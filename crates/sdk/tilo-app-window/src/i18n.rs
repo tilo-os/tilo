@@ -49,7 +49,10 @@ pub fn add_catalogues(catalogues: &[(String, String)]) {
 /// language the window speaks, and a word that language lacks reads in the package's source
 /// language, never in another of its translations.
 pub fn add_shared_catalogues(catalogues: &[(String, String)]) {
-    add(catalogues, tilo_ui_base::i18n::I18nManager::add_shared_resource);
+    add(
+        catalogues,
+        tilo_ui_base::i18n::I18nManager::add_shared_resource,
+    );
 }
 
 fn add(catalogues: &[(String, String)], as_role: fn(&str, String)) {
@@ -176,7 +179,10 @@ mod tests {
     #[test]
     fn a_notice_an_app_sends_reads_in_the_windows_words() {
         ensure();
-        let limit = [("limit", tilo_ui_base::i18n::ArgValue::Text("8 MB".to_owned()))];
+        let limit = [(
+            "limit",
+            tilo_ui_base::i18n::ArgValue::Text("8 MB".to_owned()),
+        )];
         assert_eq!(
             t_args("rich-text-too-long", &limit),
             "This paste is too long to keep (limit 8 MB). Paste it in smaller parts."

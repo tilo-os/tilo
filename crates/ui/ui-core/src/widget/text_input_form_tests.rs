@@ -7,7 +7,10 @@ use super::draw_to_populate;
 use super::drive;
 use super::layout_height;
 use super::mods;
-use tilo_ui_base::{synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release, synthetic_input::named_key};
+use tilo_ui_base::{
+    synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press,
+    synthetic_input::mouse_release, synthetic_input::named_key,
+};
 
 tilo_test_env::scenario! {
     fn a_field_keeps_its_selection_kind_and_row_as_it_is_typed_in;
@@ -514,18 +517,19 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     }
     let _guard = tilo_test_env::lock();
     let _restore = Restore;
-    tilo_ui_base::local_identity::install_source(Some(Arc::new(tilo_ui_base::local_identity::FixedIdentity(
-        tilo_ui_base::local_identity::LocalIdentity {
+    tilo_ui_base::local_identity::install_source(Some(Arc::new(
+        tilo_ui_base::local_identity::FixedIdentity(tilo_ui_base::local_identity::LocalIdentity {
             group_public_key: [1; 32],
             display_name: String::new(),
             avatar_color: [0; 3],
             device_public_key: None,
-        },
-    ))));
+        }),
+    )));
     let source: Arc<dyn settings_store::SettingsSource> = Arc::new(
         settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
     );
-    let mut settings = tilo_ui_base::personal_dictionary::TestSettings::new(source, "so.tilo.notes");
+    let mut settings =
+        tilo_ui_base::personal_dictionary::TestSettings::new(source, "so.tilo.notes");
     let field = |text: &str| {
         TextInput::local()
             .with_autocorrect(true)
@@ -547,7 +551,8 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     assert_eq!(input.value(), "teh ");
     // An edit is a request the session answers: it refuses an ordinary app's reset, and the
     // words stay as they were.
-    tilo_ui_base::personal_dictionary::edit(1, tilo_ui_base::personal_dictionary::Edit::Reset).unwrap();
+    tilo_ui_base::personal_dictionary::edit(1, tilo_ui_base::personal_dictionary::Edit::Reset)
+        .unwrap();
     assert!(
         settings.flush().is_err(),
         "ordinary apps may add explicit words but cannot reset the dictionary"
@@ -582,7 +587,9 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     english.set_focus(true);
     english.refresh_personal_spelling();
     assert!(!english.personal_word("Élodie"));
-    tilo_ui_base::local_identity::install_source(Some(Arc::new(tilo_ui_base::local_identity::NoLocalIdentity)));
+    tilo_ui_base::local_identity::install_source(Some(Arc::new(
+        tilo_ui_base::local_identity::NoLocalIdentity,
+    )));
     french.refresh_personal_spelling();
     assert!(!french.personal_word("Élodie"));
     assert!(french.spell_dictionary.as_ref().unwrap().is_empty());

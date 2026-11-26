@@ -14,26 +14,26 @@
 )]
 
 use crate::time::{Duration, Instant};
-use tilo_ui_base::widget::ModelPath;
 use automerge::ObjId;
 use std::collections::HashMap;
 use taffy::{NodeId, Size, TaffyTree};
+use tilo_ui_base::widget::ModelPath;
 use vello::kurbo::{Affine, Circle, Point, Rect, Stroke, Vec2};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
-use tilo_ui_base::{motion::Appear, motion::Direction, motion::Snap, motion::Zoom};
+use crate::widget::edge_resize::{RectEdge, WindowEdge};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::Metrics;
 use tilo_ui_base::tokens::TextRole;
-use tilo_ui_base::{tokens::EffectiveMotion, tokens::Layout, tokens::MotionSource};
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
-use crate::widget::edge_resize::{RectEdge, WindowEdge};
+use tilo_ui_base::{motion::Appear, motion::Direction, motion::Snap, motion::Zoom};
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::Layout, tokens::MotionSource};
 
 /// The unscaled title-bar height: a floating window's title bar is a Bar
 /// (HIG §9.1/§9.6), so it takes `metrics.bar_height` — the same 40 px the
@@ -49,7 +49,11 @@ pub const MIN_HEIGHT: f64 = 200.0;
 const MINIMUM: vello::kurbo::Size = vello::kurbo::Size::new(MIN_WIDTH, MIN_HEIGHT);
 const OVERLAY_CHROME_HOLD: Duration = Duration::from_millis(1_050);
 
-fn progress(spec: tilo_ui_base::motion::MotionSpec, direction: Direction, elapsed: Duration) -> f64 {
+fn progress(
+    spec: tilo_ui_base::motion::MotionSpec,
+    direction: Direction,
+    elapsed: Duration,
+) -> f64 {
     spec.progress_after(
         direction,
         EffectiveMotion::default(),
@@ -753,7 +757,9 @@ impl<C: Widget> FloatingWindow<C> {
         self.rect = Rect::from_origin_size(origin, self.rect.size());
         self.clamp_into_bounds();
         let theme = self.layout_theme.clone();
-        tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| self.place_content(&theme, tr));
+        tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| {
+            self.place_content(&theme, tr)
+        });
         true
     }
 }
@@ -778,7 +784,9 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         let bounds = self.bounds;
         self.layout_within(bounds);
         let theme = self.layout_theme.clone();
-        tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| self.place_content(&theme, tr));
+        tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| {
+            self.place_content(&theme, tr)
+        });
     }
 
     #[allow(
@@ -1058,7 +1066,8 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                 if self.closable
                     && self.close_rect().contains(pt)
                     && (!self.overlay_chrome
-                        || self.overlay_chrome_alpha_at(tilo_ui_base::motion::frame_now(), false) > 0.2)
+                        || self.overlay_chrome_alpha_at(tilo_ui_base::motion::frame_now(), false)
+                            > 0.2)
                 {
                     self.set_open(false);
                     *ctx.handled = true;
@@ -1271,7 +1280,10 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         Some(
             AccessNode::new(role)
                 .with_name(&self.title)
-                .with_description(tilo_ui_base::i18n::widget_format("floating-window-move-hint", &[]))
+                .with_description(tilo_ui_base::i18n::widget_format(
+                    "floating-window-move-hint",
+                    &[],
+                ))
                 .with_bounds(self.rect)
                 .with_state(AccessState::new().focusable(true).focused(self.focused))
                 .with_children(children),
@@ -1669,7 +1681,11 @@ mod tests {
                 origin.y + f64::from(l.size.height),
             );
         }
-        fn handle_event(&mut self, _e: &WindowEvent, _ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+        fn handle_event(
+            &mut self,
+            _e: &WindowEvent,
+            _ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+        ) {
             self.events.set(self.events.get().saturating_add(1));
         }
         fn name(&self) -> &'static str {

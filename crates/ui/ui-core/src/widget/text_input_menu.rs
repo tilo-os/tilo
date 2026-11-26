@@ -4,8 +4,8 @@
 use vello::kurbo::Point;
 
 use super::TextActionRequest;
-use tilo_ui_base::{text_selection::clipboard_paste, text_selection::word_boundaries};
 use crate::widget::context_menu::{ContextMenu, MenuItem};
+use tilo_ui_base::{text_selection::clipboard_paste, text_selection::word_boundaries};
 
 /// `MenuItem` callbacks are `Arc<dyn Fn>` and can't mutate the widget, so
 /// clicks dispatch through this parallel list by `item_at` index instead.
@@ -120,11 +120,9 @@ impl super::TextInput {
         }
         menu.push(MenuItem::action("Select All", || {}));
         actions.push(Some(CtxAction::SelectAll));
-        menu.set_about(
-            self.shareable_selection().map(|text| {
-                tilo_ui_base::shared_subject::SharedSelection::of_text(text).within(self.rect)
-            }),
-        );
+        menu.set_about(self.shareable_selection().map(|text| {
+            tilo_ui_base::shared_subject::SharedSelection::of_text(text).within(self.rect)
+        }));
         menu.open_at(pos);
         *self.context_menu = menu;
         self.context_actions = actions;

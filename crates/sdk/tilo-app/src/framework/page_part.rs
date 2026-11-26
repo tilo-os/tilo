@@ -12,10 +12,10 @@ use std::rc::Rc;
 
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::presence::PresenceCtx;
-use ui_core::vello::kurbo::Rect;
-use ui_core::{widget::Column, widget::Embedded};
 use tilo_ui_base::{widget::Element, widget::Widget};
+use ui_core::vello::kurbo::Rect;
 use ui_core::winit::event::WindowEvent;
+use ui_core::{widget::Column, widget::Embedded};
 
 /// Where a part's widgets leave the actions they ask for.
 pub type Asked<A> = Rc<RefCell<Vec<A>>>;
@@ -108,7 +108,11 @@ impl<W: Widget + 'static> Placed<W> {
     }
 
     /// Route one window event to the widget; one out of view takes none.
-    pub fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    pub fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
         if !self.placed {
             return;
         }
@@ -202,6 +206,7 @@ impl<A> PagePart<A> {
 
     /// Where the widget whose test id is `id` stands.
     pub fn find(&self, id: &str) -> Option<Rect> {
-        tilo_ui_base::widget::find_test_id(self.host.widget(), id).map(tilo_ui_base::widget::Widget::get_rect)
+        tilo_ui_base::widget::find_test_id(self.host.widget(), id)
+            .map(tilo_ui_base::widget::Widget::get_rect)
     }
 }

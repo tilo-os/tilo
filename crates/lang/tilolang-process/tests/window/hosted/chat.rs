@@ -15,9 +15,9 @@ use std::rc::Rc;
 use collaboration::RouteSpec;
 use serde_json::{Map, json};
 use tilo_app_window::{UiNode, Value};
+use tilo_ui_base::{permissions::policy, permissions::policy::MemberAccess};
 use tilolang_process::testing::Bus;
 use tilolang_tilo::runtime::{Invoked, ResourceRef, Value as RtValue};
-use tilo_ui_base::{permissions::policy, permissions::policy::MemberAccess};
 use ui::tilo_actions::MemberId;
 
 use super::{CHAT, Session, Window, find, spec_of};

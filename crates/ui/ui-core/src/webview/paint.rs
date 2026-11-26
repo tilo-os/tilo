@@ -21,9 +21,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
 
-use tilo_ui_base::{text_render::FontChoice, text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use crate::time::{Duration, Instant};
 use tilo_lock::MutexRecover as _;
+use tilo_ui_base::{
+    text_render::FontChoice, text_render::TextRenderer, text_render::TextStyle,
+    text_render::TextWeight,
+};
 use tilo_webview::{
     FrameSlot, KeyModifiers, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent,
 };

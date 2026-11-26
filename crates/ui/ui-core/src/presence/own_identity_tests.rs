@@ -1,7 +1,7 @@
-use tilo_ui_base::presence::*;
-use tilo_ui_base::collaboration::PresencePayload;
 use crate::time::Duration;
+use tilo_ui_base::collaboration::PresencePayload;
 use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::presence::*;
 
 fn workspace() -> PresenceKey {
     PresenceKey::Workspace {

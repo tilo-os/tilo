@@ -35,7 +35,9 @@ pub(crate) use chart_leaf;
 
 /// How every chart writes its title: in the heading role, the same for a line, bars, a pie or
 /// a graph.
-pub(crate) fn title_style(theme: &tilo_ui_base::theme::Theme) -> tilo_ui_base::text_render::TextStyle {
+pub(crate) fn title_style(
+    theme: &tilo_ui_base::theme::Theme,
+) -> tilo_ui_base::text_render::TextStyle {
     theme.text(tilo_ui_base::tokens::TextRole::Heading)
 }
 

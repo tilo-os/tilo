@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
-use tilo_ui_base::component::*;
 use crate::component_catalogue::TOOLKIT;
 use crate::widget::ListRowProps;
+use tilo_ui_base::component::*;
 use tilo_ui_base::widget::Element;
 
 /// The toolkit's own described widgets, as a window that builds only them composes them.
@@ -738,13 +738,17 @@ impl RowSource for Rendered {
         self.items.iter().any(|item| item.key == key)
     }
 
-    fn take_changes(&mut self) -> Vec<tilo_ui_base::collection_transition::ListModelChange<String>> {
+    fn take_changes(
+        &mut self,
+    ) -> Vec<tilo_ui_base::collection_transition::ListModelChange<String>> {
         if self.changed.is_empty() {
             return Vec::new();
         }
-        vec![tilo_ui_base::collection_transition::ListModelChange::RowsChanged {
-            keys: std::mem::take(&mut self.changed),
-        }]
+        vec![
+            tilo_ui_base::collection_transition::ListModelChange::RowsChanged {
+                keys: std::mem::take(&mut self.changed),
+            },
+        ]
     }
 
     fn has_changes(&self) -> bool {
@@ -1096,7 +1100,10 @@ fn a_person_wears_the_colour_that_travels_with_them() {
         .hue
     };
     assert_eq!(worn(Some(1)), tilo_ui_base::tokens::PresenceHue::Orange);
-    assert_eq!(worn(None), tilo_ui_base::tokens::PresenceHue::of_member(&identity));
+    assert_eq!(
+        worn(None),
+        tilo_ui_base::tokens::PresenceHue::of_member(&identity)
+    );
 }
 
 /// A component whose press is bound to an action says why it cannot be pressed now. The runtime

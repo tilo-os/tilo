@@ -103,7 +103,9 @@ impl Driver {
             self.app.invoke_bound_action_at(address, arguments)
         });
         let answered = match answered {
-            Err(error) if tilo_ui_base::widget::resource_operation::asks_to_lay_out_first(&error) => {
+            Err(error)
+                if tilo_ui_base::widget::resource_operation::asks_to_lay_out_first(&error) =>
+            {
                 self.relayout();
                 self.app.invoke_bound_action_at(address, arguments)
             }
@@ -303,7 +305,10 @@ impl Driver {
     /// Place `pointers` over the app, in the surface's logical pixels: each is drawn with the
     /// arrow, name tag and colour the app's own presence gives that person. A pointer outside
     /// the surface is dropped. Whether anything changed.
-    pub fn set_placed_pointers(&mut self, pointers: Vec<tilo_ui_base::presence::PeerCursor>) -> bool {
+    pub fn set_placed_pointers(
+        &mut self,
+        pointers: Vec<tilo_ui_base::presence::PeerCursor>,
+    ) -> bool {
         let (width, height) = self.viewport();
         let (width, height) = (f64::from(width), f64::from(height));
         let pointers: Vec<_> = pointers

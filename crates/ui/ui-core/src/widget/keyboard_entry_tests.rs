@@ -1,4 +1,4 @@
-use tilo_ui_base::widget::{keyboard_entry_rank, Widget};
+use tilo_ui_base::widget::{Widget, keyboard_entry_rank};
 
 /// An editor whose whole accessibility subtree (a node per block of a long
 /// note) is too costly to build only to read its role.
@@ -10,7 +10,9 @@ impl Widget for Editor {
         panic!("reading the keyboard entry built the editor's whole subtree")
     }
     fn accessibility_root(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
-        Some(tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Document))
+        Some(tilo_ui_base::a11y::AccessNode::new(
+            tilo_ui_base::a11y::Role::Document,
+        ))
     }
 }
 

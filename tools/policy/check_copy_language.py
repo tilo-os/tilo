@@ -733,6 +733,7 @@ LIBRARY_SKIP += (
     "crates/ui/tilo-cpu-raster/",
     "crates/ui/tilo-formats/",
     "crates/ui/tilo-rich-edit/",
+    "crates/ui/ui-base/",
     "crates/ui/ui-core/",
     "crates/ui/ui-kms/",
     "crates/ui/ui-macros/",

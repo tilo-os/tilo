@@ -6,13 +6,16 @@ use std::ops::Range;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 
+use crate::time::{Duration, Instant};
 use tilo_ui_base::text_edit::word_at_caret;
 use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::{text_selection::line_boundaries, text_selection::prev_char_boundary, text_selection::word_boundaries};
 use tilo_ui_base::theme::Theme;
-use crate::time::{Duration, Instant};
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    text_selection::line_boundaries, text_selection::prev_char_boundary,
+    text_selection::word_boundaries,
+};
 
 impl super::TextInput {
     pub(super) fn activate_spelling(&mut self) {
@@ -140,9 +143,9 @@ impl super::TextInput {
         let result = tilo_ui_base::personal_dictionary::snapshot().and_then(|snapshot| {
             tilo_ui_base::personal_dictionary::edit(
                 snapshot.revision,
-                tilo_ui_base::personal_dictionary::Edit::Add(tilo_ui_base::personal_dictionary::Word::new(
-                    word, None,
-                )?),
+                tilo_ui_base::personal_dictionary::Edit::Add(
+                    tilo_ui_base::personal_dictionary::Word::new(word, None)?,
+                ),
             )
         });
         if let Err(error) = result {

@@ -57,9 +57,10 @@ impl Layout for PageLayout {
         };
         let (top, bottom) = match self.row {
             Some(RowSpacing::After(gap)) => (length(resolved.gap(gap)), length(0.0_f32)),
-            Some(RowSpacing::Foot) => {
-                (length(resolved.gap(tilo_ui_base::tokens::Rhythm::Section)), gutter)
-            }
+            Some(RowSpacing::Foot) => (
+                length(resolved.gap(tilo_ui_base::tokens::Rhythm::Section)),
+                gutter,
+            ),
             None => (gutter, gutter),
         };
         Style {

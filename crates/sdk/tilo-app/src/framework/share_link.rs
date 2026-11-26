@@ -17,8 +17,8 @@ use tilo_actions::remote::session_actions;
 use tilo_actions::remote::{CatalogueQuery, InvokeArgument, RemoteActionTarget, ViewResourceQuery};
 use tilo_reference::link::share;
 use tilo_resource::share::ShareRequest;
-use ui_core::time::{Duration, Instant};
 use tilo_ui_base::{Arrival, CatalogueCall, InvocationCall, RemoteActions};
+use ui_core::time::{Duration, Instant};
 
 /// How long a minting waits for the host's locator.
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(30);

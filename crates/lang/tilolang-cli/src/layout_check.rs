@@ -179,23 +179,32 @@ pub const DEFAULT_LOCALE: &str = "en-US";
 /// The light and the dark variant of the shipped theme `name`: `default` the stock pair, another
 /// name its preset and that preset's light sibling (`glass`, `glass light`).
 fn theme_pair(name: &str) -> Result<[(&'static str, tilo_ui_base::Theme); 2], String> {
-    if tilo_ui_base::theme::Preset::find(name) == Some(tilo_ui_base::theme::Preset::Dark) || name == "default" {
-        return Ok([("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())]);
+    if tilo_ui_base::theme::Preset::find(name) == Some(tilo_ui_base::theme::Preset::Dark)
+        || name == "default"
+    {
+        return Ok([
+            ("light", tilo_ui_base::Theme::light()),
+            ("dark", tilo_ui_base::Theme::dark()),
+        ]);
     }
     if tilo_ui_base::Theme::named(name).is_none() && Path::new(name).is_dir() {
         let dir = Path::new(name);
         let theme = load_theme_bundle(dir).map_err(|e| format!("--theme {name}: {e}"))?;
         return Ok([("light", theme.clone()), ("dark", theme)]);
     }
-    let dark = tilo_ui_base::Theme::named(name).ok_or_else(|| format!("--theme {name}: no such theme"))?;
-    let light = tilo_ui_base::Theme::named(&format!("{name} light")).unwrap_or_else(|| dark.clone());
+    let dark =
+        tilo_ui_base::Theme::named(name).ok_or_else(|| format!("--theme {name}: no such theme"))?;
+    let light =
+        tilo_ui_base::Theme::named(&format!("{name} light")).unwrap_or_else(|| dark.clone());
     Ok([("light", light), ("dark", dark)])
 }
 
 /// The theme of the bundle directory `dir`: its [`tilo_ui_base::theme_bundle::DOCUMENT`] and a `<set>.wasm`
 /// beside it for each set the document names, each drawn on the machine code the device's daemon
 /// compiled for it when this computer has one, read from the store it keeps them in.
-fn load_theme_bundle(dir: &Path) -> Result<tilo_ui_base::Theme, tilo_ui_base::theme_bundle::BundleError> {
+fn load_theme_bundle(
+    dir: &Path,
+) -> Result<tilo_ui_base::Theme, tilo_ui_base::theme_bundle::BundleError> {
     let compiled = runtime_portal::process_link::compiled_modules();
     tilo_ui_base::theme_bundle::load_from(dir, compiled.as_deref())
 }
@@ -531,7 +540,8 @@ pub(crate) fn header_row_controls(staged: &stage::Staged, viewport: (u32, u32)) 
             && rows.iter().any(|row| row.contains(middle))
         {
             let id = node.test_id.clone().unwrap_or_default();
-            let primary = tilo_ui_base::widget::find_test_id(root, &id).is_some_and(is_primary_button);
+            let primary =
+                tilo_ui_base::widget::find_test_id(root, &id).is_some_and(is_primary_button);
             out.push(RowControl {
                 name: access.name.clone().unwrap_or_default(),
                 menu: node.widget == "OverflowButton",
@@ -1467,7 +1477,9 @@ fn checked_control_named(
         access.children.iter().find_map(|child| {
             let presses = matches!(
                 child.role,
-                tilo_ui_base::a11y::Role::Checkbox | tilo_ui_base::a11y::Role::Switch | tilo_ui_base::a11y::Role::RadioButton
+                tilo_ui_base::a11y::Role::Checkbox
+                    | tilo_ui_base::a11y::Role::Switch
+                    | tilo_ui_base::a11y::Role::RadioButton
             );
             if presses && !child.state.disabled && child.name.as_deref() == Some(label) {
                 child.action_target.clone()
@@ -2663,8 +2675,8 @@ mod board_list {
     use std::rc::Rc;
 
     use super::stage;
-    use ui::kurbo::Rect;
     use tilo_ui_base::widget::Widget;
+    use ui::kurbo::Rect;
 
     const BOARD: &str = "so.tilo.lang.layoutboard";
 
@@ -2802,9 +2814,11 @@ mod board_list {
                 let scroll = scroll.as_any()?.downcast_ref::<ui::widget::Scrollable>()?;
                 matches!(
                     scroll.layout_info(),
-                    Some(tilo_ui_base::widget::LayoutInfo::Scroll(tilo_ui_base::widget::ScrollLayout {
-                        direction: tilo_ui_base::widget::ScrollDirection::Horizontal,
-                    }))
+                    Some(tilo_ui_base::widget::LayoutInfo::Scroll(
+                        tilo_ui_base::widget::ScrollLayout {
+                            direction: tilo_ui_base::widget::ScrollDirection::Horizontal,
+                        }
+                    ))
                 )
                 .then_some(scroll)
             })

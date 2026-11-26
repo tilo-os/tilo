@@ -3,14 +3,14 @@
 //! picking one puts a mention of them in the text — one marked run naming their member
 //! id ([`Mark::Mention`](super::Mark::Mention)), not prose that happens to start with `@`.
 
-use tilo_ui_base::i18n::widget_text;
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::i18n::widget_text;
 
+use crate::widget::autocomplete::Suggestion;
+use tilo_action_policy::MemberId;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_match::FieldWeight;
 use tilo_ui_base::tokens::PresenceHue;
-use crate::widget::autocomplete::Suggestion;
-use tilo_action_policy::MemberId;
 
 /// Someone a field can mention: a member of the workspace.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -192,13 +192,14 @@ fn suggestion_with_value(candidate: &MentionCandidate, value: String) -> Suggest
         MemberId::Agent { .. } => Some(widget_text("widget-mention-agent")),
         MemberId::Bot(_) => Some(widget_text("widget-mention-bot")),
     };
-    let row =
-        Suggestion::labelled(value, candidate.name.clone()).with_person(tilo_ui_base::component::Person {
+    let row = Suggestion::labelled(value, candidate.name.clone()).with_person(
+        tilo_ui_base::component::Person {
             identity: candidate.id.clone().into(),
             name: candidate.name.clone(),
             hue: candidate.hue,
             picture: None,
-        });
+        },
+    );
     match detail {
         Some(detail) => row.with_detail(detail),
         None => row,

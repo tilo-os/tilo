@@ -123,7 +123,11 @@ pub trait Layer {
     fn a11y_tree(&self) -> Option<ui::accesskit::TreeUpdate>;
 
     /// Assistive technology acted on `target`.
-    fn a11y_action(&self, target: ui::accesskit::NodeId, action: &tilo_ui_base::a11y::Action) -> bool;
+    fn a11y_action(
+        &self,
+        target: ui::accesskit::NodeId,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool;
 
     /// What it says to assistive technology, as its own widgets name it.
     fn accessible_labels(&self) -> Vec<String>;

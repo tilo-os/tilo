@@ -540,7 +540,10 @@ impl ViewStorage {
     /// built again only for a part that changed, without the frame of the view or the rest of
     /// what it publishes. `None` for a chain the views did not open, or one another provider
     /// keeps, which is built whole for that provider to name on every action.
-    pub(crate) fn chain_published(&self, id: &str) -> Option<tilo_ui_base::published::SharedResource> {
+    pub(crate) fn chain_published(
+        &self,
+        id: &str,
+    ) -> Option<tilo_ui_base::published::SharedResource> {
         if self.kept_by.borrow().contains_key(id) {
             return None;
         }
@@ -693,7 +696,9 @@ impl ViewStorage {
         let kept_by = self.kept_by.borrow();
         let owned = |resource: tilo_actions::ResourceSpec| {
             let owner = resource.id.as_str().to_owned();
-            tilo_ui_base::published::SharedResource::from_resource(self.kept_where(&owner, resource))
+            tilo_ui_base::published::SharedResource::from_resource(
+                self.kept_where(&owner, resource),
+            )
         };
         let mut resources: Vec<tilo_ui_base::published::SharedResource> =
             self.own_resources().into_iter().map(owned).collect();
@@ -789,7 +794,8 @@ impl ViewStorage {
     /// are still on their way ([`super::workspace::WorkspaceState::declared_arriving`]).
     pub(crate) fn declared_arriving(
         &self,
-    ) -> Option<tilo_ui_base::arriving::Arriving<(), tilo_ui_base::workspace_sync::RecordNotHere>> {
+    ) -> Option<tilo_ui_base::arriving::Arriving<(), tilo_ui_base::workspace_sync::RecordNotHere>>
+    {
         self.workspace.as_ref()?.declared_arriving()
     }
 

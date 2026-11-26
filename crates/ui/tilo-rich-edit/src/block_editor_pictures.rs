@@ -320,7 +320,9 @@ impl BlockEditor {
                     f64::from(*IMAGE_WIDTH_RANGE.start()),
                     f64::from(*IMAGE_WIDTH_RANGE.end()),
                 );
-                sized = Some(tilo_ui_base::num::u32_of_i64(tilo_ui_base::num::i64_of_f64(next)));
+                sized = Some(tilo_ui_base::num::u32_of_i64(
+                    tilo_ui_base::num::i64_of_f64(next),
+                ));
             }
             "flip:h" => set.flip_h = !set.flip_h,
             "flip:v" => set.flip_v = !set.flip_v,

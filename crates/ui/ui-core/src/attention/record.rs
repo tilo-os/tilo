@@ -4,10 +4,10 @@
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
-use tilo_ui_base::icons::Icon;
 use crate::lock::MutexRecover as _;
 use crate::time::unix_now_ms;
 use crate::wake::WakeHandle;
+use tilo_ui_base::icons::Icon;
 
 /// The most items one app may have waiting; raising a further one drops the
 /// oldest of that app's, so one app cannot flood the stack.
@@ -256,7 +256,10 @@ impl Item {
                 "attention-because",
                 &[
                     ("about", tilo_ui_base::i18n::ArgValue::from(about.clone())),
-                    ("because", tilo_ui_base::i18n::ArgValue::from(because.clone())),
+                    (
+                        "because",
+                        tilo_ui_base::i18n::ArgValue::from(because.clone()),
+                    ),
                 ],
             ),
         }

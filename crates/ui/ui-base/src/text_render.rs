@@ -2549,12 +2549,7 @@ impl TextRenderer {
     }
 
     /// Greedy UAX #14 wrap of `text` at `max_width`.
-    pub fn wrap_lines(
-        &mut self,
-        text: &str,
-        style: &TextStyle,
-        max_width: f32,
-    ) -> Vec<String> {
+    pub fn wrap_lines(&mut self, text: &str, style: &TextStyle, max_width: f32) -> Vec<String> {
         fn collapsible_edge(character: char) -> bool {
             matches!(character, ' ' | '\t' | '\n' | '\r')
         }

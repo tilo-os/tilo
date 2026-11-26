@@ -1,9 +1,9 @@
 //! [`Banner`] as a described component.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event};
-use tilo_ui_base::icons::Icon;
 use crate::widget::Button;
+use tilo_ui_base::icons::Icon;
 use tilo_ui_base::widget::Press;
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 use super::{Banner, BannerKind, BannerNotice};
 

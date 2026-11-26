@@ -555,20 +555,21 @@ impl Widget for EmbeddedApp {
                     f64::from(self.region.size.width),
                     f64::from(self.region.size.height),
                 );
-                let (settling, parts) = tilo_ui_base::scene_parts::record(&mut painted, |painted| {
-                    painted.reset();
-                    if let Some(ground) = ground {
-                        painted.fill(
-                            vello::peniko::Fill::NonZero,
-                            Affine::IDENTITY,
-                            ground,
-                            None,
-                            &region,
-                        );
-                    }
-                    self.app
-                        .surface_frame_with_damage(&self.region, painted, &mut self.damage)
-                });
+                let (settling, parts) =
+                    tilo_ui_base::scene_parts::record(&mut painted, |painted| {
+                        painted.reset();
+                        if let Some(ground) = ground {
+                            painted.fill(
+                                vello::peniko::Fill::NonZero,
+                                Affine::IDENTITY,
+                                ground,
+                                None,
+                                &region,
+                            );
+                        }
+                        self.app
+                            .surface_frame_with_damage(&self.region, painted, &mut self.damage)
+                    });
                 again = settling;
                 *painted_parts = parts;
                 if !again || !self.app.unsettled() {
@@ -613,8 +614,10 @@ impl Widget for EmbeddedApp {
             // The app plans copies in the host's device pixels.
             let mut copies = Vec::with_capacity(self.painted_damage.copies.len());
             for copy in &self.painted_damage.copies {
-                let moved =
-                    tilo_ui_base::scroll_copy::MovedRegion::of(copy, self.painted_damage.copy_scale);
+                let moved = tilo_ui_base::scroll_copy::MovedRegion::of(
+                    copy,
+                    self.painted_damage.copy_scale,
+                );
                 match moved.transformed(placement) {
                     Some(moved) => copies.push(moved),
                     None => rects.push(
@@ -636,7 +639,12 @@ impl Widget for EmbeddedApp {
         });
         let key = tilo_ui_base::scene_parts::PartKey::new("ui.embedded-app", ());
         tilo_ui_base::scene_parts::hinted(scene, key, hint, |scene| {
-            tilo_ui_base::scene_parts::append(scene, &painted, painted_parts.as_ref(), Some(placement));
+            tilo_ui_base::scene_parts::append(
+                scene,
+                &painted,
+                painted_parts.as_ref(),
+                Some(placement),
+            );
         });
     }
 
@@ -897,7 +905,10 @@ impl Widget for EmbeddedApp {
         self.app.set_reduce_motion(reduced);
     }
 
-    fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
+    fn set_platform_conventions(
+        &mut self,
+        conventions: tilo_ui_base::platform::PlatformConventions,
+    ) {
         self.runs();
         self.app.set_platform_conventions(conventions);
     }
@@ -1840,8 +1851,8 @@ mod search_tests;
 mod wake_deadline_tests {
     use super::theme_repaint_tests::{layout, paint};
     use super::*;
-    use tilo_ui_base::widget::TaffyTreeExt as _;
     use std::rc::Rc;
+    use tilo_ui_base::widget::TaffyTreeExt as _;
 
     /// A leaf counting how often its deadline is asked for.
     struct Asked {
@@ -2069,9 +2080,17 @@ mod semantic_target_tests {
         let access = tile.accessibility().unwrap();
         assert_eq!(named(&access, "probe").and_then(|node| node.key), key);
 
-        assert!(act(&mut tile, "probe", &tilo_ui_base::a11y::Action::Activate));
+        assert!(act(
+            &mut tile,
+            "probe",
+            &tilo_ui_base::a11y::Action::Activate
+        ));
         assert_eq!(pressed.get(), 1, "activating the name presses the button");
-        assert!(!act(&mut tile, "missing", &tilo_ui_base::a11y::Action::Activate));
+        assert!(!act(
+            &mut tile,
+            "missing",
+            &tilo_ui_base::a11y::Action::Activate
+        ));
         assert_eq!(pressed.get(), 1);
 
         // Focus moved to a control by name is where the keyboard lands once

@@ -6,11 +6,11 @@ use vello::kurbo::{Point, Rect, RoundedRect};
 
 #[cfg(feature = "model")]
 use tilo_ui_base::permissions::PermissionScope;
-use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 
 #[path = "progress_bar_component.rs"]
 mod component;
@@ -103,7 +103,8 @@ impl ProgressBarFace {
             // In indicator steps (`tilo_ui_base::animation::indicator`): the
             // segment moves 30 times a second, not at every refresh.
             Some(started) if theme.motion().loops() && !crate::time::wall_frozen() => f64::from(
-                (tilo_ui_base::animation::indicator_elapsed(started, crate::time::now()).as_secs_f32()
+                (tilo_ui_base::animation::indicator_elapsed(started, crate::time::now())
+                    .as_secs_f32()
                     % INDETERMINATE_PERIOD_SECS)
                     / INDETERMINATE_PERIOD_SECS,
             ),
@@ -491,7 +492,13 @@ impl Widget for ProgressBar {
         }
         tilo_ui_base::widget::draw_over(
             self,
-            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
     }
 

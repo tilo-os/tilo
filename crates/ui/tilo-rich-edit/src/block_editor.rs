@@ -5,10 +5,10 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use tilo_sort::CompactSort as _;
-use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 use tilo_ui_base::num::f32_of_f64;
-use ui::widget::document_line::DocumentLine as _;
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use ui::widget::document_line::DocumentLine as _;
 
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
@@ -22,20 +22,23 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::rich_text_line::{LineSignal, RichTextLine, TransientColorSpan};
 use crate::slash_menu::{SlashCommand, SlashHostCommand, SlashMenu};
-use ui::color_compat::ColorCompat;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::{icons::Icon, icons::draw_icon};
 use tilo_ui_base::{presence::PathSegment, presence::PresenceCtx, presence::PresenceKey};
 use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
-use tilo_ui_base::{text_selection::clipboard_copy, text_selection::clipboard_copy_accepted, text_selection::clipboard_paste};
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{
+    text_selection::clipboard_copy, text_selection::clipboard_copy_accepted,
+    text_selection::clipboard_paste,
+};
+use tilo_ui_base::{widget::EventCtx, widget::Remount, widget::StructureChange, widget::Widget};
+use ui::color_compat::ColorCompat;
 use ui::widget::Button;
-use tilo_ui_base::widget::DrawChild;
-use tilo_ui_base::widget::TaffyTreeExt;
 use ui::widget::code_editor::{SyntaxHighlighter, TokenKind};
 use ui::widget::link_popover::{LinkPopover, PageEntry};
 use ui::widget::marks::{Mark, MarkSpan, PageId};
-use tilo_ui_base::{widget::EventCtx, widget::Remount, widget::StructureChange, widget::Widget};
 
 pub const MAX_LIST_INDENT: u8 = 5;
 /// The smallest and largest a view can zoom the document: 40% to 300%, as a page's zoom field
@@ -3578,8 +3581,8 @@ impl BlockEditor {
         }
         let mentions = self.mention_picker.access_rows();
         if !mentions.is_empty() {
-            let mut list =
-                AccessNode::new(tilo_ui_base::a11y::Role::List).with_name(widget_text("widget-mention-list"));
+            let mut list = AccessNode::new(tilo_ui_base::a11y::Role::List)
+                .with_name(widget_text("widget-mention-list"));
             list.semantic_key = Some("editor.mention-picker".into());
             list.bounds = self.mention_picker.rect().map(Into::into);
             list.children = mentions;
@@ -4557,7 +4560,8 @@ impl BlockEditor {
                     .map_or(f64::INFINITY, |rect| rect.width() / scale);
                 let width = (resize.start_width + (point.x - resize.start_x) / scale)
                     .clamp(f64::from(*IMAGE_WIDTH_RANGE.start()), column.max(48.0));
-                let width = tilo_ui_base::num::u32_of_i64(tilo_ui_base::num::i64_of_f64(width.round()));
+                let width =
+                    tilo_ui_base::num::u32_of_i64(tilo_ui_base::num::i64_of_f64(width.round()));
                 if width != resize.width {
                     resize.width = width;
                     self.structure_dirty = true;
@@ -4587,7 +4591,9 @@ impl BlockEditor {
                     index,
                     start_x: self.last_mouse_pos.x,
                     start_width,
-                    width: tilo_ui_base::num::u32_of_i64(tilo_ui_base::num::i64_of_f64(start_width.round())),
+                    width: tilo_ui_base::num::u32_of_i64(tilo_ui_base::num::i64_of_f64(
+                        start_width.round(),
+                    )),
                 });
                 *ctx.handled = true;
                 self.dirty = true;
@@ -5627,12 +5633,18 @@ struct HandleMetrics {
 
 impl Default for HandleMetrics {
     fn default() -> Self {
-        Self::from_tokens(&tilo_ui_base::tokens::Spacing::BASE, &tilo_ui_base::tokens::Metrics::BASE)
+        Self::from_tokens(
+            &tilo_ui_base::tokens::Spacing::BASE,
+            &tilo_ui_base::tokens::Metrics::BASE,
+        )
     }
 }
 
 impl HandleMetrics {
-    fn from_tokens(spacing: &tilo_ui_base::tokens::Spacing, metrics: &tilo_ui_base::tokens::Metrics) -> Self {
+    fn from_tokens(
+        spacing: &tilo_ui_base::tokens::Spacing,
+        metrics: &tilo_ui_base::tokens::Metrics,
+    ) -> Self {
         Self {
             width: f64::from(spacing.s4),
             height: f64::from(metrics.icon_md),
@@ -5981,9 +5993,10 @@ fn markdown_table_layout(
                             .0
                             > text_width
                         {
-                            for (index, grapheme) in tilo_ui_base::text_break::grapheme_indices(word)
-                                .map(|(_, grapheme)| grapheme)
-                                .enumerate()
+                            for (index, grapheme) in
+                                tilo_ui_base::text_break::grapheme_indices(word)
+                                    .map(|(_, grapheme)| grapheme)
+                                    .enumerate()
                             {
                                 if index > 0 {
                                     display.push('\u{200b}');
@@ -7573,7 +7586,8 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
                             ctx.theme.tokens.colors.text_primary,
                             ctx.transform.pre_translate((x, y).into()),
                             width,
-                            &TextStyle::new(14.0).with_weight(tilo_ui_base::text_render::TextWeight::Bold),
+                            &TextStyle::new(14.0)
+                                .with_weight(tilo_ui_base::text_render::TextWeight::Bold),
                         );
                     }
                     let label_height = layout.label_heights.get(column).copied().unwrap_or(0.0);
@@ -9063,9 +9077,9 @@ impl BlockEditor {
         }
         let pad = tilo_ui_base::num::f32_of_f64(self.text_pad);
         let column = (width - 2.0 * pad).max(1.0);
-        let max_height = self
-            .viewport_height
-            .map(|height| tilo_ui_base::num::f32_of_f64((height * IMAGE_VIEWPORT_FRACTION).round()));
+        let max_height = self.viewport_height.map(|height| {
+            tilo_ui_base::num::f32_of_f64((height * IMAGE_VIEWPORT_FRACTION).round())
+        });
         self.blocks
             .iter()
             .map(|block| self.floating_picture(block, column, max_height))
@@ -9218,7 +9232,11 @@ impl BlockEditor {
     /// The bands each block's rows stand in beside `floats`, whose rects are in the same space as
     /// `tops`: a block below a picture's top and above its bottom narrows by the picture and the
     /// gap that follows it.
-    fn bands_beside(&self, floats: &[FloatBand], tops: &[f32]) -> Vec<tilo_ui_base::text_render::RowBands> {
+    fn bands_beside(
+        &self,
+        floats: &[FloatBand],
+        tops: &[f32],
+    ) -> Vec<tilo_ui_base::text_render::RowBands> {
         // A picture beside rows ends with the page it stands on: the rows of another page are
         // not beside it, however tall it is.
         let page_writing = (!self.stack.pages.pages.is_empty()).then(|| {
@@ -11372,14 +11390,18 @@ impl Widget for BlockEditor {
             {
                 return true;
             }
-            if matches!(action, tilo_ui_base::a11y::Action::Focus | tilo_ui_base::a11y::Action::Activate) {
+            if matches!(
+                action,
+                tilo_ui_base::a11y::Action::Focus | tilo_ui_base::a11y::Action::Activate
+            ) {
                 let cursor = self.blocks[index].line.cursor_pos();
                 self.focus_block(index, CursorPlacement::Byte(cursor));
                 return true;
             }
             if !matches!(
                 action,
-                tilo_ui_base::a11y::Action::SetValue(_) | tilo_ui_base::a11y::Action::SetSelection { .. }
+                tilo_ui_base::a11y::Action::SetValue(_)
+                    | tilo_ui_base::a11y::Action::SetSelection { .. }
             ) {
                 return false;
             }
@@ -11427,7 +11449,10 @@ impl Widget for BlockEditor {
                 self.pending_semantic_ops.extend(ops);
                 return true;
             }
-            if matches!(action, tilo_ui_base::a11y::Action::Focus | tilo_ui_base::a11y::Action::Activate) {
+            if matches!(
+                action,
+                tilo_ui_base::a11y::Action::Focus | tilo_ui_base::a11y::Action::Activate
+            ) {
                 self.focus_block(index, CursorPlacement::Start);
                 return true;
             }
@@ -11694,7 +11719,9 @@ impl BlockEditor {
 }
 
 impl tilo_ui_base::presence::capability::PublishesPresence for BlockEditor {
-    fn presence_payload(&self) -> Option<(PresenceKey, tilo_ui_base::collaboration::PresencePayload)> {
+    fn presence_payload(
+        &self,
+    ) -> Option<(PresenceKey, tilo_ui_base::collaboration::PresencePayload)> {
         use tilo_ui_base::collaboration::PresencePayload;
         let idx = self.focused?;
         let block = self.blocks.get(idx)?;

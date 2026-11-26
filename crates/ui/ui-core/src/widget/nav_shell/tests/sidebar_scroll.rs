@@ -45,7 +45,9 @@ fn a_sidebar_taller_than_its_window_scrolls_by_wheel_to_its_last_row() {
     );
 
     let point = sidebar.center();
-    h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(point.x, point.y));
+    h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(
+        point.x, point.y,
+    ));
     for _ in 0..12 {
         h.dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_wheel(0.0, -4.0));
         h.relayout_at((1280, 800))

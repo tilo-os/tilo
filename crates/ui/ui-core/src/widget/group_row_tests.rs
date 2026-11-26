@@ -523,12 +523,13 @@ fn a_width_change_on_an_opening_window_lets_its_frames_settle() {
     let frame_at = |row: &mut GroupRow, frame: u64| {
         crate::time::testing::with_monotonic_time(t0 + Duration::from_millis(frame * 16), || {
             row.frame_presented();
-            let settle = tilo_ui_base::widget::layout::settle_widget_composition(false, |rebuild| {
-                if rebuild {
-                    relayout_strip(row, 1280.0);
-                }
-                Ok((Some(Vec::new()), row.take_structure_dirty()))
-            });
+            let settle =
+                tilo_ui_base::widget::layout::settle_widget_composition(false, |rebuild| {
+                    if rebuild {
+                        relayout_strip(row, 1280.0);
+                    }
+                    Ok((Some(Vec::new()), row.take_structure_dirty()))
+                });
             if settle.is_ok() {
                 row.mark_drawn();
             }

@@ -8,9 +8,9 @@ use vello::kurbo::Rect;
 
 use tilo_ui_base::paint::PaintCtx;
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Tone, widget::Widget};
 
 #[path = "text_stack_component.rs"]

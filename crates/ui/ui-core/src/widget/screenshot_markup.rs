@@ -27,9 +27,12 @@ use winit::{
     keyboard::{Key, NamedKey},
 };
 
-use tilo_ui_base::tokens::TextRole;
 use crate::{ColorCompat, widget::Image, widget::ImageFit};
-use tilo_ui_base::{icons, icons::Icon, surface, text_render::TextWeight, theme::Theme, widget::TaffyTreeExt, widget::Widget};
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{
+    icons, icons::Icon, surface, text_render::TextWeight, theme::Theme, widget::TaffyTreeExt,
+    widget::Widget,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MarkupTool {

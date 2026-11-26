@@ -2,13 +2,13 @@
 
 use super::widget::ItemEvents;
 use super::*;
-use tilo_ui_base::{component::Event, component::Fired, component::Intent, component::Value};
 use crate::composition::Composed;
+use jiff::civil::Date;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
-use jiff::civil::Date;
+use tilo_ui_base::{component::Event, component::Fired, component::Intent, component::Value};
 use vello::kurbo::{Affine, Point, Rect};
 
 fn item(index: usize, d: Date, start_min: i64, end_min: i64) -> TimelineItem {

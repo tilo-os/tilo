@@ -2,10 +2,10 @@
 //! its presence colour, which opens the invocation that opened the window in History. Pointing at it, or
 //! reaching it with the keyboard, says whom the agent opened it for and which invocation that was.
 use super::{Point, Rect, TOOLBAR_LEAD_GAP, TabBar, TextRenderer, Theme};
-use tilo_ui_base::a11y::AccessNode;
-use tilo_ui_base::i18n::widget_format;
 use crate::widget::{ChipFace, ChipLead, ChipStyle};
 use tilo_actions::opened_by::OpenedBy;
+use tilo_ui_base::a11y::AccessNode;
+use tilo_ui_base::i18n::widget_format;
 use vello::Scene;
 use vello::kurbo::Affine;
 

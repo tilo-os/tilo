@@ -11,8 +11,8 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionOutput, Actor, ApiError};
 
 use super::Driver;
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 use crate::shown_actions::{ActionDecision, ShownAction};
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 
 /// One invocation of another provider's action ([`Driver::serve_provider`]).
 pub struct ProvidedInvocation<'a> {
@@ -86,9 +86,9 @@ impl Served {
     /// Whether the shown actions are owed a decision: permissions changed since they were
     /// decided, or a host was given after the window asked.
     pub(super) fn owes_decision(&self) -> bool {
-        self.shown
-            .as_ref()
-            .is_some_and(|(_, _, decided)| *decided != Some(tilo_ui_base::permissions::shared_revision()))
+        self.shown.as_ref().is_some_and(|(_, _, decided)| {
+            *decided != Some(tilo_ui_base::permissions::shared_revision())
+        })
     }
 
     /// The verdicts a decision owed now gives.

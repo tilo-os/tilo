@@ -648,7 +648,10 @@ impl StrokePreview {
         self.dirty = true;
         let now = tilo_ui_base::motion::frame_now();
         let motion = self.motion.unwrap_or_else(|| {
-            tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), false)
+            tilo_ui_base::tokens::EffectiveMotion::new(
+                tilo_ui_base::tokens::Motion::default(),
+                false,
+            )
         });
         self.reveal.snap(0.0);
         self.reveal
@@ -727,7 +730,8 @@ impl Widget for StrokePreview {
 
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         use tilo_ui_base::{a11y::AccessNode, a11y::Role};
-        let character = tilo_ui_base::i18n::widget_text(&format!("stroke-preview-{}", self.brush.name()));
+        let character =
+            tilo_ui_base::i18n::widget_text(&format!("stroke-preview-{}", self.brush.name()));
         Some(
             AccessNode::new(Role::Image)
                 .with_name(self.spoken_name())
@@ -767,7 +771,10 @@ mod tests {
             !preview.needs_animation_frame(),
             "a preview built for a frame rests as it is"
         );
-        assert_eq!(tilo_ui_base::motion::frames_wanted_by(now), Vec::<String>::new());
+        assert_eq!(
+            tilo_ui_base::motion::frames_wanted_by(now),
+            Vec::<String>::new()
+        );
 
         // A person choosing another brush in the pad: the sample draws itself in.
         tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
@@ -792,7 +799,10 @@ mod tests {
             "landed, the preview asks for no more frames"
         );
         assert_eq!(preview.reveal_at(until), 1.0);
-        assert_eq!(tilo_ui_base::motion::frames_wanted_by(until), Vec::<String>::new());
+        assert_eq!(
+            tilo_ui_base::motion::frames_wanted_by(until),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -806,7 +816,10 @@ mod tests {
         assert!(preview.set_props(props("airbrush")));
         assert!(!preview.needs_animation_frame());
         assert_eq!(preview.reveal_at(now), 1.0);
-        assert_eq!(tilo_ui_base::motion::frames_wanted_by(now), Vec::<String>::new());
+        assert_eq!(
+            tilo_ui_base::motion::frames_wanted_by(now),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

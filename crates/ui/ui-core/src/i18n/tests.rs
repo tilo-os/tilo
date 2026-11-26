@@ -1,9 +1,9 @@
-use tilo_ui_base::i18n::*;
-use std::sync::Arc;
-use std::cell::Cell;
 use fluent::FluentArgs;
 use fluent::FluentResource;
 use fluent::FluentValue;
+use std::cell::Cell;
+use std::sync::Arc;
+use tilo_ui_base::i18n::*;
 use unic_langid::LanguageIdentifier;
 
 /// One line Fluent cannot read refuses the whole catalogue, and every toolkit label then

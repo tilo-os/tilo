@@ -27,11 +27,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use tilo_ui_base::widget::Widget;
-use tilo_ui_base::widget::capability::capability_mut;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::capability::capability_mut;
 
 pub mod header_row;
 
@@ -358,9 +358,9 @@ impl RowControl {
         use crate::widget::window_controls::WindowControl;
         match self {
             RowControl::NewTab => crate::widget::tabs::new_tab_name(),
-            RowControl::Maximize => {
-                tilo_ui_base::i18n::I18nManager::lookup_plain(WindowControl::Maximize.name_key(resize))
-            }
+            RowControl::Maximize => tilo_ui_base::i18n::I18nManager::lookup_plain(
+                WindowControl::Maximize.name_key(resize),
+            ),
             RowControl::Close => {
                 tilo_ui_base::i18n::I18nManager::lookup_plain(WindowControl::Close.name_key(resize))
             }
@@ -759,7 +759,9 @@ impl HistoryOpener {
         let control = self.control?;
         (rect.width() > 0.0).then(|| {
             AccessNode::new(Role::ToggleButton)
-                .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain("history-mode-title"))
+                .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain(
+                    "history-mode-title",
+                ))
                 .with_action_target(HISTORY_TARGET)
                 .with_bounds(rect)
                 .with_state(
@@ -777,7 +779,11 @@ impl HistoryOpener {
             .is_some_and(|key| *key == tilo_ui_base::a11y::hash_key(&HISTORY_TARGET))
     }
 
-    pub fn perform_semantic_action(&mut self, target: &str, action: &tilo_ui_base::a11y::Action) -> bool {
+    pub fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         if target == HISTORY_TARGET && matches!(action, tilo_ui_base::a11y::Action::Activate) {
             self.activate();
             return self.pending.is_some();
@@ -785,7 +791,11 @@ impl HistoryOpener {
         false
     }
 
-    pub fn perform_action(&mut self, action: &tilo_ui_base::a11y::Action, key_path: &[u64]) -> bool {
+    pub fn perform_action(
+        &mut self,
+        action: &tilo_ui_base::a11y::Action,
+        key_path: &[u64],
+    ) -> bool {
         if Self::is_target(key_path) && matches!(action, tilo_ui_base::a11y::Action::Activate) {
             self.activate();
             return self.pending.is_some();
@@ -830,7 +840,10 @@ mod tests {
         opener.set_control(Some(HistoryControl::Open));
         let node = opener.accessibility(rect).expect("a node");
         assert_eq!(node.state.checked, Some(true));
-        assert!(opener.perform_action(&tilo_ui_base::a11y::Action::Activate, &[node.key.expect("keyed")]));
+        assert!(opener.perform_action(
+            &tilo_ui_base::a11y::Action::Activate,
+            &[node.key.expect("keyed")]
+        ));
         assert_eq!(opener.take().map(|i| i.address.action), Some("hide".into()));
     }
 }

@@ -18,9 +18,9 @@ use winit::event::WindowEvent;
 use super::super::App;
 use crate::part_row::{PartRow, PartRowHost, RowInput, RowPlace, WindowAction};
 use crate::widget::search_request::SearchRequest;
+use crate::window_toolbar::{SearchOpening, ToolbarEvent};
 use crate::{widget::HistoryControl, widget::InPlace};
 use tilo_ui_base::widget::Widget;
-use crate::window_toolbar::{SearchOpening, ToolbarEvent};
 
 /// What the row needs of the window it stands in: how the window stands, and
 /// the window actions its controls ask for.
@@ -451,10 +451,10 @@ impl PartBar {
 #[cfg(feature = "native")]
 mod tests {
     use super::*;
-    use tilo_ui_base::tokens::MotionSource;
     use crate::widget::tabs::TOOLBAR_ROW_HEIGHT;
     use crate::widget::{NavItem, NavList, NavSection};
     use crate::window_toolbar::{ToolbarAction, WindowToolbar};
+    use tilo_ui_base::tokens::MotionSource;
     use vello::kurbo::Rect;
 
     fn settings_like_list() -> NavList {
@@ -676,7 +676,11 @@ mod tests {
                     == Some("window-search-open")
             })
             .expect("the window's search control");
-        assert!(bar.perform_accessibility(&mut app, *search, &tilo_ui_base::a11y::Action::Activate));
+        assert!(bar.perform_accessibility(
+            &mut app,
+            *search,
+            &tilo_ui_base::a11y::Action::Activate
+        ));
         assert!(bar.row.search_mut().is_open(), "the search opens");
     }
 

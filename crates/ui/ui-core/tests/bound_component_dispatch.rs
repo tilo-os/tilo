@@ -2,10 +2,10 @@
 use automerge::ROOT;
 use std::collections::HashMap;
 use tilo_ui::bound_dispatch::{BoundDispatchError, invoke_bound_node};
-use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use tilo_ui::widget::Button;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 #[allow(
     clippy::too_many_lines,
@@ -483,9 +483,9 @@ use std::cell::{Cell, RefCell};
 use tilo_ui::application::{
     AppComponent, LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput,
 };
+use tilo_ui::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
 use tilo_ui_base::host_operation::{poll_resource_operation, start_operation};
 use tilo_ui_base::local_state::LocalState;
-use tilo_ui::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
 type RefusedNode = (
     BoundNodeMap,
     HashMap<taffy::NodeId, *mut dyn Widget>,
@@ -863,7 +863,8 @@ impl tilo_ui_base::host_operation::ResourceOperations for Root {
         path: &ObjId,
     ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         if !LEGACY_MUTABLE.get() {
-            if let Some(started) = tilo_ui_base::host_operation::start_in_children(self, op, doc, path)?
+            if let Some(started) =
+                tilo_ui_base::host_operation::start_in_children(self, op, doc, path)?
             {
                 return Ok(Some(started));
             }
@@ -1081,7 +1082,8 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
             match callback {
                 Callback::DrawPermissions => {
                     let catalog = tilo_ui_base::font_catalog::fixture_catalog();
-                    let mut renderer = tilo_ui_base::TextRenderer::with_font_catalog(&catalog).unwrap();
+                    let mut renderer =
+                        tilo_ui_base::TextRenderer::with_font_catalog(&catalog).unwrap();
                     let presence = tilo_ui_base::PresenceCtx::empty();
                     presence.with_permissions(
                         tilo_ui_base::permissions::PermissionContext::permissive(),
@@ -1132,7 +1134,8 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                     // A tile with its own document owner is drained through that
                     // owner's control ownership, never by the generic outer drain.
                     assert!(
-                        tilo_ui_base::widget::controls::take_control_invocation(&mut tile).is_none()
+                        tilo_ui_base::widget::controls::take_control_invocation(&mut tile)
+                            .is_none()
                     );
                     assert!(CAPTURES.with_borrow_mut(std::mem::take).is_empty());
                     continue;

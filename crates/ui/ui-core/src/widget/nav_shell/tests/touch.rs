@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::headless::InspectionNode;
-use tilo_ui_base::interaction::InteractionEnvironment;
 use crate::widget::Button;
+use tilo_ui_base::interaction::InteractionEnvironment;
 
 fn actions() -> Vec<Element> {
     (0..6)

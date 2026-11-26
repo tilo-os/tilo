@@ -10,12 +10,12 @@ use unicode_normalization::UnicodeNormalization;
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{Color, ImageData};
 
+use crate::{widget::ChipFace, widget::ChipLead};
 use tilo_ui_base::i18n::widget_format;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::{widget::ChipFace, widget::ChipLead};
 use tilo_ui_base::widget::AvatarFace;
 
 #[derive(Clone, Copy, Debug)]

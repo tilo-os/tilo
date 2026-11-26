@@ -13,19 +13,22 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use tilo_ui_base::icons::Icon;
-use tilo_ui_base::{motion::Disclose, motion::Presence};
 use tilo_ui_base::platform::PlatformConventions;
+use tilo_ui_base::{motion::Disclose, motion::Presence};
 
-use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
-use tilo_ui_base::widget::DrawChild;
 use crate::widget::find_bar::{FindAbilities, FindOptions, FindSession, Findable, with_findable};
 use crate::widget::search_field::{FilterCount, apply_filter, with_filterable};
-use crate::{widget::Button, widget::ButtonFace, widget::ButtonRole, widget::ControlSize, widget::SearchField};
-use tilo_ui_base::widget::Widget;
 use crate::window_toolbar::SearchOpening;
+use crate::{
+    widget::Button, widget::ButtonFace, widget::ButtonRole, widget::ControlSize,
+    widget::SearchField,
+};
 use options::{Choice, OptionsPanel};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
 const CONTROL_PX: f64 = super::window_controls::CONTROL_PX;
 fn field_min(theme: &Theme) -> f64 {
@@ -56,7 +59,9 @@ pub trait Queryable {
 }
 
 pub fn with_queryable(widget: &mut dyn Widget, visit: &mut dyn FnMut(&mut dyn Queryable)) -> bool {
-    if let Some(target) = tilo_ui_base::widget::capability::capability_mut::<dyn Queryable>(&mut *widget) {
+    if let Some(target) =
+        tilo_ui_base::widget::capability::capability_mut::<dyn Queryable>(&mut *widget)
+    {
         visit(target);
         return true;
     }
@@ -960,7 +965,11 @@ impl WindowSearch {
         self.field.set_count(None);
     }
 
-    pub fn route(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
+    pub fn route(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         let open = self.is_open();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1091,7 +1100,12 @@ impl WindowSearch {
         }
     }
 
-    fn key(&mut self, key: &Key, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    fn key(
+        &mut self,
+        key: &Key,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
         let modifiers = ctx.modifiers.state();
         let command = self.platform.command_modifier_down(modifiers);
         let chord = search_chord(event, modifiers, self.platform);
@@ -1683,7 +1697,11 @@ impl Widget for WindowSearch {
             ));
         }
         let field = self.field.ime_edit_fingerprint(key)?;
-        Some(tilo_ui_base::ime::scoped_fingerprint(b"window-search", field, key))
+        Some(tilo_ui_base::ime::scoped_fingerprint(
+            b"window-search",
+            field,
+            key,
+        ))
     }
 
     fn name(&self) -> &'static str {

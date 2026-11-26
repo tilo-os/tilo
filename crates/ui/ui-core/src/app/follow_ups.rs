@@ -80,7 +80,9 @@ impl App {
             Ok((_, tilo_actions::InvocationUpdate::Succeeded { output, .. })) => Ok(
                 tilo_ui_base::widget::ResourceOperationStart::Completed(output.clone()),
             ),
-            Ok(_) if refusal.is_none() => Ok(tilo_ui_base::widget::ResourceOperationStart::Accepted),
+            Ok(_) if refusal.is_none() => {
+                Ok(tilo_ui_base::widget::ResourceOperationStart::Accepted)
+            }
             _ => Err(tilo_actions::ApiError::Failed(
                 refusal
                     .as_ref()

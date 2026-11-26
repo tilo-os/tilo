@@ -38,14 +38,14 @@ use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};
 use collab_types::caps::{Access, CapOverride, Effect, Scope};
 use tilo_action_policy::{Grantee, MemberId};
 use tilo_ui_base::presence::PresenceCtx;
-use ui::widget::EntryKind;
-use ui::{widget::HistoryClassification, widget::HistoryEntry, widget::HistoryFilter};
 use tilo_ui_base::{widget::ArtifactKind, widget::HistoryEntryId};
+use ui::widget::EntryKind;
 use ui::{
     ActivityDigest, ActivityTimeline, AgentSession, AuthorDirectory, BandUndoRequest, ChangeRange,
     DocumentId, GroupNameRequest, HistoryComparison, HistoryFacetIndex, HistorySelectionDetail,
     HistorySource, NamedRange, NarrativeRequest, format_relative_time,
 };
+use ui::{widget::HistoryClassification, widget::HistoryEntry, widget::HistoryFilter};
 
 use super::index::{
     FeedCoverage, WorkspaceDeparture, WorkspaceHistoryEntry, WorkspaceHistoryId,

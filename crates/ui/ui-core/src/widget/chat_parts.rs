@@ -11,12 +11,18 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Person, component::Value};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Person,
+    component::Value,
+};
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
+use crate::{
+    widget::Button, widget::EmojiPicker, widget::PickerEvent, widget::Popover,
+    widget::ReactionStripWidget,
+};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::{widget::Button, widget::EmojiPicker, widget::PickerEvent, widget::Popover, widget::ReactionStripWidget};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use tilo_ui_base::{widget::Decorator, widget::EventCtx, widget::Widget};
 
 /// The reactions on something: a pill per emoji with how many reacted, yours drawn on; pressing one
@@ -226,8 +232,9 @@ impl EmojiPickerButton {
         Self {
             key: key.to_owned(),
             button,
-            picker: Popover::with_content(EmojiPicker::new())
-                .with_label(tilo_ui_base::i18n::widget_format("emoji-chooser-title", &[])),
+            picker: Popover::with_content(EmojiPicker::new()).with_label(
+                tilo_ui_base::i18n::widget_format("emoji-chooser-title", &[]),
+            ),
             pressed,
             pick,
         }
@@ -264,9 +271,9 @@ impl Described for EmojiPickerButton {
 /// they name it.
 fn labelled(props: EmojiPickerProps) -> (String, Event) {
     (
-        props
-            .label
-            .unwrap_or_else(|| tilo_ui_base::i18n::I18nManager::lookup_plain("emoji-picker-add-reaction")),
+        props.label.unwrap_or_else(|| {
+            tilo_ui_base::i18n::I18nManager::lookup_plain("emoji-picker-add-reaction")
+        }),
         props.pick,
     )
 }
@@ -324,20 +331,22 @@ impl Decorator for EmojiPickerButton {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.button.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text,
-            theme,
-            env.clone(),
-        ));
-        self.picker.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text,
-            theme,
-            env.clone(),
-        ));
+        self.button
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
+        self.picker
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -393,8 +402,8 @@ impl Described for Quote {
     type Props = QuoteProps;
 
     fn from_props(key: &str, props: QuoteProps) -> Self {
-        use tilo_ui_base::tokens::Rhythm;
         use crate::widget::arrange::{Fit, Row};
+        use tilo_ui_base::tokens::Rhythm;
         let QuoteProps {
             excerpt,
             author,

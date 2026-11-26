@@ -24,8 +24,8 @@ use vello::kurbo::{Point, Rect};
 
 use tilo_ui_base::{component::Component, component::Described};
 
-use tilo_ui_base::theme::Theme;
 use crate::widget::window_well::Wells;
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// The width of a window for every ten of its height, as every shell shapes a window's

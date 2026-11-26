@@ -15,9 +15,9 @@ use winit::event::WindowEvent;
 
 use tilo_ui_base::component::Event;
 
+use crate::widget::arrange::{Part, Stack};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::Rhythm;
-use crate::widget::arrange::{Part, Stack};
 use tilo_ui_base::{widget::Decorator, widget::DrawChild, widget::Element, widget::Widget};
 
 /// What a drop carries a target's view: a resource, or device files a source of this window stood
@@ -149,7 +149,11 @@ impl Decorator for DropTarget {
         &mut self.column
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let mut changed = self.column.update(state, path);
         // A drop let go inside this target since the last pass is the event it fires; a drag
         // that came or went changes the line it draws.
@@ -160,10 +164,11 @@ impl Decorator for DropTarget {
             ]);
             match dropped {
                 Dropped::Resource(resource) => {
-                    self.drop.fire(Some(tilo_ui_base::component::Value::List(vec![
-                        tilo_ui_base::component::Value::Resource(resource),
-                        at,
-                    ])));
+                    self.drop
+                        .fire(Some(tilo_ui_base::component::Value::List(vec![
+                            tilo_ui_base::component::Value::Resource(resource),
+                            at,
+                        ])));
                 }
                 Dropped::Files(files) => {
                     self.drop_files

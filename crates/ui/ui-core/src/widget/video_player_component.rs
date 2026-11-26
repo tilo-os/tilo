@@ -4,10 +4,14 @@ use std::collections::BTreeMap;
 
 use media::Source;
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Value};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
 
 use super::{NowPlaying, PlaybackState, PlayerSetting, PlayerSettingEvent, VideoPlayer};
-use tilo_ui_base::{widget::DrawChild, widget::PictureInPictureAsk, widget::PictureInPictureProvider};
+use tilo_ui_base::{
+    widget::DrawChild, widget::PictureInPictureAsk, widget::PictureInPictureProvider,
+};
 
 /// The speeds the settings menu offers, from a quarter to three times.
 pub const PLAYBACK_RATES: [f64; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0];
@@ -583,7 +587,8 @@ impl DeclaredVideo {
             return;
         }
         self.reported.progress_ms = Some(position);
-        let share = tilo_ui_base::num::f64_of_u64(position) / tilo_ui_base::num::f64_of_u64(duration);
+        let share =
+            tilo_ui_base::num::f64_of_u64(position) / tilo_ui_base::num::f64_of_u64(duration);
         self.progress
             .fire(Some(Value::Float(share.clamp(0.0, 1.0))));
     }
@@ -598,9 +603,10 @@ fn failure_of(event: &media::MediaEvent) -> Option<String> {
             "media-missing-decoder",
             &[("codec", codec.as_str().into())],
         )),
-        media::MediaEvent::LimitReached => {
-            Some(tilo_ui_base::i18n::widget_format("media-playback-limit", &[]))
-        }
+        media::MediaEvent::LimitReached => Some(tilo_ui_base::i18n::widget_format(
+            "media-playback-limit",
+            &[],
+        )),
         _ => None,
     }
 }
@@ -691,7 +697,14 @@ impl PictureInPictureProvider for DeclaredVideo {
                 target.height() / source.height(),
             )
             .pre_translate(-source.origin().to_vec2());
-        tilo_ui_base::widget::draw_child(&mut self.player, scene, transform * onto, text, theme, &env);
+        tilo_ui_base::widget::draw_child(
+            &mut self.player,
+            scene,
+            transform * onto,
+            text,
+            theme,
+            &env,
+        );
         true
     }
 }
@@ -736,12 +749,20 @@ impl tilo_ui_base::widget::Widget for DeclaredVideo {
         Some(self)
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.player.sync(state, path);
         self.report();
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let changed = self.player.update(state, path);
         self.report();
         changed
@@ -751,12 +772,18 @@ impl tilo_ui_base::widget::Widget for DeclaredVideo {
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
         theme: &tilo_ui_base::theme::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
+        node_map: &mut std::collections::HashMap<
+            taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> taffy::NodeId {
         // The player's own leaf, measured as the player is: a view's player is the leaf the
         // layout asks for its size, so a column that grows with what it holds grows to hold it.
         let node = self.player.build_layout(taffy, theme, node_map);
-        node_map.insert(node, std::ptr::from_mut::<dyn tilo_ui_base::widget::Widget>(self));
+        node_map.insert(
+            node,
+            std::ptr::from_mut::<dyn tilo_ui_base::widget::Widget>(self),
+        );
         node
     }
 
@@ -873,7 +900,8 @@ impl Described for DeclaredVideo {
             self.player.pause();
         }
         if let Some(volume) = volume {
-            self.player.set_volume(tilo_ui_base::num::f32_of_f64(volume));
+            self.player
+                .set_volume(tilo_ui_base::num::f32_of_f64(volume));
         }
         if let Some(rate) = rate {
             self.player.set_rate(tilo_ui_base::num::f32_of_f64(rate));

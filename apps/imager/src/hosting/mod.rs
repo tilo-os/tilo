@@ -22,8 +22,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tilo_resource::{Effect, EffectStatus, LiveRow};
-use ui::tilo_actions::{EncodedAction, ResourceSpec};
 use tilo_ui_base::widget::Widget;
+use ui::tilo_actions::{EncodedAction, ResourceSpec};
 
 pub(crate) use effect::{EffectAnswer, EffectCx, Effected, JobProgress, Progress, Reply};
 pub(crate) use run::{Flow, Opened, run};
@@ -443,12 +443,20 @@ impl<W: Window> tilo_ui_base::widget::Decorator for Hosted<W> {
 
     tilo_ui_base::provides!(dyn Served; decorated);
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         serve(&mut self.0);
         self.0.sync(state, path);
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let served = serve(&mut self.0);
         self.0.update(state, path) || served
     }

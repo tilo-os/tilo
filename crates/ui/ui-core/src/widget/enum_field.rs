@@ -4,10 +4,12 @@
 //! holds (a described component's field follows the value the host keeps in step), and an
 //! edit goes back through the binding as the case's name.
 
-use tilo_ui_base::{component::Bound, component::Value};
-use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled, widget::binding::derived};
 use crate::{widget::Button, widget::MenuButton, widget::MenuItem};
+use tilo_ui_base::{component::Bound, component::Value};
 use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
+use tilo_ui_base::{
+    widget::binding::BoxedBinding, widget::binding::Pulled, widget::binding::derived,
+};
 
 #[path = "enum_field_component.rs"]
 mod component;

@@ -5,12 +5,12 @@
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
-use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{tokens::Metrics, tokens::Spacing};
 use crate::widget::flap::{FlapState, SplitLayout};
 use crate::{widget::SplitHandle, widget::SplitOrientation, widget::SplitRatio};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::AuthoredExtent;
+use tilo_ui_base::{tokens::Metrics, tokens::Spacing};
 
 mod sheet;
 
@@ -535,7 +535,10 @@ impl SidebarDrawer {
     }
 
     /// Spell the show/hide shortcut for `conventions`.
-    pub fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
+    pub fn set_platform_conventions(
+        &mut self,
+        conventions: tilo_ui_base::platform::PlatformConventions,
+    ) {
         self.toggle.conventions = conventions;
     }
 
@@ -642,8 +645,11 @@ impl SidebarDrawer {
                 if self.side == SidebarSide::Left
                     && conventions.command_modifier_down(modifiers)
                     && let Key::Character(c) = logical_key
-                    && tilo_ui_base::platform::HostShortcut::resolve(conventions, c, modifiers.shift_key())
-                        == Some(tilo_ui_base::platform::HostShortcut::Sidebar)
+                    && tilo_ui_base::platform::HostShortcut::resolve(
+                        conventions,
+                        c,
+                        modifiers.shift_key(),
+                    ) == Some(tilo_ui_base::platform::HostShortcut::Sidebar)
                 {
                     self.toggle();
                     return true;
@@ -861,8 +867,10 @@ impl SidebarDrawer {
             SidebarSide::Left => (share, 0.0, (maximum / extent).min(1.0)),
             SidebarSide::Right => (1.0 - share, (1.0 - maximum / extent).max(0.0), 1.0),
         };
-        let mut ratio = SplitRatio::default()
-            .with_bounds(tilo_ui_base::num::f32_of_f64(min), tilo_ui_base::num::f32_of_f64(max));
+        let mut ratio = SplitRatio::default().with_bounds(
+            tilo_ui_base::num::f32_of_f64(min),
+            tilo_ui_base::num::f32_of_f64(max),
+        );
         ratio.set(tilo_ui_base::num::f32_of_f64(position));
         *self.resize.ratio_mut() = ratio;
         let top = self.header_bottom.unwrap_or(self.outer.y0);
@@ -912,7 +920,11 @@ impl SidebarDrawer {
         })
     }
 
-    pub fn perform_resize_action(&mut self, target: &str, action: &tilo_ui_base::a11y::Action) -> bool {
+    pub fn perform_resize_action(
+        &mut self,
+        target: &str,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         if target != self.resize_target() || !self.resize_available() {
             return false;
         }

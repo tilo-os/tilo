@@ -18,8 +18,8 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use tilo_ui_base::theme::Theme;
 use crate::{widget::Column, widget::Scrollable};
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::TaffyTreeExt as _, widget::Widget};
 
 const ROW: f32 = 20.0;

@@ -167,7 +167,9 @@ pub fn paint_window_card(
     content(scene, &on);
     scene.pop_layer();
     if !tilo_ui_base::surface::paint_border(scene, transform, &body, theme)
-        && theme.finish(tilo_ui_base::tokens::SurfaceRole::Window).hairline()
+        && theme
+            .finish(tilo_ui_base::tokens::SurfaceRole::Window)
+            .hairline()
     {
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),

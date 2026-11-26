@@ -2,9 +2,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 
+use crate::widget::TextInput;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::widget::TextInput;
 use tilo_ui_base::widget::Widget;
 
 const WIDTH: u32 = 320;
@@ -88,8 +88,9 @@ fn an_edited_line_repaints_its_ink_that_rises_past_its_row() {
         "the edit repaints its line, not the field: {damage:?}"
     );
 
-    let mut gpu = tilo_ui_base::offscreen::OffscreenRenderer::try_new_for_pixel_test(WIDTH, HEIGHT, true)
-        .expect("pixel test renderer");
+    let mut gpu =
+        tilo_ui_base::offscreen::OffscreenRenderer::try_new_for_pixel_test(WIDTH, HEIGHT, true)
+            .expect("pixel test renderer");
     let before = gpu.render(&shown, Color::BLACK);
     let after = gpu.render(&edited, Color::BLACK);
     let width = usize::try_from(WIDTH).unwrap();

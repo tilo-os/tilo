@@ -14,9 +14,10 @@ fn send(editor: &mut BlockEditor, doc: &mut AutoCommit, key: Key) {
         },
         ElementState::Pressed,
     );
-    Dispatch::new()
-        .doc(doc)
-        .send(editor, &tilo_ui_base::synthetic_input::keyboard_input(event));
+    Dispatch::new().doc(doc).send(
+        editor,
+        &tilo_ui_base::synthetic_input::keyboard_input(event),
+    );
     editor.sync(doc, &ROOT);
 }
 

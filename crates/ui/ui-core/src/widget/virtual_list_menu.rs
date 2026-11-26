@@ -201,7 +201,10 @@ impl VirtualRows {
             opened.push(item);
         }
         // What the menu is about is the row's item under the press, which the window names.
-        opened.open_at([tilo_ui_base::num::f32_of_f64(at.x), tilo_ui_base::num::f32_of_f64(at.y)]);
+        opened.open_at([
+            tilo_ui_base::num::f32_of_f64(at.x),
+            tilo_ui_base::num::f32_of_f64(at.y),
+        ]);
         menu.menu = opened;
         menu.target = key.cloned();
         true
@@ -293,13 +296,14 @@ impl VirtualRows {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let Some(menu) = self.menus.owned_mut() {
-            menu.menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                env.clone(),
-            ));
+            menu.menu
+                .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    env.clone(),
+                ));
         }
     }
 

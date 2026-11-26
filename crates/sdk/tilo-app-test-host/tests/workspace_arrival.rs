@@ -12,8 +12,11 @@ use tilo_app::framework::testing::drive_live_window;
 use tilo_app::prelude::*;
 use tilo_app::winit::dpi::PhysicalSize;
 use tilo_app::winit::window::CursorIcon;
-use tilo_ui_base::{workspace_sync, workspace_sync::WorkspaceSync, workspace_sync::WorkspaceSyncState, workspace_sync::WorkspaceUnavailable};
 use tilo_app_test_host::TestApp;
+use tilo_ui_base::{
+    workspace_sync, workspace_sync::WorkspaceSync, workspace_sync::WorkspaceSyncState,
+    workspace_sync::WorkspaceUnavailable,
+};
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Board {

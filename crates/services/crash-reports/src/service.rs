@@ -44,7 +44,9 @@ const fn reason_label(reason: StopReason) -> &'static str {
 /// what stopped the computer as its badge.
 fn present(report: &CrashReport) -> ResourcePresentation {
     ResourcePresentation {
-        detail: Some(tilo_ui_base::format::timestamp(&tilo_ui_base::format::UnixSecs(report.at))),
+        detail: Some(tilo_ui_base::format::timestamp(
+            &tilo_ui_base::format::UnixSecs(report.at),
+        )),
         badge: report.reason.map(|reason| reason_label(reason).to_owned()),
         preview: report.build.as_ref().map(|build| format!("build {build}")),
     }

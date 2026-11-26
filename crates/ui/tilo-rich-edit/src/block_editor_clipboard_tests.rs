@@ -9,12 +9,18 @@ use ui::widget::marks::{Mark, MarkSpan};
 use winit::keyboard::ModifiersState;
 
 fn chord(editor: &mut BlockEditor, doc: &mut AutoCommit, modifiers: ModifiersState, key: &str) {
-    let event =
-        tilo_ui_base::synthetic_input::key_event(Key::Character(key.into()), None, ElementState::Pressed);
+    let event = tilo_ui_base::synthetic_input::key_event(
+        Key::Character(key.into()),
+        None,
+        ElementState::Pressed,
+    );
     let handled = Dispatch::new()
         .modifiers(modifiers)
         .doc(doc)
-        .send(editor, &tilo_ui_base::synthetic_input::keyboard_input(event))
+        .send(
+            editor,
+            &tilo_ui_base::synthetic_input::keyboard_input(event),
+        )
         .handled;
     assert!(handled, "the editor takes {modifiers:?}+{key}");
     editor.sync(doc, &ROOT);

@@ -10,11 +10,14 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::{ReactionStrip, StripHit, StripMetrics, layout};
+use tilo_action_policy::MemberId;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingKind, widget::ControlBindingMetadata, widget::EventCtx, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
-use tilo_action_policy::MemberId;
+use tilo_ui_base::{
+    widget::ActionEmitter, widget::ControlBindingKind, widget::ControlBindingMetadata,
+    widget::EventCtx, widget::ModelPath, widget::TaffyTreeExt, widget::Widget,
+};
 
 /// A person reacting with an emoji (`react`), or taking their reaction
 /// back: what a pill or a pick in the picker asks for.
@@ -78,8 +81,9 @@ impl ReactionStripWidget {
             on_toggle: None,
             on_person: None,
             picker: Some(
-                crate::widget::Popover::with_content(crate::widget::EmojiPicker::new())
-                    .with_label(tilo_ui_base::i18n::widget_format("emoji-chooser-title", &[])),
+                crate::widget::Popover::with_content(crate::widget::EmojiPicker::new()).with_label(
+                    tilo_ui_base::i18n::widget_format("emoji-chooser-title", &[]),
+                ),
             ),
             action: None,
             test_id: None,
@@ -104,12 +108,18 @@ impl ReactionStripWidget {
     /// Who the members that reacted are: the faces each pill ends in show them, in their
     /// colour and with their picture. A member it does not name shows the face their id gives.
     #[must_use]
-    pub fn with_people(mut self, people: HashMap<MemberId, tilo_ui_base::component::Person>) -> Self {
+    pub fn with_people(
+        mut self,
+        people: HashMap<MemberId, tilo_ui_base::component::Person>,
+    ) -> Self {
         self.strip.set_people(people);
         self
     }
 
-    pub(crate) fn set_people(&mut self, people: HashMap<MemberId, tilo_ui_base::component::Person>) {
+    pub(crate) fn set_people(
+        &mut self,
+        people: HashMap<MemberId, tilo_ui_base::component::Person>,
+    ) {
         self.strip.set_people(people);
         self.dirty = true;
     }
@@ -575,7 +585,9 @@ impl Widget for ReactionStripWidget {
             .map(|(_, hit)| hit)
             .chain(faces)
             .find(|hit| match hit {
-                StripHit::Toggle(emoji) => tilo_ui_base::a11y::hash_key(&("reaction", emoji)) == *key,
+                StripHit::Toggle(emoji) => {
+                    tilo_ui_base::a11y::hash_key(&("reaction", emoji)) == *key
+                }
                 StripHit::Add { .. } => tilo_ui_base::a11y::hash_key(&"reaction-add") == *key,
                 StripHit::Person(who) => {
                     tilo_ui_base::a11y::hash_key(&("reaction-person", who.id())) == *key

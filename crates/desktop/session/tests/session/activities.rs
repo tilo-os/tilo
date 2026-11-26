@@ -471,7 +471,8 @@ fn clock_needs(clock: &str) -> f64 {
         .numeric()
         .text_style()
         .clone();
-    let (needs, _) = tilo_ui_base::font_catalog::fixture_renderer().measure_style(clock, None, &style);
+    let (needs, _) =
+        tilo_ui_base::font_catalog::fixture_renderer().measure_style(clock, None, &style);
     f64::from(needs)
 }
 

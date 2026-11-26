@@ -1,7 +1,10 @@
 //! [`Timeline`] as a described component: what a view hands it, and the changes it reports back.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Moment, component::ResourceId};
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Moment,
+    component::ResourceId,
+};
 
 use super::widget::{ItemEvents, Timeline};
 use super::{TimelineItem, TimelineMode, TimelineTone, local_day_minute};

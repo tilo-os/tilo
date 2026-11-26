@@ -1,8 +1,8 @@
 //! `SignalMeter`: how strong a radio signal is (a Wi-Fi network, a mobile network), as four
 //! bars of rising height.
 
-use tilo_ui_base::i18n::widget_text;
 use std::collections::HashMap;
+use tilo_ui_base::i18n::widget_text;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;

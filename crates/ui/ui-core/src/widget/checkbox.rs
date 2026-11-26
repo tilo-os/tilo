@@ -1,14 +1,14 @@
 use super::bool_control::{
     BoolControl, bool_control_api, bool_control_capabilities, bool_control_widget_methods,
 };
+use crate::widget::Interaction;
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_ui_base::i18n::widget_text;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::text_render::TextStyle;
 use tilo_ui_base::theme::Theme;
-use crate::widget::Interaction;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 
 #[path = "checkbox_component.rs"]
 mod component;
@@ -145,8 +145,8 @@ impl CheckMotion {
         motion: tilo_ui_base::tokens::EffectiveMotion,
         now: crate::time::Instant,
     ) {
-        let source =
-            tilo_ui_base::motion::recent_input(now).unwrap_or(tilo_ui_base::tokens::MotionSource::Action);
+        let source = tilo_ui_base::motion::recent_input(now)
+            .unwrap_or(tilo_ui_base::tokens::MotionSource::Action);
         self.follow(marked, glyph, motion, source, now);
     }
 
@@ -315,7 +315,8 @@ impl Checkbox {
             control,
             label: None,
             indeterminate: false,
-            label_style: tilo_ui_base::tokens::typography::stock().style(tilo_ui_base::tokens::TextRole::Body),
+            label_style: tilo_ui_base::tokens::typography::stock()
+                .style(tilo_ui_base::tokens::TextRole::Body),
             label_layout_revision: None,
             intrinsic: false,
             painted: None,
@@ -644,7 +645,10 @@ impl Widget for Checkbox {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.label_style = theme.tokens.typography.style(tilo_ui_base::tokens::TextRole::Body);
+        self.label_style = theme
+            .tokens
+            .typography
+            .style(tilo_ui_base::tokens::TextRole::Body);
         self.label_layout_revision = Some((
             tilo_ui_base::i18n::I18nManager::revision(),
             self.control.interaction.minimum_target(),
@@ -788,7 +792,13 @@ impl Widget for Checkbox {
         }
         tilo_ui_base::widget::draw_over(
             self,
-            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
     }
 
@@ -882,8 +892,8 @@ impl Drop for Checkbox {
 mod tests {
     use super::*;
     use crate::testing::Dispatch;
-    use tilo_ui_base::widget::Widget;
     use automerge::{AutoCommit, ReadDoc, transaction::Transactable};
+    use tilo_ui_base::widget::Widget;
     use winit::event::{ElementState, MouseButton, WindowEvent};
 
     #[test]
@@ -1175,7 +1185,8 @@ mod tests {
                 &automerge::ROOT
             ));
             assert!(doc.get(&automerge::ROOT, "checked").unwrap().is_none());
-            let intent = tilo_ui_base::widget::controls::take_control_invocation(&mut checkbox).unwrap();
+            let intent =
+                tilo_ui_base::widget::controls::take_control_invocation(&mut checkbox).unwrap();
             assert_eq!(intent.arguments["value"], true);
             assert!(matches!(
                 tilo_ui_base::widget::controls::control_action_bindings(&checkbox)[0].kind,
@@ -1269,7 +1280,8 @@ mod tests {
         for theme in [Theme::dark(), Theme::light()] {
             let face = theme.tokens.colors.surfaces.raised;
             let edge = unchecked_edge(&theme, face);
-            let ratio = tilo_ui_base::a11y::contrast_ratio(edge, theme.tokens.colors.surfaces.content);
+            let ratio =
+                tilo_ui_base::a11y::contrast_ratio(edge, theme.tokens.colors.surfaces.content);
             assert!(ratio >= 3.0 - 1e-6, "edge contrast {ratio}");
         }
         let row = crate::widget::Row::new().push(Box::new(
@@ -1311,10 +1323,10 @@ mod tests {
 
     #[test]
     fn a_click_fades_the_box_in_unchecking_goes_quicker_and_a_key_lands() {
-        use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press};
         use crate::testing::dispatch;
         use crate::time::testing::with_monotonic_time;
         use tilo_ui_base::tokens::MotionSource;
+        use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press};
         let ms = |t0: crate::time::Instant, ms: u64| t0 + crate::time::Duration::from_millis(ms);
         let theme = Theme::dark();
         let state = tilo_ui_base::LocalState::new(false);

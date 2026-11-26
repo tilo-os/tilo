@@ -82,7 +82,9 @@ fn published(session: &Session) -> Value {
 /// a frame drawn by it is visibly other than the stock theme's. The device's daemon compiles it
 /// when the package arrives.
 fn triangle_module() -> Vec<u8> {
-    use tilo_ui_base::{part_paint::Brush, part_paint::PaintedPart, part_paint::ParamSpec, part_paint::PartScene};
+    use tilo_ui_base::{
+        part_paint::Brush, part_paint::PaintedPart, part_paint::ParamSpec, part_paint::PartScene,
+    };
 
     let mut part = PartScene::new();
     let mut triangle = ui::kurbo::BezPath::new();
@@ -239,10 +241,13 @@ fn an_applied_theme_package_draws_the_session_on_the_compiled_store() {
         .is_some(),
         "the install compiled the set"
     );
-    let document = tilo_ui_base::theme_bundle::document(&installed.payload_root).expect("the bundle reads");
+    let document =
+        tilo_ui_base::theme_bundle::document(&installed.payload_root).expect("the bundle reads");
     let theme = tilo_ui_base::Theme::from_document(&document).expect("the theme draws");
     assert_eq!(
-        theme.finish(tilo_ui_base::tokens::SurfaceRole::Control).painter(),
+        theme
+            .finish(tilo_ui_base::tokens::SurfaceRole::Control)
+            .painter(),
         SET
     );
 

@@ -1,6 +1,6 @@
 use super::*;
-use tilo_ui_base::widget::TaffyTreeExt;
 use std::collections::HashMap;
+use tilo_ui_base::widget::TaffyTreeExt;
 
 struct DrawUpdatedDamage {
     damage: KurboRect,

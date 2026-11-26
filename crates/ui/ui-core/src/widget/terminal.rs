@@ -13,17 +13,17 @@ use winit::event::{ElementState, Ime, MouseButton as WMouseButton, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
 use crate::color_compat::ColorCompat as _;
-use tilo_ui_base::{key_input, key_input::Button, key_input::Held, key_input::Keys};
 use crate::terminal::{
     CellColor, GridPos, GridSelection, Modes, Palette, Placement, Screen, Session, SessionEvent,
     SessionHandle, Style,
 };
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
+use crate::widget::OverlayScrollbar;
+use crate::widget::scrollbar::PressOutcome;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::ScrollMetrics;
-use crate::widget::scrollbar::PressOutcome;
-use crate::widget::OverlayScrollbar;
+use tilo_ui_base::{key_input, key_input::Button, key_input::Held, key_input::Keys};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[path = "terminal/terminal_component.rs"]
@@ -496,7 +496,12 @@ impl Terminal {
         (at.col.saturating_add(1), at.row.saturating_add(1))
     }
 
-    fn press(&mut self, button: WMouseButton, held: Held, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    fn press(
+        &mut self,
+        button: WMouseButton,
+        held: Held,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
         let at = self.cell_at(self.pointer);
         let report = self.modes.mouse_report && !held.shift;
         match button {
@@ -563,7 +568,12 @@ impl Terminal {
         }
     }
 
-    fn release(&mut self, button: WMouseButton, held: Held, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    fn release(
+        &mut self,
+        button: WMouseButton,
+        held: Held,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
         let report = self.modes.mouse_report && !held.shift;
         if report {
             let mapped = match button {
@@ -898,7 +908,11 @@ impl Widget for Terminal {
         self.rect == Rect::ZERO
     }
 
-    fn sync(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.report();
         self.refresh();
         if self.bell_flashing() {

@@ -20,9 +20,11 @@ use tilo_actions::remote::{
 };
 use tilo_lock::MutexRecover as _;
 
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PeerTransport};
 use crate::floating_surface::{FloatingSurfaceClientMessage, FloatingSurfaceHostMessage};
 use crate::window_targets::{TargetAction, WindowTarget};
+use tilo_ui_base::{
+    collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PeerTransport,
+};
 
 static FRAME: std::sync::LazyLock<std::sync::Mutex<Option<Arc<std::sync::Mutex<Frame>>>>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(None));

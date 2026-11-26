@@ -11,11 +11,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tilo_ui::time::Duration;
 
 use serde_json::Value;
-use tilo_ui_base::Widget;
 use tilo_ui::app::driver::Framed;
 use tilo_ui::state::State;
-use tilo_ui_base::theme::Theme;
 use tilo_ui::widget::WebView;
+use tilo_ui_base::Widget;
+use tilo_ui_base::theme::Theme;
 use tilo_webview::chromium::ChromiumEngine;
 use tilo_webview::text_input::{Failure, Receipt};
 use tilo_webview::{KeyInput, KeyModifiers, SharedEngine, WebViewCommand, WebViewEvent};

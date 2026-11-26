@@ -1,15 +1,15 @@
-use tilo_ui_base::widget::layout::*;
-use tilo_ui_base::widget::TaffyTreeExt;
-use vello::kurbo::{Point, Rect};
-use taffy::AvailableSpace;
-use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
 use std::collections::HashMap;
+use taffy::AvailableSpace;
 use taffy::NodeId;
 use taffy::Size;
 use taffy::TaffyTree;
-use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
+use tilo_ui_base::widget::layout::*;
+use vello::kurbo::{Point, Rect};
 
 struct AccessCount {
     built: std::rc::Rc<std::cell::Cell<usize>>,
@@ -40,7 +40,8 @@ impl Widget for AccessCount {
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.built.set(self.built.get().saturating_add(1));
         Some(
-            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button).with_semantic_key("shared"),
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button)
+                .with_semantic_key("shared"),
         )
     }
 }

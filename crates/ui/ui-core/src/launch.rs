@@ -7,8 +7,8 @@ use std::path::PathBuf;
 
 #[cfg(feature = "native")]
 use crate::App;
-use tilo_ui_base::Theme;
 use crate::headless::{self, Driver};
+use tilo_ui_base::Theme;
 
 #[cfg(feature = "native")]
 mod app_log;
@@ -918,7 +918,8 @@ fn run_parsed(
     {
         return Ok(());
     }
-    let attaches = !tilo_ui_base::surface_services::is_surface() && (spec.runtime_attachment)(&args);
+    let attaches =
+        !tilo_ui_base::surface_services::is_surface() && (spec.runtime_attachment)(&args);
     if opens_native_window(&args) && attaches {
         attach(spec.app_id).map_err(|error| {
             LaunchError::Operation(format!("native runtime attachment failed: {error}"))
@@ -1187,7 +1188,9 @@ fn dispatch_definition_with(
             driver.set_theme(shot_theme(args));
         }
         if args.touch {
-            driver.set_interaction_environment(tilo_ui_base::interaction::InteractionEnvironment::TOUCH);
+            driver.set_interaction_environment(
+                tilo_ui_base::interaction::InteractionEnvironment::TOUCH,
+            );
         }
         if !args.native_audit
             && let Some(scenario) = spec.component_capture_scenario
@@ -1277,7 +1280,8 @@ fn native_launch_manager(
     if let Some(peer) = surface_peer() {
         return Ok(tilo_ui_base::collaboration::CollaborationManager::with_peer_transport(peer));
     }
-    tilo_ui_base::collaboration::native_initial::ensure_unoccupied().map_err(LaunchError::Operation)?;
+    tilo_ui_base::collaboration::native_initial::ensure_unoccupied()
+        .map_err(LaunchError::Operation)?;
     if !(spec.runtime_attachment)(args) {
         return Ok(tilo_ui_base::collaboration::CollaborationManager::disabled());
     }
@@ -1292,7 +1296,9 @@ fn native_launch_manager(
 impl From<tilo_ui_base::collaboration::NativeLaunchError> for LaunchError {
     fn from(error: tilo_ui_base::collaboration::NativeLaunchError) -> Self {
         match error {
-            tilo_ui_base::collaboration::NativeLaunchError::Operation(message) => Self::Operation(message),
+            tilo_ui_base::collaboration::NativeLaunchError::Operation(message) => {
+                Self::Operation(message)
+            }
         }
     }
 }
@@ -2279,7 +2285,8 @@ mod tests {
                 history.save(),
             );
         let construction =
-            tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
+            tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(manager)
+                .unwrap();
         let documents = crate::launch::fixture_workspace::at(
             &environment._directory.path().join("native-canonical"),
         );
@@ -2358,7 +2365,8 @@ mod tests {
                 history.save(),
             );
         let _construction =
-            tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
+            tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(manager)
+                .unwrap();
         let documents = crate::launch::fixture_workspace::at(
             &environment._directory.path().join("legacy-cache"),
         );
@@ -2422,7 +2430,8 @@ mod tests {
                 history.save(),
             );
         let _construction =
-            tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(manager).unwrap();
+            tilo_ui_base::collaboration::native_initial::NativeConstruction::enter(manager)
+                .unwrap();
         let documents =
             crate::launch::fixture_workspace::at(&environment._directory.path().join("primary"));
         crate::launch::fixture_workspace::publish(

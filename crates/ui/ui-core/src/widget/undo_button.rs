@@ -15,19 +15,22 @@
 //! No further wiring: the host publishes the status and drains the request by
 //! sweeping its `node_map`, so the control works at any depth.
 
+use std::collections::HashMap;
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_ui_base::i18n::widget_text;
 use tilo_ui_base::widget::ModelPath;
 use tilo_ui_base::widget::TaffyTreeExt;
-use std::collections::HashMap;
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::widget::button::FaceSizer;
+use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
-use crate::widget::button::FaceSizer;
-use tilo_ui_base::{widget::undo_access::UndoAccess, widget::undo_access::UndoRequest, widget::undo_access::UndoStatus};
-use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize};
+use tilo_ui_base::{
+    widget::undo_access::UndoAccess, widget::undo_access::UndoRequest,
+    widget::undo_access::UndoStatus,
+};
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -397,10 +400,10 @@ impl tilo_ui_base::widget::undo_access::UndoControl for UndoButton {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::a11y::Action;
     use crate::testing::dispatch;
     use automerge::AutoCommit;
     use automerge::ROOT;
+    use tilo_ui_base::a11y::Action;
 
     fn button_at(kind: UndoRequest, rect: Rect) -> UndoButton {
         let mut b = match kind {

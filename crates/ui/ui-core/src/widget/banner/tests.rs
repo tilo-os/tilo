@@ -118,7 +118,10 @@ fn band_heights(band: Option<tilo_ui_base::widget::Disclosing>) -> (f64, f64) {
     }
 }
 
-fn sync_banner(state: &tilo_ui_base::LocalState<Option<BannerNotice>>, dismissible: bool) -> Banner {
+fn sync_banner(
+    state: &tilo_ui_base::LocalState<Option<BannerNotice>>,
+    dismissible: bool,
+) -> Banner {
     let banner = Banner::from_state(state).with_id("sync");
     if dismissible {
         banner.dismissible()
@@ -127,7 +130,10 @@ fn sync_banner(state: &tilo_ui_base::LocalState<Option<BannerNotice>>, dismissib
     }
 }
 
-fn sync_column(state: &tilo_ui_base::LocalState<Option<BannerNotice>>, dismissible: bool) -> Column {
+fn sync_column(
+    state: &tilo_ui_base::LocalState<Option<BannerNotice>>,
+    dismissible: bool,
+) -> Column {
     Column::new()
         .push(Box::new(sync_banner(state, dismissible)))
         .push(Box::new(crate::widget::Text::new("Below").with_id("below")))

@@ -6,10 +6,10 @@ use std::collections::HashMap;
 
 use taffy::{NodeId, TaffyTree};
 use tilo_onboarding::{OnboardingEffect, OnboardingState, Page, Secrets, Step};
-use ui::device_local_api::SharedApi;
 use tilo_ui_base::theme::Theme;
-use ui::widget::AppWidget;
 use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::Widget};
+use ui::device_local_api::SharedApi;
+use ui::widget::AppWidget;
 use vello::kurbo::Point;
 use winit::event::WindowEvent;
 
@@ -164,7 +164,11 @@ impl Mounted {
         }
     }
 
-    pub(super) fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    pub(super) fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
         // A key right after setup opens can arrive before it is laid out.
         if let Some(app) = self.app.as_mut() {
             let node = self.node.unwrap_or(ctx.node_id);
@@ -421,9 +425,12 @@ fn mount_in_memory(
     lend: impl FnOnce(&mut ui::application::ProcessContext),
 ) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {
     use std::rc::Rc;
+    use tilo_ui_base::{
+        permissions::MemberId, permissions::PermissionContext, permissions::Role,
+        permissions::SharedPermissions,
+    };
     use ui::application::{LaunchTarget, ProcessContext, ProcessContextInputs, RestoreInput};
     use ui::launch::LaunchError;
-    use tilo_ui_base::{permissions::MemberId, permissions::PermissionContext, permissions::Role, permissions::SharedPermissions};
     use ui::resource::{DocumentId, ResourceOwners};
 
     const DEVICE: &str = "this-device";

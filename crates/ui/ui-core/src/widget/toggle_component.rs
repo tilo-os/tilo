@@ -1,6 +1,9 @@
 //! [`Toggle`] as a described component.
 
-use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Event, component::Value};
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+    component::Value,
+};
 
 use super::Toggle;
 

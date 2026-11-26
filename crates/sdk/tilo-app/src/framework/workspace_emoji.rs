@@ -7,15 +7,19 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use tilo_ui_base::{
+    workspace_emoji::Adding, workspace_emoji::CustomEmoji, workspace_emoji::EmojiSource,
+    workspace_emoji::Small, workspace_emoji::WorkspaceEmoji, workspace_emoji::make_small,
+};
 use tilo_workspace_emoji::{OWNER, WorkspaceEmoji as Record, workspace_emoji as actions};
-use tilo_ui_base::{workspace_emoji::Adding, workspace_emoji::CustomEmoji, workspace_emoji::EmojiSource, workspace_emoji::Small, workspace_emoji::WorkspaceEmoji, workspace_emoji::make_small};
 
 use super::live::Live;
 use super::workspace::{WorkspaceResource, WorkspaceState};
 
 // The record checks what the toolkit makes small: one limit for both.
-const _: () =
-    assert!(tilo_workspace_emoji::MAX_IMAGE_BYTES == tilo_ui_base::workspace_emoji::MAX_IMAGE_BYTES);
+const _: () = assert!(
+    tilo_workspace_emoji::MAX_IMAGE_BYTES == tilo_ui_base::workspace_emoji::MAX_IMAGE_BYTES
+);
 const _: () = assert!(tilo_workspace_emoji::MAX_EMOJI == tilo_ui_base::workspace_emoji::MAX_EMOJI);
 
 /// The most a chosen file may be before it is made small.
@@ -193,7 +197,9 @@ impl EmojiSource for WindowEmoji {
 
     fn add(&self, name: &str, image: &[u8]) -> Result<(), String> {
         if !self.can_manage() {
-            return Err(tilo_ui_base::i18n::widget_text("workspace-emoji-not-allowed"));
+            return Err(tilo_ui_base::i18n::widget_text(
+                "workspace-emoji-not-allowed",
+            ));
         }
         self.add_small(name, make_small(image))
     }

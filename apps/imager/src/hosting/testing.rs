@@ -5,9 +5,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_resource::Effect;
+use tilo_ui_base::widget::Widget;
 use ui::headless::Driver;
 use ui::tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
-use tilo_ui_base::widget::Widget;
 
 use super::effect::Answer;
 use super::{Flow, Opened, Reply, SHOT_VIEWPORT, Store, invoke, published, scenario_store, window};

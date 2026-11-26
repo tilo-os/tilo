@@ -6,10 +6,14 @@ use std::sync::mpsc::TryRecvError;
 
 use imager_backend::support_report::{MAX_REPORT_BYTES, ReportSource, SupportReport};
 use tilo_ui_base::icons::Icon;
-use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, OpenedFile, PickRequest};
 use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
-use ui::{widget::Button, widget::ButtonRole, widget::Column, widget::Field, widget::ListRow, widget::Row, widget::Section, widget::SectionHeader, widget::Text, widget::TextInput, widget::TextInputKind};
 use tilo_ui_base::{widget::LabelPlacement, widget::Spacer, widget::Widget};
+use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, OpenedFile, PickRequest};
+use ui::{
+    widget::Button, widget::ButtonRole, widget::Column, widget::Field, widget::ListRow,
+    widget::Row, widget::Section, widget::SectionHeader, widget::Text, widget::TextInput,
+    widget::TextInputKind,
+};
 
 use super::{Commands, InstallerPreviewEffect};
 use crate::page;

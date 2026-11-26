@@ -25,7 +25,9 @@ fn focus_grid(session: &mut Session) -> ui::accesskit::NodeId {
                 && node.label().is_some_and(|label| label.trim() == "Items")
         })
         .map_or_else(|| panic!("the window shows the grid"), |(id, _)| id);
-    session.window.a11y_action(node, &tilo_ui_base::a11y::Action::Focus);
+    session
+        .window
+        .a11y_action(node, &tilo_ui_base::a11y::Action::Focus);
     settle(session);
     node
 }

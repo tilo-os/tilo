@@ -7,10 +7,10 @@ use vello::peniko::Color;
 
 use tilo_ui_base::{component::Component, component::Described, component::PartViews};
 
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{tokens::ChromeMaterial, tokens::Rhythm, tokens::SurfaceRole};
-use tilo_ui_base::widget::DrawChild;
 use crate::widget::Container;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{tokens::ChromeMaterial, tokens::Rhythm, tokens::SurfaceRole};
 use tilo_ui_base::{widget::Decorator, widget::Element, widget::Widget};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -172,7 +172,10 @@ pub fn paint_bar_body(
     let (width, ink) = tilo_ui_base::surface::border(theme).unwrap_or_else(|| {
         (
             1.0,
-            if theme.finish(tilo_ui_base::tokens::SurfaceRole::Bar).hairline() {
+            if theme
+                .finish(tilo_ui_base::tokens::SurfaceRole::Bar)
+                .hairline()
+            {
                 tilo_ui_base::chrome::chrome_hairline(theme)
             } else {
                 Color::TRANSPARENT

@@ -1,10 +1,15 @@
 use crate::support::{MemoryRelay, document_mutation, headless_app, pump};
 use std::time::SystemTime;
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PresencePayload};
-use tilo_ui_base::{permissions::ActionKind, permissions::AppKind, permissions::MemberId, permissions::PermissionContext, permissions::PermissionScope, permissions::Role};
-use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 use tilo_ui::widget::TextInput;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PresencePayload,
+};
+use tilo_ui_base::{
+    permissions::ActionKind, permissions::AppKind, permissions::MemberId,
+    permissions::PermissionContext, permissions::PermissionScope, permissions::Role,
+};
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 
 #[allow(
     clippy::too_many_lines,

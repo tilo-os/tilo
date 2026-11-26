@@ -6,11 +6,11 @@ use winit::event::{ElementState, WindowEvent};
 
 use super::TabBar;
 
+use crate::{widget::EditOutcome, widget::EditableLabel};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
-use crate::{widget::EditOutcome, widget::EditableLabel};
 use tilo_ui_base::widget::Widget;
 
 pub(super) struct TabRename {
@@ -135,7 +135,8 @@ impl TabBar {
         self.touch();
         let now = crate::time::now();
         let second = self.last_tab_press.is_some_and(|(tab, at)| {
-            tab == id && now.saturating_duration_since(at) < tilo_ui_base::gesture::multi_click_interval()
+            tab == id
+                && now.saturating_duration_since(at) < tilo_ui_base::gesture::multi_click_interval()
         });
         if second {
             self.last_tab_press = None;
@@ -239,9 +240,12 @@ impl TabBar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::{synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release, synthetic_input::named_key};
     use crate::testing::dispatch;
     use crate::widget::TabDescriptor;
+    use tilo_ui_base::{
+        synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press,
+        synthetic_input::mouse_release, synthetic_input::named_key,
+    };
     use winit::keyboard::NamedKey;
 
     /// Two tabs of 200px each, laid out by hand.

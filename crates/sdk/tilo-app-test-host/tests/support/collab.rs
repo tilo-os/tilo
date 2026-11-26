@@ -18,9 +18,9 @@ use collab_types::store::wire::{Bytes, Command, RECORD_PAGE_BYTES, Reply as Stor
 use runtime_collab::wire::{
     Call, ContextUpdate, Event, FRAMING, HostFrame, Operation, Reply, Service, Topic,
 };
+use tilo_ui_base::collaboration::CollaborationManager;
 use tokio::io::AsyncWriteExt as _;
 use tokio::sync::mpsc;
-use tilo_ui_base::collaboration::CollaborationManager;
 use uuid::Uuid;
 
 const TEST_APP_ID: &str = "ui-integration-test";

@@ -3,8 +3,8 @@
 //! app that shows them runs.
 
 use tilo_actions::ReadingRow;
-use ui::search::system::{ResourceKind, rank_fields};
 use tilo_ui_base::text_match::FieldWeight;
+use ui::search::system::{ResourceKind, rank_fields};
 
 use crate::model::{Hit, InvokeTarget, LaunchPlace, Source, Target};
 
@@ -105,7 +105,10 @@ impl Source for DeviceRows {
                     subtitle: row.subtitle.clone(),
                     facts: row.facts.clone(),
                     score,
-                    icon: row.icon.as_deref().and_then(tilo_ui_base::icons::Icon::from_name),
+                    icon: row
+                        .icon
+                        .as_deref()
+                        .and_then(tilo_ui_base::icons::Icon::from_name),
                     target: self.target(resource, row),
                 })
             })

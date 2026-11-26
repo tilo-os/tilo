@@ -76,8 +76,8 @@ impl TabBar {
 mod tests {
     use super::super::tests::lay_out_at_width;
     use super::*;
-    use tilo_ui_base::text_render::TextWeight;
     use crate::widget::TabDescriptor;
+    use tilo_ui_base::text_render::TextWeight;
     use tilo_ui_base::widget::Widget;
 
     /// Tabs of different apps on pages of one name say whose each is; two windows of one app on

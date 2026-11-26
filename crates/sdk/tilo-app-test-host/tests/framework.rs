@@ -411,7 +411,10 @@ fn restore_in_history(
     let harness = app.harness();
     harness.click_named("history-open").unwrap();
     let entry = tilo_app::history_source::entry_id_from_hash(&version.to_string());
-    let target = format!("timeline-entry:{}", tilo_ui_base::HistoryEntryId::hex(&entry));
+    let target = format!(
+        "timeline-entry:{}",
+        tilo_ui_base::HistoryEntryId::hex(&entry)
+    );
     harness
         .perform_semantic_named(
             "activity_timeline",

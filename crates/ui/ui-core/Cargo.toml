@@ -9,7 +9,7 @@ autotests = false
 autoexamples = false
 repository.workspace = true
 homepage.workspace = true
-description = "The Tilo UI toolkit: retained-mode widgets, layout, text, theming and accessibility, drawn with vello."
+description = "The Tilo UI toolkit: the retained-mode widgets, components and app runner, built on tilo-ui-base and drawn with vello."
 
 [package.metadata.cargo-machete]
 # wgpu-hal is referenced through vello's wgpu re-export; the direct optional

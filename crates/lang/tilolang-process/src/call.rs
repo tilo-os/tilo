@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use collaboration::{CollabEvent, CollabRequest};
 use tilo_render_protocol::patch::{CallPicture, CallPictureSource, CallShown, ToUi};
+use tilo_ui_base::permissions::MemberId;
 use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::platform::call_place;
 use tilolang_tilo::runtime::value::ResourceRef;
@@ -25,7 +26,6 @@ use ui_core::native_media::{
     Command, Issue, PICTURES_LOST, PictureLayer, PictureSource, REPLY_LOST, Request, Shown,
     Snapshot, State, WATCH_LOST,
 };
-use tilo_ui_base::permissions::MemberId;
 use ui_core::time::{Duration, Instant};
 
 /// What an instance knows of the system's calls, and what it asked of them.

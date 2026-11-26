@@ -425,7 +425,10 @@ fn document(saved: Rc<Cell<usize>>, done: tilo_ui_base::LocalState<bool>) -> Ele
     )
 }
 
-fn documented_list(saved: Rc<Cell<usize>>, done: tilo_ui_base::LocalState<bool>) -> VirtualList<Opens> {
+fn documented_list(
+    saved: Rc<Cell<usize>>,
+    done: tilo_ui_base::LocalState<bool>,
+) -> VirtualList<Opens> {
     VirtualList::with_selection_delegate(
         Opens {
             rows: (0..6_u64).collect(),
@@ -452,9 +455,9 @@ fn documented_list(saved: Rc<Cell<usize>>, done: tilo_ui_base::LocalState<bool>)
 
 #[test]
 fn an_item_open_in_its_row_hands_a_reader_the_fields_that_edit_it() {
-    use tilo_ui_base::a11y::Action;
     use crate::app::driver::Driver;
     use accesskit::{Action as AkAction, Role as AkRole};
+    use tilo_ui_base::a11y::Action;
 
     let saved = Rc::new(Cell::new(0));
     let done = tilo_ui_base::LocalState::new(false);

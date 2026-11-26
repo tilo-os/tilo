@@ -112,7 +112,9 @@ impl Widget for DeclaredDirectory {
     crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "declared-directory");
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.semantic_calls.set(self.semantic_calls.get() + 1);
-        Some(tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group))
+        Some(tilo_ui_base::a11y::AccessNode::new(
+            tilo_ui_base::a11y::Role::Group,
+        ))
     }
 }
 

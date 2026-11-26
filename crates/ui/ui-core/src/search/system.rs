@@ -491,11 +491,13 @@ pub fn application_search_fields<'a>(
     for other in other_names {
         fields.push((other.to_owned(), FieldWeight::TITLE));
         fields.extend(
-            tilo_ui_base::text_match::initials(other).map(|initials| (initials, FieldWeight::KEYWORD)),
+            tilo_ui_base::text_match::initials(other)
+                .map(|initials| (initials, FieldWeight::KEYWORD)),
         );
     }
-    fields
-        .extend(tilo_ui_base::text_match::initials(name).map(|initials| (initials, FieldWeight::KEYWORD)));
+    fields.extend(
+        tilo_ui_base::text_match::initials(name).map(|initials| (initials, FieldWeight::KEYWORD)),
+    );
     fields.extend(
         keywords
             .into_iter()
@@ -540,7 +542,10 @@ pub fn application_ranks(
 /// tie — and a keyword begun ranks as the start of the title, as an app's other names rank as its
 /// name ([`application_ranks`]).
 #[must_use]
-pub fn action_ranks(tier: super::MatchTier, weight: tilo_ui_base::text_match::FieldWeight) -> Option<i32> {
+pub fn action_ranks(
+    tier: super::MatchTier,
+    weight: tilo_ui_base::text_match::FieldWeight,
+) -> Option<i32> {
     // An action is found by a word of it begun, never by letters a longer word hides it
     // in: "shut" is not the incomplete items a command's sentence happens to hold.
     if tier == super::MatchTier::Contains {
@@ -549,10 +554,12 @@ pub fn action_ranks(tier: super::MatchTier, weight: tilo_ui_base::text_match::Fi
     if weight == tilo_ui_base::text_match::FieldWeight::KEYWORD {
         match tier {
             super::MatchTier::Exact => {
-                return super::MatchTier::Exact.rank_in(tilo_ui_base::text_match::FieldWeight::TITLE);
+                return super::MatchTier::Exact
+                    .rank_in(tilo_ui_base::text_match::FieldWeight::TITLE);
             }
             super::MatchTier::PrefixWord => {
-                return super::MatchTier::Prefix.rank_in(tilo_ui_base::text_match::FieldWeight::TITLE);
+                return super::MatchTier::Prefix
+                    .rank_in(tilo_ui_base::text_match::FieldWeight::TITLE);
             }
             _ => {}
         }
@@ -920,8 +927,8 @@ pub fn show_all_entry(id: impl Into<String>, group: &str, total: usize) -> Comma
     .group_total(total)
 }
 pub fn icon_for_kind(kind: &ResourceKind) -> tilo_ui_base::icons::Icon {
-    use tilo_ui_base::icons::Icon;
     use ResourceKind as K;
+    use tilo_ui_base::icons::Icon;
     match kind {
         K::Action => Icon::Settings2,
         K::Application => Icon::LayoutGrid,

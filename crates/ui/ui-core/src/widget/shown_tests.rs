@@ -6,8 +6,8 @@
 
 use super::*;
 use crate::testing::dispatch;
-use tilo_ui_base::theme::Theme;
 use crate::widget::{Button, Checkbox};
+use tilo_ui_base::theme::Theme;
 
 fn rest() -> Interaction {
     Interaction::default()

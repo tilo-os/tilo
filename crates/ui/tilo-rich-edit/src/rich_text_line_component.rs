@@ -1,7 +1,10 @@
 //! [`RichTextLine`] as a described component: one editable line of text.
 
-use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Event, component::Value};
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+    component::Value,
+};
 
 use super::{LineSignal, RichTextLine};
 use tilo_ui_base::widget::DrawChild;
@@ -145,12 +148,20 @@ impl tilo_ui_base::widget::Widget for DeclaredLine {
         Some(self)
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.line.sync(state, path);
         self.report();
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let changed = self.line.update(state, path);
         changed | self.report()
     }
@@ -159,7 +170,10 @@ impl tilo_ui_base::widget::Widget for DeclaredLine {
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
         theme: &tilo_ui_base::theme::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
+        node_map: &mut std::collections::HashMap<
+            taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> taffy::NodeId {
         self.line.build_layout(taffy, theme, node_map)
     }

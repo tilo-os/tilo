@@ -9,14 +9,16 @@ use vello::peniko::{Color, Fill};
 use super::{
     ListRowFace, RowGeometry, RowLeading, RowMark, RowMetrics, RowValue, SwipeAction, found_spans,
 };
-use tilo_ui_base::{chrome::RowJoin, chrome::SelectionState, chrome::paint_row_selection_joined};
+use crate::{widget::BadgeFace, widget::MediaArt};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{tokens::colors::NON_TEXT_MIN_CONTRAST, tokens::colors::SMALL_TEXT_MIN_CONTRAST};
-use crate::{widget::BadgeFace, widget::MediaArt};
 use tilo_ui_base::widget::Tone;
+use tilo_ui_base::{chrome::RowJoin, chrome::SelectionState, chrome::paint_row_selection_joined};
+use tilo_ui_base::{
+    tokens::colors::NON_TEXT_MIN_CONTRAST, tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+};
 
 /// Where a row's words stand ([`ListRowFace::text_frame`]).
 pub(super) struct TextFrame {
@@ -267,9 +269,11 @@ impl ListRowFace<'_> {
                 // past the row's trailing edge or under the name.
                 let cap = (right - geo.value_left).max(0.0);
                 if cap > 0.5 {
-                    let shown =
-                        ctx.text
-                            .elide_to_width_style(value, tilo_ui_base::num::f32_of_f64(cap), style);
+                    let shown = ctx.text.elide_to_width_style(
+                        value,
+                        tilo_ui_base::num::f32_of_f64(cap),
+                        style,
+                    );
                     let (w, h) = ctx.text.measure_style(&shown, None, style);
                     ctx.text(
                         &shown,
@@ -381,7 +385,10 @@ impl ListRowFace<'_> {
                     line,
                     &m.secondary,
                     theme.text_dim,
-                    Point::new(text_x, y + tilo_ui_base::num::f64_of_usize(index) * secondary_line),
+                    Point::new(
+                        text_x,
+                        y + tilo_ui_base::num::f64_of_usize(index) * secondary_line,
+                    ),
                     None,
                 );
             }
@@ -687,9 +694,11 @@ impl ListRowFace<'_> {
         let chip_w = chip.as_ref().map_or(0.0, |(.., width)| *width);
         let name_right = slot.x1 - chip_w - if chip.is_some() { m.tag_gap } else { 0.0 };
         let cap = (name_right - x).max(0.0);
-        let name =
-            ctx.text
-                .elide_to_width_style(author.person, tilo_ui_base::num::f32_of_f64(cap), &m.author);
+        let name = ctx.text.elide_to_width_style(
+            author.person,
+            tilo_ui_base::num::f32_of_f64(cap),
+            &m.author,
+        );
         let (_, height) = ctx.text.measure_style(&name, None, &m.author);
         ctx.text(
             &name,

@@ -9,14 +9,14 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, RoundedRectRadii};
 use vello::peniko::{Color, Fill};
 
-use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::TextRole;
 use crate::widget::cartesian_plot::{AxisLabelFormat, format_axis_tick, format_axis_value};
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::{Highlight, Readout};
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks, ValueAxis};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 #[derive(Clone, Debug)]
 pub struct Category {
@@ -257,7 +257,10 @@ impl CategoryMarks {
             return None;
         }
         let width = plot.width() / tilo_ui_base::num::f64_of_usize(self.categories.len());
-        Some(tilo_ui_base::num::usize_of_f64((point.x - plot.x0) / width).min(self.categories.len() - 1))
+        Some(
+            tilo_ui_base::num::usize_of_f64((point.x - plot.x0) / width)
+                .min(self.categories.len() - 1),
+        )
     }
 
     /// `value` as the chart reads it out: its own detail, else in the chart's format and unit.

@@ -13,13 +13,13 @@ use super::{
     CapturePreview, CaptureStudio, RECORDING_RECEIPT_DURATION, SCREENSHOT_RECEIPT_DURATION,
     ScreenshotKept, ScreenshotReceipt, leaving_opacity, studio_progress,
 };
+use crate::time::Duration;
+use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize, IconButton};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::time::Duration;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize, IconButton};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Size as KurboSize};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -350,7 +350,8 @@ impl CaptureStudio {
             tilo_ui_base::surface::ContentFrame::Thumbnail { selected: hovered }
                 .draw(scene, transform, rect, theme);
         }
-        let content_alpha = tilo_ui_base::motion::unit_opacity(tilo_ui_base::motion::stage(p, 0.32, 1.0));
+        let content_alpha =
+            tilo_ui_base::motion::unit_opacity(tilo_ui_base::motion::stage(p, 0.32, 1.0));
         if content_alpha > 0.0 {
             scene.push_layer(
                 Fill::NonZero,

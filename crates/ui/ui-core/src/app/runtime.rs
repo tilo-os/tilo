@@ -11,15 +11,15 @@ use super::{
     ResourceCacheKey,
 };
 #[cfg(feature = "model")]
+use crate::time::Instant;
+use std::cell::{Cell, RefCell};
+use taffy::{NodeId, TaffyTree};
+#[cfg(feature = "model")]
 use tilo_ui_base::collaboration::CollaborationManager;
 #[cfg(feature = "model")]
 use tilo_ui_base::presence::PresenceKey;
 use tilo_ui_base::theme::Theme;
-#[cfg(feature = "model")]
-use crate::time::Instant;
 use tilo_ui_base::widget::Widget;
-use std::cell::{Cell, RefCell};
-use taffy::{NodeId, TaffyTree};
 use winit::window::CursorIcon;
 
 /// The mapped nodes that take part in history: those inside a bound
@@ -801,7 +801,9 @@ pub(super) struct ContinuationRuntime {
 
 #[cfg(feature = "model")]
 impl ContinuationRuntime {
-    pub(super) fn new(pending_restore: Option<tilo_ui_base::collaboration::ContinuationMetadata>) -> Self {
+    pub(super) fn new(
+        pending_restore: Option<tilo_ui_base::collaboration::ContinuationMetadata>,
+    ) -> Self {
         Self {
             last_published: None,
             publication_initialized: false,
@@ -829,7 +831,8 @@ pub(super) struct CollaborationRuntime {
     /// Action requests the window's clients made while `manager` was still joining its primary
     /// route, which carries nothing else yet: sent, in order, once it is ready. Dropped, an
     /// invocation would wait for an answer that never comes.
-    pub(super) held_requests: std::collections::VecDeque<tilo_ui_base::collaboration::CollabRequest>,
+    pub(super) held_requests:
+        std::collections::VecDeque<tilo_ui_base::collaboration::CollabRequest>,
     /// How the window takes up what `manager`'s workspace sends it.
     pub(super) delivery: super::WorkspaceDelivery,
     /// The store read of the workspace's members the window is waiting for, by its request id:

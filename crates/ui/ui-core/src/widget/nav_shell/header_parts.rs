@@ -2,8 +2,8 @@
 //! (with its count). The actions that do not fit overflow into the toolkit's
 //! one button ([`crate::widget::OverflowButton`]).
 
-use tilo_ui_base::num::f32_of_f64;
 use std::collections::HashMap;
+use tilo_ui_base::num::f32_of_f64;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::Rect;

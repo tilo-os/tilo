@@ -3,10 +3,13 @@
 //! skeleton held a while, the answer landing and its cross-fade.
 
 use super::*;
-use tilo_ui_base::arriving::GRACE;
 use crate::launch::ShotFrame;
 use crate::time::{Duration, testing::with_monotonic_time};
-use crate::{widget::Column, widget::ListRow, widget::MediaCard, widget::MediaGrid, widget::MediaSource, widget::Text};
+use crate::{
+    widget::Column, widget::ListRow, widget::MediaCard, widget::MediaGrid, widget::MediaSource,
+    widget::Text,
+};
+use tilo_ui_base::arriving::GRACE;
 use tilo_ui_base::widget::RowShape;
 
 /// A wait long past the skeleton's first frame.
@@ -142,7 +145,9 @@ fn a_remote_list_grid_and_page_move_nothing_as_their_content_arrives() {
                                     .meta("Album"),
                             )
                         })
-                        .shaped(SkeletonShape::Media(tilo_ui_base::widget::MediaAspect::Square)),
+                        .shaped(SkeletonShape::Media(
+                            tilo_ui_base::widget::MediaAspect::Square,
+                        )),
                 )
             })
             .collect();

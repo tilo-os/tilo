@@ -1,9 +1,9 @@
 use super::*;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use crate::{widget::Button, widget::Card, widget::CardGrid, widget::Column, widget::Container};
-use tilo_ui_base::widget::Element;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 /// The grid, as a host other than an [`App`] takes it: a tree hands its
 /// controls' ownership to the host that adopts it first, and a tree an `App`

@@ -2,10 +2,10 @@
 //! while agents and assistive technology still reach every item.
 
 use tilo_app::accesskit::Role;
-use tilo_ui_base::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 use tilo_app::winit::event::WindowEvent;
 use tilo_app_test_host::TestApp;
+use tilo_ui_base::i18n::EmbeddedCatalog;
 
 use crate::support_checklist;
 use crate::support_checklist::{Checklist, Task};

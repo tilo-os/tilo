@@ -1,20 +1,20 @@
-use tilo_ui_base::accesskit_bridge::*;
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::widget::TaffyTreeExt;
-use tilo_ui_base::widget::Widget;
-use std::collections::HashMap;
-use taffy::TaffyTree;
-use tilo_ui_base::a11y::Action;
 use accesskit::Action as AkAction;
 use accesskit::Live as AkLive;
 use accesskit::Node as AkNode;
 use accesskit::NodeId as AkNodeId;
 use accesskit::Role as AkRole;
 use accesskit::TextPosition as AkTextPosition;
-use taffy::NodeId as TaffyNodeId;
 use accesskit::Toggled;
 use accesskit::TreeUpdate;
+use std::collections::HashMap;
+use taffy::NodeId as TaffyNodeId;
+use taffy::TaffyTree;
+use tilo_ui_base::a11y::Action;
+use tilo_ui_base::accesskit_bridge::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 
 struct TestWidget {
     access: Option<AccessNode>,
@@ -1641,10 +1641,7 @@ fn clip(name: &str, focused: bool) -> AccessNode {
         .with_state(AccessState::new().focusable(true).focused(focused))
 }
 
-fn taffy_id_of(
-    node_map: &HashMap<taffy::NodeId, *mut dyn Widget>,
-    role: Role,
-) -> taffy::NodeId {
+fn taffy_id_of(node_map: &HashMap<taffy::NodeId, *mut dyn Widget>, role: Role) -> taffy::NodeId {
     node_map
         .iter()
         .find(|(_, ptr)| {

@@ -16,10 +16,13 @@ use winit::keyboard::{Key, ModifiersState};
 
 use crate::app::driver::Driver;
 use crate::headless::ControlInput;
-use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
 use crate::state::State;
-use crate::{widget::Button, widget::Column, widget::Labelled, widget::NavShell, widget::Text, widget::TextInput};
+use crate::{
+    widget::Button, widget::Column, widget::Labelled, widget::NavShell, widget::Text,
+    widget::TextInput,
+};
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
 
 /// A shell with a sidebar and content, as an app shows one.
 fn shell() -> NavShell {
@@ -108,12 +111,20 @@ fn a_frame_that_settled_skips_nothing_and_measures_nothing_again() {
 
 #[test]
 fn the_root_takes_a_key_under_the_modifier_state_it_is_given() {
-    let mut driver = Driver::for_root(State::new(), shell(), (1280, 800), tilo_ui_base::Theme::dark());
+    let mut driver = Driver::for_root(
+        State::new(),
+        shell(),
+        (1280, 800),
+        tilo_ui_base::Theme::dark(),
+    );
     driver
         .root_mut::<NavShell>()
         .set_platform_conventions(PlatformConventions::new(Platform::Linux));
     driver.relayout();
-    let key = tilo_ui_base::synthetic_input::key_input(&Key::Character("L".into()), ElementState::Pressed);
+    let key = tilo_ui_base::synthetic_input::key_input(
+        &Key::Character("L".into()),
+        ElementState::Pressed,
+    );
     let modifiers = Modifiers::from(ModifiersState::CONTROL | ModifiersState::SHIFT);
     assert!(driver.dispatch_to_root_with(&key, &modifiers));
     assert!(!driver.root::<NavShell>().is_sidebar_open());

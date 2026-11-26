@@ -57,7 +57,11 @@ impl tilo_ui_base::widget::CompleteContentProvider for Repaints {
         ))
     }
 
-    fn draw_complete_content(&mut self, bounds: Rect, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) -> bool {
+    fn draw_complete_content(
+        &mut self,
+        bounds: Rect,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
+    ) -> bool {
         #[allow(
             unused_variables,
             unused_mut,
@@ -133,7 +137,11 @@ fn an_in_process_window_that_repaints_while_held_shows_what_it_showed_when_held(
     assert_eq!(shown(&draw(&mut host, &mut tr, &theme), rect.center()), OLD);
 
     assert!(hold_windows());
-    host.hold_content(&mut tr, &theme, &tilo_ui_base::presence::PresenceCtx::empty());
+    host.hold_content(
+        &mut tr,
+        &theme,
+        &tilo_ui_base::presence::PresenceCtx::empty(),
+    );
     assert!(host.content_held());
     assert!(
         !host.needs_redraw(),

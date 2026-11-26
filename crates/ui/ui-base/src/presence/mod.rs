@@ -1386,11 +1386,7 @@ impl PresenceCtx {
     }
 
     /// Never merged, only replaced, so a peer's entry is always exactly what they last published.
-    pub fn set_peer_view(
-        &mut self,
-        user: MemberId,
-        view: tilo_presence::ViewSubset,
-    ) {
+    pub fn set_peer_view(&mut self, user: MemberId, view: tilo_presence::ViewSubset) {
         self.views.insert(user, view);
     }
 

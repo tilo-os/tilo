@@ -18,7 +18,9 @@ use tilo_resource::Effect as _;
 /// caller to read back. A place that stands on a later pass is complete when it is asked, never
 /// left pending (`Accepted` would be, and nothing completes it).
 fn completed() -> tilo_ui_base::host_operation::ResourceOperationStart {
-    tilo_ui_base::host_operation::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+    tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+        tilo_actions::ActionOutput::default(),
+    )
 }
 
 /// The layout's published side: the one action API the palette, a script, an agent and the host's
@@ -194,10 +196,12 @@ impl LayoutActions {
         let Some(title) = title else {
             return completed();
         };
-        tilo_ui_base::host_operation::ResourceOperationStart::Completed(tilo_actions::ActionOutput {
-            value: Some(serde_json::json!({ "title": title })),
-            resources: Vec::new(),
-        })
+        tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({ "title": title })),
+                resources: Vec::new(),
+            },
+        )
     }
 
     /// Search for the text a place found by text names, and stand what it finds beside where the
@@ -252,7 +256,8 @@ impl LayoutActions {
         action: &LayoutAction,
         asked: &Actor,
         busy: Busy,
-    ) -> Option<Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>> {
+    ) -> Option<Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>>
+    {
         let LayoutAction::PlaceFound {
             text,
             view,
@@ -292,7 +297,8 @@ impl LayoutActions {
         &self,
         action: &LayoutAction,
         asked: &Actor,
-    ) -> Option<Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>> {
+    ) -> Option<Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>>
+    {
         let LayoutAction::Open {
             resource,
             view,
@@ -323,7 +329,8 @@ impl LayoutActions {
         action: &LayoutAction,
         asked: &Actor,
         busy: Busy,
-    ) -> Option<Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>> {
+    ) -> Option<Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>>
+    {
         let LayoutAction::RetryQuery { place } = action else {
             return None;
         };

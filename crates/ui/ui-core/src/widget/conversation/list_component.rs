@@ -1,9 +1,11 @@
 //! [`ConversationList`] as a described component: the lines of a conversation as parts, each what it
 //! says, who said it and when, and how it is on its way.
 
-use tilo_ui_base::{component::Component, component::Described, component::Moment, component::ResourceId};
-use tilo_ui_base::widget::Widget;
 use crate::widget::conversation::{ConversationLine, ConversationList, DeliveryState};
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Moment, component::ResourceId,
+};
 
 tilo_ui_base::choice!(crate::widget::conversation::DeliveryState, "Delivery", {
     Queued => "queued",

@@ -10,7 +10,8 @@ fn counted_control_app(
 ) -> (App, std::rc::Rc<[Cell<usize>; 2]>, std::rc::Rc<Cell<bool>>) {
     let counts = std::rc::Rc::new([Cell::new(0), Cell::new(0)]);
     let visible = std::rc::Rc::new(Cell::new(true));
-    let resource = tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
+    let resource =
+        tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
     let root = SemanticCountingPublisher {
         counts: counts.clone(),
         visible: visible.clone(),
@@ -207,7 +208,8 @@ struct InventoryOnlyPublisher {
 }
 
 fn inventory_only_publisher() -> (Box<dyn Widget>, std::rc::Rc<Cell<bool>>) {
-    let resource = tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
+    let resource =
+        tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
     let enabled = std::rc::Rc::new(Cell::new(false));
     (
         Box::new(InventoryOnlyPublisher {
@@ -286,7 +288,8 @@ fn control_presence_keeps_inventory_permissions_and_availability_stamps() {
         for wrapper in 0..4 {
             let counts = std::rc::Rc::new([Cell::new(0), Cell::new(0)]);
             let resource =
-                tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new()).remove(0);
+                tilo_ui_base::widget::resources::resources(&Publisher, &AutoCommit::new())
+                    .remove(0);
             let root = FastInventoryPublisher {
                 counts: counts.clone(),
                 visible: std::rc::Rc::new(Cell::new(true)),

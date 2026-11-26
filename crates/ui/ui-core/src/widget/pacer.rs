@@ -16,9 +16,9 @@
 
 use std::cell::Cell;
 
-use tilo_ui_base::{widget::AppModel, widget::Element, widget::ModelPath, widget::Widget};
-use tilo_ui_base::LocalState;
 use crate::time::{Duration, Instant};
+use tilo_ui_base::LocalState;
+use tilo_ui_base::{widget::AppModel, widget::Element, widget::ModelPath, widget::Widget};
 
 /// Steps its `step` once a beat while `running` is `true`.
 #[tilo_ui_base::component::not_a_component(framework, "frame pacing around a view")]

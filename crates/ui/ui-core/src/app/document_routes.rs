@@ -539,7 +539,10 @@ impl App {
     /// has no owner to take it, and would wait forever for the next reading of
     /// it without this: it is not here, so nothing it holds is published, and
     /// nothing that names it is offered.
-    pub(super) fn unheld_resource_arrived(&mut self, route: &tilo_ui_base::collaboration::RouteSpec) {
+    pub(super) fn unheld_resource_arrived(
+        &mut self,
+        route: &tilo_ui_base::collaboration::RouteSpec,
+    ) {
         let held = self
             .document_routes
             .owners

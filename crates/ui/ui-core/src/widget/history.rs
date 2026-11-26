@@ -631,7 +631,9 @@ pub fn author_face(
     if [red, green, blue] != [0; 3] {
         row = row.avatar_colour(crate::peniko::Color::from_rgb8(red, green, blue));
     } else if author.relation == wire::Relation::Software {
-        row = row.avatar_hue(tilo_ui_base::tokens::colors::PresenceHue::of_agent(&author.name));
+        row = row.avatar_hue(tilo_ui_base::tokens::colors::PresenceHue::of_agent(
+            &author.name,
+        ));
     }
     row
 }

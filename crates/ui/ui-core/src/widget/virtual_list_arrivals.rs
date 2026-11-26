@@ -7,8 +7,8 @@ use std::rc::Rc;
 use super::MountedRowState;
 use super::{ListKey, VirtualRows};
 use crate::time::Instant;
-use crate::widget::arriving_rows::RowReserve;
 use crate::widget::Showing;
+use crate::widget::arriving_rows::RowReserve;
 use tilo_ui_base::widget::Element;
 
 impl VirtualRows {

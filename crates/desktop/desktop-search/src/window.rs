@@ -37,7 +37,9 @@ pub const ACTIONS: &str = "window-actions";
 /// The picture `spec` declares for itself, when the toolkit draws it.
 #[must_use]
 pub fn action_icon(spec: &ActionSpec) -> Option<tilo_ui_base::icons::Icon> {
-    spec.icon.as_deref().and_then(tilo_ui_base::icons::Icon::from_name)
+    spec.icon
+        .as_deref()
+        .and_then(tilo_ui_base::icons::Icon::from_name)
 }
 
 /// Whether `spec` acts on what the person selected: its contract declares

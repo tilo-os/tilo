@@ -788,7 +788,10 @@ fn a_device_asking_for_this_sound_is_declined_from_its_row() {
                 tilo_ui_base::icons::Icon::Check,
                 "Allow this remote audio once".into()
             ),
-            second: (tilo_ui_base::icons::Icon::X, "Decline this remote audio".into()),
+            second: (
+                tilo_ui_base::icons::Icon::X,
+                "Decline this remote audio".into()
+            ),
         },
         "the person allows it once or declines it"
     );

@@ -39,7 +39,8 @@ pub(super) fn detached_dispatch<P: Chained>(
 
 /// What a chain's dispatcher refuses into: its
 /// [`refused`](Dispatcher::refused), once the dispatcher is made.
-type Told = Rc<std::cell::OnceCell<tilo_ui_base::LocalState<Option<super::super::dispatch::Refused>>>>;
+type Told =
+    Rc<std::cell::OnceCell<tilo_ui_base::LocalState<Option<super::super::dispatch::Refused>>>>;
 
 /// The dispatcher `make` makes of what applies an action to `state`'s parts
 /// as `me` ([`ChainState::apply_as`]), and of what applies several invoked as

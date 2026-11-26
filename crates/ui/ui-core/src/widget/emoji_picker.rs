@@ -9,19 +9,22 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Politeness, a11y::Role};
 use tilo_ui_base::{emoji_catalogue, emoji_catalogue::CatalogueGroup};
 use tilo_ui_base::{num::f32_of_f64, num::f64_of_usize, num::usize_of_f64};
-use tilo_ui_base::paint::PaintCtx;
 
+use crate::time::{Duration, Instant};
+use crate::{
+    widget::ControlSize, widget::ScrollRegion, widget::SearchField, widget::SegmentedFace,
+    widget::SegmentedStyle, widget::ToggleGroup,
+};
 use tilo_ui_base::text_render::TextWeight;
 use tilo_ui_base::theme::Theme;
-use crate::time::{Duration, Instant};
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
-use crate::{widget::ControlSize, widget::ScrollRegion, widget::SearchField, widget::SegmentedFace, widget::SegmentedStyle, widget::ToggleGroup};
-use tilo_ui_base::{widget::EventCtx, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
 use tilo_ui_base::workspace_emoji::Adding;
+use tilo_ui_base::{widget::EventCtx, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
 
 /// Matches listed for a query at most.
 const SEARCH_RESULTS: usize = 96;
@@ -346,7 +349,10 @@ impl EmojiPicker {
         self.search.set_query("");
         let _ = self.search.take_dirty();
         self.search
-            .set_placeholder(&tilo_ui_base::i18n::widget_format("emoji-chooser-search", &[]));
+            .set_placeholder(&tilo_ui_base::i18n::widget_format(
+                "emoji-chooser-search",
+                &[],
+            ));
         self.search.set_focused(true);
         self.group = 0;
         self.tones = None;
@@ -1045,7 +1051,9 @@ impl EmojiPicker {
                     if tilo_actions::custom_emoji_name(text).is_some()
                         && tilo_ui_base::workspace_emoji::emoji()
                             .resolve(text)
-                            .and_then(|emoji| tilo_ui_base::workspace_emoji::emoji().image(&emoji.name))
+                            .and_then(|emoji| {
+                                tilo_ui_base::workspace_emoji::emoji().image(&emoji.name)
+                            })
                             .is_none()
                     {
                         let shown = c.text.elide_to_width_style(
@@ -1459,7 +1467,10 @@ impl Widget for EmojiPicker {
         if theme_changed {
             self.theme = theme.clone();
             self.search
-                .set_placeholder(&tilo_ui_base::i18n::widget_format("emoji-chooser-search", &[]));
+                .set_placeholder(&tilo_ui_base::i18n::widget_format(
+                    "emoji-chooser-search",
+                    &[],
+                ));
         }
         if Self::sources() != self.built_from {
             let selected = self.selected;

@@ -1,8 +1,8 @@
 //! A field label aligned to its first control, independent of supporting rows: its field sets the
 //! inset that centres it on the control's first line.
 use super::{
-    HashMap, NodeId, Parts, Size, Style, TaffyTree, TextRenderer, Theme, Widget,
-    column_style, measure_owned,
+    HashMap, NodeId, Parts, Size, Style, TaffyTree, TextRenderer, Theme, Widget, column_style,
+    measure_owned,
 };
 
 pub(super) struct FieldLabel {

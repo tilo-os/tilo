@@ -81,7 +81,8 @@ impl Default for ResizeHandle {
 impl Widget for ResizeHandle {
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         (!self.rect.is_zero_area()).then(|| {
-            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Separator).with_bounds(self.rect)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Separator)
+                .with_bounds(self.rect)
         })
     }
     fn build_layout(

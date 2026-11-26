@@ -9,8 +9,8 @@ use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;
 use winit::event::{Modifiers, WindowEvent};
 
-use tilo_ui_base::widget::Widget;
 use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Widget;
 use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
 use tilo_ui_base::{Theme, text_render::TextRenderer};
 
@@ -243,13 +243,14 @@ impl<W: Widget + 'static> Embedded<W> {
                 owner.map(|viewport| self.transform.inverse().transform_rect_bbox(viewport));
         }
         let placed = self.overlay_transform().unwrap_or(self.transform);
-        self.widget.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform * placed,
-            text,
-            theme,
-            child_env,
-        ));
+        self.widget
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform * placed,
+                text,
+                theme,
+                child_env,
+            ));
     }
 
     fn overlay_transform(&self) -> Option<Affine> {

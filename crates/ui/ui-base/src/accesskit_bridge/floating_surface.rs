@@ -59,11 +59,7 @@ impl SurfaceWalk {
 }
 
 #[cfg(any(feature = "native", test))]
-pub fn surface_tree_update(
-    access: Option<&AccessNode>,
-    origin: Point,
-    scale: f64,
-) -> TreeUpdate {
+pub fn surface_tree_update(access: Option<&AccessNode>, origin: Point, scale: f64) -> TreeUpdate {
     let mut walk = SurfaceWalk {
         nodes: Vec::new(),
         focus: None,

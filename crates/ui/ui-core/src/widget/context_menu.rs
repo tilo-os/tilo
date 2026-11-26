@@ -10,21 +10,21 @@
 use std::cell::Cell;
 
 use crate::widget::floating_list::{FloatingList, FloatingRow};
-use tilo_ui_base::{widget::AppModel, widget::EventCtx, widget::ModelPath};
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::{widget::AppModel, widget::EventCtx, widget::ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::widget::floating_surface::{self, PanelAlign, PopoverSide};
 use tilo_ui_base::icons::Icon;
-use tilo_ui_base::{platform::PlatformConventions, platform::Shortcut};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
-use crate::widget::floating_surface::{self, PanelAlign, PopoverSide};
+use tilo_ui_base::{platform::PlatformConventions, platform::Shortcut};
 
 mod editing;
 mod emoji_row;
@@ -2116,7 +2116,8 @@ impl Widget for ContextMenu {
     }
 
     fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
-        self.query_caret().map(|_| tilo_ui_base::ime::InputContent::TEXT)
+        self.query_caret()
+            .map(|_| tilo_ui_base::ime::InputContent::TEXT)
     }
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
@@ -2360,19 +2361,19 @@ mod placement_tests;
 #[cfg(test)]
 mod nested_and_anchored_tests {
     use super::*;
-    use tilo_ui_base::presence::PresenceCtx;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use tilo_ui_base::presence::PresenceCtx;
 
     const WINDOW: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
 
     fn cursor_at(p: Point) -> WindowEvent {
         tilo_ui_base::synthetic_input::cursor_moved(p.x, p.y)
     }
+    use crate::testing::dispatch;
     use tilo_ui_base::synthetic_input::mouse_press;
     use tilo_ui_base::synthetic_input::mouse_release;
     use tilo_ui_base::synthetic_input::named_key;
-    use crate::testing::dispatch;
     fn paint(m: &mut ContextMenu) {
         let presence = PresenceCtx::default();
         let previous = presence.push_viewport(WINDOW);
@@ -2390,7 +2391,8 @@ mod nested_and_anchored_tests {
     fn file_menu(fired: &Arc<AtomicU32>) -> ContextMenu {
         let markdown = Arc::clone(fired);
         ContextMenu::with_items(vec![
-            MenuItem::action("Open", || {}).with_shortcut(tilo_ui_base::platform::Shortcut::command("O")),
+            MenuItem::action("Open", || {})
+                .with_shortcut(tilo_ui_base::platform::Shortcut::command("O")),
             MenuItem::submenu(
                 "New file",
                 vec![

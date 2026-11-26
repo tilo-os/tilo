@@ -1,6 +1,6 @@
 use super::*;
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState};
 use crate::composition::Picture;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState};
 
 fn text(path: &str, words: &str) -> Composed {
     let mut node = Composed::new(path.to_owned(), "Label", [13.0, 27.0, 200.0, 20.0]);
@@ -320,7 +320,10 @@ fn a_canvas_places_what_it_holds_and_a_host_fills_its_wells() {
 
 /// A real widget's frame, laid out at `size`, as a page reads it: its composition with the
 /// pictures of what only paints.
-fn framed(root: Box<dyn tilo_ui_base::widget::Widget>, size: (u32, u32)) -> crate::headless::Driver {
+fn framed(
+    root: Box<dyn tilo_ui_base::widget::Widget>,
+    size: (u32, u32),
+) -> crate::headless::Driver {
     let mut frame = crate::headless::Driver::new(crate::State::new(), root, size);
     frame.relayout();
     frame
@@ -770,8 +773,8 @@ fn a_widget_with_no_picture_shows_the_words_it_says() {
 /// button. A press on one of its rows, on the page, runs the row's action.
 #[test]
 fn a_menu_buttons_menu_is_a_layer_of_its_own_that_grows_from_the_button() {
-    use tilo_ui_base::icons::Icon;
     use crate::widget::{Button, Column, MenuItem, Text};
+    use tilo_ui_base::icons::Icon;
     let pinned = std::rc::Rc::new(std::cell::Cell::new(false));
     let pin = std::rc::Rc::clone(&pinned);
     let tree = Column::new()

@@ -1,12 +1,12 @@
+use taffy::style_helpers::percent;
+use taffy::{NodeId, Style, TaffyTree};
 #[cfg(feature = "model")]
 use tilo_ui_base::permissions::PermissionScope;
-use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 use tilo_ui_base::{widget::AppModel, widget::ModelPath};
-use taffy::style_helpers::percent;
-use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::Point;
 use winit::event::WindowEvent;
 
@@ -123,12 +123,25 @@ impl Widget for Stack {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         for child in &mut self.children {
-            tilo_ui_base::widget::draw_child(child.as_mut(), scene, transform, text_renderer, theme, &env);
+            tilo_ui_base::widget::draw_child(
+                child.as_mut(),
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &env,
+            );
         }
 
         tilo_ui_base::widget::draw_over(
             self,
-            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
     }
 

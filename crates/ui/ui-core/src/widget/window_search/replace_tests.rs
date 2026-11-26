@@ -6,10 +6,12 @@ use automerge::AutoCommit;
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
 
 use super::*;
-use tilo_ui_base::{a11y::Action, a11y::Role};
-use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release};
 use crate::widget::find_bar::{FindMatch, FindMode};
 use crate::window_toolbar::ToolbarEvent;
+use tilo_ui_base::{a11y::Action, a11y::Role};
+use tilo_ui_base::{
+    synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release,
+};
 
 fn leaf(
     taffy: &mut taffy::TaffyTree<()>,

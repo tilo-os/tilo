@@ -7,8 +7,8 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use tilo_ui_base::theme::Theme;
 use crate::widget::Banner;
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::EventCtx, widget::TaffyTreeExt, widget::Widget};
 
 /// The failure face: `title` says what failed (never an app's name, which

@@ -10,8 +10,8 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::Block;
 use crate::{BlockEditor, TransclusionPreview};
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use ui::widget::marks::{Mark, PageId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

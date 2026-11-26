@@ -4,12 +4,12 @@
 
 use super::checkbox::{CheckGlyph, CheckMotion, CheckPose};
 use super::toggle::{SwitchMotion, SwitchPose};
-use tilo_ui_base::motion::Presence;
 use crate::time::Instant;
-use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use tilo_ui_base::motion::Presence;
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
 /// The motions of a host's painted switches and checkboxes, by key.
 #[derive(Debug, Default)]

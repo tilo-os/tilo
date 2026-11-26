@@ -2,10 +2,13 @@
 
 use vello::kurbo::{Point, Rect};
 
-use tilo_ui_base::{component::Component, component::Described, component::Event};
-use tilo_ui_base::widget::DrawChild;
 use crate::widget::modal_dialog::DialogAction;
-use crate::{widget::Button, widget::Container, widget::FloatingPanel, widget::ModalDialog, widget::PanelAlign, widget::Popover, widget::PopoverSide};
+use crate::{
+    widget::Button, widget::Container, widget::FloatingPanel, widget::ModalDialog,
+    widget::PanelAlign, widget::Popover, widget::PopoverSide,
+};
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 use tilo_ui_base::{widget::Element, widget::Widget};
 
 fn column(views: Vec<Element>) -> Container {
@@ -118,11 +121,19 @@ impl Widget for DeclaredModal {
         Some(self)
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.dialog.sync(state, path);
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         self.dialog.update(state, path)
     }
 
@@ -146,13 +157,14 @@ impl Widget for DeclaredModal {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.dialog.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text,
-            theme,
-            env.clone(),
-        ));
+        self.dialog
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
     }
 
     fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
@@ -432,11 +444,19 @@ impl Widget for DeclaredPanel {
         Some(self)
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.panel.sync(state, path);
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         self.panel.update(state, path)
     }
 
@@ -697,11 +717,19 @@ impl Widget for DeclaredPopover {
         Some(self)
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.popover.sync(state, path);
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         self.popover.update(state, path)
     }
 
@@ -733,13 +761,14 @@ impl Widget for DeclaredPopover {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.popover.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text,
-            theme,
-            env.clone(),
-        ));
+        self.popover
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
     }
 
     fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
@@ -854,7 +883,12 @@ pub struct PopoverButtonProps {
 }
 
 /// The button a popover opens from: its label after its glyph, or the glyph alone.
-fn face(key: &str, label: &str, icon: Option<tilo_ui_base::icons::Icon>, icon_only: bool) -> Button {
+fn face(
+    key: &str,
+    label: &str,
+    icon: Option<tilo_ui_base::icons::Icon>,
+    icon_only: bool,
+) -> Button {
     match icon {
         Some(icon) if icon_only => Button::icon_only(key, icon, label),
         Some(icon) => Button::new(key, label).with_icon(icon),
@@ -895,11 +929,19 @@ impl Widget for DeclaredPopoverButton {
         Some(self)
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.pair.sync(state, path);
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         self.pair.update(state, path)
     }
 
@@ -933,13 +975,14 @@ impl Widget for DeclaredPopoverButton {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.pair.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text,
-            theme,
-            env.clone(),
-        ));
+        self.pair
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
     }
 
     fn handle_event(
@@ -1037,9 +1080,9 @@ mod tests {
     /// empty ground, is none.
     #[test]
     fn a_press_off_a_panel_with_a_dismiss_reports_it_and_one_on_it_does_not() {
+        use crate::testing::harness;
         use tilo_ui_base::component::Component;
         use tilo_ui_base::{component::testing::Node, component::testing::fired};
-        use crate::testing::harness;
         let queue = tilo_ui_base::Intents::default();
         let mut node = Node::new("FloatingPanel", "panel", &queue)
             .prop("width", tilo_ui_base::component::Value::Float(200.0))

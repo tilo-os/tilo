@@ -14,19 +14,30 @@ use std::rc::Rc;
 
 use vello::kurbo::Point;
 
-use tilo_ui_base::{component::Accepts, component::Component, component::Described, component::Event, component::Moment, component::PartType, component::Person, component::ResourceId, component::SharedRows, component::Source, component::Value};
-use tilo_ui_base::selection::KeySelection;
-use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
-use tilo_ui_base::widget::Length;
 use crate::widget::arrange::{Align, Fit, MEASURE_REM, Page, Part, Row, Stack, TranscriptEdges};
 use crate::widget::conversation::list::GROUPING_WINDOW_SECS;
 use crate::widget::conversation::{ConversationClock, SectionDivider};
-use crate::{widget::Attachments, widget::Avatar, widget::ContextMenuArea, widget::ListRow, widget::ListRowProps, widget::MenuEntry, widget::MenuPart, widget::RowBuild, widget::SwipeActionProps, widget::Text};
-use tilo_ui_base::{widget::AvatarSize, widget::Decorator, widget::Element, widget::Spacer, widget::Tone, widget::Widget};
+use crate::{
+    widget::Attachments, widget::Avatar, widget::ContextMenuArea, widget::ListRow,
+    widget::ListRowProps, widget::MenuEntry, widget::MenuPart, widget::RowBuild,
+    widget::SwipeActionProps, widget::Text,
+};
+use tilo_ui_base::selection::KeySelection;
+use tilo_ui_base::widget::Length;
+use tilo_ui_base::{
+    component::Accepts, component::Component, component::Described, component::Event,
+    component::Moment, component::PartType, component::Person, component::ResourceId,
+    component::SharedRows, component::Source, component::Value,
+};
+use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
+use tilo_ui_base::{
+    widget::AvatarSize, widget::Decorator, widget::Element, widget::Spacer, widget::Tone,
+    widget::Widget,
+};
 
 use super::{ListModel, TreeMarks, VirtualList};
-use tilo_ui_base::collection_transition::ListModelChange;
 use crate::widget::ChangeMarkProps;
+use tilo_ui_base::collection_transition::ListModelChange;
 
 #[path = "virtual_list_facts.rs"]
 mod facts;
@@ -943,7 +954,10 @@ impl DescribedList {
 pub(crate) fn by_hand() -> bool {
     matches!(
         tilo_ui_base::motion::recent_input(crate::time::now()),
-        Some(tilo_ui_base::tokens::MotionSource::Pointer | tilo_ui_base::tokens::MotionSource::Gesture)
+        Some(
+            tilo_ui_base::tokens::MotionSource::Pointer
+                | tilo_ui_base::tokens::MotionSource::Gesture
+        )
     )
 }
 
@@ -1184,7 +1198,9 @@ fn indent_view(
     line = line.push_part(part);
     if let Some(progress) = progress {
         line = line
-            .push(Box::new(Spacer::token(tilo_ui_base::tokens::SpacingStep::S2)))
+            .push(Box::new(Spacer::token(
+                tilo_ui_base::tokens::SpacingStep::S2,
+            )))
             .push(Box::new(Text::new(&progress).with_role(TextRole::Caption)));
     }
     Box::new(line)
@@ -1545,7 +1561,10 @@ fn read_faces(key: &str, read: Vec<Person>) -> Element {
         crate::widget::Container::new()
             .with_no_padding()
             .landmark(
-                tilo_ui_base::i18n::widget_format("conversation-read-by", &[("names", names.into())]),
+                tilo_ui_base::i18n::widget_format(
+                    "conversation-read-by",
+                    &[("names", names.into())],
+                ),
                 format!("{key}~read"),
             )
             .with_child(Box::new(faces)),
@@ -2076,9 +2095,11 @@ impl Decorator for DescribedList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::{component::BoundValue, component::Event, component::Fired, component::Intent};
     use crate::widget::MenuItemProps;
     use std::cell::Cell;
+    use tilo_ui_base::{
+        component::BoundValue, component::Event, component::Fired, component::Intent,
+    };
 
     /// The rows of a list given its items whole: a row a title each.
     fn given_rows(count: usize) -> DescribedRows {
@@ -2121,7 +2142,12 @@ mod tests {
         Widget::sync(list, &doc, &automerge::ROOT);
         let mut taffy = taffy::TaffyTree::new();
         let mut nodes = std::collections::HashMap::new();
-        let node = Widget::build_layout(list, &mut taffy, &tilo_ui_base::theme::Theme::dark(), &mut nodes);
+        let node = Widget::build_layout(
+            list,
+            &mut taffy,
+            &tilo_ui_base::theme::Theme::dark(),
+            &mut nodes,
+        );
         taffy
             .compute_layout(
                 node,
@@ -2681,7 +2707,10 @@ mod tests {
             .list()
             .and_then(|list| list.row_rect(&key))
             .expect("the row is laid out");
-        harness.send(&tilo_ui_base::synthetic_input::cursor_moved(20.0, row.center().y));
+        harness.send(&tilo_ui_base::synthetic_input::cursor_moved(
+            20.0,
+            row.center().y,
+        ));
         harness.send(&tilo_ui_base::synthetic_input::mouse_input(
             crate::winit::event::ElementState::Pressed,
             crate::winit::event::MouseButton::Right,
@@ -3489,7 +3518,8 @@ mod tests {
         }
 
         fn binding(&mut self, name: &str) -> Option<BoundValue> {
-            (name == "checkbox").then(|| BoundValue::Bool(tilo_ui_base::component::Bound::default()))
+            (name == "checkbox")
+                .then(|| BoundValue::Bool(tilo_ui_base::component::Bound::default()))
         }
 
         fn children(&mut self, _part: &str) -> Vec<Element> {

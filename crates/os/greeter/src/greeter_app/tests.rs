@@ -57,7 +57,8 @@ fn set_focus_by_id(widget: &mut dyn Widget, id: &str) {
 fn key_event(key: Key, text: Option<&str>) -> WindowEvent {
     // winit intentionally keeps the platform-specific key field private;
     // these are the same inert placeholders used by ui::App's key tests.
-    let event = tilo_ui_base::synthetic_input::key_event(key, text.map(Into::into), ElementState::Pressed);
+    let event =
+        tilo_ui_base::synthetic_input::key_event(key, text.map(Into::into), ElementState::Pressed);
     tilo_ui_base::synthetic_input::keyboard_input(event)
 }
 
@@ -320,7 +321,10 @@ fn spoken(w: &dyn Widget) -> Vec<String> {
 
 fn live_politeness_for(w: &dyn Widget, name: &str) -> Option<Politeness> {
     /// The node named `name` in `node`'s subtree.
-    fn named<'a>(node: &'a tilo_ui_base::a11y::AccessNode, name: &str) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
+    fn named<'a>(
+        node: &'a tilo_ui_base::a11y::AccessNode,
+        name: &str,
+    ) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
         if node.name.as_deref() == Some(name) {
             return Some(node);
         }
@@ -1379,7 +1383,8 @@ fn the_screen_is_laid_out_on_the_outputs_it_runs_on() {
             extent.width <= limit && extent.height <= limit,
             "{extent:?} exceeds the device limit {limit}"
         );
-        let logical = tilo_ui_base::scale::logical_size((extent.width, extent.height), extent.scale);
+        let logical =
+            tilo_ui_base::scale::logical_size((extent.width, extent.height), extent.scale);
         assert!(
             (logical.0 - window.width()).abs() <= 1.0 && (logical.1 - window.height()).abs() <= 1.0,
             "the frame keeps the window's layout: {logical:?} vs {window:?}"
@@ -2030,9 +2035,9 @@ fn the_on_screen_keyboard_suits_the_secret_and_types_into_the_passcode() {
         app.autofocus_first = true;
         app.autofocus_on_structure_change = true;
         let heard = Heard::default();
-        app.set_screen_reader(Some(tilo_ui_base::screen_reader::ScreenReader::with_speaker(
-            Box::new(heard.clone()),
-        )));
+        app.set_screen_reader(Some(
+            tilo_ui_base::screen_reader::ScreenReader::with_speaker(Box::new(heard.clone())),
+        ));
         let touchscreen = Touchscreen::default();
         touchscreen.frame(&mut app);
         let zero = ui::time::now();
@@ -2219,7 +2224,11 @@ fn after(zero: ui::time::Instant, t: u64) -> ui::time::Instant {
 }
 
 /// Where the screen reader finds the node called `name` with `role`.
-fn semantic_centre(app: &mut ui::App, role: tilo_ui_base::a11y::Role, name: &str) -> vello::kurbo::Point {
+fn semantic_centre(
+    app: &mut ui::App,
+    role: tilo_ui_base::a11y::Role,
+    name: &str,
+) -> vello::kurbo::Point {
     app.refresh_semantic_tree();
     app.semantic_tree()
         .iter()

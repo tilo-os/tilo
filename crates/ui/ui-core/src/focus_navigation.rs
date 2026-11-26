@@ -50,8 +50,8 @@ pub(crate) fn next(
     best
 }
 
-use tilo_ui_base::widget::Widget;
 use taffy::TaffyTree;
+use tilo_ui_base::widget::Widget;
 
 /// Whether `widget` and what it has stay out of the focus order: the `hidden` flag of its accessibility
 /// node, read through [`Widget::accessibility_hidden`] so traversal does not build each node (and

@@ -20,9 +20,9 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::ColorCompat;
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 use tilo_ui_base::{component::Event, component::Value};
-use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// How close to a point a press grabs it rather than adding another, in units of the box.
@@ -506,9 +506,9 @@ impl Widget for CurveEditor {
         Some(
             AccessNode::new(Role::Slider)
                 .with_name(
-                    self.label
-                        .clone()
-                        .unwrap_or_else(|| tilo_ui_base::i18n::widget_format("widget-curve-name", &[])),
+                    self.label.clone().unwrap_or_else(|| {
+                        tilo_ui_base::i18n::widget_format("widget-curve-name", &[])
+                    }),
                 )
                 .with_description(described.join("; "))
                 .with_state(
@@ -523,10 +523,12 @@ impl Widget for CurveEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::{component::Fired, component::Intent};
     use crate::testing::dispatch;
+    use tilo_ui_base::{component::Fired, component::Intent};
 
-    use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release};
+    use tilo_ui_base::{
+        synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release,
+    };
 
     /// An editor over a 200 × 200 box at the origin, reporting each change to `queue`.
     fn editor_at(points: &[f64]) -> (CurveEditor, tilo_ui_base::Intents<Fired>) {

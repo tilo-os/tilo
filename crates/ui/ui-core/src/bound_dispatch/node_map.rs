@@ -4,16 +4,16 @@
 use super::BoundDispatchError;
 #[cfg(feature = "model")]
 use super::{CallbackBinding, CallbackScopeGuard, DocumentEditStamp};
-use tilo_ui_base::widget::Widget;
-use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
-use tilo_ui_base::widget::component_walk::WalkError;
-#[cfg(feature = "model")]
-use tilo_ui_base::{widget::component_walk::ComponentScope, widget::component_walk::ScopeEntry};
 use automerge::{AutoCommit, ObjId};
 #[cfg(feature = "model")]
 use std::cell::RefCell;
 use std::collections::HashMap;
 use taffy::NodeId;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
+use tilo_ui_base::widget::component_walk::WalkError;
+#[cfg(feature = "model")]
+use tilo_ui_base::{widget::component_walk::ComponentScope, widget::component_walk::ScopeEntry};
 
 impl From<WalkError> for BoundDispatchError {
     fn from(error: WalkError) -> Self {

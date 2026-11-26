@@ -1,7 +1,10 @@
 //! [`ColorPicker`] as a described component.
 
-use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Event, component::Value};
 use crate::widget::ColorSwatch;
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+    component::Value,
+};
 
 use super::ColorPicker;
 

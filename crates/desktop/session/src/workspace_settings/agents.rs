@@ -862,7 +862,10 @@ fn limit_of(agent: &tilo_app::tilo_workspace_agent::Agent, can_choose: bool) -> 
         summary: limit_summary(agent.spend_limit_micros),
         today: t_args(
             "workspace-settings-agent-limit-today",
-            &[("spent", tilo_ui_base::format::money(agent.spent_on(&today())).into())],
+            &[(
+                "spent",
+                tilo_ui_base::format::money(agent.spent_on(&today())).into(),
+            )],
         ),
         note: if can_choose {
             t("workspace-settings-agent-limit-note")

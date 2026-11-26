@@ -6,10 +6,10 @@
 //! briefs for tone, but it is never the source of grouping, attribution, or
 //! counts.
 
-use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 use crate::time::SystemTime;
 use std::collections::HashSet;
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 
 use crate::history_source::detail::{contains_opaque_id, human_label};
 use crate::widget::history::{HistoryAuthor, HistoryEntry, HistoryEntryId};

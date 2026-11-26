@@ -2,8 +2,8 @@
 //! not cover. Read from what the content tells assistive technology, which names exactly the text
 //! a person reads and the controls they use, each with its bounds.
 
-use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 use vello::kurbo::Rect;
 
 /// The most places one window's content is read for: content that shows more counts whole.

@@ -55,11 +55,14 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollaborationManager, collaboration::PeerTransport, collaboration::RouteSpec};
     use crate::state::State;
     use automerge::transaction::Transactable as _;
     use std::cell::RefCell;
     use std::rc::Rc;
+    use tilo_ui_base::{
+        collaboration::CollabEvent, collaboration::CollaborationManager,
+        collaboration::PeerTransport, collaboration::RouteSpec,
+    };
 
     struct Instance {
         acknowledged: Option<RouteSpec>,

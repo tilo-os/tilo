@@ -14,13 +14,16 @@ use winit::keyboard::NamedKey;
 use crate::floating_surface::{
     FloatingSurfaceClientMessage, FloatingSurfaceHostMessage, FloatingSurfaceServiceClient,
 };
-use tilo_ui_base::{synthetic_input::char_key, synthetic_input::named_key};
 use crate::testing::Dispatch;
-use tilo_ui_base::theme::Theme;
 use crate::widget::find_bar::{FindMatch, FindOptions, Findable};
-use crate::{widget::AppKind, widget::HistoryControl, widget::InPlace, widget::TabDescriptor, widget::TileContent, widget::WindowGroup, widget::WindowWidth};
-use tilo_ui_base::widget::Widget;
 use crate::window_toolbar::{HistoryOffer, SearchOffer, ToolbarEvent, WindowOffer};
+use crate::{
+    widget::AppKind, widget::HistoryControl, widget::InPlace, widget::TabDescriptor,
+    widget::TileContent, widget::WindowGroup, widget::WindowWidth,
+};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{synthetic_input::char_key, synthetic_input::named_key};
 
 use super::super::App;
 
@@ -363,7 +366,11 @@ impl Omnibox {
 }
 
 impl Widget for Omnibox {
-    fn sync(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for event in crate::window_toolbar::take_events() {
             match event {
                 ToolbarEvent::Edit { text } => self.typed = text,

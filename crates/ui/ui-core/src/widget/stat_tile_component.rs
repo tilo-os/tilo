@@ -1,8 +1,8 @@
 //! [`StatTile`] and [`StatGroup`] as described components.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event};
-use tilo_ui_base::widget::Tone;
 use crate::widget::activation::Activation;
+use tilo_ui_base::widget::Tone;
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 use super::{StatGroup, StatTile, Trend};
 

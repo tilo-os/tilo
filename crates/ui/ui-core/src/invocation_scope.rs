@@ -184,10 +184,10 @@ pub(crate) fn check_shown_here(
     Ok(())
 }
 
-use tilo_ui_base::collaboration::RouteSpec;
 use crate::resource::{DocumentCheckout, ResourceStore, resource_loan_matches};
 use automerge::AutoCommit;
 use std::cell::RefCell;
+use tilo_ui_base::collaboration::RouteSpec;
 
 /// The record a disclosed read names: its workspace when it is shared in one.
 #[derive(Clone, Debug, PartialEq, Eq)]

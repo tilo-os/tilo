@@ -2,8 +2,8 @@
 
 use super::super::tests::{dispatch_cursor, dispatch_left_button, lay_out_at_width_with, send_key};
 use super::super::{PINNED_W, TAB_BAR_HEIGHT, TabBar, TabDescriptor};
-use tilo_ui_base::widget::Widget as _;
 use crate::window_toolbar::{ToolbarAction, ToolbarEvent, WindowToolbar};
+use tilo_ui_base::widget::Widget as _;
 use vello::kurbo::Rect;
 use winit::event::ElementState;
 use winit::keyboard::{Key, NamedKey};

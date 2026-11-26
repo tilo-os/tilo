@@ -5,8 +5,8 @@ use std::cell::Cell;
 
 use tilo_rich_edit::{Block, BlockEditor};
 use tilo_ui::State;
-use tilo_ui_base::a11y::AccessNode;
 use tilo_ui::app::{App, AppSurface};
+use tilo_ui_base::a11y::AccessNode;
 use vello::Scene;
 use vello::kurbo::Rect;
 

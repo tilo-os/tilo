@@ -3,11 +3,11 @@
 
 use vello::kurbo::{Point, Rect};
 
+use crate::widget::InputHint;
 use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::InputHint;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 
 #[path = "key_hint_component.rs"]
 mod component;
@@ -181,7 +181,10 @@ impl tilo_ui_base::widget::Widget for KeyHints {
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
         theme: &Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
+        node_map: &mut std::collections::HashMap<
+            taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> taffy::NodeId {
         use tilo_ui_base::widget::TaffyTreeExt as _;
         if self.theme.as_ref() != Some(theme) {
@@ -196,9 +199,9 @@ impl tilo_ui_base::widget::Widget for KeyHints {
             flex_shrink: 1.0,
             size: taffy::Size {
                 width: taffy::Dimension::length(tilo_ui_base::num::f32_of_f64(width.ceil())),
-                height: taffy::Dimension::length(tilo_ui_base::num::f32_of_f64(KeyHintsFace::height(
-                    theme,
-                ))),
+                height: taffy::Dimension::length(tilo_ui_base::num::f32_of_f64(
+                    KeyHintsFace::height(theme),
+                )),
             },
             min_size: taffy::Size {
                 width: taffy::Dimension::length(0.0_f32),

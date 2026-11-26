@@ -12,10 +12,13 @@ use tilo_actions::{
     MissingContent, Verified, dispatch_with_context, entry_of, verify_change,
 };
 use tilo_content::ContentStore;
-use tilo_ui_base::{collaboration::document_content::ContentLink, collaboration::document_content::DocumentContent, collaboration::document_content::keep_link};
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::RouteSpec};
 use tilo_ui::widget::{Column, Text};
 use tilo_ui::{App, State, WakeScope};
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::RouteSpec};
+use tilo_ui_base::{
+    collaboration::document_content::ContentLink, collaboration::document_content::DocumentContent,
+    collaboration::document_content::keep_link,
+};
 
 const APP: &str = "so.tilo.record-content-route-arrival-test";
 

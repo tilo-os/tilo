@@ -3,10 +3,10 @@
 //! shows it asks every widget a question or two, but enters the component's
 //! callback scope a bounded number of times however long the list is.
 
-use tilo_ui_base::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::profiling::observe;
 use tilo_app_test_host::TestApp;
+use tilo_ui_base::i18n::EmbeddedCatalog;
 
 use crate::support_checklist;
 use crate::support_checklist::Checklist;

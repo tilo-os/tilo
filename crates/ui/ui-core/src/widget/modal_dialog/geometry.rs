@@ -8,14 +8,14 @@ use super::{
     ModalAction, ModalEmphasis, ModalHit, ModalLayout, ModalSpec, action_height, card_width, pad,
     title_icon_side, title_lines, title_row_height, uses_full_window,
 };
+use crate::widget::control_size::ControlSize;
+use crate::widget::floating_surface;
+use tilo_sort::CompactSort as _;
 use tilo_ui_base::interaction::InteractionEnvironment;
 use tilo_ui_base::platform::DialogActionOrder;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::control_size::ControlSize;
-use crate::widget::floating_surface;
-use tilo_sort::CompactSort as _;
 
 fn sheet_area(window: Rect, wanted_h: f64, theme: &Theme) -> Rect {
     if uses_full_window(window, theme) {

@@ -8,10 +8,13 @@ use std::rc::Rc;
 
 use winit::event::WindowEvent;
 
+use crate::{widget::Button, widget::ControlSize, widget::MenuButton, widget::MenuItem};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::widget::controls::ActionControls;
-use crate::{widget::Button, widget::ControlSize, widget::MenuButton, widget::MenuItem};
-use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingMetadata, widget::EventCtx, widget::ModelPath, widget::Widget};
+use tilo_ui_base::{
+    widget::ActionEmitter, widget::ControlBindingMetadata, widget::EventCtx, widget::ModelPath,
+    widget::Widget,
+};
 
 struct Entry {
     label: String,
@@ -154,7 +157,10 @@ impl tilo_ui_base::widget::Decorator for RowMenu {
         }
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
         if request.wants::<dyn ActionControls>() {
             request.provide::<dyn ActionControls>(self);
         } else {

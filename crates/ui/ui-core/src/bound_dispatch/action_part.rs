@@ -14,8 +14,10 @@ use tilo_ui_base::permissions::MemberId;
 #[derive(Default)]
 pub(crate) struct ResourceActionState {
     pub(super) pending: Option<PendingResourceAction>,
-    pub(super) statuses:
-        HashMap<(MemberId, crate::application::InstanceId), tilo_ui_base::widget::undo_access::UndoStatus>,
+    pub(super) statuses: HashMap<
+        (MemberId, crate::application::InstanceId),
+        tilo_ui_base::widget::undo_access::UndoStatus,
+    >,
     /// The status last answered per author's window, with where the document, the history and the
     /// pending action stood: a frame asks every time, and it changes only when one of them moves.
     pub(super) answered: HashMap<

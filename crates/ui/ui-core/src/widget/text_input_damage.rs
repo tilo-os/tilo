@@ -7,9 +7,9 @@ use vello::kurbo::{Affine, Rect, Vec2};
 use vello::peniko::Color;
 
 use super::TextInput;
-use tilo_ui_base::{scroll_copy::Piece, scroll_copy::Showing, scroll_copy::Since};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{scroll_copy::Piece, scroll_copy::Showing, scroll_copy::Since};
 
 pub(super) type FieldShown = Showing<FieldLook>;
 

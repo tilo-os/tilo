@@ -34,11 +34,11 @@
 //! prompt.reject("Wrong password");
 //! ```
 
-use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -48,19 +48,24 @@ use winit::event::{ElementState, KeyEvent, MouseButton, TouchPhase, WindowEvent}
 use winit::keyboard::{Key, NamedKey};
 use zeroize::Zeroizing;
 
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Politeness, a11y::Role};
+use crate::passcode_keyboard::{PasscodeInput, PasscodeKey, PasscodeKeyboard};
+use crate::widget::control_size::ControlSize;
+use crate::widget::modal_dialog::{self, ModalAction, ModalLayout, ModalSpec};
+use crate::{
+    widget::Button, widget::ButtonFace, widget::ButtonRole, widget::ModalDialog, widget::TextInput,
+    widget::TextInputKind,
+};
 use tilo_ui_base::caps_lock::CapsLockEstimate;
 use tilo_ui_base::icons::Icon;
-use tilo_ui_base::{interaction::InputModality, interaction::InteractionEnvironment, interaction::PointerPrecision};
-use crate::passcode_keyboard::{PasscodeInput, PasscodeKey, PasscodeKeyboard};
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
-use crate::widget::control_size::ControlSize;
-use crate::widget::modal_dialog::{self, ModalAction, ModalLayout, ModalSpec};
-use crate::{widget::Button, widget::ButtonFace, widget::ButtonRole, widget::ModalDialog, widget::TextInput, widget::TextInputKind};
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Politeness, a11y::Role};
+use tilo_ui_base::{
+    interaction::InputModality, interaction::InteractionEnvironment, interaction::PointerPrecision,
+};
 use tilo_ui_base::{widget::EventCtx, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
 
 const NOTICE_MAX_LINES: usize = 3;
@@ -1206,8 +1211,12 @@ impl SecretPrompt {
             0.0
         } else {
             let style = theme.text(TextRole::Body);
-            let lines =
-                text.clamp_to_lines(&self.resource, &style, tilo_ui_base::num::f32_of_f64(width), 3);
+            let lines = text.clamp_to_lines(
+                &self.resource,
+                &style,
+                tilo_ui_base::num::f32_of_f64(width),
+                3,
+            );
             Self::line_height(theme, TextRole::Body) * tilo_ui_base::num::f64_of_usize(lines.len())
         };
         let notice = self.notice_line().map(|(line, _)| line);
@@ -1877,7 +1886,13 @@ impl SecretPrompt {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.paint_at(scene, transform, text, theme, tilo_ui_base::motion::frame_now());
+        self.paint_at(
+            scene,
+            transform,
+            text,
+            theme,
+            tilo_ui_base::motion::frame_now(),
+        );
     }
 
     /// Paint the prompt with its answer at `now`: a host that draws outside

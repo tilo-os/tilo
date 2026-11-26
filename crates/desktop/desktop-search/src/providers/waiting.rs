@@ -8,8 +8,8 @@
 //! a reply when that is all it takes.
 
 use tilo_actions::ResourceSpec;
-use ui::search::system::{ResourceKind, rank_fields};
 use tilo_ui_base::text_match::FieldWeight;
+use ui::search::system::{ResourceKind, rank_fields};
 
 use crate::model::{DESKTOP_APP, Hit, InvokeTarget, Source, Target};
 

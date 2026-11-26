@@ -3,8 +3,8 @@ use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 use vello_encoding::MarkKind;
 
-use tilo_ui_base::scene_parts::widget_keys::*;
 use std::collections::HashSet;
+use tilo_ui_base::scene_parts::widget_keys::*;
 use tilo_ui_base::widget::Widget;
 
 fn begins(scene: &Scene) -> Vec<(u64, [f32; 2])> {
@@ -92,10 +92,10 @@ fn reset_clears_the_marks() {
 /// body.
 #[test]
 fn a_container_that_draws_its_children_itself_keys_each_of_them() {
+    use crate::{widget::Button, widget::Card, widget::CardGrid};
     use tilo_ui_base::presence::PresenceCtx;
     use tilo_ui_base::text_render::TextRenderer;
     use tilo_ui_base::theme::Theme;
-    use crate::{widget::Button, widget::Card, widget::CardGrid};
     use tilo_ui_base::{widget::DrawChild, widget::Element, widget::Widget};
 
     let cards: Vec<Element> = (0..3)
@@ -148,10 +148,10 @@ fn a_container_that_draws_its_children_itself_keys_each_of_them() {
 
 #[test]
 fn a_root_drawn_into_another_scene_renumbers_no_root_of_the_frame() {
+    use crate::widget::Button;
     use tilo_ui_base::presence::PresenceCtx;
     use tilo_ui_base::text_render::TextRenderer;
     use tilo_ui_base::theme::Theme;
-    use crate::widget::Button;
     use tilo_ui_base::{widget::DrawChild as _, widget::Element};
 
     let theme = Theme::default();

@@ -6,8 +6,8 @@ use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
 use super::{Actions, FormControl, Scrollable, Text};
-use tilo_ui_base::{widget::Element, widget::Widget};
 use taffy::style_helpers::{line, span};
+use tilo_ui_base::{widget::Element, widget::Widget};
 
 use tilo_ui_base::widget::composition_parts::Parts;
 mod label;
@@ -21,7 +21,12 @@ use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 
-use tilo_ui_base::{widget::layout_info::Density, widget::layout_info::Effective, widget::layout_info::FieldLayout, widget::layout_info::FormLayout, widget::layout_info::LabelPlacement, widget::layout_info::LayoutInfo, widget::layout_info::LayoutOrigin, widget::layout_info::PageLayout, widget::layout_info::SectionLayout};
+use tilo_ui_base::{
+    widget::layout_info::Density, widget::layout_info::Effective, widget::layout_info::FieldLayout,
+    widget::layout_info::FormLayout, widget::layout_info::LabelPlacement,
+    widget::layout_info::LayoutInfo, widget::layout_info::LayoutOrigin,
+    widget::layout_info::PageLayout, widget::layout_info::SectionLayout,
+};
 
 fn spacing(value: Option<f32>) -> Option<f32> {
     value
@@ -269,8 +274,10 @@ impl FormSection {
         /// How deep forms are looked for: a page's part, a section, its pane, the form.
         const DEPTH: usize = 6;
         fn each(widget: &mut dyn Widget, depth: usize, f: &mut dyn FnMut(&mut FormSection)) {
-            use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
             use tilo_ui_base::{widget::Decorated, widget::DecoratedMut};
+            use tilo_ui_base::{
+                widget::capability::capability, widget::capability::capability_mut,
+            };
             // A wrapper (a language view's pane round the form it shows) answers as itself, and
             // its children are its inner widget's: the form it wraps is reached through it.
             if capability::<dyn Decorated>(widget).is_some() {
@@ -1052,7 +1059,10 @@ impl Widget for Field {
         environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.least_target = environment.minimum_target();
-        tilo_ui_base::widget::defaults::set_interaction_environment(self.children_mut(), environment);
+        tilo_ui_base::widget::defaults::set_interaction_environment(
+            self.children_mut(),
+            environment,
+        );
     }
     fn build_layout(
         &mut self,
@@ -1066,8 +1076,8 @@ impl Widget for Field {
         // A beside label sits on the control's first line: a one-line
         // control is at most a large control high, so a taller one (a
         // multi-line entry, a list) keeps its label on its first line.
-        self.first_line =
-            tilo_ui_base::num::f32_of_f64(super::ControlSize::Large.height(theme)).max(self.least_target);
+        self.first_line = tilo_ui_base::num::f32_of_f64(super::ControlSize::Large.height(theme))
+            .max(self.least_target);
         self.comfortable_control = theme.tokens.metrics.chooser_width
             * tilo_ui_base::tokens::Metrics::text_growth(theme.text_scale);
         let placement = self.label_placement.map_or_else(

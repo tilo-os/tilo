@@ -44,15 +44,22 @@ use tilo_ui_base::component::Event;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
 
-use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::TextRole;
 use crate::widget::media_card::MediaSize;
 use crate::widget::now_playing::{Song, SongFace};
 use tilo_actions::ActionBinding;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
-use crate::{widget::Button, widget::ButtonFace, widget::ControlSize, widget::PanelAlign, widget::PopoverSide, widget::Slider, widget::SliderFace, widget::TransportControl, widget::TransportFace, widget::When};
-use tilo_ui_base::{widget::Element, widget::Manual, widget::ManualContext, widget::TaffyTreeExt, widget::Widget, widget::WidgetLayoutError};
+use crate::{
+    widget::Button, widget::ButtonFace, widget::ControlSize, widget::PanelAlign,
+    widget::PopoverSide, widget::Slider, widget::SliderFace, widget::TransportControl,
+    widget::TransportFace, widget::When,
+};
+use tilo_ui_base::{
+    widget::Element, widget::Manual, widget::ManualContext, widget::TaffyTreeExt, widget::Widget,
+    widget::WidgetLayoutError,
+};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
@@ -241,7 +248,9 @@ impl Shared {
     /// Asked while a frame lays out, so it reads at the frame's instant, as every motion that sizes
     /// or places what it moves does.
     fn song_moving(&self) -> bool {
-        self.song.borrow().is_moving(tilo_ui_base::motion::frame_now())
+        self.song
+            .borrow()
+            .is_moving(tilo_ui_base::motion::frame_now())
     }
 
     fn follow_art(&self) -> bool {
@@ -394,12 +403,20 @@ impl<W: Widget + 'static> tilo_ui_base::widget::Decorator for Follow<W> {
         &mut self.widget
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.follow();
         self.widget.sync(state, path);
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let followed = self.follow();
         self.widget.update(state, path) | followed
     }
@@ -461,7 +478,11 @@ impl Widget for Art {
         self.rect = rect;
     }
 
-    fn update(&mut self, _: &tilo_ui_base::widget::AppModel, _: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        _: &tilo_ui_base::widget::AppModel,
+        _: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let followed = self.shared.follow_art();
         let revision = self.shared.revision.get();
         if self.seen == Some(revision) {
@@ -636,7 +657,11 @@ impl Widget for SongLines {
         self.rect = rect;
     }
 
-    fn update(&mut self, _: &tilo_ui_base::widget::AppModel, _: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        _: &tilo_ui_base::widget::AppModel,
+        _: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let revision = self.shared.revision.get();
         if self.seen == Some(revision) {
             return false;
@@ -1197,7 +1222,8 @@ fn bound_slider(slider: Slider, action: Option<&ActionBinding<f64>>) -> Slider {
 /// ground behind it: a filled heart is a liked song, an outline one is not.
 fn like_face(button: &mut Button, state: &TransportState) -> bool {
     let liked = state.liked == Some(true) && !state.idle;
-    let name = tilo_ui_base::i18n::widget_format(if liked { "media-unlike" } else { "media-like" }, &[]);
+    let name =
+        tilo_ui_base::i18n::widget_format(if liked { "media-unlike" } else { "media-like" }, &[]);
     button.set_accessible_name(&name);
     button.set_icon(if liked {
         Icon::HeartFilled
@@ -1239,8 +1265,9 @@ impl tilo_ui_base::widget::Decorator for VolumePanel {
         let node = self.slider.build_layout(taffy, theme, node_map);
         if let Ok(style) = taffy.style(node) {
             let mut style = style.clone();
-            style.size.width =
-                taffy::Dimension::length(tilo_ui_base::num::f32_of_f64(MediaSize::Large.extent(theme)));
+            style.size.width = taffy::Dimension::length(tilo_ui_base::num::f32_of_f64(
+                MediaSize::Large.extent(theme),
+            ));
             let _ = taffy.set_style(node, style);
         }
         node
@@ -1403,7 +1430,10 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
                 bound_slider(
                     Slider::from_state(&tilo_ui_base::LocalState::new(0.0))
                         .with_id("transport.position")
-                        .with_accessible_name(&tilo_ui_base::i18n::widget_format("media-position", &[]))
+                        .with_accessible_name(&tilo_ui_base::i18n::widget_format(
+                            "media-position",
+                            &[],
+                        ))
                         .value_text({
                             let shared = shared.clone();
                             move |fraction| time(fraction * shared.state.borrow().duration_ms)
@@ -1500,7 +1530,10 @@ fn children(shared: &Rc<Shared>, actions: &TransportActions) -> Vec<Element> {
                 slider: bound_slider(
                     Slider::from_state(&tilo_ui_base::LocalState::new(1.0))
                         .with_id("transport.volume-menu.slider")
-                        .with_accessible_name(&tilo_ui_base::i18n::widget_format("media-volume", &[])),
+                        .with_accessible_name(&tilo_ui_base::i18n::widget_format(
+                            "media-volume",
+                            &[],
+                        )),
                     actions.volume.as_ref(),
                 ),
             })

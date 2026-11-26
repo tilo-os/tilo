@@ -305,14 +305,26 @@ pub mod prelude {
     pub use tilo_ui_base::i18n::LabelKey;
 
     pub use settings_model::{DeviceClass, Scope, SettingsSchema};
+    pub use tilo_ui_base::collection_transition::ListModelChange;
+    pub use tilo_ui_base::tokens::TextRole;
+    pub use tilo_ui_base::{
+        LatestRequest, LatestTask, LocalState, PresenceCtx, TextRenderer, Theme, collaboration,
+        presence,
+    };
+    pub use tilo_ui_base::{arriving::Arrival, arriving::Arriving};
+    pub use tilo_ui_base::{
+        widget::ActionEmitter, widget::AudiencePresentationProvider, widget::Collaborative,
+        widget::CompleteContentProvider, widget::ContentKind, widget::Continuable,
+        widget::ControlBindingKind, widget::ControlBindingMetadata, widget::Element,
+        widget::EventCtx, widget::FullscreenProvider, widget::NativeViewLifecycle, widget::Spacer,
+        widget::Widget,
+    };
     pub use ui_core::application::{
         ANY_MEDIA_TYPE, AppComponent, ApplicationCatalog, ApplicationDefinition,
         ComponentBehaviour, ComponentRunnerInputs, LaunchTarget, OpenFile, PlaybackHandoff,
         PreparedComponentInputs, ProcessContext, ProcessContextInputs, RestoreInput,
     };
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
-    pub use tilo_ui_base::{arriving::Arrival, arriving::Arriving};
-    pub use tilo_ui_base::collection_transition::ListModelChange;
     pub use ui_core::floating_surface::FloatingSurfaceProvider;
     pub use ui_core::launch::ComponentHostPreparer;
     pub use ui_core::resource::{
@@ -321,7 +333,6 @@ pub mod prelude {
     };
     pub use ui_core::tilo_actions;
     pub use ui_core::tilo_actions::{ActionError, ActionNeed, ActionRegistry, ExecutionLocus};
-    pub use tilo_ui_base::tokens::TextRole;
     pub use ui_core::vello::kurbo::{Point, Rect, Size};
     pub use ui_core::widget::data_table::{
         ColumnDef, ColumnWidth, DataTable, TableModel, TableModelChange,
@@ -329,8 +340,19 @@ pub mod prelude {
     pub use ui_core::widget::resource_actions;
     pub use ui_core::widget::resource_actions::{ActionForm, ActionValue};
     pub use ui_core::widget::virtual_list::{ListModel, VirtualList};
-    pub use ui_core::{widget::Banner, widget::Button, widget::Card, widget::Checkbox, widget::Column, widget::Container, widget::Dropdown, widget::EmptyState, widget::FilterCount, widget::Filterable, widget::Filtered, widget::FindBar, widget::FindMatch, widget::FindOptions, widget::FindScope, widget::Findable, widget::ModelView, widget::NavItem, widget::NavList, widget::NavMode, widget::NavPane, widget::NavSection, widget::NavShell, widget::NumberInput, widget::QrWidget, widget::Row, widget::Scrollable, widget::SearchField, widget::SearchResultsView, widget::Slider, widget::Spinner, widget::Stack, widget::Text, widget::TextInput, widget::Toggle, widget::labeled_check, widget::labeled_field};
-    pub use tilo_ui_base::{widget::ActionEmitter, widget::AudiencePresentationProvider, widget::Collaborative, widget::CompleteContentProvider, widget::ContentKind, widget::Continuable, widget::ControlBindingKind, widget::ControlBindingMetadata, widget::Element, widget::EventCtx, widget::FullscreenProvider, widget::NativeViewLifecycle, widget::Spacer, widget::Widget};
-    pub use ui_core::{SearchRegistry, State, UndoAccess, UndoRequest, UndoStatus, column, history_source, row, search, stack};
-    pub use tilo_ui_base::{LatestRequest, LatestTask, LocalState, PresenceCtx, TextRenderer, Theme, collaboration, presence};
+    pub use ui_core::{
+        SearchRegistry, State, UndoAccess, UndoRequest, UndoStatus, column, history_source, row,
+        search, stack,
+    };
+    pub use ui_core::{
+        widget::Banner, widget::Button, widget::Card, widget::Checkbox, widget::Column,
+        widget::Container, widget::Dropdown, widget::EmptyState, widget::FilterCount,
+        widget::Filterable, widget::Filtered, widget::FindBar, widget::FindMatch,
+        widget::FindOptions, widget::FindScope, widget::Findable, widget::ModelView,
+        widget::NavItem, widget::NavList, widget::NavMode, widget::NavPane, widget::NavSection,
+        widget::NavShell, widget::NumberInput, widget::QrWidget, widget::Row, widget::Scrollable,
+        widget::SearchField, widget::SearchResultsView, widget::Slider, widget::Spinner,
+        widget::Stack, widget::Text, widget::TextInput, widget::Toggle, widget::labeled_check,
+        widget::labeled_field,
+    };
 }

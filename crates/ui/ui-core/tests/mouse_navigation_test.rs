@@ -1,8 +1,8 @@
 use tilo_ui::State;
 use tilo_ui::headless::Driver;
+use tilo_ui::widget::Text;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Router;
-use tilo_ui::widget::Text;
 use winit::event::{ElementState, MouseButton};
 
 fn side_button(driver: &mut Driver, button: MouseButton, state: ElementState) {

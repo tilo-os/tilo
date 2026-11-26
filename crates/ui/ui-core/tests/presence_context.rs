@@ -1,5 +1,7 @@
 use tilo_ui_base::permissions::MemberId;
-use tilo_ui_base::{presence::PathSegment, presence::PresenceCtx, presence::PresenceKey, presence::SelectionRange};
+use tilo_ui_base::{
+    presence::PathSegment, presence::PresenceCtx, presence::PresenceKey, presence::SelectionRange,
+};
 
 tilo_test_env::scenario! {
     fn presence_contexts_hold_query_and_paint_peers;

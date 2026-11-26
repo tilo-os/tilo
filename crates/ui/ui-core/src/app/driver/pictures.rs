@@ -125,10 +125,14 @@ fn picture_of(path: &str, scene: &Scene, width: f64, height: f64) -> Option<Arc<
             .then(|| tilo_ui_base::num::u32_of_f64(device))
     };
     let (width, height) = (pixels(width)?, pixels(height)?);
-    let rgba =
-        tilo_ui_base::offscreen::render_picture(scene, width, height, vello::peniko::Color::TRANSPARENT)
-            .inspect_err(|why| tracing::warn!(path, %why, "a page's picture could not be drawn"))
-            .ok()?;
+    let rgba = tilo_ui_base::offscreen::render_picture(
+        scene,
+        width,
+        height,
+        vello::peniko::Color::TRANSPARENT,
+    )
+    .inspect_err(|why| tracing::warn!(path, %why, "a page's picture could not be drawn"))
+    .ok()?;
     let png = crate::png::encode_rgba8(width, height, &rgba).ok()?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(png);
     Some(format!("data:image/png;base64,{encoded}").into())

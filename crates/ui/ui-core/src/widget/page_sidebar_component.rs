@@ -6,8 +6,10 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Value};
 use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
 
 use super::{PageSidebar, PageSidebarEvent};
 
@@ -167,7 +169,11 @@ impl tilo_ui_base::widget::Widget for DeclaredRail {
         Some(self)
     }
 
-    fn sync(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.report();
     }
 
@@ -186,7 +192,10 @@ impl tilo_ui_base::widget::Widget for DeclaredRail {
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
         theme: &tilo_ui_base::theme::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
+        node_map: &mut std::collections::HashMap<
+            taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> taffy::NodeId {
         self.rail.adopt_theme(theme);
         let width = theme.tokens.metrics.page_rail_width;

@@ -119,7 +119,10 @@ impl tilo_ui_base::widget::controls::ActionControls for Bound {
         &mut self,
         allowed: &std::collections::HashSet<ui::tilo_actions::ActionAddress>,
     ) {
-        tilo_ui_base::widget::controls::refresh_control_action_availability(&mut *self.inner, allowed);
+        tilo_ui_base::widget::controls::refresh_control_action_availability(
+            &mut *self.inner,
+            allowed,
+        );
     }
 
     fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
@@ -146,7 +149,9 @@ impl Control {
         let effect = &self.press.effect;
         tilo_ui_base::widget::ControlBindingMetadata {
             control_id: control_id.to_owned(),
-            kind: tilo_ui_base::widget::ControlBindingKind::Action(effect.address_on(effect.published_at())),
+            kind: tilo_ui_base::widget::ControlBindingKind::Action(
+                effect.address_on(effect.published_at()),
+            ),
         }
     }
 

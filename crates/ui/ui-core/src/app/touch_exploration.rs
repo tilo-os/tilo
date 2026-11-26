@@ -70,7 +70,10 @@ impl App {
         any
     }
 
-    fn apply_explore_gesture(&mut self, gesture: tilo_ui_base::screen_reader_touch::ExploreGesture) {
+    fn apply_explore_gesture(
+        &mut self,
+        gesture: tilo_ui_base::screen_reader_touch::ExploreGesture,
+    ) {
         use tilo_ui_base::screen_reader_touch::ExploreGesture;
         match gesture {
             ExploreGesture::Explore(at) => {

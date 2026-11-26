@@ -264,8 +264,10 @@ fn the_mounted_primary_document_reads_on_its_route_only() {
     let selected = select(&READERS, &resource, &resource.actions[0], &encoded)
         .unwrap()
         .unwrap();
-    let route =
-        tilo_ui_base::collaboration::RouteSpec::app("fixture.app".to_string(), uuid::Uuid::from_u128(7));
+    let route = tilo_ui_base::collaboration::RouteSpec::app(
+        "fixture.app".to_string(),
+        uuid::Uuid::from_u128(7),
+    );
     let mut mounted = AutoCommit::new();
     mounted.put(ROOT, "text", "primary").unwrap();
     mounted.commit();

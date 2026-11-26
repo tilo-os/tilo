@@ -105,7 +105,8 @@ impl Gpu {
         }) {
             Ok(_) => true,
             Err(wgpu::PollError::Timeout) => {
-                tilo_ui_base::gpu::LossWatch::new(self.loss.clone()).stopped(self.queue.clone(), waited);
+                tilo_ui_base::gpu::LossWatch::new(self.loss.clone())
+                    .stopped(self.queue.clone(), waited);
                 false
             }
             Err(_) => self.lost().is_none(),

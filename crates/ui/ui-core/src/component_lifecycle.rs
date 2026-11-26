@@ -1,9 +1,9 @@
 //! How a widget takes part in closing its window and components: unsaved work, persistence checkpoints,
 //! component close reports and deferred window close.
 
-use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
-use tilo_ui_base::{widget::Widget, widget::WindowCloseAdmission};
 use automerge::AutoCommit;
+use tilo_ui_base::{widget::Widget, widget::WindowCloseAdmission};
+use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
 
 /// A widget owning components, documents or a window-close policy.
 pub trait ComponentLifecycle: Widget {

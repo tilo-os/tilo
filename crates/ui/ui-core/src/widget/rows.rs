@@ -4,9 +4,12 @@
 
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::selection::KeySelection;
 use crate::time::Instant;
-use tilo_ui_base::{virtual_viewport::ScrollAlignment, virtual_viewport::ScrollMomentum, virtual_viewport::SparseVirtualViewport};
+use tilo_ui_base::selection::KeySelection;
+use tilo_ui_base::{
+    virtual_viewport::ScrollAlignment, virtual_viewport::ScrollMomentum,
+    virtual_viewport::SparseVirtualViewport,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RowStep {
@@ -175,7 +178,9 @@ impl RowScroll {
     }
 
     pub(crate) fn in_progress(&self) -> bool {
-        self.to.target().is_some() || self.to.is_moving(tilo_ui_base::motion::frame_now()) || self.fading()
+        self.to.target().is_some()
+            || self.to.is_moving(tilo_ui_base::motion::frame_now())
+            || self.fading()
     }
 
     pub(crate) fn fading(&self) -> bool {

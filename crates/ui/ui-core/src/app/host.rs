@@ -125,7 +125,10 @@ fn draw_frame_content_owning(
     let tracked = tilo_ui_base::scene_parts::is_tracked(scene);
     let window_bounds = vec![transform.transform_rect_bbox(window_rect)];
     if tracked {
-        tilo_ui_base::scene_parts::begin(scene, tilo_ui_base::scene_parts::PartKey::new("ui.history", ()));
+        tilo_ui_base::scene_parts::begin(
+            scene,
+            tilo_ui_base::scene_parts::PartKey::new("ui.history", ()),
+        );
     }
     // Untracked, History's paint is compared with the last presented
     // frame's: an unchanged toolbar under the live app is no layer.
@@ -235,28 +238,33 @@ fn draw_frame_content_owning(
     };
     let mut drawn = layer_start;
     if tracked {
-        tilo_ui_base::scene_parts::begin(scene, tilo_ui_base::scene_parts::PartKey::new("ui.layers", ()));
+        tilo_ui_base::scene_parts::begin(
+            scene,
+            tilo_ui_base::scene_parts::PartKey::new("ui.layers", ()),
+        );
     }
     // The window's top layer, after the app and the window's own chrome:
     // open menus, popovers and modals composite above everything drawn so
     // far, so a modal's scrim covers the History bar and every region. The
     // window stays the presence viewport: a modal covers all of it.
     if app.app_visible() {
-        app.root_widget.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            app.presence_ctx.draw_env(),
-        ));
+        app.root_widget
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                &mut app.text_renderer,
+                &app.theme,
+                app.presence_ctx.draw_env(),
+            ));
         // The box the window was asked for stands over all of it.
-        app.window_box.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            app.presence_ctx.draw_env(),
-        ));
+        app.window_box
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                &mut app.text_renderer,
+                &app.theme,
+                app.presence_ctx.draw_env(),
+            ));
     }
     painted(scene, "an overlay of the app's widgets", &mut drawn);
     #[cfg(feature = "model")]
@@ -402,7 +410,11 @@ struct DrawnFrame {
 /// Draw the widgets of a culled frame ([`draw_frame_content_with`]) again
 /// in full into `culled`'s scene of theirs, as that draw drew them with
 /// `drawn`'s transform: what the frame left out turned out to be repainted.
-fn redraw_culled_widgets(app: &mut App, culled: &mut tilo_ui_base::draw_cull::Scenes, drawn: &DrawnFrame) {
+fn redraw_culled_widgets(
+    app: &mut App,
+    culled: &mut tilo_ui_base::draw_cull::Scenes,
+    drawn: &DrawnFrame,
+) {
     let widgets = &mut culled.widgets;
     tilo_ui_base::part_paint::backdrop::forget_nested(widgets);
     widgets.reset();
@@ -711,7 +723,10 @@ fn lay_out_window(
     structure_rebuilt: bool,
     native_host: Option<&tilo_ui_base::widget::NativeViewHost<'_>>,
 ) -> Option<(bool, u128, u128)> {
-    use tilo_ui_base::{widget::layout::CompositionFocus, widget::layout::composition_geometry, widget::layout::settle_widget_composition};
+    use tilo_ui_base::{
+        widget::layout::CompositionFocus, widget::layout::composition_geometry,
+        widget::layout::settle_widget_composition,
+    };
     let _phase = tilo_actions::profiling::Phase::start("ui.layout");
     // The app's frame starts under the host's chrome and, outside a Tilo
     // session, under the row of its window-bar parts.
@@ -801,7 +816,9 @@ fn lay_out_window(
     // A resize re-solves the retained tree; only a tree that composes from
     // its allocation is composed again for it.
     let recompose_for_viewport = viewport_changed
-        && tilo_ui_base::widget::layout::tree_composition_follows_allocation(app.root_widget.as_ref());
+        && tilo_ui_base::widget::layout::tree_composition_follows_allocation(
+            app.root_widget.as_ref(),
+        );
     // What arrives in the window's first frame shows at rest.
     let _window = tilo_ui_base::motion::laying_out_window(app.layout.root_node.is_some());
     // Whether the last pass asked for another only to remount in place.
@@ -1069,7 +1086,8 @@ fn lay_out_window(
     app.layout.layout_dirty = false;
     // The size the window wants follows what was laid out in it: a panel whose height follows its
     // page measures that page here.
-    app.window.preferred_size = tilo_ui_base::widget::preferred_window_size(app.root_widget.as_ref());
+    app.window.preferred_size =
+        tilo_ui_base::widget::preferred_window_size(app.root_widget.as_ref());
     if must_compute || recomposed || remounted {
         app.update_focusable_order();
         // The tree this pass built may already hold the keyboard: a form that re-creates the field
@@ -1279,9 +1297,11 @@ impl crate::view::FreezeThaw for App {
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         let focus = crate::view::capture_focus(ordinal, || {
             self.focused_node.and_then(|id| {
-                self.inspect_node(id, |widget| tilo_ui_base::widget::undo_points::get_state(widget))
-                    .ok()
-                    .flatten()
+                self.inspect_node(id, |widget| {
+                    tilo_ui_base::widget::undo_points::get_state(widget)
+                })
+                .ok()
+                .flatten()
             })
         });
         let viewport = self

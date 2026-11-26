@@ -629,7 +629,6 @@ macro_rules! choice {
     };
 }
 
-
 /// What one child of a part of many is read as: a component's props, or one of the kinds of
 /// component the part takes ([`Accepts::OneOf`]).
 pub trait PartItem: Sized {
@@ -1513,4 +1512,3 @@ pub mod gallery;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
-

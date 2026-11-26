@@ -10,11 +10,11 @@ use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use tilo_theme_sdk::wire;
+use tilo_ui::widget::Button;
 use tilo_ui_base::part_paint::PartScene;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::theme_bundle;
-use tilo_ui::widget::Button;
 use tilo_ui_base::widget::Widget as _;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Rect};

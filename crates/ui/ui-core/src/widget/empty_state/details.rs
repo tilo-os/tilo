@@ -5,9 +5,9 @@
 
 use vello::kurbo::{Point, Rect};
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWrapMode};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWrapMode};
 
 /// What one line of Details is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,8 +98,11 @@ pub(super) fn lay_out(
         let line = match kind {
             Kind::Words => {
                 let wrap = width.max(1.0);
-                let (_, h) =
-                    text.measure_style(said, Some(tilo_ui_base::num::f32_of_f64(wrap)), &style.words);
+                let (_, h) = text.measure_style(
+                    said,
+                    Some(tilo_ui_base::num::f32_of_f64(wrap)),
+                    &style.words,
+                );
                 let rect = Rect::new(x0, y, x0 + width, y + f64::from(h));
                 Line {
                     kind,
@@ -112,8 +115,11 @@ pub(super) fn lay_out(
             }
             Kind::Verbatim => {
                 let wrap = (width - style.pad_x * 2.0 - style.copy).max(1.0);
-                let (_, h) =
-                    text.measure_style(said, Some(tilo_ui_base::num::f32_of_f64(wrap)), &style.verbatim);
+                let (_, h) = text.measure_style(
+                    said,
+                    Some(tilo_ui_base::num::f32_of_f64(wrap)),
+                    &style.verbatim,
+                );
                 let height = (f64::from(h) + style.pad_y * 2.0).max(style.copy);
                 let rect = Rect::new(x0, y, x0 + width, y + height);
                 let text_y = rect.center().y - f64::from(h) / 2.0;

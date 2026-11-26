@@ -1,13 +1,13 @@
+use std::any::Any;
+use taffy::style_helpers::{auto, length, percent};
+use taffy::{NodeId, Style, TaffyTree};
 #[cfg(feature = "model")]
 use tilo_ui_base::permissions::PermissionScope;
-use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::ModelPath;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
-use std::any::Any;
-use taffy::style_helpers::{auto, length, percent};
-use taffy::{NodeId, Style, TaffyTree};
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -555,7 +555,9 @@ impl Widget for Container {
 
     fn needs_animation_frame(&self) -> bool {
         !self.ghosts.is_empty()
-            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
+                self.for_each_child(visit)
+            })
     }
 
     fn needs_redraw(&self) -> bool {
@@ -573,7 +575,14 @@ impl Widget for Container {
         self.paint_surface(scene, transform, theme);
 
         if let Some(child) = &mut self.child {
-            tilo_ui_base::widget::draw_child(child.as_mut(), scene, transform, text_renderer, theme, &env);
+            tilo_ui_base::widget::draw_child(
+                child.as_mut(),
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                &env,
+            );
         }
 
         self.ghosts.retain_drawn();
@@ -582,7 +591,13 @@ impl Widget for Container {
 
         tilo_ui_base::widget::draw_over(
             self,
-            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
     }
 

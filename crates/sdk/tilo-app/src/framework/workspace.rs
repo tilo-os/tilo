@@ -17,13 +17,15 @@ use std::rc::{Rc, Weak};
 use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
 use tilo_resource::{Invoke, Resource};
 use tilo_ui_base::LocalState;
+use tilo_ui_base::workspace_sync::RecordNotHere;
 use tilo_ui_base::{arriving::Arriving, arriving::Source};
+use tilo_ui_base::{
+    permissions::LivePermissions, permissions::PermissionScope, permissions::TreePath,
+};
 use ui_core::history_mode::HistoryOwner;
-use tilo_ui_base::{permissions::LivePermissions, permissions::PermissionScope, permissions::TreePath};
 use ui_core::resource::StoredResource;
 use ui_core::resource::workspace::WorkspaceResources;
 use ui_core::wake::WakeHandle;
-use tilo_ui_base::workspace_sync::RecordNotHere;
 
 use super::live::Live;
 use super::resources::{Held, ResourceApi};
@@ -1210,7 +1212,10 @@ impl WorkspaceState {
         self.awaited
             .borrow()
             .iter()
-            .filter(|wait| wait.arriving.with(tilo_ui_base::arriving::Arrival::is_pending))
+            .filter(|wait| {
+                wait.arriving
+                    .with(tilo_ui_base::arriving::Arrival::is_pending)
+            })
             .filter_map(|wait| wait.since.checked_add(LONG_WAIT))
             .min()
     }
@@ -1232,7 +1237,10 @@ impl WorkspaceState {
             let mut awaited = self.awaited.borrow_mut();
             awaited.retain(|wait| wait.arriving.with(|arrival| arrival.ready().is_none()));
             for wait in awaited.iter_mut() {
-                if !wait.arriving.with(tilo_ui_base::arriving::Arrival::is_pending) {
+                if !wait
+                    .arriving
+                    .with(tilo_ui_base::arriving::Arrival::is_pending)
+                {
                     continue;
                 }
                 if wait.ended {

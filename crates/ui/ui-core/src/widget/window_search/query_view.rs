@@ -1,9 +1,9 @@
 //! A view that answers the window bar's search: the query view of an app whose view is a function
 //! of its resource.
-use tilo_ui_base::{widget::capability::Request, widget::capability::RequestMut};
-use tilo_ui_base::widget::identity::concrete;
 use crate::widget::search_field::FilterCount;
+use tilo_ui_base::widget::identity::concrete;
 use tilo_ui_base::{widget::Element, widget::Widget};
+use tilo_ui_base::{widget::capability::Request, widget::capability::RequestMut};
 
 use super::Queryable;
 

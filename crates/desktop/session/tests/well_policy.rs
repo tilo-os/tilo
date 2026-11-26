@@ -16,10 +16,10 @@ use tilo_compositor::policy::{LayoutPoint, LayoutRect};
 use tilo_compositor::{WindowInfo, WindowPolicy as _};
 
 use tilo_session::platform::surfaces::{WellPolicy, desktop};
+use tilo_ui_base::widget::Element;
 use ui::headless::Driver;
 use ui::widget::Column;
 use ui::{widget::Map, widget::PinPlace, widget::Wells, widget::WindowWell, widget::window_well};
-use tilo_ui_base::widget::Element;
 
 /// The desktop a shell's windows are placed on: a window of 640×480 across a 1280×800 output.
 const VIEWPORT: (u32, u32) = (640, 480);

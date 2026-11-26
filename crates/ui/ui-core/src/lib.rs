@@ -161,6 +161,8 @@ pub mod element_pictures;
 pub mod files;
 pub mod floating_layer;
 pub mod floating_surface;
+#[cfg(any(test, feature = "test-support"))]
+pub mod frame_probe;
 /// Painting decoded video on the GPU: uploading a hardware decoder's planar output and converting YUV
 /// to RGB in a shader.
 pub mod gpu_video;
@@ -169,31 +171,29 @@ pub mod history_mode;
 #[cfg(feature = "model")]
 pub mod history_source;
 mod host_chrome;
+#[cfg(not(all(windows, feature = "native")))]
+#[path = "host_notifications_unsupported.rs"]
+pub mod host_notifications;
 pub mod hosted_window;
 /// What a frame shows an inspector, a screen reader and an automated check: the widget and
 /// semantic tree, the named targets a caller addresses, and the accessibility issues it reports.
 pub mod inspection;
-#[cfg(feature = "model")]
-pub mod owner_wake;
-/// The app's own vello pipelines, kept across launches in its cache directory.
-#[cfg(feature = "native")]
-pub(crate) mod pipeline_cache;
-/// The session's read-only vello pipeline cache every app starts from.
-pub mod pipeline_seed;
-#[cfg(any(test, feature = "test-support"))]
-pub mod frame_probe;
-#[cfg(not(all(windows, feature = "native")))]
-#[path = "host_notifications_unsupported.rs"]
-pub mod host_notifications;
 pub mod launch;
 pub mod lift;
 pub mod live_activity;
 pub mod live_pictures;
 pub mod math;
+#[cfg(feature = "model")]
+pub mod owner_wake;
 pub mod passcode_keyboard;
 pub mod pick;
 pub mod pick_wire;
 pub mod pictures;
+/// The app's own vello pipelines, kept across launches in its cache directory.
+#[cfg(feature = "native")]
+pub(crate) mod pipeline_cache;
+/// The session's read-only vello pipeline cache every app starts from.
+pub mod pipeline_seed;
 pub mod pointer_replay;
 pub mod profiling;
 pub use tilo_ui_paint::raster;
@@ -225,9 +225,8 @@ pub mod widgets {
     };
 }
 pub use tilo_lock::deferred;
-pub mod text_assistance;
-pub mod close_admission;
 mod app_core;
+pub mod close_admission;
 pub mod reader_hud;
 pub mod render_bump_recovery;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
@@ -236,6 +235,7 @@ pub mod render_thread;
 pub mod resource;
 pub mod retained_present;
 pub mod retained_raster;
+pub mod text_assistance;
 /// Rich text as a component shows it: paragraphs with their marks, and how each reference in them reads
 /// (`ui.BlockEditor`'s value), the one model the runtime sends and the window draws.
 pub use tilo_ui_graph::rich;
@@ -278,7 +278,14 @@ pub mod window_icon;
 #[doc(inline)]
 pub use tilo_process_services::models;
 #[doc(inline)]
-pub use {tilo_process_services::background, tilo_process_services::capture, tilo_process_services::clipboard, tilo_process_services::env, tilo_process_services::jpeg, tilo_process_services::location, tilo_process_services::mpris, tilo_process_services::notify, tilo_process_services::png, tilo_process_services::portal, tilo_process_services::process, tilo_process_services::secrets, tilo_process_services::shell_choosers, tilo_process_services::time, tilo_process_services::wake};
+pub use {
+    tilo_process_services::background, tilo_process_services::capture,
+    tilo_process_services::clipboard, tilo_process_services::env, tilo_process_services::jpeg,
+    tilo_process_services::location, tilo_process_services::mpris, tilo_process_services::notify,
+    tilo_process_services::png, tilo_process_services::portal, tilo_process_services::process,
+    tilo_process_services::secrets, tilo_process_services::shell_choosers,
+    tilo_process_services::time, tilo_process_services::wake,
+};
 
 /// The AccessKit types the bridge and [`headless::Driver`] hand back, re-exported so an app crate
 /// can name them (`tilo_ui::accesskit::Role`) without taking its own dependency on a version that must
@@ -292,35 +299,64 @@ pub use tilo_lock as lock;
 /// `block_on` for synchronous entry points.
 pub use tilo_rt as rt;
 pub use vello;
-pub use {vello::kurbo, vello::peniko};
 pub use vello_encoding;
 pub use winit;
+pub use {vello::kurbo, vello::peniko};
 
 pub use app::App;
 pub use color_compat::ColorCompat;
 // Paragraph composition is the document engine's, so the reader, the word processor and PDF
 // export lay text out by one policy.
-pub use {pictures::BLOB_SCHEME, pictures::Pictures, pictures::Shown as ShownPicture};
-pub use {pictures::lend_content, pictures::set_remote_fetcher};
-pub use {portal::FileFilter, portal::PickRequest, portal::PortalChannel, portal::PortalOutcome};
-pub use {profiling::FRAME_BUDGET_US, profiling::FrameProfiler, profiling::FrameTiming, profiling::Pass, profiling::PerfReport, profiling::PerfScenario, profiling::PerfStep, profiling::StatSummary, profiling::run_scenario, profiling::run_scenario_on};
-pub use {reader_hud::HudAction, reader_hud::HudControls, reader_hud::HudPlacement, reader_hud::HudSide, reader_hud::HudSwatch, reader_hud::MarkerDrag, reader_hud::SelectionHud};
-#[cfg(feature = "model")]
-pub use {resource::DocumentCheckout, resource::DocumentId, resource::DocumentRef, resource::ResourceRefusal, resource::ResourceSet, resource::ResourceStore, resource::ResourceType};
-pub use {search::FnProvider, search::SearchGroup, search::SearchProvider, search::SearchRegistry, search::SearchResult};
 pub use state::State;
-#[cfg(feature = "model")]
-pub use {state::DocumentFrontier, state::UndoEntry, state::UndoLog};
-pub use {tilo_doc::paragraph::ComposedLine, tilo_doc::paragraph::ParagraphBox, tilo_doc::paragraph::ParagraphOptions, tilo_doc::paragraph::compose_paragraph};
 /// The one image codec: sniff, decode, encode and transform pixels, with the browser's own codecs on
 /// the web.
 pub use tilo_image_codec as image_codec;
-pub use {ui_graph::GraphPropKind, ui_graph::LIVE_GRAPH_DIR_ENV, ui_graph::LIVE_GRAPH_OPERATION, ui_graph::LiveUi, ui_graph::UI_GRAPH_VERSION, ui_graph::UiBuildContext, ui_graph::UiButtonRole, ui_graph::UiComponentRequest, ui_graph::UiDocument, ui_graph::UiDocumentExt, ui_graph::UiGraphEdit, ui_graph::UiGraphEditor, ui_graph::UiGraphError, ui_graph::UiGraphHandle, ui_graph::UiNavigation, ui_graph::UiNode, ui_graph::UiTextRole, ui_graph::UiTextSource, ui_graph::UiValues, ui_graph::parse_ui_graph_edits};
+pub use {pictures::BLOB_SCHEME, pictures::Pictures, pictures::Shown as ShownPicture};
+pub use {pictures::lend_content, pictures::set_remote_fetcher};
+pub use {portal::FileFilter, portal::PickRequest, portal::PortalChannel, portal::PortalOutcome};
+pub use {
+    profiling::FRAME_BUDGET_US, profiling::FrameProfiler, profiling::FrameTiming, profiling::Pass,
+    profiling::PerfReport, profiling::PerfScenario, profiling::PerfStep, profiling::StatSummary,
+    profiling::run_scenario, profiling::run_scenario_on,
+};
+pub use {
+    reader_hud::HudAction, reader_hud::HudControls, reader_hud::HudPlacement, reader_hud::HudSide,
+    reader_hud::HudSwatch, reader_hud::MarkerDrag, reader_hud::SelectionHud,
+};
+#[cfg(feature = "model")]
+pub use {
+    resource::DocumentCheckout, resource::DocumentId, resource::DocumentRef,
+    resource::ResourceRefusal, resource::ResourceSet, resource::ResourceStore,
+    resource::ResourceType,
+};
+pub use {
+    search::FnProvider, search::SearchGroup, search::SearchProvider, search::SearchRegistry,
+    search::SearchResult,
+};
+#[cfg(feature = "model")]
+pub use {state::DocumentFrontier, state::UndoEntry, state::UndoLog};
+pub use {
+    tilo_doc::paragraph::ComposedLine, tilo_doc::paragraph::ParagraphBox,
+    tilo_doc::paragraph::ParagraphOptions, tilo_doc::paragraph::compose_paragraph,
+};
+pub use {
+    ui_graph::GraphPropKind, ui_graph::LIVE_GRAPH_DIR_ENV, ui_graph::LIVE_GRAPH_OPERATION,
+    ui_graph::LiveUi, ui_graph::UI_GRAPH_VERSION, ui_graph::UiBuildContext, ui_graph::UiButtonRole,
+    ui_graph::UiComponentRequest, ui_graph::UiDocument, ui_graph::UiDocumentExt,
+    ui_graph::UiGraphEdit, ui_graph::UiGraphEditor, ui_graph::UiGraphError,
+    ui_graph::UiGraphHandle, ui_graph::UiNavigation, ui_graph::UiNode, ui_graph::UiTextRole,
+    ui_graph::UiTextSource, ui_graph::UiValues, ui_graph::parse_ui_graph_edits,
+};
 pub use {undo::UndoAccess, undo::UndoRequest, undo::UndoStatus};
-pub use {view::FROZEN_VERSION, view::FocusView, view::FreezeThaw, view::FrozenApp, view::ThawError, view::View, view::ViewContribution, view::ViewRect};
+pub use {
+    view::FROZEN_VERSION, view::FocusView, view::FreezeThaw, view::FrozenApp, view::ThawError,
+    view::View, view::ViewContribution, view::ViewRect,
+};
 
-pub use {a11y_tree::SemanticAction, a11y_tree::SemanticActionKind, a11y_tree::SemanticNode, a11y_tree::SemanticTree, a11y_tree::TreeDelta};
-
+pub use {
+    a11y_tree::SemanticAction, a11y_tree::SemanticActionKind, a11y_tree::SemanticNode,
+    a11y_tree::SemanticTree, a11y_tree::TreeDelta,
+};
 
 #[cfg(feature = "model")]
 pub use action_palette::ActionPalette;
@@ -331,25 +367,49 @@ pub use tilo_actions;
 pub mod autocorrect {
     pub use spellcheck::contraction;
 }
-#[cfg(feature = "model")]
-pub use {action_palette::ArgumentKind, action_palette::ArgumentSpec, action_palette::CommandEntry, action_palette::CommandOutcome, action_palette::RowFace};
 pub use widget::ModelView;
+#[cfg(feature = "model")]
+pub use {
+    action_palette::ArgumentKind, action_palette::ArgumentSpec, action_palette::CommandEntry,
+    action_palette::CommandOutcome, action_palette::RowFace,
+};
 pub use {widget::AppCommand, widget::AppKind, widget::AppWidget, widget::IconDescriptor};
-pub use {widget::Card, widget::CardGrid, widget::Section, widget::card_column_width, widget::card_columns};
-pub use {widget::NavItem, widget::NavList, widget::NavMode, widget::NavPane, widget::NavSection, widget::NavShell};
+pub use {
+    widget::Card, widget::CardGrid, widget::Section, widget::card_column_width,
+    widget::card_columns,
+};
 pub use {widget::EditOutcome, widget::EditableLabel};
+pub use {
+    widget::NavItem, widget::NavList, widget::NavMode, widget::NavPane, widget::NavSection,
+    widget::NavShell,
+};
 
 // Audit-timeline widgets + their shared types. The `ArtifactKind`
 // re-export flows through these widgets, so callers can build
 // a `HistoryEntry` without a direct dependency on the collab-types crate.
 #[cfg(feature = "model")]
-pub use {history_mode::HistoryController, history_mode::HistoryError, history_mode::HistoryResource, history_mode::HistorySnapshot, history_mode::PreviewSide, history_mode::RestoreReview};
+pub use {
+    history_mode::HistoryController, history_mode::HistoryError, history_mode::HistoryResource,
+    history_mode::HistorySnapshot, history_mode::PreviewSide, history_mode::RestoreReview,
+};
 #[cfg(feature = "model")]
 pub use {widget::activity_timeline::ActivityTimeline, widget::activity_timeline::BandUndoRequest};
 #[cfg(feature = "model")]
-pub use {widget::history::AuthorRelation, widget::history::EntryKind, widget::history::HistoryAttribution, widget::history::HistoryAuthor, widget::history::HistoryClassification, widget::history::HistoryEntry, widget::history::HistoryFilter, widget::history::RedactionDisplay, widget::history::format_relative_time, widget::history::hue_to_rgb};
+pub use {
+    widget::history::AuthorRelation, widget::history::EntryKind,
+    widget::history::HistoryAttribution, widget::history::HistoryAuthor,
+    widget::history::HistoryClassification, widget::history::HistoryEntry,
+    widget::history::HistoryFilter, widget::history::RedactionDisplay,
+    widget::history::format_relative_time, widget::history::hue_to_rgb,
+};
 #[cfg(feature = "model")]
-pub use {widget::history_group::FOLD_ACTION_FACET, widget::history_group::FOLD_ITEM_FACET, widget::history_group::GroupNameRequest, widget::history_group::GroupingConfig, widget::history_group::HistoryGroup, widget::history_group::MAX_GROUP_DEPTH, widget::history_group::NamedRange, widget::history_group::OpFamily, widget::history_group::group_entries};
+pub use {
+    widget::history_group::FOLD_ACTION_FACET, widget::history_group::FOLD_ITEM_FACET,
+    widget::history_group::GroupNameRequest, widget::history_group::GroupingConfig,
+    widget::history_group::HistoryGroup, widget::history_group::MAX_GROUP_DEPTH,
+    widget::history_group::NamedRange, widget::history_group::OpFamily,
+    widget::history_group::group_entries,
+};
 pub use {widget::name_field::NameField, widget::name_field::NameFieldOutcome};
 // Re-exported so an app reaches the whole history stack through `tilo_ui::`
 // without knowing the module layout.
@@ -358,20 +418,56 @@ pub use collab_types::presence::CallPresence;
 #[cfg(feature = "model")]
 pub use history_source::groups as history_groups;
 #[cfg(feature = "model")]
-pub use {history_source::sentence::AuthorParts, history_source::sentence::attribution_hover, history_source::sentence::author_line, history_source::sentence::author_parts, history_source::sentence::author_spoken, history_source::sentence::learn_item_names, history_source::sentence::wire_author_line, history_source::sentence::writer_badge};
-#[cfg(feature = "model")]
-pub use {history_source::ActivityBrief, history_source::ActivityBriefAction, history_source::ActivityDigest, history_source::ActivityNarrator, history_source::AuthorDirectory, history_source::CompareError, history_source::GroundedNarrative, history_source::HistoryComparison, history_source::HistoryFacetIndex, history_source::HistoryResourceTarget, history_source::HistorySelectionDetail, history_source::HistorySource, history_source::NarrativeRequest, history_source::NarrativeSource, history_source::compare_entries, history_source::deterministic_narrative, history_source::heads_for_entry, history_source::validate_narrative, history_source::version_index_for_entry};
-pub use {tilo_presence::Availability, tilo_presence::IDLE_AFTER, tilo_presence::INFERRED_STATUS_TTL, tilo_presence::LiveStatus, tilo_presence::MAX_STATUS_CHARS, tilo_presence::PresenceVisibility, tilo_presence::StatusOrigin, tilo_presence::StatusSharing};
-#[cfg(feature = "model")]
 pub use widget::history::author_face;
 #[cfg(feature = "model")]
-pub use {history_source::invocations::AgentSession, history_source::invocations::InvocationStep, history_source::invocations::forget_invocation, history_source::invocations::invocation_starting_at, history_source::invocations::read_invocations, history_source::invocations::record_invocation, history_source::invocations::record_invocation_with_details};
+pub use {
+    history_source::ActivityBrief, history_source::ActivityBriefAction,
+    history_source::ActivityDigest, history_source::ActivityNarrator,
+    history_source::AuthorDirectory, history_source::CompareError,
+    history_source::GroundedNarrative, history_source::HistoryComparison,
+    history_source::HistoryFacetIndex, history_source::HistoryResourceTarget,
+    history_source::HistorySelectionDetail, history_source::HistorySource,
+    history_source::NarrativeRequest, history_source::NarrativeSource,
+    history_source::compare_entries, history_source::deterministic_narrative,
+    history_source::heads_for_entry, history_source::validate_narrative,
+    history_source::version_index_for_entry,
+};
 #[cfg(feature = "model")]
-pub use {history_source::revert::ChangeRange, history_source::revert::KeptSlot, history_source::revert::RevertError, history_source::revert::RevertOutcome, history_source::revert::Slot, history_source::revert::latest_invocation_by, history_source::revert::plan_revert, history_source::revert::revert_invocation};
-pub use {save_status::SAVE_GIVE_UP, save_status::SAVE_RETRY_ACTION, save_status::SAVE_STALL, save_status::SaveAction, save_status::SaveNotice, save_status::SaveState, save_status::SaveStatusSurface};
+pub use {
+    history_source::invocations::AgentSession, history_source::invocations::InvocationStep,
+    history_source::invocations::forget_invocation,
+    history_source::invocations::invocation_starting_at,
+    history_source::invocations::read_invocations, history_source::invocations::record_invocation,
+    history_source::invocations::record_invocation_with_details,
+};
+#[cfg(feature = "model")]
+pub use {
+    history_source::revert::ChangeRange, history_source::revert::KeptSlot,
+    history_source::revert::RevertError, history_source::revert::RevertOutcome,
+    history_source::revert::Slot, history_source::revert::latest_invocation_by,
+    history_source::revert::plan_revert, history_source::revert::revert_invocation,
+};
+#[cfg(feature = "model")]
+pub use {
+    history_source::sentence::AuthorParts, history_source::sentence::attribution_hover,
+    history_source::sentence::author_line, history_source::sentence::author_parts,
+    history_source::sentence::author_spoken, history_source::sentence::learn_item_names,
+    history_source::sentence::wire_author_line, history_source::sentence::writer_badge,
+};
+pub use {
+    save_status::SAVE_GIVE_UP, save_status::SAVE_RETRY_ACTION, save_status::SAVE_STALL,
+    save_status::SaveAction, save_status::SaveNotice, save_status::SaveState,
+    save_status::SaveStatusSurface,
+};
+pub use {
+    tilo_presence::Availability, tilo_presence::IDLE_AFTER, tilo_presence::INFERRED_STATUS_TTL,
+    tilo_presence::LiveStatus, tilo_presence::MAX_STATUS_CHARS, tilo_presence::PresenceVisibility,
+    tilo_presence::StatusOrigin, tilo_presence::StatusSharing,
+};
 
-
-pub use {wake::WakeBindError, wake::WakeEvent, wake::WakeHandle, wake::WakeScope, wake::WakeScopeGuard};
+pub use {
+    wake::WakeBindError, wake::WakeEvent, wake::WakeHandle, wake::WakeScope, wake::WakeScopeGuard,
+};
 
 #[cfg(feature = "model")]
 pub mod application;
@@ -397,13 +493,22 @@ mod presentation_feedback;
 
 mod focus_navigation;
 
-pub use {widget::KeyboardMap, widget::KeyboardMapInput, widget::KeyboardMapKey, widget::KeyboardMapSelection};
+pub use {
+    widget::KeyboardMap, widget::KeyboardMapInput, widget::KeyboardMapKey,
+    widget::KeyboardMapSelection,
+};
 
 // Tests of the base that drive the widgets above it.
 #[cfg(test)]
+#[path = "a11y_child_route/tests.rs"]
+mod a11y_child_route_tests;
+#[cfg(test)]
+#[path = "accesskit_bridge/tests.rs"]
+mod accesskit_bridge_tests;
+#[cfg(test)]
 #[cfg(all(unix, feature = "broker-transport"))]
 #[path = "collaboration/broker_app_tests.rs"]
-mod collaboration_broker_app_tests;
+mod collaboration_app_tests;
 #[cfg(test)]
 #[path = "component/controls_tests.rs"]
 mod component_controls_tests;
@@ -426,42 +531,11 @@ mod component_part_fill_tests;
 #[path = "component/tests.rs"]
 mod component_tests;
 #[cfg(test)]
-#[path = "part_paint/tests.rs"]
-mod part_paint_tests;
-#[cfg(test)]
-#[cfg(not(feature = "lazy-painter"))]
-#[path = "part_paint/wasm_tests.rs"]
-mod part_paint_wasm_tests;
-#[cfg(test)]
-#[path = "richtext/retained_layout_tests.rs"]
-mod richtext_retained_layout_tests;
-#[cfg(test)]
-#[path = "scene_parts/widget_keys/tests.rs"]
-mod scene_parts_widget_keys_tests;
-#[cfg(test)]
-#[path = "theme_bundle/tests.rs"]
-mod theme_bundle_tests;
-#[cfg(test)]
-#[path = "widget/manual/ownership_tests.rs"]
-mod widget_manual_ownership_tests;
-#[cfg(test)]
-#[path = "widget/manual/tests.rs"]
-mod widget_manual_tests;
-#[cfg(test)]
-#[path = "widget/scrollable_placement_tests.rs"]
-mod widget_layout_scrollable_placement_tests;
-#[cfg(test)]
-#[path = "a11y_child_route/tests.rs"]
-mod a11y_child_route_tests;
-#[cfg(test)]
-#[path = "accesskit_bridge/tests.rs"]
-mod accesskit_bridge_tests;
+#[path = "control_domain/lifecycle_tests.rs"]
+mod control_domain_lifecycle_tests;
 #[cfg(test)]
 #[path = "control_domain/tests.rs"]
 mod control_domain_tests;
-#[cfg(test)]
-#[path = "control_domain/lifecycle_tests.rs"]
-mod control_domain_lifecycle_tests;
 #[cfg(test)]
 #[path = "i18n/tests.rs"]
 mod i18n_tests;
@@ -471,6 +545,13 @@ mod ime_tests;
 #[cfg(test)]
 #[path = "keycaps/tests.rs"]
 mod keycaps_tests;
+#[cfg(test)]
+#[path = "part_paint/tests.rs"]
+mod part_paint_tests;
+#[cfg(test)]
+#[cfg(not(feature = "lazy-painter"))]
+#[path = "part_paint/wasm_tests.rs"]
+mod part_paint_wasm_tests;
 #[cfg(test)]
 #[path = "presence/draft/tests.rs"]
 mod presence_draft_tests;
@@ -486,20 +567,38 @@ mod presence_key_view_key_tests;
 #[path = "presence/own_identity_tests.rs"]
 mod presence_own_identity_tests;
 #[cfg(test)]
+#[path = "richtext/retained_layout_tests.rs"]
+mod richtext_retained_layout_tests;
+#[cfg(test)]
+#[path = "scene_parts/widget_keys/tests.rs"]
+mod scene_parts_widget_keys_tests;
+#[cfg(test)]
 #[path = "secret_paint/tests.rs"]
 mod secret_paint_tests;
 #[cfg(test)]
 #[path = "surface/tests.rs"]
 mod surface_tests;
 #[cfg(test)]
+#[path = "theme_bundle/tests.rs"]
+mod theme_bundle_tests;
+#[cfg(test)]
 #[path = "widget/binding/tests.rs"]
 mod widget_binding_tests;
+#[cfg(test)]
+#[path = "widget/keyboard_entry_tests.rs"]
+mod widget_keyboard_entry_tests;
+#[cfg(test)]
+#[path = "widget/scrollable_placement_tests.rs"]
+mod widget_layout_scrollable_placement_tests;
 #[cfg(test)]
 #[path = "widget/layout/tests.rs"]
 mod widget_layout_tests;
 #[cfg(test)]
-#[path = "widget/keyboard_entry_tests.rs"]
-mod widget_keyboard_entry_tests;
+#[path = "widget/manual/ownership_tests.rs"]
+mod widget_manual_ownership_tests;
+#[cfg(test)]
+#[path = "widget/manual/tests.rs"]
+mod widget_manual_tests;
 #[cfg(test)]
 #[path = "widget/native_view/tests.rs"]
 mod widget_native_view_tests;

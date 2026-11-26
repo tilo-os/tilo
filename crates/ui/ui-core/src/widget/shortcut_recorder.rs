@@ -2,20 +2,24 @@
 //! them, or focus them and press Enter/Space, then type the replacement chord. Escape cancels;
 //! Backspace or Delete puts back the default.
 
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::collections::HashMap;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
-use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
-use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingKind, widget::ControlBindingMetadata};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::{
+    widget::ActionEmitter, widget::ControlBindingKind, widget::ControlBindingMetadata,
+};
+use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
 use vello::kurbo::{Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
-use tilo_ui_base::{input::InputBinding, input::KeyLegend, input::KeyboardBinding, input::KeyboardModifier};
 use tilo_ui_base::interaction::InteractionEnvironment;
 use tilo_ui_base::platform::PlatformConventions;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::{
+    input::InputBinding, input::KeyLegend, input::KeyboardBinding, input::KeyboardModifier,
+};
 
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
@@ -23,8 +27,8 @@ use tilo_ui_base::tokens::TextRole;
 #[path = "shortcut_recorder_component.rs"]
 mod component;
 use crate::{widget::InputHint, widget::LegendConventions};
-use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 pub use component::ShortcutRecorderProps;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 pub struct ShortcutRecorder {
     id: String,
@@ -477,7 +481,10 @@ impl Widget for ShortcutRecorder {
         state.invalid = self.invalid;
         let mut node = AccessNode::new(Role::Button)
             .with_bounds(self.interaction.minimum_target_rect(self.rect))
-            .with_name(tilo_ui_base::i18n::widget_format("widget-shortcut-change", &[]))
+            .with_name(tilo_ui_base::i18n::widget_format(
+                "widget-shortcut-change",
+                &[],
+            ))
             .with_value(self.binding().accessible_label(self.platform))
             .with_state(state);
         if self.invalid {
@@ -593,7 +600,11 @@ mod tests {
     use super::*;
 
     fn recorder(value: &str, default: &str) -> ShortcutRecorder {
-        ShortcutRecorder::new("x", &tilo_ui_base::LocalState::new(value.to_owned()), default)
+        ShortcutRecorder::new(
+            "x",
+            &tilo_ui_base::LocalState::new(value.to_owned()),
+            default,
+        )
     }
 
     #[test]
@@ -608,15 +619,15 @@ mod tests {
         {
             let recorder = recorder("Super+Down", "Super+Left");
             assert_eq!(
-                recorder
-                    .binding()
-                    .keycap_labels(PlatformConventions::new(tilo_ui_base::platform::Platform::Linux)),
+                recorder.binding().keycap_labels(PlatformConventions::new(
+                    tilo_ui_base::platform::Platform::Linux
+                )),
                 ["Super", "Down"]
             );
             assert_eq!(
-                recorder
-                    .binding()
-                    .keycap_labels(PlatformConventions::new(tilo_ui_base::platform::Platform::MacOs)),
+                recorder.binding().keycap_labels(PlatformConventions::new(
+                    tilo_ui_base::platform::Platform::MacOs
+                )),
                 ["⌘", "↓"]
             );
         }

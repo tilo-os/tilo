@@ -1,8 +1,8 @@
 //! `Autocomplete` — a text field with a suggestion list that floats below it — and the [`Suggestion`]
 //! rows that list shows.
 
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::collections::HashMap;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect, RoundedRect, Vec2};
@@ -10,22 +10,22 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::search::system::filters::{draw_filter_chip, share_row};
+use crate::widget::floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
 use tilo_ui_base::chrome::SelectionState;
-use tilo_ui_base::{icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX, icons::draw_icon};
 use tilo_ui_base::num::f32_of_f64;
 use tilo_ui_base::paint::PaintCtx;
-use crate::search::system::filters::{draw_filter_chip, share_row};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::widget::TaffyTreeExt;
-use crate::widget::floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
+use tilo_ui_base::{icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX, icons::draw_icon};
 #[path = "autocomplete_component.rs"]
 mod component;
 use crate::{widget::TextInput, widget::TextInputKind};
-use tilo_ui_base::widget::Widget;
 pub use component::{AutocompleteProps, SuggestionProps};
+use tilo_ui_base::widget::Widget;
 
 pub type SuggestionList = FloatingList<Suggestion>;
 
@@ -523,7 +523,10 @@ fn paint_notice(
 
 impl FloatingList<Suggestion> {
     /// The open list as assistive technology reads it: its panel and each row, keyed by `key`.
-    pub fn access_rows(&self, key: impl Fn(&Suggestion) -> u64) -> Vec<tilo_ui_base::a11y::AccessNode> {
+    pub fn access_rows(
+        &self,
+        key: impl Fn(&Suggestion) -> u64,
+    ) -> Vec<tilo_ui_base::a11y::AccessNode> {
         use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Politeness, a11y::Role};
         let Some(panel) = self.rect() else {
             return Vec::new();
@@ -1989,8 +1992,8 @@ mod tests {
 /// dropdown closes when nothing matches and every row returns when the field is cleared.
 #[test]
 fn a_view_offered_list_narrows_as_text_is_typed() {
-    use tilo_ui_base::synthetic_input::char_key;
     use crate::testing::dispatch;
+    use tilo_ui_base::synthetic_input::char_key;
 
     let mut ac = Autocomplete::new().with_id("recipient");
     ac.set_suggestions(vec![
@@ -2027,9 +2030,9 @@ fn a_view_offered_list_narrows_as_text_is_typed() {
 /// text is taken.
 #[test]
 fn an_edit_reports_the_text_and_no_choice() {
-    use tilo_ui_base::{component::Bound, component::Event, component::Intent};
-    use tilo_ui_base::synthetic_input::char_key;
     use crate::testing::dispatch;
+    use tilo_ui_base::synthetic_input::char_key;
+    use tilo_ui_base::{component::Bound, component::Event, component::Intent};
 
     let queue = tilo_ui_base::Intents::default();
     let mut ac = Autocomplete::new().with_id("search").on_edit(
@@ -2080,9 +2083,9 @@ fn an_edit_reports_the_text_and_no_choice() {
 /// hands to its host as a tab in front, a window beside or the row's own way.
 #[test]
 fn a_held_modifier_carries_the_row_and_the_way_it_opens() {
-    use tilo_ui_base::{component::Event, component::Intent};
-    use tilo_ui_base::synthetic_input::named_key;
     use crate::testing::{Dispatch, dispatch};
+    use tilo_ui_base::synthetic_input::named_key;
+    use tilo_ui_base::{component::Event, component::Intent};
     use winit::event::Modifiers;
     use winit::keyboard::{ModifiersState, NamedKey};
 
@@ -2112,8 +2115,8 @@ fn a_held_modifier_carries_the_row_and_the_way_it_opens() {
 /// host narrows the rows to.
 #[test]
 fn a_kind_chip_reports_the_kind_it_narrows_to() {
-    use tilo_ui_base::{a11y::Action, a11y::hash_key};
     use tilo_ui_base::component::testing::fired;
+    use tilo_ui_base::{a11y::Action, a11y::hash_key};
     use tilo_ui_base::{component::Event, component::Intent, component::Value};
 
     let queue = tilo_ui_base::Intents::default();
@@ -2149,10 +2152,10 @@ fn a_kind_chip_reports_the_kind_it_narrows_to() {
 /// caret, so a level or a volume is stepped where it stands.
 #[test]
 fn a_step_on_an_adjustable_row_reports_the_step_and_the_row() {
-    use tilo_ui_base::component::testing::fired;
-    use tilo_ui_base::{component::Event, component::Intent, component::Value};
-    use tilo_ui_base::synthetic_input::named_key;
     use crate::testing::dispatch;
+    use tilo_ui_base::component::testing::fired;
+    use tilo_ui_base::synthetic_input::named_key;
+    use tilo_ui_base::{component::Event, component::Intent, component::Value};
     use winit::keyboard::NamedKey;
 
     let queue = tilo_ui_base::Intents::default();

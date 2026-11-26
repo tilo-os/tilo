@@ -10,8 +10,8 @@ use taffy::TaffyTree;
 use tilo_ui_base::a11y::AccessNode;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use ui::widget::ModalDialog;
 use tilo_ui_base::widget::Widget;
+use ui::widget::ModalDialog;
 use vello::kurbo::Rect;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
@@ -50,8 +50,9 @@ pub(crate) struct ExportDialog {
 impl ExportDialog {
     pub(crate) fn new() -> Self {
         Self {
-            dialog: ModalDialog::new(TITLE, profile_body(""))
-                .with_max_width(f64::from(tilo_ui_base::tokens::Metrics::BASE.reading_measure)),
+            dialog: ModalDialog::new(TITLE, profile_body("")).with_max_width(f64::from(
+                tilo_ui_base::tokens::Metrics::BASE.reading_measure,
+            )),
             text: String::new(),
         }
     }
@@ -210,8 +211,12 @@ mod tests {
         for (viewport, theme) in cases {
             dialog.layout_in(viewport, &theme, &mut TextRenderer::new());
             assert_eq!(dialog.dialog_rect(), viewport);
-            let update =
-                tilo_ui_base::accesskit_bridge::build_tree_update(&dialog.dialog, &HashMap::new(), None, 1.0);
+            let update = tilo_ui_base::accesskit_bridge::build_tree_update(
+                &dialog.dialog,
+                &HashMap::new(),
+                None,
+                1.0,
+            );
             let modal = update
                 .nodes
                 .iter()

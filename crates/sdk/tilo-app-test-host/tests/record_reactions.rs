@@ -1,13 +1,13 @@
 //! A record that holds reactions shows them in its window's bar, and a
 //! press there reacts through the window's dispatcher, as the person.
 
-use tilo_ui_base::permissions::MemberId;
 use tilo_app::prelude::*;
 use tilo_app::tilo_resource::Reactions;
 use tilo_app::window_toolbar::{
     ToolbarEvent, ToolbarReaction, ToolbarReactions, deliver, reaction_action, reactions,
 };
 use tilo_app_test_host::TestApp;
+use tilo_ui_base::permissions::MemberId;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Poster {
@@ -139,7 +139,10 @@ fn reactions_follow_the_grant_and_a_viewer_sees_them_without_reacting() {
 
 #[test]
 fn a_record_in_a_workspace_with_other_members_offers_reactions_while_they_are_away() {
-    use tilo_ui_base::{permissions::LOCAL_WORKSPACE, permissions::MemberAccess, permissions::PermissionContext, permissions::Role, permissions::policy};
+    use tilo_ui_base::{
+        permissions::LOCAL_WORKSPACE, permissions::MemberAccess, permissions::PermissionContext,
+        permissions::Role, permissions::policy,
+    };
     let mut app = TestApp::<PosterApp>::new().unwrap();
     app.settle();
     assert_eq!(

@@ -1,8 +1,8 @@
 use super::*;
-use tilo_ui_base::{arriving::GRACE, arriving::MIN_SHOWN, arriving::frame_budget};
 use crate::launch::ShotFrame;
 use crate::time::{Duration, testing::with_monotonic_time};
 use tilo_ui_base::widget::Spacer;
+use tilo_ui_base::{arriving::GRACE, arriving::MIN_SHOWN, arriving::frame_budget};
 
 const SHAPE: SkeletonShape = SkeletonShape::Text { lines: 2 };
 

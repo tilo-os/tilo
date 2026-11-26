@@ -46,8 +46,10 @@ fn host_appearance_rethemes_through_the_appearance_intent() {
     assert_eq!(
         a.theme.tokens.colors.intent.you,
         Theme::light().tokens.colors.presence.hue(
-            tilo_ui_base::tokens::nearest_presence_hue(vello::peniko::Color::from_rgb8(0xE0, 0x40, 0x80))
-                .expect("a pink has a hue")
+            tilo_ui_base::tokens::nearest_presence_hue(vello::peniko::Color::from_rgb8(
+                0xE0, 0x40, 0x80
+            ))
+            .expect("a pink has a hue")
         ),
         "the host accent is the person's own colour"
     );

@@ -4,9 +4,9 @@ use imager_backend::support_report::{
     Applicability, ComponentKind, ComponentSupport, ReportSource, SupportReport, SupportState,
 };
 use tilo_ui_base::tokens::typography::TextRole;
-use ui::widget::list_row::ListRow;
-use ui::widget::Text;
 use tilo_ui_base::widget::Widget;
+use ui::widget::Text;
+use ui::widget::list_row::ListRow;
 
 use crate::setup::hardware_text::{
     component_icon, component_title, evidence_text, reason_text, remedy_text,

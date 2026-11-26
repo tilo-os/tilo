@@ -86,7 +86,8 @@ impl Meter {
 
     /// Where the bar ends, as drawn.
     fn drawn(&mut self) -> f64 {
-        let drawing = tilo_ui_base::widget::find_mut::<ui::widget::Drawing>(self.driver.root_widget_mut());
+        let drawing =
+            tilo_ui_base::widget::find_mut::<ui::widget::Drawing>(self.driver.root_widget_mut());
         match drawing
             .expect("the meter is drawn")
             .drawn_at(self.now)

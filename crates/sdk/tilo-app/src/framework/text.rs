@@ -2,10 +2,12 @@
 
 use tilo_resource::text::splice_between;
 use tilo_resource::{Doc, Model, Path, PlainText, Resource, Segment, TextEdit};
+use tilo_ui_base::{
+    widget::AppModel, widget::Decorator, widget::EventCtx, widget::ModelPath, widget::Widget,
+};
 use ui_core::automerge::{ObjId, ReadDoc as _};
-use ui_core::{widget::Autocomplete, widget::CodeEditor, widget::TextInput};
-use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::EventCtx, widget::ModelPath, widget::Widget};
 use ui_core::winit::event::WindowEvent;
+use ui_core::{widget::Autocomplete, widget::CodeEditor, widget::TextInput};
 
 use super::dispatch::Dispatcher;
 

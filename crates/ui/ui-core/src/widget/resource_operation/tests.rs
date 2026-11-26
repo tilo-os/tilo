@@ -1,9 +1,9 @@
-use tilo_ui_base::widget::resource_operation::*;
 use crate::widget::Button;
+use automerge::ObjId;
+use automerge::transaction::Transactable;
 use tilo_ui_base::widget::Decorator;
 use tilo_ui_base::widget::Widget;
-use automerge::transaction::Transactable;
-use automerge::ObjId;
+use tilo_ui_base::widget::resource_operation::*;
 
 /// Answers `"probe.write"` by writing `written` into the document.
 struct Writer {

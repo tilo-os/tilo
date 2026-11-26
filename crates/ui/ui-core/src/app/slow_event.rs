@@ -162,7 +162,10 @@ impl Drop for Span {
             total.saturating_sub(named).as_millis()
         ));
         line.push_str(&causes_line(&causes));
-        line.push_str(&solved_line(self.solved, tilo_ui_base::widget::counts::read()));
+        line.push_str(&solved_line(
+            self.solved,
+            tilo_ui_base::widget::counts::read(),
+        ));
         let fonts = tilo_ui_base::font_catalog::font_files_read_after(self.fonts_read);
         if !fonts.is_empty() {
             line.push_str(&format!(" fonts read: {}", fonts.join(" ")));

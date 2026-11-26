@@ -1,12 +1,12 @@
 use super::*;
 use crate::app::driver::Driver;
-use tilo_ui_base::{component::Bound, component::Described, component::Fired, component::Intent};
 use crate::headless::InspectionNode;
-use tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 use crate::widget::Column;
-use tilo_ui_base::{widget::Element, widget::RowLeadingShape};
 use std::cell::Cell;
 use std::rc::Rc;
+use tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
+use tilo_ui_base::{component::Bound, component::Described, component::Fired, component::Intent};
+use tilo_ui_base::{widget::Element, widget::RowLeadingShape};
 use vello::Scene;
 use vello::kurbo::Affine;
 
@@ -556,8 +556,9 @@ fn a_card_grown_to_a_fingers_target_centres_its_single_line() {
     let face = ListRowFace::new("Screenshots for the docs").card();
     let line = RowMetrics::line(&mut text, &face.title_style(&m));
     let natural = face.height(&mut text, &theme);
-    let touch =
-        f64::from(tilo_ui_base::interaction::InteractionEnvironment::TOUCH.minimum_collection_row());
+    let touch = f64::from(
+        tilo_ui_base::interaction::InteractionEnvironment::TOUCH.minimum_collection_row(),
+    );
     assert!(touch > natural, "a finger's target grows a one-line card");
     let grown = Rect::new(0.0, 0.0, 264.0, touch);
     let top = face.card_content_top(grown, &m, &mut text, &theme);
@@ -1195,8 +1196,8 @@ fn boxed_rect(access: &tilo_ui_base::a11y::AccessNode) -> Rect {
 /// under the least a finger presses.
 #[test]
 fn a_rows_box_keeps_its_target_when_the_pointer_grows_it() {
-    use tilo_ui_base::interaction::InteractionEnvironment;
     use taffy::{AvailableSpace, Size};
+    use tilo_ui_base::interaction::InteractionEnvironment;
 
     let theme = Theme::dark().with_text_scale(1.5);
     let mut row = ListRow::new("boiler", "Call the landlord about the boiler")
@@ -1387,8 +1388,9 @@ fn a_caption_wraps_onto_the_lines_its_control_leaves_it() {
     for width in [720, 300] {
         let (row, control) = laid_out(width);
         // The band the caption stands in ends a column gap before the control.
-        let column =
-            tilo_ui_base::num::f32_of_f64((control.x0 - m.column_gap - (row.x0 + m.bleed)).max(0.0));
+        let column = tilo_ui_base::num::f32_of_f64(
+            (control.x0 - m.column_gap - (row.x0 + m.bleed)).max(0.0),
+        );
         let lines = text.wrap_lines(caption, &m.secondary, column).len();
         let title = RowMetrics::line(&mut text, &m.title);
         let line = RowMetrics::line(&mut text, &m.secondary);
@@ -1729,9 +1731,9 @@ fn press_leading_checkbox(row: &mut ListRow) {
 
 #[test]
 fn a_rows_checkbox_fills_over_frames_where_a_plain_face_would_pop() {
-    use tilo_ui_base::motion::note_source;
     use crate::time::testing::with_monotonic_time;
     use crate::time::{Duration, Instant};
+    use tilo_ui_base::motion::note_source;
     use tilo_ui_base::tokens::MotionSource;
 
     let start = Instant::now();
@@ -1808,7 +1810,10 @@ fn a_press_on_the_leading_box_marks_the_row() {
     );
 }
 
-fn bound_row(state: &tilo_ui_base::LocalState<bool>, intents: &tilo_ui_base::Intents<Fired>) -> ListRow {
+fn bound_row(
+    state: &tilo_ui_base::LocalState<bool>,
+    intents: &tilo_ui_base::Intents<Fired>,
+) -> ListRow {
     let props = ListRowProps {
         key: "milk".to_owned(),
         title: "Buy oat milk".to_owned(),
@@ -1919,7 +1924,10 @@ fn a_person_pressing_a_bound_rows_box_still_sees_the_check_fill_in() {
         ("milk", "check"),
         "as the row's check event"
     );
-    assert_eq!(fired[0].value, Some(tilo_ui_base::component::Value::Bool(true)));
+    assert_eq!(
+        fired[0].value,
+        Some(tilo_ui_base::component::Value::Bool(true))
+    );
 
     let mut levels = Vec::new();
     for frame in 1..=24_u64 {
@@ -1945,9 +1953,9 @@ fn a_person_pressing_a_bound_rows_box_still_sees_the_check_fill_in() {
 
 #[test]
 fn a_row_that_says_still_marks_at_once_where_brisk_still_moves() {
-    use tilo_ui_base::motion::note_source;
     use crate::time::testing::with_monotonic_time;
     use crate::time::{Duration, Instant};
+    use tilo_ui_base::motion::note_source;
     use tilo_ui_base::tokens::MotionSource;
 
     let start = Instant::now();

@@ -1,7 +1,7 @@
 //! Explicit ownership and presentation registration for managed roots.
 use super::{HistoryResource, preview::PreviewFactory};
-use tilo_ui_base::widget::Widget;
 use automerge::transaction::Transactable as _;
+use tilo_ui_base::widget::Widget;
 
 pub struct ManagedRoot {
     pub(crate) widget: Box<dyn Widget>,

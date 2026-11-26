@@ -55,7 +55,7 @@ class MotionLibraryTests(unittest.TestCase):
         root = self.fixture(
             {
                 "crates/ui/ui-base/src/motion/named.rs": "fn f() { Curve::EaseOut; }\n",
-                "crates/ui/ui-core/src/animation/animated.rs": "fn f() { Curve::EaseOut; }\n",
+                "crates/ui/ui-base/src/animation/animated.rs": "fn f() { Curve::EaseOut; }\n",
                 "crates/ui/ui-core/src/widget/a_tests.rs": "fn f() { Curve::EaseOut; }\n",
                 "crates/ui/ui-core/src/widget/b.rs": (
                     "// Curve::EaseOut in a comment\n"

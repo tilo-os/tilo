@@ -3,12 +3,12 @@
 //! remote presence may only change its own view.
 
 use super::*;
-use tilo_ui_base::collaboration::CollabEvent;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use tilo_actions::{ActionSpec, ExecutionLocus, OperationKind, PresenceId, ResourceSpec};
+use tilo_ui_base::collaboration::CollabEvent;
 
 const MARK_TYPE: &str = "test.presence-mark";
 const VIEW_TYPE: &str = "test.presence-view";
@@ -95,9 +95,11 @@ impl tilo_ui_base::widget::ResourceOperations for TwoViews {
             *probe.carets.entry(presence.clone()).or_default() += 1;
         }
         probe.view_ops.push((type_id.to_owned(), presence));
-        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui_base::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
 }
 

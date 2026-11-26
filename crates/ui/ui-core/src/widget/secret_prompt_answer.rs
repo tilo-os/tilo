@@ -103,8 +103,8 @@ impl Answer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::theme::Theme;
     use crate::time::Duration;
+    use tilo_ui_base::theme::Theme;
 
     fn at(base: Instant, millis: u64) -> Instant {
         base.checked_add(Duration::from_millis(millis))

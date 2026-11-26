@@ -8,8 +8,8 @@ use std::rc::Rc;
 use vello::kurbo::{Rect, Vec2};
 
 use super::{Part, Parts, WindowToolbar};
-use tilo_ui_base::collection_transition::RowMotions;
 use crate::time::Instant;
+use tilo_ui_base::collection_transition::RowMotions;
 use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

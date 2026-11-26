@@ -4,9 +4,9 @@
 
 use super::*;
 use tilo_render_protocol::patch::{Patch, local};
+use tilo_ui_base::tokens::MotionSource;
 use ui::time::testing::with_monotonic_time as clock;
 use ui::time::{Duration, Instant};
-use tilo_ui_base::tokens::MotionSource;
 use ui::widget::Swapped;
 
 /// A page of the stage: a stack keyed by its name, holding a line of its own.

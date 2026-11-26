@@ -1,9 +1,12 @@
 //! [`Card`] as a described component.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::PartViews, component::ResourceId};
-use tilo_ui_base::tokens::Rhythm;
 use crate::widget::SectionHeader;
+use tilo_ui_base::tokens::Rhythm;
 use tilo_ui_base::widget::Element;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PartViews,
+    component::ResourceId,
+};
 
 use super::{Activation, Card};
 

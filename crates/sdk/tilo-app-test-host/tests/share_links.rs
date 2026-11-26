@@ -5,13 +5,13 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending, ResourceViewLocator,
 };
-use tilo_ui_base::permissions::Role;
 use tilo_app::prelude::*;
-use tilo_ui_base::{RemoteActions, RemoteActionsGuard};
 use tilo_reference::link::{
     AppId, HostOrigin, Link, LinkSecrets, LinkTarget, Mode, ResourceAddress, ResourceSegment,
     Scope, WebEntries, WebEntry,
 };
+use tilo_ui_base::permissions::Role;
+use tilo_ui_base::{RemoteActions, RemoteActionsGuard};
 
 const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90";
 const ENTRY: &str = "https://tilo.so/";

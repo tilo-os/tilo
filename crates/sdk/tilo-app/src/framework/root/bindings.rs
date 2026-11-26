@@ -4,8 +4,8 @@
 use std::rc::Rc;
 
 use tilo_actions::ResourceSpec;
-use ui_core::automerge::AutoCommit;
 use tilo_ui_base::widget::Element;
+use ui_core::automerge::AutoCommit;
 
 use super::shared_tree::mark_document_jobs;
 use super::{

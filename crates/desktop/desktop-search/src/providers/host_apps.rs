@@ -4,8 +4,8 @@
 //! matches as well, so a confined Tilo app sorts first; choosing one starts
 //! it through the host ([`HOST_APP_PREFIX`] on the launch).
 
-use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 use tilo_ui_base::text_match::FieldWeight;
+use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
 
 use crate::model::{Hit, LaunchPlace, Source, Target};
 use crate::preferences::SearchPreferences;

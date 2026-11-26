@@ -204,7 +204,11 @@ fn run(count: u64, stance: Stance) -> Run {
 
     // A click on a row takes the keyboard; End goes to the last row.
     app.surface_input(&Window, tilo_ui_base::synthetic_input::mouse_press(), false);
-    app.surface_input(&Window, tilo_ui_base::synthetic_input::mouse_release(), false);
+    app.surface_input(
+        &Window,
+        tilo_ui_base::synthetic_input::mouse_release(),
+        false,
+    );
     scene.reset();
     app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
     let built_before = built.rows.get();

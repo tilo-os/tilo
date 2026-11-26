@@ -1,10 +1,10 @@
 //! Shared, modality-aware help overlay for pan/orbit + zoom canvases.
 
 use crate::color_compat::ColorCompat;
-use tilo_ui_base::{interaction::InteractionEnvironment, interaction::PointerPrecision};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{interaction::InteractionEnvironment, interaction::PointerPrecision};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::Fill;

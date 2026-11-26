@@ -14,7 +14,10 @@ use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use tilo_ui_base::{widget::MediaAspect, widget::RowShape, widget::SkeletonShape, widget::TaffyTreeExt, widget::Widget};
+use tilo_ui_base::{
+    widget::MediaAspect, widget::RowShape, widget::SkeletonShape, widget::TaffyTreeExt,
+    widget::Widget,
+};
 
 #[path = "skeleton_component.rs"]
 mod component;
@@ -26,7 +29,10 @@ const PAGE_LINES: u8 = 12;
 /// near-black ground.
 #[must_use]
 pub fn skeleton_tone(ground: Color) -> Color {
-    tilo_ui_base::tokens::colors::composite(tilo_ui_base::tokens::colors::tier_on(ground, TONE_ALPHA), ground)
+    tilo_ui_base::tokens::colors::composite(
+        tilo_ui_base::tokens::colors::tier_on(ground, TONE_ALPHA),
+        ground,
+    )
 }
 
 const TONE_ALPHA: u8 = 32;

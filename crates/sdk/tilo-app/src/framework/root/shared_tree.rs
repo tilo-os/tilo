@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::any::Any;
 
 use tilo_resource::items::{ItemAction, ItemCollection};
-use ui_core::automerge::AutoCommit;
 use tilo_ui_base::{published::SharedChildren, published::SharedResource};
+use ui_core::automerge::AutoCommit;
 
 use super::super::chain_of_resource_id;
 use super::super::rows::{LiveRow, join, outside_document};
@@ -412,7 +412,9 @@ impl ResourceRoot {
             (head, children, chains)
         };
         let mut extras = Vec::new();
-        for extra in tilo_ui_base::widget::resources::resources_for(self.content.as_ref(), None, doc) {
+        for extra in
+            tilo_ui_base::widget::resources::resources_for(self.content.as_ref(), None, doc)
+        {
             if extra.id.as_str() == root.0.id.as_str() {
                 return None;
             }

@@ -45,7 +45,8 @@ impl<T: tilo_ui_base::motion::Animatable> FrameSpring<T> {
             tilo_ui_base::tokens::EffectiveMotion::default(),
             tilo_ui_base::tokens::MotionSource::Pointer,
         );
-        self.motion.set(target, timing, tilo_ui_base::motion::frame_now());
+        self.motion
+            .set(target, timing, tilo_ui_base::motion::frame_now());
     }
 
     pub(super) fn snap(&mut self, value: T) {

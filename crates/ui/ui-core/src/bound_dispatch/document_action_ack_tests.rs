@@ -1,8 +1,8 @@
 use super::*;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use automerge::{ReadDoc, transaction::Transactable};
 use serde::{Deserialize, Serialize};
 use tilo_actions::{Action, ActionError, ActionTransport, ExecutionLocus};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Write {
@@ -71,9 +71,11 @@ impl tilo_ui_base::widget::ResourceOperations for Owner {
         if let Some(started) = tilo_ui_base::widget::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
-        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui_base::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
 }
 

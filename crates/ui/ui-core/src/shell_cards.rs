@@ -15,8 +15,8 @@ use crate::floating_surface::{
     FloatingSource, FloatingSurfaceHostMessage, FloatingSurfaceRequest, protocol_rect_array,
 };
 use crate::live_activity::{Kind, Summary};
-use tilo_ui_base::{widget::EventCtx, widget::Widget};
 use crate::winit::event::{ElementState, WindowEvent};
+use tilo_ui_base::{widget::EventCtx, widget::Widget};
 
 /// One card an app presents over the shell.
 #[derive(Debug)]

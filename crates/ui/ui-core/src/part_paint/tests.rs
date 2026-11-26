@@ -6,13 +6,13 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, Shape, Size};
 use vello::peniko::Color;
 use winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
 
-use tilo_ui_base::part_paint::*;
-use tilo_ui_base::text_render::TextRenderer;
 use crate::time::Duration;
 use crate::widget::Button;
-use tilo_ui_base::widget::Widget;
-use tilo_ui_base::tokens::SurfaceRole;
+use tilo_ui_base::part_paint::*;
+use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::SurfaceRole;
+use tilo_ui_base::widget::Widget;
 
 /// A painter set that draws a button as a triangle pointing up, counts its calls, springs between
 /// states and leaves every other part alone.
@@ -163,7 +163,11 @@ fn strokes(painted: &PaintedPart) -> Vec<(vello::kurbo::BezPath, f32)> {
         .collect()
 }
 
-fn runs_along(path: &vello::kurbo::BezPath, rect: Rect, side: tilo_ui_base::part_paint::Sides) -> bool {
+fn runs_along(
+    path: &vello::kurbo::BezPath,
+    rect: Rect,
+    side: tilo_ui_base::part_paint::Sides,
+) -> bool {
     use vello::kurbo::PathEl;
     let half = 0.51;
     let (top, trailing, bottom, leading) = (rect.y0, rect.x1, rect.y1, rect.x0);

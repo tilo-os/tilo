@@ -20,19 +20,22 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 use crate::floating_surface::{Recipient, RecipientKind};
+use crate::shared_selection::{SendToRequest, SharedSelection};
+use crate::widget::floating_surface as panel;
 use tilo_ui_base::motion::Appearing;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::platform::PlatformConventions;
-use tilo_ui_base::{query_text::QueryComposition, query_text::QueryEventChange, query_text::QueryInk, query_text::QueryView};
-use crate::shared_selection::{SendToRequest, SharedSelection};
 pub use tilo_ui_base::shared_subject::subject_label;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::text_selection::Selection;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::floating_surface as panel;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::{
+    query_text::QueryComposition, query_text::QueryEventChange, query_text::QueryInk,
+    query_text::QueryView,
+};
 
 /// The rows of the search shown at once: more than a person reads while
 /// typing, and few enough that the box stays where it was opened.
@@ -1192,7 +1195,10 @@ impl SendToBox {
         let style = theme.text(TextRole::Body);
         let dim = tokens
             .colors
-            .on_surface_at(ground, tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
+            .on_surface_at(
+                ground,
+                tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+            )
             .ink_dim;
         let ink = tokens.colors.text_primary;
         let inset = f64::from(tokens.spacing.s2);
@@ -1281,7 +1287,8 @@ impl SendToBox {
             }
         }
         // The search field: what is typed, or what typing searches.
-        let placeholder = tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-search-placeholder");
+        let placeholder =
+            tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-search-placeholder");
         {
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -1517,11 +1524,12 @@ impl SendToBox {
             None,
             &RoundedRect::from_rect(self.layout.message, radius * 0.75),
         );
-        let message_placeholder = tilo_ui_base::i18n::I18nManager::lookup_plain(if self.reporting() {
-            "send-to-report-placeholder"
-        } else {
-            "send-to-message-placeholder"
-        });
+        let message_placeholder =
+            tilo_ui_base::i18n::I18nManager::lookup_plain(if self.reporting() {
+                "send-to-report-placeholder"
+            } else {
+                "send-to-message-placeholder"
+            });
         self.text_composition.draw_wrapped(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             QueryView {
@@ -1693,7 +1701,9 @@ impl SendToBox {
         ));
         children.push(action(
             AccessNode::new(Role::Button)
-                .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-send"))
+                .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain(
+                    "send-to-send",
+                ))
                 .with_action_target("send-to:send".to_owned())
                 .with_bounds(self.layout.send)
                 .with_state(AccessState {
@@ -1711,7 +1721,11 @@ impl SendToBox {
     }
 
     /// Assistive technology pressed or wrote in one of the box's parts.
-    pub fn perform_semantic_action(&mut self, target: &str, action: &tilo_ui_base::a11y::Action) -> bool {
+    pub fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         if !self.open {
             return false;
         }

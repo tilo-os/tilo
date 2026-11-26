@@ -11,9 +11,9 @@ use std::sync::Arc;
 
 use taffy::TaffyTree;
 use tilo_actions::remote::asked::{FileType, FilesAsked, FilesMode};
+use tilo_ui_base::widget::Widget;
 use ui::widget::file_picker::FileFilter;
 use ui::{widget::FilePicker, widget::FilePickerMode, widget::FilePickerOutcome};
-use tilo_ui_base::widget::Widget;
 use vello::kurbo::Rect;
 use winit::event::WindowEvent;
 
@@ -154,7 +154,11 @@ impl FileAsk {
         }
     }
 
-    pub(super) fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    pub(super) fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
         let mut picker_taffy = TaffyTree::<()>::new();
         if let Ok(node) = picker_taffy.new_leaf(taffy::Style::default()) {
             let path = ctx.path;

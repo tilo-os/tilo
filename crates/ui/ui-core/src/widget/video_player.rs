@@ -10,15 +10,15 @@
 //! `realtime` feature is on (any app that streams video enables it); in other
 //! builds the feed methods report that nothing was decoded.
 
-use tilo_ui_base::num::f64_of_u64;
 use crate::time::{Duration, Instant};
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::borrow::Cow;
 use std::sync::Arc;
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::num::f64_of_u64;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
-use tilo_ui_base::widget::TaffyTreeExt;
 use taffy::{NodeId, Size, TaffyTree};
+use tilo_ui_base::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{
@@ -28,9 +28,9 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use tilo_ui_base::icons::Icon;
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::{widget::FullscreenProvider, widget::Widget};
 
 /// The shape a player stands at where nothing gives it a height: a video's usual 16:9.
@@ -1182,7 +1182,8 @@ impl VideoPlayer {
                 transform,
                 &picture,
             );
-            let mut ctx = tilo_ui_base::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+            let mut ctx =
+                tilo_ui_base::paint::PaintCtx::new(scene, transform, text_renderer, theme);
             paint(&mut ctx, picture);
             scene.pop_layer();
         } else {
@@ -2402,7 +2403,11 @@ impl Widget for VideoPlayer {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        taffy.widget_leaf(tilo_ui_base::widget::layout::natural_filling(), node_map, self)
+        taffy.widget_leaf(
+            tilo_ui_base::widget::layout::natural_filling(),
+            node_map,
+            self,
+        )
     }
 
     /// Where nothing gives it a height (a column that grows with what it holds), the player

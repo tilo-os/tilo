@@ -1,4 +1,3 @@
-use tilo_ui_base::widget::manual::*;
 use crate::application::{
     ApplicationDefinition, LaunchTarget, ProcessContext, ProcessContextInputs,
 };
@@ -7,20 +6,21 @@ use crate::bound_dispatch::CallbackBinding;
 use crate::resource::{ResourceOwners, ResourceType};
 use crate::widget::{IconDescriptor, Text};
 use ::collaboration::permissions::{MemberId, PermissionContext};
-use std::cell::RefCell;
-use taffy::AvailableSpace;
-use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::HashMap;
-use taffy::NodeId;
-use tilo_ui_base::widget::composition_parts::Parts;
 use std::rc::Rc;
-use vello::kurbo::Rect;
+use taffy::AvailableSpace;
+use taffy::NodeId;
 use taffy::Size;
 use taffy::Style;
 use taffy::TaffyTree;
 use tilo_ui_base::Theme;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
+use tilo_ui_base::widget::composition_parts::Parts;
+use tilo_ui_base::widget::manual::*;
+use vello::kurbo::Rect;
 struct BoundRoot {
     parts: Parts,
     binding: CallbackBinding,

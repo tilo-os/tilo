@@ -122,7 +122,10 @@ impl tilo_ui_base::widget::Widget for Wide {
         &mut self,
         taffy: &mut crate::taffy::TaffyTree<()>,
         _: &tilo_ui_base::Theme,
-        _: &mut std::collections::HashMap<crate::taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
+        _: &mut std::collections::HashMap<
+            crate::taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> crate::taffy::NodeId {
         taffy
             .new_leaf(crate::taffy::Style {

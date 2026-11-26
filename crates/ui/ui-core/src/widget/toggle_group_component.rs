@@ -1,8 +1,10 @@
 //! [`ToggleGroup`] and [`ViewTabs`] as described components.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Value};
-use tilo_ui_base::icons::Icon;
 use crate::widget::ControlSize;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
 
 use super::{Press, Segment, ToggleGroup};
 use crate::widget::ViewTabs;

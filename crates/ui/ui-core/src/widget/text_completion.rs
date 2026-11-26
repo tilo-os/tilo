@@ -4,8 +4,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::keyboard::Key;
 
-use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::theme::Theme;
 #[cfg(test)]
 use crate::widget::autocomplete::Suggestion;
 use crate::widget::autocomplete::SuggestionList;
@@ -14,6 +12,8 @@ use crate::widget::completion::{
 };
 use crate::widget::completion_card;
 use crate::widget::mention_picker::{self, MentionCandidate};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 const MAX_SHORTCODE_LEN: usize = 32;
 
 /// Which parts of a text field's inline completion it offers.
@@ -460,8 +460,9 @@ impl CompletionList {
         if !self.is_open() {
             return;
         }
-        let breakpoint = viewport
-            .map(|viewport| tilo_ui_base::tokens::Breakpoint::of(viewport.width(), &theme.tokens.metrics));
+        let breakpoint = viewport.map(|viewport| {
+            tilo_ui_base::tokens::Breakpoint::of(viewport.width(), &theme.tokens.metrics)
+        });
         let docked = breakpoint.is_some_and(tilo_ui_base::tokens::Breakpoint::is_compact);
         self.list.set_docked(docked);
         self.list.set_anchor(if docked { field } else { caret });

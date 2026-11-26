@@ -1,11 +1,11 @@
 use super::*;
-use tilo_ui_base::presence::PresenceCtx;
 use crate::testing::dispatch;
-use tilo_ui_base::widget::Widget;
 use automerge::AutoCommit;
 use std::cell::RefCell;
 use std::rc::Rc;
 use taffy::prelude::TaffyMaxContent;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::widget::Widget;
 
 #[test]
 fn hosted_mode_swipes_commit_once_and_reject_scroll_cancel_and_multitouch() {

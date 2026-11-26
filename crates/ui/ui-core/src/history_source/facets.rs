@@ -4,8 +4,8 @@
 //! them later. Counts are derived from durable action context; legacy entries
 //! simply contribute to people and operation-class lenses.
 
-use tilo_ui_base::i18n::widget_text;
 use std::collections::BTreeMap;
+use tilo_ui_base::i18n::widget_text;
 
 use crate::widget::EntryKind;
 

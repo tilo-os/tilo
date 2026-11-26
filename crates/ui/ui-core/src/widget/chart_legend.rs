@@ -6,10 +6,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{Color, Fill};
 
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LegendEntry {
@@ -307,7 +307,9 @@ pub(crate) fn paint_series(
         name,
         fade(ink, 90),
         transform * Affine::translate((item.x0 + 14.0, cy - h / 2.0)),
-        Some(tilo_ui_base::num::f32_of_f64((item.width() - 18.0).max(1.0))),
+        Some(tilo_ui_base::num::f32_of_f64(
+            (item.width() - 18.0).max(1.0),
+        )),
         &style,
     );
 }

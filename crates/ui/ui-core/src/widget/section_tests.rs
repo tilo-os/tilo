@@ -452,7 +452,10 @@ fn a_section_says_whether_the_pointer_is_over_it() {
         rows.center().y,
     ));
     assert!(over.get(), "over a row");
-    harness.send(&tilo_ui_base::synthetic_input::cursor_moved(10.0, whole.y1 + 10.0));
+    harness.send(&tilo_ui_base::synthetic_input::cursor_moved(
+        10.0,
+        whole.y1 + 10.0,
+    ));
     assert!(!over.get(), "below the section");
     harness.send(&tilo_ui_base::synthetic_input::cursor_moved(
         rows.center().x,
@@ -539,10 +542,10 @@ fn a_list_without_marks_after_its_switches_keeps_them_on_the_edge() {
 /// follows them down, rather than being zero tall in the section and painting over the next.
 #[test]
 fn a_player_a_page_and_a_rail_push_what_follows_down_in_a_section() {
-    use tilo_ui_base::component::Described;
     use crate::widget::{
         DeclaredRail, DeclaredVideo, PageSidebarProps, VideoPlayerProps, WebView, WebViewProps,
     };
+    use tilo_ui_base::component::Described;
     let theme = Theme::light();
     let views: Vec<(&str, Element)> = vec![
         (

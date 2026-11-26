@@ -154,7 +154,11 @@ fn read(device: &wgpu::Device, queue: &wgpu::Queue, texture: &wgpu::Texture) -> 
     pixels
 }
 
-fn draw(gpu: &tilo_ui_base::offscreen::SharedGpu, renderer: &mut Renderer, scene: &Scene) -> Vec<u8> {
+fn draw(
+    gpu: &tilo_ui_base::offscreen::SharedGpu,
+    renderer: &mut Renderer,
+    scene: &Scene,
+) -> Vec<u8> {
     let target = target(&gpu.device);
     renderer
         .render_to_texture(
@@ -174,7 +178,8 @@ fn draw(gpu: &tilo_ui_base::offscreen::SharedGpu, renderer: &mut Renderer, scene
 }
 
 fn assert_same(what: &str, got: &[u8], expected: &[u8]) {
-    let differing = tilo_ui_base::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(got, expected);
+    let differing =
+        tilo_ui_base::offscreen::OffscreenRenderer::pixels_differing_beyond_aa(got, expected);
     assert_eq!(
         differing, 0,
         "{what}: {differing} pixels differ from the eager renderer"

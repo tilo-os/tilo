@@ -12,11 +12,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::app::driver::Driver;
+use crate::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarNotice, WindowToolbar};
 use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget as _;
-use crate::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarNotice, WindowToolbar};
 
 /// An app whose window's bar carries a notice with one button, and that hears what a press on it
 /// runs.
@@ -37,7 +37,11 @@ impl tilo_ui_base::widget::Decorator for NoticeApp {
         &mut self.content
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         // A notice's button is its poster's, never one of the app's part events: the app polls
         // for its press as the save status does.
         if crate::window_toolbar::take_notice_press("try-again") {

@@ -10,8 +10,8 @@ use crate::{UiNode, Value};
 use jiff::civil::{Date, Time};
 use tilo_formats::{day_of, duration_of};
 use tilo_ui_base::LocalState;
-use ui::widget::DateField;
 use tilo_ui_base::{widget::Decorator, widget::Tone, widget::Widget};
+use ui::widget::DateField;
 
 use crate::reconcile::{EventSink, UiEvent, display};
 
@@ -28,7 +28,12 @@ pub fn shown(node: &UiNode, name: &str) -> Option<String> {
     {
         return Some(tilo_ui_base::format::timestamp(&day.to_datetime(time)));
     }
-    formatted(node, name, tilo_ui_base::format::date, tilo_ui_base::format::timestamp)
+    formatted(
+        node,
+        name,
+        tilo_ui_base::format::date,
+        tilo_ui_base::format::timestamp,
+    )
 }
 
 /// The prop `name` of `node` as a list row reads it: the day fact (`Overdue`, `Today`, `Thursday`,
@@ -133,8 +138,10 @@ pub fn under_headings(node: UiNode) -> UiNode {
         {
             match paired_time(&node, name) {
                 Some(time) => {
-                    node.props
-                        .insert(name.to_owned(), Value::text(tilo_ui_base::format::time(time)));
+                    node.props.insert(
+                        name.to_owned(),
+                        Value::text(tilo_ui_base::format::time(time)),
+                    );
                 }
                 None => {
                     node.props.remove(name);
@@ -290,7 +297,11 @@ impl Decorator for DateControl {
         &mut self.field
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let followed = self.follow_value();
         let inner = Widget::update(&mut self.field, state, path);
         followed || inner

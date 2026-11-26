@@ -10,11 +10,11 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::widget::ScrollAxis;
 use super::scrollbar::{BarFade, PressOutcome, Scrollbar};
-use tilo_ui_base::{widget::PAGE_FRACTION, widget::ScrollMetrics};
 use crate::color_compat::ColorCompat;
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::ScrollAxis;
+use tilo_ui_base::{widget::PAGE_FRACTION, widget::ScrollMetrics};
 
 /// The offset along one axis that moves the least from `offset` to show `band` (content
 /// coordinates) in a viewport `view` long, kept in `0..=max`.
@@ -1004,11 +1004,12 @@ impl ScrollRegion {
     /// technology and agents: forward `Widget::primary_vertical_scroll`.
     #[must_use]
     pub fn primary_vertical_scroll(&self) -> Option<tilo_ui_base::widget::PrimaryScrollRegion> {
-        self.has_vertical().then(|| tilo_ui_base::widget::PrimaryScrollRegion {
-            key: "primary",
-            owner_generation: None,
-            metrics: self.v_metrics(),
-        })
+        self.has_vertical()
+            .then(|| tilo_ui_base::widget::PrimaryScrollRegion {
+                key: "primary",
+                owner_generation: None,
+                metrics: self.v_metrics(),
+            })
     }
 
     pub fn apply_primary_vertical_scroll(
@@ -1042,7 +1043,8 @@ mod tests {
 
     fn send(region: &mut ScrollRegion, event: &WindowEvent) -> bool {
         let mut tree = taffy::TaffyTree::<()>::new();
-        let node = tilo_ui_base::widget::TaffyTreeExt::leaf_node(&mut tree, taffy::Style::default());
+        let node =
+            tilo_ui_base::widget::TaffyTreeExt::leaf_node(&mut tree, taffy::Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = automerge::AutoCommit::new();
@@ -1266,7 +1268,10 @@ mod tests {
     fn flick(region: &mut ScrollRegion, start: crate::time::Instant, steps: u64) -> u64 {
         use crate::time::testing::with_monotonic_time;
         use winit::event::TouchPhase;
-        send(region, &tilo_ui_base::synthetic_input::cursor_moved(100.0, 100.0));
+        send(
+            region,
+            &tilo_ui_base::synthetic_input::cursor_moved(100.0, 100.0),
+        );
         for tick in 0..steps {
             with_monotonic_time(start + frame(tick), || {
                 send(region, &swipe(-20.0, TouchPhase::Moved));

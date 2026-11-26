@@ -1,8 +1,8 @@
-use tilo_ui_base::a11y::Action;
 use crate::{widget::Checkbox, widget::Dropdown, widget::Slider, widget::Toggle};
-use tilo_ui_base::widget::Widget;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT};
+use tilo_ui_base::a11y::Action;
+use tilo_ui_base::widget::Widget;
 
 #[test]
 fn value_controls_read_document_and_leave_persistence_to_actions() {

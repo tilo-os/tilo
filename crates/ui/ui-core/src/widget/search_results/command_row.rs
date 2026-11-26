@@ -8,14 +8,14 @@ use vello::kurbo::{Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
 
 use crate::color_compat::ColorCompat;
+use crate::search::{ActivationModifier, CommandRow, SearchResult};
 use tilo_ui_base::icons;
 use tilo_ui_base::num::f32_of_f64;
 use tilo_ui_base::paint::PaintCtx;
-use crate::search::{ActivationModifier, CommandRow, SearchResult};
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 
 pub(super) struct RowState<'a> {
     pub selected: bool,

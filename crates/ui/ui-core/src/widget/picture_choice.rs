@@ -19,8 +19,11 @@ use tilo_ui_base::tokens::TextRole;
 #[path = "picture_choice_component.rs"]
 mod component;
 use crate::{widget::card_column_width, widget::card_columns};
-use tilo_ui_base::{widget::ActionEmitter, widget::AppModel, widget::ControlBindingMetadata, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
 pub use component::{PictureChoiceProps, PictureKind, PictureOptionProps};
+use tilo_ui_base::{
+    widget::ActionEmitter, widget::AppModel, widget::ControlBindingMetadata, widget::ModelPath,
+    widget::TaffyTreeExt, widget::Widget,
+};
 
 pub use super::picture::{ColourFilter, Picture, TouchpadGesture};
 
@@ -275,8 +278,11 @@ impl PictureChoice {
         let moved =
             self.edge_for.is_some_and(|before| before != chosen) && self.edge.target().area() > 0.0;
         if moved {
-            let timing =
-                ListChange::MOVE.timing(Direction::Enter, motion, tilo_ui_base::motion::input_source());
+            let timing = ListChange::MOVE.timing(
+                Direction::Enter,
+                motion,
+                tilo_ui_base::motion::input_source(),
+            );
             self.edge.set(target, timing, now);
             if let Some(until) = self.edge.settles_at() {
                 tilo_ui_base::motion::want_frames_until(until);
@@ -647,7 +653,9 @@ impl Widget for PictureChoice {
                 self.cursor = index;
                 true
             }
-            tilo_ui_base::a11y::Action::Activate | tilo_ui_base::a11y::Action::ToggleCheck if self.enabled => {
+            tilo_ui_base::a11y::Action::Activate | tilo_ui_base::a11y::Action::ToggleCheck
+                if self.enabled =>
+            {
                 self.request(index);
                 true
             }
@@ -666,7 +674,9 @@ impl tilo_ui_base::widget::controls::ActionControls for PictureChoice {
             None if self.choice.is_some() || self.on_change.is_some() => (0..self.options.len())
                 .map(|index| ControlBindingMetadata {
                     control_id: self.option_id(index),
-                    kind: tilo_ui_base::widget::ControlBindingKind::SemanticAction(self.option_id(index)),
+                    kind: tilo_ui_base::widget::ControlBindingKind::SemanticAction(
+                        self.option_id(index),
+                    ),
                 })
                 .collect(),
             None => Vec::new(),

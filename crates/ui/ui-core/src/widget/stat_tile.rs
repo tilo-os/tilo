@@ -11,12 +11,12 @@ use winit::event::WindowEvent;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use crate::widget::activation::{Activation, Interaction, activation_controls};
+use crate::widget::card_column_width;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
-use crate::widget::activation::{Activation, Interaction, activation_controls};
-use crate::widget::card_column_width;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::{widget::Element, widget::TaffyTreeExt, widget::Tone, widget::Widget};
 
 #[path = "stat_tile_component.rs"]
@@ -265,9 +265,11 @@ impl<'a> StatTileFace<'a> {
         let width = (rect.x1 - x).max(0.0);
         let mut y = content.y0;
 
-        let label =
-            ctx.text
-                .elide_to_width_style(self.label, tilo_ui_base::num::f32_of_f64(width), &m.label);
+        let label = ctx.text.elide_to_width_style(
+            self.label,
+            tilo_ui_base::num::f32_of_f64(width),
+            &m.label,
+        );
         ctx.text(&label, &m.label, theme.text_dim, Point::new(x, y), None);
         y += TileMetrics::line(ctx.text, &m.label) + m.tight;
 
@@ -744,7 +746,8 @@ impl StatGroup {
     /// How many columns the group uses at `width`, and how wide each is.
     fn tracks_at(&self, width: f64) -> (usize, f32) {
         let columns = self.columns_for_width(width);
-        let column = tilo_ui_base::num::f32_of_f64(card_column_width(width, columns, self.column_gap));
+        let column =
+            tilo_ui_base::num::f32_of_f64(card_column_width(width, columns, self.column_gap));
         (columns, column)
     }
 }

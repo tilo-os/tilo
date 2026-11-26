@@ -221,7 +221,9 @@ impl crate::search::SearchProvider for DirectoryDomainProvider {
     fn action_directory_generation(&self) -> Option<u64> {
         Some(0)
     }
-    fn action_directory_invocation_domain(&self) -> tilo_ui_base::widget::ActionDirectoryInvocationDomain {
+    fn action_directory_invocation_domain(
+        &self,
+    ) -> tilo_ui_base::widget::ActionDirectoryInvocationDomain {
         if !self.supported.get() {
             return tilo_ui_base::widget::ActionDirectoryInvocationDomain::Unsupported;
         }

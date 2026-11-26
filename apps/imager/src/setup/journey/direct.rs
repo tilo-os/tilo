@@ -93,7 +93,10 @@ impl InstallerPreview {
                         "installer-review-storage-shortfall",
                         &[
                             ("needed", tilo_ui_base::format::memory(needed_bytes).into()),
-                            ("available", tilo_ui_base::format::memory(available_bytes).into()),
+                            (
+                                "available",
+                                tilo_ui_base::format::memory(available_bytes).into(),
+                            ),
                         ],
                     ));
                 }
@@ -131,8 +134,14 @@ impl InstallerPreview {
             t_args(
                 "installer-review-resize",
                 &[
-                    ("before", tilo_ui_base::format::memory(shrink.from_bytes).into()),
-                    ("after", tilo_ui_base::format::memory(shrink.to_bytes).into()),
+                    (
+                        "before",
+                        tilo_ui_base::format::memory(shrink.from_bytes).into(),
+                    ),
+                    (
+                        "after",
+                        tilo_ui_base::format::memory(shrink.to_bytes).into(),
+                    ),
                 ],
             )
         } else {

@@ -3,14 +3,16 @@
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Value};
 use crate::pictures::{Pictures, Shown};
 use crate::widget::ImageCropEditor;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 use super::CropSelection;
-use tilo_ui_base::widget::DrawChild;
 use crate::widget::PictureSource;
+use tilo_ui_base::widget::DrawChild;
 
 /// A picture with a crop its four corners set (a scanned page, a photo to trim): drag a
 /// corner to move it, or an edge's arrow keys, and it reports the crop each time it
@@ -130,7 +132,11 @@ impl Widget for CropEditor {
         Some(self)
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.take_picture();
         if let Some(editor) = &mut self.editor {
             editor.sync(state, path);
@@ -138,7 +144,11 @@ impl Widget for CropEditor {
         self.report_crop();
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let arrived = self.shown.waiting();
         self.take_picture();
         if let Some(editor) = &mut self.editor {
@@ -175,7 +185,9 @@ impl Widget for CropEditor {
                 },
                 // A box with no shape still stands at 4:3, so a leaf that is not yet sized
                 // does not collapse to nothing.
-                aspect_ratio: Some(tilo_ui_base::num::f32_of_f64(self.aspect.unwrap_or(4.0 / 3.0))),
+                aspect_ratio: Some(tilo_ui_base::num::f32_of_f64(
+                    self.aspect.unwrap_or(4.0 / 3.0),
+                )),
                 flex_shrink: 0.0,
                 ..taffy::Style::default()
             },

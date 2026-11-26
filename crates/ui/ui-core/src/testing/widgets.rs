@@ -169,7 +169,10 @@ impl tilo_ui_base::widget::Widget for TwoWindows {
         &mut self,
         taffy: &mut ::taffy::TaffyTree<()>,
         theme: &tilo_ui_base::theme::Theme,
-        node_map: &mut ::std::collections::HashMap<::taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
+        node_map: &mut ::std::collections::HashMap<
+            ::taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> ::taffy::NodeId {
         use tilo_ui_base::widget::TaffyTreeExt as _;
         let mut nodes = Vec::new();
@@ -349,7 +352,10 @@ impl tilo_ui_base::widget::Widget for TestLeaf {
         &mut self,
         taffy: &mut ::taffy::TaffyTree<()>,
         _: &tilo_ui_base::theme::Theme,
-        node_map: &mut ::std::collections::HashMap<::taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
+        node_map: &mut ::std::collections::HashMap<
+            ::taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> ::taffy::NodeId {
         let size = match self.size {
             LeafSize::Fill => ::taffy::Size::from_percent(1.0, 1.0),

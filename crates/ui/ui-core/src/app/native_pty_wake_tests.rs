@@ -175,12 +175,12 @@ impl tilo_ui_base::widget::ResourceOperations for PtyRoot {
                 serde_json::json!({"text": doc.get(ROOT, "pty-output").unwrap().and_then(|(value,_)| value.as_str().map(str::to_owned)).unwrap_or_default()}),
             ),
         };
-        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput {
+        Ok(Some(
+            tilo_ui_base::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput {
                 value,
                 resources: vec![],
-            },
-        )))
+            }),
+        ))
     }
 }
 impl tilo_ui_base::widget::resources::PublishesResources for PtyRoot {

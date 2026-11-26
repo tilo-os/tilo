@@ -1,6 +1,6 @@
 use super::*;
-use tilo_ui_base::{arriving::GRACE, arriving::MIN_SHOWN, arriving::Source};
 use crate::time::Duration;
+use tilo_ui_base::{arriving::GRACE, arriving::MIN_SHOWN, arriving::Source};
 
 fn ms(base: Instant, ms: u64) -> Instant {
     base + Duration::from_millis(ms)

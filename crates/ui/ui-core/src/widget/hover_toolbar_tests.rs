@@ -1,5 +1,5 @@
-use tilo_ui_base::text_render::TextRenderer;
 use std::collections::HashMap;
+use tilo_ui_base::text_render::TextRenderer;
 use vello::Scene;
 use vello::kurbo::Affine;
 

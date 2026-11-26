@@ -1,13 +1,13 @@
 use super::*;
+use automerge::AutoCommit;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use automerge::AutoCommit;
 
 use tilo_ui_base::synthetic_input::cursor_moved;
 
-use tilo_ui_base::synthetic_input::mouse_press;
 use crate::testing::dispatch;
+use tilo_ui_base::synthetic_input::mouse_press;
 use winit::keyboard::{Key, NamedKey};
 
 tilo_test_env::scenario! {
@@ -1092,8 +1092,12 @@ fn controls_ink_and_edges_read_on_both_presets() {
     reason = "probe coordinates are non-negative pixel positions inside a small test surface"
 )]
 fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
-    let (r, g, b, _) =
-        tilo_ui_base::offscreen::OffscreenRenderer::sample(rgba, w, x.floor() as u32, y.floor() as u32);
+    let (r, g, b, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(
+        rgba,
+        w,
+        x.floor() as u32,
+        y.floor() as u32,
+    );
     tilo_ui_base::a11y::relative_luminance(Color::from_rgb8(r, g, b))
 }
 

@@ -12,7 +12,11 @@ impl DesktopHandle {
     /// compositor's id for it. The next pass paints it in the tab it holds,
     /// and wherever else a window's app is shown. Whether that changed
     /// anything.
-    pub fn set_window_artwork(&self, window: u64, icon: Option<tilo_ui_base::icons::AppImage>) -> bool {
+    pub fn set_window_artwork(
+        &self,
+        window: u64,
+        icon: Option<tilo_ui_base::icons::AppImage>,
+    ) -> bool {
         let mut shared = self.shared.borrow_mut();
         let same = match (&icon, shared.artwork.get(&window)) {
             (Some(icon), Some(shown)) => *icon == *shown,

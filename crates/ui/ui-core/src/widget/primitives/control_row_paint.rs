@@ -5,10 +5,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 
-use tilo_ui_base::{chrome::ChromeRole, chrome::SelectionState, chrome::selection_floor_ramp};
-use tilo_ui_base::theme::Theme;
 use crate::widget::paint_focus_ring;
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Tone;
+use tilo_ui_base::{chrome::ChromeRole, chrome::SelectionState, chrome::selection_floor_ramp};
 
 /// A Control's fill: the shared hover tier when hovered, otherwise a quiet floor on the same
 /// ramp, so a row reads as a surface rather than bare text on the panel.

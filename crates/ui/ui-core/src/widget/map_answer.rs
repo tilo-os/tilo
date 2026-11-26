@@ -8,8 +8,8 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::Color;
 
 use super::{ARRIVAL_MARGIN, Map, MapCamera};
-use tilo_ui_base::theme::Theme;
 use crate::widget::primitives::SurfaceLevel;
+use tilo_ui_base::theme::Theme;
 
 impl Map {
     /// The person pointed at `at` (canvas pixels): what arrives after this is the answer to it and

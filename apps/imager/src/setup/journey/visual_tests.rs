@@ -833,7 +833,8 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
                 app.settle();
                 let selection = app
                     .with_widget::<InstallerPreview, _>(|preview| {
-                        tilo_ui_base::widget::undo_points::get_state(control(preview, id).unwrap()).unwrap()
+                        tilo_ui_base::widget::undo_points::get_state(control(preview, id).unwrap())
+                            .unwrap()
                     })
                     .unwrap();
                 assert_eq!(
@@ -845,7 +846,8 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
                 app.settle();
                 app.with_widget::<InstallerPreview, _>(|preview| {
                     assert_eq!(
-                        tilo_ui_base::widget::undo_points::get_state(control(preview, id).unwrap()).unwrap(),
+                        tilo_ui_base::widget::undo_points::get_state(control(preview, id).unwrap())
+                            .unwrap(),
                         selection,
                         "observation preserves the private selection"
                     );

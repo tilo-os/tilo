@@ -8,11 +8,11 @@ use vello::kurbo::{Affine, Rect, RoundedRect};
 
 use super::{LINE_HEIGHT_RATIO, TextInput};
 use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{richtext::RichTextLayout, richtext::TextAlign};
 use tilo_ui_base::text_break::grapheme_indices;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::text_selection::TextPosition;
 use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{richtext::RichTextLayout, richtext::TextAlign};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 
 impl TextInput {
     #[must_use]

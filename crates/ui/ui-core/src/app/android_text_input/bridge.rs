@@ -17,8 +17,10 @@ use winit::event_loop::EventLoopProxy;
 
 use super::{TextInputOp, named_key};
 use crate::app::{ImeWindowState, UserEvent};
-use tilo_ui_base::{ime::Capitalization, ime::ImeSurroundingText, ime::InputContent, ime::InputPurpose};
 use tilo_lock::MutexRecover as _;
+use tilo_ui_base::{
+    ime::Capitalization, ime::ImeSurroundingText, ime::InputContent, ime::InputPurpose,
+};
 
 const CLASS: &str = "so.tilo.android.TiloTextInput";
 const MAX_DELETE: u32 = 4096;

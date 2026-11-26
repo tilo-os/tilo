@@ -3,8 +3,6 @@
 //! [`DataTable::sort_by_with`] re-applies the remembered comparator whenever local rows change, while
 //! [`DataTable::from_model`] delegates order and paging to [`TableModel`].
 
-use tilo_ui_base::num::f32_of_f64;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Range;
@@ -12,6 +10,8 @@ use std::sync::Arc;
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Color;
@@ -20,14 +20,18 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, Wind
 use tilo_ui_base::arriving::Arrival;
 use tilo_ui_base::paint::PaintCtx;
 
-use tilo_ui_base::{text_render::TextKind, text_render::TextRenderer};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextKind, text_render::TextRenderer};
 
-use tilo_ui_base::{virtual_viewport::DragScroller, virtual_viewport::ScrollAlignment, virtual_viewport::SparseAnchor, virtual_viewport::SparseVirtualViewport, virtual_viewport::WheelStep};
+use crate::widget::scrollbar::{PressOutcome, Scrollbar};
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::widget::ScrollMetrics;
-use crate::widget::scrollbar::{PressOutcome, Scrollbar};
+use tilo_ui_base::{
+    virtual_viewport::DragScroller, virtual_viewport::ScrollAlignment,
+    virtual_viewport::SparseAnchor, virtual_viewport::SparseVirtualViewport,
+    virtual_viewport::WheelStep,
+};
 use tilo_ui_base::{widget::Element, widget::SkeletonShape, widget::TaffyTreeExt, widget::Widget};
 
 /// One line of `role` as the renderer will lay it out: the role's resolved size times its leading,
@@ -1003,7 +1007,10 @@ impl<Row: 'static> DataTable<Row> {
 
     /// [`DataTableCore::with_model_selection`].
     #[must_use]
-    pub fn with_model_selection(self, selection: tilo_ui_base::selection::KeySelection<u64>) -> Self {
+    pub fn with_model_selection(
+        self,
+        selection: tilo_ui_base::selection::KeySelection<u64>,
+    ) -> Self {
         Self::of(self.core.with_model_selection(selection))
     }
 
@@ -2956,7 +2963,12 @@ impl DataTableCore {
                 x + icon,
                 rect.center().y + icon / 2.0,
             );
-            tilo_ui_base::icons::Icon::Plus.draw(scene, transform, glyph, tokens.colors.text_tertiary);
+            tilo_ui_base::icons::Icon::Plus.draw(
+                scene,
+                transform,
+                glyph,
+                tokens.colors.text_tertiary,
+            );
             let (_, h) = text_renderer.measure_style(&add.label, None, &style);
             text_renderer.draw_style(
                 scene,
@@ -3713,8 +3725,13 @@ impl Widget for DataTableCore {
                 .scroll
                 .momentum
                 .give_needs_frame(tilo_ui_base::motion::frame_now())
-            || self.moving.rows.is_moving(tilo_ui_base::motion::frame_now())
-            || self.arrivals.needs_redraw(tilo_ui_base::motion::frame_now())
+            || self
+                .moving
+                .rows
+                .is_moving(tilo_ui_base::motion::frame_now())
+            || self
+                .arrivals
+                .needs_redraw(tilo_ui_base::motion::frame_now())
             || self
                 .mounted_cells
                 .iter()
@@ -3921,7 +3938,8 @@ impl Widget for DataTableCore {
         // A table that fills its parent's height takes that height, the rows
         // scrolling inside it. Its header and one row remain the least it
         // shows, which `filling` leaves as written.
-        let style = tilo_ui_base::widget::layout::filling(style, if self.fill_height { 1.0 } else { 0.0 });
+        let style =
+            tilo_ui_base::widget::layout::filling(style, if self.fill_height { 1.0 } else { 0.0 });
         let node = taffy.parent_node(style, &child_nodes);
         let _ = taffy.set_restyled_for_width(node, true);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -4279,7 +4297,10 @@ impl Widget for DataTableCore {
                 .scroll
                 .momentum
                 .give_needs_frame(tilo_ui_base::motion::frame_now())
-            || self.moving.rows.is_moving(tilo_ui_base::motion::frame_now())
+            || self
+                .moving
+                .rows
+                .is_moving(tilo_ui_base::motion::frame_now())
             || self.scroll.in_progress()
             || self.arrivals.is_moving(tilo_ui_base::motion::frame_now())
             || self.model.as_deref().is_some_and(TableModel::needs_poll)
@@ -4293,9 +4314,11 @@ impl Widget for DataTableCore {
         self.arrivals
             .next_wake_deadline(crate::time::now())
             .into_iter()
-            .chain(tilo_ui_base::widget::defaults::next_wake_deadline(&|visit| {
-                self.for_each_child(visit);
-            }))
+            .chain(tilo_ui_base::widget::defaults::next_wake_deadline(
+                &|visit| {
+                    self.for_each_child(visit);
+                },
+            ))
             .min()
     }
 
@@ -4484,9 +4507,9 @@ impl Widget for DataTableCore {
                     .with_key(ri as u64)
                     .with_children(cells);
                 row = match row_state {
-                    Some(Arrival::Pending { .. }) => {
-                        row.with_name(tilo_ui_base::i18n::I18nManager::lookup_plain("arriving-loading"))
-                    }
+                    Some(Arrival::Pending { .. }) => row.with_name(
+                        tilo_ui_base::i18n::I18nManager::lookup_plain("arriving-loading"),
+                    ),
                     Some(Arrival::Failed(message)) => row.with_name(message),
                     Some(Arrival::Ready(data)) => {
                         match self
@@ -4690,7 +4713,10 @@ impl<Row: 'static> Widget for DataTable<Row> {
         self.core.provide(request);
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
         self.core.provide_mut(request);
     }
 
@@ -5429,7 +5455,9 @@ mod tier_tests {
     use super::*;
     use tilo_ui_base::surface::edge_delta;
     use tilo_ui_base::tokens::colors::HAIRLINE_MIN_DELTA;
-    use tilo_ui_base::{tokens::colors::Colors, tokens::colors::NEAR_BLACK_TIER_FLOOR, tokens::colors::tier_on};
+    use tilo_ui_base::{
+        tokens::colors::Colors, tokens::colors::NEAR_BLACK_TIER_FLOOR, tokens::colors::tier_on,
+    };
 
     /// The faintest derived tier these tests exercise.
     const ZEBRA_ALPHA: u8 = 13;

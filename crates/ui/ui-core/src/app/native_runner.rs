@@ -428,15 +428,17 @@ fn dispatch_native_surface_accessibility(
     if request.target_tree != accesskit::TreeId::ROOT {
         return false;
     }
-    let Some(action) =
-        tilo_ui_base::accesskit_bridge::accesskit_action_to_ours(request.action, request.data.as_ref())
-    else {
+    let Some(action) = tilo_ui_base::accesskit_bridge::accesskit_action_to_ours(
+        request.action,
+        request.data.as_ref(),
+    ) else {
         return false;
     };
     let Some(access) = root.floating_surface_accessibility(id) else {
         return false;
     };
-    let Some(target) = tilo_ui_base::accesskit_bridge::surface_action_target(&access, request.target_node)
+    let Some(target) =
+        tilo_ui_base::accesskit_bridge::surface_action_target(&access, request.target_node)
     else {
         return false;
     };
@@ -961,7 +963,9 @@ fn prepare_window_render(
     Ok((render_cx, surface, renderer))
 }
 
-fn create_native_renderer(device_handle: &tilo_ui_base::gpu::DeviceHandle) -> Result<Renderer, String> {
+fn create_native_renderer(
+    device_handle: &tilo_ui_base::gpu::DeviceHandle,
+) -> Result<Renderer, String> {
     let plan = NativeRendererPlan::for_device(device_handle);
     let renderer = plan.build(&device_handle.device)?;
     Ok(plan.finish(device_handle, renderer))
@@ -1335,7 +1339,11 @@ impl AppHandler {
             })
             .collect();
         let target = request.and_then(|request| {
-            tilo_ui_base::fullscreen::select_audience_output(&infos, request.target, presenter_index)
+            tilo_ui_base::fullscreen::select_audience_output(
+                &infos,
+                request.target,
+                presenter_index,
+            )
         });
 
         if self.audience_presentation.as_ref().is_some_and(|audience| {
@@ -1353,7 +1361,10 @@ impl AppHandler {
         };
 
         let attributes = Window::default_attributes()
-            .with_title(tilo_ui_base::i18n::widget_format("presentation-window-title", &[]))
+            .with_title(tilo_ui_base::i18n::widget_format(
+                "presentation-window-title",
+                &[],
+            ))
             .with_decorations(false)
             .with_resizable(false)
             .with_visible(false);
@@ -1721,7 +1732,10 @@ impl AppHandler {
         }
         let logical_size = native_floating_logical_size(rect);
         let attributes = Window::default_attributes()
-            .with_title(tilo_ui_base::i18n::widget_format("floating-window-title", &[]))
+            .with_title(tilo_ui_base::i18n::widget_format(
+                "floating-window-title",
+                &[],
+            ))
             .with_decorations(false)
             .with_resizable(false)
             .with_transparent(true)
@@ -2671,7 +2685,9 @@ impl AppHandler {
         let mut culling =
             (culls && layer_recording.is_none()).then(|| std::mem::take(&mut app.layout.cull));
         let culled = culling.is_some();
-        let cull_frame = culling.as_mut().map(tilo_ui_base::draw_cull::Culling::begin);
+        let cull_frame = culling
+            .as_mut()
+            .map(tilo_ui_base::draw_cull::Culling::begin);
         let draw_phase = slow_event::phase("draw");
         tilo_ui_base::workspace_sync::frame_drawing();
         let drawn = draw_frame_content_with(
@@ -2855,7 +2871,11 @@ impl AppHandler {
                 peer_marks(&self.presence_layer, &mut self.mark_bounds, window)
             };
             if !offers.is_empty() && (decorated || marks.is_none()) {
-                damage_regions.extend(offers.iter().map(tilo_ui_base::scroll_copy::ScrollOffer::viewport));
+                damage_regions.extend(
+                    offers
+                        .iter()
+                        .map(tilo_ui_base::scroll_copy::ScrollOffer::viewport),
+                );
                 offers.clear();
             }
             if full_redraw_required {
@@ -3338,8 +3358,8 @@ impl AppHandler {
         let _slow = slow_event::Span::begin("window_event", slow_event::window_event_name(&event));
         // Ctrl+C copies whichever source is typing: name the chord by its
         // Latin key before any handler matches it.
-        let event =
-            tilo_ui_base::latin_chord::renamed(&event, self.app.input.modifiers.state()).unwrap_or(event);
+        let event = tilo_ui_base::latin_chord::renamed(&event, self.app.input.modifiers.state())
+            .unwrap_or(event);
         // What this event opens or closes follows it (a key lands it at
         // once, a click moves it): `motion::input_source`.
         tilo_ui_base::motion::note_input(&event);
@@ -3648,12 +3668,16 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                     AkWindowEvent::ActionRequested(req) => {
                         // Assistive technology acts like a shortcut: what it
                         // opens lands at once.
-                        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Action);
+                        tilo_ui_base::motion::note_source(
+                            tilo_ui_base::tokens::MotionSource::Action,
+                        );
                         // `Some((x, y))` means "synthesise a click here".
-                        if let Some(action) = tilo_ui_base::accesskit_bridge::accesskit_action_to_ours(
-                            req.action,
-                            req.data.as_ref(),
-                        ) {
+                        if let Some(action) =
+                            tilo_ui_base::accesskit_bridge::accesskit_action_to_ours(
+                                req.action,
+                                req.data.as_ref(),
+                            )
+                        {
                             // The window's row of parts is no widget of the
                             // app's: its nodes run their parts.
                             let part_ran = self.part_bar.perform_accessibility(
@@ -4386,7 +4410,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // reduce-motion. Its dwell is a wait: the loop sleeps until the
         // reveal is due (`scheduled_deadline`) and paints once then.
         let tooltip_reveal = app.input.tooltips.reveal_at();
-        let tooltip_pending = tooltip_reveal.is_some_and(|at| at <= tilo_ui_base::motion::frame_now());
+        let tooltip_pending =
+            tooltip_reveal.is_some_and(|at| at <= tilo_ui_base::motion::frame_now());
         if tooltip_pending {
             request_primary_redraw();
         }
@@ -5027,7 +5052,10 @@ impl AppHandler {
                 self.app.release_held_input(window.as_ref());
             }
             WindowEvent::ModifiersChanged(modifiers) => self.app.input.modifiers = modifiers,
-            other if self.app.input.platform.platform() == tilo_ui_base::platform::Platform::Android => {
+            other
+                if self.app.input.platform.platform()
+                    == tilo_ui_base::platform::Platform::Android =>
+            {
                 if let Some(escape) = tilo_ui_base::interaction::back_key_as_escape(&other) {
                     self.handle_back_key(window, escape);
                 } else {

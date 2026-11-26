@@ -14,13 +14,16 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{Color, Fill};
 
-use tilo_ui_base::{motion::Direction, motion::MotionSpec, motion::MotionValue, motion::Pace, motion::Reduced, motion::Shortcut};
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource, tokens::TextRole};
 use crate::widget::chart_geometry;
 use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{
+    motion::Direction, motion::MotionSpec, motion::MotionValue, motion::Pace, motion::Reduced,
+    motion::Shortcut,
+};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource, tokens::TextRole};
 
 /// A stable, labelled radial datum. Negative and non-finite values are treated
 /// as zero. `id` survives sorting and updates and is returned on activation.

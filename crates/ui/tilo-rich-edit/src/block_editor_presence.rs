@@ -81,7 +81,12 @@ impl BlockEditor {
                 })
             });
         let acting = ctx.presence.draw_writes_in(
-            &mut tilo_ui_base::paint::PaintCtx::new(ctx.scene, ctx.transform, ctx.text_renderer, ctx.theme),
+            &mut tilo_ui_base::paint::PaintCtx::new(
+                ctx.scene,
+                ctx.transform,
+                ctx.text_renderer,
+                ctx.theme,
+            ),
             (None, &b.id, line.value()),
             (edited, selected),
             None,
@@ -98,8 +103,11 @@ impl BlockEditor {
                 (
                     vec![line.selection_rect(ctx.theme, start, end)],
                     (!later).then(|| {
-                        tilo_ui_base::presence::LabeledCaret::within(line.caret_rect(ctx.theme, end), top)
-                            .among(self.ink_around(i, ctx.theme), text_right)
+                        tilo_ui_base::presence::LabeledCaret::within(
+                            line.caret_rect(ctx.theme, end),
+                            top,
+                        )
+                        .among(self.ink_around(i, ctx.theme), text_right)
                     }),
                 )
             },
@@ -120,8 +128,11 @@ impl BlockEditor {
                     ctx.transform,
                     user,
                     &name,
-                    tilo_ui_base::presence::LabeledCaret::within(line.caret_rect(ctx.theme, *byte_pos), top)
-                        .among(self.ink_around(i, ctx.theme), text_right),
+                    tilo_ui_base::presence::LabeledCaret::within(
+                        line.caret_rect(ctx.theme, *byte_pos),
+                        top,
+                    )
+                    .among(self.ink_around(i, ctx.theme), text_right),
                 );
             }
         }

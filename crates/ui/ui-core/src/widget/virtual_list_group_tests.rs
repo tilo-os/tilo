@@ -1,13 +1,13 @@
 use super::*;
-use tilo_ui_base::text_render::TextRenderer;
 use std::cell::Cell;
 use std::rc::Rc;
+use tilo_ui_base::text_render::TextRenderer;
 use vello::Scene;
 use vello::kurbo::Affine;
 
 use crate::testing::Dispatch;
-use tilo_ui_base::theme::Theme;
 use crate::widget::section::band_height;
+use tilo_ui_base::theme::Theme;
 
 struct Grouped {
     groups: Vec<Option<RowGroup>>,
@@ -352,7 +352,8 @@ fn a_heading_keeps_one_gap_to_the_row_it_heads_at_every_width() {
     list.set_interaction_environment(tilo_ui_base::interaction::InteractionEnvironment::TOUCH);
     let _ = settle(&mut list);
     let touch_band = list.groups.height;
-    let target = f64::from(tilo_ui_base::interaction::InteractionEnvironment::TOUCH.minimum_target());
+    let target =
+        f64::from(tilo_ui_base::interaction::InteractionEnvironment::TOUCH.minimum_target());
     assert!(
         touch_band >= target - 0.5,
         "the band is a target a finger presses: {touch_band} of {target}"
@@ -502,7 +503,11 @@ tilo_test_env::scenario! {
     }
 }
 
-fn send(list: &mut VirtualList<Grouped>, target: &str, action: &tilo_ui_base::a11y::Action) -> bool {
+fn send(
+    list: &mut VirtualList<Grouped>,
+    target: &str,
+    action: &tilo_ui_base::a11y::Action,
+) -> bool {
     Widget::perform_semantic_action(
         list,
         target,

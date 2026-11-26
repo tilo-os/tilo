@@ -18,10 +18,10 @@
 
 use super::*;
 use crate::app::{App, AppSurface, SurfaceDamage};
-use tilo_ui_base::offscreen::OffscreenRenderer;
 use crate::strip_layers::{
     ChromeDamage, LayerPresenter, LayerRecording, QueuedRaster, WorkspaceWork, tiles,
 };
+use tilo_ui_base::offscreen::OffscreenRenderer;
 use vello::wgpu;
 
 struct Window;

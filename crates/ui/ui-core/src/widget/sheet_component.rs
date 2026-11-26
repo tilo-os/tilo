@@ -3,7 +3,11 @@
 
 use tilo_ui_graph::component::{CaseDescription, EnumDescription};
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::PropType, component::Type, component::Value, component::case_field, component::case_field_description, component::wrong};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PropType,
+    component::Type, component::Value, component::case_field, component::case_field_description,
+    component::wrong,
+};
 
 use super::sheet::{CellKind, Peer, Sheet, SheetCell, SheetSize};
 

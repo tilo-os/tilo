@@ -2,9 +2,9 @@ use super::ActivityTree;
 use super::pane::{WorkspaceActivityPane, WorkspaceScope};
 use std::collections::{HashMap, HashSet};
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::widget::HistoryEntryId;
 use ui::time::SystemTime;
 use ui::widget::HistoryEntry;
-use tilo_ui_base::widget::HistoryEntryId;
 #[derive(Clone, Debug)]
 pub(super) struct ReplayGroup {
     pub(super) tabs: Vec<String>,

@@ -1,14 +1,14 @@
 use super::*;
-use tilo_ui_base::presence::PresenceCtx;
-use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press};
 use crate::testing::dispatch;
 use crate::time::Duration;
-use tilo_ui_base::widget::Widget;
 use crate::widget::history::HistoryAuthor;
 use automerge::AutoCommit;
 use collab_types::ArtifactKind;
 use std::cell::RefCell;
 use std::rc::Rc;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press};
 use winit::event::ElementState;
 
 #[allow(
@@ -17,8 +17,12 @@ use winit::event::ElementState;
     reason = "probe coordinates are non-negative pixel positions inside the test surface"
 )]
 fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
-    let (r, g, b, _) =
-        tilo_ui_base::offscreen::OffscreenRenderer::sample(rgba, w, x.floor() as u32, y.floor() as u32);
+    let (r, g, b, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(
+        rgba,
+        w,
+        x.floor() as u32,
+        y.floor() as u32,
+    );
     tilo_ui_base::a11y::relative_luminance(Color::from_rgb8(r, g, b))
 }
 

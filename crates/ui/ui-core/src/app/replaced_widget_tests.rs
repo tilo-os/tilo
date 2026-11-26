@@ -2,18 +2,18 @@
 //! one: a pointer move before the next layout (its cursor and tooltip
 //! lookups) reached a dropped colour picker and crashed Canvas.
 
-use tilo_ui_base::widget::TaffyTreeExt;
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
+use tilo_ui_base::widget::TaffyTreeExt;
 
 use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
 use crate::app::App;
 use crate::state::State;
-use tilo_ui_base::theme::Theme;
 use crate::widget::Text;
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::Widget};
 
 /// Shows one child, replaced by a new one on the sync after `swap` is set,

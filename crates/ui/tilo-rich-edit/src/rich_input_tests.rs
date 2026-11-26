@@ -1,7 +1,7 @@
 use super::*;
+use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::{component::Fired, component::Intent};
 use ui::testing::dispatch;
-use tilo_ui_base::text_render::TextRenderer;
 use ui::widget::MentionCandidate;
 use ui::widget::completion::{Candidate, CompletionSource, Tier};
 use vello::Scene;

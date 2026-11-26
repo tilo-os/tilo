@@ -1,6 +1,8 @@
 use super::*;
 
-use tilo_ui_base::{scene_parts::PartKey, scene_parts::Recording, scene_parts::part, scene_parts::track};
+use tilo_ui_base::{
+    scene_parts::PartKey, scene_parts::Recording, scene_parts::part, scene_parts::track,
+};
 use vello::kurbo::Affine;
 use vello::peniko::Fill;
 

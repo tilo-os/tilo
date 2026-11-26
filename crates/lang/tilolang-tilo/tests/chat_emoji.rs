@@ -10,11 +10,14 @@ use std::sync::Arc;
 
 use tilo_resource::AppNamed;
 use tilo_resource::{ReactionGroup, Reactor, Replica};
+use tilo_ui_base::{
+    workspace_emoji::CustomEmoji, workspace_emoji::EmojiSource, workspace_emoji::Small,
+    workspace_emoji::WorkspaceEmoji, workspace_emoji::make_small,
+};
 use tilo_workspace_emoji::{EmojiImage, WorkspaceEmoji as Record, workspace_emoji};
 use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 use ui::kurbo::{Point, Rect};
-use tilo_ui_base::{workspace_emoji::CustomEmoji, workspace_emoji::EmojiSource, workspace_emoji::Small, workspace_emoji::WorkspaceEmoji, workspace_emoji::make_small};
 
 use crate::fixtures::{Replica as Device, Workspace, target};
 
@@ -257,7 +260,10 @@ fn a_workspace_emoji_is_added_reacted_with_drawn_offered_and_kept_from_others() 
     // Ada's window draws the workspace's emoji from the record.
     let scope = ui::WakeScope::new();
     let _in = scope.enter();
-    tilo_ui_base::workspace_emoji::register(&scope.handle(), Rc::clone(&held) as Rc<dyn EmojiSource>);
+    tilo_ui_base::workspace_emoji::register(
+        &scope.handle(),
+        Rc::clone(&held) as Rc<dyn EmojiSource>,
+    );
 
     // She reacts to a message with it from the message's picker.
     let (ada, _) = Device::new("ada", Workspace::new(), &[(CHAT, CHAT_IDS)]);

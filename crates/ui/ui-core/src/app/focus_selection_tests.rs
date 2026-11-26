@@ -66,9 +66,9 @@ fn native_focus_and_selection_follow_only_the_semantic_target() {
         assert_ne!(old, current);
         assert_eq!(app.focused_node, Some(current));
         assert_eq!(
-            app.inspect_node(current, |widget| tilo_ui_base::widget::undo_points::get_state(
-                widget
-            ))
+            app.inspect_node(current, |widget| {
+                tilo_ui_base::widget::undo_points::get_state(widget)
+            })
             .unwrap()
             .as_deref(),
             Some("own selection")

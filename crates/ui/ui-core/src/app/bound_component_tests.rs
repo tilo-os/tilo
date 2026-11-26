@@ -4,10 +4,10 @@ use crate::application::{
     RestoreInput,
 };
 use crate::widget::{AppKind, AppWidget, Column, IconDescriptor, TileHost};
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
 use std::cell::RefCell;
 use std::rc::Rc;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 thread_local! { static CAPTURES: RefCell<Vec<(&'static str, tilo_ui_base::LatestRequest<u32>)>> = const { RefCell::new(vec![]) }; }
 thread_local! { static DISCOVERY_COUNT: Cell<usize> = const { Cell::new(0) }; }
 thread_local! { static CONTROL_AUTHORITY: RefCell<Vec<(bool, bool)>> = const { RefCell::new(vec![]) }; }
@@ -164,7 +164,10 @@ fn probe_read_project(
     doc: &automerge::AutoCommit,
     heads: &[automerge::ChangeHash],
     _: &[u8],
-) -> Result<tilo_ui_base::semantic_readers::ReadPage, tilo_ui_base::semantic_readers::SemanticReadError> {
+) -> Result<
+    tilo_ui_base::semantic_readers::ReadPage,
+    tilo_ui_base::semantic_readers::SemanticReadError,
+> {
     Probe::capture("bound-read");
     let marker = doc
         .get_at(ROOT, "marker", heads)
@@ -255,14 +258,17 @@ impl crate::search::SearchProvider for LazyProbe {
     }
 }
 impl tilo_ui_base::semantic_readers::SemanticReaders for Probe {
-    fn semantic_readers(&self) -> &'static [tilo_ui_base::semantic_readers::RegisteredSemanticReader] {
-        static READERS: [tilo_ui_base::semantic_readers::RegisteredSemanticReader; 1] =
-            [tilo_ui_base::semantic_readers::RegisteredSemanticReader::new(
+    fn semantic_readers(
+        &self,
+    ) -> &'static [tilo_ui_base::semantic_readers::RegisteredSemanticReader] {
+        static READERS: [tilo_ui_base::semantic_readers::RegisteredSemanticReader; 1] = [
+            tilo_ui_base::semantic_readers::RegisteredSemanticReader::new(
                 "bound.read",
                 probe_read_schema,
                 probe_read_validate,
                 probe_read_project,
-            )];
+            ),
+        ];
         if READ_CAPTURE_MODE.get() {
             &READERS
         } else {
@@ -343,7 +349,10 @@ impl Widget for Probe {
     }
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         Self::capture("accessibility");
-        Some(tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button).with_name("Child"))
+        Some(
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button)
+                .with_name("Child"),
+        )
     }
     fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         Self::capture("ime");
@@ -395,9 +404,11 @@ impl tilo_ui_base::widget::ResourceOperations for Probe {
                     .try_dispatch(doc.document_mut(), "bound.apply", &FollowUp);
             }
             Self::capture("bound-view");
-            return Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
+            return Ok(Some(
+                tilo_ui_base::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ),
+            ));
         }
         assert_eq!(type_id, "bound.follow-up");
         assert_eq!(path, &ROOT);
@@ -463,7 +474,11 @@ impl tilo_ui_base::widget::ResourceOperations for Probe {
             Some("child")
         );
         if !PUBLICATION_NORMAL_POLL.get() {
-            assert!(!tilo_ui_base::local_state::LocalState::new(0).writer().try_set(1));
+            assert!(
+                !tilo_ui_base::local_state::LocalState::new(0)
+                    .writer()
+                    .try_set(1)
+            );
         }
         Self::capture("mutable-cancel");
         Some(tilo_actions::InvocationUpdate::Cancelled {
@@ -944,7 +959,9 @@ impl ActionFixture {
                     device_id: "D".into(),
                     instance_id: instance,
                     permissions: if separate && instance == 12 {
-                        tilo_ui_base::permissions::SharedPermissions::new(permissions.borrow().clone())
+                        tilo_ui_base::permissions::SharedPermissions::new(
+                            permissions.borrow().clone(),
+                        )
                     } else {
                         permissions.clone()
                     },
@@ -1617,9 +1634,9 @@ fn bound_search_and_palette_disclose_only_authorized_provider_rows() {
             assert!(ticks < 5, "the first owner must participate in this pass");
         }
         fixture.permissions.set(
-            tilo_ui_base::permissions::PermissionContext::stranger(&tilo_ui_base::permissions::MemberId::person(
-                "fixture-user",
-            ))
+            tilo_ui_base::permissions::PermissionContext::stranger(
+                &tilo_ui_base::permissions::MemberId::person("fixture-user"),
+            )
             .at_unix_time(100),
         );
         ticks = 0;

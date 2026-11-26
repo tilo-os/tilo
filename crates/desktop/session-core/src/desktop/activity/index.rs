@@ -12,11 +12,11 @@ use tilo_sort::CompactSort as _;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ReadDoc as _};
 use collab_types::ArtifactKind;
+use tilo_ui_base::widget::HistoryEntryId;
 use ui::history_source::{AuthorDirectory, HistoryLog, HistorySource};
 use ui::resource::ResourceType;
 use ui::time::SystemTime;
 use ui::widget::HistoryEntry;
-use tilo_ui_base::widget::HistoryEntryId;
 
 use super::ActivityTree;
 use tilo_desktop_model::WorkspaceId;

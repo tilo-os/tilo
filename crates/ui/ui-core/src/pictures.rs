@@ -6,9 +6,9 @@
 
 use vello::peniko::ImageData as PenikoImage;
 
+use crate::widget::PictureSource;
 use tilo_ui_base::ImageStore;
 use tilo_ui_base::image_store::Fetcher;
-use crate::widget::PictureSource;
 
 /// How an app names a picture by its content address.
 pub const BLOB_SCHEME: &str = "tilo-blob://";

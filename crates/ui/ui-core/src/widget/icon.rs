@@ -6,10 +6,10 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::Rect;
 use vello::peniko::Color;
 
-use tilo_ui_base::{icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX};
 
 #[path = "icon_component.rs"]
 mod component;

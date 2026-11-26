@@ -1,6 +1,6 @@
 use super::*;
-use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 use crate::window_toolbar::{ToolbarAction, ToolbarLocation, ToolbarNavigation};
+use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 
 fn browser() -> WindowToolbar {
     WindowToolbar {
@@ -1347,7 +1347,12 @@ fn named<'a>(nodes: &'a [AccessNode], name: &str, out: &mut Vec<&'a AccessNode>)
 
 fn changed_to(row: &mut ToolbarRow, toolbar: &WindowToolbar, theme: &Theme) {
     let rect = row.row;
-    row.show(7, Some(toolbar), theme.motion(), tilo_ui_base::motion::frame_now());
+    row.show(
+        7,
+        Some(toolbar),
+        theme.motion(),
+        tilo_ui_base::motion::frame_now(),
+    );
     row.lay_out(rect);
     row.start_part_change(theme);
 }

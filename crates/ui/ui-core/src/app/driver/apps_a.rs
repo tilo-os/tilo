@@ -5,11 +5,11 @@ use vello::kurbo::Rect;
 use winit::event::{ElementState, MouseButton};
 
 use super::Driver;
-use tilo_ui_base::a11y::AccessNode;
 use crate::part_row::{PartRow, PartRowHost, RowInput, RowPlace};
 use crate::widget::tabs::TOOLBAR_ROW_HEIGHT;
 use crate::widget::window_toolbar_row::{NOTICE_TARGET_PREFIX, ToolbarRow};
 use crate::window_toolbar::ToolbarNotice;
+use tilo_ui_base::a11y::AccessNode;
 
 /// How the window's bar shows the notice up ([`Driver::window_bar_notice`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -138,7 +138,11 @@ impl Driver {
             .ok_or_else(|| format!("the bar lists no notice button {index} at {width} px"))?
             .clone();
         let running = self.running();
-        let ran = bar.perform(&mut *self.app, &target, &tilo_ui_base::a11y::Action::Activate);
+        let ran = bar.perform(
+            &mut *self.app,
+            &target,
+            &tilo_ui_base::a11y::Action::Activate,
+        );
         drop(running);
         self.relayout();
         if !ran {

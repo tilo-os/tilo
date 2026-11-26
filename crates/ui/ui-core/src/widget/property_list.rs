@@ -12,14 +12,14 @@ use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 use tilo_ui_base::chrome::row_bleed;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 
-use tilo_ui_base::{text_render::TextKind, text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextKind, text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::{tokens::colors::Colors, tokens::colors::SMALL_TEXT_MIN_CONTRAST};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Tone, widget::Widget};
 
@@ -1266,7 +1266,9 @@ impl PropertyList {
         )
     }
 
-    fn emitters_mut(&mut self) -> impl Iterator<Item = &mut tilo_ui_base::widget::ActionEmitter<()>> {
+    fn emitters_mut(
+        &mut self,
+    ) -> impl Iterator<Item = &mut tilo_ui_base::widget::ActionEmitter<()>> {
         self.groups
             .iter_mut()
             .flat_map(|(_, rows)| rows.iter_mut())
@@ -1328,7 +1330,10 @@ impl tilo_ui_base::widget::controls::ActionControls for PropertyList {
 /// A read-only value as a control: the value a [`Field`](crate::widget::Field) shows where it
 /// cannot be edited (an account id, a generated key), in primary ink with its kind's text
 /// treatment and an optional trailing copy action.
-#[tilo_ui_base::component::not_a_component(part, "a value of `ui.PropertyList`, from its `ui.Property`")]
+#[tilo_ui_base::component::not_a_component(
+    part,
+    "a value of `ui.PropertyList`, from its `ui.Property`"
+)]
 pub struct PropertyValue {
     id: Option<String>,
     value: String,
@@ -1461,8 +1466,12 @@ impl Widget for PropertyValue {
         let h = if self.row().unbreakable() {
             text.measure_style(&self.value, None, &style).1
         } else {
-            text.measure_style(&self.value, Some(tilo_ui_base::num::f32_of_f64(spare)), &style)
-                .1
+            text.measure_style(
+                &self.value,
+                Some(tilo_ui_base::num::f32_of_f64(spare)),
+                &style,
+            )
+            .1
         };
         let min = if self.copyable { m.action } else { 0.0 };
         taffy::Size {
@@ -1507,9 +1516,11 @@ impl Widget for PropertyValue {
         let mut ctx = PaintCtx::new(scene, transform, text, theme);
         let (_, h) = ctx.text.measure_style(&self.value, None, &style);
         if self.row().unbreakable() {
-            let shown =
-                ctx.text
-                    .elide_to_width_style(&self.value, tilo_ui_base::num::f32_of_f64(spare), &style);
+            let shown = ctx.text.elide_to_width_style(
+                &self.value,
+                tilo_ui_base::num::f32_of_f64(spare),
+                &style,
+            );
             let y = self.rect.center().y - f64::from(h) / 2.0;
             ctx.text(
                 &shown,
@@ -1643,7 +1654,10 @@ impl Widget for PropertyValue {
         _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        if self.copyable && key_path == [0] && matches!(action, tilo_ui_base::a11y::Action::Activate) {
+        if self.copyable
+            && key_path == [0]
+            && matches!(action, tilo_ui_base::a11y::Action::Activate)
+        {
             tilo_ui_base::text_selection::clipboard_copy(&self.value);
             return true;
         }

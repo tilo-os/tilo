@@ -1,8 +1,8 @@
 //! [`SegChoice`] — one choice of a few, over published actions.
 
-use ui::widget::toggle_group::Segment;
-use ui::widget::ToggleGroup;
 use tilo_ui_base::widget::Widget;
+use ui::widget::ToggleGroup;
+use ui::widget::toggle_group::Segment;
 
 use crate::setup::destination::control::{Bound, Control};
 

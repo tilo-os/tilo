@@ -23,9 +23,9 @@ use vello::peniko::Fill;
 
 use tilo_ui_base::i18n::widget_text;
 
-use tilo_ui_base::theme::Theme;
 use crate::time::{Instant, now};
 use crate::wake::WakeHandle;
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[path = "level_meter_component.rs"]
@@ -503,7 +503,8 @@ impl Widget for LevelMeter {
         let gap = f64::from(theme.tokens.spacing.s1);
         let room = (value_x - row.x0 - gap).max(0.0);
         let name = self.name_text();
-        let words = text_renderer.elide_to_width_style(&name, tilo_ui_base::num::f32_of_f64(room), &style);
+        let words =
+            text_renderer.elide_to_width_style(&name, tilo_ui_base::num::f32_of_f64(room), &style);
         text_renderer.draw_style(
             scene,
             &words,

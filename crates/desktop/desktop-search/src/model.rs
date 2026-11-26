@@ -2202,7 +2202,8 @@ mod tests {
                     .iter()
                     .filter(|hit| {
                         typed.is_empty()
-                            || tilo_ui_base::text_match::fold_search_text(&hit.title).contains(&typed)
+                            || tilo_ui_base::text_match::fold_search_text(&hit.title)
+                                .contains(&typed)
                     })
                     .cloned()
                     .collect()

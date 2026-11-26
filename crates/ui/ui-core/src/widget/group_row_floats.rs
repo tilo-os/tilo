@@ -13,13 +13,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::GroupRow;
+use crate::widget::floating_surface::card_radius;
+use crate::widget::primitives::paint_floating_window_card;
 use tilo_ui_base::num::f32_of_f64;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::Spacing;
 use tilo_ui_base::widget::Widget as _;
-use crate::widget::floating_surface::card_radius;
-use crate::widget::primitives::paint_floating_window_card;
 
 pub const FLOAT_SIZE: (f64, f64) = (640.0, 480.0);
 pub const FLOAT_CARD_SIZE: (f64, f64) = (360.0, 520.0);

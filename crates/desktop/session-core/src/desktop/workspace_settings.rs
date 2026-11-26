@@ -160,7 +160,12 @@ fn scope_phrase(scope: &Scope, object: bool, _apps: &dyn AppDirectory) -> String
 /// A filesystem scope, phrased the way a person would say it. The [`WORKSPACE_FILES_PATH`] mount
 /// point never appears in the label — it's a fact about where the OS keeps the bytes, not what the
 /// user is agreeing to (HIG §4).
-fn fs_scope_phrase(path: &str) -> (&'static str, Vec<(&'static str, tilo_ui_base::i18n::ArgValue)>) {
+fn fs_scope_phrase(
+    path: &str,
+) -> (
+    &'static str,
+    Vec<(&'static str, tilo_ui_base::i18n::ArgValue)>,
+) {
     // Trailing slash: `/var/workspace/` is the root, not an unnamed child.
     let trimmed = path.trim_end_matches('/');
     if trimmed == WORKSPACE_FILES_PATH {
@@ -1459,13 +1464,17 @@ mod permissions_tests {
     fn tomorrow_at(hour: i8, minute: i8) -> u64 {
         let day = tilo_ui_base::clock::today().tomorrow().expect("a tomorrow");
         let time = tilo_ui_base::format::Time::new(hour, minute, 0, 0).expect("a time of day");
-        let at = tilo_ui_base::clock::instant_of(day.to_datetime(time)).expect("the end exists locally");
+        let at =
+            tilo_ui_base::clock::instant_of(day.to_datetime(time)).expect("the end exists locally");
         u64::try_from(at.as_millisecond()).expect("after the epoch")
     }
 
     #[test]
     fn a_lifetime_that_ends_says_when_it_ends() {
-        assert_eq!(tilo_ui_base::format::lifetime(Lifetime::UntilRevoked), "Always");
+        assert_eq!(
+            tilo_ui_base::format::lifetime(Lifetime::UntilRevoked),
+            "Always"
+        );
         assert_eq!(
             tilo_ui_base::format::lifetime(Lifetime::Until(tomorrow_at(17, 30))),
             "Until Tomorrow 5:30 PM",

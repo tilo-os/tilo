@@ -1,15 +1,15 @@
 //! `Tooltip` primitive — a small label revealed after a short hover delay.
-use tilo_ui_base::num::f32_of_f64;
 use crate::time::{Duration, Instant};
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::num::f32_of_f64;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 
+use crate::widget::floating_surface::PopoverSide;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::TooltipSide;
-use crate::widget::floating_surface::PopoverSide;
 
 pub const HOVER_DWELL: Duration = Duration::from_millis(500);
 
@@ -520,8 +520,11 @@ impl Widget for Tooltip {
             self.appear.snap(false);
             return;
         }
-        self.appear
-            .follow_from(true, theme.motion(), tilo_ui_base::tokens::MotionSource::Pointer);
+        self.appear.follow_from(
+            true,
+            theme.motion(),
+            tilo_ui_base::tokens::MotionSource::Pointer,
+        );
 
         // Generous fallback so an unclamped chip still renders in bare test
         // harnesses that never push a viewport.
@@ -791,8 +794,11 @@ impl TooltipHost {
         chip: Rect,
         motion: tilo_ui_base::tokens::EffectiveMotion,
     ) -> tilo_ui_base::motion::Pose {
-        self.appear
-            .follow_from(self.visible, motion, tilo_ui_base::tokens::MotionSource::Pointer);
+        self.appear.follow_from(
+            self.visible,
+            motion,
+            tilo_ui_base::tokens::MotionSource::Pointer,
+        );
         let anchor = self
             .target
             .as_ref()

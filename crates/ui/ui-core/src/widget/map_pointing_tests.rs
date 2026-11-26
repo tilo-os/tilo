@@ -5,8 +5,8 @@
 //! press on a place is the place's, never the map's, and a middle drag pans.
 
 use super::*;
-use tilo_ui_base::Theme;
 use crate::app::driver::Driver;
+use tilo_ui_base::Theme;
 use tilo_ui_base::{component::Fired, component::Intent, component::Value};
 
 /// The key the map reports its pointing under.
@@ -563,8 +563,9 @@ fn a_pointed_rectangle_is_outlined_where_it_stands() {
     };
     let plain = render(Vec::new());
     let outlined = render(vec![100, 80, 120, 90]);
-    let at =
-        |rgba: &[u8], x: u32, y: u32| tilo_ui_base::offscreen::OffscreenRenderer::sample(rgba, 400, x, y);
+    let at = |rgba: &[u8], x: u32, y: u32| {
+        tilo_ui_base::offscreen::OffscreenRenderer::sample(rgba, 400, x, y)
+    };
     assert_ne!(
         at(&outlined, 160, 80),
         at(&plain, 160, 80),

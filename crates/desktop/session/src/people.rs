@@ -20,13 +20,15 @@ use tilo_session_core::desktop::people::{RosterRow, roster_rows};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::surfaces::{Look, Published};
 use tilo_ui_base::host_operation::ResourceOperationStart;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    motion::Appear, motion::Direction, motion::MotionValue, motion::Presence, motion::Snap,
+};
 use ui::kurbo::{Point, Rect, Size, Vec2};
-use tilo_ui_base::{motion::Appear, motion::Direction, motion::MotionValue, motion::Presence, motion::Snap};
 use ui::peniko::{BlendMode, Fill};
 use ui::taffy::{NodeId, Style, TaffyTree};
-use tilo_ui_base::theme::Theme;
 use ui::time::Duration;
-use tilo_ui_base::widget::Widget;
 use ui::widgets::DockEdge;
 use ui::winit::event::WindowEvent;
 
@@ -393,7 +395,11 @@ impl Published for People {
         Some(crate::i18n::t("session-people"))
     }
 
-    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &tilo_ui_base::a11y::Action) -> bool {
+    fn a11y_action(
+        &mut self,
+        target: ui::accesskit::NodeId,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         (self.open.get() || self.shown.borrow().is_kept())
             && self
                 .layer()
@@ -814,7 +820,14 @@ impl Panel {
             .collect();
         if !pointers.drawn.is_empty() {
             let area = shown.area;
-            tilo_ui_base::presence::draw_peer_cursors(scene, transform, area, text, theme, &pointers.drawn);
+            tilo_ui_base::presence::draw_peer_cursors(
+                scene,
+                transform,
+                area,
+                text,
+                theme,
+                &pointers.drawn,
+            );
         }
     }
 
@@ -846,8 +859,13 @@ impl Panel {
         if let Some(pin) = shown.pinned.as_mut() {
             match pin.rest {
                 Rest::Leaving => {
-                    pin.shown
-                        .show(false, Appear::SPEC, motion, tilo_ui_base::motion::input_source(), now);
+                    pin.shown.show(
+                        false,
+                        Appear::SPEC,
+                        motion,
+                        tilo_ui_base::motion::input_source(),
+                        now,
+                    );
                     if !pin.shown.is_visible(now) {
                         shown.pinned = None;
                     }
@@ -862,8 +880,13 @@ impl Panel {
                 }
                 Rest::Arriving | Rest::Waiting => {
                     pin.rest = Rest::Here;
-                    pin.shown
-                        .show(true, Appear::SPEC, motion, tilo_ui_base::motion::input_source(), now);
+                    pin.shown.show(
+                        true,
+                        Appear::SPEC,
+                        motion,
+                        tilo_ui_base::motion::input_source(),
+                        now,
+                    );
                 }
                 Rest::Here => {}
             }
@@ -927,7 +950,12 @@ impl Panel {
     }
 
     /// The roster's one painting, with the model this session builds of who is here.
-    fn draw_one_roster(&self, ctx: &mut tilo_ui_base::DrawCtx<'_>, shown: &mut Shown, panel: Option<Rect>) {
+    fn draw_one_roster(
+        &self,
+        ctx: &mut tilo_ui_base::DrawCtx<'_>,
+        shown: &mut Shown,
+        panel: Option<Rect>,
+    ) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1060,7 +1088,11 @@ impl Panel {
 
     /// What a drag of the pinned roster asks: the pointer moved, a press started on it, or it was
     /// let go at an edge.
-    fn handle_pinned(&self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
+    fn handle_pinned(
+        &self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         let roster = Rc::clone(&self.shown);
         let mut shown = roster.borrow_mut();
         let cursor = shown.cursor;

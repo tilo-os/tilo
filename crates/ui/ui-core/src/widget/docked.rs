@@ -1,8 +1,8 @@
 //! Content above a bar docked at the foot of its column, as a described component.
 
-use tilo_ui_base::{component::Component, component::Described, component::PartViews};
-use tilo_ui_base::widget::Length;
 use crate::widget::arrange::{Fit, Page, Part, Stack};
+use tilo_ui_base::widget::Length;
+use tilo_ui_base::{component::Component, component::Described, component::PartViews};
 use tilo_ui_base::{widget::Decorator, widget::Element, widget::Widget};
 
 /// Content that fills its column above a bar that stays at the column's foot: a
@@ -44,8 +44,11 @@ impl Described for Docked {
 
     fn from_props(_key: &str, props: DockedProps) -> Self {
         let DockedProps { content, foot } = props;
-        let empty =
-            || Box::new(tilo_ui_base::widget::Spacer::token(tilo_ui_base::tokens::SpacingStep::S0)) as Element;
+        let empty = || {
+            Box::new(tilo_ui_base::widget::Spacer::token(
+                tilo_ui_base::tokens::SpacingStep::S0,
+            )) as Element
+        };
         let content = content.unwrap_or_else(empty);
         // The bar stands in the column the content is read at: what follows those words in their
         // own column rather than across the window.

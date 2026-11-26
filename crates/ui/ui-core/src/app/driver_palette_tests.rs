@@ -14,11 +14,13 @@ use std::rc::Rc;
 
 use vello::kurbo::Rect;
 
-use tilo_ui_base::gesture::NavDirection;
 use crate::headless::Driver;
-use tilo_ui_base::permissions::MemberId;
 use crate::state::State;
-use crate::{widget::Button, widget::Column, widget::Scrollable, widget::TextInput, widget::resource_actions};
+use crate::{
+    widget::Button, widget::Column, widget::Scrollable, widget::TextInput, widget::resource_actions,
+};
+use tilo_ui_base::gesture::NavDirection;
+use tilo_ui_base::permissions::MemberId;
 use tilo_ui_base::{widget::Spacer, widget::Widget};
 
 const VIEW: (u32, u32) = (400, 240);
@@ -104,9 +106,12 @@ fn searching_the_window_lists_the_apps_actions_and_escape_puts_it_away() {
 
 #[test]
 fn a_focused_field_tells_peers_where_its_caret_is_and_an_unfocused_one_says_nothing() {
-    let field =
-        TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field("title".into())]).with_id("title");
-    let key = tilo_ui_base::presence::capability::presence_key(&field).expect("the field has a key");
+    let field = TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field(
+        "title".into(),
+    )])
+    .with_id("title");
+    let key =
+        tilo_ui_base::presence::capability::presence_key(&field).expect("the field has a key");
     let mut driver = Driver::new(
         State::new(),
         Box::new(Column::new().push(Box::new(field))),
@@ -118,7 +123,10 @@ fn a_focused_field_tells_peers_where_its_caret_is_and_an_unfocused_one_says_noth
     driver.type_text("Hi");
     assert_eq!(
         driver.focus_presence(),
-        Some((key, tilo_ui_base::collaboration::PresencePayload::Caret { pos: 2 })),
+        Some((
+            key,
+            tilo_ui_base::collaboration::PresencePayload::Caret { pos: 2 }
+        )),
         "the caret after what the person typed"
     );
 }
@@ -155,8 +163,11 @@ fn following_an_agent_scrolls_to_the_control_it_acts_on_once_per_action() {
 
 #[test]
 fn following_an_agent_writing_far_down_a_field_scrolls_to_its_caret() {
-    let field = TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field("body".into())]);
-    let key = tilo_ui_base::presence::capability::presence_key(&field).expect("the field has a key");
+    let field = TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field(
+        "body".into(),
+    )]);
+    let key =
+        tilo_ui_base::presence::capability::presence_key(&field).expect("the field has a key");
     let root = Scrollable::new_vertical().with_child(Box::new(
         Column::new()
             .push(Box::new(Spacer::fixed(1500.0)))

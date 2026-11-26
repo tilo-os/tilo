@@ -19,14 +19,17 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use collab_types::CommitNamed as _;
 use tilo_automerge::ApplyIncoming as _;
 
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest, collaboration::CollaborationManager, collaboration::PresencePayload};
 use tilo_ui_base::offscreen::OffscreenRenderer;
 use tilo_ui_base::permissions::MemberId;
-use tilo_ui_base::{presence::PathSegment, presence::PresenceCtx, presence::PresenceKey};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use ui_core::widget::TextInput;
+use tilo_ui_base::{
+    collaboration::CollabEvent, collaboration::CollabRequest, collaboration::CollaborationManager,
+    collaboration::PresencePayload,
+};
+use tilo_ui_base::{presence::PathSegment, presence::PresenceCtx, presence::PresenceKey};
 use tilo_ui_base::{widget::DrawChild as _, widget::Widget};
+use ui_core::widget::TextInput;
 
 use crate::support_collab::TypedBroker;
 use ui_core::vello::Scene;

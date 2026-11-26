@@ -1136,7 +1136,10 @@ fn prepared_drivers_use_canonical_documents_and_keep_close_recovery_on_failure()
 mod save_status_fixture {
     use super::*;
     use std::cell::RefCell;
-    use tilo_ui::{resource::DocumentCheckout, resource::ResourceSaveStatus, resource::ResourceStore, widget::AppKind, widget::AppWidget, widget::IconDescriptor, widget::TileHost};
+    use tilo_ui::{
+        resource::DocumentCheckout, resource::ResourceSaveStatus, resource::ResourceStore,
+        widget::AppKind, widget::AppWidget, widget::IconDescriptor, widget::TileHost,
+    };
     use tilo_ui_base::Widget;
     thread_local! {
         static STORE: RefCell<Option<ResourceStore>> = const { RefCell::new(None) };
@@ -1263,8 +1266,10 @@ mod save_status_fixture {
             }
         }
         fn pump(&mut self) {
-            self.tile
-                .settle(&mut tilo_ui_base::widget::Edits::lend(&mut self.outer), &ROOT);
+            self.tile.settle(
+                &mut tilo_ui_base::widget::Edits::lend(&mut self.outer),
+                &ROOT,
+            );
             self.tile.update(&self.outer, &ROOT);
             self.tile.sync(&self.outer, &ROOT);
         }

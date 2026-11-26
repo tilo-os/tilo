@@ -9,8 +9,8 @@
 //! send-to box in the menu's place ([`crate::widget::SendToBox`]), carrying what
 //! was typed into its message, and the box sends it to whom the person names.
 
-use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 use std::cell::Cell;
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -21,11 +21,14 @@ use super::{
 };
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{query_text::QueryComposition, query_text::QueryEventChange, query_text::QueryInk, query_text::QueryView};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::text_selection::Selection;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{
+    query_text::QueryComposition, query_text::QueryEventChange, query_text::QueryInk,
+    query_text::QueryView,
+};
 
 /// A menu's query field: the typed text and its editing state.
 #[derive(Default)]
@@ -433,7 +436,9 @@ impl ContextMenu {
         let query = self.query.as_ref()?;
         Some(
             AccessNode::new(Role::TextInput)
-                .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain("menu-query-name"))
+                .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain(
+                    "menu-query-name",
+                ))
                 .with_optional_value(Some(query.text.clone()))
                 .with_action_target("context-menu:query".to_owned())
                 .with_bounds(self.query_rect().unwrap_or(Rect::ZERO))

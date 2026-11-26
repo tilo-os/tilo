@@ -4,11 +4,13 @@
 //! minimum), says where it comes from, and cross-fades in without moving anything; a failure takes
 //! the same place; and a window waiting between two steps asks for no frames.
 use super::*;
-use tilo_ui_base::{arriving::GRACE, arriving::MIN_SHOWN, arriving::Source, arriving::Step, arriving::frame_budget};
 use crate::widget::{AppKind, TabDescriptor, TileContent};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::{
+    arriving::GRACE, arriving::MIN_SHOWN, arriving::Source, arriving::Step, arriving::frame_budget,
+};
 
 struct FirstFrame {
     landed: Rc<Cell<bool>>,

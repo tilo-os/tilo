@@ -43,8 +43,8 @@ impl Driver {
         id: &str,
         input: &crate::headless::ControlInput,
     ) -> Result<(), String> {
-        use tilo_ui_base::a11y::Action;
         use crate::headless::ControlInput;
+        use tilo_ui_base::a11y::Action;
         let control = self
             .control(id)
             .ok_or_else(|| format!("no control {id:?} in the current frame"))?;

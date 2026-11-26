@@ -167,7 +167,6 @@ pub mod platform;
 pub mod presence;
 pub mod press;
 pub mod query_text;
-pub use tilo_ui_paint::raster;
 /// Where each settings section is kept, and so published: `settings/<section>` for the person's,
 /// `devices/<device>/settings/<section>` for the device's.
 #[cfg(feature = "model")]
@@ -175,11 +174,15 @@ pub use settings_store::placement as settings_placement;
 /// The verb a setting is set by, `set-<field>`: each field of a settings section has its own.
 #[cfg(feature = "model")]
 pub use settings_store::workspace::verb as setting_verb;
+pub use tilo_ui_paint::raster;
 pub mod settings_device;
 pub mod settings_source;
 pub mod workspace_sync;
-pub use {query_text::QueryComposition, query_text::QueryEventChange, query_text::QueryImeChange, query_text::QueryInk, query_text::QueryView};
 pub use tilo_lock::deferred;
+pub use {
+    query_text::QueryComposition, query_text::QueryEventChange, query_text::QueryImeChange,
+    query_text::QueryInk, query_text::QueryView,
+};
 pub mod personal_dictionary;
 pub mod text_break;
 pub mod text_detect;
@@ -246,95 +249,203 @@ pub mod workspace_emoji;
 pub use native::warmup;
 pub mod key_input;
 pub mod widget;
-/// The model services an app's inference and provider administration travel as.
-#[cfg(feature = "model")]
-#[doc(inline)]
-pub use tilo_process_services::models;
-#[doc(inline)]
-pub use {tilo_process_services::background, tilo_process_services::capture, tilo_process_services::clipboard, tilo_process_services::env, tilo_process_services::jpeg, tilo_process_services::location, tilo_process_services::mpris, tilo_process_services::notify, tilo_process_services::png, tilo_process_services::portal, tilo_process_services::process, tilo_process_services::secrets, tilo_process_services::shell_choosers, tilo_process_services::time, tilo_process_services::wake};
 /// The AccessKit types the bridge and [`headless::Driver`] hand back, re-exported so an app crate
 /// can name them (`crate::accesskit::Role`) without taking its own dependency on a version that must
 /// match this one exactly.
 pub use accesskit;
 pub use automerge;
+pub use caps_lock::CapsLockEstimate;
+pub use color_compat::ColorCompat;
+pub use platform::local_surface_id;
 pub use taffy;
+pub use text_break::discretionary_hyphen_breaks;
+/// The one image codec: sniff, decode, encode and transform pixels, with the browser's own codecs on
+/// the web.
+pub use tilo_image_codec as image_codec;
 /// Locks that hand out a poisoned lock's guard (`ui::lock::MutexRecover`).
 pub use tilo_lock as lock;
+/// The model services an app's inference and provider administration travel as.
+#[cfg(feature = "model")]
+#[doc(inline)]
+pub use tilo_process_services::models;
 /// The async runtime model: the app runtime off the UI thread, the CPU pool, the file-I/O pool and
 /// `block_on` for synchronous entry points.
 pub use tilo_rt as rt;
 pub use vello;
-pub use {vello::kurbo, vello::peniko};
 pub use vello_encoding;
 pub use winit;
-pub use {arriving::Arrival, arriving::ArrivalClock, arriving::ArrivalCompletion, arriving::ArrivalWriter, arriving::Arriving};
-pub use caps_lock::CapsLockEstimate;
+pub use {
+    arriving::Arrival, arriving::ArrivalClock, arriving::ArrivalCompletion,
+    arriving::ArrivalWriter, arriving::Arriving,
+};
 pub use {collection_transition::RowMotion, collection_transition::RowMotions};
-pub use color_compat::ColorCompat;
 pub use {content_layout::FocusedContentArea, content_layout::ResponsiveControlBar};
 pub use {doc::TextEdit, doc::put_text_diffed, doc::splice_text_diffed};
-pub use {i18n::ArgValue, i18n::EmbeddedCatalog, i18n::I18nError, i18n::I18nManager, i18n::PseudoLocale};
+pub use {
+    i18n::ArgValue, i18n::EmbeddedCatalog, i18n::I18nError, i18n::I18nManager, i18n::PseudoLocale,
+};
 pub use {image_store::Fetcher, image_store::HostImageLoader, image_store::ImageStore};
-pub use {input::ActionBindings, input::BindingConflict, input::BindingSet, input::ControllerBinding, input::ControllerButton, input::InputBinding, input::KeyLegend, input::KeyboardBinding, input::KeyboardModifier, input::TouchGesture};
-pub use {interaction::ControllerFamily, interaction::InputAvailability, interaction::InputDevice, interaction::InputModality, interaction::InteractionEnvironment, interaction::KeyboardFamily, interaction::PointerPrecision, interaction::TouchClaim, interaction::TouchPointerEmulator, interaction::TouchPointerEvent};
+pub use {
+    input::ActionBindings, input::BindingConflict, input::BindingSet, input::ControllerBinding,
+    input::ControllerButton, input::InputBinding, input::KeyLegend, input::KeyboardBinding,
+    input::KeyboardModifier, input::TouchGesture,
+};
+pub use {
+    interaction::ControllerFamily, interaction::InputAvailability, interaction::InputDevice,
+    interaction::InputModality, interaction::InteractionEnvironment, interaction::KeyboardFamily,
+    interaction::PointerPrecision, interaction::TouchClaim, interaction::TouchPointerEmulator,
+    interaction::TouchPointerEvent,
+};
 pub use {keycaps::KeycapLanguage, keycaps::Keycaps};
-pub use {local_state::Intents, local_state::LatestRequest, local_state::LatestTask, local_state::LocalState, local_state::LocalStateWriter, local_state::RequestCompletion, local_state::TaskCompletion};
+pub use {
+    local_state::Intents, local_state::LatestRequest, local_state::LatestTask,
+    local_state::LocalState, local_state::LocalStateWriter, local_state::RequestCompletion,
+    local_state::TaskCompletion,
+};
 pub use {nav_stack::EdgeSwipeBack, nav_stack::NavAction, nav_stack::NavStack};
-pub use platform::local_surface_id;
-pub use {platform::DialogActionOrder, platform::HostShortcut, platform::Platform, platform::PlatformConventions, platform::Shortcut, platform::spell_shortcut, platform::spell_shortcut_keycaps};
+pub use {
+    platform::DialogActionOrder, platform::HostShortcut, platform::Platform,
+    platform::PlatformConventions, platform::Shortcut, platform::spell_shortcut,
+    platform::spell_shortcut_keycaps,
+};
 pub use {portal::FileFilter, portal::PickRequest, portal::PortalChannel, portal::PortalOutcome};
 #[cfg(feature = "model")]
-pub use {remote_actions::CancellationCall, remote_actions::CatalogueCall, remote_actions::ChangedCall, remote_actions::Followed, remote_actions::FollowedRead, remote_actions::InvocationCall, remote_actions::RemoteActions, remote_actions::RemoteActionsGuard, remote_actions::ResourceReadCall};
-pub use {reorder::DropCandidate, reorder::DropPlacement, reorder::DropTarget, reorder::ReorderController, reorder::ReorderDrop, reorder::ReorderMotion};
+pub use {
+    remote_actions::CancellationCall, remote_actions::CatalogueCall, remote_actions::ChangedCall,
+    remote_actions::Followed, remote_actions::FollowedRead, remote_actions::InvocationCall,
+    remote_actions::RemoteActions, remote_actions::RemoteActionsGuard,
+    remote_actions::ResourceReadCall,
+};
+pub use {
+    reorder::DropCandidate, reorder::DropPlacement, reorder::DropTarget,
+    reorder::ReorderController, reorder::ReorderDrop, reorder::ReorderMotion,
+};
 pub use {selection::KeySelection, selection::SelectionModel};
-pub use text_break::discretionary_hyphen_breaks;
-pub use {theme::AppearanceIntent, theme::ContentSurface, theme::SurfaceShape, theme::Theme, theme::WindowAppearance, theme::resolve_theme_layers, theme::workspace_hue};
-pub use {tilo_doc::paragraph::ComposedLine, tilo_doc::paragraph::ParagraphBox, tilo_doc::paragraph::ParagraphOptions, tilo_doc::paragraph::compose_paragraph};
-/// The one image codec: sniff, decode, encode and transform pixels, with the browser's own codecs on
-/// the web.
-pub use tilo_image_codec as image_codec;
-pub use {virtual_viewport::DragScrollFinish, virtual_viewport::DragScrollUpdate, virtual_viewport::DragScroller, virtual_viewport::KineticSampler, virtual_viewport::ReconcileError, virtual_viewport::ScrollAlignment, virtual_viewport::ScrollGlide, virtual_viewport::ScrollMomentum, virtual_viewport::SparseAnchor, virtual_viewport::SparseVirtualViewport, virtual_viewport::VirtualViewport, virtual_viewport::WheelStep};
+pub use {
+    theme::AppearanceIntent, theme::ContentSurface, theme::SurfaceShape, theme::Theme,
+    theme::WindowAppearance, theme::resolve_theme_layers, theme::workspace_hue,
+};
+pub use {
+    tilo_doc::paragraph::ComposedLine, tilo_doc::paragraph::ParagraphBox,
+    tilo_doc::paragraph::ParagraphOptions, tilo_doc::paragraph::compose_paragraph,
+};
+#[doc(inline)]
+pub use {
+    tilo_process_services::background, tilo_process_services::capture,
+    tilo_process_services::clipboard, tilo_process_services::env, tilo_process_services::jpeg,
+    tilo_process_services::location, tilo_process_services::mpris, tilo_process_services::notify,
+    tilo_process_services::png, tilo_process_services::portal, tilo_process_services::process,
+    tilo_process_services::secrets, tilo_process_services::shell_choosers,
+    tilo_process_services::time, tilo_process_services::wake,
+};
+pub use {vello::kurbo, vello::peniko};
+pub use {
+    virtual_viewport::DragScrollFinish, virtual_viewport::DragScrollUpdate,
+    virtual_viewport::DragScroller, virtual_viewport::KineticSampler,
+    virtual_viewport::ReconcileError, virtual_viewport::ScrollAlignment,
+    virtual_viewport::ScrollGlide, virtual_viewport::ScrollMomentum,
+    virtual_viewport::SparseAnchor, virtual_viewport::SparseVirtualViewport,
+    virtual_viewport::VirtualViewport, virtual_viewport::WheelStep,
+};
 // `a11y::Role` / `a11y::Action` are reached through the module path to avoid
 // clashing with `permissions::{Role}` / `permissions::Verb`, which are
 // already re-exported at the crate root.
 pub use a11y::SemanticId;
-pub use {a11y::A11ySettings, a11y::AccessBounds, a11y::AccessNode, a11y::AccessState, a11y::AccessibleTextSelection};
-pub use {screen_reader::ScreenReader, screen_reader::describe, screen_reader::flatten_reading_order};
 pub use tilo_actions;
-pub use {draw::DrawCtx, draw::DrawEnv, draw::WidgetOverlay};
 pub use widget::ContentKind;
-pub use {widget::Element, widget::Widget};
-pub use {widget::NativeView, widget::NativeViewAccessibility, widget::NativeViewBackend, widget::NativeViewGeometry, widget::NativeViewHost, widget::NativeViewInput};
-pub use {widget::RouteError, widget::RouteHandle, widget::Router};
 pub use widget::HistoryEntryId;
+pub use {
+    a11y::A11ySettings, a11y::AccessBounds, a11y::AccessNode, a11y::AccessState,
+    a11y::AccessibleTextSelection,
+};
+pub use {draw::DrawCtx, draw::DrawEnv, draw::WidgetOverlay};
+pub use {
+    screen_reader::ScreenReader, screen_reader::describe, screen_reader::flatten_reading_order,
+};
+pub use {widget::Element, widget::Widget};
+pub use {
+    widget::NativeView, widget::NativeViewAccessibility, widget::NativeViewBackend,
+    widget::NativeViewGeometry, widget::NativeViewHost, widget::NativeViewInput,
+};
+pub use {widget::RouteError, widget::RouteHandle, widget::Router};
 // Re-exported so an app reaches the whole history stack through `crate::`
 // without knowing the module layout.
 #[cfg(feature = "model")]
 pub use collab_types::presence::CallPresence;
-pub use {tilo_presence::Availability, tilo_presence::IDLE_AFTER, tilo_presence::INFERRED_STATUS_TTL, tilo_presence::LiveStatus, tilo_presence::MAX_STATUS_CHARS, tilo_presence::PresenceVisibility, tilo_presence::StatusOrigin, tilo_presence::StatusSharing};
+pub use {
+    tilo_presence::Availability, tilo_presence::IDLE_AFTER, tilo_presence::INFERRED_STATUS_TTL,
+    tilo_presence::LiveStatus, tilo_presence::MAX_STATUS_CHARS, tilo_presence::PresenceVisibility,
+    tilo_presence::StatusOrigin, tilo_presence::StatusSharing,
+};
 // Undoing a run of changes that never reached anybody's undo stack — a
 // remote author's, an agent's.
-pub use {gesture::DragSelect, gesture::Granularity};
-pub use {richtext::BaselineShift, richtext::FontFamily, richtext::RichSpan, richtext::RichTextLayout, richtext::TextAlign};
-pub use {text_edit::CaretWord, text_edit::CharFilter, text_edit::CharSplice, text_edit::Edit, text_edit::EditCore, text_edit::Motion, text_edit::SUGGESTION_SETTLE, text_edit::TypingRun, text_edit::delete_last_grapheme, text_edit::word_at_caret};
-pub use {text_render::FontChoice, text_render::FontVariation, text_render::Fragmentation, text_render::GlyphOutline, text_render::HangingPunctuation, text_render::Hyphenation, text_render::NumericStyle, text_render::OpenTypeFeature, text_render::OpenTypeTag, text_render::OpticalSizing, text_render::ParagraphAlign, text_render::PolygonTextLayout, text_render::TextFlowRegion, text_render::TextFlowRegionError, text_render::TextGround, text_render::TextKind, text_render::TextLayoutConstraints, text_render::TextLayoutEngine, text_render::TextRenderer, text_render::TextScaling, text_render::TextStyle, text_render::TextWeight, text_render::TextWrapMode, text_render::UI_HYPERLEGIBLE_FAMILY, text_render::UI_MONOSPACE_FAMILY, text_render::UI_SANS_FAMILY, text_render::UI_SERIF_FAMILY, text_render::configured_font_system};
-pub use {text_selection::CopyWatch, text_selection::Selection, text_selection::TextAffinity, text_selection::TextPosition, text_selection::clipboard_available, text_selection::clipboard_copy, text_selection::clipboard_copy_image, text_selection::clipboard_copy_primary, text_selection::clipboard_copy_rich_accepted, text_selection::clipboard_paste, text_selection::clipboard_paste_image, text_selection::clipboard_paste_primary, text_selection::clipboard_paste_rich, text_selection::extend_span_drag, text_selection::grapheme_boundary_at_or_before, text_selection::line_boundaries, text_selection::next_char_boundary, text_selection::next_word_boundary, text_selection::next_word_boundary_chars, text_selection::prev_char_boundary, text_selection::prev_word_boundary, text_selection::prev_word_boundary_chars, text_selection::reserve_clipboard_copy, text_selection::try_clipboard_copy, text_selection::try_clipboard_copy_secret, text_selection::word_boundaries, text_selection::word_boundaries_chars};
-pub use {tokens::ReadingFace, tokens::TextRole, tokens::UiFace};
 pub use animation::Lerp;
 #[cfg(feature = "model")]
 pub use collaboration::PresencePayload;
 #[cfg(feature = "model")]
-pub use {permissions::Access, permissions::CapDecision, permissions::CapOverride, permissions::PermissionContext, permissions::PermissionScope, permissions::ResourceRef, permissions::Role, permissions::Scope as CapScope};
-pub use {permissions::Acting, permissions::ActionKind, permissions::Grantee, permissions::MemberId};
-pub use {presence::PathSegment, presence::PresenceCtx, presence::PresenceKey, presence::SelectionRange, presence::human_label};
-pub use {wake::WakeBindError, wake::WakeEvent, wake::WakeHandle, wake::WakeScope, wake::WakeScopeGuard};
-#[cfg(feature = "model")]
 pub use widget::ViewPresence;
+pub use {gesture::DragSelect, gesture::Granularity};
+#[cfg(feature = "model")]
+pub use {
+    permissions::Access, permissions::CapDecision, permissions::CapOverride,
+    permissions::PermissionContext, permissions::PermissionScope, permissions::ResourceRef,
+    permissions::Role, permissions::Scope as CapScope,
+};
+pub use {
+    permissions::Acting, permissions::ActionKind, permissions::Grantee, permissions::MemberId,
+};
+pub use {
+    presence::PathSegment, presence::PresenceCtx, presence::PresenceKey, presence::SelectionRange,
+    presence::human_label,
+};
+pub use {
+    richtext::BaselineShift, richtext::FontFamily, richtext::RichSpan, richtext::RichTextLayout,
+    richtext::TextAlign,
+};
+pub use {
+    text_edit::CaretWord, text_edit::CharFilter, text_edit::CharSplice, text_edit::Edit,
+    text_edit::EditCore, text_edit::Motion, text_edit::SUGGESTION_SETTLE, text_edit::TypingRun,
+    text_edit::delete_last_grapheme, text_edit::word_at_caret,
+};
+pub use {
+    text_render::FontChoice, text_render::FontVariation, text_render::Fragmentation,
+    text_render::GlyphOutline, text_render::HangingPunctuation, text_render::Hyphenation,
+    text_render::NumericStyle, text_render::OpenTypeFeature, text_render::OpenTypeTag,
+    text_render::OpticalSizing, text_render::ParagraphAlign, text_render::PolygonTextLayout,
+    text_render::TextFlowRegion, text_render::TextFlowRegionError, text_render::TextGround,
+    text_render::TextKind, text_render::TextLayoutConstraints, text_render::TextLayoutEngine,
+    text_render::TextRenderer, text_render::TextScaling, text_render::TextStyle,
+    text_render::TextWeight, text_render::TextWrapMode, text_render::UI_HYPERLEGIBLE_FAMILY,
+    text_render::UI_MONOSPACE_FAMILY, text_render::UI_SANS_FAMILY, text_render::UI_SERIF_FAMILY,
+    text_render::configured_font_system,
+};
+pub use {
+    text_selection::CopyWatch, text_selection::Selection, text_selection::TextAffinity,
+    text_selection::TextPosition, text_selection::clipboard_available,
+    text_selection::clipboard_copy, text_selection::clipboard_copy_image,
+    text_selection::clipboard_copy_primary, text_selection::clipboard_copy_rich_accepted,
+    text_selection::clipboard_paste, text_selection::clipboard_paste_image,
+    text_selection::clipboard_paste_primary, text_selection::clipboard_paste_rich,
+    text_selection::extend_span_drag, text_selection::grapheme_boundary_at_or_before,
+    text_selection::line_boundaries, text_selection::next_char_boundary,
+    text_selection::next_word_boundary, text_selection::next_word_boundary_chars,
+    text_selection::prev_char_boundary, text_selection::prev_word_boundary,
+    text_selection::prev_word_boundary_chars, text_selection::reserve_clipboard_copy,
+    text_selection::try_clipboard_copy, text_selection::try_clipboard_copy_secret,
+    text_selection::word_boundaries, text_selection::word_boundaries_chars,
+};
+pub use {tokens::ReadingFace, tokens::TextRole, tokens::UiFace};
+pub use {
+    wake::WakeBindError, wake::WakeEvent, wake::WakeHandle, wake::WakeScope, wake::WakeScopeGuard,
+};
+/// Emission-time local control ownership.
+pub mod control_domain;
 #[cfg(feature = "native")]
 pub mod input_frame;
 #[cfg(feature = "model")]
 pub mod semantic_readers;
 pub mod synthetic_input;
-/// Emission-time local control ownership.
-pub mod control_domain;
-pub use {control_domain::ControlCoverage, control_domain::ControlDomain, control_domain::ControlOutbox, control_domain::ControlProducerDiscipline};
+pub use {
+    control_domain::ControlCoverage, control_domain::ControlDomain, control_domain::ControlOutbox,
+    control_domain::ControlProducerDiscipline,
+};

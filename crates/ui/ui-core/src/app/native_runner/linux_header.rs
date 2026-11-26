@@ -95,13 +95,15 @@ impl Decorations {
             header
                 .bar
                 .draw_child(scene, transform, text, theme, &presence.draw_env());
-            header.bar.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-                scene,
-                transform,
-                text,
-                theme,
-                presence.draw_env(),
-            ));
+            header
+                .bar
+                .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    text,
+                    theme,
+                    presence.draw_env(),
+                ));
         }
     }
 
@@ -134,8 +136,10 @@ impl LiveHeader {
 
     fn refresh(&mut self, app: &mut App, window: &Window, part_row_shown: bool) {
         let physical = window.inner_size();
-        let size =
-            tilo_ui_base::scale::logical_size((physical.width, physical.height), window.scale_factor());
+        let size = tilo_ui_base::scale::logical_size(
+            (physical.width, physical.height),
+            window.scale_factor(),
+        );
         let bounds = Rect::new(0.0, 0.0, size.0, size.1);
         let hidden = window.fullscreen().is_some();
         if hidden != self.hidden {

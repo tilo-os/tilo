@@ -7,11 +7,11 @@
 use std::collections::HashMap;
 
 use super::*;
-use tilo_ui_base::Theme;
 use crate::widget::scrollable::Scrollable;
 use crate::{widget::DragSource, widget::drag_bus};
-use tilo_ui_base::{widget::Spacer, widget::Widget};
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use tilo_ui_base::Theme;
+use tilo_ui_base::{widget::Spacer, widget::Widget};
 
 /// A widget laid out in its own tree, which every event is then dispatched against: the tree
 /// the widget's retained nodes belong to, as a window's frame lays its root out.
@@ -285,8 +285,9 @@ fn a_press_outside_a_source_is_not_the_sources_and_leaves_the_release_to_what_wa
 #[test]
 fn a_drop_onto_a_target_reports_the_resource_the_source_carried() {
     let queue = tilo_ui_base::Intents::default();
-    let dropped =
-        tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(&queue, "target", "drop"));
+    let dropped = tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(
+        &queue, "target", "drop",
+    ));
     let target = crate::widget::DropTarget::new(
         "target",
         Box::new(Spacer::fixed(120.0)) as Element,
@@ -392,7 +393,9 @@ fn files_the_desktop_carried_back_land_on_the_target_under_the_pointer() {
             crate::widget::DropTarget::new(
                 key,
                 Box::new(Spacer::fixed(height)) as Element,
-                tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(&queue, key, "drop")),
+                tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(
+                    &queue, key, "drop",
+                )),
             )
             .with_files(tilo_ui_base::component::Event::View(
                 tilo_ui_base::component::Intent::new(&queue, key, "drop_files"),
@@ -500,7 +503,9 @@ fn a_rows_files_dragged_inside_the_window_land_on_the_target_as_files() {
     let target = crate::widget::DropTarget::new(
         "folder",
         Box::new(Spacer::fixed(120.0)) as Element,
-        tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(&queue, "folder", "drop")),
+        tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(
+            &queue, "folder", "drop",
+        )),
     )
     .with_files(tilo_ui_base::component::Event::View(
         tilo_ui_base::component::Intent::new(&queue, "folder", "drop_files"),

@@ -1,11 +1,11 @@
-use tilo_ui_base::a11y_child_route::*;
 use std::cell::Cell;
 use std::rc::Rc;
+use tilo_ui_base::a11y_child_route::*;
 
 use crate::{widget::Button, widget::Embedded};
 use tilo_ui_base::widget::TaffyTreeExt;
-use vello::kurbo::Rect;
 use tilo_ui_base::widget::Widget;
+use vello::kurbo::Rect;
 
 struct Painter {
     button: Embedded<Button>,
@@ -58,7 +58,10 @@ impl Widget for Painter {
     }
 
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
-        Some(tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group).with_name("Painted"))
+        Some(
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
+                .with_name("Painted"),
+        )
     }
 
     fn children(&self) -> Vec<&dyn Widget> {

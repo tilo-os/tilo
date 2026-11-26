@@ -181,7 +181,10 @@ fn section(
         vec![KurboRect::from_center_size(at, (20.0, 20.0))]
     });
     if host.section {
-        tilo_ui_base::scene_parts::end(&mut scene, vec![KurboRect::new(0.0, 0.0, SCENE.0, SCENE.1)]);
+        tilo_ui_base::scene_parts::end(
+            &mut scene,
+            vec![KurboRect::new(0.0, 0.0, SCENE.0, SCENE.1)],
+        );
     }
     if host.badge {
         scene.fill(
@@ -289,8 +292,13 @@ fn scroll(theme: &Theme, host: Host, scale: f64, runs: &[(f64, usize)]) -> Vec<R
                     .iter()
                     .map(|rect| to_device.transform_rect_bbox(*rect).expand())
                     .collect();
-                let plan =
-                    tilo_ui_base::scene_parts::present_copies(&damage.copies, rects, &[], to_device, size);
+                let plan = tilo_ui_base::scene_parts::present_copies(
+                    &damage.copies,
+                    rects,
+                    &[],
+                    to_device,
+                    size,
+                );
                 if !plan.copies.is_empty() {
                     run.copied_frames += 1;
                     let repainted = covered(&plan.raster, size);

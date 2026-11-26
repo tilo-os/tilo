@@ -100,10 +100,7 @@ pub struct OperationTarget {
 }
 #[cfg(feature = "model")]
 impl OperationTarget {
-    pub fn new(
-        route: ::collaboration::RouteSpec,
-        address: tilo_actions::ActionAddress,
-    ) -> Self {
+    pub fn new(route: ::collaboration::RouteSpec, address: tilo_actions::ActionAddress) -> Self {
         Self { route, address }
     }
     pub fn route(&self) -> &::collaboration::RouteSpec {
@@ -444,4 +441,3 @@ pub(crate) fn poll_by_default(
         poll_resource_operation(child, invocation, cancellation_requested, doc, path)
     })
 }
-

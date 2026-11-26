@@ -8,9 +8,12 @@ use std::rc::Rc;
 use winit::event::{ElementState, KeyEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::{
+    widget::Button, widget::Column, widget::ControlSize, widget::EmptyState, widget::ListRow,
+    widget::Row, widget::Scrollable, widget::Section, widget::SectionHeader, widget::Text,
+};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
-use crate::{widget::Button, widget::Column, widget::ControlSize, widget::EmptyState, widget::ListRow, widget::Row, widget::Scrollable, widget::Section, widget::SectionHeader, widget::Text};
 use tilo_ui_base::{widget::Decorator, widget::Element, widget::Widget};
 
 use super::record::{Item, ItemId, deferred, items, revision};
@@ -320,7 +323,11 @@ impl Decorator for Stack {
         &mut self.inner
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let inner = Widget::update(&mut self.inner, state, path);
         if self.presses.changed() {
             self.restack();

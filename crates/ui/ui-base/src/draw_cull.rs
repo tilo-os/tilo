@@ -46,12 +46,7 @@ impl Keep {
     /// The content shown in `clip` (logical pixels, drawn with `transform`) and moved by `delta`
     /// (logical pixels, on screen) since the frame on screen, with `overlays` (logical) painted over it
     /// without moving.
-    pub fn scrolled(
-        transform: Affine,
-        clip: Rect,
-        delta: Vec2,
-        overlays: &[Rect],
-    ) -> Option<Self> {
+    pub fn scrolled(transform: Affine, clip: Rect, delta: Vec2, overlays: &[Rect]) -> Option<Self> {
         let shown = transform.transform_rect_bbox(clip);
         let step = transform * delta.to_point() - transform * vello::kurbo::Point::ZERO;
         let whole = |value: f64| (value - value.round()).abs() <= WHOLE_PIXEL;
@@ -287,11 +282,7 @@ fn bound_to(state: &State, scene: &Scene) -> bool {
 
 /// Draw a scroller's content (`draw`) into `scene` with the frame keeping its pixels where `keep` says
 /// (`None`: nowhere, its content repaints).
-pub fn keeping<T>(
-    scene: &mut Scene,
-    keep: Option<Keep>,
-    draw: impl FnOnce(&mut Scene) -> T,
-) -> T {
+pub fn keeping<T>(scene: &mut Scene, keep: Option<Keep>, draw: impl FnOnce(&mut Scene) -> T) -> T {
     let _scope = keep_scope(scene, keep);
     draw(scene)
 }

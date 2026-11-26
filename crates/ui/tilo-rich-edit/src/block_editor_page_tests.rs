@@ -24,8 +24,14 @@ fn paged(
     (editor, text, theme)
 }
 
-fn page_shown_event(queue: &tilo_ui_base::Intents<tilo_ui_base::component::Fired>) -> tilo_ui_base::component::Event {
-    tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(queue, "doc", "page_shown"))
+fn page_shown_event(
+    queue: &tilo_ui_base::Intents<tilo_ui_base::component::Fired>,
+) -> tilo_ui_base::component::Event {
+    tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(
+        queue,
+        "doc",
+        "page_shown",
+    ))
 }
 
 #[test]

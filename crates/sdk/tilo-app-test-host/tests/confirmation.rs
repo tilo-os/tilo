@@ -185,7 +185,11 @@ impl Widget for Remover {
         self.rect
     }
 
-    fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, _: &tilo_app::automerge::ObjId) {
+    fn settle(
+        &mut self,
+        edits: &mut tilo_ui_base::widget::Edits<'_>,
+        _: &tilo_app::automerge::ObjId,
+    ) {
         let (Some(now), Some(dispatch), Some(first)) =
             (NOW.take(), self.dispatch.as_ref(), self.first.clone())
         else {

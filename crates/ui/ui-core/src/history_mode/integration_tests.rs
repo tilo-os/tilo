@@ -4,8 +4,8 @@ use crate::application_test_support::{
     APP, ProbeHarness, runner_permissions, runner_probe_definition,
 };
 use crate::{State, headless::Driver, widget::BoundAppWidget};
-use tilo_ui_base::widget::Widget;
 use automerge::{ROOT, transaction::Transactable};
+use tilo_ui_base::widget::Widget;
 
 static BOUND: HistoryDefinition = HistoryDefinition {
     app_id: APP,
@@ -370,7 +370,11 @@ fn managed_review_dialog_drains_and_returns_to_retained_preview() {
     );
     assert!(!driver.poll_frame().unwrap());
 }
-fn grant(actor: &str, app: &str, until: Option<u64>) -> tilo_ui_base::permissions::PermissionContext {
+fn grant(
+    actor: &str,
+    app: &str,
+    until: Option<u64>,
+) -> tilo_ui_base::permissions::PermissionContext {
     use tilo_ui_base::permissions::*;
     PermissionContext::granted(
         &tilo_ui_base::permissions::MemberId::person(actor),

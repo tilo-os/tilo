@@ -4,9 +4,12 @@
 
 use std::fmt::Write as _;
 
-use tilo_ui_base::i18n::I18nManager;
 use tilo_ui::widget::toggle_group::Segment;
-use tilo_ui::{widget::Avatar, widget::Badge, widget::Button, widget::Column, widget::ProgressBar, widget::Row, widget::Scrollable, widget::Spinner, widget::Text, widget::ToggleGroup};
+use tilo_ui::{
+    widget::Avatar, widget::Badge, widget::Button, widget::Column, widget::ProgressBar,
+    widget::Row, widget::Scrollable, widget::Spinner, widget::Text, widget::ToggleGroup,
+};
+use tilo_ui_base::i18n::I18nManager;
 use tilo_ui_base::{widget::AvatarSize, widget::ScrollAxis, widget::Widget};
 
 fn leak_label(s: &str) -> &'static str {

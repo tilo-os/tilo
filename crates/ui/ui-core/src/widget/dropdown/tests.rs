@@ -1,7 +1,7 @@
 use super::*;
-use tilo_ui_base::i18n::widget_text;
 use crate::testing::Dispatch;
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, transaction::Transactable};
+use tilo_ui_base::i18n::widget_text;
 
 fn opts() -> Vec<String> {
     ["UTC", "Europe/Amsterdam", "America/New_York", "Asia/Tokyo"]

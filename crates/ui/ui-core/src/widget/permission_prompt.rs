@@ -1,21 +1,21 @@
 //! Inline permission prompt — the bar that pops in at the top of the active strip when a
 //! sandboxed app requests a capability.
 
-use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
-use tilo_ui_base::widget::ModelPath;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::widget::ModelPath;
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 use vello::kurbo::{Point, Rect, RoundedRect, Vec2};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::widget::control_size::ControlSize;
+use crate::{widget::Button, widget::ButtonFace, widget::ButtonRole};
 use tilo_ui_base::text_metrics::centered_text_top;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::control_size::ControlSize;
-use crate::{widget::Button, widget::ButtonFace, widget::ButtonRole};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 pub const PROMPT_HEIGHT: f64 = 80.0;
@@ -425,7 +425,9 @@ impl Widget for PermissionPrompt {
                 None,
                 &body,
             );
-            tilo_ui_base::chrome::shell::paint_panel_edge(scene, transform, self.rect, radius, theme);
+            tilo_ui_base::chrome::shell::paint_panel_edge(
+                scene, transform, self.rect, radius, theme,
+            );
 
             // Placeholder pulled from the accent ramp until the portal layer
             // surfaces real icons via the app's `.desktop` file metadata.
@@ -782,8 +784,8 @@ mod tests {
     //! `apply_layout_helper` populates the hit-test rects from a synthetic
     //! `self.rect` so tests don't depend on a GPU/text-renderer.
     use super::*;
-    use tilo_ui_base::presence::PresenceCtx;
     use automerge::AutoCommit;
+    use tilo_ui_base::presence::PresenceCtx;
     use vello::Scene;
     use vello::kurbo::Affine;
 
@@ -1053,8 +1055,8 @@ mod tests {
         tilo_ui_base::synthetic_input::cursor_moved(p.x, p.y)
     }
 
-    use tilo_ui_base::synthetic_input::mouse_press;
     use crate::testing::dispatch;
+    use tilo_ui_base::synthetic_input::mouse_press;
 
     /// 600x80 with computed button rects; `is_owner` is the only
     /// knob, every other field is fixed.

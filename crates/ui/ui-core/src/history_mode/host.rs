@@ -5,8 +5,10 @@ use super::{
     canvas::PreviewCanvas,
 };
 use crate::widget::ButtonRole;
-use crate::{widget::ActivityTimeline, widget::Button, widget::Column, widget::Row, widget::Text, widget::TextInput};
-use tilo_ui_base::{i18n::I18nManager, theme::Theme, widget::TaffyTreeExt, widget::Widget};
+use crate::{
+    widget::ActivityTimeline, widget::Button, widget::Column, widget::Row, widget::Text,
+    widget::TextInput,
+};
 use automerge::AutoCommit;
 use std::{
     cell::{Cell, RefCell},
@@ -14,6 +16,7 @@ use std::{
     rc::Rc,
 };
 use taffy::{Dimension, FlexDirection, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::{i18n::I18nManager, theme::Theme, widget::TaffyTreeExt, widget::Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -462,7 +465,10 @@ impl HistoryHost {
         scene: &mut Scene,
         transform: Affine,
         text: &mut tilo_ui_base::text_render::TextRenderer,
-        (theme, presence): (&tilo_ui_base::theme::Theme, &tilo_ui_base::presence::PresenceCtx),
+        (theme, presence): (
+            &tilo_ui_base::theme::Theme,
+            &tilo_ui_base::presence::PresenceCtx,
+        ),
     ) -> bool {
         let mut own = self.painting.take().unwrap_or_default();
         own.reset();
@@ -1062,8 +1068,9 @@ impl HistoryHost {
         tree: &TaffyTree<()>,
     ) {
         if self.saved_focus.is_none() && focus.is_some_and(|node| !self.owns_node(node, tree)) {
-            self.saved_focus =
-                unsafe { tilo_ui_base::widget::layout::CompositionFocus::capture(focus, nodes, bindings) };
+            self.saved_focus = unsafe {
+                tilo_ui_base::widget::layout::CompositionFocus::capture(focus, nodes, bindings)
+            };
         }
     }
     pub(crate) unsafe fn restore_focus(
@@ -1830,7 +1837,8 @@ impl HistoryHost {
             .is_some_and(HistoryController::has_live_updates)
         {
             toolbar = toolbar.push(Box::new(
-                Text::new("history-mode-live-updates").with_live(tilo_ui_base::a11y::Politeness::Polite),
+                Text::new("history-mode-live-updates")
+                    .with_live(tilo_ui_base::a11y::Politeness::Polite),
             ));
         }
         if self.open && self.registration.definition.scopes.len() > 1 {
@@ -1925,7 +1933,9 @@ impl HistoryHost {
     }
 
     /// The oldest and newest selected change: the run a name covers.
-    pub(super) fn selected_run(&self) -> Option<(tilo_ui_base::HistoryEntryId, tilo_ui_base::HistoryEntryId)> {
+    pub(super) fn selected_run(
+        &self,
+    ) -> Option<(tilo_ui_base::HistoryEntryId, tilo_ui_base::HistoryEntryId)> {
         let mut picked = self.selected_entries();
         let first = picked.next()?.id;
         Some((first, picked.last().map_or(first, |entry| entry.id)))
@@ -1953,12 +1963,11 @@ impl HistoryHost {
             let label = I18nManager::lookup_plain("history-mode-back-to-live");
             let close = self.commands.clone();
             Some(
-                Button::icon_only("history-back-live", tilo_ui_base::icons::Icon::X, &label).on_open(
-                    move || {
+                Button::icon_only("history-back-live", tilo_ui_base::icons::Icon::X, &label)
+                    .on_open(move || {
                         close.borrow_mut().push_back(Command::Live);
                         super::note_news();
-                    },
-                ),
+                    }),
             )
         } else if self.window_presents {
             // The window's bar holds History's control, which closes it as
@@ -2176,7 +2185,8 @@ pub(crate) fn press_offered(
     history: Option<&mut HistoryHost>,
     control: crate::widget::HistoryControl,
 ) -> Result<(), String> {
-    match tilo_ui_base::widget::capability::capability_mut::<dyn crate::widget::WindowHistory>(root) {
+    match tilo_ui_base::widget::capability::capability_mut::<dyn crate::widget::WindowHistory>(root)
+    {
         Some(offered) if offered.window_history_control().is_some() => {
             offered.invoke_window_history_control(control)
         }

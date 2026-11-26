@@ -7,17 +7,17 @@ use tilo_actions::reaction::{ReactionGroup, Reactor};
 use vello::kurbo::{Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 use crate::color_compat::ColorCompat as _;
+use crate::widget::ChipStyle;
+use tilo_action_policy::MemberId;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::num::f32_of_f64;
 use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 use tilo_ui_base::{presence::Face, presence::FaceStack};
 use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
-use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource, tokens::TextRole};
-use crate::widget::ChipStyle;
-use tilo_action_policy::MemberId;
 
 #[path = "reaction_strip_widget.rs"]
 mod retained;
@@ -418,7 +418,10 @@ impl StripLayout {
         name: &dyn Fn(&Reactor) -> String,
     ) -> Option<(Rect, String)> {
         if let Some(add) = self.add.filter(|add| add.contains(point)) {
-            return Some((add, tilo_ui_base::i18n::widget_format("reaction-strip-add", &[])));
+            return Some((
+                add,
+                tilo_ui_base::i18n::widget_format("reaction-strip-add", &[]),
+            ));
         }
         let pill = self.pills.iter().find(|pill| pill.rect.contains(point))?;
         Some((pill.rect, who_reacted(pill, self.me.as_ref(), name)))
@@ -497,7 +500,10 @@ fn who_reacted(
         }
     }
     if own {
-        names.insert(0, tilo_ui_base::i18n::widget_format("reaction-strip-you", &[]));
+        names.insert(
+            0,
+            tilo_ui_base::i18n::widget_format("reaction-strip-you", &[]),
+        );
     }
     // Who reacted elsewhere, under a name of their own: they read as any other reactor.
     names.extend(
@@ -623,7 +629,13 @@ impl ReactionStrip {
                 } else {
                     tilo_ui_base::motion::Presence::opened()
                 };
-                presence.show(true, tilo_ui_base::motion::Appear::SPEC, motion, source, now);
+                presence.show(
+                    true,
+                    tilo_ui_base::motion::Appear::SPEC,
+                    motion,
+                    source,
+                    now,
+                );
                 PillMotion {
                     presence,
                     count: tilo_ui_base::motion::CrossFade::new(pill.count),
@@ -762,7 +774,8 @@ fn pill_faces<'a>(
     theme: &Theme,
 ) -> Vec<Face<'a>> {
     let palette = &theme.tokens.colors.presence;
-    let derived = |identity: &str| palette.hue(tilo_ui_base::tokens::PresenceHue::of_identity(identity));
+    let derived =
+        |identity: &str| palette.hue(tilo_ui_base::tokens::PresenceHue::of_identity(identity));
     pill.reactors
         .iter()
         .map(|reactor| {

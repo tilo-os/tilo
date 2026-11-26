@@ -94,7 +94,7 @@ def window_tree_reaches_adapter(source: str) -> bool:
         return False
     return bool(
         re.search(r"let\s+mut\s+update\s*=\s*app\.build_a11y_tree_update\(scale\);", body)
-        and re.search(r"crate::accesskit_bridge::native_tree_update\(update\)\s*$", body)
+        and re.search(r"tilo_ui_base::accesskit_bridge::native_tree_update\(update\)\s*$", body)
     )
 
 
@@ -167,7 +167,7 @@ def audit(root: Path = ROOT) -> list[str]:
     # adapter, accepting both rustfmt layouts (including a trailing comma).
     tree_update = (
         r"adapter\.update_if_active\(\|\|\s*\{\s*"
-        r"crate::accesskit_bridge::native_tree_update\(\s*"
+        r"tilo_ui_base::accesskit_bridge::native_tree_update\(\s*"
         r"app_ref\.build_a11y_tree_update\(scale\),?\s*\)\s*\}\)"
     )
     if not re.search(tree_update, app) and not window_tree_reaches_adapter(app):

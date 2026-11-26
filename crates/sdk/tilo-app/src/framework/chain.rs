@@ -65,9 +65,11 @@ use std::rc::Rc;
 
 use tilo_actions::{ActionContext, ActionError, ActionInvoker};
 use tilo_resource::{Invoke, Refusal, Resource};
+use tilo_ui_base::{
+    permissions::LivePermissions, permissions::PermissionScope, permissions::TreePath,
+};
 use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{ChangeHash, ObjType, ROOT, ReadDoc as _, Value};
-use tilo_ui_base::{permissions::LivePermissions, permissions::PermissionScope, permissions::TreePath};
 use ui_core::resource::{
     DocumentCheckout, DocumentId, ResourceOpenError, ResourceStore, ResourceType,
 };

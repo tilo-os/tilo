@@ -76,7 +76,8 @@ fn notes(locale: &str) -> (Host, Package) {
     imports.push(discussion.meta.clone());
     let compiled = tilolang::compile_package_source(&source, &ids, &imports)
         .expect("the notes package compiles");
-    tilo_ui_base::i18n::I18nManager::install("en-US", locale, &[("en-US", "")]).expect("the source words");
+    tilo_ui_base::i18n::I18nManager::install("en-US", locale, &[("en-US", "")])
+        .expect("the source words");
     let host = Host::new(
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
@@ -108,7 +109,8 @@ fn contacts(locale: &str) -> (Host, Package) {
     .expect("its ids parse");
     let compiled = tilolang::compile_package_source(&source, &ids, &metas)
         .expect("the contacts package compiles");
-    tilo_ui_base::i18n::I18nManager::install("en-US", locale, &[("en-US", "")]).expect("the source words");
+    tilo_ui_base::i18n::I18nManager::install("en-US", locale, &[("en-US", "")])
+        .expect("the source words");
     let host = Host::new(
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,
@@ -400,7 +402,8 @@ fn a_german_counter_window_draws_german() {
     .expect("its ids parse");
     let compiled =
         tilolang::compile_package_source(&source, &ids, &[]).expect("the counter package compiles");
-    tilo_ui_base::i18n::I18nManager::install("en-US", "de-DE", &[("en-US", "")]).expect("the German words");
+    tilo_ui_base::i18n::I18nManager::install("en-US", "de-DE", &[("en-US", "")])
+        .expect("the German words");
     let host = Host::new(
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         || None,

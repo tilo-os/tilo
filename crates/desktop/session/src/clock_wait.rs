@@ -17,9 +17,9 @@ use std::task::Waker;
 use tilo_identity::policy_change;
 use tilo_onboarding_session::identity::IdentityProblem;
 use tilo_onboarding_session::view::OnboardingView;
-use tilo_user_identity::{CertificateClockError, DeviceCertError};
 use tilo_ui_base::format::UnixSecs;
 use tilo_ui_base::icons::Icon;
+use tilo_user_identity::{CertificateClockError, DeviceCertError};
 use ui::widget::{Container, EmptyState};
 
 use crate::i18n::{t, t_args};
@@ -204,7 +204,8 @@ impl ClockWait {
         let now = tilo_ui_base::format::timestamp(&UnixSecs(secs(self.refusal.clock_ns)));
         let body = match self.refusal.reason {
             DeviceCertError::NotYetValid => {
-                let valid = tilo_ui_base::format::timestamp(&UnixSecs(secs(self.refusal.valid_from_ns)));
+                let valid =
+                    tilo_ui_base::format::timestamp(&UnixSecs(secs(self.refusal.valid_from_ns)));
                 t_args(
                     "identity-clock-wait-not-yet-valid",
                     &[("now", now.into()), ("valid", valid.into())],

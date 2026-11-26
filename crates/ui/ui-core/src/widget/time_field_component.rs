@@ -1,8 +1,10 @@
 //! [`TimeField`] as a described component.
 
-use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Event};
-use tilo_ui_base::widget::binding::derived;
 use crate::widget::date_field::time_in;
+use tilo_ui_base::widget::binding::derived;
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+};
 
 use super::TimeField;
 
@@ -43,8 +45,10 @@ fn reports(
         .then(|| change.clone().handler())
         .flatten();
     move |time| {
-        let said =
-            tilo_ui_base::component::Value::Text(crate::widget::date_field::with_time(&held.get(), time));
+        let said = tilo_ui_base::component::Value::Text(crate::widget::date_field::with_time(
+            &held.get(),
+            time,
+        ));
         bound.edited(said.clone());
         change.fire(Some(said));
         if let Some(run) = run.as_mut() {

@@ -357,7 +357,9 @@ fn child<P: Chained>(state: &dyn Any, id: &str) -> Option<tilo_actions::Resource
 }
 
 fn new_view<P: Chained>() -> Box<dyn Any> {
-    Box::new(tilo_ui_base::LocalState::<super::Parts<P>>::new(Rc::default()))
+    Box::new(tilo_ui_base::LocalState::<super::Parts<P>>::new(
+        Rc::default(),
+    ))
 }
 
 fn set_view<P: Chained>(view: &dyn Any, parts: TypedParts) {

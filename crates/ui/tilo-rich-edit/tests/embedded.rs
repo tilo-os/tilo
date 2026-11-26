@@ -3,15 +3,19 @@
 
 use automerge::AutoCommit;
 use tilo_rich_edit::{BlockContent, BlockEditor};
+use tilo_ui::widget::Embedded;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::theme::Theme;
-use tilo_ui::widget::Embedded;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-fn click(embedded: &mut Embedded<BlockEditor>, doc: &mut tilo_ui_base::widget::Edits<'_>, at: Point) {
+fn click(
+    embedded: &mut Embedded<BlockEditor>,
+    doc: &mut tilo_ui_base::widget::Edits<'_>,
+    at: Point,
+) {
     let device_id = winit::event::DeviceId::dummy();
     for event in [
         WindowEvent::CursorMoved {

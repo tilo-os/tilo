@@ -1,8 +1,8 @@
 //! The accessibility tree of a [`super::VirtualList`]: its mounted rows, and the heading
 //! before each group of them.
-use tilo_ui_base::i18n::widget_text;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tilo_ui_base::i18n::widget_text;
 
 use super::edit::RenameStamp;
 use super::groups::{Band, HEADING_TARGET};
@@ -10,8 +10,8 @@ use super::jump::PILL_TARGET;
 use super::open::first_page_title;
 use super::{ListKey, VirtualRows};
 use super::{MountedRow, MountedRowState};
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 use vello::kurbo::Rect;
 
 pub(super) struct KeptAccessRows<K> {
@@ -560,9 +560,9 @@ fn holds_controls(widget: &dyn Widget) -> bool {
 #[cfg(test)]
 mod tests {
     use super::super::open::first_page_title;
-    use tilo_ui_base::tokens::TextRole;
-    use crate::widget::arrange::Row;
     use crate::widget::Text;
+    use crate::widget::arrange::Row;
+    use tilo_ui_base::tokens::TextRole;
     use tilo_ui_base::widget::Element;
 
     #[test]

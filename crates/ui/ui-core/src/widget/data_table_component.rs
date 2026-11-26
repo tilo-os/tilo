@@ -6,11 +6,14 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::ResourceId, component::Value};
+use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui_base::selection::SelectionModel;
 use tilo_ui_base::text_render::TextKind;
 use tilo_ui_base::widget::Widget;
-use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::ResourceId,
+    component::Value,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TableColumnWidth {

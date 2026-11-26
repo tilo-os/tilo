@@ -10,8 +10,8 @@
 use serde_json::{Value, json};
 use tilo_resource::Doc;
 use tilo_ui::automerge::{Patch, PatchAction, Prop};
-use tilo_ui_base::num::f64_of_usize;
 use tilo_ui::vello::kurbo::{BezPath, Point, Rect, Shape as _};
+use tilo_ui_base::num::f64_of_usize;
 
 use crate::model::{Artwork, Layer, Mark, Selection};
 

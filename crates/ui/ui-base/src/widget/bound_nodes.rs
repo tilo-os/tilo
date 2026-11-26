@@ -331,10 +331,7 @@ pub struct NodeSweep<'m> {
 }
 
 impl<'m> NodeSweep<'m> {
-    pub fn new(
-        bindings: &'m BoundNodeMap,
-        nodes: &'m HashMap<NodeId, *mut dyn Widget>,
-    ) -> Self {
+    pub fn new(bindings: &'m BoundNodeMap, nodes: &'m HashMap<NodeId, *mut dyn Widget>) -> Self {
         Self {
             bindings,
             nodes,
@@ -403,9 +400,7 @@ pub unsafe fn mutate_bound_node<R>(
 
 /// Explicit compatibility mode for retained helpers; component adapters still
 /// enforce their own entry when called by an unbound legacy traversal.
-pub fn enter_traversal<const BOUND: bool>(
-    widget: &dyn Widget,
-) -> Result<NodeEntry, WalkError> {
+pub fn enter_traversal<const BOUND: bool>(widget: &dyn Widget) -> Result<NodeEntry, WalkError> {
     if BOUND {
         enter_widget(widget)
     } else {

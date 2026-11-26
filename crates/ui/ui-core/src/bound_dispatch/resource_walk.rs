@@ -2,11 +2,15 @@
 //! the items past a page, search providers, an action directory's pages),
 //! each read under the component the widget belongs to.
 
+use automerge::AutoCommit;
 #[cfg(feature = "model")]
 use tilo_ui_base::widget::ActionDirectoryResourcePage;
 use tilo_ui_base::widget::Widget;
-use tilo_ui_base::{widget::component_walk::Binding, widget::component_walk::Entry, widget::component_walk::binding_of, widget::component_walk::enter, widget::component_walk::has_separate_document_owner};
-use automerge::AutoCommit;
+use tilo_ui_base::{
+    widget::component_walk::Binding, widget::component_walk::Entry,
+    widget::component_walk::binding_of, widget::component_walk::enter,
+    widget::component_walk::has_separate_document_owner,
+};
 
 /// Where a walk stands at one widget: whether the widget is a component's
 /// boundary, the component it reads under, and that component's scope held.
@@ -90,7 +94,9 @@ pub(crate) fn collect_widget_resources(
         };
         if !crossing.boundary {
             let found = crossing
-                .read(doc, |doc| tilo_ui_base::widget::resources::resources(widget, doc))
+                .read(doc, |doc| {
+                    tilo_ui_base::widget::resources::resources(widget, doc)
+                })
                 .unwrap_or_default();
             let found = if root || crossing.binding.is_none() {
                 found

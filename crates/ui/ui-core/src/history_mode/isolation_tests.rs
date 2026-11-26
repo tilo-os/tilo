@@ -1,9 +1,6 @@
 use super::host_tests::registration;
 use super::*;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use crate::{State, headless::Driver, widget::Text};
-use tilo_ui_base::{widget::ActionEmitter, widget::Widget};
 use automerge::{AutoCommit, ObjId, ROOT, transaction::Transactable};
 use std::{
     cell::{Cell, RefCell},
@@ -11,6 +8,9 @@ use std::{
     rc::Rc,
 };
 use taffy::{NodeId, TaffyTree};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::ActionEmitter, widget::Widget};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
@@ -308,7 +308,10 @@ impl tilo_ui_base::widget::controls::ActionControls for LiveOwner {
 }
 
 impl tilo_ui_base::widget::undo_access::LocalUndo for LiveOwner {
-    fn handle_local_undo_request(&mut self, _: tilo_ui_base::widget::undo_access::UndoRequest) -> bool {
+    fn handle_local_undo_request(
+        &mut self,
+        _: tilo_ui_base::widget::undo_access::UndoRequest,
+    ) -> bool {
         self.local_events.set(self.local_events.get() + 1);
         true
     }

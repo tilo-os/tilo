@@ -2,9 +2,9 @@
 //! (`collab_types::WORKSPACE_DOCUMENTS`): one record in the workspace for
 //! every member, not one per person.
 
-use tilo_ui_base::Role;
 use tilo_app::prelude::*;
 use tilo_app_test_host::TestApp;
+use tilo_ui_base::Role;
 
 /// The app keeping the record: Browser, whose bookmarks the workspace keeps.
 const BROWSER: &str = "so.tilo.browser";

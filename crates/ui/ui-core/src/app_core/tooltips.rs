@@ -5,11 +5,11 @@
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
+use crate::widget::tooltip::TooltipHost;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::TooltipSide;
 use tilo_ui_base::widget::Widget;
-use crate::widget::tooltip::TooltipHost;
 
 /// Every tooltip `widget` and the shown widgets under `point` within it offer there.
 pub(super) fn targets_under(

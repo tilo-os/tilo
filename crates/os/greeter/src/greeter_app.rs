@@ -34,18 +34,22 @@ use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
 use tilo_ui_base::a11y::AccessibilityRequest;
-use ui::app::UserEvent;
 use tilo_ui_base::caps_lock::CapsLockEstimate;
 use tilo_ui_base::icons::Icon;
+use ui::app::UserEvent;
 
 #[cfg(test)]
 use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::{text_render::NumericStyle, text_render::OpenTypeTag, text_render::TextWeight};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
-use ui::{widget::Avatar, widget::Button, widget::ButtonRole, widget::ControlSize, widget::Dropdown, widget::FieldRole, widget::IconWidget, widget::Presentation, widget::Row, widget::Scrollable, widget::SecretKind, widget::SecretPrompt, widget::Text, widget::TextInput};
+use tilo_ui_base::{text_render::NumericStyle, text_render::OpenTypeTag, text_render::TextWeight};
 use tilo_ui_base::{widget::AvatarSize, widget::Spacer, widget::Widget};
+use ui::{
+    widget::Avatar, widget::Button, widget::ButtonRole, widget::ControlSize, widget::Dropdown,
+    widget::FieldRole, widget::IconWidget, widget::Presentation, widget::Row, widget::Scrollable,
+    widget::SecretKind, widget::SecretPrompt, widget::Text, widget::TextInput,
+};
 
 mod boot_mode;
 mod console;
@@ -382,10 +386,12 @@ impl Widget for Stack {
 
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         (self.access == StackAccess::Hidden).then(|| {
-            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group).with_state(tilo_ui_base::a11y::AccessState {
-                hidden: true,
-                ..Default::default()
-            })
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group).with_state(
+                tilo_ui_base::a11y::AccessState {
+                    hidden: true,
+                    ..Default::default()
+                },
+            )
         })
     }
 
@@ -2733,12 +2739,14 @@ impl tilo_ui_base::host_operation::ResourceOperations for GreeterApp {
         encoded.payload.zeroize();
         applied
             .map(|value| {
-                Some(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput {
-                        value: Some(value),
-                        resources: Vec::new(),
-                    },
-                ))
+                Some(
+                    tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+                        ui::tilo_actions::ActionOutput {
+                            value: Some(value),
+                            resources: Vec::new(),
+                        },
+                    ),
+                )
             })
             .map_err(|(_, message)| message)
     }

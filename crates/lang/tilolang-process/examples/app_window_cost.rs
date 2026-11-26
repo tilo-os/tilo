@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 
 use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::local::{End, pair};
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Widget as _;
 use tilolang_tilo::host::Host;
 use tilolang_tilo::instance::{
     Config, GlobalLocale, Instance, Locale, Mode, Platform, Publication,
@@ -32,8 +34,6 @@ use tilolang_tilo::instance::{
 use tilolang_tilo::publish::{Planner, Publications};
 use tilolang_tilo::runtime::{Actor, NameHost};
 use tilolang_tilo::tilolang::Compiled;
-use tilo_ui_base::widget::DrawChild;
-use tilo_ui_base::widget::Widget as _;
 
 /// The package and what it uses, compiled once for every instance.
 struct Packages(Rc<Vec<Compiled>>);

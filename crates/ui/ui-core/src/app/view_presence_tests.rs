@@ -1,13 +1,13 @@
 use super::*;
-use tilo_ui_base::Theme;
 use crate::resource::{DocumentCheckout, DocumentId, ResourceType};
 use crate::state::State;
 use crate::view::{FreezeThaw, ViewContribution, ViewSubset};
-use tilo_ui_base::widget::TaffyTreeExt;
-use tilo_ui_base::widget::Widget;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use taffy::TaffyTree;
+use tilo_ui_base::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 use vello::kurbo::Rect as KurboRect;
 
 /// No focus field — [`ViewSubset`] excludes the caret.

@@ -7,14 +7,16 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 
-use tilo_ui_base::{input::InputBinding, input::KeyboardBinding};
-use tilo_ui_base::{interaction::ControllerFamily, interaction::InteractionEnvironment, interaction::KeyboardFamily};
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::platform::PlatformConventions;
+use tilo_ui_base::{input::InputBinding, input::KeyboardBinding};
+use tilo_ui_base::{
+    interaction::ControllerFamily, interaction::InteractionEnvironment, interaction::KeyboardFamily,
+};
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[path = "input_hint_component.rs"]
@@ -521,7 +523,8 @@ impl Widget for InputHint {
             .iter()
             .map(|(label, shape)| match shape {
                 HintShape::RoundButton => {
-                    (tilo_ui_base::num::f64_of_usize(label.chars().count()) * 7.0 + CAP_PAD_X).max(height)
+                    (tilo_ui_base::num::f64_of_usize(label.chars().count()) * 7.0 + CAP_PAD_X)
+                        .max(height)
                 }
                 HintShape::Keycap | HintShape::Gesture => {
                     (tilo_ui_base::num::f64_of_usize(label.chars().count()) * 7.0 + CAP_PAD_X * 2.0)
@@ -616,9 +619,12 @@ impl Widget for InputHint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::{input::ControllerBinding, input::ControllerButton, input::KeyLegend, input::KeyboardModifier};
-    use tilo_ui_base::platform::Platform;
     use taffy::prelude::TaffyMaxContent;
+    use tilo_ui_base::platform::Platform;
+    use tilo_ui_base::{
+        input::ControllerBinding, input::ControllerButton, input::KeyLegend,
+        input::KeyboardModifier,
+    };
 
     #[test]
     fn input_hint_scales_layout_and_names_platform_legends() {

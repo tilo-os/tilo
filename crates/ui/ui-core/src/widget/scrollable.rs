@@ -1,15 +1,15 @@
-use tilo_ui_base::num::f32_of_f64;
 use crate::time::{Duration, Instant};
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::cell::Cell;
 use std::rc::Rc;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
+use crate::widget::scrollbar::Scrollbar;
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::TaffyTreeExt;
-use crate::widget::scrollbar::Scrollbar;
 use tilo_ui_base::{widget::Element, widget::ScrollAxis, widget::Widget};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::BlendMode;
@@ -2068,9 +2068,12 @@ impl Widget for Scrollable {
                     let clip = self.shown.drawing().map_or(self.rect, |shown| shown.clip);
                     if let Some(child) = &self.child {
                         let first = regions.len();
-                        tilo_ui_base::widget::with_layout_clip(self.content_viewport_rect(), || {
-                            child.collect_damage(regions);
-                        });
+                        tilo_ui_base::widget::with_layout_clip(
+                            self.content_viewport_rect(),
+                            || {
+                                child.collect_damage(regions);
+                            },
+                        );
                         if let Some(changed) = regions.get_mut(first..) {
                             for rect in changed {
                                 *rect = rect.intersect(clip);

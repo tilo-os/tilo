@@ -19,9 +19,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use tilo_ui::App;
-use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 use tilo_ui::state::State;
 use tilo_ui::widget::{Column, Text};
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 
 type PeerInboxes = HashMap<String, VecDeque<CollabEvent>>;
 

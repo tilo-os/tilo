@@ -1,10 +1,12 @@
 //! `ChangeMark`: what someone else changed that the person has not seen yet (task-legibility §3), as
 //! one pill in the changer's colour: their face, and the task run it was part of.
 
-use tilo_ui_base::{component, component::Component, component::Event, component::Person, component::ResourceId};
+use crate::{widget::Button, widget::Chip, widget::ChipStyle, widget::Container};
 use tilo_ui_base::tokens::Rhythm;
 use tilo_ui_base::tokens::colors::PresenceHue;
-use crate::{widget::Button, widget::Chip, widget::ChipStyle, widget::Container};
+use tilo_ui_base::{
+    component, component::Component, component::Event, component::Person, component::ResourceId,
+};
 use tilo_ui_base::{widget::Element, widget::Tone};
 
 /// What someone else changed of a resource that the person looking has not seen yet: who, in which task
@@ -164,8 +166,9 @@ impl ChangeMarkProps {
         pair.popover_mut()
             .set_label(tilo_ui_base::i18n::widget_format("change-catch-up", &[]));
         pair.popover_mut().set_confined_to_viewport(true);
-        pair.popover_mut()
-            .set_max_width(f64::from(tilo_ui_base::tokens::Metrics::BASE.panel_width_list));
+        pair.popover_mut().set_max_width(f64::from(
+            tilo_ui_base::tokens::Metrics::BASE.panel_width_list,
+        ));
         pair.popover_mut().set_sheet_when_narrow(true);
         Some(Box::new(pair))
     }

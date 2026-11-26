@@ -706,7 +706,9 @@ fn checked_off(session: &mut Session, title: &str) -> bool {
 /// Whether the sidebar shows `place` chosen.
 fn chosen(session: &mut Session, place: &str) -> bool {
     accessible(session).into_iter().any(|node| {
-        node.role == tilo_ui_base::a11y::Role::TreeItem && node.answers_to(place) && node.state.selected
+        node.role == tilo_ui_base::a11y::Role::TreeItem
+            && node.answers_to(place)
+            && node.state.selected
     })
 }
 

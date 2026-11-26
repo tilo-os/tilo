@@ -5,9 +5,15 @@ use std::collections::HashMap;
 use tilo_rich_edit::BlockEditor;
 use tilo_ui::headless::Driver;
 use tilo_ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
+use tilo_ui::{
+    widget::AppKind, widget::AppWidget, widget::GroupRow, widget::IconDescriptor,
+    widget::Scrollable, widget::TabDescriptor, widget::TileContent, widget::WindowGroup,
+    widget::WindowWidth,
+};
 use tilo_ui_base::theme::Theme;
-use tilo_ui::{widget::AppKind, widget::AppWidget, widget::GroupRow, widget::IconDescriptor, widget::Scrollable, widget::TabDescriptor, widget::TileContent, widget::WindowGroup, widget::WindowWidth};
-use tilo_ui_base::{widget::AppModel, widget::EventCtx, widget::ModelPath, widget::ScrollAxis, widget::Widget};
+use tilo_ui_base::{
+    widget::AppModel, widget::EventCtx, widget::ModelPath, widget::ScrollAxis, widget::Widget,
+};
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 

@@ -7,12 +7,14 @@ use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::ColorCompat as _;
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Value};
+use tilo_ui_base::tokens::MotionSource;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
 use tilo_ui_base::{motion::Drill, motion::Pose, motion::Presence};
 use tilo_ui_base::{text_render::FontChoice, text_render::TextRenderer};
-use tilo_ui_base::tokens::MotionSource;
 use tilo_ui_base::{widget::TaffyTreeExt as _, widget::Widget};
+use ui::ColorCompat as _;
 
 use super::from_rich;
 use super::layout::{ChapterLayout, ChapterLayoutRequest, LaidBlock, LayoutKind, layout_chapter};
@@ -187,10 +189,18 @@ impl Reading {
             "" | "serif" => FontChoice::Serif,
             "sans" => FontChoice::SansSerif,
             "mono" => FontChoice::Monospace,
-            "libertinus" => FontChoice::Named(tilo_ui_base::ReadingFace::Libertinus.family().to_owned()),
-            "literata" => FontChoice::Named(tilo_ui_base::ReadingFace::Literata.family().to_owned()),
-            "garamond" => FontChoice::Named(tilo_ui_base::ReadingFace::Garamond.family().to_owned()),
-            "source_serif" => FontChoice::Named(tilo_ui_base::ReadingFace::SourceSerif.family().to_owned()),
+            "libertinus" => {
+                FontChoice::Named(tilo_ui_base::ReadingFace::Libertinus.family().to_owned())
+            }
+            "literata" => {
+                FontChoice::Named(tilo_ui_base::ReadingFace::Literata.family().to_owned())
+            }
+            "garamond" => {
+                FontChoice::Named(tilo_ui_base::ReadingFace::Garamond.family().to_owned())
+            }
+            "source_serif" => {
+                FontChoice::Named(tilo_ui_base::ReadingFace::SourceSerif.family().to_owned())
+            }
             family => FontChoice::Named(family.to_owned()),
         }
     }
@@ -529,7 +539,8 @@ impl Reading {
     fn offset(&self, laid: &Laid) -> f32 {
         match self.mode {
             ReadingMode::Continuous => {
-                let head = laid.layout.total_height - tilo_ui_base::num::f32_of_f64(self.rect.height());
+                let head =
+                    laid.layout.total_height - tilo_ui_base::num::f32_of_f64(self.rect.height());
                 head.max(0.0) * tilo_ui_base::num::f32_of_f64(self.place).clamp(0.0, 1.0)
             }
             _ => 0.0,
@@ -960,11 +971,19 @@ impl Widget for Reading {
         self.dirty = self.needs_animation_frame();
     }
 
-    fn sync(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.report_pages();
     }
 
-    fn update(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         self.report_pages()
     }
 
@@ -1149,8 +1168,8 @@ impl Widget for Reading {
         let words: Vec<&str> = shown.iter().map(|block| block.text.as_str()).collect();
         // The page reads as a document of its paragraphs, each a line a reader meets in order,
         // as the page sets them.
-        let mut node =
-            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Document).with_name(words.join("\n"));
+        let mut node = tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Document)
+            .with_name(words.join("\n"));
         node.children = shown
             .iter()
             .filter(|block| !block.text.trim().is_empty())
@@ -1189,8 +1208,8 @@ fn mark_range(entry: &str) -> Option<(usize, usize, usize, Color)> {
 
 #[cfg(test)]
 mod tests {
-    use tilo_ui_graph::rich::{Block as WireBlock, RichText};
     use tilo_ui_base::{component::Fired, component::Intent};
+    use tilo_ui_graph::rich::{Block as WireBlock, RichText};
     use ui::testing::{dispatch, lay_out};
     use winit::keyboard::NamedKey;
 

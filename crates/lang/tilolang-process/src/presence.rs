@@ -17,11 +17,11 @@ use std::collections::HashMap;
 use collab_types::presence::Payload;
 use collaboration::{CollabEvent, CollabRequest, PresencePayload};
 use tilo_render_protocol::patch::ToUi;
+use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::{presence::DraftSaid, presence::PresenceCtx, presence::PresenceKey};
 use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::value::ResourceRef;
 use ui_core::component_lifecycle::Heard;
-use tilo_ui_base::permissions::MemberId;
-use tilo_ui_base::{presence::DraftSaid, presence::PresenceCtx, presence::PresenceKey};
 
 /// What an instance heard of the document's members, and what it last said of its own.
 pub struct Presence {

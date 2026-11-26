@@ -1,9 +1,9 @@
 //! The overflow button: the named place a control goes when the row it belongs to is too small.
 
-use tilo_ui_base::i18n::widget_text;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::i18n::widget_text;
 
 use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
@@ -11,10 +11,10 @@ use winit::event::WindowEvent;
 
 use tilo_ui_base::icons::Icon;
 
+use crate::widget::Button;
+use crate::widget::context_menu::{ContextMenu, MenuItem};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
-use crate::widget::context_menu::{ContextMenu, MenuItem};
-use crate::widget::Button;
 use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
 
 /// The toolkit's one overflow rule: which of a row's `count` items give way to its button.
@@ -64,7 +64,8 @@ pub fn plan(width: f64, widths: impl IntoIterator<Item = f64>, gap: f64, button:
             .filter(|(_, hidden)| !**hidden)
             .map(|(width, _)| *width)
             .collect();
-        shown.iter().sum::<f64>() + gap * tilo_ui_base::num::f64_of_usize(shown.len().saturating_sub(1))
+        shown.iter().sum::<f64>()
+            + gap * tilo_ui_base::num::f64_of_usize(shown.len().saturating_sub(1))
     };
     let hidden = give_way(widths.len(), width, button, used, |_| Some(0), |i| vec![i]);
     hidden.iter().take_while(|hidden| !**hidden).count()
@@ -247,13 +248,14 @@ impl Widget for OverflowButton {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text,
-            theme,
-            env.clone(),
-        ));
+        self.menu
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {

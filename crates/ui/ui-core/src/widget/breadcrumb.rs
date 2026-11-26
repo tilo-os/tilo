@@ -4,13 +4,13 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::widget::text::centered_text_top;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
-use crate::widget::text::centered_text_top;
 
 #[path = "breadcrumb_component.rs"]
 mod component;

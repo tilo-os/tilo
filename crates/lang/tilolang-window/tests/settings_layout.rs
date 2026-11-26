@@ -17,8 +17,8 @@
 mod support;
 
 use support::{accessible, open, open_pane, said, set_reading, settle, settle_motion, shows};
-use tilolang_window::Window;
 use tilo_ui_base::widget::Widget;
+use tilolang_window::Window;
 
 /// Every pane the sidebar opens, by the app's own name for it.
 const PANES: &[&str] = &[
@@ -121,7 +121,10 @@ fn past_the_edge(window: &Window, (width, height): (u32, u32)) -> Vec<String> {
 #[test]
 fn every_pane_fits_the_window_it_is_shown_in() {
     for (size, text_scale) in WINDOWS {
-        let mut window = open(size, tilo_ui_base::Theme::light().with_text_scale(text_scale));
+        let mut window = open(
+            size,
+            tilo_ui_base::Theme::light().with_text_scale(text_scale),
+        );
         for pane in PANES {
             open_pane(&mut window, pane);
             assert!(
@@ -289,7 +292,10 @@ fn a_tall_pane_scrolls_in_a_short_window() {
     );
     // The pointer rests over the pane: a wheel is the pointer's, sent where it stands.
     window.harness.dispatch_to_root_with(
-        &tilo_ui_base::synthetic_input::cursor_moved(f64::from(SHORT.0) / 2.0, f64::from(SHORT.1) / 2.0),
+        &tilo_ui_base::synthetic_input::cursor_moved(
+            f64::from(SHORT.0) / 2.0,
+            f64::from(SHORT.1) / 2.0,
+        ),
         &ui::winit::event::Modifiers::default(),
     );
     window.harness.relayout();

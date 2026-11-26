@@ -2,9 +2,9 @@
 //! the resource's actions published unavailable for that reason.
 
 use tilo_actions::ResourceSpec;
+use tilo_ui_base::widget::Decorator;
 use ui_core::automerge::AutoCommit;
 use ui_core::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
-use tilo_ui_base::widget::Decorator;
 
 use super::unreadable_state;
 

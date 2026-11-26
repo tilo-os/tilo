@@ -127,10 +127,12 @@ pub fn with_continuation_resource(
     };
     envelope.record = Some(record.as_str().to_owned());
     match postcard::to_stdvec(&envelope) {
-        Ok(bytes) if bytes.len() <= 32 * 1024 => tilo_ui_base::collaboration::ContinuationMetadata {
-            schema_version: STRUCTURAL_CONTINUATION_SCHEMA,
-            bytes,
-        },
+        Ok(bytes) if bytes.len() <= 32 * 1024 => {
+            tilo_ui_base::collaboration::ContinuationMetadata {
+                schema_version: STRUCTURAL_CONTINUATION_SCHEMA,
+                bytes,
+            }
+        }
         _ => metadata,
     }
 }
@@ -334,9 +336,9 @@ impl App {
         let metadata = if protected {
             None
         } else {
-            let semantic = tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::Continuable>(
-                &*self.root_widget,
-            )
+            let semantic = tilo_ui_base::widget::capability::capability::<
+                dyn tilo_ui_base::widget::Continuable,
+            >(&*self.root_widget)
             .and_then(|continuable| {
                 continuable.continuation_metadata(&self.state.doc, &self.state.root)
             });

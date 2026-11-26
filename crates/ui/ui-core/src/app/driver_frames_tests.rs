@@ -19,8 +19,8 @@ use winit::event::{ElementState, WindowEvent};
 
 use crate::headless::{Driver, Framed};
 use crate::state::State;
-use tilo_ui_base::theme::Theme;
 use crate::{widget::Column, widget::Text};
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::TaffyTreeExt as _, widget::Widget};
 
 // ---- frames a capture waits for ----
@@ -244,7 +244,11 @@ impl Probe {
 }
 
 impl Widget for Probe {
-    fn sync(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.syncs = self.syncs.saturating_add(1);
     }
 
@@ -339,8 +343,8 @@ fn recompose_rebuilds_an_unchanged_tree() {
 #[test]
 fn dispatch_to_root_reaches_the_root_and_keeps_the_retained_tree() {
     let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
-    let handled =
-        Framed::harness_mut(&mut probe).dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_press());
+    let handled = Framed::harness_mut(&mut probe)
+        .dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_press());
     assert!(handled);
     assert_eq!(probe.presses, 1);
 

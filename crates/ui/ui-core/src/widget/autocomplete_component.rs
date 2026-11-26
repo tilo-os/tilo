@@ -1,6 +1,9 @@
 //! [`Autocomplete`] as a described component.
 
-use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Event, component::Person};
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+    component::Person,
+};
 
 use super::{Autocomplete, RowRole, Suggestion};
 use crate::widget::TextInput;

@@ -4,11 +4,11 @@
 //! in the same slot), a **title** in the `Title` role, an optional one-sentence **message**
 //! in secondary ink s3 under it, and an optional primary **action** s4 under the text.
 
-use tilo_ui_base::i18n::widget_text;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use automerge::ObjId;
 use taffy::style_helpers::percent;
@@ -16,15 +16,18 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::widget::Scrollable;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::interaction::InteractionEnvironment;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::presence::PresenceCtx;
-use tilo_ui_base::{text_render::ParagraphAlign, text_render::TextRenderer, text_render::TextStyle, text_render::TextWrapMode};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
-use crate::widget::Scrollable;
+use tilo_ui_base::{
+    text_render::ParagraphAlign, text_render::TextRenderer, text_render::TextStyle,
+    text_render::TextWrapMode,
+};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[derive(Clone, Copy, Debug)]
@@ -732,7 +735,11 @@ fn paint_empty_state(
 
     if let Some(slot) = hero {
         if let Some((step, next)) = waiting_step {
-            tilo_ui_base::workspace_sync::spinner_painted(step, next, transform.transform_rect_bbox(slot));
+            tilo_ui_base::workspace_sync::spinner_painted(
+                step,
+                next,
+                transform.transform_rect_bbox(slot),
+            );
         }
         if let Some(spinner) = spinner {
             spinner.set_rect(slot);
@@ -1024,7 +1031,11 @@ impl PaintedEmptyStates {
     /// Where the painted action at `path` beneath `described` (what [`Self::describe`]
     /// returned) is drawn; `None` for any other node.
     #[must_use]
-    pub fn action_rect(&self, described: &tilo_ui_base::a11y::AccessNode, path: &[usize]) -> Option<Rect> {
+    pub fn action_rect(
+        &self,
+        described: &tilo_ui_base::a11y::AccessNode,
+        path: &[usize],
+    ) -> Option<Rect> {
         let mut node = described;
         for &index in path {
             node = node.children.get(index)?;
@@ -1621,7 +1632,8 @@ impl EmptyState {
         if rect.width() <= 0.0
             || rect.height() <= 0.0
             || content.action_label.is_none()
-            || tilo_ui_base::workspace_sync::waiting().is_some_and(|waiting| !waiting.keeps_action())
+            || tilo_ui_base::workspace_sync::waiting()
+                .is_some_and(|waiting| !waiting.keeps_action())
         {
             return None;
         }
@@ -2175,7 +2187,9 @@ impl tilo_ui_base::widget::controls::ActionControls for EmptyState {
         attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         if let Some(engine) = &mut self.engine {
-            tilo_ui_base::widget::controls::ActionControls::attach_controls(engine, domain, attachment);
+            tilo_ui_base::widget::controls::ActionControls::attach_controls(
+                engine, domain, attachment,
+            );
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {

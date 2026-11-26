@@ -14,15 +14,15 @@ use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stro
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
-use tilo_ui_base::chart_palette::ChartPalette;
-use tilo_ui_base::paint::with_alpha;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::TextRole;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_legend;
 use crate::widget::chart_readout::{Highlight, Readout};
 use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use tilo_ui_base::chart_palette::ChartPalette;
+use tilo_ui_base::paint::with_alpha;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AxisRange {
@@ -1379,7 +1379,8 @@ impl CartesianMarks {
 
     fn ticks(axis: &PlotAxis, domain: Domain, span: f64) -> Vec<AxisTick> {
         if !axis.ticks.is_empty() {
-            let available = tilo_ui_base::num::usize_of_f64((span / axis.min_tick_spacing).floor()).max(2);
+            let available =
+                tilo_ui_base::num::usize_of_f64((span / axis.min_tick_spacing).floor()).max(2);
             if axis.ticks.len() <= available {
                 return axis.ticks.clone();
             }
@@ -1812,7 +1813,8 @@ impl CartesianMarks {
                 theme.tokens.colors.text_dim,
                 transform
                     * Affine::translate((
-                        self.frame.rect.x0 + tilo_ui_base::num::f64_of_usize(index) * self.bands.tick_line,
+                        self.frame.rect.x0
+                            + tilo_ui_base::num::f64_of_usize(index) * self.bands.tick_line,
                         plot.center().y + f64::from(width) / 2.0,
                     ))
                     * Affine::rotate(-std::f64::consts::FRAC_PI_2),
@@ -2034,7 +2036,8 @@ impl CartesianMarks {
         points
             .iter()
             .map(|point| {
-                let left = tilo_ui_base::widget::layout::snap_to_device_pixels(point.x - width / 2.0);
+                let left =
+                    tilo_ui_base::widget::layout::snap_to_device_pixels(point.x - width / 2.0);
                 Rect::new(left, point.y.min(zero), left + width, point.y.max(zero))
             })
             .collect()
@@ -2224,7 +2227,8 @@ impl CartesianMarks {
         );
         let count = series.data.len();
         let points_per_pixel = self.style.rendering.max_points_per_pixel.clamp(0.25, 16.0);
-        let target = tilo_ui_base::num::usize_of_f64((plot.width().max(1.0) * points_per_pixel).ceil());
+        let target =
+            tilo_ui_base::num::usize_of_f64((plot.width().max(1.0) * points_per_pixel).ceil());
         let target = target.max(16);
         if !self.style.rendering.adaptive_sampling || !connected || count <= target || count <= 2 {
             return (0..count).collect();
@@ -3107,9 +3111,9 @@ impl PlotMarks for CartesianMarks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::chart_navigation::InteractiveChart as _;
     use tilo_ui_base::presence::PresenceCtx;
     use tilo_ui_base::widget::Widget;
-    use crate::widget::chart_navigation::InteractiveChart as _;
 
     fn band_plot() -> CartesianPlot {
         let series = [

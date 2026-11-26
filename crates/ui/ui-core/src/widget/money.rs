@@ -1,10 +1,10 @@
 //! An amount of money as people read it: `$5`, `$0.42`, `$1,250`.
 
-use tilo_ui_base::{component::Component, component::Described};
+use crate::widget::Text;
 use tilo_ui_base::format::Formats;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::Text;
 use tilo_ui_base::widget::Decorator;
+use tilo_ui_base::{component::Component, component::Described};
 
 /// An amount of money in millionths of the currency (`$5`, `$0.42`, `$1,250`), as the toolkit
 /// writes money: whole amounts without cents, fractional ones with two places, grouped and

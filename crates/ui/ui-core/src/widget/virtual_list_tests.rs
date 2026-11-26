@@ -1,9 +1,9 @@
 use super::*;
-use tilo_ui_base::collection_transition::ListModelChange;
 use crate::time::Duration;
 use automerge::AutoCommit;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use tilo_ui_base::collection_transition::ListModelChange;
 
 use crate::testing::Dispatch;
 use crate::widget::context_menu::MenuItem;
@@ -189,7 +189,10 @@ impl Widget for ProbeRow {
     }
 
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
-        Some(tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button).with_name(&self.label))
+        Some(
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button)
+                .with_name(&self.label),
+        )
     }
 }
 
@@ -1367,7 +1370,8 @@ where
     let at = list.rect.y0
         + list.viewport.item_view_top(row).unwrap()
         + list.viewport.item_height(row).unwrap() / 2.0;
-    let press = tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
+    let press =
+        tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
     crate::widget::context_menu::note_input(&press);
     dispatch(list, &cursor(at), &taffy, node);
     dispatch(list, &press, &taffy, node);
@@ -1944,11 +1948,11 @@ fn a_transcript_offers_the_way_to_what_is_unread_or_to_what_is_now() {
 /// first row the person has not seen.
 #[test]
 fn the_way_back_is_a_control_a_reader_or_an_agent_can_find_and_take() {
-    use tilo_ui_base::a11y::Action;
     use crate::app::driver::Driver;
     use crate::widget::ListRow;
     use crate::widget::conversation::Jump;
     use accesskit::Role as AkRole;
+    use tilo_ui_base::a11y::Action;
 
     fn transcript(unread: &str) -> VirtualList<VecListModel<u32, u32>> {
         let mut list = VirtualList::new(
@@ -2063,8 +2067,9 @@ fn the_way_back_is_as_wide_as_its_words_need() {
     list.set_key_presenting(|id: &str| id.parse::<u32>().ok());
     let _ = lay_out(&mut list, 200.0);
     let theme = Theme::dark();
-    let needs =
-        tilo_ui_base::text_render::with_layout_renderer(&theme, |text| Jump::Unread.width(text, &theme));
+    let needs = tilo_ui_base::text_render::with_layout_renderer(&theme, |text| {
+        Jump::Unread.width(text, &theme)
+    });
     let rect = list
         .pill_rect()
         .expect("the pill shows over rows read away from");
@@ -2085,9 +2090,9 @@ fn the_way_back_is_as_wide_as_its_words_need() {
 }
 
 fn page_column() -> VirtualList<VecListModel<u32, u32>> {
-    use tilo_ui_base::tokens::Rhythm;
     use crate::widget::Text;
     use crate::widget::arrange::{Page, Part, Stack};
+    use tilo_ui_base::tokens::Rhythm;
     VirtualList::from_items(
         (0..40_u32).collect(),
         64.0,
@@ -2220,10 +2225,10 @@ pub(super) fn within(within: accesskit::Rect, covered: accesskit::Rect) -> bool 
 
 #[test]
 fn a_closed_rows_own_controls_are_where_the_row_is() {
-    use tilo_ui_base::a11y::Action;
     use crate::app::driver::Driver;
     use crate::widget::{Checkbox, Column, Text};
     use accesskit::Role as AkRole;
+    use tilo_ui_base::a11y::Action;
 
     let done = tilo_ui_base::LocalState::new(false);
     let model = VecListModel::new(vec![7_u64], |key| *key).unwrap();
@@ -2261,10 +2266,10 @@ fn a_closed_rows_own_controls_are_where_the_row_is() {
 
 #[test]
 fn a_closed_rows_checkbox_is_one_control_under_one_row() {
-    use tilo_ui_base::a11y::Action;
     use crate::app::driver::Driver;
     use crate::widget::ListRow;
     use accesskit::Role as AkRole;
+    use tilo_ui_base::a11y::Action;
 
     let toggled = Rc::new(Cell::new(None::<bool>));
     let heard = Rc::clone(&toggled);
@@ -2401,7 +2406,10 @@ fn a_finger_held_on_a_row_lifts_it_and_moves_it_in_the_list() {
             .send(list, event)
             .handled
     };
-    send(&mut list, &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y));
+    send(
+        &mut list,
+        &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y),
+    );
     send(&mut list, &left(ElementState::Pressed));
     send(
         &mut list,

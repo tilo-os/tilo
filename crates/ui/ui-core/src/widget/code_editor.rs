@@ -16,9 +16,9 @@
 //! editor.set_text("fn main() {\n    println!(\"hi\");\n}\n");
 //! ```
 
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::ops::Range;
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -26,15 +26,15 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
+use crate::{widget::TextInput, widget::TextInputKind};
 #[cfg(test)]
 use tilo_ui_base::presence::PresenceCtx;
-use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::widget::TaffyTreeExt;
-use crate::{widget::TextInput, widget::TextInputKind};
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 
 pub mod syntax;
 pub mod tilolang;
@@ -733,13 +733,14 @@ impl Widget for CodeEditor {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.inner.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            env.clone(),
-        ));
+        self.inner
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         self.draw_diagnostic_hover(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,

@@ -7,11 +7,14 @@
 use vello::kurbo::Rect;
 
 use super::Driver;
-use tilo_ui_base::a11y::AccessNode;
 use crate::headless::InspectionNode;
 use crate::widget::window_header::{content_bar, root_header_row};
 use crate::widget::window_toolbar_row::SIDEBAR_TARGET;
-use crate::{widget::ColumnFrame, widget::NavPane, widget::NavShell, widget::SidebarPlacement, widget::WindowFrame, widget::WindowHeader};
+use crate::{
+    widget::ColumnFrame, widget::NavPane, widget::NavShell, widget::SidebarPlacement,
+    widget::WindowFrame, widget::WindowHeader,
+};
+use tilo_ui_base::a11y::AccessNode;
 use tilo_ui_base::widget::Widget;
 
 /// The sidebar toggle a shell's own header row holds while the app's parts are not in a bar.
@@ -80,8 +83,8 @@ impl Driver {
         viewport: (u32, u32),
         theme: tilo_ui_base::theme::Theme,
     ) -> Self {
-        use tilo_ui_base::component::Described as _;
         use crate::widget::arrange::{Fit, Part, Stack};
+        use tilo_ui_base::component::Described as _;
         let frame = WindowFrame::from_props(
             "window",
             crate::widget::WindowFrameProps {
@@ -386,7 +389,8 @@ impl Driver {
             if rect.area() > 0.0
                 && rows.iter().any(|row| row.contains(rect.center()))
                 && node.semantics.as_ref().is_some_and(|access| {
-                    access.role == tilo_ui_base::a11y::Role::Button && access.name.as_deref() == Some(name)
+                    access.role == tilo_ui_base::a11y::Role::Button
+                        && access.name.as_deref() == Some(name)
                 })
             {
                 return Some(rect);

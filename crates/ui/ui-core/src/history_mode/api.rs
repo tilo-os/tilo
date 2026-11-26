@@ -9,10 +9,10 @@ use tilo_actions::{
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
+use crate::widget::Button;
+use crate::widget::window_header::HistoryControl;
 use tilo_ui_base::i18n::I18nManager;
 use tilo_ui_base::theme::Theme;
-use crate::widget::window_header::HistoryControl;
-use crate::widget::Button;
 use tilo_ui_base::widget::HistoryEntryId;
 
 pub(crate) const HISTORY_OPERATION: &str = "tilo.host.history.view";

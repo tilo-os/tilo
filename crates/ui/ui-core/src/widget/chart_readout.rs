@@ -10,9 +10,9 @@ use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
 use tilo_ui_base::paint::with_alpha;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 
 /// What a chart reads at the mark a person inspects.
 #[derive(Clone, Debug, PartialEq)]
@@ -280,23 +280,26 @@ impl Readout {
         let on_panel = theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
         let styles = Styles::of(theme);
         let ink = Inks::of(&on_panel);
-        let mut words =
-            |tr: &mut TextRenderer, text: &str, rect: Rect, color, style: &TextStyle| {
-                if text.is_empty() || rect.width() <= 0.0 {
-                    return;
-                }
-                let shown =
-                    tr.elide_to_width_style(text, tilo_ui_base::num::f32_of_f64(rect.width()), style);
-                let (_, h) = tr.measure_style(&shown, None, style);
-                tr.draw_style(
-                    scene,
-                    &shown,
-                    color,
-                    transform * Affine::translate((rect.x0, rect.center().y - f64::from(h) / 2.0)),
-                    None,
-                    style,
-                );
-            };
+        let mut words = |tr: &mut TextRenderer,
+                         text: &str,
+                         rect: Rect,
+                         color,
+                         style: &TextStyle| {
+            if text.is_empty() || rect.width() <= 0.0 {
+                return;
+            }
+            let shown =
+                tr.elide_to_width_style(text, tilo_ui_base::num::f32_of_f64(rect.width()), style);
+            let (_, h) = tr.measure_style(&shown, None, style);
+            tr.draw_style(
+                scene,
+                &shown,
+                color,
+                transform * Affine::translate((rect.x0, rect.center().y - f64::from(h) / 2.0)),
+                None,
+                style,
+            );
+        };
         if let Some(rect) = placed.title {
             words(tr, &self.title, rect, ink.title, &styles.title);
         }

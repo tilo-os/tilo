@@ -492,8 +492,8 @@ impl ProgressRing {
     }
 
     fn face(&self) -> ProgressRingFace<'_> {
-        let mut face =
-            ProgressRingFace::new(self.drawn.get(tilo_ui_base::motion::frame_now())).size(self.size);
+        let mut face = ProgressRingFace::new(self.drawn.get(tilo_ui_base::motion::frame_now()))
+            .size(self.size);
         face.fill = self.fill;
         if !self.value.is_empty() {
             face = face.value(&self.value);
@@ -508,7 +508,11 @@ impl ProgressRing {
 impl Widget for ProgressRing {
     tilo_ui_base::described!();
 
-    fn sync(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
+    ) {
         if let Some(reading) = self.source.as_mut().and_then(|read| read()) {
             self.apply_reading(reading);
         }
@@ -571,7 +575,9 @@ impl Widget for ProgressRing {
     fn needs_animation_frame(&self) -> bool {
         // The ring keeps asking for frames while its fill is on its way to the value it shows.
         self.drawn.is_moving(tilo_ui_base::motion::frame_now())
-            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
+                self.for_each_child(visit)
+            })
     }
 
     fn name(&self) -> &'static str {

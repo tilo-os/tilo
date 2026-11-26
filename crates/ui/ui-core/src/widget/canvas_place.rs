@@ -20,11 +20,16 @@ use winit::event::WindowEvent;
 
 use tilo_ui_base::{component::Component, component::Described};
 
-use tilo_ui_base::{tokens::Rhythm, tokens::SpacingStep, tokens::TextRole};
 use crate::widget::arrange::{Align, Fit, Part, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
-use crate::{widget::ContextMenuArea, widget::DragSource, widget::HoverToolbar, widget::MenuItemProps, widget::Text};
-use tilo_ui_base::{widget::Decorator, widget::DrawChild, widget::Element, widget::Spacer, widget::Widget};
+use crate::{
+    widget::ContextMenuArea, widget::DragSource, widget::HoverToolbar, widget::MenuItemProps,
+    widget::Text,
+};
+use tilo_ui_base::{tokens::Rhythm, tokens::SpacingStep, tokens::TextRole};
+use tilo_ui_base::{
+    widget::Decorator, widget::DrawChild, widget::Element, widget::Spacer, widget::Widget,
+};
 
 /// A resource's view on a canvas: the view on the window surface, with a handle shown
 /// over its corner on hover and focus that names it, holds its controls and moves it.

@@ -226,7 +226,10 @@ impl Commands {
             .iter()
             .map(|command| {
                 vec![
-                    (command.title.clone(), tilo_ui_base::text_match::FieldWeight::TITLE),
+                    (
+                        command.title.clone(),
+                        tilo_ui_base::text_match::FieldWeight::TITLE,
+                    ),
                     (
                         command.subtitle.clone().unwrap_or_default(),
                         tilo_ui_base::text_match::FieldWeight::SUBTITLE,
@@ -537,7 +540,10 @@ impl Published {
             }),
             facts: Vec::new(),
             score,
-            icon: action.icon.as_deref().and_then(tilo_ui_base::icons::Icon::from_name),
+            icon: action
+                .icon
+                .as_deref()
+                .and_then(tilo_ui_base::icons::Icon::from_name),
             target: Target::Invoke(Box::new(crate::model::InvokeTarget {
                 arguments,
                 descriptor: Some(action.clone()),
@@ -1058,7 +1064,8 @@ impl Answers {
                         ("amount", from.into()),
                         (
                             "age",
-                            tilo_ui_base::format::relative(i64::try_from(age).unwrap_or(i64::MAX)).into(),
+                            tilo_ui_base::format::relative(i64::try_from(age).unwrap_or(i64::MAX))
+                                .into(),
                         ),
                     ],
                 )
@@ -1436,8 +1443,14 @@ impl Switches {
             .map(|(title, detail)| {
                 vec![
                     (title.clone(), tilo_ui_base::text_match::FieldWeight::TITLE),
-                    (detail.clone(), tilo_ui_base::text_match::FieldWeight::SUBTITLE),
-                    (keywords.clone(), tilo_ui_base::text_match::FieldWeight::KEYWORD),
+                    (
+                        detail.clone(),
+                        tilo_ui_base::text_match::FieldWeight::SUBTITLE,
+                    ),
+                    (
+                        keywords.clone(),
+                        tilo_ui_base::text_match::FieldWeight::KEYWORD,
+                    ),
                 ]
             })
             .collect();
@@ -1466,7 +1479,11 @@ impl Source for Switches {
             return Vec::new();
         }
         // One index over every switch, built where the search asks them.
-        let ranks = rank::rank_rows(&tilo_ui_base::text_match::ListIndex::default(), needle, &self.fields);
+        let ranks = rank::rank_rows(
+            &tilo_ui_base::text_match::ListIndex::default(),
+            needle,
+            &self.fields,
+        );
         self.sources
             .iter()
             .zip(&self.rows)
@@ -2718,7 +2735,9 @@ mod tests {
         fn query(&self, needle: &str) -> Vec<Hit> {
             let typed = tilo_ui_base::text_match::fold_search_text(needle.trim());
             let title = "Write a launch checklist note in Notes with five short items";
-            if typed.is_empty() || !tilo_ui_base::text_match::fold_search_text(title).contains(&typed) {
+            if typed.is_empty()
+                || !tilo_ui_base::text_match::fold_search_text(title).contains(&typed)
+            {
                 return Vec::new();
             }
             vec![Hit {

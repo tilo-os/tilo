@@ -12,7 +12,10 @@ use tilo_ui_base::widget::Widget;
 
 #[cfg(feature = "local-daemons")]
 use tilo_ui_base::widget::avatar_face::profile_image;
-use tilo_ui_base::{widget::avatar_face::AvatarFace, widget::avatar_face::AvatarSize, widget::avatar_face::PresenceStatus};
+use tilo_ui_base::{
+    widget::avatar_face::AvatarFace, widget::avatar_face::AvatarSize,
+    widget::avatar_face::PresenceStatus,
+};
 
 enum Picture {
     None,
@@ -257,7 +260,11 @@ impl Widget for Avatar {
         Some(self)
     }
 
-    fn sync(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.refresh_name();
         self.follow_picture();
     }

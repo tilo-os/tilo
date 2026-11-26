@@ -11,8 +11,8 @@ use std::collections::HashMap;
 
 use tilo_desktop_model::commands::{DesktopCommand, apply_command};
 use tilo_desktop_model::{CanvasPlace, FloatPlace, GroupId, Layout, StripId, TabId, Workspace};
-use ui::kurbo::{Point, Rect};
 use tilo_ui_base::{num::f64_of_i64, num::i32_of_f64, num::u32_of_f64};
+use ui::kurbo::{Point, Rect};
 use ui::widget::FLOAT_CARD_SIZE;
 
 use super::Shared;

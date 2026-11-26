@@ -6,11 +6,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use super::{AnyModel, ListKey, VirtualRows};
+use crate::widget::Interaction;
+use crate::widget::section::{SectionHeaderFace, band_height, heading_count};
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::widget::section::{SectionHeaderFace, band_height, heading_count};
-use crate::widget::Interaction;
 use tilo_ui_base::widget::Tone;
 
 pub(super) const HEADING_TARGET: &str = "group:";

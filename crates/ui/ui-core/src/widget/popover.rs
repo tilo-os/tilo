@@ -7,11 +7,11 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use crate::widget::autocomplete::{Suggestion, SuggestionList};
+use crate::widget::floating_surface;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::autocomplete::{Suggestion, SuggestionList};
-use crate::widget::floating_surface;
 use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
 
 /// Side of the anchor a popover prefers to open on. It flips to the
@@ -19,8 +19,8 @@ use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::TaffyTreeExt, wi
 /// [`Popover::resolved_side`].
 pub use crate::widget::floating_surface::PopoverSide;
 
-use tilo_ui_base::widget::DrawChild;
 pub use crate::widget::floating_surface::PanelAlign;
+use tilo_ui_base::widget::DrawChild;
 
 #[derive(Clone, Copy, Debug, Default)]
 #[tilo_ui_base::component::not_a_component(part, "a popover with no body of its own")]
@@ -812,11 +812,17 @@ impl PopoverPanel {
         }
         if self.open {
             let theme = self.layout_theme.clone();
-            tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| self.place(content, tr, &theme));
+            tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| {
+                self.place(content, tr, &theme)
+            });
         }
     }
 
-    fn draw_overlay(&mut self, content: &mut dyn Widget, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
+    fn draw_overlay(
+        &mut self,
+        content: &mut dyn Widget,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
+    ) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1177,7 +1183,10 @@ impl Widget for PopoverPrompt {
         self.theme = theme.clone();
         let (w, h) = self.size(theme);
         let style = Style {
-            size: Size::from_lengths(tilo_ui_base::num::f32_of_f64(w), tilo_ui_base::num::f32_of_f64(h)),
+            size: Size::from_lengths(
+                tilo_ui_base::num::f32_of_f64(w),
+                tilo_ui_base::num::f32_of_f64(h),
+            ),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -1550,7 +1559,13 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.panel.draw_overlay(
             &mut self.content,
-            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
     }
 
@@ -1763,7 +1778,10 @@ impl<C: Widget + 'static> PopoverButton<C> {
 }
 
 impl<C: Widget + 'static> Widget for PopoverButton<C> {
-    fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
+    fn set_platform_conventions(
+        &mut self,
+        conventions: tilo_ui_base::platform::PlatformConventions,
+    ) {
         self.button.set_platform_conventions(conventions);
         self.popover.set_platform_conventions(conventions);
     }
@@ -1817,21 +1835,23 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.button.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            env.clone(),
-        ));
+        self.button
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         self.popover.set_anchor(self.button.get_rect());
-        self.popover.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            env.clone(),
-        ));
+        self.popover
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {

@@ -16,11 +16,11 @@ use super::model::{CommandGroup, HostCommand};
 use tilo_ui_base::i18n::I18nManager;
 use tilo_ui_base::icons::Icon;
 
+use crate::widget::ControlSize;
+use crate::{widget::Button, widget::ContextMenu, widget::MenuItem, widget::Row, widget::Text};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::widget::ControlSize;
 use tilo_ui_base::widget::DrawChild;
-use crate::{widget::Button, widget::ContextMenu, widget::MenuItem, widget::Row, widget::Text};
 use tilo_ui_base::{widget::Spacer, widget::Widget};
 
 /// What the person asked of the window or the app through the bar.
@@ -100,8 +100,9 @@ impl HeaderBar {
                 menu.push(MenuItem::separator());
             }
             previous = Some(command.group);
-            let press =
-                tilo_ui_base::widget::Press::of(tilo_ui_base::component::Event::Action(command.binding.clone()));
+            let press = tilo_ui_base::widget::Press::of(tilo_ui_base::component::Event::Action(
+                command.binding.clone(),
+            ));
             menu.push(MenuItem::bound(command.label.clone(), press).with_enabled(command.enabled));
         }
 
@@ -215,7 +216,9 @@ impl HeaderBar {
         // which stays in place and unaliased for both calls.
         let solved = unsafe {
             bindings.rebuild(self, tree, node, nodes);
-            tilo_ui_base::widget::compute_widget_layout(tree, node, available, nodes, &bindings, text)
+            tilo_ui_base::widget::compute_widget_layout(
+                tree, node, available, nodes, &bindings, text,
+            )
         };
         solved.ok()?;
         self.apply_layout(tree, node, Point::ORIGIN);
@@ -278,7 +281,11 @@ fn control(id: &str, icon: Icon, key: &str) -> Button {
 }
 
 impl Widget for HeaderBar {
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.dirty = true;
         self.take_menu_request();
         for child in self.children_mut() {
@@ -333,13 +340,14 @@ impl Widget for HeaderBar {
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.menu.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text,
-            theme,
-            env.clone(),
-        ));
+        self.menu
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
@@ -376,7 +384,11 @@ impl Widget for HeaderBar {
         // from the app's tree, so it answers the press here, before the
         // menu it asks for opens.
         let path = ctx.path;
-        tilo_ui_base::widget::controls::start_pending_control_invocations(self, &mut ctx.edits(), path);
+        tilo_ui_base::widget::controls::start_pending_control_invocations(
+            self,
+            &mut ctx.edits(),
+            path,
+        );
         self.take_menu_request();
         if !*ctx.handled
             && matches!(

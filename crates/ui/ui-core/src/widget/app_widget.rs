@@ -2,9 +2,9 @@
 //! inside a tile. Extends the base `Widget` trait with app-level metadata (kind, title, icon,
 //! permission hint, commands).
 
-use tilo_ui_base::widget::Widget;
 use std::cell::RefCell;
 use std::rc::Weak;
+use tilo_ui_base::widget::Widget;
 
 /// The person's answer to [`AppProcessIntent::AllowHostShell`]: `None` until they choose, then whether
 /// the device's own shell was allowed.
@@ -372,12 +372,20 @@ mod component_adapter {
     }
 
     use super::{AppProcessIntent, AppWidget, IconDescriptor};
-    use tilo_ui_base::widget::Widget;
     use crate::application::AppComponent;
     use crate::floating_surface::{FloatingSurfaceProvider, FloatingSurfaceWidgetExt};
-    use tilo_ui_base::widget::DrawChild;
     use crate::{time::Instant, widget::AppKind};
-    use tilo_ui_base::{widget::ActionDirectoryResourcePage, widget::Affine, widget::AudiencePresentationProvider, widget::AudiencePresentationWidgetExt, widget::AutoCommit, widget::CompleteContentProvider, widget::CompleteContentWidgetExt, widget::ControlBindingMetadata, widget::FullscreenProvider, widget::FullscreenWidgetExt, widget::HashMap, widget::HashSet, widget::NodeId, widget::ObjId, widget::PresenceKey, widget::ResourceOperationStart, widget::Scene, widget::TaffyTree, widget::TaffyTreeExt, widget::TextRenderer, widget::Theme, widget::WindowEvent};
+    use tilo_ui_base::widget::DrawChild;
+    use tilo_ui_base::widget::Widget;
+    use tilo_ui_base::{
+        widget::ActionDirectoryResourcePage, widget::Affine, widget::AudiencePresentationProvider,
+        widget::AudiencePresentationWidgetExt, widget::AutoCommit, widget::CompleteContentProvider,
+        widget::CompleteContentWidgetExt, widget::ControlBindingMetadata,
+        widget::FullscreenProvider, widget::FullscreenWidgetExt, widget::HashMap, widget::HashSet,
+        widget::NodeId, widget::ObjId, widget::PresenceKey, widget::ResourceOperationStart,
+        widget::Scene, widget::TaffyTree, widget::TaffyTreeExt, widget::TextRenderer,
+        widget::Theme, widget::WindowEvent,
+    };
 
     pub(crate) struct BoundAppWidget {
         pub(crate) component: AppComponent,
@@ -428,7 +436,9 @@ mod component_adapter {
             Now {
                 revision: binding.lifetime.revision(),
                 document: binding
-                    .read_document(outer, |document, _| tilo_ui_base::doc::settle_mark(document))
+                    .read_document(outer, |document, _| {
+                        tilo_ui_base::doc::settle_mark(document)
+                    })
                     .ok(),
                 inputs: Self::inputs(&self.component, &binding),
             }
@@ -521,7 +531,10 @@ mod component_adapter {
                         return;
                     };
                     let before = tilo_ui_base::doc::settle_mark(document);
-                    root.settle(&mut tilo_ui_base::widget::Edits::lend(document), resource_root);
+                    root.settle(
+                        &mut tilo_ui_base::widget::Edits::lend(document),
+                        resource_root,
+                    );
                     let _ = binding.drain_owned_tree(root, document);
                     if tilo_ui_base::doc::settle_mark(document) != before {
                         root.update(document, resource_root);
@@ -543,7 +556,9 @@ mod component_adapter {
                     widget
                         .component
                         .callback_binding()
-                        .read_document(state, |document, _| tilo_ui_base::doc::settle_mark(document))
+                        .read_document(state, |document, _| {
+                            tilo_ui_base::doc::settle_mark(document)
+                        })
                         .ok(),
                     widget
                         .in_root(|root| root.layout_needs_measure() || root.is_layout_dirty())
@@ -618,7 +633,11 @@ mod component_adapter {
         }
 
         /// Note what the pass that just ran read: `reads` outside the component, and what stands now.
-        fn observation_pass(&mut self, outer: &AutoCommit, reads: tilo_ui_base::component_inputs::Reads) {
+        fn observation_pass(
+            &mut self,
+            outer: &AutoCommit,
+            reads: tilo_ui_base::component_inputs::Reads,
+        ) {
             if self.in_root(|root| Self::busy(root)).unwrap_or(true) {
                 self.observation = None;
                 return;
@@ -663,7 +682,11 @@ mod component_adapter {
         fn with_root_edits<R: Default>(
             &mut self,
             edits: &mut tilo_ui_base::widget::Edits<'_>,
-            f: impl FnOnce(&mut (dyn Widget + 'static), &mut tilo_ui_base::widget::Edits<'_>, &ObjId) -> R,
+            f: impl FnOnce(
+                &mut (dyn Widget + 'static),
+                &mut tilo_ui_base::widget::Edits<'_>,
+                &ObjId,
+            ) -> R,
         ) -> R {
             let binding = self.component.callback_binding();
             binding.note_input();
@@ -719,8 +742,10 @@ mod component_adapter {
             binding
                 .read_document(state, |document, resource_root| {
                     let root = self.component.root.as_deref()?;
-                    tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::Continuable>(root)?
-                        .continuation_metadata(document, resource_root)
+                    tilo_ui_base::widget::capability::capability::<
+                        dyn tilo_ui_base::widget::Continuable,
+                    >(root)?
+                    .continuation_metadata(document, resource_root)
                 })
                 .unwrap_or(None)
         }
@@ -748,7 +773,11 @@ mod component_adapter {
             self.in_root_mut(|root| root.on_floating_surface_ime_source_changed(id));
         }
 
-        fn draw_floating_surface(&mut self, id: &str, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) -> bool {
+        fn draw_floating_surface(
+            &mut self,
+            id: &str,
+            ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
+        ) -> bool {
             #[allow(
                 unused_variables,
                 unused_mut,
@@ -791,7 +820,10 @@ mod component_adapter {
                 .unwrap_or_default()
         }
 
-        fn floating_surface_accessibility(&self, id: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
+        fn floating_surface_accessibility(
+            &self,
+            id: &str,
+        ) -> Option<tilo_ui_base::a11y::AccessNode> {
             self.in_root(|root| root.floating_surface_accessibility(id))
                 .flatten()
         }
@@ -1005,13 +1037,15 @@ mod component_adapter {
             let offset = root
                 .primary_vertical_scroll()
                 .map(|region| region.metrics.offset);
-            if tilo_ui_base::widget::layout::lay_out_detached(root, bounds, theme, text_renderer).is_err()
+            if tilo_ui_base::widget::layout::lay_out_detached(root, bounds, theme, text_renderer)
+                .is_err()
             {
                 return false;
             }
             let inner = crate::widget::app_widget::lent_permissions(&env, &binding);
             root.draw_child(scene, transform, text_renderer, theme, &inner);
-            let _ = tilo_ui_base::widget::layout::lay_out_detached(root, live, theme, text_renderer);
+            let _ =
+                tilo_ui_base::widget::layout::lay_out_detached(root, live, theme, text_renderer);
             if let Some(offset) = offset {
                 let _ = root.apply_primary_vertical_scroll(
                     tilo_ui_base::widget::PrimaryScrollAction::Absolute(offset),
@@ -1121,7 +1155,10 @@ mod component_adapter {
                 .stamp(binding.lifetime_id)
         }
 
-        fn mount_native_views(&mut self, host: &tilo_ui_base::widget::native_view::NativeViewHost<'_>) {
+        fn mount_native_views(
+            &mut self,
+            host: &tilo_ui_base::widget::native_view::NativeViewHost<'_>,
+        ) {
             self.in_root_mut(|root| root.mount_native_views(host));
         }
         fn unmount_native_views(&mut self) {
@@ -1130,7 +1167,10 @@ mod component_adapter {
         fn native_view_frame_start(&mut self) {
             self.in_root_mut(|root| root.native_view_frame_start());
         }
-        fn set_platform_conventions(&mut self, conventions: tilo_ui_base::platform::PlatformConventions) {
+        fn set_platform_conventions(
+            &mut self,
+            conventions: tilo_ui_base::platform::PlatformConventions,
+        ) {
             self.owes_sync = true;
             self.in_root_mut(|root| root.set_platform_conventions(conventions));
         }
@@ -1144,7 +1184,11 @@ mod component_adapter {
             }
             self.in_root_mut(|root| root.set_interaction_environment(environment));
         }
-        fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+        fn sync(
+            &mut self,
+            state: &tilo_ui_base::widget::AppModel,
+            path: &tilo_ui_base::widget::ModelPath,
+        ) {
             let (state, _) = tilo_ui_base::doc::document_ref(state, path);
             if self.at_rest(state) {
                 #[cfg(debug_assertions)]
@@ -1299,7 +1343,11 @@ mod component_adapter {
             let inner = crate::widget::app_widget::lent_permissions(&env, &binding);
             root.draw_child(scene, transform, text_renderer, theme, &inner);
         }
-        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+        ) {
             let binding = self.component.callback_binding();
             // Whether this event alone panned a view: the host reads the
             // same answer once dispatch ends, so it is handed back.
@@ -1861,8 +1909,10 @@ mod component_adapter {
 
         fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
             self.in_root(|root| {
-                tilo_ui_base::widget::capability::capability::<dyn crate::widget::WindowHistory>(root)?
-                    .window_history_control()
+                tilo_ui_base::widget::capability::capability::<dyn crate::widget::WindowHistory>(
+                    root,
+                )?
+                .window_history_control()
             })
             .flatten()
         }
@@ -2260,7 +2310,9 @@ mod component_adapter {
             tilo_ui_base::widget::presence_topology::leave_presence_in_children(self, presence);
         }
         fn set_presence_label(&mut self, presence: &tilo_actions::PresenceId, label: &str) {
-            tilo_ui_base::widget::presence_topology::set_presence_label_in_children(self, presence, label);
+            tilo_ui_base::widget::presence_topology::set_presence_label_in_children(
+                self, presence, label,
+            );
         }
         fn set_remote_only(&mut self, host: bool) {
             tilo_ui_base::widget::presence_topology::set_remote_only_in_children(self, host);
@@ -2275,7 +2327,9 @@ mod component_adapter {
                     self.component
                         .root
                         .as_deref()
-                        .map(|root| tilo_ui_base::widget::presence_topology::presences(root, document))
+                        .map(|root| {
+                            tilo_ui_base::widget::presence_topology::presences(root, document)
+                        })
                         .unwrap_or_default()
                 })
                 .unwrap_or_default()

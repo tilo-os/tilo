@@ -292,7 +292,10 @@ impl Widget for WindowWell {
     /// The window of the place it shows, standing here: a page's host fills it with what stands
     /// for that window ([`crate::composition::page::well_place`]).
     fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
-        Some(tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Window).with_item(self.place.clone()))
+        Some(
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Window)
+                .with_item(self.place.clone()),
+        )
     }
 
     fn build_layout(

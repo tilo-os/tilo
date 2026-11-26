@@ -7,9 +7,12 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use crate::{
+    widget::Button, widget::Column, widget::ControlSize, widget::EmptyState, widget::ListRow,
+    widget::ProgressBar, widget::Row, widget::Scrollable, widget::Section, widget::SectionHeader,
+};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::tokens::Rhythm;
-use crate::{widget::Button, widget::Column, widget::ControlSize, widget::EmptyState, widget::ListRow, widget::ProgressBar, widget::Row, widget::Scrollable, widget::Section, widget::SectionHeader};
 use tilo_ui_base::{widget::Decorator, widget::Element, widget::Widget};
 
 use super::record::{Job, JobId, Progress, Subject, Unit};
@@ -125,12 +128,18 @@ pub fn pane(presses: &Presses) -> Column {
     let mut parts: Vec<Element> = Vec::new();
     if !running.is_empty() {
         parts.push(Box::new(Section::new(running).with_header(
-            SectionHeader::group(tilo_ui_base::i18n::widget_format("jobs-running-heading", &[])),
+            SectionHeader::group(tilo_ui_base::i18n::widget_format(
+                "jobs-running-heading",
+                &[],
+            )),
         )));
     }
     if !ended.is_empty() {
         parts.push(Box::new(Section::new(ended).with_header(
-            SectionHeader::group(tilo_ui_base::i18n::widget_format("jobs-finished-heading", &[])),
+            SectionHeader::group(tilo_ui_base::i18n::widget_format(
+                "jobs-finished-heading",
+                &[],
+            )),
         )));
     }
     let mut column = Column::new()
@@ -221,8 +230,14 @@ fn bar(job: &Job) -> Element {
         (Progress::Measured { done, total }, unit) => tilo_ui_base::i18n::widget_format(
             "jobs-bar-of",
             &[
-                ("done", tilo_ui_base::i18n::ArgValue::from(unit.format(*done))),
-                ("total", tilo_ui_base::i18n::ArgValue::from(unit.format(*total))),
+                (
+                    "done",
+                    tilo_ui_base::i18n::ArgValue::from(unit.format(*done)),
+                ),
+                (
+                    "total",
+                    tilo_ui_base::i18n::ArgValue::from(unit.format(*total)),
+                ),
             ],
         ),
         (Progress::Seen { seen: _ }, Unit::Steps) | (Progress::Starting, _) => String::new(),
@@ -270,7 +285,10 @@ pub fn apply(press: Press) -> Option<Subject> {
 
 /// A jobs surface as a widget: it keeps its rows, rebuilds them when the registry moves, and reports
 /// what was pressed through its [`Presses`].
-#[tilo_ui_base::component::not_a_component(system, "the band of long work the system shows (HIG 10)")]
+#[tilo_ui_base::component::not_a_component(
+    system,
+    "the band of long work the system shows (HIG 10)"
+)]
 pub struct Band {
     inner: Column,
     presses: Presses,
@@ -366,7 +384,11 @@ impl Decorator for Band {
         &mut self.inner
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let inner = Widget::update(&mut self.inner, state, path);
         if self.presses.changed() {
             self.restack();

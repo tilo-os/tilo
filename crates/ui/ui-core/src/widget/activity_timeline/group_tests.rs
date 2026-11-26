@@ -1,13 +1,13 @@
 use super::*;
-use tilo_ui_base::presence::PresenceCtx;
 use crate::testing::{Dispatch, dispatch};
 use crate::time::Duration;
-use tilo_ui_base::widget::Widget;
 use crate::widget::history::HistoryAuthor;
 use crate::widget::history_group::NamedRange;
 use collab_types::ArtifactKind;
 use std::cell::RefCell;
 use std::rc::Rc;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::widget::Widget;
 use winit::event::ElementState;
 use winit::event::Modifiers;
 

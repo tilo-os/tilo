@@ -1063,4 +1063,3 @@ pub fn control_face(
     }
     paint_border(scene, transform, body, theme)
 }
-

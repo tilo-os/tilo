@@ -15,11 +15,11 @@
 )]
 
 use super::*;
-use tilo_ui_base::offscreen::OffscreenRenderer;
 use crate::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use std::cell::Cell;
 use std::rc::Rc;
 use taffy::prelude::TaffyMaxContent;
+use tilo_ui_base::offscreen::OffscreenRenderer;
 
 /// The scene, in logical pixels.
 const SCENE: (f64, f64) = (720.0, 540.0);

@@ -8,9 +8,9 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use super::{BlockEditor, BlockKind, CursorPlacement, DocumentPosition};
 use tilo_ui_base::platform::Shortcut;
 use tilo_ui_base::text_selection::word_boundaries;
+use tilo_ui_base::{widget::EventCtx, widget::Widget};
 use ui::widget::context_menu::{ContextMenu, EditingCommand, MenuItem};
 use ui::widget::marks::Mark;
-use tilo_ui_base::{widget::EventCtx, widget::Widget};
 
 const TEXT_MENU_TARGET: &str = "editor.text-menu:";
 
@@ -293,7 +293,10 @@ impl BlockEditor {
                 ));
             }
             rows.push((
-                MenuItem::action(tilo_ui_base::i18n::widget_text("text-menu-ignore-spelling"), || {}),
+                MenuItem::action(
+                    tilo_ui_base::i18n::widget_text("text-menu-ignore-spelling"),
+                    || {},
+                ),
                 Some(TextMenuAction::IgnoreSpelling(word)),
             ));
             rows.push((MenuItem::separator(), None));

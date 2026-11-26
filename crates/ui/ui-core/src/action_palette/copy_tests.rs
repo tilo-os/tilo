@@ -62,9 +62,10 @@ fn the_palette_names_itself_in_the_windows_language() {
             vec![ActionParam::required("to", ParamType::Text, "To")],
         )),
     ];
-    let mut palette = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
-        SearchField::with_language("de-DE")
-    });
+    let mut palette =
+        ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
+            SearchField::with_language("de-DE")
+        });
     palette.load_open_resources(&resources);
     palette.open();
     assert!(

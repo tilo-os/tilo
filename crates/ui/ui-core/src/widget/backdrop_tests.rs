@@ -5,10 +5,10 @@ use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Blob, Color, Fill, ImageAlphaType, ImageData, ImageFormat};
 
 use super::Backdrop;
-use tilo_ui_base::{part_paint::wallpaper, part_paint::wallpaper::Source};
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{part_paint::wallpaper, part_paint::wallpaper::Source};
 
 /// A picture of one colour, `edge` square.
 fn picture(edge: u32, rgba: [u8; 4]) -> ImageData {
@@ -48,7 +48,8 @@ fn rendered(theme: &Theme, rect: Rect) -> Vec<u8> {
             PresenceCtx::empty().draw_env(),
         ),
     );
-    tilo_ui_base::offscreen::OffscreenRenderer::new(240, 240).render(&scene, vello::peniko::Color::BLACK)
+    tilo_ui_base::offscreen::OffscreenRenderer::new(240, 240)
+        .render(&scene, vello::peniko::Color::BLACK)
 }
 
 #[test]
@@ -59,7 +60,8 @@ fn the_backdrop_paints_the_shells_wallpaper_under_everything() {
     source.set(Some(picture(4, [220, 40, 40, 255])));
     wallpaper::install(Some(source));
     let seen = rendered(&theme, rect);
-    let (red, green, blue, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 120, 120);
+    let (red, green, blue, _) =
+        tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 120, 120);
     assert!(
         red > 180 && green < 90 && blue < 90,
         "the wallpaper shows through: saw {red},{green},{blue}"
@@ -69,7 +71,8 @@ fn the_backdrop_paints_the_shells_wallpaper_under_everything() {
     source.set_gradient((Color::from_rgb8(20, 40, 200), Color::from_rgb8(20, 40, 200)));
     wallpaper::install(Some(source));
     let seen = rendered(&theme, rect);
-    let (red, green, blue, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 120, 120);
+    let (red, green, blue, _) =
+        tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 120, 120);
     assert!(
         blue > 150 && red < 90,
         "the gradient stands where no picture does: saw {red},{green},{blue}"
@@ -77,7 +80,8 @@ fn the_backdrop_paints_the_shells_wallpaper_under_everything() {
     // And nothing stands where the shell was handed no wallpaper at all.
     wallpaper::install(None);
     let seen = rendered(&theme, rect);
-    let (red, green, blue, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 120, 120);
+    let (red, green, blue, _) =
+        tilo_ui_base::offscreen::OffscreenRenderer::sample(&seen, 240, 120, 120);
     let ground = theme.tokens.colors.surfaces.base.to_rgba8();
     let near = |seen: u8, want: u8| (i32::from(seen) - i32::from(want)).abs() <= 12;
     assert!(

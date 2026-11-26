@@ -4,8 +4,8 @@
 
 use tilo_cpu_raster::{CANVAS_THREADS, CpuRasterizer, Options, Region, Target};
 
-use tilo_ui_base::damage::bounded_present_damage;
 use crate::retained_raster::FrameContent;
+use tilo_ui_base::damage::bounded_present_damage;
 
 pub(crate) struct CpuCanvas {
     rasterizer: CpuRasterizer,

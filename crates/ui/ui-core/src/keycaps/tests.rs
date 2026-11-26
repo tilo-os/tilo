@@ -1,8 +1,8 @@
-use tilo_ui_base::keycaps::*;
 use std::collections::BTreeMap;
-use tilo_ui_base::interaction::KeyboardFamily;
-use tilo_ui_base::input::KeyboardModifier;
 use std::sync::atomic::Ordering;
+use tilo_ui_base::input::KeyboardModifier;
+use tilo_ui_base::interaction::KeyboardFamily;
+use tilo_ui_base::keycaps::*;
 
 tilo_test_env::scenario! {
     fn the_active_layout_is_scoped_published_and_typed;

@@ -2,10 +2,10 @@
 //! row once it wraps under the text.
 
 use super::{ListRow, MIN_TEXT_LINES};
-use tilo_ui_base::a11y::Role;
-use tilo_ui_base::{widget::Element, widget::Widget};
 use taffy::prelude::length;
 use taffy::{NodeId, TaffyTree};
+use tilo_ui_base::a11y::Role;
+use tilo_ui_base::{widget::Element, widget::Widget};
 use vello::kurbo::Rect;
 
 use tilo_ui_base::text_render::TextRenderer;
@@ -87,7 +87,8 @@ impl ListRow {
             // control wraps at by the one reckoning and fits at by the
             // other, and the row fills and stops filling on every pass of
             // the solve; or keeps filling where a fresh layout would not.
-            let beside = tilo_ui_base::num::f32_of_f64(min_text) + (trailing.natural + trailing.margins);
+            let beside =
+                tilo_ui_base::num::f32_of_f64(min_text) + (trailing.natural + trailing.margins);
             (
                 f64::from(trailing.natural),
                 beside > taffy.unrounded_layout(node).size.width,

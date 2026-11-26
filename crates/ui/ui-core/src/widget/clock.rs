@@ -10,11 +10,11 @@ use std::cell::Cell;
 
 use jiff::civil::Date;
 
+use crate::time::{Duration, Instant};
+use crate::{widget::Column, widget::Text};
+use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::{component::Component, component::Described};
 use tilo_ui_base::{i18n::ArgValue, i18n::widget_format};
-use crate::time::{Duration, Instant};
-use tilo_ui_base::tokens::TextRole;
-use crate::{widget::Column, widget::Text};
 use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
 
 /// Seconds in a minute, as a reading's minute is counted.

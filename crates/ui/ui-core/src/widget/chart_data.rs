@@ -6,7 +6,10 @@ use std::collections::HashMap;
 use tilo_ui_graph::component::{CaseDescription, EnumDescription};
 use vello::peniko::Color;
 
-use tilo_ui_base::{component::PropType, component::Type, component::Value, component::case_field, component::case_field_description};
+use tilo_ui_base::{
+    component::PropType, component::Type, component::Value, component::case_field,
+    component::case_field_description,
+};
 
 #[derive(Clone, Debug)]
 pub struct ChartItem {

@@ -14,11 +14,14 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use tilo_ui_base::{widget::AppModel, widget::DrawChild, widget::DrawCtx, widget::Element, widget::EventCtx, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
-use tilo_ui_base::{motion::CrossFade, motion::Feel, motion::frame_now, motion::recent_input};
-use tilo_ui_base::theme::Theme;
 use crate::time::Instant;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{motion::CrossFade, motion::Feel, motion::frame_now, motion::recent_input};
 use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
+use tilo_ui_base::{
+    widget::AppModel, widget::DrawChild, widget::DrawCtx, widget::Element, widget::EventCtx,
+    widget::ModelPath, widget::TaffyTreeExt, widget::Widget,
+};
 
 #[tilo_ui_base::component::not_a_component(
     framework,

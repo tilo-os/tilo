@@ -1,40 +1,53 @@
 //! Text input: a field for single-line or wrapping text, with a caret, selection,
 //! completion and spelling. Its edits splice the text it shows.
 
-use tilo_ui_base::i18n::widget_text;
 use crate::time::Instant;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use crate::color_compat::ColorCompat;
-use tilo_ui_base::{gesture::DragSelect, gesture::Granularity};
-use tilo_ui_base::{ime::Capitalization, ime::InputContent, ime::InputPurpose};
-use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
-use tilo_ui_base::{richtext::RichSpan, richtext::RichTextLayout, richtext::TextAlign};
-use tilo_ui_base::text_break::line_break_opportunities;
-use tilo_ui_base::{text_break::grapheme_indices, text_break::graphemes};
-use tilo_ui_base::{text_edit::CaretWord, text_edit::Edit, text_edit::EditCore, text_edit::Motion, text_edit::TypingRun};
-use tilo_ui_base::{text_render::FontChoice, text_render::TextKind, text_render::TextRenderer, text_render::TextScaling, text_render::TextStyle, text_render::TextWeight};
-use tilo_ui_base::{text_selection::TextAffinity, text_selection::TextPosition, text_selection::clipboard_copy, text_selection::clipboard_copy_primary, text_selection::clipboard_paste_primary, text_selection::extend_span_drag, text_selection::grapheme_boundary_at_or_before, text_selection::line_boundaries, text_selection::word_boundaries};
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{tokens::SyntaxPalette, tokens::TextRole};
-use tilo_ui_base::widget::DrawChild;
-use tilo_ui_base::widget::TaffyTreeExt;
-use tilo_ui_base::widget::Widget;
 use crate::widget::code_editor::{Highlighter, Span};
 use crate::widget::context_menu::ContextMenu;
 use crate::widget::control_size::ControlSize;
 use crate::widget::mention_picker::MentionCandidate;
 use crate::widget::text_completion::{CompletionKey, CompletionList, TextCompletion};
-use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingKind, widget::ControlBindingMetadata};
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 #[cfg(feature = "model")]
 use tilo_resource::{TextEdit, text::splice_between};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_break::line_break_opportunities;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{gesture::DragSelect, gesture::Granularity};
+use tilo_ui_base::{ime::Capitalization, ime::InputContent, ime::InputPurpose};
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
+use tilo_ui_base::{richtext::RichSpan, richtext::RichTextLayout, richtext::TextAlign};
+use tilo_ui_base::{text_break::grapheme_indices, text_break::graphemes};
+use tilo_ui_base::{
+    text_edit::CaretWord, text_edit::Edit, text_edit::EditCore, text_edit::Motion,
+    text_edit::TypingRun,
+};
+use tilo_ui_base::{
+    text_render::FontChoice, text_render::TextKind, text_render::TextRenderer,
+    text_render::TextScaling, text_render::TextStyle, text_render::TextWeight,
+};
+use tilo_ui_base::{
+    text_selection::TextAffinity, text_selection::TextPosition, text_selection::clipboard_copy,
+    text_selection::clipboard_copy_primary, text_selection::clipboard_paste_primary,
+    text_selection::extend_span_drag, text_selection::grapheme_boundary_at_or_before,
+    text_selection::line_boundaries, text_selection::word_boundaries,
+};
+use tilo_ui_base::{tokens::SyntaxPalette, tokens::TextRole};
+use tilo_ui_base::{
+    widget::ActionEmitter, widget::ControlBindingKind, widget::ControlBindingMetadata,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::BlendMode;
@@ -1436,7 +1449,10 @@ impl TextInput {
     }
 
     #[must_use]
-    pub fn with_change(mut self, change: Option<(tilo_ui_base::component::Person, String)>) -> Self {
+    pub fn with_change(
+        mut self,
+        change: Option<(tilo_ui_base::component::Person, String)>,
+    ) -> Self {
         self.change = change;
         self
     }
@@ -3717,7 +3733,11 @@ impl TextInput {
 
     #[must_use]
     pub fn with_clear_button(self) -> Self {
-        self.with_trailing_accessory(tilo_ui_base::icons::Icon::X, "Clear", AccessoryAction::Clear)
+        self.with_trailing_accessory(
+            tilo_ui_base::icons::Icon::X,
+            "Clear",
+            AccessoryAction::Clear,
+        )
     }
 
     #[must_use]
@@ -4191,7 +4211,8 @@ impl TextInput {
 
     #[must_use]
     pub fn own_width_in(theme: &Theme) -> f32 {
-        theme.tokens.metrics.field_min_width * tilo_ui_base::tokens::Metrics::text_growth(theme.text_scale)
+        theme.tokens.metrics.field_min_width
+            * tilo_ui_base::tokens::Metrics::text_growth(theme.text_scale)
     }
 
     fn band(&self) -> f64 {
@@ -5494,14 +5515,16 @@ impl Widget for TextInput {
         } else {
             self.rect.y0 + (self.rect.height() - line) / 2.0
         };
-        Some(tilo_ui_base::widget::LayoutInfo::Text(tilo_ui_base::widget::TextLayout {
-            top: tilo_ui_base::num::f32_of_f64(top),
-            line: tilo_ui_base::num::f32_of_f64(line),
-            rows: self.content_rows(),
-            lines: u32::try_from(self.min_lines).unwrap_or(u32::MAX),
-            band: tilo_ui_base::num::f32_of_f64(self.band()),
-            document: self.plain,
-        }))
+        Some(tilo_ui_base::widget::LayoutInfo::Text(
+            tilo_ui_base::widget::TextLayout {
+                top: tilo_ui_base::num::f32_of_f64(top),
+                line: tilo_ui_base::num::f32_of_f64(line),
+                rows: self.content_rows(),
+                lines: u32::try_from(self.min_lines).unwrap_or(u32::MAX),
+                band: tilo_ui_base::num::f32_of_f64(self.band()),
+                document: self.plain,
+            },
+        ))
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -5678,7 +5701,12 @@ impl Widget for TextInput {
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         (!self.holds_secret() && !self.core.has_preedit()).then(|| {
-            tilo_ui_base::ime::edit_fingerprint(&self.text, self.core.anchor(), self.core.caret(), key)
+            tilo_ui_base::ime::edit_fingerprint(
+                &self.text,
+                self.core.anchor(),
+                self.core.caret(),
+                key,
+            )
         })
     }
 
@@ -5870,7 +5898,9 @@ impl Widget for TextInput {
             || self
                 .wheel_glide
                 .give_needs_frame(tilo_ui_base::motion::frame_now())
-            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
+                self.for_each_child(visit)
+            })
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -5909,7 +5939,13 @@ impl Widget for TextInput {
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         Widget::draw_overlay(
             &mut *self.context_menu,
-            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
         self.paint_completion(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
@@ -6003,7 +6039,9 @@ impl tilo_ui_base::presence::capability::PublishesPresence for TextInput {
         self.is_focused
             .then(|| self.shareable_selection())
             .flatten()
-            .map(|text| tilo_ui_base::shared_subject::SharedSelection::of_text(text).within(self.rect))
+            .map(|text| {
+                tilo_ui_base::shared_subject::SharedSelection::of_text(text).within(self.rect)
+            })
     }
 
     fn presence_range_rects(

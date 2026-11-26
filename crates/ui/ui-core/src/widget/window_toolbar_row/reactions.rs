@@ -8,13 +8,13 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use super::{CONTROL_PX, Part, SECTION_GAP, ToolbarRow, Widget};
+use crate::widget::emoji_picker::{EmojiPicker, PickerEvent};
+use crate::widget::reaction_strip::{self, ReactionStrip, StripMetrics};
+use crate::window_toolbar::{ToolbarEvent, ToolbarReaction, WindowToolbar, reaction_action};
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
-use crate::widget::emoji_picker::{EmojiPicker, PickerEvent};
-use crate::widget::reaction_strip::{self, ReactionStrip, StripMetrics};
-use crate::window_toolbar::{ToolbarEvent, ToolbarReaction, WindowToolbar, reaction_action};
 
 pub const REACTION_TARGET_PREFIX: &str = "window-toolbar-reaction:";
 pub const REACTION_ADD_TARGET: &str = "window-toolbar-reaction-add";

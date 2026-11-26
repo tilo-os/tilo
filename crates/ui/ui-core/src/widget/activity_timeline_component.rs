@@ -4,12 +4,15 @@
 
 use std::collections::HashMap;
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Moment, component::Person, component::ResourceId, component::Value};
 use crate::time::{Duration, UNIX_EPOCH};
+use crate::widget::ActivityTimeline;
 use crate::widget::history::{
     AuthorRelation, EntryKind, HistoryAuthor, HistoryEntry, HistoryEntryId,
 };
-use crate::widget::ActivityTimeline;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Moment,
+    component::Person, component::ResourceId, component::Value,
+};
 use tilo_ui_base::{widget::ArtifactKind, widget::Widget};
 
 tilo_ui_base::choice!(crate::widget::EntryKind, "EntryKind", {
@@ -348,13 +351,19 @@ mod tests {
         let ada = Person::named("Ada");
         let made = by(ada.clone());
         assert_eq!(made.author.relation, AuthorRelation::Person);
-        assert_eq!(made.author.rgb(), tilo_ui_base::presence::identity_rgb(ada.hue));
+        assert_eq!(
+            made.author.rgb(),
+            tilo_ui_base::presence::identity_rgb(ada.hue)
+        );
         let scout = Person::new(
             tilo_actions::MemberId::agent("scenario:Scout", "ada"),
             "Scout",
         );
         let made = by(scout.clone());
         assert_eq!(made.author.relation, AuthorRelation::Software);
-        assert_eq!(made.author.rgb(), tilo_ui_base::presence::identity_rgb(scout.hue));
+        assert_eq!(
+            made.author.rgb(),
+            tilo_ui_base::presence::identity_rgb(scout.hue)
+        );
     }
 }

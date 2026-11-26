@@ -8,9 +8,9 @@
 //! sections and changes them through the same setters.
 
 use serde::{Deserialize, Serialize};
-use tilo_ui_base::Role;
 use tilo_app::prelude::*;
 use tilo_app_test_host::TestApp;
+use tilo_ui_base::Role;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Board {

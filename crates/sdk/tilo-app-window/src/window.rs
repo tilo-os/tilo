@@ -26,15 +26,18 @@ use std::rc::Rc;
 use page::{chosen_item, content_nodes, node_of_key};
 use tilo_render_protocol::patch::validate::{PatchLimits, Validator};
 use tilo_render_protocol::patch::{self as wire, Answer, Level, ToApp, ToUi, Transport, Words};
+use tilo_ui_base::{tokens::MotionSource, tokens::Rhythm};
+use tilo_ui_base::{widget::Element, widget::PictureInPictureAsk, widget::Widget};
 use ui::floating_surface::{
     FloatingRole, FloatingSource, FloatingSurfaceHostMessage, FloatingSurfacePresentation,
     FloatingSurfaceRequest, protocol_rect,
 };
-use tilo_ui_base::{tokens::MotionSource, tokens::Rhythm};
 use ui::widget::arrange::{Fit, Part, Stack};
 use ui::widget::toast::ToastKind;
-use ui::{widget::Absent, widget::NavPane, widget::NavShell, widget::PermissionPrompt, widget::PromptChoice, widget::SidebarPlacement};
-use tilo_ui_base::{widget::Element, widget::PictureInPictureAsk, widget::Widget};
+use ui::{
+    widget::Absent, widget::NavPane, widget::NavShell, widget::PermissionPrompt,
+    widget::PromptChoice, widget::SidebarPlacement,
+};
 
 use crate::i18n::{t, t_args};
 use crate::pane::Pane;
@@ -1185,7 +1188,8 @@ impl AppWindow {
     }
 
     fn show_loading(&mut self) {
-        let loading = ui::widget::EmptyState::new(tilo_ui_base::i18n::widget_text("arriving-loading")).busy();
+        let loading =
+            ui::widget::EmptyState::new(tilo_ui_base::i18n::widget_text("arriving-loading")).busy();
         if let Some(pane) = self.shell_pane() {
             pane.set(Box::new(loading));
         }
@@ -3535,8 +3539,9 @@ impl ui::widget::WindowHistory for AppWindow {
 /// containers, so the window asks down the tree and reports the first intent it finds to the
 /// host, which fullscreens the window.
 fn fullscreen_intent_of(root: &dyn Widget) -> Option<bool> {
-    if let Some(provider) =
-        tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::FullscreenProvider>(root)
+    if let Some(provider) = tilo_ui_base::widget::capability::capability::<
+        dyn tilo_ui_base::widget::FullscreenProvider,
+    >(root)
         && let Some(intent) = provider.fullscreen_intent()
     {
         return Some(intent);
@@ -3557,7 +3562,9 @@ impl tilo_ui_base::widget::FullscreenProvider for AppWindow {
 
     fn fullscreen_params(&self) -> tilo_ui_base::fullscreen::FullscreenRequest {
         fullscreen_params_of(self.body.as_ref()).unwrap_or_else(|| {
-            tilo_ui_base::fullscreen::FullscreenRequest::mirror(tilo_ui_base::fullscreen::FullscreenTarget::Largest)
+            tilo_ui_base::fullscreen::FullscreenRequest::mirror(
+                tilo_ui_base::fullscreen::FullscreenTarget::Largest,
+            )
         })
     }
 }
@@ -3565,8 +3572,9 @@ impl tilo_ui_base::widget::FullscreenProvider for AppWindow {
 /// The request the view's fullscreen intent carries, wherever it stands in the tree: which
 /// screen a presentation fills, and whether it is the window or a surface of its own.
 fn fullscreen_params_of(root: &dyn Widget) -> Option<tilo_ui_base::fullscreen::FullscreenRequest> {
-    if let Some(provider) =
-        tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::FullscreenProvider>(root)
+    if let Some(provider) = tilo_ui_base::widget::capability::capability::<
+        dyn tilo_ui_base::widget::FullscreenProvider,
+    >(root)
         && provider.fullscreen_intent().is_some()
     {
         return Some(provider.fullscreen_params());
@@ -3661,7 +3669,11 @@ impl ui::floating_surface::FloatingSurfaceProvider for AppWindow {
     }
 
     /// The picture, drawn into the floating window the shell stood for it.
-    fn draw_floating_surface(&mut self, id: &str, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) -> bool {
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
+    ) -> bool {
         if id != self.pip_surface_id() {
             return false;
         }
@@ -3706,8 +3718,9 @@ impl AppWindow {
 /// The shell's window for the view's picture went away, at any depth: what kept the float is
 /// done, and the picture draws in its own window again.
 fn picture_in_picture_returned(root: &mut dyn Widget) {
-    if let Some(provider) =
-        tilo_ui_base::widget::capability::capability_mut::<dyn tilo_ui_base::widget::PictureInPictureProvider>(root)
+    if let Some(provider) = tilo_ui_base::widget::capability::capability_mut::<
+        dyn tilo_ui_base::widget::PictureInPictureProvider,
+    >(root)
     {
         provider.picture_in_picture_returned();
     }
@@ -3719,8 +3732,9 @@ fn picture_in_picture_returned(root: &mut dyn Widget) {
 /// Where the picture the view floats stands in its window now, at any depth: the region the
 /// floated surface mirrors.
 fn picture_in_picture_region(root: &dyn Widget) -> Option<ui::kurbo::Rect> {
-    if let Some(provider) =
-        tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::PictureInPictureProvider>(root)
+    if let Some(provider) = tilo_ui_base::widget::capability::capability::<
+        dyn tilo_ui_base::widget::PictureInPictureProvider,
+    >(root)
         && let Some(region) = provider.floating_picture_in_picture_region()
     {
         return Some(region);
@@ -3741,8 +3755,9 @@ fn picture_in_picture_drawn(
     target: ui::kurbo::Rect,
     ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
 ) -> bool {
-    if let Some(provider) =
-        tilo_ui_base::widget::capability::capability_mut::<dyn tilo_ui_base::widget::PictureInPictureProvider>(root)
+    if let Some(provider) = tilo_ui_base::widget::capability::capability_mut::<
+        dyn tilo_ui_base::widget::PictureInPictureProvider,
+    >(root)
         && let Some(source) = provider.floating_picture_in_picture_region()
         && provider.draw_picture_in_picture(source, target, ctx)
     {
@@ -3759,8 +3774,9 @@ fn picture_in_picture_drawn(
 /// Whether the view floats a picture now, at any depth: a page's video or a player's, which the
 /// app keeps floating until its own control takes it back.
 fn picture_in_picture_floating(root: &dyn Widget) -> bool {
-    if let Some(provider) =
-        tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::PictureInPictureProvider>(root)
+    if let Some(provider) = tilo_ui_base::widget::capability::capability::<
+        dyn tilo_ui_base::widget::PictureInPictureProvider,
+    >(root)
         && provider.picture_in_picture_floating()
     {
         return true;
@@ -3776,8 +3792,9 @@ fn picture_in_picture_floating(root: &dyn Widget) -> bool {
 
 /// Whether a player in the view has a picture-in-picture request waiting, at any depth.
 fn picture_in_picture_wanted(root: &dyn Widget) -> bool {
-    if let Some(provider) =
-        tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::PictureInPictureProvider>(root)
+    if let Some(provider) = tilo_ui_base::widget::capability::capability::<
+        dyn tilo_ui_base::widget::PictureInPictureProvider,
+    >(root)
         && provider.wants_picture_in_picture()
     {
         return true;
@@ -3794,8 +3811,9 @@ fn picture_in_picture_wanted(root: &dyn Widget) -> bool {
 /// The player in the view that asked for picture-in-picture, at any depth: a player sits inside
 /// the shell's containers, so the window asks down the tree for the one that has a request.
 fn picture_in_picture_of(root: &dyn Widget) -> Option<PictureInPictureAsk> {
-    if let Some(provider) =
-        tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::PictureInPictureProvider>(root)
+    if let Some(provider) = tilo_ui_base::widget::capability::capability::<
+        dyn tilo_ui_base::widget::PictureInPictureProvider,
+    >(root)
         && let Some(ask) = provider.take_picture_in_picture()
     {
         return Some(ask);
@@ -3815,8 +3833,9 @@ fn picture_in_picture_of(root: &dyn Widget) -> Option<PictureInPictureAsk> {
 /// view's containers nest it: the window answers for its tree, and the host plays the stream in
 /// the places the session's outputs name.
 fn audio_of(root: &dyn Widget, samples: &mut Vec<i16>) {
-    if let Some(provider) =
-        tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::AudioTapProvider>(root)
+    if let Some(provider) = tilo_ui_base::widget::capability::capability::<
+        dyn tilo_ui_base::widget::AudioTapProvider,
+    >(root)
     {
         samples.extend(provider.take_audio());
     }
@@ -3875,7 +3894,10 @@ impl tilo_ui_base::widget::Decorator for AppWindow {
         self.body.provide(request);
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
         if request.wants::<dyn ui::widget::Queryable>() && self.offers_search() {
             request.provide::<dyn ui::widget::Queryable>(self);
             return;
@@ -4125,7 +4147,8 @@ impl tilo_ui_base::widget::Decorator for AppWindow {
     /// The window's own changes (a shell built, a bar shown) rebuild; what its body describes (a
     /// column's content changed in place) stays described.
     fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
-        let own = tilo_ui_base::widget::StructureChange::of(std::mem::take(&mut self.structure_dirty));
+        let own =
+            tilo_ui_base::widget::StructureChange::of(std::mem::take(&mut self.structure_dirty));
         own.join(self.body.take_structure_change())
     }
 }

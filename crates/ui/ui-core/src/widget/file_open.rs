@@ -5,15 +5,15 @@
 //! file chooser, which reports a file it cannot read. The surface reads nothing and grants
 //! no access.
 
-use tilo_ui_base::i18n::widget_text;
 use std::path::PathBuf;
+use tilo_ui_base::i18n::widget_text;
 
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
+use crate::widget::{DropZoneFace, EmptyState, EmptyStateContent};
 use tilo_ui_base::interaction::InteractionEnvironment;
 use tilo_ui_base::paint::PaintCtx;
-use crate::widget::{DropZoneFace, EmptyState, EmptyStateContent};
 
 /// A file event the surface took.
 #[derive(Debug, PartialEq, Eq)]

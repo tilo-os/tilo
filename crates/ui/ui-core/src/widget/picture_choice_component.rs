@@ -1,7 +1,9 @@
 //! [`PictureChoice`] as a described component.
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Value};
 use crate::widget::Picture;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
 
 use super::{PictureChoice, PictureOption};
 use crate::widget::picture as picture_module;

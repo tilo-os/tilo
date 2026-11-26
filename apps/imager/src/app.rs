@@ -21,8 +21,13 @@ use ui::portal::{FileFilter, PickRequest};
 use tilo_ui_base::text_render::ParagraphAlign;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use ui::{widget::Banner, widget::Button, widget::ButtonRole, widget::Column, widget::ControlSize, widget::DropZone, widget::EmptyState, widget::ListRow, widget::ProgressRing, widget::ProgressRingSize, widget::Property, widget::PropertyList, widget::Row, widget::Section, widget::Text};
 use tilo_ui_base::{widget::Spacer, widget::Tone, widget::Widget};
+use ui::{
+    widget::Banner, widget::Button, widget::ButtonRole, widget::Column, widget::ControlSize,
+    widget::DropZone, widget::EmptyState, widget::ListRow, widget::ProgressRing,
+    widget::ProgressRingSize, widget::Property, widget::PropertyList, widget::Row, widget::Section,
+    widget::Text,
+};
 
 use crate::export_dialog::ExportDialog;
 use crate::hosting::{EffectAnswer, EffectCx, Effected, JobProgress, Opened, Port, Reply, Store};
@@ -818,16 +823,28 @@ impl ImagerApp {
             CATALOG.t_args(
                 "imager-release-channel-downloads-first",
                 &[
-                    ("target", tilo_ui_base::i18n::ArgValue::Text(target_name(release))),
-                    ("channel", tilo_ui_base::i18n::ArgValue::Text(release.channel.clone())),
+                    (
+                        "target",
+                        tilo_ui_base::i18n::ArgValue::Text(target_name(release)),
+                    ),
+                    (
+                        "channel",
+                        tilo_ui_base::i18n::ArgValue::Text(release.channel.clone()),
+                    ),
                 ],
             )
         } else {
             CATALOG.t_args(
                 "imager-release-channel",
                 &[
-                    ("target", tilo_ui_base::i18n::ArgValue::Text(target_name(release))),
-                    ("channel", tilo_ui_base::i18n::ArgValue::Text(release.channel.clone())),
+                    (
+                        "target",
+                        tilo_ui_base::i18n::ArgValue::Text(target_name(release)),
+                    ),
+                    (
+                        "channel",
+                        tilo_ui_base::i18n::ArgValue::Text(release.channel.clone()),
+                    ),
                 ],
             )
         };
@@ -1141,8 +1158,14 @@ impl ImagerApp {
                     &CATALOG.t_args(
                         "imager-writing-from-to",
                         &[
-                            ("source", tilo_ui_base::i18n::ArgValue::Text(src.name.clone())),
-                            ("target", tilo_ui_base::i18n::ArgValue::Text(tgt.model.clone())),
+                            (
+                                "source",
+                                tilo_ui_base::i18n::ArgValue::Text(src.name.clone()),
+                            ),
+                            (
+                                "target",
+                                tilo_ui_base::i18n::ArgValue::Text(tgt.model.clone()),
+                            ),
                         ],
                     ),
                     TextRole::Caption,
@@ -1320,7 +1343,10 @@ impl ImagerApp {
         }
         self.set_status(&crate::setup::strings::t_args(
             "imager-status-downloading",
-            &[("name", tilo_ui_base::i18n::ArgValue::from(release.display_name()))],
+            &[(
+                "name",
+                tilo_ui_base::i18n::ArgValue::from(release.display_name()),
+            )],
         ));
         let control = crate::release::DownloadControl::default();
         let worker = control.clone();
@@ -2560,13 +2586,14 @@ impl Widget for ImagerApp {
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.export_dialog.is_open() {
-            self.export_dialog.draw_detached(&mut tilo_ui_base::DrawCtx::new(
-                scene,
-                transform,
-                text,
-                theme,
-                env.clone(),
-            ));
+            self.export_dialog
+                .draw_detached(&mut tilo_ui_base::DrawCtx::new(
+                    scene,
+                    transform,
+                    text,
+                    theme,
+                    env.clone(),
+                ));
         }
     }
     fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, path: &ObjId) {

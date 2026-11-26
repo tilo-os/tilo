@@ -9,8 +9,10 @@ use tilo_sort::CompactSort as _;
 use taffy::NodeId as TaffyNodeId;
 use vello::kurbo::Rect;
 
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Action, a11y::Role, a11y::SharedAccessNode};
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    a11y::AccessNode, a11y::AccessState, a11y::Action, a11y::Role, a11y::SharedAccessNode,
+};
 
 #[cfg(test)]
 #[path = "a11y_tree/identity_tests.rs"]
@@ -43,12 +45,15 @@ use component_nodes::ComponentNodes;
 type ComponentSnapshot = crate::bound_dispatch::BoundResourceSnapshot;
 #[cfg(not(feature = "model"))]
 type ComponentSnapshot = std::convert::Infallible;
-use tilo_ui_base::a11y::SemanticId;
-use tilo_ui_base::{a11y_walk::A11yVisitor, a11y_walk::HostedByIndex, a11y_walk::HostedWidget, a11y_walk::Visit, a11y_walk::walk, a11y_walk::walk_synthetic, a11y_walk::with_slot_words};
 pub(crate) use component_nodes::component_resource;
-pub(crate) use tilo_ui_base::widget::bound_nodes::AdmittedNodeNames;
 use node_identity::WidgetNodeMap;
 use reading_order::ReadingOrder;
+use tilo_ui_base::a11y::SemanticId;
+pub(crate) use tilo_ui_base::widget::bound_nodes::AdmittedNodeNames;
+use tilo_ui_base::{
+    a11y_walk::A11yVisitor, a11y_walk::HostedByIndex, a11y_walk::HostedWidget, a11y_walk::Visit,
+    a11y_walk::walk, a11y_walk::walk_synthetic, a11y_walk::with_slot_words,
+};
 
 type NodeMap = HashMap<SemanticId, SemanticNode, rustc_hash::FxBuildHasher>;
 type RetainedMap = HashMap<SemanticId, RetainedSubtree, rustc_hash::FxBuildHasher>;
@@ -955,7 +960,9 @@ fn verbs(role: Role, s: &AccessState, actionable: bool) -> Vec<SemanticAction> {
             kind: SemanticActionKind::Verb(Action::ShowContextMenu),
         });
     }
-    if !s.disabled && (tilo_ui_base::a11y::activation_role(role) || (role == Role::Row && actionable)) {
+    if !s.disabled
+        && (tilo_ui_base::a11y::activation_role(role) || (role == Role::Row && actionable))
+    {
         out.push(SemanticAction {
             name: "activate".into(),
             label: "Activate".into(),
@@ -1522,12 +1529,12 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::theme::Theme;
     use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
     use crate::{widget::Button, widget::Column, widget::TextInput};
-    use tilo_ui_base::widget::Widget;
     use std::collections::HashMap;
     use taffy::TaffyTree;
+    use tilo_ui_base::theme::Theme;
+    use tilo_ui_base::widget::Widget;
 
     include!("a11y_tree/action_projection_tests.rs");
 

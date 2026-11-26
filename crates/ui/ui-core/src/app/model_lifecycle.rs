@@ -365,8 +365,9 @@ impl super::App {
         // noted before it: that stays noted for its own host (an app hosted
         // in a tile updates in the middle of its host's update).
         let outer = tilo_ui_base::widget::take_layout_moved();
-        let update =
-            || tilo_ui_base::presence::frame::lend(presence, || root.update(&state.doc, &state.root));
+        let update = || {
+            tilo_ui_base::presence::frame::lend(presence, || root.update(&state.doc, &state.root))
+        };
         #[cfg(feature = "model")]
         let updated = presence.with_permissions(self.permission_ctx.clone(), update);
         #[cfg(not(feature = "model"))]
@@ -448,8 +449,9 @@ impl super::App {
         // and a window still opening runs none of it either.
         #[cfg(feature = "model")]
         let submitted = {
-            let queued =
-                tilo_ui_base::widget::controls::has_pending_control_invocation(self.root_widget.as_ref());
+            let queued = tilo_ui_base::widget::controls::has_pending_control_invocation(
+                self.root_widget.as_ref(),
+            );
             let held = self.input.opening || self.input.passive_input;
             !held && (settled || queued) && self.dispatch_control_invocations() != 0
         };

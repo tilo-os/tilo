@@ -10,13 +10,18 @@ use vello::kurbo::Rect;
 
 use super::performed::{self, Performed};
 use super::{ControlHints, ControlHintsProps};
-use tilo_ui_base::{component::Described, component::Event, component::Fired, component::Intent, component::Value};
 use crate::headless::Driver;
-use tilo_ui_base::theme::Theme;
 use crate::time::{Duration, Instant};
-use tilo_ui_base::widget::Length;
 use crate::widget::arrange::{Fit, Sizing, Stack};
-use crate::{widget::CanvasPlace, widget::Map, widget::MapProps, widget::PLACE_BAND, widget::PinPlace, widget::PlaceProps, widget::Scrollable, widget::WindowFrame, widget::WindowFrameProps};
+use crate::{
+    widget::CanvasPlace, widget::Map, widget::MapProps, widget::PLACE_BAND, widget::PinPlace,
+    widget::PlaceProps, widget::Scrollable, widget::WindowFrame, widget::WindowFrameProps,
+};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Length;
+use tilo_ui_base::{
+    component::Described, component::Event, component::Fired, component::Intent, component::Value,
+};
 use tilo_ui_base::{widget::Manual, widget::MeasureConstraint, widget::Spacer, widget::Widget};
 
 /// The display the shell draws on, and where its two windows stand: room above them, where a hint

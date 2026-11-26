@@ -5,13 +5,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
+use crate::widget::TimelineDensity;
 use tilo_ui_base::format;
 use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{surface::card, surface::edge_on};
 use tilo_ui_base::text_render::TextStyle;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
-use crate::widget::TimelineDensity;
+use tilo_ui_base::{surface::card, surface::edge_on};
 
 use super::{
     Ghost, MonthTarget, Split, TimelineGeom, TimelineItem, TimelineTarget, TimelineText,
@@ -79,9 +79,11 @@ fn text_in_band(
     band: Rect,
     max_width: f64,
 ) {
-    let shown =
-        ctx.text
-            .elide_to_width_style(text, tilo_ui_base::num::f32_of_f64(max_width.max(0.0)), style);
+    let shown = ctx.text.elide_to_width_style(
+        text,
+        tilo_ui_base::num::f32_of_f64(max_width.max(0.0)),
+        style,
+    );
     let (_, h) = ctx.text.measure_style(&shown, None, style);
     let top = tilo_ui_base::text_metrics::centered_text_top(band.y0, band.height(), f64::from(h));
     ctx.text(&shown, style, color, Point::new(x, top), None);

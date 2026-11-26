@@ -14,10 +14,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
+use tilo_ui::{widget::Column, widget::Scrollable, widget::Text};
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use tilo_ui::{widget::Column, widget::Scrollable, widget::Text};
 use tilo_ui_base::widget::Widget;
 
 const W: u32 = 400;

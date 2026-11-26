@@ -28,9 +28,6 @@
 //! screen reader presses them but they are never published to an agent: that consent stays
 //! with the person.
 
-use tilo_ui_base::i18n::widget_text;
-use tilo_ui_base::widget::DrawChild;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 #[cfg(test)]
 use automerge::AutoCommit;
 use automerge::ObjId;
@@ -39,23 +36,26 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::icons::Icon;
-use tilo_ui_base::interaction::InteractionEnvironment;
-use tilo_ui_base::{platform::DialogActionOrder, platform::PlatformConventions};
-use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::TextRole;
-use tilo_ui_base::widget::Widget;
 use crate::widget::button::{Button, ButtonFace, ButtonRole};
 use crate::widget::control_size::ControlSize;
 use crate::widget::floating_surface;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::interaction::InteractionEnvironment;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{platform::DialogActionOrder, platform::PlatformConventions};
 
 pub const MODAL_MAX_WIDTH: f64 = 520.0;
 /// Narrowest a modal sheet is drawn, in design pixels, before it elides.
@@ -1723,7 +1723,11 @@ impl ModalDialog<dyn Widget> {
             scene,
             transform,
             track,
-            tilo_ui_base::widget::ScrollMetrics::new(self.content_size.1, body.height(), self.scroll),
+            tilo_ui_base::widget::ScrollMetrics::new(
+                self.content_size.1,
+                body.height(),
+                self.scroll,
+            ),
             theme,
             false,
         );
@@ -2077,13 +2081,14 @@ impl Widget for ModalDialog<dyn Widget> {
             scene.pop_layer();
         }
         self.paint_scroll_edges(scene, transform, theme);
-        self.content.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            env.clone(),
-        ));
+        self.content
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         pose.end(scene);
     }
 
@@ -2420,7 +2425,10 @@ impl Widget for ModalDialog<dyn Widget> {
         if self.up() && self.closable() {
             node.children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(tilo_ui_base::i18n::widget_format("widget-dialog-close", &[]))
+                    .with_name(tilo_ui_base::i18n::widget_format(
+                        "widget-dialog-close",
+                        &[],
+                    ))
                     .with_key(3)
                     .with_state(AccessState::new().focusable(true))
                     .with_bounds(self.close_rect().unwrap_or(Rect::ZERO))

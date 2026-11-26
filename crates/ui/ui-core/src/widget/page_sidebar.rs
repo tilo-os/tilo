@@ -1,20 +1,20 @@
 //! `PageSidebar` — a shared, reorderable page/slide preview rail: the PDF reader's page rail
 //! and the presentation editor's slide rail both drive this one widget.
 
-use tilo_ui_base::num::f64_of_usize;
 use std::collections::HashMap;
+use tilo_ui_base::num::f64_of_usize;
 
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
+use crate::widget::drag::{DragController, ListMetrics};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
-use crate::widget::drag::{DragController, ListMetrics};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 
 /// Something the host should do to its page/slide model in response to a
 /// sidebar interaction. The ordering-changing variants flag that a save is needed.
@@ -808,7 +808,13 @@ impl PageSidebar {
             // dragged-object shadow, shaped to its own corners (HIG §9.3),
             // rather than a black wash nudged down four pixels.
             let radius = f64::from(theme.tokens.radii.control);
-            tilo_ui_base::surface::shadow(scene, base, ghost, radius, &theme.tokens.elevation.floating);
+            tilo_ui_base::surface::shadow(
+                scene,
+                base,
+                ghost,
+                radius,
+                &theme.tokens.elevation.floating,
+            );
             thumb(scene, tr, base, from, ghost);
             scene.stroke(
                 &Stroke::new(2.0),

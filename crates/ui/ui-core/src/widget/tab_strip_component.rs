@@ -14,9 +14,12 @@
 
 use std::collections::HashMap;
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Person, component::ResourceId, component::Value};
-use tilo_ui_base::icons::Icon;
 use crate::widget::{TabBar, TabDescriptor, TabFaceSpec, TabMark};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Person,
+    component::ResourceId, component::Value,
+};
 
 tilo_ui_base::part_type!(TabItemProps);
 
@@ -339,8 +342,13 @@ impl tilo_ui_base::widget::identity::concrete::Decorator for TabStrip {
         state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        let handled =
-            tilo_ui_base::widget::Widget::perform_action(&mut self.bar, action, key_path, state, path);
+        let handled = tilo_ui_base::widget::Widget::perform_action(
+            &mut self.bar,
+            action,
+            key_path,
+            state,
+            path,
+        );
         self.report();
         handled
     }
@@ -365,12 +373,20 @@ impl tilo_ui_base::widget::identity::concrete::Decorator for TabStrip {
 
     /// A host that keeps its tree in step each frame hears what the pills reported since the
     /// last one, as one that only takes events does from [`Self::handle_event`].
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         tilo_ui_base::widget::Widget::sync(&mut self.bar, state, path);
         self.report();
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let changed = tilo_ui_base::widget::Widget::update(&mut self.bar, state, path);
         self.report();
         changed

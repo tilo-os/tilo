@@ -17,9 +17,9 @@ use tilo_actions::remote::{
     RESOURCE_READ_REFUSED, RESOURCE_READS_UNAVAILABLE, ResourceAddress, ResourceCopy,
     ResourceReadRequest, WatchScope,
 };
+use tilo_ui_base::{Arrival, RemoteActions};
 use ui::automerge::transaction::Transactable as _;
 use ui::time::Duration;
-use tilo_ui_base::{Arrival, RemoteActions};
 
 use super::{HOLD_MAX, HeldRecords, Openings, RecordAnswers};
 

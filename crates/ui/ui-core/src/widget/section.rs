@@ -1,10 +1,10 @@
 //! `Section`: a titled group of content on the ground, separated from the next group by space,
 //! never boxed.
 
-use tilo_ui_base::widget::DrawChild;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::widget::DrawChild;
 
 #[cfg(test)]
 use automerge::AutoCommit;
@@ -15,19 +15,26 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::widget::composition_parts::Parts;
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
-use tilo_ui_base::{chrome::RowJoin, chrome::SelectionState, chrome::paint_row_selection, chrome::row_bleed};
+use crate::pointer_replay::{PressAt, Release};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
-use crate::pointer_replay::{PressAt, Release};
+use tilo_ui_base::widget::composition_parts::Parts;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::{
+    chrome::RowJoin, chrome::SelectionState, chrome::paint_row_selection, chrome::row_bleed,
+};
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use crate::widget::list_row::RowStatus;
+use crate::{
+    widget::Button, widget::ButtonFace, widget::ButtonRole, widget::ControlSize,
+    widget::Interaction, widget::Text,
+};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::list_row::RowStatus;
-use crate::{widget::Button, widget::ButtonFace, widget::ButtonRole, widget::ControlSize, widget::Interaction, widget::Text};
-use tilo_ui_base::{widget::AvatarFace, widget::Element, widget::TaffyTreeExt, widget::Tone, widget::Widget};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::{
+    widget::AvatarFace, widget::Element, widget::TaffyTreeExt, widget::Tone, widget::Widget,
+};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Level {
@@ -363,8 +370,12 @@ impl<'a> SectionHeaderFace<'a> {
         let style = theme.text(self.level.role());
         let spare = (width - self.trailing_width(text, theme, &m)).max(1.0);
         let title_h = f64::from(
-            text.measure_style(self.title, Some(tilo_ui_base::num::f32_of_f64(spare)), &style)
-                .1,
+            text.measure_style(
+                self.title,
+                Some(tilo_ui_base::num::f32_of_f64(spare)),
+                &style,
+            )
+            .1,
         );
         let line = f64::from(style.line_height_px());
         title_h.max(m.height(line))
@@ -713,7 +724,11 @@ impl HeaderRow {
 }
 
 impl Widget for HeaderRow {
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {
             changed |= child.update(state, path);
@@ -721,7 +736,11 @@ impl Widget for HeaderRow {
         changed
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for child in &mut self.parts.children {
             child.sync(state, path);
         }
@@ -897,7 +916,12 @@ impl Widget for HeaderRow {
             .children
             .iter()
             .any(|child| tilo_ui_base::widget::holds_pointer(child.as_ref()));
-        tilo_ui_base::widget::route_to_children(&mut self.parts.children, &self.parts.nodes, event, ctx);
+        tilo_ui_base::widget::route_to_children(
+            &mut self.parts.children,
+            &self.parts.nodes,
+            event,
+            ctx,
+        );
         if *ctx.handled || held {
             return;
         }
@@ -1278,7 +1302,11 @@ impl Section {
 }
 
 impl Widget for Section {
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {
             changed |= child.update(state, path);
@@ -1286,7 +1314,11 @@ impl Widget for Section {
         changed
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for child in &mut self.parts.children {
             child.sync(state, path);
         }
@@ -1480,7 +1512,9 @@ impl Widget for Section {
 
     fn needs_animation_frame(&self) -> bool {
         !self.ghosts.is_empty()
-            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
+                self.for_each_child(visit)
+            })
     }
 
     fn needs_redraw(&self) -> bool {
@@ -1822,7 +1856,11 @@ impl Widget for StatusLine {
             _ => f32::INFINITY,
         });
         let spare = (f64::from(width) - self.dot - self.gap).max(1.0);
-        let (w, h) = text.measure_style(&self.text, Some(tilo_ui_base::num::f32_of_f64(spare)), style);
+        let (w, h) = text.measure_style(
+            &self.text,
+            Some(tilo_ui_base::num::f32_of_f64(spare)),
+            style,
+        );
         taffy::Size {
             width: if width.is_finite() {
                 width

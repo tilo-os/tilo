@@ -1,13 +1,13 @@
 //! Badge widget — the non-interactive member of the chip family: a small pill typically anchored over
 //! another element (avatar, icon, row).
 
+use crate::widget::chip::{ChipStyle, PillPaint, paint_pill};
+use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
-use crate::widget::chip::{ChipStyle, PillPaint, paint_pill};
-use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 
@@ -317,12 +317,16 @@ impl Badge {
         }
         let now = tilo_ui_base::motion::frame_now();
         let motion = self.motion.unwrap_or_else(|| {
-            tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), false)
+            tilo_ui_base::tokens::EffectiveMotion::new(
+                tilo_ui_base::tokens::Motion::default(),
+                false,
+            )
         });
         // A change moves only on screen, and lands after a key or an action;
         // a count ticking while the person looks at it cross-fades.
         let source = if self.on_screen {
-            tilo_ui_base::motion::recent_input(now).unwrap_or(tilo_ui_base::tokens::MotionSource::Pointer)
+            tilo_ui_base::motion::recent_input(now)
+                .unwrap_or(tilo_ui_base::tokens::MotionSource::Pointer)
         } else {
             tilo_ui_base::tokens::MotionSource::Action
         };
@@ -331,13 +335,23 @@ impl Badge {
             (false, true) => {
                 self.leaving = None;
                 self.label = tilo_ui_base::motion::CrossFade::new(label);
-                self.presence
-                    .show(true, tilo_ui_base::motion::Appear::SPEC, motion, source, now);
+                self.presence.show(
+                    true,
+                    tilo_ui_base::motion::Appear::SPEC,
+                    motion,
+                    source,
+                    now,
+                );
             }
             (true, false) => {
                 self.leaving = Some(std::mem::replace(&mut self.content, content.clone()));
-                self.presence
-                    .show(false, tilo_ui_base::motion::Appear::SPEC, motion, source, now);
+                self.presence.show(
+                    false,
+                    tilo_ui_base::motion::Appear::SPEC,
+                    motion,
+                    source,
+                    now,
+                );
             }
             (false, false) => {}
         }

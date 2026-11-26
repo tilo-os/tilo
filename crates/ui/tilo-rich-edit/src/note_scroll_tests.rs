@@ -11,10 +11,10 @@
     reason = "frame fixtures: failures are the assertion"
 )]
 
-use ui::app::{App, AppSurface, SurfaceDamage};
 use tilo_ui_base::theme::Theme;
-use ui::widget::Scrollable;
 use tilo_ui_base::widget::Widget;
+use ui::app::{App, AppSurface, SurfaceDamage};
+use ui::widget::Scrollable;
 use vello::Scene;
 use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
 
@@ -218,7 +218,11 @@ fn a_keystroke_in_a_long_note_paints_only_its_line() {
         .enumerate()
     {
         let _ = crate::rich_text_line::take_face_work();
-        app.surface_input(&Window, tilo_ui_base::synthetic_input::char_key(letter), false);
+        app.surface_input(
+            &Window,
+            tilo_ui_base::synthetic_input::char_key(letter),
+            false,
+        );
         scene.reset();
         app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
         let (painted, kept) = crate::rich_text_line::take_face_work();

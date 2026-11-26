@@ -1,8 +1,8 @@
-use tilo_ui_base::widget::native_view::*;
-use tilo_ui_base::widget::{NativeViewLifecycle, Widget};
 use std::cell::RefCell;
 use std::rc::Rc;
 use tilo_ui_base::platform::PlatformConventions;
+use tilo_ui_base::widget::native_view::*;
+use tilo_ui_base::widget::{NativeViewLifecycle, Widget};
 use vello::kurbo::Point;
 use winit::event::WindowEvent;
 

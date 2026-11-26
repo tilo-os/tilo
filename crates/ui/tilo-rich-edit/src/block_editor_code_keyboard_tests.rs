@@ -24,7 +24,10 @@ fn dispatch_key(
     let handled = Dispatch::new()
         .modifiers(modifiers)
         .doc(doc)
-        .send(editor, &tilo_ui_base::synthetic_input::keyboard_input(event))
+        .send(
+            editor,
+            &tilo_ui_base::synthetic_input::keyboard_input(event),
+        )
         .handled;
     editor.sync(doc, &ROOT);
     handled

@@ -66,8 +66,9 @@ pub(super) fn build_window(spec: &LaunchSpec, args: &LaunchArgs) -> Result<App, 
 /// What a process that is its own launcher handed its first window
 /// ([`super::hand_connection`]): the connection its join takes, once, or why the process could not
 /// make one.
-static HANDED: std::sync::Mutex<Option<Result<tilo_ui_base::collaboration::HandedConnection, String>>> =
-    std::sync::Mutex::new(None);
+static HANDED: std::sync::Mutex<
+    Option<Result<tilo_ui_base::collaboration::HandedConnection, String>>,
+> = std::sync::Mutex::new(None);
 
 /// Whether this process handed its first window a connection, or tried to: it is its own launcher,
 /// and its windows join the workspace as a launched process's do.
@@ -308,7 +309,8 @@ pub(super) fn dispatch_definition_in(
 ///
 /// # Errors
 /// The process is its own launcher and has no connection for this window.
-pub(super) fn native_connection() -> Result<tilo_ui_base::collaboration::NativeConnection, LaunchError> {
+pub(super) fn native_connection()
+-> Result<tilo_ui_base::collaboration::NativeConnection, LaunchError> {
     if crate::window_link::is_building() {
         return Ok(tilo_ui_base::collaboration::NativeConnection::Window(
             crate::window_link::take_collaboration(),
@@ -322,7 +324,9 @@ pub(super) fn native_connection() -> Result<tilo_ui_base::collaboration::NativeC
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .take();
     match handed {
-        Some(Ok(connection)) => Ok(tilo_ui_base::collaboration::NativeConnection::Handed(connection)),
+        Some(Ok(connection)) => Ok(tilo_ui_base::collaboration::NativeConnection::Handed(
+            connection,
+        )),
         Some(Err(why)) => Err(LaunchError::Operation(why)),
         None => Err(LaunchError::Operation(
             "this window has no connection to its workspace: its process handed one to its first \

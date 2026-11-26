@@ -3,12 +3,12 @@
 use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 
+use crate::widget::{Button, ButtonRole, ControlSize};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
-use crate::widget::{Button, ButtonRole, ControlSize};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 
 #[derive(Clone, Copy, Debug)]
 pub struct BarControlFace<'a> {

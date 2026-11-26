@@ -8,11 +8,11 @@ use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::platform::PlatformConventions;
 use crate::search::{ActivationModifier, Facet, FacetFilter, SearchGroup, SearchResult};
+use crate::widget::SearchField;
+use tilo_ui_base::platform::PlatformConventions;
 use tilo_ui_base::text_match::FieldWeight;
 use tilo_ui_base::theme::Theme;
-use crate::widget::SearchField;
 use tilo_ui_base::widget::Widget;
 
 use super::rows::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome};
@@ -1028,7 +1028,11 @@ impl ActionPalette {
         false
     }
 
-    fn edit_host_field(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    fn edit_host_field(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
         let mut taffy: taffy::TaffyTree<()> = taffy::TaffyTree::new();
         let Ok(node) = taffy.new_leaf(taffy::Style::default()) else {
             return;

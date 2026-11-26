@@ -229,7 +229,10 @@ impl tilo_ui_base::widget::Decorator for ControlRow {
         }
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
         if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
             request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
         } else {
@@ -312,9 +315,8 @@ impl tilo_ui_base::widget::Decorator for ControlRow {
         path: &ModelPath,
     ) -> bool {
         match action {
-            tilo_ui_base::a11y::Action::Activate | tilo_ui_base::a11y::Action::SetSelection { .. } => {
-                self.choose()
-            }
+            tilo_ui_base::a11y::Action::Activate
+            | tilo_ui_base::a11y::Action::SetSelection { .. } => self.choose(),
             _ => self.content.perform_action(action, &[], state, path),
         }
     }

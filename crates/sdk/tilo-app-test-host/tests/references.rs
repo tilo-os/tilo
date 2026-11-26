@@ -9,10 +9,10 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeRequest, Pending, ReceiptStatus,
 };
-use tilo_ui_base::RemoteActions;
-use tilo_ui_base::a11y::Action as A11yAction;
 use tilo_app::prelude::*;
 use tilo_reference::ResourceRef;
+use tilo_ui_base::RemoteActions;
+use tilo_ui_base::a11y::Action as A11yAction;
 
 const WORKSPACE: &str = "6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a91";
 const TASKS: &str = "so.tilo.tasks";

@@ -128,9 +128,9 @@ fn receipt_status(
         tilo_actions::remote::ActionCallError,
     >,
 ) -> Option<tilo_actions::remote::ReceiptStatus> {
-    use tilo_ui_base::arriving::Arrival;
     use tilo_actions::InvocationUpdate;
     use tilo_actions::remote::ReceiptStatus;
+    use tilo_ui_base::arriving::Arrival;
     Some(match arrival {
         Arrival::Failed(error) => ReceiptStatus::Rejected {
             error: error.clone(),
@@ -708,7 +708,11 @@ impl Driver {
     ///
     /// # Panics
     /// If `workspace` is not a workspace id.
-    pub fn set_session_api(&mut self, client: tilo_ui_base::RemoteActions, workspace: Option<String>) {
+    pub fn set_session_api(
+        &mut self,
+        client: tilo_ui_base::RemoteActions,
+        workspace: Option<String>,
+    ) {
         if self.peer.is_none() {
             self.connect_peer();
         }

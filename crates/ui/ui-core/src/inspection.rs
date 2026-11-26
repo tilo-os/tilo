@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 
 use vello::kurbo::Rect;
 
-use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 
 /// One node in a developer inspection snapshot; `semantics` is the [`AccessNode`] the exported
 /// AccessKit tree was built from, and `children` include virtualized rows and cells that own no
@@ -255,7 +255,8 @@ fn collect_targets_called(
     if w.accessibility_hidden() {
         return;
     }
-    let (name, path, my_index) = tilo_ui_base::widget::widget_path(w, parent_path, called, sibling_counts);
+    let (name, path, my_index) =
+        tilo_ui_base::widget::widget_path(w, parent_path, called, sibling_counts);
     out.insert(path.clone(), w.get_rect());
     if my_index == 0 {
         let bare = if parent_path.is_empty() {
@@ -308,7 +309,10 @@ fn collect_targets_called(
     }
 }
 
-fn control_bounds(node: &tilo_ui_base::a11y::AccessNode, id: &str) -> Option<tilo_ui_base::a11y::AccessBounds> {
+fn control_bounds(
+    node: &tilo_ui_base::a11y::AccessNode,
+    id: &str,
+) -> Option<tilo_ui_base::a11y::AccessBounds> {
     if node.action_target.as_deref() == Some(id) && node.bounds.is_some() {
         return node.bounds;
     }
@@ -411,7 +415,8 @@ fn collect_inspection_called(
             children: vec![],
         };
     };
-    let (name, path, _) = tilo_ui_base::widget::widget_path(widget, parent_path, called, sibling_counts);
+    let (name, path, _) =
+        tilo_ui_base::widget::widget_path(widget, parent_path, called, sibling_counts);
     let rect = widget.get_rect();
     let mut semantics = widget.accessibility();
     if let Some(node) = &mut semantics {
@@ -454,7 +459,8 @@ fn collect_inspection_called(
         page_title: widget.own_page_title(),
         layout: widget.layout_info(),
         paint_key: tilo_ui_base::scene_parts::painted_key(widget),
-        semantics: semantics.map(|access| tilo_ui_base::a11y::with_synthetic_bounds(access, widget)),
+        semantics: semantics
+            .map(|access| tilo_ui_base::a11y::with_synthetic_bounds(access, widget)),
         children,
     }
 }

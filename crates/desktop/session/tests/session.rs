@@ -1064,9 +1064,11 @@ impl Published for Player {
         _look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         self.asked.borrow_mut().push(address.action.clone());
-        Ok(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        ))
+        Ok(
+            tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        )
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {

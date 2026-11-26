@@ -2,7 +2,10 @@
 
 use tilo_ui_graph::component::{CaseDescription, EnumDescription};
 
-use tilo_ui_base::{component::Component, component::Described, component::PropType, component::Type, component::Value, component::case_field, component::case_field_description};
+use tilo_ui_base::{
+    component::Component, component::Described, component::PropType, component::Type,
+    component::Value, component::case_field, component::case_field_description,
+};
 
 use super::{FunnelChart, FunnelDirection};
 use crate::widget::chart_data::ChartItem;

@@ -571,7 +571,11 @@ impl Session {
 }
 
 /// The rects of the laid out widgets whose accessible name says `text`.
-fn containing(widget: &dyn tilo_ui_base::widget::Widget, text: &str, out: &mut Vec<ui::kurbo::Rect>) {
+fn containing(
+    widget: &dyn tilo_ui_base::widget::Widget,
+    text: &str,
+    out: &mut Vec<ui::kurbo::Rect>,
+) {
     if widget.accessibility().is_some_and(|access| {
         access
             .name
@@ -677,8 +681,10 @@ fn labelled<'a>(node: &'a UiNode, label: &str) -> Vec<&'a UiNode> {
 /// The wall clock at `hour:minute:second` on `day` of 2026, in the zone this process reads as
 /// the person's.
 fn local(month: i8, day: i8, (hour, minute, second): (i8, i8, i8)) -> ui::time::SystemTime {
-    let at = tilo_ui_base::clock::instant_of(jiff::civil::date(2026, month, day).at(hour, minute, second, 0))
-        .expect("the time exists where the person is");
+    let at = tilo_ui_base::clock::instant_of(
+        jiff::civil::date(2026, month, day).at(hour, minute, second, 0),
+    )
+    .expect("the time exists where the person is");
     let ms = u64::try_from(at.as_millisecond()).expect("after 1970");
     ui::time::UNIX_EPOCH
         .checked_add(ui::time::Duration::from_millis(ms))
@@ -1301,8 +1307,12 @@ fn a_reply_goes_out_once_the_server_takes_the_effect() {
 #[test]
 fn a_send_the_workspace_denies_settles_refused_and_nothing_is_sent() {
     use collaboration::RouteSpec;
+    use tilo_ui_base::{
+        permissions::policy::Answer, permissions::policy::Grant, permissions::policy::Grantee,
+        permissions::policy::KindSet, permissions::policy::MemberAccess,
+        permissions::policy::TreePath, permissions::policy::WorkspacePolicy,
+    };
     use tilolang_process::hosted::Spec;
-    use tilo_ui_base::{permissions::policy::Answer, permissions::policy::Grant, permissions::policy::Grantee, permissions::policy::KindSet, permissions::policy::MemberAccess, permissions::policy::TreePath, permissions::policy::WorkspacePolicy};
 
     let servers = servers();
     let connector = MailConnector::of(account(&servers));
@@ -1350,8 +1360,11 @@ fn a_send_the_workspace_denies_settles_refused_and_nothing_is_sent() {
 #[test]
 fn a_send_the_workspace_denies_for_its_capability_settles_refused() {
     use collaboration::RouteSpec;
+    use tilo_ui_base::{
+        permissions::policy::Grantee, permissions::policy::MemberAccess,
+        permissions::policy::WorkspacePolicy,
+    };
     use tilolang_process::hosted::Spec;
-    use tilo_ui_base::{permissions::policy::Grantee, permissions::policy::MemberAccess, permissions::policy::WorkspacePolicy};
 
     let servers = servers();
     let connector = MailConnector::of(account(&servers));
@@ -1408,8 +1421,11 @@ fn a_send_the_workspace_denies_for_its_capability_settles_refused() {
 #[test]
 fn a_send_goes_while_another_capability_is_the_one_denied() {
     use collaboration::RouteSpec;
+    use tilo_ui_base::{
+        permissions::policy::Grantee, permissions::policy::MemberAccess,
+        permissions::policy::WorkspacePolicy,
+    };
     use tilolang_process::hosted::Spec;
-    use tilo_ui_base::{permissions::policy::Grantee, permissions::policy::MemberAccess, permissions::policy::WorkspacePolicy};
 
     let servers = servers();
     let connector = MailConnector::of(account(&servers));
@@ -4699,7 +4715,9 @@ fn composer_field(session: &mut Session, order: usize) -> ui::accesskit::NodeId 
 /// technology does: the window's own accessible action, not a press at a place.
 fn into_composer_field(session: &mut Session, order: usize) {
     let node = composer_field(session, order);
-    session.window.a11y_action(node, &tilo_ui_base::a11y::Action::Focus);
+    session
+        .window
+        .a11y_action(node, &tilo_ui_base::a11y::Action::Focus);
     session.settle();
 }
 

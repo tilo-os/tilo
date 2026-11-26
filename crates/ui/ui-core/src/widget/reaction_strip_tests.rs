@@ -1,7 +1,7 @@
 use super::*;
-use tilo_ui_base::widget::Widget as _;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::widget::Widget as _;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::keyboard::NamedKey;
@@ -40,7 +40,10 @@ fn lay_out_and_draw(widget: &mut ReactionStripWidget, width: f32, theme: &Theme)
 }
 
 fn click(widget: &mut ReactionStripWidget, at: Point) {
-    crate::testing::dispatch(widget, &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y));
+    crate::testing::dispatch(
+        widget,
+        &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y),
+    );
     crate::testing::dispatch(widget, &tilo_ui_base::synthetic_input::mouse_press());
     crate::testing::dispatch(widget, &tilo_ui_base::synthetic_input::mouse_release());
 }

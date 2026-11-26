@@ -49,7 +49,9 @@ impl FrameRecords {
     pub(super) fn begin(&self, scene: &Scene) -> Recording {
         let backdrops = tilo_ui_base::part_paint::backdrop::BackdropRecording::begin();
         tilo_ui_base::part_paint::backdrop::layer_scene(scene, 0);
-        let parts = self.track_parts.then(tilo_ui_base::scene_parts::Recording::begin);
+        let parts = self
+            .track_parts
+            .then(tilo_ui_base::scene_parts::Recording::begin);
         if parts.is_some() {
             tilo_ui_base::scene_parts::track(scene);
         }
@@ -69,7 +71,9 @@ impl FrameRecords {
             .lift
             .map(crate::lift::Recording::finish)
             .unwrap_or_default();
-        let recorded = recording.parts.map(tilo_ui_base::scene_parts::Recording::finish);
+        let recorded = recording
+            .parts
+            .map(tilo_ui_base::scene_parts::Recording::finish);
         self.parts = recorded.as_ref().and_then(|recorded| recorded.of(scene));
         if let Some(recorded) = &recorded {
             for lifted in &mut self.lifted {
@@ -182,7 +186,8 @@ impl Driver {
             layout: None,
             paint_key: None,
             semantics: Some(
-                tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Tooltip).with_name(text.to_owned()),
+                tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Tooltip)
+                    .with_name(text.to_owned()),
             ),
             children: Vec::new(),
         })
@@ -499,7 +504,12 @@ impl<'a> Walk<'a> {
     /// and take it out of what the widget publishes (`owner`): it stands over the window, not in
     /// the widget's box. A press on one of its rows still reaches the widget that opened it, the
     /// one its path names before the `#`.
-    fn lift(&self, path: &str, surface: &dyn Widget, owner: Option<&mut tilo_ui_base::a11y::AccessNode>) {
+    fn lift(
+        &self,
+        path: &str,
+        surface: &dyn Widget,
+        owner: Option<&mut tilo_ui_base::a11y::AccessNode>,
+    ) {
         let Some(access) = surface.accessibility() else {
             return;
         };
@@ -671,7 +681,8 @@ impl Driver {
         let mut widgets = HashMap::new();
         let mut sibling_counts = HashMap::new();
         for root in self.app.presentation_roots() {
-            let (_, path, _) = tilo_ui_base::widget::widget_path(root, "", None, &mut sibling_counts);
+            let (_, path, _) =
+                tilo_ui_base::widget::widget_path(root, "", None, &mut sibling_counts);
             index_widgets(root, path, &mut widgets);
         }
         let walk = Walk {

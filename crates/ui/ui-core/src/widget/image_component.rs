@@ -1,7 +1,7 @@
 //! [`Image`] as a described component: a picture by its address.
 
-use tilo_ui_base::{component::Component, component::Described};
 use crate::pictures::Pictures;
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::{Image, ImageFit};
 

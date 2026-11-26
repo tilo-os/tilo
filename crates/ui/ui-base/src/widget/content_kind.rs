@@ -72,7 +72,8 @@ impl crate::component::PropType for ContentKind {
     }
 
     fn from_value(value: &crate::component::Value) -> Result<Self, String> {
-        let (crate::component::Value::Choice(case) | crate::component::Value::Text(case)) = value else {
+        let (crate::component::Value::Choice(case) | crate::component::Value::Text(case)) = value
+        else {
             return Err(format!("takes ContentKind, not {}", value.kind()));
         };
         Ok(match case.as_str() {

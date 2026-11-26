@@ -8,9 +8,9 @@ use super::{
     Column, ContentKind, Inputs, InspectorPlacement, Metrics, NavMode, NavPane, OverviewPlacement,
     Part, SidebarPlacement, inspector_layout_of, reaches,
 };
+use crate::widget::flap::SplitLayout;
 use tilo_ui_base::num::f64_of_usize;
 use tilo_ui_base::tokens::Breakpoint;
-use crate::widget::flap::SplitLayout;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NavGeometry {

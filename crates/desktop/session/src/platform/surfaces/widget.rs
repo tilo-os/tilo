@@ -641,7 +641,8 @@ impl tilo_session_core::surfaces::Published for WidgetSurface {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         _look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError>
+    {
         let started = self
             .host
             .invoke_published(&address.resource, &address.action, arguments);
@@ -658,7 +659,11 @@ impl tilo_session_core::surfaces::Published for WidgetSurface {
         self.name.clone()
     }
 
-    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &tilo_ui_base::a11y::Action) -> bool {
+    fn a11y_action(
+        &mut self,
+        target: ui::accesskit::NodeId,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         let acted = self.host.perform_a11y_action(target, action).is_ok();
         self.revision = self.revision.wrapping_add(1);
         self.owe();
@@ -737,7 +742,10 @@ impl tilo_session_core::surfaces::Published for WidgetSurface {
     /// name or test id, else an element of the accessibility tree — a chip, a
     /// window bar's pill — activated as assistive technology activates it.
     fn press(&mut self, name: &str) -> Result<(), String> {
-        if let Err(named) = self.host.perform_named(name, &tilo_ui_base::a11y::Action::Activate) {
+        if let Err(named) = self
+            .host
+            .perform_named(name, &tilo_ui_base::a11y::Action::Activate)
+        {
             // A control of an app the tree shows as its own, by the id it
             // names it with, else an element of the accessibility tree.
             let mut pressed = false;
@@ -1107,7 +1115,10 @@ impl ShellSurface for WidgetSurface {
 }
 
 /// Hand `each` every app `widget`'s tree shows as its own ([`ui::app::EmbeddedApp`]).
-fn each_embedded_app(widget: &mut dyn tilo_ui_base::Widget, each: &mut dyn FnMut(&mut ui::app::EmbeddedApp)) {
+fn each_embedded_app(
+    widget: &mut dyn tilo_ui_base::Widget,
+    each: &mut dyn FnMut(&mut ui::app::EmbeddedApp),
+) {
     if let Some(app) = widget
         .as_any_mut()
         .and_then(|any| any.downcast_mut::<ui::app::EmbeddedApp>())

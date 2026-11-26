@@ -10,9 +10,9 @@ use std::time::Instant;
 
 use tilo_compositor::{Compositor, WindowEffect};
 
-use ui::kurbo::{Point, Rect};
 use tilo_ui_base::{motion::Direction, motion::WindowMotion};
 use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
+use ui::kurbo::{Point, Rect};
 
 /// How far a window `elapsed` into its motion `direction` has come.
 fn progress(motion: EffectiveMotion, direction: Direction, elapsed: std::time::Duration) -> f64 {
@@ -102,9 +102,10 @@ impl WindowMotions {
             if let std::collections::btree_map::Entry::Vacant(appearing) = self.known.entry(info.id)
             {
                 appearing.insert(Some(now));
-                if let Some(control) =
-                    control(tilo_ui_base::motion::recent_input(now), compositor.pointer_location())
-                {
+                if let Some(control) = control(
+                    tilo_ui_base::motion::recent_input(now),
+                    compositor.pointer_location(),
+                ) {
                     self.controls.insert(info.id, control);
                 }
             }

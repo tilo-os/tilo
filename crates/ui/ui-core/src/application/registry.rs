@@ -72,7 +72,12 @@ pub fn register(definition: &'static ApplicationDefinition) -> bool {
 
 /// Register an application whose code `load` fetches when it is first needed.
 pub fn defer(app_id: &'static str, title: &'static str, load: Load) -> bool {
-    defer_arriving(app_id, title, tilo_ui_base::widget::SkeletonShape::Ground, load)
+    defer_arriving(
+        app_id,
+        title,
+        tilo_ui_base::widget::SkeletonShape::Ground,
+        load,
+    )
 }
 
 /// [`defer`] with the shape the app's window shows while its code is on its way: what the app declares

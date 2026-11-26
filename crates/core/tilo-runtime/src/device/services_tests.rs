@@ -701,7 +701,8 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
             ),
             ui::resource::ResourceType::new(WRITER_KIND),
         );
-        let mut manager = tilo_ui_base::collaboration::CollaborationManager::for_resource(&checkout);
+        let mut manager =
+            tilo_ui_base::collaboration::CollaborationManager::for_resource(&checkout);
         wait_until_joined(&mut manager);
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "text", WRITTEN).unwrap();
@@ -715,9 +716,7 @@ fn an_sdk_apps_sealed_write_in_the_runtimes_own_workspace_is_durable_across_rest
                 .with_message(edit.change_message().unwrap()),
         );
         assert!(
-            manager.send(tilo_ui_base::collaboration::CollabRequest::document_snapshot(
-                doc.save()
-            ))
+            manager.send(tilo_ui_base::collaboration::CollabRequest::document_snapshot(doc.save()))
         );
         watch_for_stop(&mut manager);
     }

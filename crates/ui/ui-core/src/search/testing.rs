@@ -108,8 +108,8 @@ where
 mod tests {
     use super::*;
     use crate::search::{SearchCatalog, SearchCursor, SearchItem, SearchPage};
-    use tilo_ui_base::text_match::FieldWeight;
     use tilo_actions::ActionAddress;
+    use tilo_ui_base::text_match::FieldWeight;
 
     fn catalogue(corpus: Corpus, extra_text: &str) -> SearchCatalog {
         let catalog = SearchCatalog::new("Documents");

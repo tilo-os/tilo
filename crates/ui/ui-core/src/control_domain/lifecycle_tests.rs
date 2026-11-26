@@ -1,8 +1,8 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+use tilo_actions::ControlInvocation;
 use tilo_ui_base::control_domain::*;
 use tilo_ui_base::widget::Widget;
-use tilo_actions::ControlInvocation;
-use std::rc::Rc;
-use std::cell::RefCell;
 fn request(label: &str) -> ControlInvocation {
     ControlInvocation {
         address: tilo_actions::ActionAddress::new(label, "run"),

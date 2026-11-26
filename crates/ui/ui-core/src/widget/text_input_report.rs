@@ -43,12 +43,15 @@ impl TextInput {
                 return;
             }
             if let Some(action) = &mut self.action {
-                let _ = tilo_ui_base::widget::input_provenance::with_physical_text(physical_text, || {
-                    action.press(Edited {
-                        before: before.clone(),
-                        after,
-                    })
-                });
+                let _ = tilo_ui_base::widget::input_provenance::with_physical_text(
+                    physical_text,
+                    || {
+                        action.press(Edited {
+                            before: before.clone(),
+                            after,
+                        })
+                    },
+                );
             }
             self.set_text(&before);
             return;
@@ -67,9 +70,10 @@ impl TextInput {
             .fire(Some(tilo_ui_base::component::Value::Text(held)));
         if let Some(action) = &mut self.action {
             let after = self.text.clone();
-            let _ = tilo_ui_base::widget::input_provenance::with_physical_text(physical_text, || {
-                action.emit(Edited { before, after })
-            });
+            let _ =
+                tilo_ui_base::widget::input_provenance::with_physical_text(physical_text, || {
+                    action.emit(Edited { before, after })
+                });
         }
         // The field's own state stays the one a bound local edit reads: an
         // action publishing the text does not stand in for it.

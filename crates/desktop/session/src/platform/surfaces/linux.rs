@@ -76,7 +76,11 @@ impl Layer for RefCell<WidgetSurface> {
         Published::a11y_tree(&mut *self.borrow_mut())
     }
 
-    fn a11y_action(&self, target: ui::accesskit::NodeId, action: &tilo_ui_base::a11y::Action) -> bool {
+    fn a11y_action(
+        &self,
+        target: ui::accesskit::NodeId,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         Published::a11y_action(&mut *self.borrow_mut(), target, action)
     }
 

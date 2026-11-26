@@ -9,8 +9,8 @@
 )]
 
 use crate::headless::Driver;
-use tilo_ui_base::theme::Theme;
 use crate::widget::{NavShell, SidebarPlacement};
+use tilo_ui_base::theme::Theme;
 
 /// A mail window: mailboxes in the sidebar, a mailbox's messages beside them and the message
 /// read, each column titled in its header row.
@@ -41,7 +41,11 @@ impl tilo_ui_base::widget::Decorator for MailApp {
         &mut self.shell
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for event in crate::window_toolbar::take_events() {
             self.shell.window_toolbar_event(&event);
         }

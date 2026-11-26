@@ -1,8 +1,17 @@
-use tilo_ui_base::{permissions::Access, permissions::ActionKind, permissions::Answer, permissions::AppKind, permissions::CapDecision, permissions::CapOverride, permissions::Denial, permissions::Grantee, permissions::MemberId, permissions::PermissionContext, permissions::PermissionScope, permissions::ResourceRef, permissions::Role, permissions::Scope, permissions::TreePath, permissions::policy};
+use tilo_ui_base::{
+    permissions::Access, permissions::ActionKind, permissions::Answer, permissions::AppKind,
+    permissions::CapDecision, permissions::CapOverride, permissions::Denial, permissions::Grantee,
+    permissions::MemberId, permissions::PermissionContext, permissions::PermissionScope,
+    permissions::ResourceRef, permissions::Role, permissions::Scope, permissions::TreePath,
+    permissions::policy,
+};
 
 /// A viewer in the workspace: role only, no individual capabilities.
 fn viewer_ctx(user: &str) -> PermissionContext {
-    PermissionContext::member(&tilo_ui_base::permissions::MemberId::person(user), Role::Viewer)
+    PermissionContext::member(
+        &tilo_ui_base::permissions::MemberId::person(user),
+        Role::Viewer,
+    )
 }
 
 /// An editor in the workspace, additionally shared one file.
@@ -11,13 +20,15 @@ fn viewer_ctx(user: &str) -> PermissionContext {
 /// authority over the filesystem, so even an Owner needs one of these
 /// to touch a path.
 fn editor_ctx(user: &str) -> PermissionContext {
-    PermissionContext::member(&tilo_ui_base::permissions::MemberId::person(user), Role::Editor).granting(
-        CapOverride::grant(
-            Grantee::person(user),
-            Scope::FsPath("/var/workspace/report.md".into()),
-            Access::Write,
-        ),
+    PermissionContext::member(
+        &tilo_ui_base::permissions::MemberId::person(user),
+        Role::Editor,
     )
+    .granting(CapOverride::grant(
+        Grantee::person(user),
+        Scope::FsPath("/var/workspace/report.md".into()),
+        Access::Write,
+    ))
 }
 
 /// What a denial was decided by, for the cases that pin it.

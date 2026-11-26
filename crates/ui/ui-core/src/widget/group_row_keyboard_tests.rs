@@ -163,9 +163,9 @@ fn chat_and_a_field(chat_first: bool) -> (Driver, Rc<Cell<u32>>) {
         vec![(
             TabDescriptor::new(2, "Tasks"),
             TileContent::App(Box::new(Field {
-                input: crate::widget::TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field(
-                    "title".into(),
-                )])
+                input: crate::widget::TextInput::new(vec![
+                    tilo_ui_base::presence::PathSegment::Field("title".into()),
+                ])
                 .with_id("title"),
             })),
         )],

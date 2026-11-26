@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
-use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 

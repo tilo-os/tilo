@@ -412,8 +412,12 @@ fn every_builtin_kind_is_named_in_the_shells_language() {
             "Window groups",
         ]
     );
-    tilo_ui_base::i18n::I18nManager::install("en-US", "de-DE", &[("en-US", SOURCE), ("de-DE", GERMAN)])
-        .expect("both catalogues parse");
+    tilo_ui_base::i18n::I18nManager::install(
+        "en-US",
+        "de-DE",
+        &[("en-US", SOURCE), ("de-DE", GERMAN)],
+    )
+    .expect("both catalogues parse");
     assert_eq!(
         labels(),
         [

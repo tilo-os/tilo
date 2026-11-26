@@ -41,8 +41,12 @@ fn packages() -> Rc<Packages> {
 /// this test is about the fade.
 fn open() -> Window {
     tilo_app_window::i18n::ensure();
-    let mut window = Window::open(APP, &packages(), Opening::new(WINDOW, tilo_ui_base::Theme::light()))
-        .expect("the window opens");
+    let mut window = Window::open(
+        APP,
+        &packages(),
+        Opening::new(WINDOW, tilo_ui_base::Theme::light()),
+    )
+    .expect("the window opens");
     window
         .harness
         .set_theme(tilo_ui_base::Theme::light().with_reduce_motion(false));

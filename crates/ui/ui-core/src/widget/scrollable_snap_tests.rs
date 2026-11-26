@@ -9,13 +9,13 @@
 use super::Scrollable;
 use crate::app::driver::Framed;
 use crate::testing::dispatch;
-use tilo_ui_base::theme::Theme;
 use crate::time::testing::with_monotonic_time;
 use crate::time::{Duration, Instant};
-use tilo_ui_base::{tokens::EffectiveMotion, tokens::Motion, tokens::Rhythm};
 use crate::{widget::Board, widget::Container, widget::Text};
-use tilo_ui_base::{widget::Element, widget::Widget};
 use automerge::AutoCommit;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::Motion, tokens::Rhythm};
+use tilo_ui_base::{widget::Element, widget::Widget};
 use winit::event::{MouseScrollDelta, TouchPhase};
 use winit::keyboard::NamedKey;
 

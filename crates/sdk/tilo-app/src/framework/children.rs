@@ -38,10 +38,10 @@ use tilo_actions::{
 };
 use tilo_resource::children::{self as lifecycle, ChildList as _, ChildRef, Children as Container};
 use tilo_resource::{Atom, Edit, EditOp, Id, Reader, Resource, Segment};
+use tilo_ui_base::widget::Edits;
 use tilo_ui_base::{arriving::Arrival, arriving::Arriving, arriving::Source};
 use tilo_ui_base::{permissions::PermissionScope, permissions::TreePath};
 use ui_core::resource::{DocumentCheckout, DocumentId, ResourceOpenError, ResourceType};
-use tilo_ui_base::widget::Edits;
 
 use super::chain::{CHAIN_ACTION_TYPE, WorkspaceResources};
 use super::live::Live;

@@ -1,8 +1,8 @@
 use super::tests::{paint, starting_host};
 use super::*;
-use tilo_ui_base::{arriving::Source, arriving::Step};
 use crate::time::testing::with_monotonic_time;
 use tilo_ui_base::widget::SkeletonShape;
+use tilo_ui_base::{arriving::Source, arriving::Step};
 use vello::kurbo::Rect;
 
 #[test]

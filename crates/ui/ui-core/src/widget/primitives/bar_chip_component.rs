@@ -7,13 +7,15 @@ use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::{component::Component, component::Described, component::Event, component::Person};
+use crate::widget::primitives::BarChipFace;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
-use tilo_ui_base::{presence::Face, presence::FaceStack};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::widget::primitives::BarChipFace;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Person,
+};
+use tilo_ui_base::{presence::Face, presence::FaceStack};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// A bar control for people: their faces, a label and a press, with faces opening who is here

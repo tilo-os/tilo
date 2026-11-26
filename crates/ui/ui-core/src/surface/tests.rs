@@ -1,14 +1,14 @@
 use tilo_ui_base::surface::*;
 use tilo_ui_base::theme::PresetDesign;
-use vello::kurbo::Affine;
-use vello::peniko::Color;
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::Colors;
-use vello::peniko::Fill;
+use tilo_ui_base::tokens::Shadow;
+use vello::Scene;
+use vello::kurbo::Affine;
 use vello::kurbo::Rect;
 use vello::kurbo::RoundedRect;
-use vello::Scene;
-use tilo_ui_base::tokens::Shadow;
-use tilo_ui_base::theme::Theme;
+use vello::peniko::Color;
+use vello::peniko::Fill;
 
 tilo_test_env::scenario! {
     /// Edge fades, separators and derived edges.
@@ -255,9 +255,7 @@ fn render_token_shadow(
     shadow(&mut scene, Affine::IDENTITY, rect, radius, token);
     let mut r = OffscreenRenderer::new(w, h);
     let rgba = r.render(&scene, Color::BLACK);
-    move |x: f64, y: f64| {
-        OffscreenRenderer::sample(&rgba, w, x.floor() as u32, y.floor() as u32).0
-    }
+    move |x: f64, y: f64| OffscreenRenderer::sample(&rgba, w, x.floor() as u32, y.floor() as u32).0
 }
 
 /// A control face painted in `finish` (and `border`, `depth`) over the dark window
@@ -506,9 +504,7 @@ fn render_shadow(w: u32, h: u32, rect: Rect, spread: f64) -> impl Fn(f64, f64) -
     );
     let mut r = OffscreenRenderer::new(w, h);
     let rgba = r.render(&scene, Color::BLACK);
-    move |x: f64, y: f64| {
-        OffscreenRenderer::sample(&rgba, w, x.floor() as u32, y.floor() as u32).0
-    }
+    move |x: f64, y: f64| OffscreenRenderer::sample(&rgba, w, x.floor() as u32, y.floor() as u32).0
 }
 
 #[test]

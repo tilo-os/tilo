@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use taffy::Size;
-use ui::kurbo::{Point, Rect};
 use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::Widget};
+use ui::kurbo::{Point, Rect};
 use ui::{KeyboardMap, KeyboardMapKey};
 use winit::keyboard::{NativeKeyCode, PhysicalKey};
 

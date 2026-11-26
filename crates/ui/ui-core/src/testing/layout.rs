@@ -37,7 +37,9 @@ pub fn lay_out_in(
     };
     // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
     unsafe {
-        tilo_ui_base::widget::solve_built_layout(widget, &mut taffy, node, &node_map, &mut text, available)
+        tilo_ui_base::widget::solve_built_layout(
+            widget, &mut taffy, node, &node_map, &mut text, available,
+        )
     }?;
     widget.apply_layout(&taffy, node, crate::kurbo::Point::ZERO);
     Ok(())

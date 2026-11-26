@@ -1,8 +1,8 @@
 //! [`ProgressBar`] as a described component.
 
-use tilo_ui_base::{component::Component, component::Described};
 use crate::widget::GaugeThresholds;
 use tilo_ui_base::widget::Tone;
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::{BarFill, ProgressBar};
 

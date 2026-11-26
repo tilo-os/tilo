@@ -57,7 +57,11 @@ impl Widget for OwnerProbe {
         dyn tilo_ui_base::widget::undo_access::CommittedActions
     );
 
-    fn update(&mut self, _: &tilo_ui_base::widget::AppModel, _: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        _: &tilo_ui_base::widget::AppModel,
+        _: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         self.seen.updates.set(self.seen.updates.get() + 1);
         false
     }
@@ -74,7 +78,11 @@ impl Widget for OwnerProbe {
         false
     }
 
-    fn sync(&mut self, model: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        model: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         let (doc, root) = tilo_ui_base::doc::document_ref(model, path);
         // The owner syncs over its own record, which holds only its content: who the record is
         // the workspace's store keeps.

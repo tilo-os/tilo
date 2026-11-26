@@ -296,7 +296,10 @@ impl Job {
         let percent = (fraction * 100.0).round() as u32;
         Some(tilo_ui_base::i18n::widget_format(
             "jobs-percent",
-            &[("percent", tilo_ui_base::i18n::ArgValue::from(percent.to_string()))],
+            &[(
+                "percent",
+                tilo_ui_base::i18n::ArgValue::from(percent.to_string()),
+            )],
         ))
     }
 
@@ -311,8 +314,14 @@ impl Job {
             (Progress::Measured { done, total }, false) => tilo_ui_base::i18n::widget_format(
                 "jobs-phase-of",
                 &[
-                    ("phase", tilo_ui_base::i18n::ArgValue::from(phase.to_owned())),
-                    ("done", tilo_ui_base::i18n::ArgValue::from(self.unit.format(*done))),
+                    (
+                        "phase",
+                        tilo_ui_base::i18n::ArgValue::from(phase.to_owned()),
+                    ),
+                    (
+                        "done",
+                        tilo_ui_base::i18n::ArgValue::from(self.unit.format(*done)),
+                    ),
                     (
                         "total",
                         tilo_ui_base::i18n::ArgValue::from(self.unit.format(*total)),
@@ -322,8 +331,14 @@ impl Job {
             (Progress::Seen { seen }, false) => tilo_ui_base::i18n::widget_format(
                 "jobs-phase-seen",
                 &[
-                    ("phase", tilo_ui_base::i18n::ArgValue::from(phase.to_owned())),
-                    ("seen", tilo_ui_base::i18n::ArgValue::from(self.unit.format(*seen))),
+                    (
+                        "phase",
+                        tilo_ui_base::i18n::ArgValue::from(phase.to_owned()),
+                    ),
+                    (
+                        "seen",
+                        tilo_ui_base::i18n::ArgValue::from(self.unit.format(*seen)),
+                    ),
                 ],
             ),
         }

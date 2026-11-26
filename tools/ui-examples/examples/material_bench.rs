@@ -5,13 +5,16 @@
 
 use std::time::{Duration, Instant};
 
+use tilo_ui::widget::primitives::{SurfaceLevel, paint_surface};
 use tilo_ui_base::TextRole;
 use tilo_ui_base::offscreen::OffscreenRenderer;
-use tilo_ui_base::{part_paint::backdrop::BackdropFrame, part_paint::backdrop::BackdropRecording, part_paint::backdrop::layer_scene};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::SurfaceRole;
-use tilo_ui::widget::primitives::{SurfaceLevel, paint_surface};
+use tilo_ui_base::{
+    part_paint::backdrop::BackdropFrame, part_paint::backdrop::BackdropRecording,
+    part_paint::backdrop::layer_scene,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::{Color, ColorStop, Fill, Gradient};
@@ -274,8 +277,9 @@ pub fn run(args: &[String]) {
             Some(theme) => theme,
             None if std::path::Path::new(&name).is_dir() => {
                 let dir = std::path::Path::new(&name);
-                let document = std::fs::read_to_string(dir.join(tilo_ui_base::theme_bundle::DOCUMENT))
-                    .unwrap_or_else(|e| crate::registry::fatal(format!("{name}: {e}")));
+                let document =
+                    std::fs::read_to_string(dir.join(tilo_ui_base::theme_bundle::DOCUMENT))
+                        .unwrap_or_else(|e| crate::registry::fatal(format!("{name}: {e}")));
                 tilo_ui_base::theme_bundle::load(&document, |set| {
                     let path = dir.join(format!("{set}.wasm"));
                     match std::fs::read(&path) {

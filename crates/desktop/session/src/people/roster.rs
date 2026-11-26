@@ -440,9 +440,10 @@ impl PeopleOverlay {
         // Never taller than the output under the bar: the list scrolls.
         let chrome_h = face.height_for(1.0, theme) - 1.0;
         let room = (model.host.y1 - f64::from(spacing.s3) - anchor_top - chrome_h).max(row_h);
-        let visible_body = (heading_h * 2.0 + card_h * tilo_ui_base::num::f64_of_usize(VISIBLE_ROWS))
-            .min(self.body_height)
-            .min(room);
+        let visible_body = (heading_h * 2.0
+            + card_h * tilo_ui_base::num::f64_of_usize(VISIBLE_ROWS))
+        .min(self.body_height)
+        .min(room);
         let panel_h = face.height_for(visible_body, theme);
         self.panel = model.panel.map_or_else(
             || {
@@ -648,9 +649,10 @@ impl PeopleOverlay {
     ) -> (Rect, Rect) {
         let control = f64::from(theme.tokens.metrics.bar_control_height);
         let probe = ListRowFace::new(label).trailing_width(self.trailing_w);
-        let right = probe
-            .trailing_rect(rect, text, theme)
-            .map_or_else(|| rect.x1 - tilo_ui_base::chrome::row_bleed(theme), |slot| slot.x1);
+        let right = probe.trailing_rect(rect, text, theme).map_or_else(
+            || rect.x1 - tilo_ui_base::chrome::row_bleed(theme),
+            |slot| slot.x1,
+        );
         let follow = Rect::new(
             right - follow_w,
             rect.center().y - control / 2.0,
@@ -760,7 +762,9 @@ impl PeopleOverlay {
             ui::peniko::BlendMode::default(),
             1.0,
             transform,
-            &self.body.inflate(tilo_ui_base::chrome::row_bleed(theme), 0.0),
+            &self
+                .body
+                .inflate(tilo_ui_base::chrome::row_bleed(theme), 0.0),
         );
         let scrolled = transform.pre_translate((0.0, -self.scroll_offset()).into());
         let cursor = cursor.map(|p| Point::new(p.x, p.y + self.scroll_offset()));
@@ -794,7 +798,8 @@ impl PeopleOverlay {
         if !in_call {
             self.call_since = None;
         }
-        let sweep = tilo_ui_base::motion::Sweep::at(now.saturating_duration_since(since), theme.motion());
+        let sweep =
+            tilo_ui_base::motion::Sweep::at(now.saturating_duration_since(since), theme.motion());
         for place in self.rows.clone() {
             let Some(row) = model.rows.get(place.index) else {
                 continue;
@@ -836,7 +841,8 @@ impl PeopleOverlay {
                 disabled: false,
             };
             let paint_face = |ctx: &mut tilo_ui_base::paint::PaintCtx<'_>, rect: Rect| {
-                let mut face = tilo_ui_base::presence::Face::member(&row.label, &row.member, row.color);
+                let mut face =
+                    tilo_ui_base::presence::Face::member(&row.label, &row.member, row.color);
                 face.dimmed = row.availability.dims();
                 face.active = row.call.as_ref().map(|_| sweep);
                 tilo_ui_base::presence::FaceStack {
@@ -1073,7 +1079,11 @@ impl PeopleOverlay {
         self.keyboard_focus = None;
     }
 
-    fn scroll_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
+    fn scroll_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         let Some(theme) = self.scroll_theme.clone() else {
             return false;
         };
@@ -1116,7 +1126,8 @@ impl PeopleOverlay {
             WindowEvent::CursorMoved { position, .. } if !drawn.is_rest() => {
                 let scale = ctx.scale_factor;
                 let local = drawn.to_local(Point::new(position.x / scale, position.y / scale));
-                posed = tilo_ui_base::synthetic_input::cursor_moved(local.x * scale, local.y * scale);
+                posed =
+                    tilo_ui_base::synthetic_input::cursor_moved(local.x * scale, local.y * scale);
                 &posed
             }
             _ => event,
@@ -1429,9 +1440,11 @@ impl PeopleOverlay {
             .skip(1)
             .filter(|child| child.role == tilo_ui_base::a11y::Role::Button);
         for (index, (child, hit)) in controls.zip(&order).enumerate() {
-            let mut control =
-                std::mem::replace(child, tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button))
-                    .with_action_target(format!("people:{index}"));
+            let mut control = std::mem::replace(
+                child,
+                tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button),
+            )
+            .with_action_target(format!("people:{index}"));
             let rect = self.rect_for_hit(*hit).map(|rect| match hit {
                 PeopleHit::Invite | PeopleHit::Pin => rect,
                 _ => self.view_rect(rect),

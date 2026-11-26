@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use tilo_ui::application::{LaunchTarget, RestoreInput};
 use tilo_ui::bound_dispatch::invoke_bound_node;
 use tilo_ui::state::UndoLog;
-use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
 use tilo_ui::widget::TileHost;
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
 
 struct BoundProbe {
     _tile: Box<TileHost>,
@@ -492,7 +492,11 @@ fn instance_history_selects_only_its_own_attributed_entries() {
         assert!(history.next_undo_in(&doc, &author(), 11).is_none());
         assert!(
             history
-                .next_undo_in(&doc, &tilo_ui_base::permissions::MemberId::person("other"), 12)
+                .next_undo_in(
+                    &doc,
+                    &tilo_ui_base::permissions::MemberId::person("other"),
+                    12
+                )
                 .is_none()
         );
         assert_eq!(

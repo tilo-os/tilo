@@ -5,8 +5,8 @@
 
 use super::*;
 use tilo_render_protocol::patch::{Patch, local};
-use ui::time::{Duration, Instant};
 use tilo_ui_base::tokens::MotionSource;
+use ui::time::{Duration, Instant};
 use ui::widget::arrange::{Arranged, DrawnPart, FlexLayout};
 
 fn text(key: &str) -> UiNode {

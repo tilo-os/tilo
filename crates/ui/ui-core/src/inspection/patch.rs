@@ -3,9 +3,9 @@
 //! needs only what changed: while typing that is the edited field and its caret, not the whole window's
 //! hundreds of nodes.
 use super::{InspectionNode, InspectionSnapshot};
-use tilo_ui_base::a11y::AccessNode;
 use serde::Serialize;
 use std::hash::{Hash, Hasher};
+use tilo_ui_base::a11y::AccessNode;
 
 /// How much of a tree a patch carries.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

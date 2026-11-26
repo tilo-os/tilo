@@ -2,9 +2,9 @@
 //! window's keyboard order: laid out right after the bar, so Tab reaches it after the tab list and
 //! before the app. Focus, the focus ring the bar paints on the mark, the accessibility node and the
 //! press all name the same control, so a keyboard-only person reaches what a pointer does.
+use taffy::{NodeId, TaffyTree};
 use tilo_ui_base::a11y::AccessNode;
 use tilo_ui_base::widget::Widget;
-use taffy::{NodeId, TaffyTree};
 use vello::kurbo::Rect;
 
 #[derive(Debug, Default)]

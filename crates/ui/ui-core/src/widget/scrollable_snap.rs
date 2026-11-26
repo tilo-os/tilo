@@ -5,9 +5,9 @@
 
 use vello::kurbo::Vec2;
 
+use crate::widget::Scrollable;
 use tilo_ui_base::{motion::ScrollJump, motion::Snap};
 use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
-use crate::widget::Scrollable;
 
 /// Two detents closer than this (logical px) are one: a list's leading edge
 /// and the end of the scrollable content are often the same place.

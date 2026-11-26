@@ -504,8 +504,8 @@ fn kept_by_chat() -> Vec<tilo_app::resource::DocumentId> {
 /// it opens that and sends none of it back.
 #[test]
 fn a_view_with_no_window_holds_the_workspaces_emoji_once_told_what_the_workspace_holds() {
-    use tilo_ui_base::collaboration::DocumentMutation;
     use tilo_app::resource::WorkspaceAnswer;
+    use tilo_ui_base::collaboration::DocumentMutation;
 
     let app = TestApp::<KeepingApp>::new().unwrap();
     let mut first = attached(&app).unwrap();

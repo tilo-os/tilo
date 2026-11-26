@@ -9,14 +9,18 @@ use vello::kurbo::{Affine, Point};
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 
-use tilo_ui_base::{component::Described as _, component::Event, component::Intent, component::Value};
-use tilo_ui_base::{key_input::Button, key_input::Held, key_input::Key, key_input::Keys, key_input::Named};
 use crate::terminal::{GridPos, Line, Modes, Placement, Screen, Session, SessionEvent};
 use crate::testing::Dispatch;
+use crate::{widget::Terminal, widget::TerminalProps};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use crate::{widget::Terminal, widget::TerminalProps};
 use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    component::Described as _, component::Event, component::Intent, component::Value,
+};
+use tilo_ui_base::{
+    key_input::Button, key_input::Held, key_input::Key, key_input::Keys, key_input::Named,
+};
 
 /// What a session was asked, and the grid it answers with.
 #[derive(Default)]

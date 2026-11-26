@@ -1,7 +1,10 @@
 //! [`TextInput`] as a described component.
 
-use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Event, component::Person, component::Value};
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+    component::Person, component::Value,
+};
 
 use super::TextInput;
 
@@ -126,7 +129,9 @@ fn change_note(by: &Person, previous: Option<&str>) -> String {
                 ("before", before.to_owned().into()),
             ],
         ),
-        None => tilo_ui_base::i18n::widget_format("change-field", &[("who", by.name.clone().into())]),
+        None => {
+            tilo_ui_base::i18n::widget_format("change-field", &[("who", by.name.clone().into())])
+        }
     }
 }
 
@@ -365,7 +370,10 @@ mod tests {
         let fired = queue.take();
         assert_eq!(fired.len(), 1, "the change is told: {fired:?}");
         assert_eq!(fired[0].event, "changed");
-        assert_eq!(fired[0].value, Some(tilo_ui_base::component::testing::text("a")));
+        assert_eq!(
+            fired[0].value,
+            Some(tilo_ui_base::component::testing::text("a"))
+        );
     }
 
     /// A field built as a secret masks what it holds, marks it protected, and keeps the value

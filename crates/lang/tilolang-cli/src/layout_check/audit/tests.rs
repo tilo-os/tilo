@@ -2431,7 +2431,10 @@ fn text_that_cannot_break_a_word_wider_than_its_column_is_caught() {
         clipped_text(h.root_widget_mut(), &mut renderer, (320, 200)).len()
     };
     assert_eq!(clipped(tilo_ui_base::text_render::TextWrapMode::Wrap), 0);
-    assert_eq!(clipped(tilo_ui_base::text_render::TextWrapMode::Indented), 1);
+    assert_eq!(
+        clipped(tilo_ui_base::text_render::TextWrapMode::Indented),
+        1
+    );
 }
 
 /// A line given less room than its text needs: its last rows are laid out and painted nowhere,
@@ -2888,11 +2891,13 @@ fn day_fact_card(heading: Option<&str>, fact: &str) -> InspectionNode {
 fn a_pill_floating_over_a_list_is_caught_when_it_cuts_its_words() {
     let pill = |needs: f32, has: f32| {
         let mut list = node_of("VirtualList", "transcript", [0.0, 40.0, 320.0, 500.0]);
-        list.layout = Some(tilo_ui_base::widget::LayoutInfo::List(tilo_ui_base::widget::ListLayout {
-            heads_rows: false,
-            lead: 8.0,
-            pill: Some(tilo_ui_base::widget::ListPillLayout { needs, has }),
-        }));
+        list.layout = Some(tilo_ui_base::widget::LayoutInfo::List(
+            tilo_ui_base::widget::ListLayout {
+                heads_rows: false,
+                lead: 8.0,
+                pill: Some(tilo_ui_base::widget::ListPillLayout { needs, has }),
+            },
+        ));
         list
     };
     let clipped = |root: &InspectionNode| {

@@ -89,7 +89,10 @@ pub(crate) fn shoot<W: Driven>(app: &mut W, name: &str, settle: impl Fn(&mut W))
     let Some(dir) = shots_dir() else {
         return;
     };
-    for (shade, theme) in [("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())] {
+    for (shade, theme) in [
+        ("light", tilo_ui_base::Theme::light()),
+        ("dark", tilo_ui_base::Theme::dark()),
+    ] {
         app.harness().set_theme(theme);
         settle(app);
         app.harness()

@@ -13,9 +13,12 @@ use tilo_ui_base::a11y::Politeness;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::typography::TextRole;
-use ui::widget::NumberInput;
-use ui::{widget::Button, widget::ButtonRole, widget::Column, widget::Container, widget::ControlSize, widget::ListRow, widget::Row, widget::Section, widget::SectionHeader, widget::Text};
 use tilo_ui_base::{widget::Spacer, widget::Widget};
+use ui::widget::NumberInput;
+use ui::{
+    widget::Button, widget::ButtonRole, widget::Column, widget::Container, widget::ControlSize,
+    widget::ListRow, widget::Row, widget::Section, widget::SectionHeader, widget::Text,
+};
 
 use super::actions::{HardwareProjection, SETUP_ROW_ID, SetupEffect};
 use super::desktop_catalog::{DesktopRelease, PackageFormat, RuntimeEvidence};
@@ -737,7 +740,10 @@ impl SetupApp {
                     "version",
                     tilo_ui_base::i18n::ArgValue::Text(selection.release.version.clone()),
                 );
-                let host = ("host", tilo_ui_base::i18n::ArgValue::Text(selection.host.clone()));
+                let host = (
+                    "host",
+                    tilo_ui_base::i18n::ArgValue::Text(selection.host.clone()),
+                );
                 CATALOG.t_args(
                     if selection.already_installed {
                         "imager-desktop-already-installed"
@@ -754,7 +760,10 @@ impl SetupApp {
                         "version",
                         tilo_ui_base::i18n::ArgValue::Text(selection.release.version.clone()),
                     ),
-                    ("host", tilo_ui_base::i18n::ArgValue::Text(selection.host.clone())),
+                    (
+                        "host",
+                        tilo_ui_base::i18n::ArgValue::Text(selection.host.clone()),
+                    ),
                 ],
             ),
             DesktopFlowState::Authorizing(selection) => CATALOG.t_args(
@@ -764,7 +773,10 @@ impl SetupApp {
                         "version",
                         tilo_ui_base::i18n::ArgValue::Text(selection.release.version.clone()),
                     ),
-                    ("host", tilo_ui_base::i18n::ArgValue::Text(selection.host.clone())),
+                    (
+                        "host",
+                        tilo_ui_base::i18n::ArgValue::Text(selection.host.clone()),
+                    ),
                 ],
             ),
             DesktopFlowState::Preparing(selection) => CATALOG.t_args(
@@ -774,7 +786,10 @@ impl SetupApp {
                         "version",
                         tilo_ui_base::i18n::ArgValue::Text(selection.release.version.clone()),
                     ),
-                    ("host", tilo_ui_base::i18n::ArgValue::Text(selection.host.clone())),
+                    (
+                        "host",
+                        tilo_ui_base::i18n::ArgValue::Text(selection.host.clone()),
+                    ),
                 ],
             ),
             DesktopFlowState::Installing(selection) => CATALOG.t_args(
@@ -784,18 +799,30 @@ impl SetupApp {
                         "version",
                         tilo_ui_base::i18n::ArgValue::Text(selection.release.version.clone()),
                     ),
-                    ("host", tilo_ui_base::i18n::ArgValue::Text(selection.host.clone())),
+                    (
+                        "host",
+                        tilo_ui_base::i18n::ArgValue::Text(selection.host.clone()),
+                    ),
                 ],
             ),
             DesktopFlowState::Verifying(selection) => CATALOG.t_args(
                 "imager-desktop-verifying",
-                &[("host", tilo_ui_base::i18n::ArgValue::Text(selection.host.clone()))],
+                &[(
+                    "host",
+                    tilo_ui_base::i18n::ArgValue::Text(selection.host.clone()),
+                )],
             ),
             DesktopFlowState::Installed { selection, result } => CATALOG.t_args(
                 "imager-desktop-installed",
                 &[
-                    ("version", tilo_ui_base::i18n::ArgValue::Text(result.version.clone())),
-                    ("host", tilo_ui_base::i18n::ArgValue::Text(selection.host.clone())),
+                    (
+                        "version",
+                        tilo_ui_base::i18n::ArgValue::Text(result.version.clone()),
+                    ),
+                    (
+                        "host",
+                        tilo_ui_base::i18n::ArgValue::Text(selection.host.clone()),
+                    ),
                 ],
             ),
             DesktopFlowState::Failed { kind, message, .. } => {
@@ -813,7 +840,10 @@ impl SetupApp {
                         "imager-desktop-failed",
                         &[
                             ("what", tilo_ui_base::i18n::ArgValue::Text(what)),
-                            ("detail", tilo_ui_base::i18n::ArgValue::Text(message.clone())),
+                            (
+                                "detail",
+                                tilo_ui_base::i18n::ArgValue::Text(message.clone()),
+                            ),
                         ],
                     )
                 } else {
@@ -821,7 +851,10 @@ impl SetupApp {
                         "imager-desktop-failed-retry",
                         &[
                             ("what", tilo_ui_base::i18n::ArgValue::Text(what)),
-                            ("detail", tilo_ui_base::i18n::ArgValue::Text(message.clone())),
+                            (
+                                "detail",
+                                tilo_ui_base::i18n::ArgValue::Text(message.clone()),
+                            ),
                         ],
                     )
                 }
@@ -1600,7 +1633,10 @@ impl SetupApp {
                 "imager-setup-internal-plan-error-space",
                 &[
                     ("needed", tilo_ui_base::format::memory(needed_bytes).into()),
-                    ("available", tilo_ui_base::format::memory(available_bytes).into()),
+                    (
+                        "available",
+                        tilo_ui_base::format::memory(available_bytes).into(),
+                    ),
                 ],
             ),
             Some(Err(super::staging::plan::PlanError::Unsupported(detail))) => t_args(
@@ -1622,7 +1658,10 @@ impl SetupApp {
                                     )
                                     .into(),
                                 ),
-                                ("from", tilo_ui_base::format::memory(shrink.from_bytes).into()),
+                                (
+                                    "from",
+                                    tilo_ui_base::format::memory(shrink.from_bytes).into(),
+                                ),
                                 ("to", tilo_ui_base::format::memory(shrink.to_bytes).into()),
                             ],
                         )
@@ -1634,7 +1673,8 @@ impl SetupApp {
                         "imager-setup-internal-plan-target",
                         &[(
                             "target",
-                            tilo_ui_base::format::memory(install_flow::target_extent_bytes(plan)).into(),
+                            tilo_ui_base::format::memory(install_flow::target_extent_bytes(plan))
+                                .into(),
                         )],
                     ),
                     t_args(
@@ -1818,8 +1858,14 @@ impl SetupApp {
                                 "imager-setup-internal-run-progress",
                                 &[
                                     ("step", step.into()),
-                                    ("done", tilo_ui_base::format::memory(progress.done_bytes).into()),
-                                    ("total", tilo_ui_base::format::memory(progress.total_bytes).into()),
+                                    (
+                                        "done",
+                                        tilo_ui_base::format::memory(progress.done_bytes).into(),
+                                    ),
+                                    (
+                                        "total",
+                                        tilo_ui_base::format::memory(progress.total_bytes).into(),
+                                    ),
                                 ],
                             )
                         }
@@ -2740,7 +2786,9 @@ mod tests {
     }
 
     fn retained_name(root: &dyn Widget, id: &str) -> Option<String> {
-        tilo_ui_base::widget::find_test_id(root, id)?.accessibility()?.name
+        tilo_ui_base::widget::find_test_id(root, id)?
+            .accessibility()?
+            .name
     }
 
     fn internal_action(app: &SetupApp, id: &str) -> tilo_actions::ActionSpec {

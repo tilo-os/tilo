@@ -1289,7 +1289,10 @@ fn ctrl() -> winit::event::Modifiers {
 }
 
 fn key_named(named: winit::keyboard::NamedKey) -> WindowEvent {
-    tilo_ui_base::synthetic_input::key_input(&winit::keyboard::Key::Named(named), ElementState::Pressed)
+    tilo_ui_base::synthetic_input::key_input(
+        &winit::keyboard::Key::Named(named),
+        ElementState::Pressed,
+    )
 }
 
 fn key_char(s: &str) -> WindowEvent {

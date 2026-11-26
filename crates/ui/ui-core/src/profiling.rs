@@ -4,11 +4,11 @@
 
 pub(crate) mod resource_trace;
 
-use tilo_ui_base::{num::f32_of_f64, num::f64_of_u64, num::f64_of_usize, num::usize_of_f64};
 use crate::time::{Duration, Instant};
 use std::collections::VecDeque;
 use std::path::Path;
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::{num::f32_of_f64, num::f64_of_u64, num::f64_of_usize, num::usize_of_f64};
 
 use serde::Serialize;
 use vello::Scene;

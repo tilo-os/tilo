@@ -1,8 +1,8 @@
 //! How a widget contributes to the unified search: providers folded into the
 //! Ctrl+K palette and system search, and activating one of its hits.
 
-use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
 use tilo_ui_base::{widget::ModelPath, widget::Widget};
+use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
 
 /// A widget whose content is searchable.
 pub trait SearchSource: Widget {

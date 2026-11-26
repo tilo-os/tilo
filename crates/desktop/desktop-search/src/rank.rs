@@ -1,8 +1,8 @@
 //! Desktop search's per-provider field scores on the shared ranker; the
 //! cross-provider merge and kind grouping live in [`ui::search::system`].
 
-use ui::search::system::{RankField, provider_score, rank_fields};
 use tilo_ui_base::text_match::FieldWeight;
+use ui::search::system::{RankField, provider_score, rank_fields};
 
 /// An app's searchable fields: its name in every language and its identity,
 /// its kind, and every other word it is known by — the keywords its
@@ -124,13 +124,17 @@ pub fn published_action_match_scores<'a>(
             .map(|(label, keywords, resource_label)| {
                 let mut fields = vec![(label, tilo_ui_base::text_match::FieldWeight::TITLE)];
                 if let Some(resource_label) = resource_label {
-                    fields.push((resource_label, tilo_ui_base::text_match::FieldWeight::SUBTITLE));
+                    fields.push((
+                        resource_label,
+                        tilo_ui_base::text_match::FieldWeight::SUBTITLE,
+                    ));
                 }
-                fields.extend(
-                    keywords
-                        .iter()
-                        .map(|word| (word.as_str(), tilo_ui_base::text_match::FieldWeight::KEYWORD)),
-                );
+                fields.extend(keywords.iter().map(|word| {
+                    (
+                        word.as_str(),
+                        tilo_ui_base::text_match::FieldWeight::KEYWORD,
+                    )
+                }));
                 fields
             }),
     )

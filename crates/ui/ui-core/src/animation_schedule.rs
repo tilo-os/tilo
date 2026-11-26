@@ -140,7 +140,12 @@ pub fn animating_leaves(root: &dyn tilo_ui_base::widget::Widget) -> Vec<String> 
 /// is `due` or earlier: who wakes an otherwise idle loop next. Allocates, so
 /// only diagnostics call it.
 pub fn waking_leaves(root: &dyn tilo_ui_base::widget::Widget, due: Instant) -> Vec<String> {
-    fn walk(widget: &dyn tilo_ui_base::widget::Widget, due: Instant, path: &str, out: &mut Vec<String>) {
+    fn walk(
+        widget: &dyn tilo_ui_base::widget::Widget,
+        due: Instant,
+        path: &str,
+        out: &mut Vec<String>,
+    ) {
         if widget.next_wake_deadline().is_none_or(|at| at > due) {
             return;
         }

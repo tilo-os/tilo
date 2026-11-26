@@ -1,11 +1,11 @@
 use super::flow::{Flow, flow_builders, flow_capabilities, flow_widget_methods};
+use std::any::Any;
+use taffy::style_helpers::{length, percent};
+use taffy::{NodeId, Style, TaffyTree};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
-use std::any::Any;
-use taffy::style_helpers::{length, percent};
-use taffy::{NodeId, Style, TaffyTree};
 
 /// Keep the small savings from coalescing adjacent row children without turning sparse
 /// animation damage into a broad horizontal strip.
@@ -194,9 +194,9 @@ impl Widget for Row {
             .flow
             .rhythm_padding(theme)
             .unwrap_or((self.horizontal_padding, self.vertical_padding));
-        let min_height = self
-            .min_height
-            .map_or(0.0, |size| tilo_ui_base::num::f32_of_f64(size.height(theme)));
+        let min_height = self.min_height.map_or(0.0, |size| {
+            tilo_ui_base::num::f32_of_f64(size.height(theme))
+        });
         self.resolved = (gap, pad_x, pad_y, min_height);
 
         let style = Style {
@@ -241,7 +241,8 @@ impl Widget for Row {
         };
         // A body row that fills what its parent's column leaves takes that width and no more
         // (`tilo_ui_base::widget::layout::filling`), its children sharing it.
-        let style = tilo_ui_base::widget::layout::filling(style, if self.fill_height { 1.0 } else { 0.0 });
+        let style =
+            tilo_ui_base::widget::layout::filling(style, if self.fill_height { 1.0 } else { 0.0 });
         let node = taffy.parent_node(style, &self.flow.child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node

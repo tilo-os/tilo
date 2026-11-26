@@ -8,9 +8,9 @@ use std::collections::VecDeque;
 use serde::Deserialize;
 use tilo_actions::{ActionResource, SelectionAnchor, SelectionPlace};
 
+use crate::floating_surface::Recipient;
 #[cfg(feature = "model")]
 use tilo_ui_base::collaboration::PresencePayload;
-use crate::floating_surface::Recipient;
 #[cfg(feature = "model")]
 use tilo_ui_base::presence::PresenceKey;
 #[cfg(feature = "model")]
@@ -744,7 +744,10 @@ mod tests {
 
     fn type_into(menu: &mut dyn tilo_ui_base::widget::Widget, text: &str) {
         for ch in text.chars() {
-            crate::testing::dispatch(menu, &tilo_ui_base::synthetic_input::char_key(&ch.to_string()));
+            crate::testing::dispatch(
+                menu,
+                &tilo_ui_base::synthetic_input::char_key(&ch.to_string()),
+            );
         }
     }
 

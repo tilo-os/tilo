@@ -13,7 +13,10 @@ fn send(editor: &mut BlockEditor, doc: &mut AutoCommit, key: Key) {
     );
     let handled = Dispatch::new()
         .doc(doc)
-        .send(editor, &tilo_ui_base::synthetic_input::keyboard_input(event))
+        .send(
+            editor,
+            &tilo_ui_base::synthetic_input::keyboard_input(event),
+        )
         .handled;
     assert!(handled);
     editor.sync(doc, &ROOT);

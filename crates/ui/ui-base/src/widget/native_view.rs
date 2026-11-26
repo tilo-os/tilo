@@ -614,4 +614,3 @@ impl Widget for NativeView {
         }
     }
 }
-

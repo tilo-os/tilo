@@ -9,14 +9,22 @@
     reason = "immediate-mode capture geometry uses tiny fixed arrays and bounded screen coordinates"
 )]
 
-use crate::{widget::Button, widget::ButtonFace, widget::CaptureButtonFace, widget::CaptureKind, widget::ControlSize, widget::IconButton, widget::selection_handles::Handle, widget::selection_handles::SelectionHandles, widget::toggle_group::Segment, widget::toggle_group::SegmentedFace, widget::toggle_group::SegmentedStyle};
-use tilo_ui_base::{icons::Icon, paint::PaintCtx, presence::PresenceCtx, text_render::TextRenderer, theme::Theme, widget::TaffyTreeExt, widget::Widget};
+use crate::{
+    widget::Button, widget::ButtonFace, widget::CaptureButtonFace, widget::CaptureKind,
+    widget::ControlSize, widget::IconButton, widget::selection_handles::Handle,
+    widget::selection_handles::SelectionHandles, widget::toggle_group::Segment,
+    widget::toggle_group::SegmentedFace, widget::toggle_group::SegmentedStyle,
+};
 use automerge::ObjId;
 use std::collections::HashMap;
+use tilo_ui_base::{
+    icons::Icon, paint::PaintCtx, presence::PresenceCtx, text_render::TextRenderer, theme::Theme,
+    widget::TaffyTreeExt, widget::Widget,
+};
 
 use crate::time::{Duration, Instant};
-use tilo_ui_base::tokens::TextRole;
 use taffy::{Dimension, NodeId, Size as TaffySize, Style, TaffyTree};
+use tilo_ui_base::tokens::TextRole;
 use vello::{
     Scene,
     kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke, Vec2},
@@ -1760,7 +1768,11 @@ impl CaptureStudio {
         }
     }
 
-    fn route_menu_event(&mut self, e: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
+    fn route_menu_event(
+        &mut self,
+        e: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         let options = self.options_menu.is_some();
         let Some(menu) = self.options_menu.as_mut().or(self.send_menu.as_mut()) else {
             return false;
@@ -2187,7 +2199,8 @@ impl Widget for CaptureStudio {
                             Handle::Left => "w",
                             Handle::Rotate => continue,
                         };
-                        let side = f64::from(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target);
+                        let side =
+                            f64::from(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target);
                         o.push((
                             format!("capture.selection.{index}.{name}"),
                             Rect::from_center_size(handles.position(handle, 1.0), (side, side)),

@@ -21,9 +21,9 @@
 use std::rc::Rc;
 
 use tilo_actions::{Actor, PersonId};
-use ui_core::deferred::Deferred;
 use tilo_ui_base::remote_actions::RemoteActions;
 use tilo_ui_base::widget::Element;
+use ui_core::deferred::Deferred;
 
 /// A written view, as the app that shows it names it.
 #[derive(Clone, Debug, PartialEq, Eq)]

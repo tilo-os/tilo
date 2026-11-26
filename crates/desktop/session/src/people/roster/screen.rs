@@ -89,7 +89,10 @@ fn paint_window(
             transform,
             colour,
             None,
-            &tilo_ui_base::surface::edge_outline(tile, ui::widget::SurfaceLevel::Raised.radius(theme)),
+            &tilo_ui_base::surface::edge_outline(
+                tile,
+                ui::widget::SurfaceLevel::Raised.radius(theme),
+            ),
         );
     }
 }

@@ -11,9 +11,9 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+use tilo_ui_base::widget::Element;
 use tilolang_tilo::tilolang::PackageMeta;
 use ui::framework::{AppName, OpeningCx, OpeningView, ResourceApp, ViewCx};
-use tilo_ui_base::widget::Element;
 
 use super::resource::Workspace;
 

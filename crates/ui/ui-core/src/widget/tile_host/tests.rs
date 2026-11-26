@@ -149,7 +149,10 @@ fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
         // "still shell" cannot be confused with "some theme token".
         let ground = vello::peniko::Color::from_rgb8(0x00, 0xFF, 0x00);
 
-        for theme in tilo_ui_base::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+        for theme in tilo_ui_base::theme::ALL_PRESETS_FOR_TEST
+            .iter()
+            .map(|f| f())
+        {
             let name = theme.name.clone();
             let focus = theme.tokens.colors.window_edge_focused();
             assert_eq!(
@@ -295,21 +298,28 @@ fn an_unresolved_tile_only_refuses_events_meant_for_it() {
             .send(host, event)
             .handled
     };
-    let key = tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
-        Key::Character("a".into()),
-        None,
-        ElementState::Pressed,
-    ));
+    let key =
+        tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
+            Key::Character("a".into()),
+            None,
+            ElementState::Pressed,
+        ));
     assert!(!send(
         &mut host,
         &tilo_ui_base::synthetic_input::cursor_moved(250.0, 50.0)
     ));
-    assert!(!send(&mut host, &tilo_ui_base::synthetic_input::mouse_press()));
+    assert!(!send(
+        &mut host,
+        &tilo_ui_base::synthetic_input::mouse_press()
+    ));
     assert!(send(
         &mut host,
         &tilo_ui_base::synthetic_input::cursor_moved(50.0, 50.0)
     ));
-    assert!(send(&mut host, &tilo_ui_base::synthetic_input::mouse_press()));
+    assert!(send(
+        &mut host,
+        &tilo_ui_base::synthetic_input::mouse_press()
+    ));
     assert!(!send(&mut host, &key));
     host.set_focused(true);
     assert!(send(&mut host, &key));

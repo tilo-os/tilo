@@ -1,8 +1,8 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+use tilo_actions::ControlInvocation;
 use tilo_ui_base::control_domain::*;
 use tilo_ui_base::{widget::ActionEmitter, widget::Widget};
-use tilo_actions::ControlInvocation;
-use std::rc::Rc;
-use std::cell::RefCell;
 fn invocation(value: bool) -> ControlInvocation {
     tilo_ui_base::widget::test_bool_action_binding()
         .invoke(value)
@@ -18,8 +18,8 @@ fn unit_binding() -> tilo_actions::ActionBinding<()> {
         vec![],
         |_| tilo_actions::EncodedAction::encode_operation("fixture.run", &()).unwrap(),
     );
-    let resource = tilo_actions::ResourceSpec::new("fixture", "fixture", "Fixture")
-        .with_action(spec.clone());
+    let resource =
+        tilo_actions::ResourceSpec::new("fixture", "fixture", "Fixture").with_action(spec.clone());
     tilo_actions::ActionBinding::new(&resource, &spec, |()| serde_json::Map::new()).unwrap()
 }
 fn raw_request(resource: &str, action: &str, marker: &str) -> ControlInvocation {

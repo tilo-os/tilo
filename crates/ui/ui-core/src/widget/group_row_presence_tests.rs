@@ -16,7 +16,9 @@ struct Field {
 impl Field {
     fn new(field: &str, drawn: Rc<Cell<Rect>>) -> Self {
         let mut input =
-            crate::widget::TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field(field.into())]);
+            crate::widget::TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field(
+                field.into(),
+            )]);
         input.set_text("the words a note holds");
         Self { input, drawn }
     }

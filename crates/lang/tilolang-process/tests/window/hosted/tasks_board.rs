@@ -9,8 +9,8 @@
 
 use crate::change_marks::Driven as _;
 use tilo_app_test_host::TestApp;
-use tilolang_process::window::app::TlApp;
 use tilo_ui_base::a11y::Role;
+use tilolang_process::window::app::TlApp;
 
 const DESKTOP: (u32, u32) = (1280, 800);
 const PHONE: (u32, u32) = (420, 860);
@@ -382,7 +382,10 @@ fn what_a_run_did_in_tasks_is_marked_on_its_rows() {
     assert!(marked, "the row it checked off is marked in Done: {done:?}");
     crate::change_marks::choose(&mut app, "Inbox");
     if let Some(dir) = crate::change_marks::shots_dir() {
-        for (shade, theme) in [("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())] {
+        for (shade, theme) in [
+            ("light", tilo_ui_base::Theme::light()),
+            ("dark", tilo_ui_base::Theme::dark()),
+        ] {
             app.harness().set_theme(theme);
             settle(&mut app);
             app.harness()
@@ -469,8 +472,10 @@ fn a_tasks_history_shows_its_due_day_before_and_after_and_who_set_it() {
 /// The wall clock at `hour:minute:second` on `day` of 2026, in the zone this process reads as
 /// the person's.
 fn local(month: i8, day: i8, (hour, minute, second): (i8, i8, i8)) -> ui::time::SystemTime {
-    let at = tilo_ui_base::clock::instant_of(jiff::civil::date(2026, month, day).at(hour, minute, second, 0))
-        .expect("the time exists where the person is");
+    let at = tilo_ui_base::clock::instant_of(
+        jiff::civil::date(2026, month, day).at(hour, minute, second, 0),
+    )
+    .expect("the time exists where the person is");
     let ms = u64::try_from(at.as_millisecond()).expect("after 1970");
     ui::time::UNIX_EPOCH
         .checked_add(ui::time::Duration::from_millis(ms))
@@ -780,7 +785,10 @@ fn shots() {
     std::fs::create_dir_all(&dir).unwrap();
     let _settled = tilo_ui_base::motion::testing::settled();
     for (size, viewport) in [("desktop", DESKTOP), ("phone", PHONE)] {
-        for (shade, theme) in [("light", tilo_ui_base::Theme::light()), ("dark", tilo_ui_base::Theme::dark())] {
+        for (shade, theme) in [
+            ("light", tilo_ui_base::Theme::light()),
+            ("dark", tilo_ui_base::Theme::dark()),
+        ] {
             let mut app = staged(viewport);
             app.harness().set_theme(theme);
             settle(&mut app);

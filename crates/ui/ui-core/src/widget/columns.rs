@@ -6,7 +6,9 @@ use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
-use tilo_ui_base::{widget::AppModel, widget::Element, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
+use tilo_ui_base::{
+    widget::AppModel, widget::Element, widget::ModelPath, widget::TaffyTreeExt, widget::Widget,
+};
 
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::Rhythm;

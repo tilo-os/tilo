@@ -9,9 +9,9 @@ use vello::kurbo::{Circle, Point, Rect};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::paint::PaintCtx;
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Tone, widget::Widget};
 
 #[path = "facts_component.rs"]
@@ -246,7 +246,8 @@ impl<'a> FactsFace<'a> {
                 // The value is the thing itself, so the label gives way first: it is
                 // elided to what the value and its gap leave.
                 let value = f64::from(ctx.text.measure_style(&fact.text, None, &m.style).0);
-                let spare = tilo_ui_base::num::f32_of_f64((rect.x1 - x - value - m.label_gap).max(0.0));
+                let spare =
+                    tilo_ui_base::num::f32_of_f64((rect.x1 - x - value - m.label_gap).max(0.0));
                 let label = ctx.text.elide_to_width_style(named, spare, &m.style);
                 let w = f64::from(ctx.text.measure_style(&label, None, &m.style).0);
                 ctx.text.draw_style(
@@ -373,7 +374,9 @@ impl Widget for Facts {
         // fact elides a letter it has the width to draw ("1 he…" for "1 here").
         let grid = tilo_ui_base::widget::device_scale();
         let width = if grid > 0.0 {
-            tilo_ui_base::num::f32_of_f64((f64::from(width) * f64::from(grid)).ceil() / f64::from(grid))
+            tilo_ui_base::num::f32_of_f64(
+                (f64::from(width) * f64::from(grid)).ceil() / f64::from(grid),
+            )
         } else {
             width
         };

@@ -7,13 +7,13 @@ use winit::event::WindowEvent;
 
 use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 
-use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::theme::Theme;
 use crate::widget::chart_legend::SeriesToggles;
 use crate::widget::chart_navigation::{
     ChartInspection, InteractiveChart, activated_key, chart_nav_action, handle_chart_event,
 };
 use crate::widget::chart_readout::Readout;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::ModelPath, widget::Widget};
 
 /// Where a chart kind's marks sit and what is inspected: the shell lays the
@@ -272,7 +272,11 @@ pub trait PlotMarks: 'static {
     /// Takes the events the shell's own inspection cannot drive — zoom,
     /// pan, brush, focus loss — before the shell inspects. Whether the
     /// event was consumed.
-    fn event(&mut self, _event: &WindowEvent, _ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
+    fn event(
+        &mut self,
+        _event: &WindowEvent,
+        _ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         false
     }
     /// Whether a gesture is in flight and must keep receiving the pointer.
@@ -300,7 +304,11 @@ pub trait PlotMarks: 'static {
 /// How tall a chart with nothing to show stands: its title, and its note with a line of room above
 /// and below it, so an empty chart is no blank box as tall as its marks would be.
 fn nothing_to_show_height<H>(frame: &PlotFrame<H>, theme: &Theme) -> f64 {
-    let line = f64::from(theme.text(tilo_ui_base::tokens::TextRole::Body).line_height_px());
+    let line = f64::from(
+        theme
+            .text(tilo_ui_base::tokens::TextRole::Body)
+            .line_height_px(),
+    );
     crate::widget::chart_navigation::title_band(theme, &frame.title) + 3.0 * line
 }
 

@@ -1,11 +1,11 @@
 use super::*;
+use crate::testing::dispatch;
+use automerge::AutoCommit;
+use std::sync::Arc;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::synthetic_input::mouse_press;
 use tilo_ui_base::synthetic_input::mouse_release;
 use tilo_ui_base::synthetic_input::named_key;
-use crate::testing::dispatch;
-use automerge::AutoCommit;
-use std::sync::Arc;
 
 tilo_test_env::scenario! {
     /// What a menu paints and how wide, tall and where it is.

@@ -45,9 +45,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::{cell::RefCell, rc::Rc};
 use taffy::{NodeId, TaffyTree};
-use ui::ColorCompat as _;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
+use ui::ColorCompat as _;
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 use zeroize::{Zeroize, Zeroizing};
@@ -2614,7 +2614,10 @@ mod tests {
         }
     }
 
-    fn accessibility_for_id(widget: &dyn Widget, id: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
+    fn accessibility_for_id(
+        widget: &dyn Widget,
+        id: &str,
+    ) -> Option<tilo_ui_base::a11y::AccessNode> {
         tilo_ui_base::widget::find_test_id(widget, id)?.accessibility()
     }
 
@@ -3729,7 +3732,10 @@ mod tests {
     fn frame(view: &mut OnboardingView) {
         FRAMES.with(|doc| {
             let mut doc = doc.borrow_mut();
-            view.settle(&mut tilo_ui_base::widget::Edits::lend(&mut doc), &automerge::ROOT);
+            view.settle(
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            );
             view.sync(&*doc, &automerge::ROOT);
         });
     }

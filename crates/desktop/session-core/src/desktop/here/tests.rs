@@ -1028,7 +1028,8 @@ fn a_member_wears_one_colour_on_the_bar_and_in_every_app() {
     let keeper = (0..1000)
         .map(|n| format!("person-{n}"))
         .find(|id| {
-            tilo_ui_base::tokens::PresenceHue::of_identity(id) == tilo_ui_base::tokens::PresenceHue::of_agent("helper")
+            tilo_ui_base::tokens::PresenceHue::of_identity(id)
+                == tilo_ui_base::tokens::PresenceHue::of_agent("helper")
         })
         .expect("a person whose hue what the agent is lands on");
     let me = LiveMember {

@@ -76,17 +76,9 @@ pub(crate) use control::{
 };
 
 #[cfg(feature = "model")]
-use tilo_ui_base::{permissions::MemberId, permissions::PermissionContext, permissions::SharedPermissions};
-#[cfg(feature = "model")]
-use tilo_ui_base::published::SharedResource;
-#[cfg(feature = "model")]
 use crate::resource::{DocumentCheckout, ResourceOpenError, ResourceSaveStatus, ResourceStore};
 #[cfg(feature = "model")]
 use crate::wake::{WakeHandle, WakeScopeGuard};
-use tilo_ui_base::widget::Widget;
-use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
-#[cfg(feature = "model")]
-use tilo_ui_base::widget::component_walk::has_separate_document_owner;
 #[cfg(feature = "model")]
 use automerge::{AutoCommit, ChangeHash, ObjId, ROOT, transaction::Transactable};
 #[cfg(feature = "model")]
@@ -97,6 +89,16 @@ use std::collections::HashMap;
 use std::rc::Rc;
 #[cfg(all(feature = "model", feature = "native"))]
 use taffy::NodeId;
+#[cfg(feature = "model")]
+use tilo_ui_base::published::SharedResource;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
+#[cfg(feature = "model")]
+use tilo_ui_base::widget::component_walk::has_separate_document_owner;
+#[cfg(feature = "model")]
+use tilo_ui_base::{
+    permissions::MemberId, permissions::PermissionContext, permissions::SharedPermissions,
+};
 
 #[cfg(feature = "model")]
 mod action_part;
@@ -106,9 +108,14 @@ pub(crate) use action_part::ToolkitPart;
 #[cfg(feature = "model")]
 use tilo_ui_base::widget::input_provenance::Input;
 #[cfg(feature = "model")]
-use tilo_ui_base::{widget::input_provenance::capture_physical_drain, widget::input_provenance::native_text_input, widget::input_provenance::with_native_text};
+use tilo_ui_base::{
+    widget::input_provenance::capture_physical_drain, widget::input_provenance::native_text_input,
+    widget::input_provenance::with_native_text,
+};
 #[cfg(test)]
-use tilo_ui_base::{widget::input_provenance::physical_text, widget::input_provenance::with_physical_text};
+use tilo_ui_base::{
+    widget::input_provenance::physical_text, widget::input_provenance::with_physical_text,
+};
 
 #[cfg(feature = "model")]
 use tilo_ui_base::widget::controls::Origin;
@@ -419,12 +426,16 @@ impl ControlAvailability {
         let allowed = Rc::make_mut(&mut self.allowed);
         let (counts, addresses) = (&mut self.counts, &self.addresses);
         tilo_ui_base::published::diff(&last, next, &mut |change| match change {
-            tilo_ui_base::published::Change::Removed(subtree) => visit_subtree(subtree, &mut |node| {
-                count_addresses(binding, node, false, counts, allowed, addresses);
-            }),
-            tilo_ui_base::published::Change::Added(subtree) => visit_subtree(subtree, &mut |node| {
-                count_addresses(binding, node, true, counts, allowed, addresses);
-            }),
+            tilo_ui_base::published::Change::Removed(subtree) => {
+                visit_subtree(subtree, &mut |node| {
+                    count_addresses(binding, node, false, counts, allowed, addresses);
+                })
+            }
+            tilo_ui_base::published::Change::Added(subtree) => {
+                visit_subtree(subtree, &mut |node| {
+                    count_addresses(binding, node, true, counts, allowed, addresses);
+                })
+            }
             tilo_ui_base::published::Change::Head { last, next } if same_offer(last, next) => {}
             tilo_ui_base::published::Change::Head { last, next } => {
                 count_addresses(binding, last, false, counts, allowed, addresses);
@@ -730,7 +741,13 @@ pub(crate) fn poll_resource_operation(
                         widget: &mut dyn crate::widget::AppWidget,
                         _: &tilo_actions::ActionRegistry| {
         result = Some(binding.read_document(document, |doc, path| {
-            tilo_ui_base::widget::poll_resource_operation(&mut *widget, invocation, cancel, doc, path)
+            tilo_ui_base::widget::poll_resource_operation(
+                &mut *widget,
+                invocation,
+                cancel,
+                doc,
+                path,
+            )
         }));
         result
             .as_ref()
@@ -1301,7 +1318,9 @@ pub(crate) fn publication_visibility(
             let found = if let Some(binding) = &binding {
                 binding
                     .read_document(doc, |doc, _| {
-                        tilo_ui_base::widget::resources::action_directory_visibility(widget, doc, id)
+                        tilo_ui_base::widget::resources::action_directory_visibility(
+                            widget, doc, id,
+                        )
                     })
                     .ok()
                     .flatten()
@@ -1360,8 +1379,9 @@ pub(crate) fn publication_visibilities(
                         _ => false,
                     };
                     if mine {
-                        *slot =
-                            tilo_ui_base::widget::resources::action_directory_visibility(widget, doc, id);
+                        *slot = tilo_ui_base::widget::resources::action_directory_visibility(
+                            widget, doc, id,
+                        );
                     }
                 }
             };
@@ -1556,7 +1576,8 @@ pub(crate) struct BoundOwnerMark {
 /// chain parts', [`CallbackBinding::shown_save_status`]), which its root shows once synced.
 #[derive(PartialEq)]
 pub(crate) struct OwnerInputs {
-    pub(crate) permissions: Result<tilo_ui_base::permissions::DirectoryPermissionObservation, String>,
+    pub(crate) permissions:
+        Result<tilo_ui_base::permissions::DirectoryPermissionObservation, String>,
     pub(crate) save: Result<crate::resource::ResourceSaveStatus, String>,
 }
 
@@ -1724,9 +1745,11 @@ pub(crate) fn discover_cached_bound_resources(
                         if root {
                             return resource;
                         }
-                        SharedResource::from_resource(tilo_ui_base::widget::resources::outside_document(
-                            resource.to_resource(),
-                        ))
+                        SharedResource::from_resource(
+                            tilo_ui_base::widget::resources::outside_document(
+                                resource.to_resource(),
+                            ),
+                        )
                     })
                     .filter(|resource| !taken.holds(resource.id()))
                     .collect();
@@ -1923,12 +1946,12 @@ pub(crate) fn admit_local_action(
     argument: Option<&str>,
 ) -> Result<(), tilo_actions::ApiError> {
     let answer = permissions.invocation_admission(app_id, resource, action, typed, argument);
-    tilo_ui_base::permissions::admit_in_window(answer, action, permissions.asker()).map_err(|refused| {
-        match permissions.shown_refusal(resource, action) {
+    tilo_ui_base::permissions::admit_in_window(answer, action, permissions.asker()).map_err(
+        |refused| match permissions.shown_refusal(resource, action) {
             Some(held) if answer.answer == tilo_ui_base::permissions::Answer::Deny => held,
             _ => refused,
-        }
-    })
+        },
+    )
 }
 
 #[cfg(feature = "model")]
@@ -2105,7 +2128,10 @@ fn discover_bound_resources_with_filter(
         root: bool,
         address: Option<&tilo_actions::ActionAddress>,
         snapshots: &mut Vec<BoundResourceSnapshot>,
-        taken: &mut std::collections::HashMap<usize, tilo_ui_base::widget::resources::TakenResources>,
+        taken: &mut std::collections::HashMap<
+            usize,
+            tilo_ui_base::widget::resources::TakenResources,
+        >,
         filtered: bool,
     ) -> Result<(), BoundDispatchError> {
         let boundary = callback_binding(widget);
@@ -2165,8 +2191,11 @@ fn discover_bound_resources_with_filter(
                             };
                         }
                     }
-                    let mut resources =
-                        tilo_ui_base::widget::resources::resources_for(widget, presence.as_ref(), doc);
+                    let mut resources = tilo_ui_base::widget::resources::resources_for(
+                        widget,
+                        presence.as_ref(),
+                        doc,
+                    );
                     if !root {
                         resources = resources
                             .into_iter()
@@ -2897,7 +2926,9 @@ fn perform_resource_operation(
                 effects
                     .start_document_effects(&operation, &applied)
                     .map_err(tilo_actions::ApiError::Failed)?
-                    .unwrap_or(tilo_ui_base::widget::ResourceOperationStart::Completed(output))
+                    .unwrap_or(tilo_ui_base::widget::ResourceOperationStart::Completed(
+                        output,
+                    ))
             } else {
                 tilo_ui_base::widget::ResourceOperationStart::Completed(output)
             }
@@ -2914,7 +2945,9 @@ fn perform_resource_operation(
             let selected = crate::semantic_document_read::select(readers, resource, spec, &encoded)
                 .map_err(refused)?
                 .ok_or_else(|| tilo_actions::ApiError::Unknown(address.clone()))?;
-            tilo_ui_base::widget::ResourceOperationStart::Completed(selected.read(doc).map_err(refused)?)
+            tilo_ui_base::widget::ResourceOperationStart::Completed(
+                selected.read(doc).map_err(refused)?,
+            )
         } else if encoded.type_id == tilo_actions::remote::ApplicationLaunch::TYPE {
             crate::session_api::start_application_launch(
                 api,
@@ -2925,7 +2958,10 @@ fn perform_resource_operation(
             )?
         } else {
             let target = target_route.map(|route| {
-                tilo_ui_base::widget::resource_operation::OperationTarget::new(route, address.clone())
+                tilo_ui_base::widget::resource_operation::OperationTarget::new(
+                    route,
+                    address.clone(),
+                )
             });
             let op = tilo_ui_base::widget::ResourceOperation::local(
                 invocation,
@@ -3307,7 +3343,9 @@ fn collect_published(
     let mut taken = tilo_ui_base::widget::resources::TakenResources::default();
     for_each_published(widget, walk, &mut |widget, root| {
         let found = match presence {
-            Some(presence) => tilo_ui_base::widget::resources::resources_for(widget, Some(presence), doc),
+            Some(presence) => {
+                tilo_ui_base::widget::resources::resources_for(widget, Some(presence), doc)
+            }
             None => tilo_ui_base::widget::resources::resources(widget, doc),
         };
         let found: Vec<_> = found
@@ -3340,8 +3378,9 @@ fn resolve_published(
     let mut found = None;
     for_each_published(widget, walk, &mut |widget, root| {
         if found.is_none() {
-            found = tilo_ui_base::widget::resources::resource_for(widget, presence.as_ref(), doc, id)
-                .map(|resource| below_root(root, resource));
+            found =
+                tilo_ui_base::widget::resources::resource_for(widget, presence.as_ref(), doc, id)
+                    .map(|resource| below_root(root, resource));
         }
     });
     found
@@ -3498,7 +3537,10 @@ pub(crate) fn service_retained_owner_model(
             let updated = current
                 .with_settlement(outer, |document, resource_root| {
                     owner.update(document, resource_root);
-                    owner.settle(&mut tilo_ui_base::widget::Edits::lend(document), resource_root);
+                    owner.settle(
+                        &mut tilo_ui_base::widget::Edits::lend(document),
+                        resource_root,
+                    );
                     current.drain_owned_tree(owner, document).map(|_| ())
                 })
                 .and_then(|result| result);
@@ -5197,7 +5239,6 @@ impl DocumentEditStamp {
         }
     }
 }
-
 
 #[cfg(feature = "model")]
 #[cfg(test)]

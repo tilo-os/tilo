@@ -1224,7 +1224,9 @@ mod authentication_tests {
     fn remote_sign_in_fixture_child() {
         let Some(route) = std::env::var_os("TILO_GREETER_CONSOLE_AUTH_FIXTURE") else {
             let app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
-            assert!(!tilo_ui_base::widget::resources::resources(&app, &AutoCommit::new()).is_empty());
+            assert!(
+                !tilo_ui_base::widget::resources::resources(&app, &AutoCommit::new()).is_empty()
+            );
             return;
         };
         let _logs = tracing_subscriber::fmt()

@@ -1,7 +1,7 @@
 //! The installer's entry: the helpers its binary also is, its shots, and its live window.
 
-use ui::launch::LaunchArgs;
 use tilo_ui_base::widget::Widget;
+use ui::launch::LaunchArgs;
 
 use super::Store;
 

@@ -1415,7 +1415,8 @@ impl ShellChrome {
         &self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, tilo_actions::ApiError> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, tilo_actions::ApiError>
+    {
         if address.resource != tilo_session_core::desktop::verbs::CHROME_RESOURCE {
             return Ok(None);
         }
@@ -1423,9 +1424,11 @@ impl ShellChrome {
         // strip chosen closes it, so nothing of the chrome's strip switcher draws.
         if address.action == "show-strips" {
             self.surfaces.toggle(crate::device_lists::Surfaces::STRIPS);
-            return Ok(Some(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
+            return Ok(Some(
+                tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ),
+            ));
         }
         // Any other action of the chrome's puts the strips list away, as a menu closes once
         // something is chosen: showing a strip, stepping along them, switching workspace.
@@ -1524,11 +1527,11 @@ impl ShellChrome {
             }
             _ => false,
         };
-        Ok(
-            started.then_some(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+        Ok(started.then_some(
+            tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
-            )),
-        )
+            ),
+        ))
     }
 }
 
@@ -1539,7 +1542,8 @@ impl ShellChrome {
         &self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, tilo_actions::ApiError> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, tilo_actions::ApiError>
+    {
         use tilo_session_core::desktop::navigation::{ChromeEffect, Verb};
         use tilo_session_core::desktop::state::chrome_verbs::Carried;
         if address.resource != tilo_session_core::desktop::verbs::CHROME_RESOURCE {
@@ -1573,12 +1577,14 @@ impl ShellChrome {
             }
             Carried::Shell => return Ok(None),
         };
-        Ok(Some(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput {
-                value,
-                ..tilo_actions::ActionOutput::default()
-            },
-        )))
+        Ok(Some(
+            tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput {
+                    value,
+                    ..tilo_actions::ActionOutput::default()
+                },
+            ),
+        ))
     }
 
     /// Answer what the desktop left of a shortcut to the shell: whether that was all of it. The
@@ -1707,9 +1713,11 @@ impl tilo_session_core::surfaces::Published for ShellLists {
             }
             self.surfaces
                 .toggle(tilo_session_core::desktop::overlays::Overlay::Launcher.name());
-            return Ok(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            ));
+            return Ok(
+                tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ),
+            );
         }
         // The platform search API (a window's search control, its toolbar's magnifier, Ctrl+K)
         // asks for the shell's search under the shell too: the shell draws that search, so the

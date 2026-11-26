@@ -213,7 +213,10 @@ impl IndexedContent {
             subtitle,
             facts: Vec::new(),
             score,
-            icon: found.icon.as_deref().and_then(tilo_ui_base::icons::Icon::from_name),
+            icon: found
+                .icon
+                .as_deref()
+                .and_then(tilo_ui_base::icons::Icon::from_name),
             target: Target::Invoke(Box::new(self.bringing(
                 found,
                 InvokeTarget {

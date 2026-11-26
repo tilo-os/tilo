@@ -27,7 +27,8 @@ impl OwnedText {
         let Some(text) = self.input.take_dirty() else {
             return;
         };
-        if tilo_ui_base::doc::read_str_or_text(doc.doc(), root, self.key).as_deref() == Some(text.as_str())
+        if tilo_ui_base::doc::read_str_or_text(doc.doc(), root, self.key).as_deref()
+            == Some(text.as_str())
         {
             return;
         }

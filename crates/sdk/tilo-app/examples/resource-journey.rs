@@ -4,8 +4,8 @@
 //! Prove its platform journey without a display with
 //! `cargo test --locked -p tilo-app --example resource-journey`.
 
-use tilo_ui_base::i18n::EmbeddedCatalog;
 use tilo_app::prelude::*;
+use tilo_ui_base::i18n::EmbeddedCatalog;
 
 static CATALOG: EmbeddedCatalog =
     EmbeddedCatalog::new("en-US", &[("en-US", include_str!("resource-journey.ftl"))]);
@@ -108,7 +108,8 @@ impl ResourceApp for ChecklistApp {
             Checklist::ADD.invoke(),
         );
         let label = actions.bind_invocation(
-            Button::new("add-label", "journey-add-label").with_icon(tilo_ui_base::icons::Icon::Plus),
+            Button::new("add-label", "journey-add-label")
+                .with_icon(tilo_ui_base::icons::Icon::Plus),
             Checklist::ADD.invoke(),
         );
         let component = AddTask {
@@ -232,8 +233,8 @@ mod tests {
 
     #[test]
     fn progressively_customized_controls_keep_semantics_focus_and_permissions() {
-        use tilo_ui_base::{a11y::Action, a11y::Role as AccessibleRole};
         use tilo_app::headless::SemanticExpectation;
+        use tilo_ui_base::{a11y::Action, a11y::Role as AccessibleRole};
 
         let mut app = TestApp::<ChecklistApp>::new().expect("open");
         let add_address = app

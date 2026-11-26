@@ -1,7 +1,7 @@
 //! `Card` and `CardGrid`: objects in content.
 
-use tilo_ui_base::num::f64_of_usize;
 use std::collections::HashMap;
+use tilo_ui_base::num::f64_of_usize;
 
 use taffy::style_helpers::{auto, fr, length, max_content, min_content, minmax, percent, repeat};
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -10,15 +10,15 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::widget::composition_parts::Parts;
 use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::widget::composition_parts::Parts;
 
+use crate::widget::activation::{Activation, Interaction, activation_controls};
+use crate::{widget::Button, widget::Text};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::widget::DrawChild;
-use crate::widget::activation::{Activation, Interaction, activation_controls};
-use crate::{widget::Button, widget::Text};
 use tilo_ui_base::{widget::Element, widget::TaffyTreeExt, widget::Tone, widget::Widget};
 
 /// How many columns of at least `min_card_w` fit in `avail_w` with `gap`
@@ -521,7 +521,11 @@ impl Widget for Card {
         }
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {
             changed |= child.update(state, path);
@@ -529,7 +533,11 @@ impl Widget for Card {
         changed
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for child in &mut self.parts.children {
             child.sync(state, path);
         }
@@ -1190,7 +1198,11 @@ impl CardGrid {
 }
 
 impl Widget for CardGrid {
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let mut changed = false;
         for card in &mut self.cards {
             changed |= card.update(state, path);
@@ -1229,7 +1241,8 @@ impl Widget for CardGrid {
             taffy::AvailableSpace::Definite(width) => {
                 let width = f64::from(width);
                 let columns = self.columns_for_width(width);
-                let column = tilo_ui_base::num::f32_of_f64(card_column_width(width, columns, self.gap));
+                let column =
+                    tilo_ui_base::num::f32_of_f64(card_column_width(width, columns, self.gap));
                 vec![length(column); columns]
             }
             // A question of how wide it could be keeps the tracks of the width it was last laid

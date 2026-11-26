@@ -8,9 +8,9 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, KeyEvent, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Action, a11y::Role};
 use tilo_ui_base::{motion, motion::Direction, motion::MotionValue, motion::Snap};
-use tilo_ui_base::theme::Theme;
 use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -495,7 +495,10 @@ impl BottomSheet {
 
     pub fn accessibility(&self, name: &str, target: &str) -> AccessNode {
         let grip = AccessNode::new(Role::Slider)
-            .with_name(tilo_ui_base::i18n::widget_format("widget-sheet-height", &[]))
+            .with_name(tilo_ui_base::i18n::widget_format(
+                "widget-sheet-height",
+                &[],
+            ))
             .with_value(self.detent.label())
             .with_action_target(target)
             .with_hashed_key(target)

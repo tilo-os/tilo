@@ -1,7 +1,7 @@
 //! [`Facts`] and its facts as described components.
 
-use tilo_ui_base::{component::Component, component::Described};
 use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::{Fact, FactMark, Facts};
 

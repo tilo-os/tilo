@@ -1,7 +1,7 @@
 //! [`ChordChart`] as a described component: weighted links between nodes around a ring.
 
-use tilo_ui_base::{component::Component, component::Described};
 use crate::widget::{ChartLink, ChartNode};
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::ChordChart;
 

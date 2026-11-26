@@ -1,23 +1,23 @@
 //! An inline-editable label: reads as static text until the caller puts it into edit mode,
 //! then becomes a real [`TextInput`].
 
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use std::collections::HashMap;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use tilo_ui_base::{text_render::FontChoice, text_render::TextRenderer, text_render::TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{text_render::FontChoice, text_render::TextRenderer, text_render::TextStyle};
 #[path = "editable_label_component.rs"]
 mod component;
 use crate::{widget::TextInput, widget::TextInputKind};
-use tilo_ui_base::widget::Widget;
 pub use component::EditableLabelProps;
+use tilo_ui_base::widget::Widget;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditOutcome {
@@ -79,7 +79,8 @@ impl EditableLabel {
             editing: false,
             family: None,
             role: tilo_ui_base::tokens::TextRole::Body,
-            style: tilo_ui_base::tokens::typography::stock().style(tilo_ui_base::tokens::TextRole::Body),
+            style: tilo_ui_base::tokens::typography::stock()
+                .style(tilo_ui_base::tokens::TextRole::Body),
             idle_color: None,
             rect: Rect::ZERO,
             last_pointer: Point::ZERO,
@@ -434,7 +435,11 @@ impl EditableLabel {
         self.input.apply_layout_external(rect);
     }
 
-    fn begin_on_press(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    fn begin_on_press(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
         if !(self.renames || self.edits_on_click)
             || !matches!(
                 event,
@@ -796,9 +801,9 @@ impl tilo_ui_base::widget::controls::ActionControls for EditableLabel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_ui_base::presence::PresenceCtx;
     use crate::testing::Dispatch;
     use automerge::AutoCommit;
+    use tilo_ui_base::presence::PresenceCtx;
     use vello::Scene;
     use winit::event::Modifiers;
 

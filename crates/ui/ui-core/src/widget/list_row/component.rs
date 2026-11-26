@@ -1,9 +1,12 @@
 //! [`ListRow`] as a described component.
 
-use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Event, component::ResourceId, component::Value};
-use tilo_ui_base::icons::Icon;
 use crate::widget::AvatarProps;
+use tilo_ui_base::icons::Icon;
 use tilo_ui_base::widget::Element;
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+    component::ResourceId, component::Value,
+};
 
 use super::{Leading, ListRow};
 use tilo_ui_base::widget::Tone;

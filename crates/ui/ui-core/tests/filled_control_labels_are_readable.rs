@@ -13,13 +13,13 @@
 //! asserting only that the label clears its floor against the fill the
 //! widget resolved for itself.
 
-use tilo_ui_base::a11y::contrast_ratio;
 use tilo_ui::color_compat::ColorCompat;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{tokens::colors::NON_TEXT_MIN_CONTRAST, tokens::colors::ON_FILL_MIN_CONTRAST};
 use tilo_ui::widget::{
     ButtonRole, Interaction, SegmentedStyle, face_colors, segment_colors, toggle_face_colors,
 };
+use tilo_ui_base::a11y::contrast_ratio;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{tokens::colors::NON_TEXT_MIN_CONTRAST, tokens::colors::ON_FILL_MIN_CONTRAST};
 use vello::peniko::Color;
 
 fn hex(c: Color) -> String {

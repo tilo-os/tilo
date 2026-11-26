@@ -118,7 +118,8 @@ impl RowFace {
     /// ([`tilo_ui_base::widget::AvatarFace`]): their colour, an agent's mark for software.
     #[must_use]
     pub fn avatar(&self) -> tilo_ui_base::widget::AvatarFace<'_> {
-        let face = tilo_ui_base::widget::AvatarFace::new(&self.name, &self.identity).presence(self.colour);
+        let face =
+            tilo_ui_base::widget::AvatarFace::new(&self.name, &self.identity).presence(self.colour);
         if self.is_agent { face.agent() } else { face }
     }
 }

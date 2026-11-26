@@ -1081,7 +1081,8 @@ mod tests {
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].summary, "The desktop restarted");
         let at =
-            tilo_ui_base::format::DateTime::strptime("%Y-%m-%d %H:%M:%S", "2026-10-24 22:52:01").unwrap();
+            tilo_ui_base::format::DateTime::strptime("%Y-%m-%d %H:%M:%S", "2026-10-24 22:52:01")
+                .unwrap();
         assert!(
             live[0].body.contains(&tilo_ui_base::format::timestamp(&at)),
             "{}",

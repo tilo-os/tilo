@@ -12,9 +12,9 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use tilo_render_protocol::patch::{self as wire, ToApp};
-use ui::widget::modal_dialog::DialogAction;
-use ui::widget::ModalDialog;
 use tilo_ui_base::widget::Widget;
+use ui::widget::ModalDialog;
+use ui::widget::modal_dialog::DialogAction;
 
 use crate::pane::Pane;
 use crate::reconcile::{Reconciler, UiEvent};

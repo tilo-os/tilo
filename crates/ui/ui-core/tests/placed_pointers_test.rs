@@ -12,9 +12,9 @@
 use tilo_ui::State;
 use tilo_ui::headless::Driver;
 use tilo_ui_base::permissions::MemberId;
-use tilo_ui_base::{presence::PlacedPointer, presence::PresenceCtx};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Spacer;
+use tilo_ui_base::{presence::PlacedPointer, presence::PresenceCtx};
 
 const SIZE: (u32, u32) = (420, 200);
 const PINK: (u8, u8, u8) = (0xee, 0x83, 0xaf);
