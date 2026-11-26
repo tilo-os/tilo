@@ -368,6 +368,103 @@ async fn a_turn_of_a_persons_own_agent_is_answered_on_their_device() {
     );
 }
 
+/// What the person calls important is told to their agent before every turn of their own
+/// conversation with it, in their words: a turn asked after they changed it is told the change,
+/// and nothing of what they no longer say.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_persons_agent_is_told_what_they_call_important_as_it_stands_at_each_turn() {
+    use tilo_actions::remote::person_telling::{Importance, Line};
+    let scratch = tempfile::tempdir().unwrap();
+    let (server, workspace, person) = scout_on_a_device(scratch.path()).await;
+    let mut key = [0_u8; 32];
+    hex::decode_to_slice(&person, &mut key).unwrap();
+    let says = |words: &str| Importance {
+        lines: vec![Line {
+            id: "line-1".into(),
+            words: words.into(),
+            ..Line::default()
+        }],
+        ..Importance::default()
+    };
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let model: Model = {
+        let asked = Arc::clone(&asked);
+        Arc::new(move || {
+            Some(Box::new(Scripted {
+                asked: Arc::clone(&asked),
+            }) as Box<dyn PlanTurns>)
+        })
+    };
+    let agents =
+        ServerAgents::on_device(server.workspaces().clone(), chat_provider(), Arc::new(Keys))
+            .scripted(model);
+    // Each turn: the person writes to the agent, and what its model was told first.
+    let turn = |id: &'static str| {
+        let mut wrote = message_written(&workspace, &person, "anything new?");
+        wrote.record = id.to_owned();
+        wrote.change = format!("change-{id}");
+        if let Some(item) = wrote.item.as_mut() {
+            item.id = id.to_owned();
+        }
+        let (agents, workspace, person, asked) = (
+            agents.clone(),
+            workspace.clone(),
+            person.clone(),
+            Arc::clone(&asked),
+        );
+        async move {
+            let before = asked.lock().unwrap().len();
+            let started = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                agents.triggered(
+                    &workspace,
+                    SCOUT,
+                    tilo_workspace_service::work::Where::of(&wrote)
+                        .expect("a message is a change an agent answers"),
+                    wrote,
+                    person,
+                    (tilo_actions::InvocationId::new(), Arc::default()),
+                ),
+            )
+            .await
+            .expect("the turn ends")
+            .unwrap();
+            assert!(
+                matches!(started, tilo_workspace_service::work::Started::Taken(_)),
+                "this device took the turn: {started:?}"
+            );
+            let requests = asked.lock().unwrap().clone();
+            requests[before]
+                .messages
+                .iter()
+                .find(|message| message.role == Role::System)
+                .map(text_of)
+                .unwrap_or_default()
+        }
+    };
+
+    server
+        .workspaces()
+        .keep_importance(&key, &says("My landlord is always important"))
+        .unwrap();
+    let first = turn("asked-1").await;
+    assert!(
+        first.contains("- My landlord is always important"),
+        "the agent is told the rule in its person's words: {first}"
+    );
+
+    server
+        .workspaces()
+        .keep_importance(&key, &says("Only my sister is important"))
+        .unwrap();
+    let second = turn("asked-2").await;
+    assert!(
+        second.contains("- Only my sister is important")
+            && !second.contains("My landlord is always important"),
+        "the next turn is told the rule as it stands now: {second}"
+    );
+}
+
 /// A turn its person stops while its model writes keeps what came in its reply, and says below
 /// it that it was stopped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

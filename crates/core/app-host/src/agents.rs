@@ -1458,10 +1458,20 @@ impl ServerAgents {
                 let keeping = keeping.as_ref();
                 let web = self.web(workspace);
                 // What this server keeps of what was learned about the person, where the turn
-                // is their own keeper's conversation with the agent: the newest facts, as data.
-                let told = learned::learned_for(&self.workspaces, workspace, &turn)
+                // is their own keeper's conversation with the agent: the newest facts, as data,
+                // and what the person calls important.
+                let learned = learned::learned_for(&self.workspaces, workspace, &turn)
                     .await
                     .map(|known| learned::told(&known));
+                let told = match (
+                    learned,
+                    learned::importance_for(&self.workspaces, &turn).await,
+                ) {
+                    (None, None) => None,
+                    (learned, importance) => {
+                        Some(learned.unwrap_or_default() + &importance.unwrap_or_default())
+                    }
+                };
                 Box::pin(work(
                     model,
                     &scope,

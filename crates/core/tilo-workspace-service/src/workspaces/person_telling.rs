@@ -54,8 +54,6 @@ const MAX_WORKSPACE_BYTES: usize = 128;
 pub(super) struct Telling {
     /// One writer at a time of anybody's rule or log.
     writing: Mutex<()>,
-    /// Moves whenever anybody's rule changed.
-    moved: tokio::sync::watch::Sender<u64>,
     /// Moves whenever anybody's log changed.
     told: tokio::sync::watch::Sender<u64>,
     /// What knows whose day a judgement is counted on.
@@ -77,7 +75,6 @@ impl Default for Telling {
     fn default() -> Self {
         Self {
             writing: Mutex::default(),
-            moved: tokio::sync::watch::channel(0).0,
             told: tokio::sync::watch::channel(0).0,
             spenders: OnceLock::new(),
             changed: Mutex::default(),
@@ -642,10 +639,6 @@ impl Workspaces {
             write_rule(&root, &rule)?;
             rule
         };
-        self.inner
-            .telling
-            .moved
-            .send_modify(|count| *count = count.wrapping_add(1));
         Ok(rule)
     }
 
@@ -674,12 +667,6 @@ impl Workspaces {
     pub fn keep_importance(&self, person: &[u8; 32], rule: &Importance) -> Result<(), String> {
         let _writing = self.inner.telling.writing.lock_recover();
         write_rule(&self.person_settings_root(person), rule)
-    }
-
-    /// Moves whenever anybody's rule changed.
-    #[must_use]
-    pub fn importance_changes(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.inner.telling.moved.subscribe()
     }
 }
 
