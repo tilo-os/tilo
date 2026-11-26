@@ -1358,6 +1358,76 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
     // A link is only asked for by the seat it was admitted for: another account reaches none.
     let refused = ask(BOB, json!({"native": "shells#link"}));
     assert!(refused["error"].is_string(), "{refused}");
+
+    // Her shell hands the device's tilolang processes its windows' instances on this endpoint,
+    // with a secret its link was answered for her seat's account. The account is the kernel's
+    // word for the connection (here the peer this test stands in for it), never the request's,
+    // and the endpoint is every account's, so no file's mode admits anything.
+    let reached = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    shells.links.serve_processes({
+        let reached = std::sync::Arc::clone(&reached);
+        std::sync::Arc::new(move |_| {
+            reached.fetch_add(1, Ordering::SeqCst);
+        })
+    });
+    let hand = |uid: u32, secret: &[u8; 32]| {
+        PEER.store(uid, Ordering::SeqCst);
+        runtime_collab::hand_processes(&socket, secret)
+            .map(drop)
+            .map_err(|error| error.to_string())
+    };
+    let handed = || reached.load(Ordering::SeqCst);
+    // Hers, from her account: handed over once, and never again.
+    let secret = shells.links.processes(ADA);
+    hand(ADA, &secret).unwrap();
+    assert_eq!(handed(), 1, "her hand-over reached the processes");
+    let refused = hand(ADA, &secret).unwrap_err();
+    assert!(refused.contains("spent"), "a secret admits once: {refused}");
+    // Her valid secret from any other account is refused, and spent by being shown.
+    for by in [BOB, DAEMON, ROOT] {
+        let secret = shells.links.processes(ADA);
+        let refused = hand(by, &secret).unwrap_err();
+        assert!(refused.contains("refused"), "{by}: {refused}");
+        let refused = hand(ADA, &secret).unwrap_err();
+        assert!(refused.contains("spent"), "{by} spent it: {refused}");
+    }
+    let refused = hand(DAEMON, &shells.links.processes(ADA)).unwrap_err();
+    assert!(refused.contains("another account"), "{refused}");
+    // Another account's own valid secret admits that account, never her.
+    let bobs = shells.links.processes(BOB);
+    let refused = hand(ADA, &bobs).unwrap_err();
+    assert!(refused.contains("another account"), "{refused}");
+    // A secret older than its lifetime admits nothing.
+    let minted = tilo_clock::now()
+        .checked_sub(tilo_app_host::shell::PROCESSES_SECRET_LIFETIME)
+        .unwrap();
+    let old = shells.links.processes_minted_at(ADA, minted);
+    let refused = hand(ADA, &old).unwrap_err();
+    assert!(refused.contains("lifetime"), "{refused}");
+    // One the daemon never minted admits nothing.
+    let refused = hand(ADA, &[9; 32]).unwrap_err();
+    assert!(refused.contains("spent"), "{refused}");
+    // A hand-over that names no secret is refused.
+    let refused = {
+        PEER.store(ADA, Ordering::SeqCst);
+        let stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let (_, theirs) = runtime_portal::packet::pair().unwrap();
+        let request = format!("{}\n", json!({"native": "shells#processes"}));
+        runtime_portal::fd_transport::send_with_fd(&stream, request.as_bytes(), &theirs).unwrap();
+        let mut line = String::new();
+        io::BufReader::new(stream).read_line(&mut line).unwrap();
+        serde_json::from_str::<Value>(&line).unwrap()
+    };
+    assert!(
+        refused["error"]
+            .as_str()
+            .is_some_and(|why| why.contains("names the secret")),
+        "{refused}"
+    );
+    assert_eq!(handed(), 1, "no refused hand-over reached the processes");
     // A daemon of the system's starts no shell itself: root starts each with the link it got.
     let started = ask(
         ADA,
@@ -1771,6 +1841,9 @@ struct Linked {
     /// The person the tokens are made for, once the test knows them.
     person: std::sync::Mutex<Option<[u8; 32]>>,
     tokens: std::sync::Mutex<Vec<[u8; 32]>>,
+    /// The hand-overs to the device's processes the shells' links were answered, as the
+    /// daemon's own links keep them.
+    links: tilo_app_host::shell::ShellLinks,
 }
 
 impl Linked {
@@ -1837,6 +1910,15 @@ impl crate::seats::Shells for Linked {
 
     fn serves(&self, person: [u8; 32]) -> bool {
         *self.person.lock().unwrap() == Some(person)
+    }
+
+    fn hand_processes(
+        &self,
+        uid: u32,
+        secret: &[u8; 32],
+        packets: std::os::fd::OwnedFd,
+    ) -> Result<(), String> {
+        self.links.hand_processes(uid, secret, packets)
     }
 
     fn start(
@@ -2206,6 +2288,18 @@ impl crate::seats::Shells for NestedShells {
 
     fn serves(&self, person: [u8; 32]) -> bool {
         self.0.upgrade().is_some_and(|daemon| daemon.serves(person))
+    }
+
+    fn hand_processes(
+        &self,
+        uid: u32,
+        secret: &[u8; 32],
+        packets: std::os::fd::OwnedFd,
+    ) -> Result<(), String> {
+        self.0
+            .upgrade()
+            .ok_or("this computer's daemon is stopping")?
+            .hand_processes(uid, secret, packets)
     }
 
     fn start(

@@ -32,12 +32,15 @@ pub struct ShellCaller {
 pub type ShellLink = (ShellCaller, Option<u64>);
 
 /// The shell links the daemon made and no shell took yet: each a one-use secret the daemon
-/// sends on a connection it opens itself, then hands to the shell it starts. And the
-/// connections it asked to hand the device's tilolang processes an instance on.
+/// sends on a connection it opens itself, then hands to the shell it starts. And the hand-overs
+/// to the device's tilolang processes a linked shell asked for ([`Self::processes`]), which the
+/// shell then makes on the daemon's native endpoint ([`Self::hand_processes`]).
 #[derive(Default)]
 pub struct ShellLinks {
     shells: std::sync::Mutex<std::collections::HashMap<[u8; 32], ShellLink>>,
-    processes: std::sync::Mutex<std::collections::HashSet<[u8; 32]>>,
+    processes: std::sync::Mutex<Vec<ProcessesSecret>>,
+    /// The device's tilolang processes, once the daemon serves them: `None` where none can start.
+    serving: std::sync::OnceLock<ShellProcesses>,
     /// The seats a shell link is admitted for now: a seat has one shell, and a second link for it
     /// is refused while the first stands.
     live: std::sync::Mutex<std::collections::HashSet<u64>>,
@@ -110,20 +113,123 @@ impl ShellLinks {
         lock(&self.live).remove(&seat);
     }
 
-    /// A secret admitting one connection to the device's tilolang processes: what an admitted
-    /// shell is answered when it asks to hand them an instance.
+    /// Hand the shells' instances to `processes` from now on: the device's tilolang processes,
+    /// served once.
+    pub fn serve_processes(&self, processes: ShellProcesses) {
+        let _ = self.serving.set(processes);
+    }
+
+    /// Whether the device's tilolang processes are served here.
     #[must_use]
-    pub fn processes(&self) -> [u8; 32] {
+    pub fn serves_processes(&self) -> bool {
+        self.serving.get().is_some()
+    }
+
+    /// A secret admitting one hand-over to the device's tilolang processes from the account
+    /// `uid`: what a linked shell is answered when it asks to hand them an instance. `uid` is the
+    /// account of the seat the shell's link was made for, which the kernel named when the link
+    /// was asked for; the secret admits that account alone, once, within
+    /// [`PROCESSES_SECRET_LIFETIME`].
+    #[must_use]
+    pub fn processes(&self, uid: u32) -> [u8; 32] {
+        self.mint_processes(uid, tilo_clock::now())
+    }
+
+    /// [`Self::processes`], as though minted at `minted`: what a test of a secret that outlived
+    /// its lifetime mints with.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn processes_minted_at(&self, uid: u32, minted: tilo_clock::time::Instant) -> [u8; 32] {
+        self.mint_processes(uid, minted)
+    }
+
+    fn mint_processes(&self, uid: u32, minted: tilo_clock::time::Instant) -> [u8; 32] {
         let secret: [u8; 32] = rand::random();
-        lock(&self.processes).insert(secret);
+        let mut waiting = lock(&self.processes);
+        // A secret no shell spent in time admits nothing, and is not kept.
+        let now = tilo_clock::now();
+        waiting.retain(|kept| !kept.expired(now));
+        waiting.push(ProcessesSecret {
+            secret,
+            uid,
+            minted,
+        });
         secret
     }
 
-    /// Whether `secret` admits a connection to the processes, once.
-    #[must_use]
-    pub fn take_processes(&self, secret: &[u8; 32]) -> bool {
-        lock(&self.processes).remove(secret)
+    /// Hand the device's tilolang processes `packets`, the packet socket a connection from the
+    /// account `uid` (the kernel's word for its peer) carried with `secret`. The secret is spent
+    /// by being presented, whatever the answer: it admits one hand-over, from the account it was
+    /// minted for, within its lifetime.
+    ///
+    /// # Errors
+    /// Why the hand-over is refused: no such secret waits, it outlived its lifetime, it was minted
+    /// for another account, or no processes run here.
+    pub fn hand_processes(
+        &self,
+        uid: u32,
+        secret: &[u8; 32],
+        packets: runtime_portal::packet::Descriptor,
+    ) -> Result<(), String> {
+        let mut waiting = lock(&self.processes);
+        // Every secret is compared, each in constant time, so how long the search takes says
+        // nothing of how near a guess came.
+        let mut found = None;
+        for (at, kept) in waiting.iter().enumerate() {
+            if same_secret(&kept.secret, secret) {
+                found = Some(at);
+            }
+        }
+        let taken = found.map(|at| waiting.swap_remove(at));
+        drop(waiting);
+        let Some(taken) = taken else {
+            return Err(
+                "this secret is no hand-over a shell asked for on its link, or it was spent"
+                    .to_owned(),
+            );
+        };
+        if taken.expired(tilo_clock::now()) {
+            return Err("this hand-over's secret outlived its lifetime".to_owned());
+        }
+        if taken.uid != uid {
+            return Err(
+                "this hand-over's secret was asked for by another account's shell".to_owned(),
+            );
+        }
+        let processes = self
+            .serving
+            .get()
+            .ok_or("no tilolang process can start on this device")?;
+        processes(packets);
+        Ok(())
     }
+}
+
+/// How long a hand-over's secret admits its connection after the shell was answered it: the shell
+/// connects at once, so a secret that waits longer was lost, or taken.
+pub const PROCESSES_SECRET_LIFETIME: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A hand-over to the device's tilolang processes a linked shell asked for: the secret, the
+/// account it admits, and when it was minted.
+struct ProcessesSecret {
+    secret: [u8; 32],
+    uid: u32,
+    minted: tilo_clock::time::Instant,
+}
+
+impl ProcessesSecret {
+    fn expired(&self, now: tilo_clock::time::Instant) -> bool {
+        now.saturating_duration_since(self.minted) >= PROCESSES_SECRET_LIFETIME
+    }
+}
+
+/// Whether two secrets are the same, compared in time that does not depend on where they differ.
+fn same_secret(kept: &[u8; 32], presented: &[u8; 32]) -> bool {
+    let mut difference = 0_u8;
+    for (kept, presented) in kept.iter().zip(presented) {
+        difference |= kept ^ presented;
+    }
+    std::hint::black_box(difference) == 0
 }
 
 /// The device's tilolang processes, as the shell reaches them: each takes one connection, a
@@ -173,8 +279,8 @@ pub type DocumentWrites =
 pub struct ShellServices {
     /// The links of the shells the daemon starts: a connection is a shell's only with one.
     pub links: Arc<ShellLinks>,
-    /// The socket this dispatch answers on: where a connection to the device's tilolang processes
-    /// opens.
+    /// The daemon's native endpoint: where the shell hands the device's tilolang processes an
+    /// instance ([`ShellLinks::hand_processes`]), on a connection the kernel names its account on.
     pub socket: std::path::PathBuf,
     /// The device's documents, read for the device itself.
     pub documents: Arc<dyn DeviceDocuments>,
@@ -191,9 +297,6 @@ pub struct ShellServices {
     /// settings): the shell link reads and changes them as the app it names, so a session's apps
     /// reach the one copy the daemon keeps.
     pub published: Option<Arc<dyn PublishedResources>>,
-    /// The device's tilolang processes, which the shell hands its windows' instances: `None` where
-    /// none can start.
-    pub processes: Option<ShellProcesses>,
     /// The workspaces the device holds: what the resource commands of the apps the shell runs
     /// itself, and its asks of a workspace's vault, run on.
     pub workspaces: tilo_workspace_service::workspaces::Workspaces,

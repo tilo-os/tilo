@@ -1691,6 +1691,15 @@ impl crate::seats::Shells for ShellsOf {
         self.0.serves(person)
     }
 
+    fn hand_processes(
+        &self,
+        uid: u32,
+        secret: &[u8; 32],
+        packets: std::os::fd::OwnedFd,
+    ) -> Result<(), String> {
+        self.0.hand_processes(uid, secret, packets)
+    }
+
     fn start(
         &self,
         _: Vec<std::ffi::OsString>,

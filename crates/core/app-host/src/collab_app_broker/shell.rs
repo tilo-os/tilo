@@ -7,7 +7,7 @@ use tilo_person_services::PersonServices;
 
 use runtime_collab::wire::Reply;
 use runtime_collab::wire::shell::{
-    DocumentWritten, PROCESSES_MAGIC, SHELL_MAGIC, ShellCall, ShellMemberChange, ShellReply,
+    DocumentWritten, SHELL_MAGIC, ShellCall, ShellMemberChange, ShellReply,
 };
 use tilo_actions::remote::{
     Caller, ReceiptStatus, RemoteActionMessage, ResourceReadRequest, resource_parts,
@@ -21,6 +21,9 @@ use crate::shell::{ShellCaller, ShellServices};
 #[derive(Clone)]
 pub(super) struct Shell {
     pub(super) caller: ShellCaller,
+    /// The seat the shell's link was made for: its account and process, as the kernel named them
+    /// when the link was asked for. `None` for a link made for no seat.
+    seat: Option<u64>,
     pub(super) services: Arc<ShellServices>,
     /// The writes the device took since the shell last asked, followed from the moment it
     /// connected, so none falls between two asks.
@@ -100,6 +103,7 @@ pub(super) async fn serve(
     let speaking = services.speaking.clone();
     let (connection, outgoing) = super::wire::WireConnection::shell(Shell {
         caller,
+        seat,
         services,
         writes: followed,
         received: received.clone(),
@@ -130,52 +134,27 @@ impl Drop for SeatLink {
     }
 }
 
-/// Hand the device's tilolang processes the packet socket `stream` carries, when it opened with
-/// [`PROCESSES_MAGIC`], the secret the daemon answered a shell's [`ShellCall::Processes`] with on
-/// its own link, and the number its descriptor stream hands the socket by. Any other connection,
-/// one that dialed the socket itself above all, is closed before anything reaches the processes:
-/// only the shell the daemon started hands them an instance.
-pub(super) async fn processes(
-    stream: tilo_socket::tokio::Stream,
-    services: Arc<ShellServices>,
-) -> Result<(), crate::BrokerError> {
-    use runtime_collab::wire::shell::SHELL_SECRET_BYTES;
-    use tokio::io::AsyncReadExt as _;
-    let refused = |why: String| {
-        tracing::warn!(%why, "refused a hand-over to the device's tilolang processes");
-        Ok(())
-    };
-    let received = runtime_portal::descriptors::ReceivedDescriptors::new(1);
-    let mut stream =
-        runtime_portal::descriptors::DescriptorStream::receiving(stream, received.clone());
-    let mut opening = [0_u8; PROCESSES_MAGIC.len() + SHELL_SECRET_BYTES + 4];
-    if let Err(error) = stream.read_exact(&mut opening).await {
-        return refused(format!("its opening does not read: {error}"));
+/// A hand-over to the device's tilolang processes for `shell`: the secret admits the account of
+/// the seat its link was made for, which the kernel named when the link was asked for on the
+/// native endpoint. The hand-over is made there, and admitted by the account the kernel names for
+/// that connection.
+fn hand_over(shell: &Shell) -> Result<ShellReply, String> {
+    if !shell.services.links.serves_processes() {
+        return Err("no tilolang process can start on this device".to_owned());
     }
-    let (marker, rest) = opening.split_at(PROCESSES_MAGIC.len());
-    let (secret, number) = rest.split_at(SHELL_SECRET_BYTES);
-    let (Ok(secret), Ok(number)) = (
-        <[u8; SHELL_SECRET_BYTES]>::try_from(secret),
-        <[u8; 4]>::try_from(number),
-    ) else {
-        return refused("its opening is no marker, secret and packet socket".to_owned());
-    };
-    if marker != PROCESSES_MAGIC.as_slice() || !services.links.take_processes(&secret) {
-        return refused(
-            "only the person's shell hands over, with a secret its link asked for".to_owned(),
-        );
-    }
-    let Some(processes) = services.processes.as_ref() else {
-        return refused("no tilolang process can start on this device".to_owned());
-    };
-    let Some(packets) = received.take(u32::from_le_bytes(number)) else {
-        return refused("its opening hands no packet socket".to_owned());
-    };
-    match runtime_portal::packet::Descriptor::try_from(packets) {
-        Ok(packets) => processes(packets),
-        Err(error) => return refused(format!("what it handed is no packet socket: {error}")),
-    }
-    Ok(())
+    let seat = shell
+        .seat
+        .ok_or("this shell link was made for no seat, so no account hands its processes over")?;
+    Ok(ShellReply::Processes {
+        socket: shell.services.socket.clone(),
+        secret: shell.services.links.processes(seat_account(seat)),
+    })
+}
+
+/// The account of `seat`, which is numbered by its account and process
+/// (`tilo_runtime::seats::seat_id`).
+fn seat_account(seat: u64) -> u32 {
+    u32::try_from(seat >> 32).unwrap_or(u32::MAX)
 }
 
 /// An app's connection a shell handed over and vouched for ([`ShellCall::Vouch`]), with the
@@ -516,15 +495,7 @@ fn answered(shell: Option<Shell>, call: ShellCall) -> ShellAnswer {
             | ShellCall::KeepsReceipts { .. }
             | ShellCall::Authorizes { .. }) => Box::pin(kept(&services.workspaces, call)).await,
             ShellCall::Vouch(vouch) => vouch_for(&shell, vouch)?,
-            ShellCall::Processes => {
-                if services.processes.is_none() {
-                    return Err("no tilolang process can start on this device".to_owned());
-                }
-                ShellReply::Processes {
-                    socket: services.socket.clone(),
-                    secret: services.links.processes(),
-                }
-            }
+            ShellCall::Processes => hand_over(&shell)?,
             ShellCall::Action {
                 workspace,
                 frame,

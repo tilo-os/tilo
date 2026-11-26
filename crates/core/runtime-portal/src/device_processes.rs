@@ -14,8 +14,10 @@
 //!
 //! Each ask is one packet socket of its own: one [`ToDevice`] with the descriptors it carries, one
 //! [`FromDevice`] back. The session asks for it on the shell link the daemon started it with
-//! (`runtime_collab::wire::shell::ShellCall::Processes`), so only that shell hands over: no other
-//! process of the account, and none of the apps the daemon started.
+//! (`runtime_collab::wire::shell::ShellCall::Processes`) and hands it over on the daemon's native
+//! socket (`runtime_collab::wire::shell::SHELL_PROCESSES`), admitted by the account the kernel
+//! names for that connection and the one-use secret its link was answered: no other process of
+//! another account, and none of the apps the daemon started.
 
 use std::io;
 use std::sync::Arc;

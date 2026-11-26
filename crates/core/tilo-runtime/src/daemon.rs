@@ -1106,6 +1106,16 @@ impl crate::seats::Shells for PersonShells {
         self.daemon().is_ok_and(|daemon| daemon.serves(person))
     }
 
+    fn hand_processes(
+        &self,
+        uid: u32,
+        secret: &[u8; 32],
+        packets: runtime_portal::process_link::Descriptor,
+    ) -> Result<(), String> {
+        let daemon = self.daemon().map_err(|error| error.to_string())?;
+        daemon.hand_processes(uid, secret, packets)
+    }
+
     #[cfg(target_os = "linux")]
     fn start(
         &self,

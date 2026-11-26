@@ -1404,6 +1404,22 @@ impl Daemon {
         }
     }
 
+    /// Hand the device's tilolang processes `packets`, which a connection of the account `uid`
+    /// carried to the native endpoint with `secret`: admitted when a shell of that account was
+    /// answered `secret` on its link moments ago, and never twice
+    /// ([`tilo_app_host::shell::ShellLinks::hand_processes`]).
+    ///
+    /// # Errors
+    /// Why the hand-over is refused.
+    pub(crate) fn hand_processes(
+        &self,
+        uid: u32,
+        secret: &[u8; 32],
+        packets: runtime_portal::process_link::Descriptor,
+    ) -> Result<(), String> {
+        self.shell_links.hand_processes(uid, secret, packets)
+    }
+
     /// Whether the seat has a shell link standing now.
     pub(crate) fn shell_live(&self, seat: u64) -> bool {
         self.shell_links.live(seat)
@@ -3787,13 +3803,17 @@ fn shell_services(
     );
     // The person's desktop session: their workspaces' documents, governance and standing,
     // reached through this device alone.
+    // Its windows' instances are handed to the device's tilolang processes on the native
+    // endpoint, where the kernel names the account handing them over.
+    if let Some(processes) = shell_processes(parts.apps, parts.workspaces) {
+        parts.shell_links.serve_processes(processes);
+    }
     services.shell = Some(Arc::new(super::shell::services(
         parts.workspaces,
         parts.shell_links,
-        parts.sockets.collab.clone(),
+        parts.sockets.native.clone(),
         Arc::clone(parts.shell_dispatch),
         shell_published,
-        shell_processes(parts.apps, parts.workspaces),
         super::shell::Serving {
             identity: Arc::clone(&parts.identity),
             live: Some(live_links(parts.live)),

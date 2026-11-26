@@ -59,7 +59,6 @@ pub(crate) fn services(
     socket: std::path::PathBuf,
     dispatching: Arc<Dispatching>,
     published: Arc<dyn PublishedResources>,
-    processes: Option<tilo_app_host::shell::ShellProcesses>,
     serving: Serving,
 ) -> ShellServices {
     let Serving {
@@ -79,7 +78,6 @@ pub(crate) fn services(
     ShellServices {
         links: Arc::clone(links),
         socket,
-        processes,
         documents: Arc::new(ServiceDocuments::of(copies.clone())),
         writes: Arc::new(ServiceWrites::of(copies.clone())),
         document_writes: Arc::new({

@@ -75,6 +75,9 @@ const WAIT: &str = "shells#wait";
 /// The one request that establishes a shell link, on the daemon's own socket: `{token?}`, the
 /// one-use secret the daemon gave the shell the first time, answered the link as a descriptor.
 const LINK: &str = runtime_collab::wire::shell::SHELL_LINK;
+/// Hand the device's tilolang processes an instance: `{secret}`, the one-use secret the daemon
+/// answered the shell's link with, and the packet socket as the line's one descriptor.
+const PROCESSES: &str = runtime_collab::wire::shell::SHELL_PROCESSES;
 /// How long a shell's start waits for the person's services, which the daemon starts after its
 /// native endpoint answers: a sign-in as the computer boots asks before they run.
 const SERVICES_START: Duration = Duration::from_secs(120);
@@ -287,6 +290,19 @@ pub(crate) trait Shells: Send + Sync {
     /// it runs. The token it makes names that person, so the device's own account (and root)
     /// redeems it as the person this daemon serves, never as another.
     fn serves(&self, person: [u8; 32]) -> bool;
+
+    /// Hand the device's tilolang processes `packets`, which a connection of the account `uid`
+    /// (the kernel's word for its peer) carried with `secret`
+    /// (`tilo_app_host::shell::ShellLinks::hand_processes`).
+    ///
+    /// # Errors
+    /// Why the hand-over is refused.
+    fn hand_processes(
+        &self,
+        uid: u32,
+        secret: &[u8; 32],
+        packets: Descriptor,
+    ) -> Result<(), String>;
 
     /// Start the person's shell with `args` and `env`, handed its link and, when the session that
     /// asked sent one (`window`), the connection it draws its window on.
@@ -611,6 +627,10 @@ impl Seats {
             START => Some(self.start(seat, request, received)),
             WAIT => Some(self.wait(seat, request).unwrap_or_else(refused)),
             LINK => Some(self.link(seat, request, handed)),
+            PROCESSES => Some(ready(
+                self.hand_processes(seat, request, received)
+                    .map_or_else(|why| json!({"error": why}), |()| json!({"handed": true})),
+            )),
             _ => None,
         }
     }
@@ -619,7 +639,7 @@ impl Seats {
     pub(crate) fn asks(request: &Value) -> bool {
         matches!(
             request.get("native").and_then(Value::as_str),
-            Some(WHO | START | WAIT | LINK)
+            Some(WHO | START | WAIT | LINK | PROCESSES)
         )
     }
 
@@ -797,6 +817,37 @@ impl Seats {
             *handed.lock_recover() = Some(runtime_portal::packet::descriptor_of(stream));
             Ok(Some(json!({"shell": true, "pid": pid})))
         }))
+    }
+
+    /// Hand the device's tilolang processes the packet socket the connection sent with its
+    /// request (`{secret}`), admitted by the account the kernel names for the connection's peer
+    /// and by the one-use secret the daemon answered that account's shell on its link. The
+    /// account comes from the kernel alone: nothing the request says names it, and a file's mode
+    /// admits nothing here, since every account reaches this endpoint.
+    fn hand_processes(
+        &self,
+        seat: &Seat,
+        request: &Value,
+        received: &Mutex<Vec<Descriptor>>,
+    ) -> Result<(), String> {
+        let mut received = std::mem::take(&mut *received.lock_recover());
+        if seat.app.is_some() {
+            return Err("an app is no shell: it hands the device's processes nothing".to_owned());
+        }
+        let secret = request
+            .get("secret")
+            .and_then(Value::as_str)
+            .and_then(|secret| hex::decode(secret).ok())
+            .and_then(|secret| <[u8; 32]>::try_from(secret).ok())
+            .ok_or("a hand-over names the secret its shell's link was answered")?;
+        let (Some(packets), true) = (received.pop(), received.is_empty()) else {
+            return Err("a hand-over sends one packet socket with its request".to_owned());
+        };
+        let shells =
+            self.shells.borrow().clone().ok_or(
+                "this device's person's services are still starting: ask again in a moment",
+            )?;
+        shells.hand_processes(seat.uid, &secret, packets)
     }
 
     /// Whether a connection admitted as `admitted` acts as `person` now, as `shells` serves them:

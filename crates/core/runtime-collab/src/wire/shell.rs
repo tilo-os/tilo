@@ -53,13 +53,15 @@ pub const SHELL_TOKEN_ENV: &str = "TILO_SHELL_TOKEN";
 /// seat.
 pub const SHELL_LINK: &str = "shells#link";
 
-/// What a connection the shell opens to hand the device's tilolang processes an instance begins
-/// with, followed by the one-use secret the daemon answered the shell's [`ShellCall::Processes`]
-/// with, then the number the connection's descriptor stream (`runtime_portal::descriptors`) hands
-/// the daemon's end of a packet socket pair (`runtime_portal::packet::pair`) by, as four
-/// little-endian bytes. The daemon's processes then take the hand-over on that packet socket
-/// (`runtime_portal::device_processes`). As long as [`SHELL_MAGIC`].
-pub const PROCESSES_MAGIC: &[u8; 4] = b"QSP1";
+/// The request a shell hands the device's tilolang processes an instance with, on the daemon's
+/// native socket: `{"native":"shells#processes","secret":"<hex>"}`, the one-use secret the daemon
+/// answered the shell's [`ShellCall::Processes`] with, sent with the daemon's end of a packet
+/// socket pair (`runtime_portal::packet::pair`) as the line's one descriptor. It is answered
+/// `{"handed":true}`, or `{"error":…}`. The daemon admits it by the account the kernel names for
+/// the connection's peer, which must be the account of the seat the shell's link was made for,
+/// and by the secret, which admits one hand-over within a few seconds of being answered. The
+/// processes then take the hand-over on that packet socket (`runtime_portal::device_processes`).
+pub const SHELL_PROCESSES: &str = "shells#processes";
 
 /// A connection the shell hands the daemon ([`ShellCall::Vouch`]), made on the shell's app
 /// socket: the apps the person runs reach the shell there, and only the shell can tell them apart
@@ -248,9 +250,8 @@ pub enum ShellCall {
     /// the shell closes the handle ([`super::Operation::Close`]) or its link, and a call it had not
     /// answered fails.
     Provide { provider: String, catalogue: String },
-    /// Admit one connection to the device's tilolang processes: answered with the one-use secret
-    /// that connection opens with after [`PROCESSES_MAGIC`]. The link itself is a byte stream that
-    /// many calls share, so the descriptors of a hand-over travel on that connection instead.
+    /// Admit one hand-over to the device's tilolang processes: answered with the daemon's native
+    /// socket and the one-use secret the hand-over is made with there ([`SHELL_PROCESSES`]).
     Processes,
     /// What the person says of themselves in `workspace` now, as their shell knows it
     /// ([`ShellWord`]), or nothing any more (`None`), and the runs this device executes there,
@@ -560,8 +561,8 @@ pub enum ShellReply {
     Authorized(Result<(), String>),
     /// A [`ShellCall::Provide`]: the handle the provider's calls arrive on.
     Providing(super::Handle),
-    /// A [`ShellCall::Processes`]: the daemon's socket the connection to its processes opens on,
-    /// and the secret it opens with.
+    /// A [`ShellCall::Processes`]: the daemon's native socket the hand-over is made on
+    /// ([`SHELL_PROCESSES`]), and the secret it is made with.
     Processes {
         socket: std::path::PathBuf,
         secret: [u8; SHELL_SECRET_BYTES],

@@ -310,6 +310,7 @@ async fn device_carrying(live: Option<crate::shell::LiveLinks>) -> Device {
     let daemon_socket = dir.path().join("daemon.sock");
     let links = Arc::new(ShellLinks::default());
     let reached_processes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    links.serve_processes(processes_fake(Arc::clone(&reached_processes)));
     let launched = Arc::new(Launched::default());
     let daemon = crate::collab_broker::spawn_with_test_services(
         daemon_socket.clone(),
@@ -320,7 +321,6 @@ async fn device_carrying(live: Option<crate::shell::LiveLinks>) -> Device {
             committed_documents: Some(Arc::new(DaemonReads)),
             published: Some(Arc::new(Published)),
             shell: Some(Arc::new(ShellServices {
-                processes: Some(processes_fake(Arc::clone(&reached_processes))),
                 links: Arc::clone(&links),
                 socket: daemon_socket.clone(),
                 documents: Arc::new(NoDocuments),
@@ -656,68 +656,88 @@ async fn a_live_link_is_refused_where_no_live_session_runs() {
     );
 }
 
-/// Only the shell the daemon started reaches the device's processes: a connection it asked for on
-/// its own link is handed to them, and one that opens with any other secret, from a process that
-/// dialed the daemon's socket itself, reaches nothing.
+/// A linked shell asks for a hand-over to the device's processes on its link, and is answered a
+/// secret for the account of the seat the link was made for: the hand-over itself is made on the
+/// daemon's native endpoint, where the kernel names the account (`tilo_runtime::seats`), and the
+/// secret admits that account alone, once. A link made for no seat is answered none.
 #[tokio::test(flavor = "current_thread")]
-async fn only_the_shell_hands_the_device_processes_an_instance() {
+async fn a_shells_hand_over_secret_admits_its_seats_account_alone() {
+    use runtime_collab::wire::shell::{ShellCall, ShellReply};
     use runtime_portal::device_processes::{FromDevice, ToDevice};
     use runtime_portal::packet::Packet as _;
+    const ACCOUNT: u32 = 1000;
     let device = device_with_shell().await;
-    let ask = |connection: runtime_portal::packet::Descriptor| {
-        tokio::task::spawn_blocking(move || {
-            ToDevice::Running.send(&connection)?;
-            FromDevice::receive(&connection)
-        })
-    };
-    // A process that is not the shell, with a secret no link asked for.
-    let (ours, theirs) = runtime_portal::packet::pair().unwrap();
-    let dialed = tokio::net::UnixStream::connect(&device.daemon_socket)
-        .await
-        .unwrap();
-    let sender = runtime_portal::descriptors::DescriptorSender::new();
-    let mut dialed = runtime_portal::descriptors::DescriptorStream::sending(dialed, sender.clone());
-    let number = sender.send(theirs).unwrap();
-    let mut opening = runtime_collab::wire::shell::PROCESSES_MAGIC.to_vec();
-    opening.extend_from_slice(&[9; runtime_collab::wire::shell::SHELL_SECRET_BYTES]);
-    opening.extend_from_slice(&number.to_le_bytes());
-    tokio::io::AsyncWriteExt::write_all(&mut dialed, &opening)
-        .await
-        .unwrap();
-    let refused = ask(ours).await.unwrap();
-    assert!(
-        matches!(refused, Ok(None) | Err(_)),
-        "a process that dialed the daemon itself is not answered: {refused:?}"
-    );
-    assert_eq!(
-        device
-            .reached_processes
-            .load(std::sync::atomic::Ordering::SeqCst),
-        0,
-        "nothing of it reached the processes"
-    );
-    // The shell, on the link the daemon made for it.
-    let secret = device.links.make(ShellCaller {
+    let caller = ShellCaller {
         person: root(3).verifying_key().to_bytes(),
-    });
-    let mut opening = runtime_collab::wire::shell::SHELL_MAGIC.to_vec();
-    opening.extend_from_slice(&secret);
-    let (shell, _) = runtime_collab::ShellClient::open(
-        Endpoint::connect(&device.daemon_socket, &opening)
-            .await
-            .stream,
+    };
+    let linked = |secret: [u8; 32]| {
+        let socket = device.daemon_socket.clone();
+        async move {
+            let mut opening = runtime_collab::wire::shell::SHELL_MAGIC.to_vec();
+            opening.extend_from_slice(&secret);
+            runtime_collab::ShellClient::open(Endpoint::connect(&socket, &opening).await.stream).0
+        }
+    };
+    let refused = linked(device.links.make(caller))
+        .await
+        .call(ShellCall::Processes)
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("no seat"), "{refused}");
+
+    let shell = linked(
+        device
+            .links
+            .make_for(caller, Some((u64::from(ACCOUNT) << 32) | 0x4d)),
+    )
+    .await;
+    let (shell, daemon_socket) = (&shell, &device.daemon_socket);
+    let asked = || async move {
+        match shell.call(ShellCall::Processes).await.unwrap() {
+            ShellReply::Processes { socket, secret } => {
+                assert_eq!(&socket, daemon_socket, "where the hand-over is made");
+                secret
+            }
+            other => panic!("a hand-over's secret, not {other:?}"),
+        }
+    };
+    let secret = asked().await;
+    let (_, theirs) = runtime_portal::packet::pair().unwrap();
+    let refused = device
+        .links
+        .hand_processes(ACCOUNT + 1, &secret, theirs)
+        .unwrap_err();
+    assert!(refused.contains("another account"), "{refused}");
+    let (_, theirs) = runtime_portal::packet::pair().unwrap();
+    let refused = device
+        .links
+        .hand_processes(ACCOUNT, &secret, theirs)
+        .unwrap_err();
+    assert!(
+        refused.contains("spent"),
+        "presenting a secret spends it: {refused}"
     );
-    let connection = shell.processes().await.unwrap();
-    assert_eq!(
-        ask(connection).await.unwrap().unwrap(),
-        Some(FromDevice::Running(Vec::new())),
-        "the shell's connection reaches the processes"
-    );
+
+    let secret = asked().await;
+    let (ours, theirs) = runtime_portal::packet::pair().unwrap();
+    device
+        .links
+        .hand_processes(ACCOUNT, &secret, theirs)
+        .unwrap();
+    let answered = tokio::task::spawn_blocking(move || {
+        ToDevice::Running.send(&ours)?;
+        FromDevice::receive(&ours)
+    })
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(answered, Some(FromDevice::Running(Vec::new())));
     assert_eq!(
         device
             .reached_processes
             .load(std::sync::atomic::Ordering::SeqCst),
-        1
+        1,
+        "only the seat's own account reached the processes"
     );
 }
 

@@ -43,7 +43,6 @@ async fn shell_on_a_joined_workspace(
         None,
         crate::services::ProcessServices {
             shell: Some(Arc::new(crate::shell::ShellServices {
-                processes: None,
                 links: Arc::clone(&links),
                 socket: socket.clone(),
                 documents: Arc::new(crate::service_reads::ServiceDocuments::of(

@@ -930,10 +930,9 @@ pub(super) async fn drive_connection(
     };
     let mut stream = stream;
     let local_media = if worker.is_none() {
-        // A person's shell, where this host answers one, opens with its own marker, and so does a
-        // connection it opens to hand the device's processes an instance; an app's connection the
-        // shell handed over was admitted by the shell's vouch; any other is an app the launcher
-        // started, or a client admitted by what it presents.
+        // A person's shell, where this host answers one, opens with its own marker; an app's
+        // connection the shell handed over was admitted by the shell's vouch; any other is an app
+        // the launcher started, or a client admitted by what it presents.
         let admitted = if let Some(handed) = handed {
             handed.admitted().map_err(|error| LaunchRefusal {
                 error: BrokerError::failed(error),
@@ -949,9 +948,6 @@ pub(super) async fn drive_connection(
                         directories: Rc::clone(&directories),
                     };
                     return super::shell::serve(stream, shell, broker).await;
-                }
-                if marker == *runtime_collab::wire::shell::PROCESSES_MAGIC {
-                    return super::shell::processes(stream, shell).await;
                 }
             }
             authenticate_launcher_handoff(&mut stream, &state.services).await

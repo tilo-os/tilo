@@ -724,9 +724,10 @@ impl Processes {
         }
     }
 
-    /// What the daemon's dispatch hands each connection the person's shell opened to these
-    /// processes: a packet socket, admitted by a one-use secret the shell asked for on its own
-    /// link (`runtime_collab::wire::shell::ShellCall::Processes`), whose one ask is answered on a
+    /// What the daemon hands each connection the person's shell opened to these
+    /// processes: a packet socket handed over on the native endpoint, admitted by the account the
+    /// kernel names for it and a one-use secret the shell asked for on its own link
+    /// (`runtime_collab::wire::shell::ShellCall::Processes`), whose one ask is answered on a
     /// thread of its own, for a workspace `has` says the device has for the person. What reaches
     /// an app's origin connector, for a handed instance or a service of the shell, is `origins`.
     /// Only a Linux shell hands its windows' instances over.

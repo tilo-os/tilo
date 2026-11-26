@@ -1710,14 +1710,13 @@ impl ShellClient {
     }
 
     /// A packet socket to the device's tilolang processes, for one ask
-    /// (`runtime_portal::device_processes`): admitted on the shell's own link, then opened on the
-    /// daemon's socket with the secret it answered, which carries the daemon's end of the pair.
+    /// (`runtime_portal::device_processes`): admitted on the shell's own link, then handed over on
+    /// the daemon's native socket with the secret it answered ([`hand_processes`]).
     ///
     /// # Errors
     /// The daemon refused it, or its socket does not answer.
     #[cfg(target_os = "linux")]
     pub async fn processes(&self) -> Result<std::os::fd::OwnedFd, NotAvailable> {
-        use tokio::io::AsyncWriteExt as _;
         let (socket, secret) = match self.call(crate::wire::shell::ShellCall::Processes).await? {
             crate::wire::shell::ShellReply::Processes { socket, secret } => (socket, secret),
             other => {
@@ -1726,20 +1725,9 @@ impl ShellClient {
                 )));
             }
         };
-        let stream = tilo_socket::connect(&socket)?;
-        stream.set_nonblocking(true)?;
-        let stream = tokio::net::UnixStream::from_std(stream)?;
-        let (ours, theirs) = runtime_portal::packet::pair()?;
-        let sender = runtime_portal::descriptors::DescriptorSender::new();
-        let mut stream =
-            runtime_portal::descriptors::DescriptorStream::sending(stream, sender.clone());
-        let number = sender.send(theirs)?;
-        let mut opening = crate::wire::shell::PROCESSES_MAGIC.to_vec();
-        opening.extend_from_slice(&secret);
-        opening.extend_from_slice(&number.to_le_bytes());
-        stream.write_all(&opening).await?;
-        stream.flush().await?;
-        Ok(ours)
+        tokio::task::spawn_blocking(move || hand_processes(&socket, &secret))
+            .await
+            .map_err(|error| NotAvailable::Refused(format!("the hand-over did not run: {error}")))?
     }
 
     /// Ask the device `call`.
@@ -1793,6 +1781,56 @@ fn opened(link: tokio::net::UnixStream) -> (ShellShared, ConnectionEnd) {
         },
         end,
     )
+}
+
+/// Hand the device's tilolang processes one end of a packet socket pair on the daemon's native
+/// socket at `socket`, with `secret`, the one-use secret the daemon answered this shell's
+/// [`crate::wire::shell::ShellCall::Processes`] with ([`crate::wire::shell::SHELL_PROCESSES`]),
+/// and answer the other end. The daemon admits the hand-over by the account the kernel names for
+/// this connection and by the secret.
+///
+/// # Errors
+/// The daemon's socket does not answer, or the daemon refused the hand-over.
+#[cfg(target_os = "linux")]
+pub fn hand_processes(
+    socket: &std::path::Path,
+    secret: &[u8; crate::wire::shell::SHELL_SECRET_BYTES],
+) -> Result<std::os::fd::OwnedFd, NotAvailable> {
+    use std::io::BufRead as _;
+    let refused = |what: String| {
+        NotAvailable::Refused(format!(
+            "the device's processes at {}: {what}",
+            socket.display()
+        ))
+    };
+    let stream = tilo_socket::connect(socket)?;
+    stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
+    let (ours, theirs) = runtime_portal::packet::pair()?;
+    let secret = secret.iter().fold(String::new(), |mut hex, byte| {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+        hex
+    });
+    let request = serde_json::json!({
+        "native": crate::wire::shell::SHELL_PROCESSES,
+        "secret": secret,
+    })
+    .to_string()
+        + "\n";
+    runtime_portal::fd_transport::send_with_fd(&stream, request.as_bytes(), &theirs)?;
+    drop(theirs);
+    let mut answer = String::new();
+    std::io::BufReader::new(&stream).read_line(&mut answer)?;
+    let answer: serde_json::Value = serde_json::from_str(&answer)
+        .map_err(|error| refused(format!("an answer that does not read: {error}")))?;
+    if let Some(why) = answer.get("error").and_then(serde_json::Value::as_str) {
+        return Err(refused(format!("the hand-over was refused: {why}")));
+    }
+    if answer.get("handed").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Err(refused(format!("no hand-over: {answer}")));
+    }
+    Ok(ours)
 }
 
 /// Ask this device's daemon at `socket` for a shell link for the seat this process is, and take
