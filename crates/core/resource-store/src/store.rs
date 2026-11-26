@@ -2259,6 +2259,8 @@ impl Store {
                 }
             }
         }
+        drop(contents);
+        drop(recent);
         for (kind, id, doc_id) in found {
             let last = touches
                 .get(&doc_id)

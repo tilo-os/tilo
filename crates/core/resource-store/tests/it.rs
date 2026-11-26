@@ -1566,7 +1566,7 @@ mod store {
         body(&mut store, "board/b", &at("b's body", 7));
         body(&mut store, "elsewhere/d", &at("d's body", 8));
         let newest = |store: &Store, limit| match read(
-            &store,
+            store,
             &Command::Newest {
                 within: "board".to_owned(),
                 limit,
@@ -3001,12 +3001,7 @@ mod store {
                 ..Stamp::default()
             };
             let made = issues()
-                .put(
-                    ISSUE,
-                    id,
-                    resource("board", id, "History", "open"),
-                    &stamp,
-                )
+                .put(ISSUE, id, resource("board", id, "History", "open"), &stamp)
                 .unwrap();
             assert_eq!(
                 deliver(&made, &mut verbed(), &anyone),
