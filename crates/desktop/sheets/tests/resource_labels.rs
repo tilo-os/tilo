@@ -67,7 +67,9 @@ fn sheets() -> [Sheet; 7] {
 
 #[test]
 fn a_sheet_names_its_resource_in_the_persons_language() {
-    ui::i18n::I18nManager::set_locale("de-DE");
+    // The first use of the catalogue installs the thread's manager in the
+    // system's language, so the language is chosen with it, not before it.
+    ui::i18n::I18nManager::init("de-DE");
     for (kind, declared, english, german) in sheets() {
         assert_eq!(
             label::localized(kind, declared, SHEETS),
@@ -77,7 +79,9 @@ fn a_sheet_names_its_resource_in_the_persons_language() {
         assert_ne!(label::localized(kind, declared, SHEETS), english, "{kind}");
     }
 
-    ui::i18n::I18nManager::set_locale("en-US");
+    // A fresh manager for the second language, as the catalogue's first use
+    // installs one in the system's language.
+    ui::i18n::I18nManager::init("en-US");
     for (kind, declared, english, _) in sheets() {
         assert_eq!(
             label::localized(kind, declared, SHEETS),
@@ -89,7 +93,7 @@ fn a_sheet_names_its_resource_in_the_persons_language() {
 
 #[test]
 fn a_resource_a_sheet_names_itself_keeps_that_name() {
-    ui::i18n::I18nManager::set_locale("de-DE");
+    ui::i18n::I18nManager::init("de-DE");
     // A publisher that names the resource itself (the app a question is
     // about, say) is not read through the kind's entry.
     assert_eq!(
