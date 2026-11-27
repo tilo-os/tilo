@@ -502,12 +502,12 @@ tilo-desktop-search = { path = "../desktop-search", features = ["indexes", "sett
 tilo-app-package = { path = "../../core/tilo-app-package" }
 settings-store = { package = "tilo-settings-store", path = "../../desktop/settings", features = ["watch"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
-# The authored form of the surface this crate publishes, rendered from the same description.
-tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
 
 [dev-dependencies]
 # The notification service's socket, as an app connects it in tests.
 tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
+# The canonical compiled form of the surface this crate publishes.
+tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
 # This package's own integration tests run a session in their process as the shell of a device
 # daemon (`shell_session::start_in_process`): the feature that builds it. Named apart from the
 # package: under its own name, `--features tilo-session/dev-overrides` (the dev image's build,
