@@ -3277,8 +3277,8 @@ fn the_banners_stack_and_say_how_many_wait() {
 /// dismisses while a surface of the shell's stands over the places — the launcher, as a person
 /// leaves it open when a notice arrives: the shell publishes it as a live banner, its title and
 /// its Dismiss stand where the person can read and press them, and pressing Dismiss takes the
-/// notice off the shell and out of the centre. A surface does not hold a notice back: a notice
-/// reaches a person wherever they are.
+/// card off the shell and leaves the notice in the centre. A surface does not hold a notice back:
+/// a notice reaches a person wherever they are.
 #[test]
 fn a_notice_rises_as_a_banner_over_a_surface_with_a_dismiss_that_takes_it_away() {
     let _settled = tilo_ui_base::motion::testing::settled();
@@ -3340,11 +3340,17 @@ fn a_notice_rises_as_a_banner_over_a_surface_with_a_dismiss_that_takes_it_away()
             (x, y, w, h)
         );
     }
-    // Dismissing it from the banner takes it off the shell and out of the centre.
+    // Dismissing it from the banner takes the card off the shell; the notice waits in the
+    // centre, where the person reads it again.
     press(&mut session, "Dismiss");
     until(&mut session, |session| {
-        session.shell_control("Lunch at one").is_none() && centre(session).notices.is_empty()
+        session.shell_control("Lunch at one").is_none() && centre(session).banners.is_empty()
     });
+    assert_eq!(
+        centre(&session).notices.len(),
+        1,
+        "the notice stays in the centre"
+    );
     assert!(
         session.shell_refusals().is_empty(),
         "the banner's Dismiss reached the centre: {:?}",
