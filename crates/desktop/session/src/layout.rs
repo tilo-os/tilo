@@ -2743,11 +2743,13 @@ impl Layouts {
         }
     }
 
-    /// Whether this device is admitted in `workspace`, as the daemon's governance names its
-    /// member devices. A device that has just joined is not until the invitation's admission
-    /// reaches the workspace it joined: it writes nothing of the shared layout until then, and
-    /// says nothing of it, because the person can do nothing about it yet. Where the roster
-    /// cannot be read, nothing is known against the write and it is made as it always was.
+    /// Whether this device is admitted in `workspace`, as the daemon's governance names it: a
+    /// device of one of its members, whom the workspace enrols by their root whatever devices of
+    /// theirs it lists, or one its roster lists. A device that has just joined is not until the
+    /// invitation's admission reaches the workspace it joined: it writes nothing of the shared
+    /// layout until then, and says nothing of it, because the person can do nothing about it yet.
+    /// Where the roster cannot be read, nothing is known against the write and it is made as it
+    /// always was.
     fn admitted(&self, workspace_id: WorkspaceId) -> bool {
         let Some(view) = self.view.borrow().clone() else {
             return true;
@@ -2759,8 +2761,15 @@ impl Layouts {
         if view.is_founding(workspace_id) {
             return true;
         }
-        view.roster_devices(&workspace_id.to_string())
-            .map_or(true, |devices| {
+        let workspace = workspace_id.to_string();
+        let person = hex::encode(certificate.user_public_key);
+        let a_member = view.members(&workspace).is_ok_and(|list| {
+            list.members
+                .iter()
+                .any(|member| !member.removed && member.id.person_id() == Some(person.as_str()))
+        });
+        a_member
+            || view.roster_devices(&workspace).map_or(true, |devices| {
                 devices.contains(&certificate.device_public_key)
             })
     }
