@@ -119,6 +119,7 @@ fn layout(record: &str, shows: &str, shown_as: &str) -> LayoutReading {
             name: "Main".to_owned(),
             shell: String::new(),
             current: true,
+            ..LayoutRowReading::default()
         }],
         strips: vec![LayoutStripReading {
             key: "s1".to_owned(),

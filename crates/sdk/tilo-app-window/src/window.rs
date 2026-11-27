@@ -287,6 +287,9 @@ pub struct AppWindow {
     /// Builds the composed shell and reconciles it, reporting what its controls do.
     reconciler: Rc<RefCell<Reconciler>>,
     events: EventSink,
+    /// The offsets the person's wheel or fingers asked of a scroll bound to a host's pan: the host
+    /// takes them as its own to present ([`Self::take_pan_asks`]).
+    pan_asks: Vec<f64>,
     built: Option<UiNode>,
     rows: Registry,
     /// What each bound control shows, as the app last sent it, by key in the composed tree.
@@ -516,6 +519,7 @@ impl AppWindow {
             page_asks: BTreeMap::new(),
             page_picker: None,
             events,
+            pan_asks: Vec::new(),
             built: None,
             rows,
             bound: Rc::default(),
@@ -2008,6 +2012,12 @@ impl AppWindow {
         tilo_ui_base::press::note_control(rect);
     }
 
+    /// The offsets the person's wheel or fingers asked of a scroll bound to a host's pan, oldest
+    /// first, leaving the queue empty: the host presents them as its own pan.
+    pub fn take_pan_asks(&mut self) -> Vec<f64> {
+        std::mem::take(&mut self.pan_asks)
+    }
+
     /// Tell the app which bound control the keyboard focus is in now, when that changed: what its
     /// presence shows of the person (where they type).
     fn follow_focus(&mut self) {
@@ -2056,6 +2066,12 @@ impl AppWindow {
     }
 
     fn event(&mut self, event: UiEvent) {
+        // A scroll bound to a host's offset is not the app's event: the host presents the offset
+        // the person asked for.
+        if let UiEvent::Pan(_, at) = &event {
+            self.pan_asks.push(*at);
+            return;
+        }
         if crate::form::in_form(&event) {
             if let Some(edit) = self.form.as_ref().and_then(|form| form.edit(&event)) {
                 self.out.push(edit);
@@ -2132,6 +2148,8 @@ impl AppWindow {
             }
             UiEvent::Open(resource) => ToApp::Open { resource },
             UiEvent::OpenReference(reference) => ToApp::OpenReference { reference },
+            // Taken before the app's own events, for the host that presents the offset.
+            UiEvent::Pan(..) => return,
         };
         self.out.push(message);
     }

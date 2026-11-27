@@ -272,6 +272,24 @@ pub struct Scrollable {
     /// the view scrolls freely.
     snap_x: Vec<f32>,
     snap_y: Vec<f32>,
+    /// The offset this view is a view of, when a host owns the scrolling (the shell's row of
+    /// windows, whose pan the desktop presents): the drawn offset follows it by the shared
+    /// motion, and a host that presents no pan leaves it `None` and the view scrolls itself.
+    bound: Option<f32>,
+    /// Where the offset the person's wheel or fingers ask for goes, back to the host that owns
+    /// the scrolling.
+    ask: Option<Rc<dyn Fn(f64)>>,
+    /// When the person's wheel or fingers last moved the content: a hand's move is a request to
+    /// the host, which presents the offset this view draws at.
+    hand_at: Option<Instant>,
+    /// The offset the person's hand began at, and how far it has asked the content to move since:
+    /// what a move asks for is that start plus the whole travel, so a request never waits on the
+    /// host's echo of the one before it.
+    hand_base: Option<f32>,
+    hand_delta: f32,
+    /// The offset this view last asked its host for: where the hand's next window begins, whatever
+    /// the host has echoed so far.
+    last_asked: Option<f32>,
 }
 
 /// Where a frame shows the content: its offset, the clip it paints into,
@@ -389,6 +407,12 @@ impl Scrollable {
             shows: None,
             snap_x: Vec::new(),
             snap_y: Vec::new(),
+            bound: None,
+            ask: None,
+            hand_at: None,
+            hand_base: None,
+            hand_delta: 0.0,
+            last_asked: None,
         }
     }
     pub fn new_vertical() -> Self {
@@ -960,6 +984,176 @@ impl Scrollable {
         }
     }
 
+    /// Draw at the offset `target` this view is a view of, or scroll itself again with `None`:
+    /// a host that owns the scrolling presents it, and a change moves the content there by the
+    /// shared motion. A value that echoes what the wheel or fingers last asked is where the
+    /// content already is or is going, so it moves nothing.
+    pub fn set_bound(&mut self, target: Option<f32>) {
+        let Some(target) = target else {
+            if self.bound.take().is_some() {
+                self.scroll_dirty = true;
+                self.scroll_unplaced = true;
+                self.wake();
+            }
+            return;
+        };
+        // Before the first layout places the content, a target kept to a size nothing knows yet
+        // would be no offset at all: the layout clamps it once it knows.
+        let target = if self.content_w > 0.0 || self.content_h > 0.0 {
+            self.clamp_along_axis(target)
+        } else {
+            target
+        };
+        if self
+            .bound
+            .is_some_and(|bound| bound.to_bits() == target.to_bits())
+        {
+            return;
+        }
+        self.bound = Some(target);
+        // The host's offset is the one this view draws at: a change takes the content there by the
+        // shared motion, whether an agent asked it or the person's own hand reported it.
+        self.move_to_bound();
+    }
+
+    /// Draw at the offset `target` a host presents, from the build: [`Self::set_bound`] without
+    /// its motion, for a view built where the offset already stands.
+    #[must_use]
+    pub fn bound_to(mut self, target: f32, ask: Rc<dyn Fn(f64)>) -> Self {
+        self.ask = Some(ask);
+        self.bound = Some(target);
+        match self.axis {
+            ScrollAxis::Vertical => self.offset_y = target,
+            ScrollAxis::Horizontal | ScrollAxis::Both => self.offset_x = target,
+        }
+        // Before the first layout, nothing knows how much the content scrolls: the layout keeps
+        // the offset inside it then.
+        if self.content_w > 0.0 || self.content_h > 0.0 {
+            self.clamp();
+        }
+        self
+    }
+
+    /// Where what the person's wheel or fingers ask of the bound offset goes: the host that owns
+    /// the scrolling presents it back as the offset this view draws at.
+    pub fn set_ask(&mut self, ask: Rc<dyn Fn(f64)>) {
+        self.ask = Some(ask);
+    }
+
+    /// Whether this view already reports what the person asks of it.
+    #[must_use]
+    pub fn reports_asked(&self) -> bool {
+        self.ask.is_some()
+    }
+
+    /// The offset this view draws at, along the axis it scrolls.
+    fn offset_along_axis(&self) -> f32 {
+        if self.axis_has_horizontal() {
+            self.offset_x
+        } else {
+            self.offset_y
+        }
+    }
+
+    /// `target` kept inside what the content can show along the axis it scrolls.
+    fn clamp_along_axis(&self, target: f32) -> f32 {
+        let max = if self.axis_has_horizontal() {
+            (self.content_w - self.viewport_w).max(0.0)
+        } else {
+            self.max_offset_y()
+        };
+        target.clamp(0.0, max)
+    }
+
+    /// Whether a motion of this view's own is under way.
+    fn moving(&self) -> bool {
+        let now = tilo_ui_base::motion::frame_now();
+        self.glide.is_active() || self.scroll_to.target().is_some() || self.scroll_to.is_moving(now)
+    }
+
+    /// Whether the person's wheel or fingers still hold this view.
+    fn held_by_a_gesture(&self) -> bool {
+        let now = crate::time::now();
+        // The hand's own window covers the frames between its moves and their reports reaching
+        // the host: within it the travel it asks for is counted from where the hand began.
+        self.hand_at
+            .is_some_and(|at| now.saturating_duration_since(at) < Duration::from_millis(500))
+    }
+
+    /// Take the content to the bound offset by the shared motion.
+    fn move_to_bound(&mut self) {
+        let Some(target) = self.bound else {
+            return;
+        };
+        let now = tilo_ui_base::motion::frame_now();
+        let (tx, ty) = match self.axis {
+            ScrollAxis::Vertical => (self.offset_x, target),
+            ScrollAxis::Horizontal | ScrollAxis::Both => (target, self.offset_y),
+        };
+        let viewport = vello::kurbo::Vec2::new(
+            f64::from(self.viewport_w),
+            f64::from(self.effective_viewport_h()),
+        );
+        let drawn = vello::kurbo::Vec2::new(f64::from(self.offset_x), f64::from(self.offset_y));
+        let target = vello::kurbo::Vec2::new(f64::from(tx), f64::from(ty));
+        let source = tilo_ui_base::motion::recent_input(now)
+            .unwrap_or(tilo_ui_base::tokens::MotionSource::Action);
+        self.glide.stop();
+        if self
+            .scroll_to
+            .go_from(drawn, target, viewport, self.motion, source, now)
+            == tilo_ui_base::motion::ScrollJump::Glide
+        {
+            self.follow_scroll_to(now);
+        } else {
+            self.move_by(tx - self.offset_x, ty - self.offset_y);
+        }
+        self.scroll_dirty = true;
+        self.scroll_unplaced = true;
+        self.wake();
+    }
+
+    /// Ask the host that presents this view's offset for `delta` more travel along the axis it
+    /// scrolls, from where the person's hand began: the host presents it, and the content follows.
+    fn ask_hand(&mut self, delta: f32) {
+        let now = crate::time::now();
+        if !self.held_by_a_gesture() {
+            // Where the hand begins is what this view last asked for, else where the host presents
+            // it: the whole travel is counted from there.
+            let at = self
+                .last_asked
+                .or(self.bound)
+                .unwrap_or_else(|| self.offset_along_axis());
+            self.hand_base = Some(self.clamp_along_axis(at));
+            self.hand_delta = 0.0;
+        }
+        self.hand_at = Some(now);
+        self.hand_delta += delta;
+        let base = self.hand_base.unwrap_or_else(|| self.offset_along_axis());
+        let target = self.clamp_along_axis(base + self.hand_delta);
+        self.ask_offset(target);
+    }
+
+    /// Ask the host that presents this view's offset for `target`.
+    fn ask_offset(&mut self, target: f32) {
+        self.last_asked = Some(target);
+        let Some(ask) = self.ask.as_deref() else {
+            return;
+        };
+        ask(f64::from(target));
+    }
+
+    /// How far a release at `velocity` (logical px per second, in content space) would glide: the
+    /// whole decay, `v/k` ([`tilo_ui_base::virtual_viewport::FLING_DECAY_PER_SECOND`]).
+    fn gliding_on(velocity: f64) -> f32 {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a glide's travel is small beside f32's range"
+        )]
+        let distance = (velocity / tilo_ui_base::virtual_viewport::FLING_DECAY_PER_SECOND) as f32;
+        distance
+    }
+
     /// Show the content rect at `x`, `y` (`w` by `h`, in content
     /// coordinates), moving as little as it takes. A jump the person's hand
     /// or key just asked for moves there ([`tilo_ui_base::motion::ScrollTo`]): it
@@ -1368,6 +1562,15 @@ impl Widget for Scrollable {
         }
         // A jump in progress, like a glide, moves only this view.
         self.follow_scroll_to(tilo_ui_base::motion::frame_now());
+        // The offset this view is a view of: what its host presents takes the content there by
+        // the shared motion, once this view's own motion is done.
+        if let Some(bound) = self.bound
+            && (self.content_w > 0.0 || self.content_h > 0.0)
+            && !self.moving()
+            && (self.offset_along_axis() - bound).abs() > 0.5
+        {
+            self.move_to_bound();
+        }
         // Click-and-hold auto-repeat: the host wakes on the repeat's
         // deadline (`next_wake_deadline`), not on animation frames.
         let held = self.hold.is_some() && {

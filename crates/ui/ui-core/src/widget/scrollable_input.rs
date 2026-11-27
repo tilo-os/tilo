@@ -164,6 +164,11 @@ impl Scrollable {
         // (… − offset), so wheel-up must DECREASE offset_y — negate.
         let line = tilo_ui_base::tokens::Metrics::BASE.wheel_line;
         self.device_scale = scale_factor;
+        // A view of a host's offset asks that host for the travel instead of moving itself: the
+        // offset it presents draws the view there.
+        if self.bound.is_some() {
+            return self.on_bound_wheel(delta, phase, shift, scale_factor);
+        }
         self.scroll_to.take_over(tilo_ui_base::motion::frame_now());
         let pixel = matches!(delta, MouseScrollDelta::PixelDelta(_));
         if pixel {
@@ -245,6 +250,15 @@ impl Scrollable {
     /// an end through the rubber band; moving back takes the give in first.
     /// Returns whether anything moved.
     pub(super) fn pan(&mut self, dx: f32, dy: f32) -> bool {
+        if self.bound.is_some() {
+            // The host owns the offset: the fingers ask for the travel, and the offset it presents
+            // draws the view where they went.
+            self.kinetic
+                .record(f64::from(dx), f64::from(dy), crate::time::now());
+            let along = if self.axis_has_horizontal() { dx } else { dy };
+            self.ask_hand(along);
+            return true;
+        }
         let now = tilo_ui_base::motion::frame_now();
         let drawn_before = self.drawn_offset();
         let hand = vello::kurbo::Vec2::new(f64::from(dx), f64::from(dy));
@@ -287,6 +301,61 @@ impl Scrollable {
             return false;
         }
         self.kinetic.record(hand.x, hand.y, crate::time::now());
+        true
+    }
+
+    /// A view of a host's offset under the wheel or a lifting hand: the travel it asks for goes to
+    /// the host, and a release's glide is asked for as the travel it would cover.
+    fn on_bound_wheel(
+        &mut self,
+        delta: &MouseScrollDelta,
+        phase: TouchPhase,
+        shift: bool,
+        scale_factor: f64,
+    ) -> bool {
+        let line = tilo_ui_base::tokens::Metrics::BASE.wheel_line;
+        let pixel = matches!(delta, MouseScrollDelta::PixelDelta(_));
+        if pixel {
+            match phase {
+                TouchPhase::Ended => {
+                    let release = self.kinetic.release(crate::time::now());
+                    self.kinetic.reset();
+                    let Some((vx, vy)) = release else {
+                        return false;
+                    };
+                    let velocity = if self.axis_has_horizontal() { vx } else { vy };
+                    let travel = Scrollable::gliding_on(velocity);
+                    if travel == 0.0 {
+                        return false;
+                    }
+                    self.ask_hand(travel);
+                    return true;
+                }
+                TouchPhase::Cancelled | TouchPhase::Started => {
+                    self.kinetic.reset();
+                    return false;
+                }
+                TouchPhase::Moved => {}
+            }
+        } else {
+            self.kinetic.reset();
+        }
+        let (mut dx, mut dy) = match delta {
+            MouseScrollDelta::LineDelta(x, y) => (*x * -line, *y * -line),
+            MouseScrollDelta::PixelDelta(pp) => (
+                -f32_of_f64(pp.x / scale_factor),
+                -f32_of_f64(pp.y / scale_factor),
+            ),
+        };
+        if shift && self.axis_has_horizontal() && dx == 0.0 {
+            dx = dy;
+            dy = 0.0;
+        }
+        let along = if self.axis_has_horizontal() { dx } else { dy };
+        if along == 0.0 {
+            return false;
+        }
+        self.ask_hand(along);
         true
     }
 

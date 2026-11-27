@@ -362,11 +362,39 @@ impl ShellSurface for ShellPart {
         if self.measure_room() && self.turn() {
             drew |= self.draw();
         }
+        // What the person's wheel or fingers asked of the row in front is the pan the desktop
+        // keeps for it: the row they see and the pan beside the tree are one state.
+        self.present_pan_asks();
         drew
     }
 }
 
 impl super::ShellPart {
+    /// Present what the person's wheel or fingers asked of the row in front: a bound scroll
+    /// reports the offset it was taken to, and that is the pan the desktop keeps for the strip, so
+    /// the row the person sees and the pan beside the tree are one state.
+    fn present_pan_asks(&mut self) {
+        let asked = self.widgets.take_pan_asks();
+        if asked.is_empty() {
+            return;
+        }
+        let Some(desktop) = &self.floats else {
+            return;
+        };
+        let Some(pan) = desktop.presentation().pan else {
+            return;
+        };
+        for offset in asked {
+            let offset = offset.clamp(0.0, pan.max);
+            // A strip that went since the person's hand moved refuses the pan: the next report
+            // names the one in front then.
+            let _ = desktop.dispatch(tilo_session_core::desktop::navigation::ChromeEffect::Pan {
+                strip: pan.strip.clone(),
+                offset,
+            });
+        }
+    }
+
     /// A floating window's bar the person lifted, as its frame carries it on the toolkit's drag
     /// bus: the desktop carries that window from where the press took it, and it follows the hand
     /// until it is let go.

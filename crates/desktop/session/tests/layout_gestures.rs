@@ -160,6 +160,9 @@ fn three_fingers_carry_the_strip_and_it_glides_on() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     open(&mut session, &notes, 6);
+    // The row in front is drawn at the pan the desktop presents, which lands a pass after the
+    // windows are placed: the gesture starts from where the person sees the row.
+    settle(&mut session);
     // The row keeps the window in front in view, so a window picked by its place among six may
     // stand off the screen with its bar out of reach: the marker is one of the windows the shell
     // draws, and the direction it moves when the fingers carry the row is what is asserted.
@@ -181,6 +184,9 @@ fn three_fingers_carry_the_strip_and_it_glides_on() {
     let mut down = vec![GestureEvent::SwipeBegin { fingers: 3 }];
     down.extend(travel(150.0, 0.0));
     fingers_on_the_pad(&mut session, &down);
+    // The row is drawn at the pan the desktop presents, which the hand's travel reaches a pass
+    // after the last move.
+    settle(&mut session);
     let held = at(&session).expect("the window is still drawn");
     assert!(
         (held - before - 150.0).abs() <= 2.0,
@@ -252,5 +258,63 @@ fn the_strip_in_front_presents_its_pan_and_the_pan_verb_moves_it() {
         panned.offset,
         120.0_f64.min(presented.max),
         "the pan went where the action asked, as far as the strip scrolls"
+    );
+
+    // The row the person sees is the pan the desktop presents: a host that pans by the action
+    // moves what the shell draws, by what it asked.
+    let wanted = 120.0_f64.min(presented.max);
+    session
+        .invoke(
+            CHROME,
+            "pan",
+            json!({ "strip": strip.0.to_string(), "offset": 0.0 })
+                .as_object()
+                .expect("an object"),
+        )
+        .expect("the strip pans to its start");
+    crate::common::wait_for(&mut session, "the strip at its start", |session| {
+        session
+            .handle()
+            .presentation()
+            .pan
+            .filter(|pan| pan.offset <= 1.0)
+    });
+    // The row the shell draws follows the presented pan a pass later: the frame that shows the
+    // row at its start is the one after the pass that presented it.
+    settle(&mut session);
+    let (marker, rested) = crate::common::wait_for(
+        &mut session,
+        "a window clear of the row's start",
+        |session| {
+            crate::common::places(session)
+                .into_iter()
+                .map(|place| {
+                    if place.title.is_empty() {
+                        place.name
+                    } else {
+                        place.title
+                    }
+                })
+                .filter_map(|name| on_screen(session, &name).map(|(x, ..)| (name, x)))
+                .find(|(_, x)| *x >= wanted + 20.0)
+        },
+    );
+    session
+        .invoke(
+            CHROME,
+            "pan",
+            json!({ "strip": strip.0.to_string(), "offset": wanted })
+                .as_object()
+                .expect("an object"),
+        )
+        .expect("the strip pans");
+    let moved = crate::common::wait_for(&mut session, "the row to move with the pan", |session| {
+        on_screen(session, &marker)
+            .map(|(x, ..)| x)
+            .filter(|x| (rested - x - wanted).abs() <= 2.0)
+    });
+    assert!(
+        (rested - moved - wanted).abs() <= 2.0,
+        "the row moved by what the pan asked: {rested} then {moved}, for {wanted}"
     );
 }

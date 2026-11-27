@@ -1066,15 +1066,17 @@ impl Shell {
             if part.placement().is_none() {
                 continue;
             }
-            let Some((x, y, width, height)) = part.control_bounds(&name) else {
+            // What the place's name names is its bar — its pill, or the bar its frame reports —
+            // and the row scroll is what stands under it. A window carried past the part's edge
+            // takes its bar with it: the fingers then carry the row filling the part.
+            let aim = part
+                .control_bounds(&name)
+                .map(|(x, y, width, height)| (x + width / 2.0, y + height / 2.0))
+                .filter(|&(x, y)| part.accepts_pointer(x, y))
+                .or_else(|| part.row_pointer());
+            let Some((x, y)) = aim else {
                 continue;
             };
-            // What the place's name names is its bar — its pill, or the bar its frame reports —
-            // and the row scroll is what stands under it.
-            let (x, y) = (x + width / 2.0, y + height / 2.0);
-            if !part.accepts_pointer(x, y) {
-                continue;
-            }
             part.pointer_motion(x, y);
             part.pointer_axis(scroll);
             if part.accepts_pointer(pointer.0, pointer.1) {

@@ -871,6 +871,7 @@ fn one_window_layout() -> LayoutReading {
             name: "Main".to_owned(),
             shell: String::new(),
             current: true,
+            ..LayoutRowReading::default()
         }],
         strips: vec![LayoutStripReading {
             key: "s1".to_owned(),

@@ -304,32 +304,46 @@ view rows_of_the_shell(a: Layout, held: LayoutRow, lists: Bool) {
             } else {
                 ui.EmptyState("No window here yet", inline: true)
             }
+        } else if held.current {
+            // The row in front is drawn at the pan the desktop presents beside the tree: what the
+            // person's wheel or fingers ask of it goes out as the `pan` action, and the pan that
+            // comes back draws the row there. One state, whichever moved it.
+            scroll(axis: .horizontal, offset: held.pan, fill) {
+                row_of_windows(a, held, strips, lists)
+            }
         } else {
             // The front strip is kept in view: a person who moves between windows (a press on a
             // window, a key that brings another forward) is shown the strip they moved to, at
             // the pace the motion sets from their recent input, rather than left to pan for it.
             scroll(axis: .horizontal, keep: "front", fill) {
-                // Each gap between two windows is a drop target of its own (`gap_here`), so a tab
-                // or a window's bar carried into the row lands at that place in it: the row's own
-                // gap is the room those targets take.
-                row(gap: .none, align: .stretch, fill) {
-                    for s in strips {
-                        // A window takes the share its width names against the row's other
-                        // windows, so a carried edge is seen where the person put it, and never
-                        // narrower than the least its bar, its tabs and an app need: a row of
-                        // more windows than that holds scrolls along it.
-                        row_window(a, s, lists, fill(strip_weight(s).to_float()), min: 44rem)
-                        // Only between two windows: the row's last window reaches the shell's
-                        // edge, as its first reaches the other.
-                        if strip_after(strips, s) != "" {
-                            gap_here(held, strips, s, min: 1.5rem, max: 1.5rem)
-                        }
-                    }
-                    if strips.is_empty() {
-                        ui.EmptyState("No window here yet", inline: true)
-                    }
-                }
+                row_of_windows(a, held, strips, lists)
             }
+        }
+    }
+}
+
+/// The windows of a row side by side, each the share of the row its width names, with each gap
+/// after a window a drop target of its own: what a row in front holds, drawn at the desktop's
+/// pan, and what a row that scrolls itself holds.
+view row_of_windows(a: Layout, held: LayoutRow, strips: List<LayoutStrip>, lists: Bool) {
+    // Each gap between two windows is a drop target of its own (`gap_here`), so a tab or a
+    // window's bar carried into the row lands at that place in it: the row's own gap is the room
+    // those targets take.
+    row(gap: .none, align: .stretch, fill) {
+        for s in strips {
+            // A window takes the share its width names against the row's other windows, so a
+            // carried edge is seen where the person put it, and never narrower than the least its
+            // bar, its tabs and an app need: a row of more windows than that holds scrolls along
+            // it.
+            row_window(a, s, lists, fill(strip_weight(s).to_float()), min: 44rem)
+            // Only between two windows: the row's last window reaches the shell's edge, as its
+            // first reaches the other.
+            if strip_after(strips, s) != "" {
+                gap_here(held, strips, s, min: 1.5rem, max: 1.5rem)
+            }
+        }
+        if strips.is_empty() {
+            ui.EmptyState("No window here yet", inline: true)
         }
     }
 }

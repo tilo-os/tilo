@@ -1045,6 +1045,22 @@ impl ShellPart {
         self.widgets.control_bounds(name)
     }
 
+    /// The middle of this part's own place, when it takes the pointer there: where a strip carried
+    /// by the fingers is handed when the front window's bar has scrolled out of the part, the row
+    /// filling it.
+    pub fn row_pointer(&mut self) -> Option<(f64, f64)> {
+        let (_, (x, y, width, height)) = self.placement()?;
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a part's place is small enough for f64's integer range"
+        )]
+        let centre = (
+            f64::from(x) + f64::from(width) / 2.0,
+            f64::from(y) + f64::from(height) / 2.0,
+        );
+        self.accepts_pointer(centre.0, centre.1).then_some(centre)
+    }
+
     /// Where every control assistive technology names `name` stands: a menu item repeats the
     /// name of the row it moves a place to, which a chip of that row elsewhere says too.
     pub fn control_bounds_all(&mut self, name: &str) -> Vec<(f64, f64, f64, f64)> {

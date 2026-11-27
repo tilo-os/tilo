@@ -114,6 +114,10 @@ type LayoutRow (origin: session.layout_row) {
     name: Text merge register
     /// Whether it is the row in front in its workspace.
     current: Bool
+    /// How far this row's places are scrolled sideways, as the desktop beside the tree presents
+    /// it: the row is drawn at this offset, and the person's wheel or fingers ask the desktop for
+    /// another. Empty where nothing presents a pan, and the row scrolls itself.
+    pan: Option<Float>
     /// The shell that made it; empty reads as this shell's.
     shell: Text merge register
 }

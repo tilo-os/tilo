@@ -113,8 +113,10 @@ pub const PRIMS: &[Prim] = &[
     prim_of("primary", &[], &[]),
     prim_of("secondary", &[], &[]),
     prim_of("layers", &[], &["transition", "motion"]),
-    // A column that scrolls: down, sideways (`axis: .horizontal`) or both ways.
-    prim_of("scroll", &[], &["axis", "across", "both", "keep"]),
+    // A column that scrolls: down, sideways (`axis: .horizontal`) or both ways. `offset` is the
+    // offset it is a view of, when a host owns the scrolling: it draws there, and what the wheel or
+    // the fingers ask for goes back to the host instead of moving it.
+    prim_of("scroll", &[], &["axis", "across", "both", "keep", "offset"]),
     prim_of("spacer", &[], &[]),
     prim_of("fragment", &[], &[]),
     // A button for a declared action, whose label, icon and role are the action's; or a plain

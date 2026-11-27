@@ -22,7 +22,7 @@ pub struct LayoutWorkspaceReading {
 }
 
 /// A row of the layout, as the person's layout names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LayoutRowReading {
     pub key: String,
     pub workspace: String,
@@ -30,6 +30,12 @@ pub struct LayoutRowReading {
     pub shell: String,
     /// Whether it is the row in front in its workspace.
     pub current: bool,
+    /// How far this row's places are scrolled sideways, in logical px, as the desktop beside the
+    /// tree presents it: a shell draws the row at this offset, and the person's wheel or fingers
+    /// ask the desktop for another. Absent where nothing presents a pan (a page showing the
+    /// workspace on the web), where the row scrolls itself.
+    #[serde(default)]
+    pub pan: Option<f64>,
 }
 
 /// A strip of the layout, as the person's layout names it.
@@ -104,7 +110,7 @@ pub struct LayoutPlaceReading {
 
 /// The person's layout as a shell's views read it, by key: every workspace, its rows, every
 /// window group and every window, each as the layout has it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LayoutReading {
     /// The person at this device, by their name.
     pub person: String,
@@ -231,6 +237,7 @@ pub fn of(
                 name: (naming.row)(&row.name, at),
                 shell: SHELL.to_owned(),
                 current: Some(row.id) == front,
+                pan: None,
             });
             for group in &row.window_groups {
                 let canvas = workspace.layout.place_of(group.id);

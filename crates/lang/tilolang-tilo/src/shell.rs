@@ -587,6 +587,12 @@ fn row_fields(r: &LayoutRowReading) -> Vec<(&'static str, Value)> {
         ("name", text(&r.name)),
         ("shell", text(&r.shell)),
         ("current", Value::Bool(r.current)),
+        (
+            "pan",
+            r.pan.map_or(Value::Opt(None), |offset| {
+                Value::Opt(Some(Box::new(Value::Float(offset))))
+            }),
+        ),
     ]
 }
 

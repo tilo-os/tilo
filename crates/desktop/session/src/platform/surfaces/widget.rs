@@ -323,6 +323,22 @@ impl WidgetSurface {
         self.wells = wells;
     }
 
+    /// The offsets the person's wheel or fingers asked of a scroll bound to this tree's host pan,
+    /// oldest first, leaving the queue empty: what the host presents as the pan it owns.
+    pub fn take_pan_asks(&mut self) -> Vec<f64> {
+        let mut asked = Vec::new();
+        self.host.change_root(|root| {
+            if let Some(window) = root
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<tilo_app_window::AppWindow>())
+            {
+                asked = window.take_pan_asks();
+            }
+            false
+        });
+        asked
+    }
+
     /// Report the previews of a tree's windows ([`ui::widget::WindowPreview`])
     /// to `previews` as it lays them out: the same handle the pictures the
     /// host hands the compositor are read from.

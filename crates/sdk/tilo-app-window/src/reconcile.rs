@@ -46,6 +46,9 @@ pub enum UiEvent {
     Fire(String, String, Option<Value>, Option<String>),
     Open(crate::ResourceRef),
     OpenReference(String),
+    /// The offset the wheel or fingers asked of a scroll bound to a host's pan: the host presents
+    /// it, by the node `key` that asked.
+    Pan(String, f64),
 }
 
 /// Where controls report what the person did.
@@ -209,6 +212,13 @@ fn number(node: &UiNode, name: &str) -> Option<f32> {
     match prop(node, name) {
         Some(Value::Float(number)) => Some(*number as f32),
         Some(Value::Int(number)) => Some(*number as f32),
+        // An offset a host presents is absent where the host has none (`Option<Float>`): the
+        // scroll it is bound to then scrolls itself.
+        Some(Value::Opt(Some(present))) => match &**present {
+            Value::Float(number) => Some(*number as f32),
+            Value::Int(number) => Some(*number as f32),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -1369,6 +1379,17 @@ impl Reconciler {
         if let Some(keep) = token(node, "keep") {
             scroll.keep_in_view(keep);
         }
+        // The offset a host presents (the shell's row in front, whose pan the desktop keeps): the
+        // view draws there, and what the person's wheel or fingers ask goes back to the host as
+        // the offset to present.
+        if let Some(target) = number(node, "offset") {
+            let sink = Rc::clone(&self.sink);
+            let key = node.key.clone();
+            scroll = scroll.bound_to(
+                target,
+                Rc::new(move |offset| sink.push(UiEvent::Pan(key.clone(), offset))),
+            );
+        }
         Box::new(scroll.with_child(Box::new(inner)))
     }
 
@@ -1822,34 +1843,8 @@ impl Reconciler {
                 let kept = self.reconcile_children(widget, old_node, new_node);
                 (!kept).then(|| self.build(new_node))
             }
-            "scroll" if same_shell(old_node, new_node) => {
-                let Some(scroll) = widget
-                    .as_any_mut()
-                    .and_then(|any| any.downcast_mut::<Scrollable>())
-                else {
-                    return Some(self.build(new_node));
-                };
-                let kept = scroll
-                    .child_mut()
-                    .is_some_and(|content| self.reconcile_children(content, old_node, new_node));
-                if let Some(keep) = token(new_node, "keep") {
-                    scroll.keep_in_view(keep);
-                }
-                // A surface the person pans (a strip deck) shows what just arrived on it: a
-                // card put on a canvas, or the window of a place just placed, comes into view.
-                if kept {
-                    let canvas = token(new_node, "axis") == Some("both");
-                    let arrived = if canvas {
-                        arrived_card(old_node, new_node)
-                    } else {
-                        None
-                    }
-                    .or_else(|| arrived_window(old_node, new_node));
-                    if let Some(arrived) = arrived {
-                        scroll.reveal_on_layout(arrived);
-                    }
-                }
-                (!kept).then(|| self.build(new_node))
+            "scroll" if same_shell_but(old_node, new_node, "offset") => {
+                self.update_scroll(widget, old_node, new_node)
             }
             "embed" if same_shell(old_node, new_node) && frames(old_node) == frames(new_node) => {
                 let Some(card) = widget
@@ -1870,6 +1865,60 @@ impl Reconciler {
             kind if is_container(kind) => Some(self.rebuild_shell(widget, old_node, new_node)),
             _ => Some(self.build(new_node)),
         }
+    }
+
+    /// A scroll met again: its content is reconciled in place, and a node that is a view of a
+    /// host's offset is drawn there and reports what the person asks of it.
+    fn update_scroll(
+        &mut self,
+        widget: &mut Element,
+        old_node: &UiNode,
+        new_node: &UiNode,
+    ) -> Option<Element> {
+        let Some(scroll) = widget
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<Scrollable>())
+        else {
+            return Some(self.build(new_node));
+        };
+        let kept = scroll
+            .child_mut()
+            .is_some_and(|content| self.reconcile_children(content, old_node, new_node));
+        // A view of a host's offset draws where the host presents it, and the person's asks go
+        // back to that host: no kept front and no reveal move it behind the host's back.
+        let bound = number(new_node, "offset");
+        if let Some(target) = bound {
+            if !scroll.reports_asked() {
+                let sink = Rc::clone(&self.sink);
+                let key = new_node.key.clone();
+                scroll.set_ask(Rc::new(move |offset| {
+                    sink.push(UiEvent::Pan(key.clone(), offset));
+                }));
+            }
+            scroll.set_bound(Some(target));
+        } else {
+            scroll.set_bound(None);
+        }
+        if bound.is_none() {
+            if let Some(keep) = token(new_node, "keep") {
+                scroll.keep_in_view(keep);
+            }
+            // A surface the person pans (a strip deck) shows what just arrived on it: a card put
+            // on a canvas, or the window of a place just placed, comes into view.
+            if kept {
+                let canvas = token(new_node, "axis") == Some("both");
+                let arrived = if canvas {
+                    arrived_card(old_node, new_node)
+                } else {
+                    None
+                }
+                .or_else(|| arrived_window(old_node, new_node));
+                if let Some(arrived) = arrived {
+                    scroll.reveal_on_layout(arrived);
+                }
+            }
+        }
+        (!kept).then(|| self.build(new_node))
     }
 
     /// A layout's menu area met again ([`Self::with_menu`]): the layout it wraps takes what the

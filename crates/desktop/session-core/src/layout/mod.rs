@@ -1490,6 +1490,18 @@ impl Layout {
             .handle
             .read(|tree| reading_of(tree, &records, &catalog, &self.names));
         reading.person = self.person_name();
+        // How far the row in front is scrolled, as the desktop beside the tree presents it: the
+        // shell draws that row at this offset, and what the person's wheel or fingers ask of it
+        // goes back as the `pan` verb. A page showing a workspace on the web has no desktop
+        // here, so its rows present no pan and scroll themselves.
+        if let Some(pan) = self.handle.presentation().pan
+            && let Some(row) = reading
+                .rows
+                .iter_mut()
+                .find(|row| row.current && row.key == pan.strip)
+        {
+            row.pan = Some(pan.offset);
+        }
         // A floating window is drawn where this device lays it out: where the record keeps it on
         // this display, or where the person's hand has it while they carry it.
         for (group, at) in self.handle.floats_drawn() {

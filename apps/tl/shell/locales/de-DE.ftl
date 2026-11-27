@@ -1298,6 +1298,9 @@ d-fcxy4mu5 = Shell-Ansicht
 d-54b5rqo4 = Zeilen der Shell
     .w-no-window-here-yet = Noch kein Fenster hier
 
+d-hwz6gayi = Fensterreihe
+    .w-no-window-here-yet = Noch kein Fenster hier
+
 d-k4p3z4ee = Vorn
     .doc = Die Leiste, deren Fenster auf diesem Gerät die Tastatur hat, nach ihrem Schlüssel; leer für keine.
 
@@ -1411,7 +1414,12 @@ d-sm4scdu2 = Vorne
 d-bowkspu3 = Shell
     .doc = Die Shell, die ihn angelegt hat; leer liest sich als die dieser Shell.
 
+d-qa4vlh5j = Verschiebung
+    .doc = Wie weit die Plätze dieser Zeile seitlich verschoben sind, wie es der Desktop neben dem Baum zeigt: die Zeile wird bei diesem Versatz gezeichnet, und Rad oder Finger der Person bitten den Desktop um einen anderen.
+
 d-4s5jxxte-filter-current = Aktionsleiste
+
+d-4s5jxxte-filter-pan = Verschieben
 
 d-w25t6rl7 = Leiste des Layouts
     .doc = Eine Leiste: eine Spalte aus Plätzen, mit einer Breite, in einer Zeile eines Arbeitsbereichs.
