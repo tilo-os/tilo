@@ -74,7 +74,7 @@ pub fn record(
 pub fn record_at(native: &Path, pid: u32, app: &str, workspace: &str) -> Result<Recorded, String> {
     let started =
         start_time(pid).ok_or_else(|| format!("the shell (process {pid}) ended as it started"))?;
-    let mut stream = match UnixStream::connect(native) {
+    let mut stream = match tilo_files::native::socket::connect(native) {
         Ok(stream) => stream,
         Err(error)
             if matches!(
@@ -146,7 +146,7 @@ impl ShellEndpoint {
         }
         let path = dir.join(format!("{session}.sock"));
         let _ = std::fs::remove_file(&path);
-        let listener = Arc::new(UnixListener::bind(&path)?);
+        let listener = Arc::new(tilo_files::native::socket::bind(&path)?);
         let accepting = Arc::clone(&listener);
         let ask = ShellLine::new(app, workspace)
             .line()
@@ -197,7 +197,7 @@ fn carry(program: &UnixStream, native: &Path, ask: &[u8]) {
             serde_json::json!({ "error": format!("this shell does not reach Tilo: {why}") })
         );
     };
-    let mut daemon = match UnixStream::connect(native) {
+    let mut daemon = match tilo_files::native::socket::connect(native) {
         Ok(daemon) => daemon,
         Err(error) => return refuse(&error.to_string()),
     };

@@ -99,7 +99,7 @@ impl ControlLine {
     }
 
     fn connect(&self) -> io::Result<UnixStream> {
-        let mut stream = UnixStream::connect(&self.socket).map_err(|error| {
+        let mut stream = tilo_files::native::socket::connect(&self.socket).map_err(|error| {
             io::Error::new(
                 error.kind(),
                 format!("Tilo's shell runtime is not running here: {error}"),
