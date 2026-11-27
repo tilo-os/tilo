@@ -220,12 +220,24 @@ pub(crate) fn on_hosts(
 }
 
 /// Every workspace of the person's the device's daemon lists, as `view` reads its list; `None`
-/// until the daemon answered with the list at all, when what the person has is not known yet: the
-/// daemon enters the workspaces their server lists as soon as it hears the list. An answer that
-/// lists none is a person with no workspaces, which is what the shell's own workspace settles as.
-fn listed_by_daemon(view: &crate::workspace_view::WorkspaceView) -> Option<BTreeSet<WorkspaceId>> {
-    view.listed_read().then(|| {
-        view.listed()
+/// until the daemon has answered with the person's workspaces at all, which is not the same as
+/// having none of them. The daemon holds the person's own workspace — the one their list, devices
+/// and settings live in — as soon as their part serves them, and every workspace of theirs it
+/// enters stands beside it: a list that does not name it was read before that part served, or
+/// before the workspaces their server lists reached the device, and says nothing about what the
+/// person has. An answer naming it and nothing else is a person with no workspaces, which is what
+/// the shell's own workspace settles as.
+fn listed_by_daemon(
+    view: &crate::workspace_view::WorkspaceView,
+    person: &[u8; 32],
+) -> Option<BTreeSet<WorkspaceId>> {
+    if !view.listed_read() {
+        return None;
+    }
+    let listed = view.listed();
+    let own = tilo_server_protocol::servers::person_workspace_id(person);
+    listed.iter().any(|entry| entry.id == own).then(|| {
+        listed
             .iter()
             .filter_map(|listed| WorkspaceId::parse(&listed.id))
             .collect()
@@ -1573,7 +1585,10 @@ impl crate::Shared {
     /// ([`Personal::seed`]) against what the person has: the workspaces the device's daemon holds
     /// of theirs, once it published its list, unless it is redeeming an invitation, which lists
     /// them once it is in. A join under way is the person having a workspace, so settling the seed before it
-    /// lands would make the shell's own workspace theirs and list it to their other devices.
+    /// lands would make the shell's own workspace theirs and list it to their other devices. A
+    /// daemon whose person's part has not served yet has not said what the person has either
+    /// ([`listed_by_daemon`]), and the shell's workspace waits for it rather than being made their
+    /// first.
     fn settle_seed(
         &self,
         personal: &mut Personal,
@@ -1583,6 +1598,7 @@ impl crate::Shared {
         if personal.seed().is_none() {
             return;
         }
+        let person = personal.identity.device_cert.user_public_key;
         let held = view
             .map(tilo_session_client::workspace_view::WorkspaceView::workspaces)
             .unwrap_or_default();
@@ -1590,7 +1606,10 @@ impl crate::Shared {
         let listed = if joining {
             None
         } else {
-            view.map_or_else(|| Some(BTreeSet::new()), listed_by_daemon)
+            view.map_or_else(
+                || Some(BTreeSet::new()),
+                |view| listed_by_daemon(view, &person),
+            )
         };
         // A workspace whose governance names the person its owner is theirs, however it came to
         // this device: a computer restored from their words that joins their own workspace — their
@@ -1899,27 +1918,122 @@ mod tests {
         }
     }
 
-    /// The daemon's list read as empty is a person with no workspaces of their own, so the shell's
-    /// own workspace settles as their first and the daemon founds it; a list the daemon has not
-    /// answered yet says nothing, so nothing settles on a guess.
+    /// The daemon's list is what the person has once it names their own workspace, which the
+    /// daemon holds as soon as their part serves: a list not read yet, one read before that part
+    /// served, and an early empty list all say nothing, so the shell's workspace is never made the
+    /// person's first on one. A list naming their own workspace and nothing else is a person with
+    /// no workspaces of their own, so the shell's own workspace settles as their first.
     #[test]
-    fn the_seed_settles_once_the_daemons_list_is_read_even_when_it_names_none() {
+    fn the_seed_settles_once_the_daemon_names_the_persons_workspace_even_when_it_names_no_more() {
+        use serde_json::json;
+        use tilo_peer_state::workspace_view::LIST;
+
+        let person = [7; 32];
+        let own = tilo_server_protocol::servers::person_workspace_id(&person);
         let view = std::sync::Arc::new(crate::workspace_view::WorkspaceView::new(
-            [0; 32],
+            person,
             [0; 32],
             std::sync::Arc::new(NoAsks),
         ));
         assert_eq!(
-            listed_by_daemon(&view),
+            listed_by_daemon(&view, &person),
             None,
             "a list the daemon has not read yet says nothing"
         );
-        view.apply(tilo_peer_state::workspace_view::LIST, None)
-            .expect("an empty list reads");
+        view.apply(LIST, None).expect("an empty list reads");
         assert_eq!(
-            listed_by_daemon(&view),
-            Some(BTreeSet::new()),
-            "a daemon that lists no workspaces has answered"
+            listed_by_daemon(&view, &person),
+            None,
+            "a list read before the person's part served says nothing"
+        );
+        view.apply(LIST, Some("[]")).expect("an empty list reads");
+        assert_eq!(
+            listed_by_daemon(&view, &person),
+            None,
+            "an early empty list is not a person with no workspaces"
+        );
+        let theirs = json!([
+            {"id": own, "name": "Servers", "own": true},
+        ]);
+        view.apply(LIST, Some(&theirs.to_string()))
+            .expect("the list reads");
+        assert_eq!(
+            listed_by_daemon(&view, &person),
+            Some(BTreeSet::from([
+                WorkspaceId::parse(&own).expect("the person's workspace")
+            ])),
+            "the daemon that names their own workspace has read what they have"
+        );
+    }
+
+    /// A person whose workspace the daemon holds on a server: the session reads the person's
+    /// workspaces from a part that has not served yet — nothing at all, then an empty list, then a
+    /// list that is not the person's — and keeps the workspace the shell started with as it is,
+    /// founding and listing nothing. Once the daemon serves their workspaces, the one of theirs the
+    /// session shows stands on the shell and the workspace the shell started with goes, never
+    /// founded as their first.
+    #[test]
+    fn the_seed_waits_for_the_daemon_to_serve_the_persons_workspaces_and_then_shows_theirs() {
+        use serde_json::json;
+        use tilo_peer_state::workspace_view::LIST;
+
+        let identity = identity(1, 0x21, "The laptop");
+        let person = identity.device_cert.user_public_key;
+        let own = tilo_server_protocol::servers::person_workspace_id(&person);
+        let shell = session();
+        let [seed] = on_shell(&shell)
+            .try_into()
+            .expect("a fresh shell shows one workspace");
+        let mut personal = Personal::open(identity);
+        personal.hold_seed(seed);
+        let list = WorkspaceList::default();
+        let view =
+            crate::workspace_view::WorkspaceView::new(person, [0; 32], std::sync::Arc::new(NoAsks));
+        let settle = |personal: &mut Personal,
+                      view: Option<&crate::workspace_view::WorkspaceView>| {
+            let listed = view.and_then(|view| listed_by_daemon(view, &person));
+            personal.settle_seed(&shell, &list, &[], listed.as_ref(), &BTreeSet::new())
+        };
+
+        // The part has not served: nothing says what the person has, so the shell's own
+        // workspace is neither founded nor listed as theirs.
+        assert!(!settle(&mut personal, None));
+        assert_eq!(
+            personal.seed(),
+            Some(seed),
+            "the shell's workspace still waits"
+        );
+        view.apply(LIST, Some("[]")).expect("the list reads");
+        assert!(
+            !settle(&mut personal, Some(&view)),
+            "an early empty list settles nothing"
+        );
+        assert_eq!(personal.seed(), Some(seed));
+        assert_eq!(
+            on_shell(&shell),
+            [seed],
+            "the shell keeps the workspace it started with"
+        );
+
+        // Their workspace comes to the shell once the daemon holds it, and the daemon then names
+        // it with their own workspace: the shell's own goes, never founded as their first.
+        let theirs = WorkspaceId::new();
+        open_here(&shell, theirs, "Studio");
+        let served = json!([
+            {"id": own, "name": "Servers", "own": true},
+            {"id": theirs.to_string(), "name": "Studio", "own": true},
+        ]);
+        view.apply(LIST, Some(&served.to_string()))
+            .expect("the list reads");
+        assert!(
+            settle(&mut personal, Some(&view)),
+            "the person's workspaces settled it"
+        );
+        assert_eq!(personal.seed(), None);
+        assert_eq!(
+            on_shell(&shell),
+            [theirs],
+            "the person's workspace stands where the shell's own did"
         );
     }
 
