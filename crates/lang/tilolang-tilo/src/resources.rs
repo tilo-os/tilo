@@ -3490,7 +3490,7 @@ impl ResourceStore {
         if self.places_written(kind, &id_of(at)) {
             return Ok(None);
         }
-        let listing = self.paged(at, field, kind, Vec::new(), Order::default());
+        let (listing, pages) = self.paged_pages(at, field, kind, Vec::new(), Order::default());
         let stands = match leaving {
             Some(item) => match listing.position(item) {
                 Some(stands) => stands,
@@ -3505,8 +3505,10 @@ impl ResourceStore {
             Some(stands) if stands <= i => i.saturating_add(1),
             _ => i,
         };
-        let low = index.checked_sub(1).map(|before| listing.get(past(before)));
-        let high = (index < others).then(|| listing.get(past(index)));
+        // The two neighbours, each read with the few items around it: a place far down a long
+        // collection reads no page of the items before it.
+        let low = index.checked_sub(1).map(|before| pages.probe(past(before)));
+        let high = (index < others).then(|| pages.probe(past(index)));
         // A place the listing could not read is told by reading every item.
         if matches!(low, Some(None)) || matches!(high, Some(None)) {
             return Ok(None);
@@ -5464,6 +5466,10 @@ impl Pages {
         }
         if let Some(item) = self.far.borrow().get(&at) {
             return Some(Rc::clone(item));
+        }
+        // A listing the store moved past reads what it read before the write, never the store.
+        if self.frozen() {
+            return PagedItems::get(self, at);
         }
         let inner = self.store.upgrade()?;
         let mut query = self.query.clone();
