@@ -37,11 +37,6 @@ pub const PROVIDER: &str = "tilo.environment";
 pub const RESOURCE: &str = "environment";
 /// Start the browser session in a workspace's VM, or attach to it.
 pub const OPEN: &str = "open-browser";
-/// The page action that lets a held request leave, by the id the window
-/// published it with: what a departure nothing asked for is answered with.
-pub const SEND_HELD: &str = "send-held-request";
-/// The page action that drops a held request, leaving the page as it was.
-pub const KEEP_HELD: &str = "keep-held-request";
 /// The prefix of the context facets a held departure is reported under:
 /// `browser.departure.page`, `.kind`, `.method`, `.destination` and
 /// `.picture`. The window states them on the action it publishes and the

@@ -40,7 +40,7 @@ use crate::keep::common::{
     Linked, TestDevice, TestServer, TestUser, spawn_server, spawn_server_serving_apps,
 };
 use tilo_app_host::agents::windows::PageWindow;
-use tilo_runtime::device::keep::hosted_browser::APP;
+use tilo_runtime::device::keep::hosted_browser::{APP, LET_LEAVE};
 use tilo_workspace_service::environment::vm_placed_records;
 use tilo_workspace_service::workspaces::person_workspace::devices;
 
@@ -556,13 +556,9 @@ const PAGE_ACTIONS: &[(&str, &[&str])] = &[
     ("let_leave", &["id", "origin", "method", "leaving"]),
 ];
 
-/// The page actions the session holding the window raises itself, which its page does not
-/// publish: releasing or keeping a request the page holds, and a fill from a vault item.
-const SESSION_ACTIONS: [&str; 3] = [
-    tilo_action_services::browser::SEND_HELD,
-    tilo_action_services::browser::KEEP_HELD,
-    tilo_runtime::device::keep::hosted_browser::FILL_PAGE_ITEM,
-];
+/// The page action the host hands a window that its page does not publish: a fill from a vault
+/// item.
+const SESSION_ACTIONS: [&str; 1] = [tilo_runtime::device::keep::hosted_browser::FILL_PAGE_ITEM];
 
 /// The window's page as its listing declares it: each of [`PAGE_ACTIONS`] on the page record.
 fn declared_page() -> Vec<tilo_actions::remote::CatalogueRow> {
@@ -2609,24 +2605,21 @@ async fn an_environment_stops_when_the_session_that_held_it_ends() {
     );
 }
 
-/// A departure the window holds, reported as the session in the VM reports
-/// one: the call that would release it, named by the id the window published it
-/// with, and the departure itself in its context — the page it leaves from,
-/// what it sends and where — as the window states it.
-/// A departure the window holds, reported as the session in the VM reports
-/// one: the call that would release it, named by the id the window published it
-/// with, and the departure itself in its context — the page it leaves from,
-/// what it sends and where — as the window states it. The session makes it over
-/// its own link, which proves the device; it carries no other caller's word.
+/// A request the window's page holds, let leave: the Browser's `let_leave` of the page, naming
+/// the request by the id the page holds it under, and the departure itself in its context — the
+/// page it leaves from, what it sends and where — as the window states it. The session in the
+/// VM raises it over its own link for what its page sent by itself, which proves the device.
 fn reported_departure(invocation: InvocationId, id: u32) -> InvokeRequest {
     InvokeRequest {
         on_behalf_of: None,
         invocation,
-        target: the_page().target(tilo_action_services::browser::SEND_HELD),
-        argument: InvokeArgument::Json(serde_json::Map::from_iter([(
-            "id".to_owned(),
-            id.to_string().into(),
-        )])),
+        target: the_page().target(LET_LEAVE),
+        argument: InvokeArgument::Json(serde_json::Map::from_iter([
+            ("id".to_owned(), id.into()),
+            ("origin".to_owned(), "https://orders.example".into()),
+            ("method".to_owned(), "POST".into()),
+            ("leaving".to_owned(), "the order form".into()),
+        ])),
         context: Some(tilo_actions::ActionContext {
             purpose: Some("POST https://orders.example".into()),
             facets: [
@@ -2732,8 +2725,8 @@ async fn a_departure_nothing_asked_for_is_put_to_the_person_and_their_allow_rele
     );
     assert_eq!(
         *fixture.meter.recorded.lock().unwrap(),
-        0,
-        "a departure the person releases is no page action of their allowance"
+        1,
+        "nothing counted what the page sent by itself, so its release counts once"
     );
 }
 
@@ -2780,11 +2773,97 @@ async fn a_departure_the_person_does_not_allow_is_answered_kept() {
     assert_eq!(*fixture.meter.recorded.lock().unwrap(), 0);
 }
 
-/// Only the environment's own device releases the requests its own window
-/// holds: another device of the workspace is refused, and nobody is asked.
+/// Any device of the person's own lets a request their window holds leave, their agent's among
+/// them, and each is put to the person first: a key that may operate web pages included. A
+/// device of another member of the workspace is refused, and nobody is asked.
 #[tokio::test]
-async fn only_the_device_of_the_window_releases_what_it_holds() {
+async fn each_of_the_persons_devices_lets_a_held_request_leave_and_another_members_is_refused() {
     let fixture = fixture(Arc::new(Counting::default())).await;
+    let key = fixture.key(true);
+    fixture.list_environment_and(&key).await;
+    let material = fixture.environments.material();
+    let seen = window_actions(&fixture.server.server, &material, Asks::Never).await;
+    let approver = fixture.approving_device().await;
+    let approver_actions = asking(&approver, WS_NAME).await;
+    let approver_caller = approver.caller(fixture.user.user_pk);
+
+    // Another member of the workspace, on a device of their own.
+    let bea = TestUser::fresh("Bea");
+    let beas = bea.enrol("laptop", DeviceCapabilities::primary());
+    let workspaces = fixture
+        .server
+        .server
+        .workspaces()
+        .expect("the server holds workspaces");
+    let issued = crate::keep::common::invitation(
+        workspaces,
+        &fixture.host_device,
+        WS_NAME,
+        tilo_peer_state::join::Role::Editor,
+        &beas,
+    )
+    .await;
+    crate::keep::common::redeem(&beas, &issued)
+        .await
+        .expect("Bea joins the workspace");
+    let theirs = member_link(&fixture.server.server, &beas).await;
+    let refused = ActionProvider::invoke(
+        &asking(&theirs, WS_NAME).await,
+        &theirs.caller(bea.user_pk),
+        as_asked(&beas, reported_departure(InvocationId::new(), 4)),
+    )
+    .await
+    .expect("the host answers")
+    .expect_err("the host refuses it");
+    assert_eq!(
+        refused,
+        ActionCallError::NotPermitted,
+        "another member does not let the person's request leave"
+    );
+    assert!(
+        questions(&approver_actions, &approver_caller)
+            .await
+            .is_empty(),
+        "nobody is asked about a release another member asked for"
+    );
+
+    // The person's agent, on a key that operates web pages, and their own laptop: each asks the
+    // person, and the window runs nothing meanwhile.
+    for (at, asker) in [(5, &key), (6, &fixture.laptop)] {
+        let linked = member_link(&fixture.server.server, asker).await;
+        let receipt = ActionProvider::invoke(
+            &asking(&linked, WS_NAME).await,
+            &linked.caller(fixture.user.user_pk),
+            as_asked(asker, reported_departure(InvocationId::new(), at)),
+        )
+        .await
+        .expect("the host answers")
+        .expect("the release waits for the person");
+        assert_eq!(receipt.status, ReceiptStatus::Accepted);
+    }
+    assert_eq!(
+        questions(&approver_actions, &approver_caller).await.len(),
+        2,
+        "the person is asked about each release"
+    );
+    assert!(
+        seen.lock().unwrap().is_empty(),
+        "nothing leaves before the person answers"
+    );
+}
+
+/// A request the page holds because an agent's click sent it was counted with the click: the
+/// person letting it leave counts nothing more. One held-then-released request moves the
+/// allowance by exactly one.
+#[tokio::test]
+async fn a_held_request_let_leave_moves_the_allowance_by_exactly_one() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    let material = fixture.environments.material();
+    let (seen, window) = window_session(&fixture.server.server, &material, Asks::Never).await;
+    let window_caller = Caller::authenticated(
+        fixture.user.user_pk,
+        DeviceIdentity::of(&material).device_pubkey(),
+    );
     let linked = member_link(&fixture.server.server, &fixture.agent).await;
     let remote = asking(&linked, WS_NAME).await;
     let caller = linked.caller(fixture.user.user_pk);
@@ -2792,21 +2871,53 @@ async fn only_the_device_of_the_window_releases_what_it_holds() {
     let approver_actions = asking(&approver, WS_NAME).await;
     let approver_caller = approver.caller(fixture.user.user_pk);
 
-    let refused =
-        ActionProvider::invoke(&remote, &caller, reported_departure(InvocationId::new(), 4))
+    // The agent's click sends a form, which the page holds: the click ran, and is counted.
+    let click = InvocationId::new();
+    let receipt =
+        ActionProvider::invoke(&remote, &caller, page(&fixture.agent, click, "click_page"))
             .await
             .expect("the host answers")
-            .expect_err("the host refuses it");
-    assert_eq!(
-        refused,
-        ActionCallError::NotPermitted,
-        "another device does not answer for the window's page"
-    );
+            .expect("the click runs");
+    assert!(matches!(receipt.status, ReceiptStatus::Completed { .. }));
+    assert_eq!(*fixture.meter.recorded.lock().unwrap(), 1);
+
+    // The window raises the release of what the click sent, naming the click.
+    let release = InvocationId::new();
+    let mut leave = reported_departure(release, 7);
+    leave.on_behalf_of = Some(click);
+    let receipt = ActionProvider::invoke(&window, &window_caller, leave)
+        .await
+        .expect("the host answers")
+        .expect("the release waits for the person");
+    assert_eq!(receipt.status, ReceiptStatus::Accepted);
+    let question = asked(&approver_actions, &approver_caller).await;
+    answer(
+        &approver_actions,
+        &approver_caller,
+        &question,
+        tilo_actions::remote::asked::Offer::Approve,
+    )
+    .await;
     assert!(
-        questions(&approver_actions, &approver_caller)
-            .await
-            .is_empty(),
-        "nobody is asked about a hold another device reports"
+        matches!(
+            followed(&window, &window_caller, release).await,
+            tilo_actions::InvocationUpdate::Succeeded { .. }
+        ),
+        "the release the person allowed ran"
+    );
+    assert_eq!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter(|handed| handed.approved)
+            .count(),
+        1,
+        "the window let it leave once"
+    );
+    assert_eq!(
+        *fixture.meter.recorded.lock().unwrap(),
+        1,
+        "the click's count covers what it sent: never twice"
     );
 }
 

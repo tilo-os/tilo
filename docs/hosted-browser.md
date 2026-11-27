@@ -277,9 +277,9 @@ is asked about one departure twice.
 
 A departure no action asked for, such as a page posting on its own or a
 download the page started, waits on nobody's invocation. The window publishes
-it as the wait it is — `send-held-request` and `keep-held-request` of
-`browser.page`, each bound to the number the window holds it under and stating
-it as the argument a caller names. The number is the window's own, one per
+it as the wait it is — the Browser's own `let_leave` of its page record,
+bound to the number the window holds it under and stating it as the argument
+a caller names. The number is the window's own, one per
 hold: a request and a download the engine counts alike are two holds with two
 numbers. The session in the VM reports each hold the window publishes to the
 server, naming that invocation. The departure travels with the row, so the
@@ -289,9 +289,13 @@ from, what it sends and where (`send the form to https://visa.example
 content store, which the person's device draws before they allow it. The server
 puts it to the person as it puts any page action, and their answer comes back
 to the session as the confirmation their allow runs it with: the same answer
-a page action carries, for that one request. Denied or unanswered,
-the session runs `keep-held-request` instead and the page stays as it was
-filled. A person's own window holds none of this: what they click leaves as
+a page action carries, for that one request. Denied or unanswered, nothing
+leaves and the page stays as it was filled. Any of the person's own devices,
+their agent's under its grants among them, may ask for `let_leave` too, and
+it is always put to the person; another member's device is refused. A release
+is counted once: where the page action whose run made the page hold it was
+counted, its count covers the release, and otherwise the release counts when
+it runs. A person's own window holds none of this: what they click leaves as
 they click it.
 
 The tab's record says what was held, whose action reached it and how it

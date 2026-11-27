@@ -170,11 +170,10 @@ pub const OPERATING_ACTIONS: [&str; 9] = [
     "pointer_page",
     "hover_page",
 ];
-/// The page action that keeps the page as it is, dropping the held request.
-pub use tilo_action_services::browser::KEEP_HELD;
-/// The page action that lets a held request leave, by the id the window
-/// publishes it with: what a hold nothing called for is answered with.
-pub use tilo_action_services::browser::SEND_HELD;
+/// The Browser's page action that lets a request its page holds leave, by the id the page holds
+/// it under. It names the page action whose run made the page hold it, where one did, as the
+/// call it continues (`on_behalf_of`).
+pub const LET_LEAVE: &str = "let_leave";
 /// How long a device certified for a session lasts: as long as the session
 /// may run.
 pub const DEVICE_LIFETIME: Duration =
@@ -323,6 +322,13 @@ struct Handed {
     /// Callers asking how it went, waiting for it to move, by the number
     /// that finds them again once their wait is over.
     waiting: Vec<(u64, Completer<RemoteActionMessage>)>,
+    /// For a held request let leave, the page action whose run made the page hold it, as the
+    /// call named it when it was handed over.
+    held_by: Option<tilo_actions::InvocationId>,
+    /// It was counted against the workspace's account.
+    counted: bool,
+    /// A request its run made the page hold was let leave: its count covered that one.
+    released: bool,
 }
 
 /// How far a handed page action has come.
@@ -693,6 +699,53 @@ impl HostedBrowsers {
         self.asked_after(caller, message)
     }
 
+    /// Letting a held request leave is the person's alone: one of their own devices asks it,
+    /// or their agent under its grants, or the window's own session for what its page sent
+    /// by itself; another member's device is refused. It is always put to the person first,
+    /// whoever asked and whatever the key may do, since nothing takes a departure back.
+    fn let_leave(
+        &self,
+        workspace_id: WorkspaceId,
+        caller: &Caller,
+        (window, window_device): ([u8; 32], [u8; 32]),
+        message: &RemoteActionMessage,
+        request: &InvokeRequest,
+    ) -> Option<tilo_workspace_service::app_serving::Routing> {
+        let device = *caller.device_public_key()?;
+        let persons = self
+            .person()
+            .is_ok_and(|person| caller.user_public_key() == Some(&person));
+        if !persons && device != window_device {
+            return answered_with(message, ActionCallError::NotPermitted);
+        }
+        // Answered, it is the person's approval of the record it was kept as, carried to the
+        // window like any approved page action.
+        if request.confirmation.is_some() {
+            return None;
+        }
+        if let Err(refusal) = self.meter.admit(&self.account) {
+            return answered_with(
+                message,
+                ActionCallError::Refused {
+                    reason: refusal.to_reason(),
+                },
+            );
+        }
+        self.hand_over(workspace_id, caller.clone(), window, request);
+        let Some(asked) = self.keep_asked(request.invocation, &leaving_asked(request)) else {
+            self.handed.lock_recover().remove(&request.invocation);
+            return answered_with(
+                message,
+                ActionCallError::Unavailable {
+                    reason: "nobody can be asked to let it leave here".to_owned(),
+                },
+            );
+        };
+        Some(tilo_workspace_service::app_serving::Routing::Answer(
+            Pending::ready(asked),
+        ))
+    }
+
     fn route_as(
         &self,
         workspace_id: WorkspaceId,
@@ -736,15 +789,6 @@ impl HostedBrowsers {
             return None;
         }
         let device = *caller.device_public_key()?;
-        // The request a window holds is its own session's to release or drop: another device
-        // answering for its page would be answered as though it were the window.
-        if matches!(
-            request.target.address.action.as_str(),
-            tilo_action_services::browser::SEND_HELD | tilo_action_services::browser::KEEP_HELD
-        ) && device != window_device
-        {
-            return answered_with(message, ActionCallError::NotPermitted);
-        }
         // With an answer, only the person's approval of the asked record this call was kept as:
         // the dispatch admitted the same call again carrying their answer, and the window runs it
         // with it. Admission drops an answer from anything a caller sent, so what reaches here is
@@ -752,6 +796,17 @@ impl HostedBrowsers {
         let permitted = matches!(&request.confirmation, None | Some(Confirmation::Asked(_)));
         if !permitted {
             return answered_with(message, ActionCallError::NotPermitted);
+        }
+        if request.target.address.action == LET_LEAVE
+            && let Some(answered) = self.let_leave(
+                workspace_id,
+                caller,
+                (window, window_device),
+                message,
+                request,
+            )
+        {
+            return Some(answered);
         }
         // A key whose person let it operate web pages needs no question about
         // one: this host hands the key's own call to the window it placed
@@ -927,20 +982,28 @@ impl HostedBrowsers {
         }
         match &receipt.status {
             ReceiptStatus::Completed { .. } => {
-                // The action ran where the window says it did, and nowhere
-                // else: a count is owed once. Releasing or dropping a request the
-                // page already holds is no page action of the person's allowance.
-                let entry = handed.get_mut(&receipt.invocation)?;
+                // The action ran where the window says it did, and nowhere else: a count is
+                // owed once. A held request let leave is counted at its release, unless the
+                // action that made the page hold it was counted already: that count covers one
+                // release, never two.
+                let entry = handed.get(&receipt.invocation)?;
                 let ran = matches!(entry.stage, Stage::Running);
-                let counted = !matches!(
-                    entry.request.target.address.action.as_str(),
-                    tilo_action_services::browser::SEND_HELD
-                        | tilo_action_services::browser::KEEP_HELD
-                );
                 let workspace = entry.workspace.clone();
+                let held_by = entry.held_by;
+                let covered = held_by.is_some_and(|held_by| {
+                    held_by != receipt.invocation
+                        && handed.get_mut(&held_by).is_some_and(|holder| {
+                            holder.workspace == workspace
+                                && holder.counted
+                                && !std::mem::replace(&mut holder.released, true)
+                        })
+                });
+                let entry = handed.get_mut(&receipt.invocation)?;
                 answered(entry, &receipt.status);
+                let count = ran && !covered;
+                entry.counted |= count;
                 drop(handed);
-                if ran && counted {
+                if count {
                     self.counted(&workspace);
                 }
                 None
@@ -951,36 +1014,8 @@ impl HostedBrowsers {
             ReceiptStatus::Rejected {
                 error: ActionCallError::ConfirmationRequired(facts),
             } => {
-                let entry = handed.get(&receipt.invocation)?;
-                let (workspace, caller, request) = (
-                    entry.workspace.clone(),
-                    entry.caller.clone(),
-                    entry.request.clone(),
-                );
-                let records = self.asked.lock_recover().clone();
                 drop(handed);
-                let Some(records) = records else {
-                    // No store here keeps it: the caller is answered the refusal it always was.
-                    self.handed.lock_recover().remove(&receipt.invocation);
-                    return None;
-                };
-                let Ok(record) = records.write_asked(&workspace, &caller, &request, facts) else {
-                    self.handed.lock_recover().remove(&receipt.invocation);
-                    return None;
-                };
-                let mut handed = self.handed.lock_recover();
-                let entry = handed.get_mut(&receipt.invocation)?;
-                entry.stage = Stage::Asked(record.clone());
-                let waiting =
-                    InvocationState::new(receipt.invocation, record.waiting(receipt.invocation));
-                for (_, waiter) in entry.waiting.drain(..) {
-                    waiter.complete(state_message(
-                        receipt.invocation,
-                        waiting.update.clone(),
-                        None,
-                    ));
-                }
-                Some(RemoteActionMessage::Receipt(waiting.receipt()))
+                self.keep_asked(receipt.invocation, facts)
             }
             // Running, or to be followed: the answer is still to come, and
             // what it settles is counted then.
@@ -993,6 +1028,44 @@ impl HostedBrowsers {
                 None
             }
         }
+    }
+
+    /// Keep `invocation`, a handed page action, as its own asked record for its person, stating
+    /// `facts`: what its caller is answered while it waits. `None`, with the action forgotten,
+    /// where nothing here keeps such a record.
+    fn keep_asked(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        facts: &tilo_actions::remote::asked::AskedFacts,
+    ) -> Option<RemoteActionMessage> {
+        let (workspace, caller, request) = {
+            let handed = self.handed.lock_recover();
+            let entry = handed.get(&invocation)?;
+            (
+                entry.workspace.clone(),
+                entry.caller.clone(),
+                entry.request.clone(),
+            )
+        };
+        let records = self.asked.lock_recover().clone();
+        let record = records.and_then(|records| {
+            records
+                .write_asked(&workspace, &caller, &request, facts)
+                .ok()
+        });
+        let Some(record) = record else {
+            // No store here keeps it: the caller is answered the refusal it always was.
+            self.handed.lock_recover().remove(&invocation);
+            return None;
+        };
+        let mut handed = self.handed.lock_recover();
+        let entry = handed.get_mut(&invocation)?;
+        entry.stage = Stage::Asked(record.clone());
+        let waiting = InvocationState::new(invocation, record.waiting(invocation));
+        for (_, waiter) in entry.waiting.drain(..) {
+            waiter.complete(state_message(invocation, waiting.update.clone(), None));
+        }
+        Some(RemoteActionMessage::Receipt(waiting.receipt()))
     }
 
     /// Count one page action a window of `workspace` says it carried out.
@@ -1184,6 +1257,11 @@ impl HostedBrowsers {
                 request: request.clone(),
                 stage: Stage::Running,
                 waiting: Vec::new(),
+                held_by: request
+                    .on_behalf_of
+                    .filter(|_| request.target.address.action == LET_LEAVE),
+                counted: false,
+                released: false,
             },
         );
     }
@@ -2152,6 +2230,44 @@ fn answered_with(
     Some(tilo_workspace_service::app_serving::Routing::Answer(
         Pending::ready(tilo_actions::remote::refuse(message, error)?),
     ))
+}
+
+/// What the person is asked about `request`, a [`LET_LEAVE`]: the departure its context states,
+/// as the window states one, or else what the Browser's own action shows of it (what leaves, to
+/// which site and how).
+fn leaving_asked(request: &InvokeRequest) -> tilo_actions::remote::asked::AskedFacts {
+    let stated = tilo_action_services::browser::departure_facts(request.context.as_ref());
+    let stated = if stated.is_empty() {
+        let tilo_actions::remote::InvokeArgument::Json(arguments) = &request.argument else {
+            return tilo_actions::remote::asked::AskedFacts::default();
+        };
+        [
+            ("leaving", "kind"),
+            ("origin", "destination"),
+            ("method", "method"),
+        ]
+        .into_iter()
+        .filter_map(|(param, fact)| {
+            let value = arguments.get(param)?.as_str()?;
+            Some((fact.to_owned(), value.to_owned()))
+        })
+        .collect()
+    } else {
+        stated
+    };
+    let mut facts = tilo_action_services::browser::departure_asked(stated);
+    if facts.on.is_none() {
+        facts.on = Some(request.target.address.resource.clone());
+    }
+    if facts.words.is_empty()
+        && let Some(purpose) = request
+            .context
+            .as_ref()
+            .and_then(|context| context.purpose.clone())
+    {
+        facts.words = purpose;
+    }
+    facts
 }
 
 /// Note that a handed page action is over, as `status` says: what a caller

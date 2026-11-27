@@ -72,8 +72,8 @@ drops it and leaves the page as it was, filled and unsent. Nobody is asked about
 the same call does not run the page action again when the answer comes back.
 
 A departure no action started — a page that posts on its own, a download — waits the same way, and the
-window offers the wait as two actions bound to it, `send-held-request` and `keep-held-request`, so a person
-(or a call they answer) can settle it.
+window offers the wait as the Browser's `let_leave`, bound to it, which any of the person's own devices or their
+agent may call: the person is always asked first, and another member's device is refused.
 
 ## What a person sees, and what stays
 

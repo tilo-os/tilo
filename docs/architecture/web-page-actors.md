@@ -162,7 +162,7 @@ Who answered the engine cannot know, so the window says it with its answer. It i
 person when their allow ran again the invocation that reached the hold: that
 invocation is its actor's, whom the held entry already names, and only the
 person's own answer runs it a second time. It is whoever the action system
-admitted `send-held-request` or `keep-held-request` for, the person at the
+admitted `let_leave` for, the person at the
 window when it names nobody. It is nobody when the window dropped the hold
 at its own deadline, and when it turned it away at once. The window asks the
 person about eight departures at a time: one more is dropped at once, and

@@ -336,7 +336,7 @@ impl HostedBrowsers {
     }
 
     /// The person the workspaces here belong to.
-    fn person(&self) -> Result<[u8; 32], String> {
+    pub(super) fn person(&self) -> Result<[u8; 32], String> {
         self.authority
             .lock_recover()
             .as_ref()
