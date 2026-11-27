@@ -37,6 +37,9 @@ pub struct Workspace {
     documents: tilo_resource_store::LocalPort,
     /// The workspace's members' resource, as its governance would answer it.
     members: RefCell<Option<serde_json::Value>>,
+    /// Whether the members' record has yet to arrive: the workspace's governance publishes it,
+    /// and a test that has it come late answers no members until it is released.
+    members_held: std::cell::Cell<bool>,
     /// How many surfaces this process had named when the store last declared them.
     declared: std::cell::Cell<Option<u64>>,
 }
@@ -53,6 +56,7 @@ impl Default for Workspace {
             written: RefCell::default(),
             documents: tilo_resource_store::LocalPort::default(),
             members: RefCell::default(),
+            members_held: std::cell::Cell::default(),
             declared: std::cell::Cell::default(),
         }
     }
@@ -100,6 +104,9 @@ impl Workspace {
             && kind == tilo_resource_store::WORKSPACE_MEMBERS_KIND
             && id == tilo_resource_store::WORKSPACE_MEMBERS_ID
         {
+            if self.members_held.get() {
+                return Ok(Reply::Content(None));
+            }
             return Ok(Reply::Content(self.members.borrow().clone()));
         }
         if let Command::Turn {
@@ -207,6 +214,23 @@ impl Workspace {
     /// a read of it with.
     pub fn set_members(&self, members: serde_json::Value) {
         *self.members.borrow_mut() = Some(members);
+    }
+
+    /// Hold the workspace's members' record back: until it is released, a read of it answers no
+    /// record, as one whose governance has not published it yet.
+    pub fn hold_members(&self) {
+        self.members_held.set(true);
+    }
+
+    /// Let the workspace's members' record come: its connections are told it moved.
+    pub fn release_members(&self) {
+        self.members_held.set(false);
+    }
+
+    /// Whether the workspace's members' record is held back.
+    #[must_use]
+    pub fn members_held(&self) -> bool {
+        self.members_held.get()
     }
 
     /// The stamps of the writes the store took, oldest first: who wrote each and the
@@ -418,6 +442,30 @@ impl Bus {
         self.member_with_avatar(who, name, None);
     }
 
+    /// Hold the workspace's members' record back until [`Self::release_members`]: a window
+    /// opened meanwhile reads no members, as one whose governance has not published them yet.
+    pub fn hold_members(&self) {
+        self.workspace.hold_members();
+    }
+
+    /// Let the workspace's members' record come: every connection is told it moved.
+    pub fn release_members(&self) {
+        self.workspace.release_members();
+        let joined: Vec<(String, Inbox)> = self
+            .joined
+            .borrow()
+            .iter()
+            .map(|(_, person, inbox)| (person.clone(), Rc::clone(inbox)))
+            .collect();
+        let mut told: Vec<Inbox> = Vec::new();
+        for (person, inbox) in joined {
+            if !told.iter().any(|done| Rc::ptr_eq(done, &inbox)) {
+                self.tell_members(&person, &inbox);
+                told.push(inbox);
+            }
+        }
+    }
+
     /// The workspace has the member `who`, named `name` and pictured as `avatar`, the image's
     /// own bytes: every connection is told.
     pub fn member_with_avatar(
@@ -451,12 +499,13 @@ impl Bus {
     }
 
     /// Hands the connection of `person` at `inbox` the workspace's members, as its store answers
-    /// them now, and tells it the members' resource moved: nothing while the workspace has none.
+    /// them now, and tells it the members' resource moved: a workspace with no members is one
+    /// whose record publishes an empty list, as its governance answers it.
     fn tell_members(&self, _person: &str, inbox: &Inbox) {
-        let members = self.members.borrow();
-        if members.is_empty() {
+        if self.workspace.members_held() {
             return;
         }
+        let members = self.members.borrow();
         let rows: Vec<serde_json::Value> = members
             .iter()
             .map(|row| {

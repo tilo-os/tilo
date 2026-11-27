@@ -4,6 +4,7 @@
 //! through the API, as a block the person runs, the way an agent or the person's own tool runs
 //! one.
 
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
@@ -3398,6 +3399,86 @@ fn mail_that_comes_to_an_inbox_the_window_holds_is_announced_once() {
         session.instance_host().run_triggers(at),
         0,
         "each rings once"
+    );
+}
+
+/// Mail that comes before the workspace's members have been read waits for them: an
+/// announcement tells the people who read the mail, so it is not told to nobody while the
+/// members' record is still on its way, and its arrival is not cleared before it ran. Once the
+/// record arrives, the waiting announcement tells the person once.
+#[test]
+fn mail_that_arrives_before_the_members_are_read_is_announced_once_they_are() {
+    let servers = servers();
+    let connector = MailConnector::of(account(&servers));
+    let bus = Rc::new(tilolang_process::testing::Bus::default());
+    bus.member(ui::tilo_actions::MemberId::person("ada"), "Ada");
+    bus.hold_members();
+    let mut session = connector.attach(Session::member_on(&bus, APP, "ada"));
+    synced(&mut session);
+    // No reading of the members has arrived: it is no empty workspace, and the host reads none.
+    assert_eq!(
+        session.instance_host().runtime().members().len(),
+        0,
+        "no reading of the members has arrived"
+    );
+    let account = session.accounts().remove(0);
+    let at = tilolang::calendar::instant("2026-11-23T12:00:00Z").expect("a time");
+    servers.imap.append(
+        "INBOX",
+        &mail(
+            "lunch@chen.example",
+            "Bo Chen <bo@chen.example>",
+            "Lunch on Monday?",
+            "Shall we meet at noon?",
+            None,
+        ),
+        &[],
+    );
+    session.call("check_now", &account, &json!({}));
+    let lunch = session.wait_for("the conversation to come in", |session| {
+        session
+            .threads()
+            .iter()
+            .find(|t| session.text(t, "subject") == "Lunch on Monday?")
+            .cloned()
+    });
+    // The announcement waits for the members it would tell: nobody is told, and the moment it
+    // came is not cleared before it ran.
+    for _ in 0..20 {
+        session.settle();
+    }
+    assert!(
+        notices_held(&session).is_empty(),
+        "nobody is told while the members are not read"
+    );
+    assert!(
+        matches!(session.value_of(&lunch, "arrived"), RtValue::Opt(Some(_))),
+        "the arrival waits to be announced"
+    );
+
+    // The workspace's members' record arrives: the waiting announcement tells the person once.
+    bus.release_members();
+    let notices = session.wait_for("the mail to be announced", |session| {
+        let held = notices_held(session);
+        (held.len() == 1).then_some(held)
+    });
+    assert!(
+        matches!(session.value_of(&lunch, "arrived"), RtValue::Opt(None)),
+        "the arrival was announced and cleared"
+    );
+    assert_eq!(session.instance_host().run_triggers(at), 0, "it rings once");
+    let opens = session
+        .instance_host()
+        .runtime()
+        .read(&notices[0], tilolang::NOTICE_OPENS)
+        .expect("the notice says what it opens");
+    let RtValue::Ref(reference) = opens else {
+        panic!("the notice opens the conversation: {opens:?}");
+    };
+    assert_eq!(
+        reference.target.id_string(),
+        lunch.id_string(),
+        "it opens the conversation it tells of"
     );
 }
 

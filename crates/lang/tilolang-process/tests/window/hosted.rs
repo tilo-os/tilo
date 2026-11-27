@@ -711,17 +711,22 @@ impl Session {
     /// `person` at a harness window of `app` in a workspace whose members it knows, alone in it:
     /// what an app tells them reaches them as a notice, on every device of theirs.
     fn member(app: &str, person: &str) -> Self {
+        let bus = Rc::new(tilolang_process::testing::Bus::default());
+        // The workspace has its person as a member, as a workspace the person signed in to
+        // does: who an app's announcement reaches is the members' resource the bus answers.
+        bus.member(ui::tilo_actions::MemberId::person(person), person);
+        Self::member_on(&bus, app, person)
+    }
+
+    /// [`Self::member`] on `bus`, which says when the workspace's members' record arrives.
+    fn member_on(bus: &Rc<tilolang_process::testing::Bus>, app: &str, person: &str) -> Self {
         use ui::permissions::policy::{MemberAccess, WorkspacePolicy};
         let route = RouteSpec::app(app, uuid::Uuid::new_v4());
         let policy = WorkspacePolicy::new(route.cluster_id.to_string(), person);
         let spec = Spec::new(app, route.cluster_id.to_string(), 1, person)
             .in_language("en-US")
             .access(MemberAccess::person(policy, person));
-        let bus = Rc::new(tilolang_process::testing::Bus::default());
-        // The workspace has its person as a member, as a workspace the person signed in to
-        // does: who an app's announcement reaches is the members' resource the bus answers.
-        bus.member(ui::tilo_actions::MemberId::person(person), person);
-        Self::on_bus_window(&bus, &route, spec, Window::in_harness)
+        Self::on_bus_window(bus, &route, spec, Window::in_harness)
     }
 
     /// [`Self::brokered`] of the instance `spec` names: a workspace of its own.

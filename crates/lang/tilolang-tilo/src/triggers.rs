@@ -84,6 +84,16 @@ pub(crate) fn run_due(host: &Host, schedule: &Schedule, now: i64) -> usize {
         Next::At(at) if at > now => return 0,
         Next::At(_) | Next::Unknown => {}
     }
+    // A trigger runs as the app over the workspace and may tell its members what it acted on:
+    // until a reading of the workspace's members has arrived, a due run waits for it, rather
+    // than telling an empty list. The host asks its store once; the store's notice that the
+    // members' record moved brings the reading, and the run happens in that frame.
+    if !host.members_known() {
+        host.ask_members_once();
+        if !host.members_known() {
+            return 0;
+        }
+    }
     let (ran, waiting) = run(host, schedule, now);
     let next = next(host, now);
     schedule.set(if waiting {

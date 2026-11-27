@@ -230,6 +230,13 @@ pub(crate) struct HostInner {
     /// the workspace says of each: what a view calls people and wears their colours by.
     pub(crate) member_rows:
         RefCell<Rc<std::collections::HashMap<collab_types::MemberId, collab_types::Member>>>,
+    /// Whether a reading of the workspace's members' resource has arrived: a workspace's
+    /// members' record is published by its governance, and until this host read one it is no
+    /// emptiness to read, so a trigger that may tell the members waits for it.
+    pub(crate) members_known: Cell<bool>,
+    /// Whether this host has asked its store for the workspace's members while no reading had
+    /// arrived: it asks once, and then waits for the store's notice that the record moved.
+    pub(crate) members_asked: Cell<bool>,
     /// Where the workspace's content is read from, when its embedder has one
     /// ([`Host::follow_content`](crate::content::Host::follow_content)).
     pub(crate) content_source: RefCell<Option<crate::content::ContentSource>>,
@@ -1387,6 +1394,8 @@ impl Host {
             members_watch,
             members_stale: Cell::new(true),
             member_rows: RefCell::new(Rc::new(std::collections::HashMap::new())),
+            members_known: Cell::new(false),
+            members_asked: Cell::new(false),
             content_source: RefCell::new(None),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));
@@ -2147,6 +2156,23 @@ impl Host {
     pub(crate) fn refresh_members(&self) {
         self.inner.members_stale.set(true);
         self.read_workspace_members();
+    }
+
+    /// Whether the workspace's members have been read: a reading has arrived, or the host is in
+    /// no workspace whose members it could name. A trigger that may tell the members waits until
+    /// it is so, rather than telling an empty list.
+    #[must_use]
+    pub(crate) fn members_known(&self) -> bool {
+        self.inner.members_known.get()
+    }
+
+    /// Ask this host's store for the workspace's members, once while no reading has arrived: a
+    /// due trigger waits for the reading then, and the store's notice that the members' record
+    /// moved is what asks again — nothing is polled.
+    pub(crate) fn ask_members_once(&self) {
+        if !self.inner.members_asked.replace(true) {
+            self.refresh_members();
+        }
     }
 
     /// What this host's triggers that name a device land on `device`, the device of `person`,

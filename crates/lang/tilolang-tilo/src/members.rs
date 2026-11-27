@@ -242,6 +242,9 @@ impl Host {
         let Some(access) = self.authority().access() else {
             // A host with no workspace policy yet decides by none: the people its members'
             // resource names are in it, with no role. It follows the policy once one arrives.
+            // Until then it is in no workspace whose members it could name, so nothing waits on
+            // a reading of them.
+            self.inner.members_known.set(true);
             return false;
         };
         let person = access.person_id().unwrap_or_default();
@@ -310,7 +313,18 @@ impl Host {
             .cloned()
             .unwrap_or_else(|| MemberId::person(""));
         let rows = match self.member_rows_read(&me_id) {
-            Ok(rows) => rows,
+            // The workspace's governance publishes its members' record; until it has, there is
+            // no reading to hand in, and an empty list is not one: a trigger that may tell the
+            // members waits for the reading rather than telling nobody. A view that reads it
+            // shows what its type starts as meanwhile, rather than waiting on it every frame;
+            // the reading handed in when the record arrives replaces this.
+            Ok(None) => {
+                let _ = self
+                    .runtime()
+                    .set_absent(&crate::platform::workspace_members());
+                return false;
+            }
+            Ok(Some(rows)) => rows,
             Err(error) => {
                 tracing::warn!(%error, "the workspace's members did not read");
                 return false;
@@ -355,12 +369,16 @@ impl Host {
             })
             .collect();
         let reading = serde_json::json!({ "people": people });
-        self.runtime()
+        let took = self
+            .runtime()
             .set_reading(&crate::platform::workspace_members(), &reading.to_string())
             .unwrap_or_else(|error| {
                 tracing::error!(%error, "the workspace's members were refused as a reading");
                 false
-            })
+            });
+        self.inner.members_known.set(true);
+        self.inner.members_asked.set(false);
+        took
     }
 
     /// Who the workspace's members' resource names now, as this host's store reads it: the
@@ -397,16 +415,16 @@ impl Host {
     /// The members the workspace's members' resource names now, each with what the workspace
     /// says of them, as this host's store reads it: the one member list every surface showing
     /// people reads, here and on a replica that synced it.
-    fn member_rows_read(&self, me: &MemberId) -> Result<Vec<collab_types::Member>, String> {
+    fn member_rows_read(&self, me: &MemberId) -> Result<Option<Vec<collab_types::Member>>, String> {
         let reading = self
             .store()
             .workspace_members()
             .map_err(|error| error.to_string())?;
         let Some(reading) = reading else {
-            return Ok(Vec::new());
+            return Ok(None);
         };
         let Some(rows) = reading.get("people").and_then(serde_json::Value::as_array) else {
-            return Ok(Vec::new());
+            return Ok(Some(Vec::new()));
         };
         // A workspace's governance answers each row with the actor an action names
         // ([`tilo_actions::Actor`]); a store held in this process keeps the runtime's own
@@ -425,10 +443,10 @@ impl Host {
                 }
             })
             .collect();
-        Ok(collab_types::Member::roster_of(
+        Ok(Some(collab_types::Member::roster_of(
             &serde_json::json!({ "people": rows }),
             me,
-        ))
+        )))
     }
 
     /// The members this host last read of the workspace's members' resource, by id, with what
