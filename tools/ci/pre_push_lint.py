@@ -875,6 +875,29 @@ def catalogue_checks(push: Push) -> list[str]:
     return []
 
 
+# What the shipped shell is compiled from: its package, the session's declared actions it calls,
+# and the tilolang compiler and standard library that compile it.
+SHELL_INPUTS = (
+    "apps/tl/shell/",
+    "apps/tl/session/surface.json",
+    "crates/lang/tilolang",
+)
+
+
+def shell_checks(push: Push) -> list[str]:
+    """t's `shell-compiles` when the push reaches what the shipped shell is compiled from.
+
+    A session compiles the shell's package without its scenarios at startup, so a shell that
+    fails that compile starts no session and every session test and walk fails with it. The
+    surface checks compile the package together with its scenarios, so a package file calling a
+    helper only the scenarios declare passes them and fails here. t keys the check by its
+    inputs, so a rebase that changes none of them reuses the pass.
+    """
+    if any(path.startswith(SHELL_INPUTS) for path in push.files):
+        return ["shell-compiles"]
+    return []
+
+
 # The check that judges the fluent catalogues a change leaves behind.
 CATALOGUE_COVERAGE = TOOLS / "policy/check_catalogue_coverage.py"
 
@@ -1939,7 +1962,7 @@ def main(argv: list[str]) -> int:
             members = set(package_maps(selection.metadata, root)[0])
             named = t_checks(root, selection.linted, members)[0]
             scoped = scoped_checks(root, push)
-            extra = [*surface_checks(push, scoped), *catalogue_checks(push),
+            extra = [*surface_checks(push, scoped), *catalogue_checks(push), *shell_checks(push),
                      *policy_checks(root, push, scoped)]
             named += [name for name in extra if name not in named]
             print(f"t: {' '.join(named)}")
@@ -1951,7 +1974,7 @@ def main(argv: list[str]) -> int:
             members = set(package_maps(selection.metadata, root)[0])
             checks, uncovered = t_checks(root, selection.linted, members)
             scoped = scoped_checks(root, push)
-            extra = [*surface_checks(push, scoped), *catalogue_checks(push),
+            extra = [*surface_checks(push, scoped), *catalogue_checks(push), *shell_checks(push),
                      *policy_checks(root, push, scoped)]
             checks += [name for name in extra if name not in checks]
         except (OSError, ValueError, KeyError) as error:

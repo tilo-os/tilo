@@ -1462,6 +1462,27 @@ class BuilderLicenseGateTests(unittest.TestCase):
         self.assertEqual(module.builder_licenses_range(ROOT, module.Push({"crates/x/src/lib.rs"}, [], [], [])), 0)
 
 
+class ShellGateTests(unittest.TestCase):
+    """A push that reaches what the shipped shell is compiled from names t's shell-compiles."""
+
+    def names(self, *files: str) -> list[str]:
+        module = pre_push_lint()
+        return module.shell_checks(module.Push(set(files), [], [], []))
+
+    def test_a_shell_source_names_the_shell_compile(self):
+        self.assertEqual(self.names("apps/tl/shell/presets.tl"), ["shell-compiles"])
+
+    def test_the_sessions_declared_actions_name_it(self):
+        self.assertEqual(self.names("apps/tl/session/surface.json"), ["shell-compiles"])
+
+    def test_the_compiler_and_its_standard_library_name_it(self):
+        self.assertEqual(self.names("crates/lang/tilolang/src/check.rs"), ["shell-compiles"])
+        self.assertEqual(self.names("crates/lang/tilolang/std/app.tl"), ["shell-compiles"])
+
+    def test_another_app_names_nothing(self):
+        self.assertEqual(self.names("apps/tl/tasks/app.tl"), [])
+
+
 class CatalogueGateTests(unittest.TestCase):
     """A push that reaches what the component catalogue is made from names t's ui-graph."""
 
