@@ -3036,7 +3036,7 @@ impl DirectSync {
             loop {
                 tokio::select! {
                     () = self.0.replay.notified() => {
-                        self.ask_store(&mut control, remote, answering.clone().as_ref()).await?
+                        self.ask_store(&mut control, remote, answering.clone().as_ref()).await?;
                     }
                     Some((cursors, answer)) = asked.recv() => {
                         let fetched = Self::fetch_history(&mut control, cursors).await;
@@ -3228,15 +3228,14 @@ impl DirectSync {
             let acknowledged = frames
                 .iter()
                 .filter(|(author, _)| *author == remote)
-                .map(|(_, message)| message)
-                .cloned()
+                .map(|(_, message)| message.clone())
                 .collect::<Vec<_>>();
             let lacked = self.admit_history(frames).await;
             if !lacked {
                 // The other device's own writes this one took in are answered
                 // here as the ones a link brings live are: the store keeps
                 // them, and their author stops sending them once it knows.
-                for message in acknowledged {
+                for message in &acknowledged {
                     self.answer_kept(answering, remote, message);
                 }
             }
@@ -4280,15 +4279,15 @@ impl DirectSync {
         &self,
         answering: Option<&tokio::sync::mpsc::UnboundedSender<Answered>>,
         remote: [u8; 32],
-        message: NeighbourMsg,
+        message: &NeighbourMsg,
     ) {
         let (Some(answering), Some(store)) = (answering, &self.0.store) else {
             return;
         };
-        let NeighbourMsg::AppDocument { envelope, .. } = &message else {
+        let NeighbourMsg::AppDocument { envelope, .. } = message else {
             return;
         };
-        let (Ok(workspace), Ok(frame)) = (self.workspace(), Frame::of(&message)) else {
+        let (Ok(workspace), Ok(frame)) = (self.workspace(), Frame::of(message)) else {
             return;
         };
         if envelope.author.as_bytes() != &remote
@@ -4296,7 +4295,7 @@ impl DirectSync {
         {
             return;
         }
-        let write = postcard::to_allocvec(&message)
+        let write = postcard::to_allocvec(message)
             .ok()
             .map(|bytes| *blake3::hash(&bytes).as_bytes());
         if let Some(write) = write {
