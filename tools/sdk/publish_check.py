@@ -347,6 +347,12 @@ def release_version() -> str:
             "the crates are released from a release tag (vX.Y.Z); this run is for "
             + (os.environ.get("T_REF") or "a working tree")
         )
+    tree = (REPO / "tools/ci/publish/release-version").read_text().strip()
+    if match.group(1) != tree:
+        raise SystemExit(
+            f"the tag v{match.group(1)} is not the release tools/ci/publish/release-version "
+            f"names (v{tree}); set it there and tag that commit"
+        )
     return match.group(1)
 
 

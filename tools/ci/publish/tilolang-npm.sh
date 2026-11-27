@@ -27,6 +27,7 @@ name=tilolang
 # The version this release carries: the release tag's (vX.Y.Z, maybe with a pre-release part).
 version() {
   if [[ ${T_REF:-} =~ ^tag:v([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)$ ]]; then
+    tag_names_tree_version "${BASH_REMATCH[1]}"
     printf '%s' "${BASH_REMATCH[1]}"
   else
     die "tilolang is released to npm from a release tag (vX.Y.Z); this run is for ${T_REF:-a working tree}"

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import tarfile
 import tempfile
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
@@ -558,6 +559,39 @@ class OversizeTests(unittest.TestCase):
             self.assertIn("big:", over[0])
             self.assertLess(over[0].index("assets/font.ttf"), over[0].index("src/lib.rs"), "biggest first")
             self.assertEqual(check.too_big({"big": crate}), [], "under crates.io's own limit")
+
+
+class ReleaseVersionTests(unittest.TestCase):
+    """A release tag releases the version the tree names, which the `tilo` and `tilolang`
+    programs are built at before any tag exists; a tag naming another is refused by every step."""
+
+    TREE = (check.REPO / "tools/ci/publish/release-version").read_text().strip()
+    LIB = check.REPO / "tools/ci/publish/lib.sh"
+
+    def tag_check(self, tag):
+        return subprocess.run(
+            ["bash", "-c", '. "$1" && tag_names_tree_version "$2" && tree_version', "-", self.LIB, tag],
+            capture_output=True, text=True,
+        )
+
+    def test_the_tree_names_a_version(self):
+        self.assertRegex(self.TREE, r"^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$")
+
+    def test_a_tag_at_the_trees_version_is_released(self):
+        with patch.dict(os.environ, {"T_REF": f"tag:v{self.TREE}"}):
+            self.assertEqual(check.release_version(), self.TREE)
+        result = self.tag_check(f"v{self.TREE}")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, self.TREE)
+
+    def test_a_tag_at_another_version_is_refused(self):
+        with patch.dict(os.environ, {"T_REF": "tag:v0.0.1"}):
+            with self.assertRaises(SystemExit) as refused:
+                check.release_version()
+        self.assertIn("release-version names", str(refused.exception))
+        result = self.tag_check("v0.0.1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("is not the release tools/ci/publish/release-version names", result.stderr)
 
 
 if __name__ == "__main__":

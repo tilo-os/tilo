@@ -22,6 +22,29 @@ channel() {
   esac
 }
 
+# The version the next release tag carries, as tools/ci/publish/release-version names it (X.Y.Z
+# or X.Y.Z-<pre-release>). A release build that bakes its version in (the `tilo` and `tilolang`
+# programs) reads it here rather than from the tag: t tells only a publishing check which tag
+# its run is for, and keys a build by its files, so the build the release gate passed is the
+# one the tag releases.
+tree_version() {
+  local named
+  named=$(tr -d '[:space:]' < "$repo_root/tools/ci/publish/release-version")
+  [[ $named =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
+    || die "tools/ci/publish/release-version names no version (X.Y.Z): '$named'"
+  printf '%s' "$named"
+}
+
+# Dies unless the release tag's version $1 (with or without its `v`) is the tree's, so one tag
+# never releases two versions: a tag on a commit whose release-version names another is refused
+# before anything is published.
+tag_names_tree_version() {
+  local tree
+  tree=$(tree_version)
+  [[ ${1#v} == "$tree" ]] \
+    || die "the tag v${1#v} is not the release tools/ci/publish/release-version names (v$tree); set it there and tag that commit"
+}
+
 require_commit() {
   [[ ${T_COMMIT:-} =~ ^[0-9a-f]{40}$ ]] || die "T_COMMIT is not a commit: ${T_COMMIT:-unset}"
 }

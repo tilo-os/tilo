@@ -281,6 +281,15 @@ The same tag publishes what people build Tilo apps with, at the same version:
   `cli-{arch}`, `cli-release`, `sign-cli`, `publish-cli`), installed with
   `curl -fsSL https://tilolang.dev/install | sh`.
 
+Their version is the one `tools/ci/publish/release-version` names. The `tilo` and `tilolang`
+programs carry it (`tilolang --version`, and the crates an app that `tilolang new` starts builds
+on), so it is decided before the tag exists. t tells only a publishing check which tag its run is
+for, and keys a build like `cli-x86_64` by its files alone, so that build never sees the tag:
+the version has to be in the tree it builds. A release sets
+`release-version` on `main`, runs the release gate at that commit, and tags that commit
+`v<version>`; `sign-cli`, `publish-crates` and `publish-npm-tilolang` refuse a tag naming any
+other version, and `sign-cli` runs the archived programs to check what they say.
+
 A step that stopped is dispatched again on the tag:
 
 ```sh

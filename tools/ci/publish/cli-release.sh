@@ -79,6 +79,22 @@ version() {
   fi
 }
 
+# Refuses to sign a release whose tag, or whose programs, name a version other than the tree's.
+# The Linux x86_64 archives are run here (sign-cli runs on x86_64), so what a person installs says
+# the release it came from.
+release_matches_tree() {
+  local dir=$1 tree each said
+  tree=$(tree_version)
+  tag_names_tree_version "$(version)"
+  for each in tilo tilolang; do
+    said=$(tar -xzOf "$dir/$each-linux-x86_64.tar.gz" "$each" > "$scratch/version-$each" \
+      && chmod +x "$scratch/version-$each" && "$scratch/version-$each" --version) \
+      || die "$each from $each-linux-x86_64.tar.gz does not run"
+    [[ $said == "$each $tree" ]] \
+      || die "$each-linux-x86_64.tar.gz's $each says '$said', not the release $tree"
+  done
+}
+
 # A final version (no pre-release part) as three numbers, for `sort -V`; nothing for any other.
 final() { if [[ $1 =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then printf '%s' "${BASH_REMATCH[1]}"; fi; }
 
@@ -240,13 +256,12 @@ cmd_build() {
     esac
   fi
   # The release's version, so `tilo --version` and `tilolang --version` name the release these
-  # programs are from. A build that releases nothing (a branch's, a working tree's) keeps the
-  # crates' own version.
-  local released
-  if [[ ${T_REF:-} == tag:* || -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
-    released=$(version)
-    export TILO_CLI_VERSION=${released#v}
-  fi
+  # programs are from, and an app `tilolang new` starts builds on the crates published at it.
+  # It comes from the tree, not from the tag: t tells only a publishing check which tag its run
+  # is for, and keys a build like this one by its files, so the build the release gate passed is
+  # the build the tag releases. `sign` refuses a tag that names another version.
+  export TILO_CLI_VERSION
+  TILO_CLI_VERSION=$(tree_version)
   # `tilo mcp` starts a task's tilolang programs in tilolang-process, which it looks for beside
   # itself, on Linux alone: there the archive carries it, built with the command in one feature
   # resolution. On a Mac no task program starts, and none is built.
@@ -287,12 +302,10 @@ cmd_build() {
     # emulator a cross-built archive is checked only by its ELF, above.
     if [[ $arch == $(uname -m) ]]; then
       "$program" --help >/dev/null || die "$program --help failed"
-      if [[ -n ${TILO_CLI_VERSION:-} ]]; then
-        [[ $("$program" --version) == "tilo $TILO_CLI_VERSION" ]] \
-          || die "$program --version does not name the release $TILO_CLI_VERSION it was built for"
-        [[ $("$tilolang" --version) == "tilolang $TILO_CLI_VERSION" ]] \
-          || die "$tilolang --version does not name the release $TILO_CLI_VERSION it was built for"
-      fi
+      [[ $("$program" --version) == "tilo $TILO_CLI_VERSION" ]] \
+        || die "$program --version does not name the release $TILO_CLI_VERSION it was built for"
+      [[ $("$tilolang" --version) == "tilolang $TILO_CLI_VERSION" ]] \
+        || die "$tilolang --version does not name the release $TILO_CLI_VERSION it was built for"
       task_program_starts "$task_program"
       "$launcher" --help >/dev/null || die "$launcher --help failed"
       "$tilolang" --help >/dev/null || die "$tilolang --help failed"
@@ -359,6 +372,7 @@ cmd_sign() {
   version >/dev/null
   if [[ -z ${TILO_PUBLISH_DRY_RUN:-} ]]; then
     [[ $(channel) == release ]] || die "only releases are signed; this run is for $T_REF"
+    release_matches_tree "$dir"
   fi
   rm -f "$dir/SHA256SUMS.sig" "$dir/SHA256SUMS.bundle" "$dir/dry-run.pub"
   use_cosign
