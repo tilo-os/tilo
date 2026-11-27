@@ -417,6 +417,24 @@ mod cases {
             rows.iter().any(|title| title == "LX Factory"),
             "the results list what was handed over: {rows:?}"
         );
+        // The places kept stand under Saved, each a row of the list beside the map, as they
+        // stand in the results.
+        let toggle = of_kind(window.tree(), "ui.ToggleGroup")
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| panic!("the places' segments: {}", dump(window.tree())));
+        let key = toggle.key.clone();
+        let saved = window.fire_with(&key, "change", Some(&Value::Int(2)));
+        assert!(matches!(saved, Ok(InvokeOutcome::Done(_))), "{saved:?}");
+        window.poll_patches().unwrap();
+        let rows: Vec<String> = of_kind(window.tree(), "ui.ListRow")
+            .into_iter()
+            .map(|row| props_text(row, "title"))
+            .collect();
+        assert!(
+            rows.iter().any(|title| title == "LX Factory"),
+            "the kept places list under Saved: {rows:?}"
+        );
     }
 
     phase a_found_place_keeps_its_name_and_position_across_searches;

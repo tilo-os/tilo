@@ -2315,16 +2315,10 @@ view places_side(a: Atlas, chosen: State<Text>, seen: List<Float>, directions: B
                         icon: .star,
                     )
                 } else {
+                    // The kept places stand as the results do, each a row a press opens.
                     stack(gap: .tight) {
                         for kept in a.places.filter(p -> p.saved) {
-                            ui.ListItem(
-                                item: kept,
-                                presence: lenses(kept).find(l -> not l.mine)?.who,
-                            ) {
-                                row: {
-                                    place_body(kept, chosen, seen)
-                                }
-                            }
+                            place_row(kept, chosen, seen)
                         }
                     }
                 }
@@ -2351,22 +2345,6 @@ view places_side(a: Atlas, chosen: State<Text>, seen: List<Float>, directions: B
 
 /// One place as a row: what it is, where it is, and what a person does with it.
 view place_row(place: Place, chosen: State<Text>, seen: List<Float>) {
-    ui.ListRow(
-        title: place.name,
-        secondary: place_where(place, seen),
-        icon: place.category.icon(),
-        meta: category_name(place.category),
-        selected: place.name == chosen,
-    ) {
-        on activate: set(chosen, place.name).then(open_place(atlas, place.key))
-        trailing: {
-            place_acts(place)
-        }
-    }
-}
-
-/// What a place's row holds: its name and address, with what a person does with it beside.
-view place_body(place: Place, chosen: State<Text>, seen: List<Float>) {
     ui.ListRow(
         title: place.name,
         secondary: place_where(place, seen),
