@@ -402,6 +402,52 @@ impl Held {
             }
         }
     }
+    /// Everything `doc` holds, as a change to it leaves it: every value and key under its root.
+    #[must_use]
+    pub fn of_doc(doc: &impl automerge::ReadDoc) -> Self {
+        let mut held = Self::nothing();
+        held.add_in(doc, &automerge::ROOT);
+        held
+    }
+
+    /// Every value and key the object `obj` of `doc` holds.
+    pub fn add_in(&mut self, doc: &impl automerge::ReadDoc, obj: &automerge::ObjId) {
+        use automerge::{ObjType, ScalarValue, Value as At};
+        let value_at = |value: At<'_>, inner: automerge::ObjId, held: &mut Self| match value {
+            At::Object(ObjType::Text) => held.add_text(&doc.text(&inner).unwrap_or_default()),
+            At::Object(_) => held.add_in(doc, &inner),
+            At::Scalar(scalar) => match scalar.as_ref() {
+                ScalarValue::Str(text) => held.add_text(text),
+                ScalarValue::Int(number) => held.add(&serde_json::Value::from(*number)),
+                ScalarValue::Uint(number) => held.add(&serde_json::Value::from(*number)),
+                ScalarValue::F64(number) => held.add(&serde_json::Value::from(*number)),
+                ScalarValue::Counter(counter) => {
+                    held.add(&serde_json::Value::from(i64::from(counter)));
+                }
+                ScalarValue::Boolean(flag) => held.add(&serde_json::Value::Bool(*flag)),
+                _ => held.add(&serde_json::Value::Null),
+            },
+        };
+        match doc.object_type(obj) {
+            Ok(ObjType::Map | ObjType::Table) => {
+                for key in doc.keys(obj).collect::<Vec<_>>() {
+                    self.add_text(&key);
+                    if let Ok(Some((value, inner))) = doc.get(obj, key.as_str()) {
+                        value_at(value, inner, self);
+                    }
+                }
+            }
+            Ok(ObjType::List) => {
+                for at in 0..doc.length(obj) {
+                    if let Ok(Some((value, inner))) = doc.get(obj, at) {
+                        value_at(value, inner, self);
+                    }
+                }
+            }
+            Ok(ObjType::Text) => self.add_text(&doc.text(obj).unwrap_or_default()),
+            Err(_) => {}
+        }
+    }
 
     /// Hold `text`.
     pub fn add_text(&mut self, text: &str) {

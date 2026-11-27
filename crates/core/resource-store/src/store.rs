@@ -1719,7 +1719,7 @@ impl Store {
         };
         let called = early.unwrap_or_else(|| {
             let mut held = held_record(Kept::nothing(), kind, id);
-            held_in(&tx, &ROOT, &mut held);
+            held.add_in(&tx, &ROOT);
             named_in(called_before.as_ref(), &doc_id, stamp.for_change(&held))
         });
         tx.commit_with(CommitOptions::default().with_message(called.message()));
@@ -3586,46 +3586,6 @@ fn held_by_put(kind: &str, id: &str, resource: &Resource) -> Kept {
         held.add_text(text);
     }
     held
-}
-
-/// Every value and key the object `obj` of `doc` holds, into `held`.
-fn held_in(doc: &impl automerge::ReadDoc, obj: &ObjId, held: &mut Kept) {
-    let value_at = |value: automerge::Value<'_>, inner: ObjId, held: &mut Kept| match value {
-        automerge::Value::Object(automerge::ObjType::Text) => {
-            held.add_text(&doc.text(&inner).unwrap_or_default());
-        }
-        automerge::Value::Object(_) => held_in(doc, &inner, held),
-        automerge::Value::Scalar(scalar) => match scalar.as_ref() {
-            ScalarValue::Str(text) => held.add_text(text),
-            ScalarValue::Int(number) => held.add(&serde_json::Value::from(*number)),
-            ScalarValue::Uint(number) => held.add(&serde_json::Value::from(*number)),
-            ScalarValue::F64(number) => held.add(&serde_json::Value::from(*number)),
-            ScalarValue::Counter(counter) => {
-                held.add(&serde_json::Value::from(i64::from(counter)));
-            }
-            ScalarValue::Boolean(flag) => held.add(&serde_json::Value::Bool(*flag)),
-            _ => held.add(&serde_json::Value::Null),
-        },
-    };
-    match doc.object_type(obj) {
-        Ok(automerge::ObjType::Map | automerge::ObjType::Table) => {
-            for key in doc.keys(obj).collect::<Vec<_>>() {
-                held.add_text(&key);
-                if let Ok(Some((value, inner))) = doc.get(obj, key.as_str()) {
-                    value_at(value, inner, held);
-                }
-            }
-        }
-        Ok(automerge::ObjType::List) => {
-            for at in 0..doc.length(obj) {
-                if let Ok(Some((value, inner))) = doc.get(obj, at) {
-                    value_at(value, inner, held);
-                }
-            }
-        }
-        Ok(automerge::ObjType::Text) => held.add_text(&doc.text(obj).unwrap_or_default()),
-        Err(_) => {}
-    }
 }
 
 fn commit_options(under: Option<&(automerge::ActorId, i64)>, stamp: &Stamp) -> CommitOptions {

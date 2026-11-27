@@ -95,7 +95,7 @@ pub fn step(
         )
     };
     let mut options = CommitOptions::default().with_time(0);
-    if let Some(message) = context.change_message() {
+    if let Some(message) = context.entry_in(&doc) {
         options = options.with_message(message);
     }
     let hash = doc
@@ -189,7 +189,7 @@ pub fn rewrite(
         )
     };
     let mut options = CommitOptions::default().with_time(0);
-    if let Some(message) = context.change_message() {
+    if let Some(message) = context.entry_in(&migrated) {
         options = options.with_message(message);
     }
     migrated.commit_with(options);

@@ -490,6 +490,7 @@ impl Stamp {
         // entry names it, so every holder checks that caller asked for it, and with which key.
         if context.signed.is_none() {
             context.signed.clone_from(&self.signed);
+            context.parts.clone_from(&self.parts);
         }
         if context.what.is_none() {
             let op = match (self.verb.as_str(), &self.undoes) {

@@ -476,7 +476,7 @@ impl Records {
             Environment::LABEL,
         );
         let message = step
-            .change_message()
+            .entry_in(&doc)
             .ok_or_else(|| RecordError::Model("the branch's step names no entry".to_owned()))?;
         doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
         into.write(key, &mut doc, None)?;

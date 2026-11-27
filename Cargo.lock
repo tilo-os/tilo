@@ -20319,6 +20319,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-automerge-fork",
  "tilo-collab-types",
  "tilo-device-identity",
  "tilo-headless-schema",

@@ -74,6 +74,11 @@ pub struct ActionContext {
     /// root ([`crate::remote::SignedCall`]); the host never makes one up.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signed: Option<Box<crate::remote::SignedCall>>,
+    /// Of the argument of [`signed`](Self::signed), signed over its parts too, the parts the
+    /// changed document holds, with their proof ([`Self::holding`]): what the entry keeps of it
+    /// in place of the whole argument, which other documents' readers may not read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parts: Option<crate::remote::argument_parts::KeptParts>,
     /// The bot run that made this change, when one did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caused_by: Option<Cause>,
@@ -176,6 +181,7 @@ impl Clone for ActionContext {
             invoker: self.invoker.clone(),
             source_invocation: self.source_invocation,
             signed: self.signed.clone(),
+            parts: self.parts.clone(),
             caused_by: self.caused_by.clone(),
             action: self.action.clone(),
             compensation: self.compensation.clone(),
@@ -264,6 +270,7 @@ impl ActionContext {
         }
         if self.signed.is_none() {
             self.signed.clone_from(&ambient.signed);
+            self.parts.clone_from(&ambient.parts);
         }
         if self.caused_by.is_none() {
             self.caused_by.clone_from(&ambient.caused_by);
@@ -456,8 +463,36 @@ impl ActionContext {
             .unwrap_or_default()
     }
 
+    /// This context as the entry of a change to `doc` keeps it, read with the change's operations
+    /// in: a call on its way to its changes, signed over its argument's parts
+    /// ([`crate::remote::SignedCall::in_flight`]), without its argument and with the parts of it
+    /// `doc` holds then, by the rule every change of the call keeps them by
+    /// ([`crate::remote::argument_parts::Held`]); any other context as it is.
+    #[must_use]
+    pub fn holding(&self, doc: &impl automerge::ReadDoc) -> std::borrow::Cow<'_, Self> {
+        let Some(call) = self.signed.as_deref().filter(|call| call.in_flight()) else {
+            return std::borrow::Cow::Borrowed(self);
+        };
+        let held = crate::remote::argument_parts::Held::of_doc(doc);
+        std::borrow::Cow::Owned(Self {
+            parts: call.kept_parts(&held),
+            signed: Some(Box::new(call.kept())),
+            ..self.clone()
+        })
+    }
+
+    /// The message a change to `doc` is committed with, read with its operations in: this
+    /// context as the change keeps it ([`Self::holding`]). The one way a change's entry is
+    /// written; `None` for an empty context, which leaves an app's own history path alone.
+    #[must_use]
+    pub fn entry_in(&self, doc: &impl automerge::ReadDoc) -> Option<String> {
+        self.holding(doc).change_message()
+    }
+
     /// Encode into the Automerge change message. Returning `None` keeps an
-    /// empty/default context from displacing an app's ordinary history path.
+    /// empty/default context from displacing an app's ordinary history path. A call on its way
+    /// to its changes is kept without its argument and none of its parts: a writer that has the
+    /// changed document writes its entry with [`Self::entry_in`].
     pub fn change_message(&self) -> Option<String> {
         if self == &Self::default() {
             return None;
@@ -852,6 +887,8 @@ mod wire {
         source_invocation: Option<crate::InvocationId>,
         #[serde(rename = "sc", skip_serializing_if = "Option::is_none")]
         signed: Option<Box<crate::remote::SignedCall>>,
+        #[serde(rename = "sp", skip_serializing_if = "Option::is_none")]
+        parts: Option<crate::remote::argument_parts::KeptParts>,
         #[serde(rename = "cb", skip_serializing_if = "Option::is_none")]
         caused_by: Option<Cause>,
         #[serde(rename = "a", skip_serializing_if = "Option::is_none")]
@@ -1244,8 +1281,10 @@ mod wire {
                 invoker: context.invoker.clone(),
                 source_invocation: context.source_invocation,
                 // A call on its way to its changes keeps its argument whole to split it: an entry
-                // keeps the call without it.
+                // keeps the call without it, and of it the parts its document holds
+                // ([`ActionContext::holding`]).
                 signed: context.signed.as_deref().map(|call| Box::new(call.kept())),
+                parts: context.parts.clone(),
                 caused_by: context.caused_by.clone(),
                 action: context.action.as_ref().map(Action::of),
                 compensation: context.compensation.as_ref().map(Action::of),
@@ -1285,6 +1324,7 @@ mod wire {
                 invoker: self.invoker,
                 source_invocation: self.source_invocation,
                 signed: self.signed,
+                parts: self.parts,
                 caused_by: self.caused_by,
                 compensation: self.compensation.and_then(Action::into_encoded),
                 gesture: self

@@ -66,6 +66,7 @@ tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
 uuid = { workspace = true, features = ["js"] }
 
 [dev-dependencies]
+automerge.workspace = true
 tilo-test-env = { version = "0.1.0", path = "../../../tools/test-env" }
 tempfile.workspace = true
 postcard = { workspace = true, features = ["use-std"] }

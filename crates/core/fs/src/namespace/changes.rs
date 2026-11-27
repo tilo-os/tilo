@@ -216,7 +216,7 @@ impl ChangeTrackedDoc {
         }
         let message = naming
             .and_then(|naming| naming.context())
-            .and_then(|context| context.change_message())
+            .and_then(|context| context.entry_in(&self.doc))
             .unwrap_or_else(|| match &self.person {
                 Some(person) => tilo_actions::ActionContext::whole_edit_by(
                     &tilo_actions::Acting::member(person.clone()),

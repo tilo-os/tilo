@@ -73,10 +73,8 @@ impl crate::resource::ToolkitActions for ResourceActionState {
         let Some(pending) = &self.pending else {
             return false;
         };
-        tilo_resource::history::commit_stamped_with_message(
-            doc,
-            pending.context.clone().in_step().change_message(),
-        );
+        let message = pending.context.clone().in_step().entry_in(&*doc);
+        tilo_resource::history::commit_stamped_with_message(doc, message);
         true
     }
 
@@ -86,10 +84,8 @@ impl crate::resource::ToolkitActions for ResourceActionState {
         history: &mut collab_types::history::UndoLog,
     ) {
         if let Some(pending) = self.pending.take() {
-            tilo_resource::history::commit_stamped_with_message(
-                doc,
-                pending.context.clone().in_step().change_message(),
-            );
+            let message = pending.context.clone().in_step().entry_in(&*doc);
+            tilo_resource::history::commit_stamped_with_message(doc, message);
             let after = doc.get_heads();
             history.record_committed_span(
                 doc,

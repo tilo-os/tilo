@@ -873,7 +873,7 @@ impl CommitNamed for automerge::AutoCommit {
             *person,
         )));
         let mut options = automerge::transaction::CommitOptions::default();
-        if let Some(message) = context.change_message() {
+        if let Some(message) = context.entry_in(self) {
             options.set_message(message);
         }
         self.commit_with(options)

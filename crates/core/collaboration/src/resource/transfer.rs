@@ -63,7 +63,7 @@ pub fn branch(source: &AutoCommit, to_workspace: &str) -> Result<AutoCommit, Tra
         step.kind.as_str(),
     );
     let message = context
-        .change_message()
+        .entry_in(&doc)
         .ok_or(TransferError::NotTransferable(
             "the branch's founding step is written as an entry",
         ))?;

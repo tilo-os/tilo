@@ -877,8 +877,8 @@ impl UndoLog {
             gesture: Some(ActionId::new()),
             ..ActionContext::default()
         };
-        let moved =
-            tilo_resource::history::commit_stamped_with_message(doc, entry.change_message());
+        let message = entry.entry_in(&*doc);
+        let moved = tilo_resource::history::commit_stamped_with_message(doc, message);
         let Some(moved) = moved else {
             return;
         };

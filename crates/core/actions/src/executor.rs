@@ -525,6 +525,7 @@ fn named(mut env: ActionEnvelope, made: Option<crate::entry::ActionItem>) -> Act
 /// same message, hence the same change.
 #[must_use]
 pub fn entry_message(doc: &Doc, actor: &ActorId, context: &ActionContext) -> Option<String> {
+    let context = context.holding(doc);
     if context.gesture.is_some() && context.compensation.is_none() {
         let document = doc.committed_document();
         let continuation = document

@@ -402,6 +402,13 @@ pub fn verify_recorded(
     if call.argument_signed() == Some(false) {
         return Err(StatementMismatch::Arguments.into());
     }
+    // The parts of the argument an entry keeps are the signed argument's, under the call kept
+    // without it: a part changed, a proof changed or another document's part is refused.
+    if let Some(parts) = &context.parts
+        && (call.argument.is_some() || call.salt.is_some() || !parts.proves(&statement.arguments))
+    {
+        return Err(StatementMismatch::Arguments.into());
+    }
     // The change stays inside what the call named: its resource, or the type of it a caller that
     // knows only the app names, and the action it names when the change says which verb it ran.
     // Or it is a step the called action declares it takes in another record, written by the
@@ -2011,6 +2018,80 @@ mod tests {
             context: Some(Box::new(context)),
             ..tilo_actions::stamp::Stamp::default()
         }
+    }
+
+    /// A call that writes a document its whole workspace reads and one only Ada reads: each
+    /// change's history entry keeps the call without its argument, and of it the parts that
+    /// document holds once written, so the shared document's entry holds the title and no byte
+    /// of the private note, and each checks as the caller's call. A part changed, a proof
+    /// changed, or the other document's parts under this one's call are refused.
+    #[test]
+    fn an_entry_keeps_the_arguments_parts_its_document_holds() {
+        use automerge::transaction::Transactable as _;
+        let (asked, cert) = parted();
+        let none = RevocationList::new();
+        let context = parted_stamp(&asked, &cert).action_context();
+        assert!(
+            context
+                .signed
+                .as_deref()
+                .is_some_and(tilo_actions::remote::SignedCall::in_flight)
+        );
+        let written = |text: &str| {
+            let mut doc = automerge::AutoCommit::new();
+            doc.put(automerge::ROOT, "text", text).unwrap();
+            let entry = context.entry_in(&doc).unwrap();
+            (
+                entry.clone(),
+                tilo_actions::ActionContext::from_change_message(&entry).unwrap(),
+            )
+        };
+        let (shared, read) = written("Shared plan");
+        let (private, other) = written("Ada's private note");
+        let holds = |entry: &str, text: &str| {
+            let read = tilo_actions::ActionContext::from_change_message(entry).unwrap();
+            serde_json::to_string(&read.parts).unwrap().contains(text)
+        };
+        assert!(holds(&shared, "Shared plan") && !holds(&shared, "private"));
+        assert!(!shared.contains("private"), "{shared}");
+        assert!(holds(&private, "Ada's private note") && !holds(&private, "Shared plan"));
+        let parts = |entry: &tilo_actions::ActionContext| {
+            let parts = entry.parts.clone().unwrap();
+            parts
+                .parts
+                .into_iter()
+                .map(|part| part.path)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(parts(&read), ["/title"]);
+        assert_eq!(parts(&other), ["/note"]);
+        let check = |entry: &tilo_actions::ActionContext| {
+            verify_recorded(entry, (WORKSPACE, "so.tilo.notes", None), &none, NOW, None)
+        };
+        assert_eq!(check(&read), Ok(Some(cert.clone())));
+        assert_eq!(check(&other), Ok(Some(cert)));
+
+        let refused = Err(InvocationError::from(StatementMismatch::Arguments));
+        let tampered = |edit: &dyn Fn(&mut tilo_actions::remote::argument_parts::KeptParts)| {
+            let mut entry = read.clone();
+            edit(entry.parts.as_mut().unwrap());
+            check(
+                &tilo_actions::ActionContext::from_change_message(&entry.change_message().unwrap())
+                    .unwrap(),
+            )
+        };
+        assert_eq!(
+            tampered(&|parts| parts.parts[0].value = serde_json::json!("Other plan")),
+            refused
+        );
+        assert_eq!(
+            tampered(&|parts| parts.proof[0] = hex::encode([1u8; 32])),
+            refused
+        );
+        assert_eq!(
+            tampered(&|parts| parts.parts.clone_from(&other.parts.clone().unwrap().parts)),
+            refused
+        );
     }
 
     /// A caller signs its argument's parts beside its request: the host takes the request as its

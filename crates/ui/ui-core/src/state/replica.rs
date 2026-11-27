@@ -110,12 +110,13 @@ impl State {
         author: Option<MemberId>,
         context: Option<tilo_actions::ActionContext>,
     ) -> bool {
+        let message = context.and_then(|context| context.entry_in(&self.doc));
         self.undo.commit_action_authored_with_message(
             &mut self.doc,
             focused_node_idx,
             metadata,
             author,
-            context.and_then(|context| context.change_message()),
+            message,
         )
     }
 
