@@ -229,7 +229,7 @@ fn a_size_setting_change_reaches_its_new_height_through_the_frames_between() {
 /// magnifying item, keeps its own height and its foot edge while the item grows over the band.
 #[test]
 fn a_dock_body_keeps_its_band_while_an_item_grows_over_it() {
-    use super::chrome_body::{ChromeBody, ChromeEdge, ChromeProps, ChromeShape};
+    use tilo_ui::widget::chrome_body::{ChromeBody, ChromeEdge, ChromeProps, ChromeShape};
     use tilo_ui_base::widget::Widget;
     let tile = Button::icon_only("tile", tilo_ui_base::icons::Icon::X, "Tile");
     let magnify = Magnify::from_props(
@@ -259,7 +259,7 @@ fn a_dock_body_keeps_its_band_while_an_item_grows_over_it() {
     driver.relayout();
     let band = |driver: &mut Driver| {
         driver
-            .with_widget_mut(|dock: &mut ChromeBody| dock.get_rect())
+            .with_widget_mut(|dock: &mut ChromeBody| tilo_ui_base::widget::Widget::get_rect(dock))
             .expect("the dock is the root")
     };
     let before = band(&mut driver);
