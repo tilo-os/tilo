@@ -560,8 +560,9 @@ title = "Topic"
 type = "String"
 "#;
     // The surfaces it installs are the process's: no other test runs here.
-    if !crate::keep::common::in_own_process(
-        "listed_workspaces::the_server_forwards_only_changes_their_app_surface_publishes",
+    if !tilo_test_env::in_own_process_here(
+        module_path!(),
+        "the_server_forwards_only_changes_their_app_surface_publishes",
     ) {
         return;
     }
@@ -667,8 +668,9 @@ field = "comments"
 params = []
 "#;
     // The surfaces it installs are the process's: no other test runs here.
-    if !crate::keep::common::in_own_process(
-        "listed_workspaces::the_server_refuses_an_action_the_author_is_not_granted",
+    if !tilo_test_env::in_own_process_here(
+        module_path!(),
+        "the_server_refuses_an_action_the_author_is_not_granted",
     ) {
         return;
     }

@@ -97,8 +97,9 @@ fn gathered(frames: &[Vec<u8>]) -> Option<Vec<u8>> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
     // The content store it installs is the process's: no other test runs here.
-    if !crate::keep::common::in_own_process(
-        "surface_content::a_surface_a_member_answers_with_is_the_workspaces_from_then_on",
+    if !tilo_test_env::in_own_process_here(
+        module_path!(),
+        "a_surface_a_member_answers_with_is_the_workspaces_from_then_on",
     ) {
         return;
     }

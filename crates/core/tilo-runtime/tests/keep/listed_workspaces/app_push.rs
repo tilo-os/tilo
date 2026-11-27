@@ -53,8 +53,9 @@ async fn hosted_topic(
 async fn a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_in() {
     use std::sync::atomic::Ordering;
     // The surfaces it installs are the process's: no other test runs here.
-    if !crate::keep::common::in_own_process(
-        "listed_workspaces::app_push::a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_in",
+    if !tilo_test_env::in_own_process_here(
+        module_path!(),
+        "a_member_follows_the_version_the_workspace_runs_and_its_held_edit_goes_in",
     ) {
         return;
     }

@@ -10,7 +10,6 @@
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
 use std::sync::Arc;
-use tilo_test_env::SpawnUnderEnvLock as _;
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use ed25519_dalek::SigningKey;
@@ -1240,42 +1239,14 @@ pub fn print_phase_diagnostic() {
 /// The app surfaces a process decides received changes against
 /// (`tilo_peer_state::decide_with_surfaces`) are one per process, and a
 /// server or replica reads them when it starts. A test that installs some
-/// runs in a process of its own ([`in_own_process`]), so no other test of
-/// this binary ever runs under them.
+/// runs in a process of its own
+/// (`tilo_test_env::in_own_process_here`), so no other test of this binary
+/// ever runs under them.
 pub fn install_process_surfaces(
     surfaces: collab_types::Surfaces,
     of: impl Fn(&str) -> Option<[u8; 32]> + Send + Sync + 'static,
 ) {
     tilo_peer_state::decide_with_surfaces(surfaces, of);
-}
-
-/// Names the one test a process of its own runs, see [`in_own_process`].
-const OWN_PROCESS: &str = "TILO_SERVER_TEST_OWN_PROCESS";
-
-/// Whether the test `test` (its path in this binary) is to run its body
-/// here: in the process this binary started for it alone. Anywhere else the
-/// test runs this binary again for itself, waits for it to pass, and answers
-/// `false`, leaving nothing more to do.
-pub fn in_own_process(test: &str) -> bool {
-    if std::env::var_os(OWN_PROCESS).is_some_and(|own| own == test) {
-        return true;
-    }
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", test, "--nocapture", "--test-threads=1"])
-        .env(OWN_PROCESS, test)
-        .output_locked()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    eprintln!("{stdout}");
-    // Why it failed is on its stderr, which this process keeps for it: the run reads it here or
-    // never, as a test that failed in this process would have printed it.
-    eprintln!("{}", String::from_utf8_lossy(&output.stderr));
-    assert!(
-        output.status.success() && stdout.contains("test result: ok. 1 passed"),
-        "{test} did not pass in its own process: {}",
-        output.status
-    );
-    false
 }
 
 /// The laptop's own service under `state`, opened as a device opens its own, with its key
