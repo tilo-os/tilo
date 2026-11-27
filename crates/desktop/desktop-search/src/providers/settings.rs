@@ -484,8 +484,9 @@ mod tests {
     #[test]
     fn the_words_people_use_find_the_setting_or_page_they_mean() {
         let settings = Settings::new("workspace");
+        // The volume is not among them: it is a quick action, which the words for it find
+        // (`the_words_people_use_find_the_quick_action_that_does_it`).
         for (query, expected) in [
-            ("loudness", "Volume"),
             ("resolution", "Resolution"),
             ("refresh rate", "Refresh rate"),
             ("portrait", "Rotation"),

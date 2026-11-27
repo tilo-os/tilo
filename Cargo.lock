@@ -16835,6 +16835,7 @@ dependencies = [
  "tempfile",
  "tilo-action-services",
  "tilo-actions",
+ "tilo-audio-service",
  "tilo-collab-types",
  "tilo-failure",
  "tilo-files",

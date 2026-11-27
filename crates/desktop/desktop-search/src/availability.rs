@@ -33,6 +33,13 @@ pub fn keywords_for(package_id: &str) -> &'static [&'static str] {
     entry_for(package_id).map_or(&[], |app| app.keywords)
 }
 
+/// What the app is for, in the registry's one line ("Email over IMAP and SMTP") — empty for
+/// an app it does not list.
+#[must_use]
+pub fn tagline_for(package_id: &str) -> &'static str {
+    entry_for(package_id).map_or("", |app| app.tagline)
+}
+
 /// The app's name in the other languages the registry knows ("Dateien",
 /// "Rechner") — empty for an app it does not list.
 #[must_use]

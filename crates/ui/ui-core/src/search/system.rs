@@ -475,11 +475,16 @@ pub fn actions_found_by<'a>(
 /// (aliases, synonyms, the products it stands in for, in every language its manifest
 /// gives), its names in other languages as the name itself, and the initials of its name
 /// (`wp` for `Word Processor`).
+///
+/// A keyword its `purpose` (the line saying what the app is for, "Email over IMAP and
+/// SMTP") also says names what the app is, and ranks as its name: "email" leads with Mail,
+/// whose purpose it is, over Contacts, which keeps it as a word for what a contact has.
 #[must_use]
 pub fn application_search_fields<'a>(
     name: &'a str,
     package_id: &'a str,
     category: Option<&'a str>,
+    purpose: &'a str,
     other_names: impl IntoIterator<Item = &'a str>,
     keywords: impl IntoIterator<Item = &'a str>,
 ) -> Vec<(String, tilo_ui_base::text_match::FieldWeight)> {
@@ -498,11 +503,31 @@ pub fn application_search_fields<'a>(
     fields.extend(
         tilo_ui_base::text_match::initials(name).map(|initials| (initials, FieldWeight::KEYWORD)),
     );
+    // A word is the same spelled with or without its hyphens: "e-mail" is "email".
+    let plain = |word: &str| -> String {
+        word.chars()
+            .filter(|c| *c != '-')
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    let purpose: Vec<String> = purpose
+        .split(|c: char| !c.is_alphanumeric() && c != '-')
+        .filter(|word| !word.is_empty())
+        .map(plain)
+        .collect();
     fields.extend(
         keywords
             .into_iter()
             .filter(|keyword| !keyword.trim().is_empty())
-            .map(|keyword| (keyword.to_owned(), FieldWeight::KEYWORD)),
+            .map(|keyword| {
+                let what_it_is = purpose.contains(&plain(keyword.trim()));
+                let weight = if what_it_is {
+                    FieldWeight::TITLE
+                } else {
+                    FieldWeight::KEYWORD
+                };
+                (keyword.to_owned(), weight)
+            }),
     );
     fields
 }

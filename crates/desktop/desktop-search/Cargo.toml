@@ -54,6 +54,8 @@ tracing = { workspace = true, optional = true }
 walkdir = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The sound resource as the device publishes it, whose quick actions search offers.
+tilo-audio-service = { path = "../../os/audio-service", default-features = false }
 # The device's search index, which the source over it is tested against.
 tilo-workspace-search = { path = "../../core/workspace-search" }
 serial_test.workspace = true

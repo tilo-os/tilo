@@ -96,36 +96,46 @@ impl Source for Applications {
 
     fn query(&self, needle: &str) -> Vec<Hit> {
         let browsing = needle.trim().is_empty();
-        let ranks = rank::rank_rows(&self.ranker, needle, &self.fields);
-        self.entries
+        // The provider scale counts every match from a name begun up as perfect; among those,
+        // an app named by the word (or whose purpose it is) stands before one that only keeps
+        // it as a keyword, and every later order keeps that.
+        let exact = rank::raw_ranks(&self.ranker, needle, &self.fields);
+        let mut hits: Vec<(i32, Hit)> = self
+            .entries
             .iter()
-            .zip(ranks)
-            .filter_map(|(app, matched)| {
-                let matched = matched?;
-                Some(Hit {
-                    row: None,
-                    preview: None,
-                    faces: Vec::new(),
-                    outcome: None,
-                    kind: ResourceKind::Application,
-                    provider: self.id().into(),
-                    id: app.id.clone(),
-                    title: app.title.clone(),
-                    subtitle: app.category.clone(),
-                    facts: Vec::new(),
-                    score: if browsing {
-                        ui::search::system::starting_point_rank(&app.id)
-                    } else {
-                        matched
+            .zip(exact)
+            .filter_map(|(app, exact)| {
+                let exact = exact?;
+                let matched = ui::search::system::provider_score(exact);
+                Some((
+                    exact,
+                    Hit {
+                        row: None,
+                        preview: None,
+                        faces: Vec::new(),
+                        outcome: None,
+                        kind: ResourceKind::Application,
+                        provider: self.id().into(),
+                        id: app.id.clone(),
+                        title: app.title.clone(),
+                        subtitle: app.category.clone(),
+                        facts: Vec::new(),
+                        score: if browsing {
+                            ui::search::system::starting_point_rank(&app.id)
+                        } else {
+                            matched
+                        },
+                        icon: None,
+                        target: Target::Launch {
+                            app: app.id.clone(),
+                            place: LaunchPlace::Focus,
+                        },
                     },
-                    icon: None,
-                    target: Target::Launch {
-                        app: app.id.clone(),
-                        place: LaunchPlace::Focus,
-                    },
-                })
+                ))
             })
-            .collect()
+            .collect();
+        hits.sort_by_key(|(exact, _)| std::cmp::Reverse(*exact));
+        hits.into_iter().map(|(_, hit)| hit).collect()
     }
 }
 
@@ -1667,7 +1677,9 @@ mod tests {
                 ("preferences", "so.tilo.settings"),
                 ("excel", "so.tilo.sheets"),
                 ("taschenrechner", "so.tilo.calculator"),
-                ("wp", "so.tilo.word-processor"),
+                // A name of several words is found by its initials: `pv` for PDF Viewer.
+                ("pv", "so.tilo.pdf-viewer"),
+                ("writer", "so.tilo.word-processor"),
             ] {
                 assert_eq!(
                     first_app(&apps, query).as_deref(),
@@ -2819,6 +2831,38 @@ mod tests {
                 document < action,
                 "the document leads the actions on it: {:?}",
                 titles(&found)
+            );
+        }
+    }
+
+    /// A word people use for what a quick action does finds that action, as the device
+    /// publishes it: "loudness" is the volume, offered to set right there, not a Settings page
+    /// that only shows it.
+    #[test]
+    fn the_words_people_use_find_the_quick_action_that_does_it() {
+        let sound = tilo_audio_service::sound::Sound {
+            output: Some(1),
+            volume: Some(0.5),
+            ..tilo_audio_service::sound::Sound::default()
+        };
+        let published = Published(vec![PublishedActions::of(
+            "session",
+            "",
+            &[tilo_audio_service::sound::resource(&sound)],
+        )]);
+        for query in ["loudness", "volume", "sound"] {
+            let found: Vec<_> = search(query, &[&published], 10, &|_| 0.0)
+                .into_iter()
+                .flat_map(|group| group.results)
+                .take(3)
+                .filter_map(|hit| match hit.target {
+                    Target::Invoke(invoke) => Some(invoke.address.action.clone()),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                found.iter().any(|action| action == "set-volume"),
+                "`{query}` should offer the volume, found {found:?}"
             );
         }
     }

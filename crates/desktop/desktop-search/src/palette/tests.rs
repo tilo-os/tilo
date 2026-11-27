@@ -1088,13 +1088,16 @@ tilo_test_env::scenario! {
             let description = entry.description.as_deref().unwrap_or_default();
             assert!(!description.contains("so.tilo"), "{app}: {description}");
         }
-        let notes = apps
-            .iter()
-            .find(|(app, _)| app == "so.tilo.notes")
-            .expect("Notes leads the empty list");
-        assert_eq!(notes.1.label, "Notes");
+        // The app that leads the empty list (Browser, the first place people start) wears its
+        // own name and glyph.
+        let (lead, entry) = apps.first().expect("an app leads the empty list");
+        assert_eq!(
+            Some(entry.label.as_str()),
+            crate::availability::name_for(lead),
+            "{lead}"
+        );
         assert_ne!(
-            notes.1.icon,
+            entry.icon,
             Some(tilo_ui_base::icons::Icon::LayoutGrid),
             "not the generic grid"
         );
@@ -1108,7 +1111,14 @@ tilo_test_env::scenario! {
                         .is_some_and(|hit| matches!(hit.target, Target::Window { .. }))
             })
             .expect("windows are listed");
-        assert_eq!(window.icon, notes.1.icon);
+        assert_eq!(
+            window.icon,
+            Some(tilo_ui_base::icons::app_glyph(
+                "so.tilo.notes",
+                crate::availability::category_for("so.tilo.notes")
+            )),
+            "the Notes window wears Notes' glyph"
+        );
     }
 }
 

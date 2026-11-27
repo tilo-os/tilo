@@ -20,6 +20,7 @@ pub fn application_fields(
         name,
         package_id,
         category,
+        crate::availability::tagline_for(package_id),
         crate::availability::names_for(package_id).iter().copied(),
         keywords.iter().copied(),
     )
@@ -39,15 +40,24 @@ pub fn rank_rows(
     needle: &str,
     rows: &[Vec<(String, FieldWeight)>],
 ) -> Vec<Option<i32>> {
-    ranker
-        .ranks(
-            needle,
-            rows.iter()
-                .map(|row| row.iter().map(|(text, weight)| (text.as_str(), *weight))),
-        )
+    raw_ranks(ranker, needle, rows)
         .into_iter()
         .map(|rank| rank.map(provider_score))
         .collect()
+}
+
+/// Every row's rank on the ranker's own scale, before the provider scale counts every match
+/// from a name begun up as one: what tells an exact name from a keyword among equal scores.
+pub fn raw_ranks(
+    ranker: &tilo_ui_base::text_match::ListIndex,
+    needle: &str,
+    rows: &[Vec<(String, FieldWeight)>],
+) -> Vec<Option<i32>> {
+    ranker.ranks(
+        needle,
+        rows.iter()
+            .map(|row| row.iter().map(|(text, weight)| (text.as_str(), *weight))),
+    )
 }
 
 /// How well `needle` names a record, by the shared ranker. Title first; the
