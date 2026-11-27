@@ -1406,7 +1406,7 @@ async fn administers_applications(holder: &crate::keep::common::Hosted, workspac
 /// included. A further device of a person on the list writes its own row
 /// there as at any holder.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn another_persons_key_holder_reads_and_serves_but_lets_nobody_in() {
+async fn another_persons_server_reads_and_serves_and_admits_only_listed_people() {
     let alice = TestUser::fresh("Alice");
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let phone = alice.enrol("phone", DeviceCapabilities::primary());

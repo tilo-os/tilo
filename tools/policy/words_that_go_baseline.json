@@ -2614,7 +2614,6 @@
    "a_restarted_key_holder_removes_a_reader_without_being_asked_for_the_keys",
    "a_sealed_write_is_renewed_only_for_its_current_author_by_the_key_holder",
    "a_write_from_an_older_epoch_renews_with_what_the_key_holder_resealed",
-   "another_persons_key_holder_reads_and_serves_but_lets_nobody_in",
    "any_key_holder_admits_and_late_joiners_read_all_past_content",
    "appetite",
    "detaching_the_base_maker_hands_the_base_to_another_key_holder",

@@ -463,9 +463,11 @@ fn reads_note(server: &Server, workspace: &str) -> Result<String, String> {
 }
 
 /// A server of the person's added to a workspace, by the line it serves as the person pastes it,
-/// opens every sealed write the workspace holds within a second of being asked: the handing server admits it into the workspace's keys and hands it them,
-/// and every frame it keeps, over the connection it hands the workspace over on. No keys are
-/// handed it beforehand: both servers run their own key service, as any server does.
+/// opens every sealed write the workspace holds from what the hand-over carried alone: the
+/// handing server admits it into the workspace's keys and hands it them, and every frame it keeps,
+/// over the connection it hands the workspace over on, before it answers. No keys are handed it
+/// beforehand, and the handing server is gone once it answered: nothing is fetched or dialled
+/// back after.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_server_added_opens_what_it_holds_once_it_is_added() {
     let alice = TestUser::fresh("Alice");
@@ -510,34 +512,20 @@ async fn a_server_added_opens_what_it_holds_once_it_is_added() {
         origin: None,
     })
     .unwrap();
-    let asked = std::time::Instant::now();
     a.workspaces()
         .unwrap()
         .add_server(&workspace.workspace, &line, CopyRole::KeyHolder)
         .await
         .expect("the server is added");
-    // Answered, the server holds the workspace's keys and every frame of it; its copy takes the
-    // sealed note in from there, all within the second.
-    let read = tokio::time::timeout(
-        Duration::from_secs(1).saturating_sub(asked.elapsed()),
-        async {
-            loop {
-                if let Ok(text) = reads_note(&b, &workspace.workspace) {
-                    break text;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        },
-    )
-    .await;
-    let took = asked.elapsed();
-    assert_eq!(
-        read.as_deref(),
-        Ok("before the server was added"),
-        "the server added opens what it holds within a second of being asked: {took:?}"
-    );
-
+    // Answered, the server holds the workspace's keys and every frame of it: the only other
+    // device that keeps them goes, and its copy takes the sealed note in from what it holds.
     a.shutdown().await;
+    tilo_test_env::within("the server added opens the note on its own", async {
+        while reads_note(&b, &workspace.workspace).as_deref() != Ok("before the server was added") {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
     b.shutdown().await;
 }
 
