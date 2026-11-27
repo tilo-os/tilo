@@ -755,16 +755,28 @@ pub fn device_home() -> tilo_test_env::TestHome {
 /// since the shell is one of the default apps the daemon starts, and a launcher that finds no
 /// runtimes starts nothing.
 ///
+/// The shell is installed in the store the home's daemon keeps its packages in, as a device comes
+/// with it: the daemon runs the person's changes of their shell as the shell's own actions, and
+/// takes the store it reads once, when it starts, so a store named later is not the one it reads.
+///
 /// # Panics
-/// No run built the launcher.
+/// No run built the launcher, or the shell does not install.
 pub fn launcher_for(home: &mut tilo_test_env::TestHome) -> std::path::PathBuf {
     // Before its daemon starts: the device runs the person's shell and their apps' actions
     // ([`furnished`]).
     let _ = furnished();
     let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
-    home.env().set("TILO_LAUNCHER_BIN", &launcher);
+    let store = home.data().join("tilo-apps");
+    home.env()
+        .set("TILO_LAUNCHER_BIN", &launcher)
+        .set("TILO_APPS_DATA_DIR", &store);
+    let installed = dev_apps::install_named(&store, &[SHELL]);
+    assert_eq!(installed, [SHELL], "the device's store holds the shell");
     launcher
 }
+
+/// The person's shell, by its package id.
+const SHELL: &str = "so.tilo.shell";
 
 /// The sealed file store this process keeps its secrets in: a process opens the store
 /// `TILO_SECRETS_DIR` names once, so every device of this test binary keeps its keys in the one

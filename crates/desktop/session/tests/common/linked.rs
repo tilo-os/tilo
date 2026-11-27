@@ -232,9 +232,8 @@ fn home_with_apps(installs: bool) -> (tilo_test_env::TestHome, std::path::PathBu
     home.env()
         .set("TILO_IDENTITY_ROOT", &identity)
         .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-    let store = home.data().join("tilo-apps");
-    home.env().set("TILO_APPS_DATA_DIR", &store);
     let launcher = crate::common::launcher_for(&mut home);
+    let store = home.data().join("tilo-apps");
     if !installs {
         return (home, launcher);
     }
