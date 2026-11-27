@@ -482,12 +482,18 @@ pub struct TilolangProcess {
 
 /// The outside services whose resources an instance's types may hold, kept in step through the
 /// app's connector: a package's types name one (`origin: imap.message`), matched in this order.
-const CONNECTED_ORIGINS: [&str; 2] = ["imap", "caldav"];
+const CONNECTED_ORIGINS: [&str; 4] = ["imap", "caldav", "youtube", "music"];
+
+/// The origins of [`CONNECTED_ORIGINS`] whose clients come only with the app launches they are
+/// part of (`app-launch`).
+#[cfg(test)]
+const LAUNCH_ORIGINS: [&str; 3] = ["caldav", "youtube", "music"];
 
 /// Have this process reach the connector of each origin in [`CONNECTED_ORIGINS`] its build links
 /// through that origin's own client, once: the platform finds a client only where its crate
-/// registered one (`tilolang_tilo::origin::remote`), and a host whose instances keep a mailbox or a
-/// calendar is such a process. The calendar's client comes with the app launches it is part of.
+/// registered one (`tilolang_tilo::origin::remote`), and a host whose instances keep a mailbox, a
+/// calendar, a video site or a music catalogue is such a process. All but the mail's client come
+/// with the app launches they are part of.
 fn register_origins() {
     #[cfg(any(unix, windows))]
     {
@@ -495,7 +501,11 @@ fn register_origins() {
         ONCE.call_once(|| {
             tilolang_mail::register();
             #[cfg(feature = "app-launch")]
-            tilolang_calendar::register();
+            {
+                tilolang_calendar::register();
+                tilolang_youtube::register();
+                tilolang_music::register();
+            }
         });
     }
 }
@@ -1492,10 +1502,10 @@ fn hung_up(fd: std::os::fd::BorrowedFd<'_>) -> bool {
 mod tests {
     use super::*;
 
-    /// An instance whose types hold a mailbox's or a calendar's resources is handed its app's
-    /// connector, and the host makes the origin's client of it: a host reaches the connector of
-    /// every origin its build links, so a hosted Mail or Calendar opens rather than saying its
-    /// build has no connector.
+    /// An instance whose types hold a mailbox's, a calendar's, a video site's or a music
+    /// catalogue's resources is handed its app's connector, and the host makes the origin's client
+    /// of it: a host reaches the connector of every origin its build links, so a hosted Mail,
+    /// Calendar, Tube or Music opens rather than taking the connector for held connections.
     #[cfg(unix)]
     #[test]
     fn a_host_reaches_the_connector_of_each_origin_an_instance_holds() {
@@ -1503,7 +1513,7 @@ mod tests {
         let _host = TilolangProcess::new(Arc::clone(&wake));
         let linked = CONNECTED_ORIGINS
             .into_iter()
-            .filter(|name| *name != "caldav" || cfg!(feature = "app-launch"));
+            .filter(|name| !LAUNCH_ORIGINS.contains(name) || cfg!(feature = "app-launch"));
         for name in linked {
             let (ours, _connector) = std::os::unix::net::UnixStream::pair().unwrap();
             let handed: Descriptor = std::os::fd::OwnedFd::from(ours);
