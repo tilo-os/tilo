@@ -1113,33 +1113,41 @@ mod tests {
                 }],
             },
         ));
-        all.push((
-            "record content kept",
-            NeighbourMsg::DocumentContentKept {
-                responder: 3,
-                requester: 4,
-                app_id: "so.tilo.photos".into(),
-                cluster_id: "workspace".into(),
-                hash: "ab".into(),
-            },
-        ));
-        all.push((
-            "record content released",
-            NeighbourMsg::DocumentContentReleased {
-                requester: 4,
-                app_id: "so.tilo.photos".into(),
-                cluster_id: "workspace".into(),
-                hash: "ab".into(),
-            },
-        ));
-        all.push((
-            "governance wanted",
-            NeighbourMsg::MlsGovernanceWanted {
-                workspace: "workspace".into(),
-                from_epoch: 2,
-            },
-        ));
+        all.extend(fixtures_pushed_content());
         all
+    }
+
+    /// What a member pushes of a record's content and what its host keeps: the content named as
+    /// kept, let go, and the group frames a device asks its peers for.
+    fn fixtures_pushed_content() -> Vec<(&'static str, NeighbourMsg)> {
+        vec![
+            (
+                "record content kept",
+                NeighbourMsg::DocumentContentKept {
+                    responder: 3,
+                    requester: 4,
+                    app_id: "so.tilo.photos".into(),
+                    cluster_id: "workspace".into(),
+                    hash: "ab".into(),
+                },
+            ),
+            (
+                "record content released",
+                NeighbourMsg::DocumentContentReleased {
+                    requester: 4,
+                    app_id: "so.tilo.photos".into(),
+                    cluster_id: "workspace".into(),
+                    hash: "ab".into(),
+                },
+            ),
+            (
+                "governance wanted",
+                NeighbourMsg::MlsGovernanceWanted {
+                    workspace: "workspace".into(),
+                    from_epoch: 2,
+                },
+            ),
+        ]
     }
 
     /// A member asking a host to stream it the host's windows it shows.
