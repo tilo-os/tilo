@@ -289,14 +289,15 @@ async fn nothing_reaches_tilo_sh_or_a_public_relay() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_server_serves_its_web_ui_by_default_and_a_setting_turns_it_off() {
     let f = Box::pin(rig()).await;
-    let addr = f.host.daemon.web();
+    let web = crate::support::https::DevHttps::new(f.host.daemon.web(), f.person);
 
-    // On by default: the server answers HTTP on its own address, which is how its pages and
-    // the page protocol are reached.
-    let (status, body) = flow::post(addr, "/", &[]).expect("the server answers on its address");
+    // On by default: the server answers on its own address over TLS a device of the person's
+    // trusts, which is how its pages and the page protocol are reached.
+    let served = web.post_answer("/", Vec::new()).await;
     assert!(
-        status > 0,
-        "the server serves its web UI on its own address by default: {status} {body}"
+        served.is_ok(),
+        "the server serves its web UI on its own address by default: {:?}",
+        served.err()
     );
 
     // A setting of the server's, changed by one of its person's devices, turns it off.
@@ -315,9 +316,8 @@ async fn flow_server_serves_its_web_ui_by_default_and_a_setting_turns_it_off() {
         "the server has a published setting that stops it serving its web UI, which a \
          device of the person's turns off: {turned_off:?}"
     );
-    let (status, _) = flow::post(addr, "/", &[]).unwrap_or((0, String::new()));
-    assert_eq!(
-        status, 0,
+    assert!(
+        web.post_answer("/", Vec::new()).await.is_err(),
         "the server's web UI is off once its setting says so"
     );
 }
