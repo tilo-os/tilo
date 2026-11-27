@@ -998,10 +998,8 @@ impl App {
             // re-reads the records named. The members' resource is one of them: it is not a
             // document, but its membership may have moved.
             CollabEvent::RecordsMoved { records } => {
-                if records
-                    .iter()
-                    .any(|record| record.as_str() == collab_types::store::WORKSPACE_MEMBERS_ID)
-                {
+                let members = collab_types::store::WORKSPACE_MEMBERS_ID;
+                if records.iter().any(|moved| moved.record == members) {
                     self.collaboration.members_request = None;
                     self.request_workspace_members();
                 }

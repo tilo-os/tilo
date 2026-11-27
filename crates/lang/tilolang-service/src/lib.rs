@@ -1480,7 +1480,11 @@ impl Service for ResourceService {
         if records.contains("") {
             self.host.store().moved();
         } else {
-            self.host.store().moved_docs(records);
+            let records: Vec<_> = records
+                .iter()
+                .map(collab_types::store::MovedRecord::whole)
+                .collect();
+            self.host.store().moved_records(&records);
         }
     }
 

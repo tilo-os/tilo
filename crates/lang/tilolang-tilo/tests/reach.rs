@@ -3,9 +3,9 @@
 //! The view draws again as that moves, as it does when the record itself moves.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
 use std::rc::Rc;
 
+use collab_types::store::MovedRecord;
 use collab_types::store::wire::{Command, Reach, Reply};
 use tilolang_runtime::{Actor, UiNode, Value};
 use tilolang_tilo::host::Host;
@@ -88,7 +88,8 @@ fn a_view_reads_each_step_of_a_records_writes_reaching_another_device() {
 
     // Another device keeping the workspace takes the write in: the view draws it reached.
     *port.reach.borrow_mut() = Reach::default();
-    host.store().moved_docs(&BTreeSet::from([root.doc.clone()]));
+    host.store()
+        .moved_records(&[MovedRecord::whole(root.doc.clone())]);
     view.poll_patches().unwrap();
     assert!(
         texts(view.tree()).contains(&"reached".to_owned()),
@@ -101,7 +102,7 @@ fn a_view_reads_each_step_of_a_records_writes_reaching_another_device() {
         pending: Vec::new(),
         refused: vec!["11".repeat(32)],
     };
-    host.store().moved_docs(&BTreeSet::from([root.doc]));
+    host.store().moved_records(&[MovedRecord::whole(root.doc)]);
     view.poll_patches().unwrap();
     assert!(
         texts(view.tree()).contains(&"refused".to_owned()),
@@ -152,7 +153,7 @@ fn the_effects_waiting_are_asked_again_only_once_a_record_moved() {
         asked,
         "nothing moved: nothing is asked again"
     );
-    store.moved_docs(&BTreeSet::from(["n1".to_owned()]));
+    store.moved_records(&[MovedRecord::whole("n1")]);
     let _ = store.pending_effects();
     assert!(
         port.asked.get() > asked,

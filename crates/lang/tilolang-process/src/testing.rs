@@ -260,32 +260,32 @@ impl Workspace {
         automerge::AutoCommit::load(&store.document(&doc)?.save()).ok()
     }
 
-    /// The records `command` moves: each resource it writes, by the document it lives in. A
-    /// write that names no resource (an undo) may move every record the store holds.
+    /// The records `command` moves, as the device's broker tells the other windows: the
+    /// resources it moves ([`Command::moves`]), by the document each lives in. A write that names
+    /// no resource (an undo) may move every record the store holds.
     #[must_use]
-    pub fn records_written(&self, command: &Command) -> Vec<String> {
-        fn collect(command: &Command, records: &mut Vec<String>) -> bool {
-            match command {
-                Command::Put { id, .. } | Command::Remove { id, .. } | Command::Edit { id, .. } => {
-                    let doc = tilo_resource_store::doc_of(id);
-                    if !records.iter().any(|known| known == doc) {
-                        records.push(doc.to_owned());
-                    }
-                    true
-                }
-                Command::Batch(commands) => {
-                    commands.iter().all(|command| collect(command, records))
-                }
-                Command::Undo { .. } => false,
-                _ => true,
-            }
-        }
-        let mut records = Vec::new();
-        if collect(command, &mut records) {
+    pub fn records_written(&self, command: &Command) -> Vec<collab_types::store::MovedRecord> {
+        let Some(items) = command.moves() else {
+            return self
+                .documents()
+                .into_iter()
+                .map(collab_types::store::MovedRecord::whole)
+                .collect();
+        };
+        let mut records: BTreeMap<String, Vec<collab_types::store::MovedItem>> = BTreeMap::new();
+        for item in items {
             records
-        } else {
-            self.documents()
+                .entry(tilo_resource_store::doc_of(&item.id).to_owned())
+                .or_default()
+                .push(item);
         }
+        records
+            .into_iter()
+            .map(|(record, items)| collab_types::store::MovedRecord {
+                record,
+                items: Some(items),
+            })
+            .collect()
     }
 }
 
@@ -528,7 +528,9 @@ impl Bus {
         self.workspace
             .set_members(serde_json::json!({ "people": rows }));
         inbox.borrow_mut().push_back(CollabEvent::RecordsMoved {
-            records: vec![tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned()],
+            records: vec![collab_types::store::MovedRecord::whole(
+                tilo_resource_store::WORKSPACE_MEMBERS_ID,
+            )],
         });
     }
 
@@ -557,7 +559,7 @@ impl Bus {
     /// The workspace's store moved, here or in another window of it: every other connection reads
     /// again what it read of the records that moved, as the session tells each window when
     /// another host wrote.
-    fn resources_moved(&self, from: &Inbox, records: &[String]) {
+    fn resources_moved(&self, from: &Inbox, records: &[collab_types::store::MovedRecord]) {
         let joined = self.joined.borrow();
         let mut told: Vec<&Inbox> = Vec::new();
         for (_, _, inbox) in joined.iter() {

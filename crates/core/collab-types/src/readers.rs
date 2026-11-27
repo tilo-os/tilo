@@ -216,6 +216,16 @@ pub fn store_content_resource(document: &str) -> Option<(&str, &str)> {
     (!kind.is_empty() && !id.is_empty()).then_some((kind, id))
 }
 
+/// What a document of resources a workspace's store placed (`<readers>/<owner>#<n>`) holds the
+/// resources of: those nested in the resource `owner`, or of the kind `owner` and nested in
+/// nothing. `None` for any other document.
+#[must_use]
+pub fn placed_owner(document: &str) -> Option<&str> {
+    store_document_readers(document)?;
+    let (_, placed) = document.split_once('/')?;
+    Some(placed.rsplit_once('#')?.0)
+}
+
 /// Whether `document` is a document a workspace's resource store placed.
 #[must_use]
 pub fn is_store_document(document: &str) -> bool {

@@ -1861,7 +1861,7 @@ pub struct Hosted {
     early: Vec<CollabEvent>,
     /// The records other devices wrote, as the connection told since the last frame: read again
     /// once, after every event of the frame is in, so a burst of writes is one reading.
-    moved_records: std::collections::BTreeSet<String>,
+    moved_records: Vec<collab_types::store::MovedRecord>,
     /// What the app was opened with, until the turn that published its surface runs the action its
     /// package declares for the file's kind, or its `open-link` for a link ([`Self::opened`]).
     opening: Option<runtime_portal::process_link::OpenRequest>,
@@ -2285,7 +2285,7 @@ impl Hosted {
             invocations,
             shell,
             early: Vec::new(),
-            moved_records: std::collections::BTreeSet::new(),
+            moved_records: Vec::new(),
             opening: None,
             files: kept.content.clone(),
             outputs_sent: None,
@@ -3539,20 +3539,10 @@ impl Hosted {
                 self.not_ours();
                 return false;
             }
-            CollabEvent::ResourcesArrived { records } => {
-                // Records of the workspace the instance reads arrived here from elsewhere: what
-                // it read of them is read again, and what it shows moves with it. A move that
-                // names no record may have moved any of them.
-                if records.is_empty() {
-                    self.store_moved();
-                    return true;
-                }
-                self.moved_records.extend(records);
-                return false;
-            }
             CollabEvent::RecordsMoved { records } => {
-                // Another device wrote these records: what this window read of them is read
-                // again with the rest of the frame's events, once, however many ops moved them.
+                // Another window or device wrote these records: what this window read of the
+                // resources they name is read again with the rest of the frame's events, once,
+                // however many ops moved them.
                 self.moved_records.extend(records);
                 return false;
             }

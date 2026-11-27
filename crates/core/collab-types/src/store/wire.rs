@@ -502,6 +502,60 @@ impl Command {
                 | Self::UndoMany { .. }
         )
     }
+
+    /// The resources whose readings this write moves: each resource it writes, what it puts one
+    /// under, and what it says the resources it made were made from. A reader forgets what it
+    /// read of each, of what is nested under it and of what holds it ([`super::MovedRecord`]).
+    /// `None` for a write that may move any resource (an undo, a restore, a record's own
+    /// changes); none for a read.
+    #[must_use]
+    pub fn moves(&self) -> Option<Vec<super::MovedItem>> {
+        let item = |id: &str, kind: Option<&str>| super::MovedItem {
+            id: id.to_owned(),
+            kind: kind.map(str::to_owned),
+        };
+        let mut moved = Vec::new();
+        let mut commands = vec![self];
+        while let Some(command) = commands.pop() {
+            let (kind, id, stamp) = match command {
+                Self::Put {
+                    kind,
+                    id,
+                    resource,
+                    stamp,
+                } => {
+                    moved.extend(resource.parent.iter().map(|parent| item(parent, None)));
+                    (kind, id, stamp)
+                }
+                Self::Remove { kind, id, stamp }
+                | Self::Edit {
+                    kind, id, stamp, ..
+                }
+                | Self::Checkpoint {
+                    kind, id, stamp, ..
+                } => (kind, id, stamp),
+                Self::Batch(inner) => {
+                    commands.extend(inner);
+                    continue;
+                }
+                Self::Undo { .. }
+                | Self::UndoMany { .. }
+                | Self::Restore { .. }
+                | Self::RecordChange { .. } => return None,
+                _ => continue,
+            };
+            moved.push(item(id, Some(kind)));
+            moved.extend(
+                stamp
+                    .from
+                    .as_ref()
+                    .map(|from| item(&from.id, Some(&from.kind))),
+            );
+        }
+        moved.sort_unstable();
+        moved.dedup();
+        Some(moved)
+    }
 }
 
 #[cfg(test)]

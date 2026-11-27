@@ -626,7 +626,7 @@ impl Shell {
         }
     }
 
-    /// Tell Today the workspace's documents arrived, as the broker tells a connection when what
+    /// Tell Today the workspace's records moved, as the broker tells a connection when what
     /// Tasks wrote reached the store. Whether Tasks wrote anything since the last call.
     fn carry_workspace(&mut self) -> bool {
         let written = self.tasks_instance().store().last_written();
@@ -636,8 +636,14 @@ impl Shell {
         self.written = written;
         self.today_inbox
             .borrow_mut()
-            .push_back(CollabEvent::ResourcesArrived {
-                records: self.bus.workspace().documents(),
+            .push_back(CollabEvent::RecordsMoved {
+                records: self
+                    .bus
+                    .workspace()
+                    .documents()
+                    .into_iter()
+                    .map(collab_types::store::MovedRecord::whole)
+                    .collect(),
             });
         true
     }

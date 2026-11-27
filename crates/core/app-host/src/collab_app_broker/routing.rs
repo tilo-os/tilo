@@ -595,7 +595,9 @@ impl AppBrokerState {
         let apps = self.installed_apps();
         let members = self.members_digest(&CrdtRoute::from_channel_key(channel).cluster_id);
         let members_moved =
-            ContextUpdate::RecordsMoved(vec![tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned()]);
+            ContextUpdate::RecordsMoved(vec![collab_types::store::MovedRecord::whole(
+                tilo_resource_store::WORKSPACE_MEMBERS_ID,
+            )]);
         let mut channels = self
             .channels
             .lock()

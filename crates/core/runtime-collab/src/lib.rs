@@ -283,10 +283,11 @@ pub struct ChannelContext {
     /// wrote and no window here holds (`recordsArrived`); empty otherwise.
     /// Not a roster update either.
     pub resources_arrived: Vec<String>,
-    /// On a session-local frame: records another device wrote into this
-    /// workspace's store (`recordsMoved`); empty otherwise. What a window that
-    /// reads the store read of them is read again. Not a roster update either.
-    pub records_moved: Vec<String>,
+    /// On a session-local frame: records of this workspace's store that moved
+    /// (`recordsMoved`); empty otherwise. What a window that reads the store
+    /// read of the resources each names is read again. Not a roster update
+    /// either.
+    pub records_moved: Vec<collab_types::store::MovedRecord>,
     /// `Some` only on another member's word in the workspace: who said it, and the frame the
     /// live session carries. Not a roster update either.
     pub heard: Option<(collab_types::MemberId, collab_types::presence::Presence)>,

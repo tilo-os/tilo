@@ -271,11 +271,7 @@ fn system_kind_of<'a>(
     document: &WrittenDocument<'a>,
 ) -> Option<&'a str> {
     let record = document.document;
-    let named = crate::claim::content_kind(record).or_else(|| {
-        crate::store_document_readers(record)?;
-        let (_, rest) = record.split_once('/')?;
-        rest.rsplit_once('#').map(|(kind, _)| kind)
-    });
+    let named = crate::claim::content_kind(record).or_else(|| crate::placed_owner(record));
     named
         .or_else(|| crate::bound_kind(record))
         .filter(|kind| known.system_resource(document.app, kind).is_some())

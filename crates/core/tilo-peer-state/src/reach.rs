@@ -116,6 +116,40 @@ pub struct ReachMoved {
     pub app: String,
     /// The record, as its writes name it.
     pub record: String,
+    /// The resources of the record the noted write moved ([`writing`]); none for a write taken
+    /// in, `None` when anything of the record may have moved.
+    pub items: Option<Vec<collab_types::store::MovedItem>>,
+    /// The connection that made the noted write, which holds it already.
+    pub by: Option<u64>,
+}
+
+/// The write this device is making now: the app, its connection and the resources it moves.
+#[derive(Clone, Debug)]
+pub struct Writing {
+    pub app: String,
+    pub by: Option<u64>,
+    pub items: Vec<collab_types::store::MovedItem>,
+}
+
+tokio::task_local! {
+    static WRITING: Writing;
+}
+
+/// `work`, as the write `writing`: what it notes of `writing.app`'s records ([`Ledgers::note`])
+/// moved the resources it names; a write noted outside one moves its whole record.
+pub async fn writing<F: std::future::Future>(writing: Writing, work: F) -> F::Output {
+    WRITING.scope(writing, work).await
+}
+
+/// `work`, a task the write being made now hands on, as that write: taken when it is called.
+pub fn carrying<F: std::future::Future>(work: F) -> impl std::future::Future<Output = F::Output> {
+    let writing = WRITING.try_with(Clone::clone).ok();
+    async move {
+        match writing {
+            Some(writing) => WRITING.scope(writing, work).await,
+            None => work.await,
+        }
+    }
 }
 
 /// One write the log names.
@@ -378,10 +412,19 @@ impl Ledgers {
             }
             drop(ledgers);
         }
+        let (items, by) = WRITING
+            .try_with(|writing| {
+                (writing.app == *app_id).then(|| (Some(writing.items.clone()), writing.by))
+            })
+            .ok()
+            .flatten()
+            .unwrap_or((None, None));
         let _ = self.moved.send(ReachMoved {
             workspace,
             app: app_id.clone(),
             record: document_id.clone(),
+            items,
+            by,
         });
     }
 
@@ -397,10 +440,14 @@ impl Ledgers {
                 let Some(noted) = ledger.pending.get(&write) else {
                     return;
                 };
+                // Taken in, the write changed nothing here: only how far it has gone moved. A
+                // refusal says the record stands otherwise than this device wrote it.
                 let moved = ReachMoved {
                     workspace,
                     app: noted.app.clone(),
                     record: noted.record.clone(),
+                    items: matches!(kept, Kept::Durable).then(Vec::new),
+                    by: None,
                 };
                 let entry = match kept {
                     Kept::Durable => Entry::Reached(write),

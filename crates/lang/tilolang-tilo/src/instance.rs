@@ -2875,11 +2875,10 @@ impl Instance {
         self.moved = true;
     }
 
-    /// The records `docs` moved on, written by another device: what this window read of those
-    /// records is read again, and what it read of the rest stays, so a workspace changed as a
-    /// whole is read again the records that changed, not all of it.
-    pub fn records_moved(&mut self, docs: &BTreeSet<tilolang_runtime::ids::DocId>) {
-        self.store.moved_docs(docs);
+    /// Records of the workspace moved on ([`ResourceStore::moved_records`]): what this window read
+    /// of the resources they name is read again, and what it read of the rest stays.
+    pub fn records_moved(&mut self, moved: &[collab_types::store::MovedRecord]) {
+        self.store.moved_records(moved);
         self.moved = true;
     }
 

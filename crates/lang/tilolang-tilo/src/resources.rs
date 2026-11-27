@@ -1440,18 +1440,133 @@ impl ResourceStore {
         self.inner.queried.borrow_mut().clear();
     }
 
-    /// The records `docs` moved on, written by another device: what was read of those records is
-    /// read again, and the views that read them move with it. What was read of any other record
-    /// stays as it read, so a workspace whose records arrive in a burst is read again a record at
-    /// a time, not whole for each.
-    pub fn moved_docs(&self, docs: &BTreeSet<DocId>) {
-        if docs.is_empty() {
+    /// Records of the workspace moved on: another window or device wrote them, or this
+    /// device's changes of them went further. What was read of each resource a move names and of
+    /// what holds it is read again, and the views that read them move with them; the rest of the
+    /// record stands, so a message posted to a channel of ten thousand reads that message again,
+    /// not the channel. A move that names no resource forgets the whole record: its document, the
+    /// resource whose content it holds, or, for a document of resources the workspace's store
+    /// placed, the document of what they are nested in.
+    pub fn moved_records(&self, moved: &[collab_types::store::MovedRecord]) {
+        if moved.is_empty() {
             return;
         }
-        self.forget_reads_of(docs);
-        for doc in docs {
+        // Each move may be how far this device's changes went, or a write that adds to them.
+        self.inner.reach.borrow_mut().clear();
+        let mut whole = BTreeSet::new();
+        // A resource named with no kind is what a write nested the one it wrote in: its fields
+        // are as they were, and its collections are told with the resource's.
+        let mut items = BTreeMap::<String, String>::new();
+        for record in moved {
+            match &record.items {
+                Some(moved) => items.extend(
+                    moved
+                        .iter()
+                        .filter_map(|item| Some((item.id.clone(), item.kind.clone()?))),
+                ),
+                None => {
+                    if let Some((kind, id)) = collab_types::touch::content_resource(&record.record)
+                    {
+                        items.insert(id, kind);
+                    } else if let Some(owner) = collab_types::placed_owner(&record.record) {
+                        // Records nested in nothing are each their own document: any may have
+                        // come or gone.
+                        if self.type_of_kind(owner).is_some() {
+                            return self.moved();
+                        }
+                        whole.insert(doc_of(owner).to_owned());
+                    } else {
+                        whole.insert(record.record.clone());
+                    }
+                }
+            }
+        }
+        let mut told = BTreeMap::<DocId, (BTreeSet<FieldKey>, BTreeSet<FieldKey>)>::new();
+        items.retain(|id, _| !whole.contains(doc_of(id)));
+        for (id, kind) in &items {
+            if self.moved_item(id, kind, &mut told, &mut whole) {
+                return self.moved();
+            }
+        }
+        self.forget_reads_of(&whole);
+        for doc in &whole {
             self.notify(&ChangeSummary::whole(doc.clone()));
         }
+        told.retain(|doc, _| !whole.contains(doc));
+        for (doc, (fields, collections)) in told {
+            self.notify(&ChangeSummary {
+                doc,
+                fields: fields.into_iter().collect(),
+                collections: collections.into_iter().collect(),
+                listings: Vec::new(),
+                by: None,
+            });
+        }
+    }
+
+    /// Forget what was read of the resource `id` of `kind` and read it again, gathering what the
+    /// views are told into `told`: the resource, and the collections of what holds it before and
+    /// after. One gone before it was read moved its whole document, into `whole`. Whether the
+    /// workspace moved as a whole: a record nested in nothing came or went.
+    fn moved_item(
+        &self,
+        id: &str,
+        kind: &str,
+        told: &mut BTreeMap<DocId, (BTreeSet<FieldKey>, BTreeSet<FieldKey>)>,
+        whole: &mut BTreeSet<DocId>,
+    ) -> bool {
+        let was = self.inner.cache.borrow_mut().remove(id).flatten();
+        self.inner.absent.borrow_mut().retain(|held| held.1 != id);
+        self.inner.versions.borrow_mut().remove(id);
+        self.inner
+            .listings
+            .borrow_mut()
+            .retain(|_, (_, pages)| pages.kind != kind);
+        let now = self.held(kind, id).ok().flatten();
+        let holders: BTreeSet<String> = [&was, &now]
+            .into_iter()
+            .filter_map(|held| held.as_ref()?.parent.clone())
+            .collect();
+        match (&was, &now) {
+            (None, None) => {
+                whole.insert(doc_of(id).to_owned());
+                return false;
+            }
+            (None, Some(_)) | (Some(_), None) if holders.is_empty() => return true,
+            _ => {}
+        }
+        let any = FieldKey {
+            resource: id.to_owned(),
+            field: ANY_FIELD.to_owned(),
+        };
+        told.entry(doc_of(id).into()).or_default().0.insert(any);
+        let Some(ty) = self.type_of_kind(kind) else {
+            return false;
+        };
+        for holder in holders {
+            let holder_ty = self.type_of_id(&holder);
+            let kinds = self.inner.kinds.borrow();
+            let fields: Vec<&String> = holder_ty
+                .and_then(|holder_ty| kinds.get(&holder_ty))
+                .map(|entry| {
+                    let held = entry.fields.iter().filter(|(_, f)| f.items.contains(&ty));
+                    held.map(|(field, _)| field).collect()
+                })
+                .unwrap_or_default();
+            if fields.is_empty() {
+                whole.insert(doc_of(&holder).to_owned());
+            }
+            let entry = told.entry(doc_of(&holder).to_owned()).or_default();
+            for field in fields {
+                let key = FieldKey {
+                    resource: holder.clone(),
+                    field: field.clone(),
+                };
+                entry.0.insert(key.clone());
+                entry.1.insert(key);
+            }
+        }
+        false
     }
 
     /// Forget what was read of the records `docs`, and of nothing else: each resource's reading
@@ -1482,54 +1597,21 @@ impl ResourceStore {
         self.inner.queried.borrow_mut().clear();
     }
 
-    /// Forget the versions read of what `command` writes: each resource it writes, what holds
-    /// it, and what it was made from. A write whose resources it does not name (an undo)
-    /// forgets them all.
+    /// Forget the versions read of what `command` moves ([`Command::moves`]) and of what holds
+    /// each: an item's id is under the ids of what holds it (`doc/item`). A write whose resources
+    /// it does not name (an undo) forgets them all.
     fn forget_versions_of(&self, command: &Command) {
-        // An item's id is under the ids of what holds it (`doc/item`).
-        fn forget(versions: &mut HashMap<String, History>, id: &str) {
-            versions.remove(id);
-            let mut held = id;
+        let mut versions = self.inner.versions.borrow_mut();
+        let Some(moved) = command.moves() else {
+            versions.clear();
+            return;
+        };
+        for item in moved {
+            let mut held = item.id.as_str();
+            versions.remove(held);
             while let Some((holder, _)) = held.rsplit_once('/') {
                 versions.remove(holder);
                 held = holder;
-            }
-        }
-        let mut versions = self.inner.versions.borrow_mut();
-        let mut stamps = Vec::new();
-        let mut commands = vec![command];
-        while let Some(command) = commands.pop() {
-            match command {
-                Command::Put {
-                    id,
-                    resource,
-                    stamp,
-                    ..
-                } => {
-                    forget(&mut versions, id);
-                    if let Some(parent) = &resource.parent {
-                        forget(&mut versions, parent);
-                    }
-                    stamps.push(stamp);
-                }
-                Command::Remove { id, stamp, .. }
-                | Command::Edit { id, stamp, .. }
-                | Command::Checkpoint { id, stamp, .. } => {
-                    forget(&mut versions, id);
-                    stamps.push(stamp);
-                }
-                Command::Batch(inner) => commands.extend(inner),
-                // An undo, a redo or a restore takes back changes of any resource.
-                Command::Undo { .. } | Command::UndoMany { .. } | Command::Restore { .. } => {
-                    versions.clear();
-                    return;
-                }
-                _ => {}
-            }
-        }
-        for stamp in stamps {
-            if let Some(from) = &stamp.from {
-                forget(&mut versions, &from.id);
             }
         }
     }
@@ -1870,6 +1952,10 @@ impl ResourceStore {
     /// the app knows, so a read of an id the store holds none of costs one round trip.
     #[must_use]
     pub fn type_of_id(&self, id: &str) -> Option<TypeId> {
+        // The workspace's members' resource is of its one kind, which few packages read.
+        if id == tilo_resource_store::WORKSPACE_MEMBERS_ID {
+            return self.type_of_kind(tilo_resource_store::WORKSPACE_MEMBERS_KIND);
+        }
         // What was written here is what it is, removed included.
         if let Some(written) = self.inner.local.borrow().get(id) {
             return written

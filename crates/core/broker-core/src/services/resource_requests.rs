@@ -68,6 +68,8 @@ pub struct ResourceRequestContext {
     /// writes outside an invocation it serves is the app's own. The device's own callers (the
     /// shell, a runtime of the device's) write for the device's person.
     app_process: bool,
+    /// The connection the command came on, which holds what it writes already.
+    connection: Option<u64>,
 }
 
 impl ResourceRequestContext {
@@ -87,7 +89,19 @@ impl ResourceRequestContext {
             founding_refusal: None,
             kind: None,
             app_process: false,
+            connection: None,
         }
+    }
+
+    #[must_use]
+    pub const fn on_connection(mut self, connection: u64) -> Self {
+        self.connection = Some(connection);
+        self
+    }
+
+    #[must_use]
+    pub const fn connection(&self) -> Option<u64> {
+        self.connection
     }
 
     /// The context of a route that serves the app's own process, its connection to the device.

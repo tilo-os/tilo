@@ -227,7 +227,9 @@ async fn a_native_context_subscriber_is_told_where_the_members_are() {
     state.refresh_workspace_context_services().unwrap();
     assert_eq!(
         stream.try_recv().unwrap(),
-        ContextUpdate::RecordsMoved(vec![tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned()]),
+        ContextUpdate::RecordsMoved(vec![collab_types::store::MovedRecord::whole(
+            tilo_resource_store::WORKSPACE_MEMBERS_ID
+        )]),
         "the window is told where the members are, not who they are"
     );
     state.refresh_workspace_context_services().unwrap();
@@ -250,7 +252,9 @@ async fn a_native_context_subscriber_is_told_where_the_members_are() {
     state.refresh_workspace_context_services().unwrap();
     assert_eq!(
         stream.try_recv().unwrap(),
-        ContextUpdate::RecordsMoved(vec![tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned()]),
+        ContextUpdate::RecordsMoved(vec![collab_types::store::MovedRecord::whole(
+            tilo_resource_store::WORKSPACE_MEMBERS_ID
+        )]),
         "a grant changes who is there: the window reads its members again"
     );
     {

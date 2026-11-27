@@ -237,24 +237,28 @@ fn thousands_of_items_are_written_fast_and_listed() {
     assert_eq!(titles(view.tree()).len(), total);
 }
 
-/// A store held in this process that counts every command it is sent.
-struct Asked(tilo_resource_store::LocalPort, std::cell::Cell<usize>);
+/// A store that keeps every command it is sent: what a write moved is named from its commands,
+/// as the workspace names it.
+struct Asked(
+    std::rc::Rc<dyn tilo_resource_store::Port>,
+    std::cell::RefCell<Vec<collab_types::store::wire::Command>>,
+);
 
 impl tilo_resource_store::Port for Asked {
     fn command(
         &self,
         command: collab_types::store::wire::Command,
     ) -> Result<collab_types::store::wire::Reply, String> {
-        self.1.set(self.1.get().saturating_add(1));
-        tilo_resource_store::Port::command(&self.0, command)
+        self.1.borrow_mut().push(command.clone());
+        self.0.command(command)
     }
 
     fn declare(&self, schema: tilo_resource_store::Schema) {
-        tilo_resource_store::Port::declare(&self.0, schema);
+        self.0.declare(schema);
     }
 
     fn set_record_reader(&self, reader: std::sync::Arc<dyn tilo_resource_store::RecordReader>) {
-        tilo_resource_store::Port::set_record_reader(&self.0, reader);
+        self.0.set_record_reader(reader);
     }
 }
 
@@ -298,8 +302,8 @@ view items(list: Items) {
     let compiled = tilolang::compile_package(source, &tilolang::IdsLock::new(), &[])
         .unwrap_or_else(|errors| panic!("{errors:#?}"));
     let port = std::rc::Rc::new(Asked(
-        tilo_resource_store::LocalPort::in_memory(),
-        std::cell::Cell::new(0),
+        std::rc::Rc::new(tilo_resource_store::LocalPort::in_memory()),
+        std::cell::RefCell::default(),
     ));
     let store = ResourceStore::new(port.clone());
     store.declare(&compiled.meta);
@@ -333,7 +337,7 @@ view items(list: Items) {
         let titles = (0..count)
             .map(|at| Value::text(format!("item {round}-{at}")))
             .collect();
-        port.1.set(0);
+        port.1.take();
         let made = rt
             .invoke_action(
                 &me(),
@@ -348,7 +352,7 @@ view items(list: Items) {
         };
         assert_eq!(made.len(), count, "every item of the batch is made");
         // What the view reads to show them is its own: a page of rows at a time.
-        let action = port.1.get();
+        let action = port.1.take().len();
         view.poll_patches().unwrap();
         action
     };
@@ -736,7 +740,7 @@ fn a_resource_the_store_holds_none_of_is_asked_for_once_until_its_record_moves()
         "a thousand reads of a resource the store holds none of asked it {} times",
         port.gets.get()
     );
-    store.moved_docs(&std::collections::BTreeSet::from([nobody.doc.clone()]));
+    store.moved_records(&[collab_types::store::MovedRecord::whole(nobody.doc.clone())]);
     assert!(!store.contains(&nobody));
     assert_eq!(
         port.gets.get(),
@@ -832,8 +836,8 @@ fn a_record_the_store_holds_none_of_is_one_question_however_many_kinds_the_app_h
     use tilolang_runtime::store::Store as _;
     let compiled = ticks_with_many_kinds();
     let port = std::rc::Rc::new(Asked(
-        tilo_resource_store::LocalPort::in_memory(),
-        std::cell::Cell::new(0),
+        std::rc::Rc::new(tilo_resource_store::LocalPort::in_memory()),
+        std::cell::RefCell::default(),
     ));
     let store = ResourceStore::new(port.clone());
     store.declare(&compiled.meta);
@@ -879,9 +883,9 @@ fn a_record_the_store_holds_none_of_is_one_question_however_many_kinds_the_app_h
     let reader = ResourceStore::new(port.clone());
     reader.declare(&compiled.meta);
     let asked = |read: &dyn Fn()| {
-        let before = port.1.get();
+        port.1.take();
         read();
-        port.1.get() - before
+        port.1.take().len()
     };
 
     let missing = "root-nobody-wrote-this";
@@ -925,4 +929,74 @@ fn a_record_the_store_holds_none_of_is_one_question_however_many_kinds_the_app_h
         );
     });
     assert_eq!(questions, 1, "a removed record's type is one question too");
+}
+
+/// A list whose rows each read who made them, as a conversation's do.
+const LINES: &str = r#"app so.tilo.lines "Lines"
+type Line {
+    said: Text
+}
+type Lines {
+    items: Collection<Line>
+}
+action say(list: Lines, said: Text) -> Line {
+    return list.items.insert(Line(said: said))
+}
+view lines(list: Lines) {
+    stack {
+        for line in list.items {
+            if let c = created(line) {
+                text("{line.said} by {c.who}")
+            }
+        }
+    }
+}
+"#;
+
+/// Another window's write among a thousand rows that each read their history is read again
+/// alone: the view asks for the resource written, its holder and its history, never another
+/// row's. Another device's write, which moves its record as a whole, reaches the view too.
+#[test]
+fn a_write_elsewhere_reads_again_only_what_it_moved() {
+    use collab_types::store::wire::Command;
+    let compiled = tilolang::compile_package(LINES, &tilolang::IdsLock::new(), &[])
+        .unwrap_or_else(|errors| panic!("{errors:#?}"));
+    let shared: std::rc::Rc<dyn tilo_resource_store::Port> =
+        std::rc::Rc::new(tilo_resource_store::LocalPort::in_memory());
+    let [ours, theirs] = [(); 2].map(|()| std::rc::Rc::new(Asked(shared.clone(), <_>::default())));
+    let [(store, rt), (_, other)] = [&ours, &theirs].map(|port| {
+        let store = ResourceStore::new(port.clone());
+        store.declare(&compiled.meta);
+        let rt = Runtime::new(store.clone(), solo()).unwrap();
+        rt.load_compiled(&compiled).unwrap();
+        (store, rt)
+    });
+    let list = other.create("Lines").unwrap();
+    let write = |said: String| {
+        let line = vec![Value::resource(&list), Value::text(said)];
+        other
+            .invoke_action(&me(), (compiled.meta.actions[0].id.as_str(), line))
+            .unwrap();
+        let moved: Option<Vec<_>> = theirs.1.take().iter().map(Command::moves).collect();
+        moved.map(|items| items.concat())
+    };
+    (0..1000).for_each(|at| _ = write(format!("line {at}")));
+    let view = &compiled.meta.views[0].id;
+    let mut view = rt
+        .open_view(&me(), view, vec![Value::resource(&list)])
+        .unwrap();
+    for (said, near) in [("nearby", true), ("from afar", false)] {
+        let items = write(said.to_owned()).filter(|_| near);
+        ours.1.take();
+        let record = list.doc.clone();
+        store.moved_records(&[collab_types::store::MovedRecord { record, items }]);
+        view.poll_patches().unwrap();
+        let asked = ours.1.take();
+        let rows = asked
+            .iter()
+            .filter(|read| matches!(read, Command::Get { .. } | Command::VersionEnd { .. }));
+        assert!(!near || rows.count() <= 4, "{asked:#?}");
+        let bottom = view.tree().of_kind("ui.Text").last().unwrap().props["value"].clone();
+        assert!(matches!(bottom, Value::Text(shown) if shown.starts_with(said)));
+    }
 }

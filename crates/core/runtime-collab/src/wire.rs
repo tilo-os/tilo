@@ -488,9 +488,9 @@ pub enum ContextUpdate {
     Handoff(Vec<u8>),
     /// Records of the application's trees a peer wrote and no window holds.
     ResourcesArrived(Vec<String>),
-    /// Records another device wrote into this workspace's store: what a window that reads the
-    /// store read of them is read again.
-    RecordsMoved(Vec<String>),
+    /// Records of this workspace's store that moved: what a window that reads the store read of
+    /// the resources each names is read again.
+    RecordsMoved(Vec<collab_types::store::MovedRecord>),
     /// The record changed past what the endpoint was sent: it asks the changes from its own
     /// heads (the store command `RecordChanges`).
     RecordChanged,

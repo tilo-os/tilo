@@ -2318,7 +2318,21 @@ impl Workspaces {
         context: &tilo_broker_core::services::ResourceRequestContext,
         command: collab_types::store::wire::Command,
     ) -> Result<collab_types::store::wire::Reply, String> {
-        self.answer_resource_command(context, command).await
+        // What a write moves is told the app's windows as its records are noted, with the
+        // connection it came on, which holds it already. A write that may move anything names
+        // nothing, and its records move whole.
+        let items = command.moves().filter(|_| command.writes());
+        // Boxed, so the scope adds nothing to the size of every caller's future.
+        let answer = Box::pin(self.answer_resource_command(context, command));
+        match items {
+            Some(items) => {
+                let app = context.app_id().to_owned();
+                let by = context.connection();
+                let writing = tilo_peer_state::reach::Writing { app, by, items };
+                tilo_peer_state::reach::writing(writing, answer).await
+            }
+            None => answer.await,
+        }
     }
 
     #[cfg(feature = "apps")]
@@ -2727,8 +2741,8 @@ impl Workspaces {
         let (complete, answer) = tokio::sync::oneshot::channel();
         let workspaces = self.clone();
         // Once retention starts, every write is kept even if the caller goes away: the batch is
-        // one action.
-        tokio::spawn(async move {
+        // one action, and its records are noted as the write the caller is making.
+        tokio::spawn(tilo_peer_state::reach::carrying(async move {
             let result = workspaces
                 .keep_batches(&mut hosted, &device, &app, (&writes, &requests), whole)
                 .await;
@@ -2749,7 +2763,7 @@ impl Workspaces {
             }
             hosted.resources.batch_kept();
             let _ = complete.send(result);
-        });
+        }));
         answer
             .await
             .map_err(|_| "the resource writer stopped".to_owned())?

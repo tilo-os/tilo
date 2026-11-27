@@ -7,7 +7,7 @@
 # broker, shell-owned tools), one range for all of them: the image serves
 # every version from `oldest` to `version`.
 name = "runtime"
-version = 54
+version = 55
 version_const = "crates/core/runtime-interface/src/lib.rs:RUNTIME_INTERFACE_VERSION"
 oldest_const = "crates/core/runtime-interface/src/lib.rs:OLDEST_RUNTIME_INTERFACE_VERSION"
 encoding = "postcard"
@@ -55,6 +55,7 @@ sources = [
     "crates/core/collab-types/src/presence/shell.rs",
     "crates/core/collab-types/src/presence/call.rs",
     "crates/core/collab-types/src/presence/shown.rs",
+    "crates/core/collab-types/src/store/mod.rs",
     "crates/core/tilo-fs-client/src/wire.rs",
     "crates/core/tilo-fs-client/src/lib.rs",
     "crates/core/tilo-fs-client/src/blobs.rs",
@@ -273,7 +274,7 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "ContextUpdate::Heard.frame" = "#1 Box<Presence>"
 "ContextUpdate::Heard.member" = "#0 MemberId"
 "ContextUpdate::RecordChanged" = "#5 unit"
-"ContextUpdate::RecordsMoved" = "#4 tuple(Vec<String>)"
+"ContextUpdate::RecordsMoved" = "#4 tuple(Vec<MovedRecord>)"
 "ContextUpdate::ResourcesArrived" = "#3 tuple(Vec<String>)"
 "ContextUpdate::Snapshot" = "#0 struct"
 "ContextUpdate::Snapshot.apps" = "#1 Vec<NamedApp>"
@@ -1036,6 +1037,12 @@ SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own sig
 "Metadata.modified_unix_seconds" = "#2 Option<i64>"
 "Metadata.needs_hydration" = "#3 bool"
 "Metadata.size" = "#1 u64"
+"MovedItem" = "struct"
+"MovedItem.id" = "#0 String"
+"MovedItem.kind" = "#1 Option<String>"
+"MovedRecord" = "struct"
+"MovedRecord.items" = "#1 Option<Vec<MovedItem>>"
+"MovedRecord.record" = "#0 String"
 "NamedApp" = "struct"
 "NamedApp.id" = "#0 String"
 "NamedApp.name" = "#1 String"

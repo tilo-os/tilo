@@ -305,7 +305,9 @@ mod tests {
     }
 
     /// The records each `RecordsMoved` the subscriber was sent named.
-    fn moved(rx: &mut mpsc::UnboundedReceiver<ContextUpdate>) -> Vec<Vec<String>> {
+    fn moved(
+        rx: &mut mpsc::UnboundedReceiver<ContextUpdate>,
+    ) -> Vec<Vec<collab_types::store::MovedRecord>> {
         let mut moved = Vec::new();
         while let Ok(envelope) = rx.try_recv() {
             if let ContextUpdate::RecordsMoved(records) = envelope {
@@ -604,7 +606,11 @@ mod tests {
             open.deliver(&value, edit(&workspace, &value, 1, "hello")),
             Delivery::Done
         );
-        assert_eq!(moved(&mut open.window), [vec![value.clone()]]);
+        // Another device's write arrives as the record's changes, which name no resource.
+        assert_eq!(
+            moved(&mut open.window),
+            [vec![collab_types::store::MovedRecord::whole(value.clone())]]
+        );
         assert_eq!(
             open.announced.lock().unwrap().as_slice(),
             &[(open.app.clone(), vec![value.clone()])],
@@ -617,7 +623,7 @@ mod tests {
         );
         assert_eq!(
             moved(&mut open.window),
-            [vec![value]],
+            [vec![collab_types::store::MovedRecord::whole(value)]],
             "every op of a record tells the window it moved, not only the first"
         );
         assert_eq!(
@@ -627,7 +633,7 @@ mod tests {
         );
         assert_eq!(
             moved(&mut open.window),
-            [vec![root]],
+            [vec![collab_types::store::MovedRecord::whole(root)]],
             "the window is told the root document, on the app's route"
         );
         assert!(

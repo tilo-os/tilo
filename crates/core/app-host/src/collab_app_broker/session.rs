@@ -379,6 +379,7 @@ impl JoinedChannel {
                 caller,
             )
             .of_app_process()
+            .on_connection(writer)
             .serving(delivered_to)
             .landed_with(std::sync::Arc::clone(&landed))
             .opened_for(opened_for);

@@ -380,9 +380,24 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             "ResourcesArrived"
         }
         CollabEvent::RecordsMoved { records } => {
-            meter.add_product(records.capacity(), std::mem::size_of::<String>());
-            for record in records {
-                meter.string_capacity(record);
+            meter.add_product(
+                records.capacity(),
+                std::mem::size_of::<collab_types::store::MovedRecord>(),
+            );
+            for moved in records {
+                meter.string_capacity(&moved.record);
+                if let Some(items) = &moved.items {
+                    meter.add_product(
+                        items.capacity(),
+                        std::mem::size_of::<collab_types::store::MovedItem>(),
+                    );
+                    for item in items {
+                        meter.string_capacity(&item.id);
+                        if let Some(kind) = &item.kind {
+                            meter.string_capacity(kind);
+                        }
+                    }
+                }
             }
             "RecordsMoved"
         }

@@ -18,3 +18,30 @@ pub use value::{Cell, Value};
 pub const WORKSPACE_MEMBERS_KIND: &str = "workspace.members";
 /// The id the workspace's members' resource is read by ([`WORKSPACE_MEMBERS_KIND`]).
 pub const WORKSPACE_MEMBERS_ID: &str = "workspace/members";
+
+/// A record of the workspace that moved, as a window reading the store is told, and the resources
+/// of it that moved: `None` when anything of it may have (another device's write), none when only
+/// how far this device's changes of it have gone moved.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct MovedRecord {
+    pub record: String,
+    pub items: Option<Vec<MovedItem>>,
+}
+
+/// One resource a write moved: its id, and its kind where the write named it.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub struct MovedItem {
+    pub id: String,
+    pub kind: Option<String>,
+}
+
+impl MovedRecord {
+    /// Anything of `record` may have moved.
+    #[must_use]
+    pub fn whole(record: impl Into<String>) -> Self {
+        Self {
+            record: record.into(),
+            items: None,
+        }
+    }
+}

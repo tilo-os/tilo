@@ -55,12 +55,15 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
     /// container's child) that a peer wrote and no window here holds:
     /// whatever follows those trees holds them. Session-local.
     ResourcesArrived { records: Vec<String> },
-    /// The records another device wrote into this workspace's store. A window that keeps no
-    /// document of its own, whose views read the store a record at a time, reads again what it
-    /// read of these and nothing of the records not named: every view of a resource shows the
-    /// change without re-reading the workspace. A window that holds the documents themselves
-    /// has applied them already and needs no telling. Session-local.
-    RecordsMoved { records: Vec<String> },
+    /// The records of this workspace's store that moved: another device wrote them, another
+    /// window of this device did, or this device's changes of them went further. A window that
+    /// keeps no document of its own, whose views read the store a resource at a time, reads again
+    /// what it read of the resources each names and nothing else: every view of a resource shows
+    /// the change without re-reading the workspace. A window that holds the documents
+    /// themselves has applied them already and needs no telling. Session-local.
+    RecordsMoved {
+        records: Vec<collab_types::store::MovedRecord>,
+    },
     /// The workspace's hosts sent everything they hold of the on-demand
     /// record on `route` (`neighbour_wire::document_sync`) this endpoint read,
     /// and it was not among it, or no host of the workspace is connected:

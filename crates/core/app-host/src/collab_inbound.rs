@@ -117,6 +117,8 @@ pub fn follow_reach(
                 Ok(moved) => tell_records_moved(
                     &fanout,
                     &CrdtRoute::record(&moved.app, moved.workspace.to_string(), &moved.record),
+                    moved.items,
+                    moved.by,
                 ),
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
                     tracing::warn!(
@@ -309,7 +311,9 @@ fn accept(
     if first_of_the_document {
         announce_document(fanout, route);
     }
-    tell_records_moved(fanout, route);
+    // Another device's write arrives as the record's changes, which name no resource: anything
+    // of the record may have moved.
+    tell_records_moved(fanout, route, None, None);
 }
 
 /// Whether this exact op, signature included, passed validation here.
@@ -341,12 +345,18 @@ fn announce_document(fanout: &FanoutState, route: &CrdtRoute) {
     );
 }
 
-/// Tell the app's windows that the record on `route` moved. A window that holds the record's
-/// document applies the op as it arrives; a window that keeps no document of its own, whose views
-/// read the store a record at a time (a tilolang app's window), reads again what it read of this
-/// record and of no other. Sent on the app's route, which every window of the app is joined on,
-/// whether or not it already opened the record.
-fn tell_records_moved(fanout: &FanoutState, route: &CrdtRoute) {
+/// Tell the app's windows that the record on `route` moved: the resources `items` of it, or
+/// anything of it when `None`. A window that holds the record's document applies the op as it
+/// arrives; a window that keeps no document of its own, whose views read the store a resource at
+/// a time (a tilolang app's window), reads again what it read of the resources named and of no
+/// other. Sent on the app's route, which every window of the app is joined on, whether or not it
+/// already opened the record; but to the connection `by`, which made the write and holds it.
+fn tell_records_moved(
+    fanout: &FanoutState,
+    route: &CrdtRoute,
+    items: Option<Vec<collab_types::store::MovedItem>>,
+    by: Option<u64>,
+) {
     if route.app_id.is_empty() || route.document_id.is_empty() {
         // A route that names no app or no record carries the app's own document, which its
         // windows apply themselves: no store a window reads holds it.
@@ -354,9 +364,12 @@ fn tell_records_moved(fanout: &FanoutState, route: &CrdtRoute) {
     }
     fanout.fanout_to_route(
         &CollabEvent::RecordsMoved {
-            records: vec![route.document_id.clone()],
+            records: vec![collab_types::store::MovedRecord {
+                record: route.document_id.clone(),
+                items,
+            }],
         },
-        u64::MAX,
+        by.unwrap_or(u64::MAX),
         &CrdtRoute::app(route.app_id.clone(), route.cluster_id.clone()),
     );
 }
