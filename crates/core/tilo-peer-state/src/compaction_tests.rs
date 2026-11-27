@@ -234,13 +234,14 @@ tilo_test_env::scenario! {
     // A reader catching up from what its holder retained takes changes of the
     // history a base replaced after it took the base: each waits for a change
     // of that history, which never comes. The base's history numbers its
-    // writers' changes again from the base, and its change at a waiting old
-    // change's number can itself come ahead of what it builds on. It is taken
-    // in to wait, never refused as a duplicate number, and the old one goes.
+    // writers' changes again from the base, under each writer's actor of the
+    // base's generation, and its change at a waiting old change's number can
+    // itself come ahead of what it builds on. It is taken in to wait, never
+    // refused, and the old one goes.
     {
         let (mut peer, _, _) = workspace_with(Role::Editor);
         let (owner_key, owner) = owner();
-        let actor = peer.workspace_actor_for(&owner.device_public_key);
+        let replaced = peer.workspace_actor_for(&owner.device_public_key);
         for name in ["One", "Two", "Three", "Four"] {
             assert!(
                 peer.governance_mut()
@@ -253,6 +254,8 @@ tilo_test_env::scenario! {
         let mut reader = newcomer();
         handed(&mut reader, owner.device_public_key, peer.workspace_message()).unwrap();
         let base = document_of(&peer).get_heads();
+        let actor = peer.workspace_actor_for(&owner.device_public_key);
+        assert_ne!(actor, replaced, "the base's generation numbers the device apart");
         for name in ["Five", "Six", "Seven"] {
             assert!(
                 peer.governance_mut()
@@ -268,7 +271,7 @@ tilo_test_env::scenario! {
             .expect("the owner's device writes the base's history");
         let superseded = old
             .iter()
-            .find(|change| change.actor_id() == &actor && change.seq() == numbered.seq())
+            .find(|change| change.actor_id() == &replaced && change.seq() == numbered.seq())
             .expect("the history the base replaced holds the same number")
             .clone();
         let one = |changes: Vec<automerge::Change>| NeighbourMsg::SyncResp {

@@ -272,16 +272,23 @@ async fn a_member_device_republishes_its_retained_frames_and_a_peer_converges() 
     publish_write(&fixture, workspace, "first");
     publish_write(&fixture, workspace, "second");
     let reopened = open_file(&path).unwrap();
-    let frames = reopened.frames(workspace);
+    let (frames, others): (Vec<_>, Vec<_>) = reopened
+        .frames(workspace)
+        .into_iter()
+        .map(|bytes| postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&bytes).unwrap())
+        .partition(|frame| {
+            matches!(frame, NeighbourMsg::AppDocument { app_id, .. } if app_id == "so.tilo.chat")
+        });
     assert_eq!(
         frames.len(),
         3,
         "the record's creation and two writes are frames a peer is sent"
     );
-    let frames = frames
-        .into_iter()
-        .map(|bytes| postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&bytes).unwrap())
-        .collect::<Vec<_>>();
+    assert_eq!(
+        others.len(),
+        1,
+        "the grant the device committed goes out as a frame of its own"
+    );
     // A peer that never saw the first write receives the second one first.
     let origin = |fixture: &Fixture| {
         crate::TransportOrigin::RetainedServerDelta(fixture.certificate.device_public_key)

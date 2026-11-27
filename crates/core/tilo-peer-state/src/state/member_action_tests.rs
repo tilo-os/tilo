@@ -1,5 +1,6 @@
 //! A member's device runs an action exactly where its role lets it: a commenter's verb under the
-//! `comments` is theirs, the same kind at the record is not, and a viewer's is refused. The
+//! `comments` and in Discussion is theirs, the same kind at another app's record is not, and a
+//! viewer's is refused. The
 //! decision is the node's, so an action its app declares under a field is judged there.
 use super::*;
 
@@ -39,13 +40,37 @@ fn a_commenters_device_runs_what_its_role_covers_where_the_action_sits() {
         .unwrap(),
         "a commenter comments"
     );
-    // The same undoable kind at the record is what an editor holds, not a commenter: the field
-    // is what their grant covers.
+    // Discussion is where comments are said, so writing anywhere in it is commenting: who may
+    // edit or delete a comment is Discussion's own rule.
+    assert!(
+        peer.permits_app_action(
+            device,
+            (DISCUSSION, COMMENTS, "comment"),
+            &undoable(None),
+            None,
+            now
+        )
+        .unwrap(),
+        "a commenter writes in Discussion"
+    );
+    // Elsewhere the same undoable kind at the record is what an editor holds, not a commenter:
+    // the `comments` field is what their grant covers.
+    assert!(
+        peer.permits_app_action(
+            device,
+            (TASKS, "tl:so.tilo.tasks", "comment"),
+            &undoable(Some("comments")),
+            None,
+            now
+        )
+        .unwrap(),
+        "a commenter writes a task's comments"
+    );
     assert!(
         !peer
             .permits_app_action(
                 device,
-                (DISCUSSION, COMMENTS, "comment"),
+                (TASKS, "tl:so.tilo.tasks", "comment"),
                 &undoable(None),
                 None,
                 now
