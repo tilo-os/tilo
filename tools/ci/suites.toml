@@ -1533,6 +1533,7 @@ inputs = [
 readers = [
   "crates/core/fs/src/main.rs",
   "crates/core/fs/src/cloud/account_source.rs",
+  "crates/core/fs/src/fs/tests.rs",
   "crates/core/fs/tests/cloud_mount.rs",
 ]
 
@@ -1610,9 +1611,11 @@ inputs = [
   "crates/os/block-devices/tests/fixtures/imager.json",
   "apps/imager/tests/fixtures/lsblk-targets.json",
   "crates/os/block-devices/tests/fixtures/installer.json",
+  "crates/os/block-devices/tests/fixtures/sfdisk.json",
 ]
 readers = [
   "crates/os/imager-backend/src/destination/disks.rs",
+  "crates/os/imager-backend/src/linux_parse.rs",
   "crates/os/imager-backend/src/probe.rs",
 ]
 
