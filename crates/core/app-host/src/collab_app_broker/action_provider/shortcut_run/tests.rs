@@ -1522,7 +1522,7 @@ impl Fixture {
             .shortcut_approval(&caller, &workspace, &stored)
             .expect("the saver's approval stands");
         (
-            BrokerApi::for_run(Arc::clone(&self.state), Some(approval)),
+            BrokerApi::for_shortcut_run(Arc::clone(&self.state), Some(approval)),
             caller.running_shortcut(shortcut),
         )
     }

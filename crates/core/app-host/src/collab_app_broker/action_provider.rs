@@ -256,8 +256,20 @@ impl BrokerApi {
     ) -> Self {
         Self {
             origin,
-            running_shortcut: true,
             ..Self::new(state)
+        }
+    }
+
+    /// The api a shortcut's run calls its steps through, however the run was started: one
+    /// started by a press carries this device's own person rather than a saved approval, and
+    /// its steps are still the actions this device offers.
+    pub(super) fn for_shortcut_run(
+        state: Arc<AppBrokerState>,
+        origin: Option<super::InvocationCaller>,
+    ) -> Self {
+        Self {
+            running_shortcut: true,
+            ..Self::for_run(state, origin)
         }
     }
 

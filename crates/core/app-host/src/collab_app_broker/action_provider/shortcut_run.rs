@@ -367,7 +367,7 @@ impl AppBrokerState {
             self.prepare_shortcut_run(caller, workspace, &shortcut, &start, admission)?;
         let job = admitted.id;
         let invocation = admitted.invocation;
-        let host = BrokerApi::for_run(Arc::clone(self), origin);
+        let host = BrokerApi::for_shortcut_run(Arc::clone(self), origin);
         let state = Arc::clone(self);
         let caller = caller
             .clone()

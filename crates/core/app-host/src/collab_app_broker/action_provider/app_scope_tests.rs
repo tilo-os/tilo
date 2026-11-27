@@ -702,12 +702,9 @@ impl tilo_actions::remote::Admits for TurnStep {
     }
 }
 
-/// A shortcut saved from this device's own shell runs here, so its steps are held
-/// to what this device offers: a step only turns reach is offered to a caller from
-/// the shell, whose device key alone does not say the call is local, where a
-/// shortcut save lists this device's providers.
-#[tokio::test(flavor = "current_thread")]
-async fn a_shortcut_saves_a_step_only_this_device_offers() {
+/// The broker of a shell whose device offers a turn step, and the person's own shell as its
+/// caller: the device's key, with no app or turn origin.
+fn device_turn_state() -> (Arc<AppBrokerState>, Caller) {
     let user = [51; 32];
     let mut workspace = Workspace::new(WorkspaceId::from_u128(91), "Shortcut saves");
     workspace.policy.set_owner(hex::encode(user));
@@ -728,25 +725,74 @@ async fn a_shortcut_saves_a_step_only_this_device_offers() {
             ..Default::default()
         },
     );
-    // The person's own shell: the device's key, and no app or turn origin.
-    let caller = Caller::authenticated(user, [52; 32]).in_workspace(workspace_id);
-    let offers_strip = |rows: Vec<CatalogueRow>| {
-        rows.iter().any(|row| {
-            row.app_id == tilo_actions::remote::session_actions::PROVIDER
-                && row
-                    .action
-                    .as_ref()
-                    .is_some_and(|action| action.address.action == "new-strip")
-        })
+    (
+        state,
+        Caller::authenticated(user, [52; 32]).in_workspace(workspace_id),
+    )
+}
+
+/// Whether `rows` offer the shell's new strip: the step this device runs alone.
+fn offers_strip(rows: &[CatalogueRow]) -> bool {
+    rows.iter().any(|row| {
+        row.app_id == tilo_actions::remote::session_actions::PROVIDER
+            && row
+                .action
+                .as_ref()
+                .is_some_and(|action| action.address.action == "new-strip")
+    })
+}
+
+/// `api`'s whole catalogue, as the run it is built for lists it.
+async fn listed(api: &super::BrokerApi, caller: &Caller) -> CataloguePage {
+    let query = CatalogueQuery {
+        max_results: MAX_CATALOGUE_PAGE,
+        ..CatalogueQuery::default()
     };
+    let mut pending = tilo_actions::remote::ActionProvider::query(api, caller, query);
+    loop {
+        match pending.poll_ready() {
+            PendingPoll::Ready(page) => return page.expect("the catalogue answers"),
+            PendingPoll::Abandoned => panic!("the catalogue query was abandoned"),
+            PendingPoll::Waiting => tokio::task::yield_now().await,
+        }
+    }
+}
+
+/// A shortcut saved from this device's own shell runs here, so its steps are held
+/// to what this device offers: a step only turns reach is offered to a caller from
+/// the shell, whose device key alone does not say the call is local, where a
+/// shortcut save lists this device's providers.
+#[tokio::test(flavor = "current_thread")]
+async fn a_shortcut_saves_a_step_only_this_device_offers() {
+    let (state, caller) = device_turn_state();
     let (listed, _) = state.eager_catalogue(&caller, super::RowScope::All);
     assert!(
-        !offers_strip(listed),
+        !offers_strip(&listed),
         "a call carrying a device key alone lists no turn step"
     );
     let (listed, _) = state.device_catalogue(&caller, super::RowScope::All);
     assert!(
-        offers_strip(listed),
+        offers_strip(&listed),
         "a shortcut saved here lists the steps this device runs"
+    );
+}
+
+/// A shortcut's run finds the steps this device offers, however the run was started: one
+/// started by a press carries the device's own person rather than a saved approval. A run of
+/// anything else reads the workspace's catalogue alone.
+#[tokio::test(flavor = "current_thread")]
+async fn a_shortcuts_run_reads_this_devices_steps_and_other_runs_do_not() {
+    let (state, caller) = device_turn_state();
+    let run = super::BrokerApi::for_shortcut_run(Arc::clone(&state), None);
+    let page = listed(&run, &caller).await;
+    assert!(
+        offers_strip(&page.rows),
+        "a shortcut's run finds the step this device runs"
+    );
+    let plain = super::BrokerApi::for_run(Arc::clone(&state), None);
+    let page = listed(&plain, &caller).await;
+    assert!(
+        !offers_strip(&page.rows),
+        "a run of another kind reads the workspace's catalogue alone"
     );
 }
