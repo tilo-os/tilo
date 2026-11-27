@@ -29,7 +29,9 @@ mod without_runner {
     )]
     pub fn run_or_exit(spec: &LaunchSpec) {
         if let Err(error) = run(spec) {
-            tracing::error!("{error}");
+            // This branch ends before the launch sets up a log, so the process's own error stream is
+            // the only place a person, a session or a test reads why the app has no window.
+            eprintln!("error: {error}");
             std::process::exit(2);
         }
     }

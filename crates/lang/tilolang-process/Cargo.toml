@@ -21,6 +21,10 @@ path = "src/main.rs"
 # beside `tilo`, a server) runs instances and programs alone and links no toolkit.
 app-launch = [
     "dep:ui",
+    # The runner a window is drawn by: the SDK's native runner and the event loop under it. Without
+    # it `ui::launch::run_or_exit` has nothing to start a window with, so the process ends the launch
+    # instead of drawing it.
+    "ui/native",
     # The window link the shell hands each window's patch connection over: the process link,
     # not the desktop stack, which stays the host's.
     "ui-core/local-daemons",
