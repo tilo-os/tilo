@@ -952,6 +952,7 @@ impl InstallerApp {
         Some(match name {
             "disk-alongside" => staged(Step::Disk, Self::shot_alongside),
             "review-alongside" => staged(Step::Review, Self::shot_alongside_review),
+            "review-hardware" => staged(Step::Review, Self::shot_hardware_report),
             "options-open" => staged(Step::Options, Self::shot_open_timezone),
             "profile-locale-repair" => staged(Step::Options, Self::shot_locale_repair),
             "keyboard" => staged(Step::Keyboard, |app| app.shot_keymap("German")),
@@ -1022,6 +1023,13 @@ impl InstallerApp {
     pub fn shot_codecs_chosen(&mut self) {
         self.step = Step::Media;
         self.codecs = true;
+    }
+
+    /// The review page with the report a computer of its own would give it: a capture stands on no
+    /// machine whose parts this run can read.
+    pub fn shot_hardware_report(&mut self) {
+        self.step = Step::Review;
+        self.hardware = crate::setup::support_report_view::checked(sample_support_report());
     }
 
     pub fn shot_alongside(&mut self) {
@@ -3289,6 +3297,169 @@ fn centered_media_control(widget: Box<dyn Widget>) -> Box<dyn Widget> {
             .push(widget)
             .push(Box::new(Spacer::new())),
     )
+}
+
+/// What this computer is and what its parts support, for a capture: a computer with a graphics
+/// card and a display the release was checked against, Wi-Fi it was not, and no camera or reader.
+fn sample_support_report() -> hardware_report::SupportReport {
+    use hardware_report::{
+        Applicability, ComponentKind, ComponentSupport, DestinationIdentity, DeviceBinding,
+        Evidence, EvidenceFact, EvidenceScope, REPORT_SCHEMA, Remedy, ReportSource, SupportReason,
+        SupportReport, SupportState,
+    };
+
+    fn observed(name: &str, driver: &str) -> Evidence {
+        Evidence {
+            scope: EvidenceScope::Observation,
+            fact: EvidenceFact::Device {
+                name: name.into(),
+                driver: Some(driver.into()),
+                firmware: None,
+                vendor: None,
+                product: None,
+                reported_problem: false,
+            },
+        }
+    }
+
+    fn checked_device(name: &str, driver: &str) -> Evidence {
+        Evidence {
+            scope: EvidenceScope::SelectedRelease,
+            ..observed(name, driver)
+        }
+    }
+
+    fn bound(device: &str, driver: &str) -> SupportReason {
+        SupportReason::DriverBound {
+            bindings: vec![DeviceBinding {
+                device: device.into(),
+                driver: Some(driver.into()),
+            }],
+        }
+    }
+
+    fn component(
+        kind: ComponentKind,
+        name: &str,
+        present: bool,
+        state: SupportState,
+        applicability: Applicability,
+        reason: SupportReason,
+        evidence: Vec<Evidence>,
+        remedy: Option<Remedy>,
+    ) -> ComponentSupport {
+        ComponentSupport {
+            kind,
+            name: name.into(),
+            present,
+            state,
+            applicability,
+            reason,
+            evidence,
+            remedy,
+        }
+    }
+
+    SupportReport {
+        schema: REPORT_SCHEMA.into(),
+        identity: DestinationIdentity {
+            source: ReportSource::LocalScan,
+            manufacturer: Some("Example".into()),
+            model: Some("Laptop 14".into()),
+            variant: Some("BOARD-1".into()),
+            board: None,
+            sku: Some("SKU-1".into()),
+            firmware: Some("Example Firmware 1.2.3".into()),
+        },
+        kernel: Some("6.18.58".into()),
+        architecture: Some("x86_64".into()),
+        components: vec![
+            component(
+                ComponentKind::Graphics,
+                "AMD Radeon 780M",
+                true,
+                SupportState::Supported,
+                Applicability::ReleaseVerified,
+                bound("AMD Radeon 780M", "amdgpu"),
+                vec![checked_device("AMD Radeon 780M", "amdgpu")],
+                None,
+            ),
+            component(
+                ComponentKind::Display,
+                "eDP-1",
+                true,
+                SupportState::Supported,
+                Applicability::ReleaseVerified,
+                SupportReason::DisplaysActive {
+                    internal: 1,
+                    external: 0,
+                    devices: vec!["eDP-1".into()],
+                },
+                vec![Evidence {
+                    scope: EvidenceScope::SelectedRelease,
+                    fact: EvidenceFact::Display {
+                        name: "eDP-1".into(),
+                        connected: true,
+                        active: true,
+                    },
+                }],
+                None,
+            ),
+            component(
+                ComponentKind::Wifi,
+                "wlp1s0",
+                true,
+                SupportState::Limited,
+                Applicability::ObservationOnly,
+                bound("wlp1s0", "iwlwifi"),
+                vec![observed("wlp1s0", "iwlwifi")],
+                None,
+            ),
+            component(
+                ComponentKind::Boot,
+                "UEFI",
+                true,
+                SupportState::Unverified,
+                Applicability::ObservationOnly,
+                SupportReason::Uefi {
+                    secure_boot: Some(true),
+                    tpm: Some("TPM 2.0".into()),
+                },
+                vec![observed("UEFI", "efi")],
+                None,
+            ),
+            component(
+                ComponentKind::Storage,
+                "NVMe SSD",
+                true,
+                SupportState::Supported,
+                Applicability::ReleaseVerified,
+                bound("NVMe SSD", "nvme"),
+                vec![checked_device("NVMe SSD", "nvme")],
+                None,
+            ),
+            component(
+                ComponentKind::Camera,
+                "",
+                false,
+                SupportState::Unverified,
+                Applicability::Unknown,
+                SupportReason::NotDetected,
+                Vec::new(),
+                Some(Remedy::ExternalCamera),
+            ),
+            component(
+                ComponentKind::Fingerprint,
+                "",
+                false,
+                SupportState::Unverified,
+                Applicability::Unknown,
+                SupportReason::NotDetected,
+                Vec::new(),
+                Some(Remedy::PasswordSignIn),
+            ),
+        ],
+    }
 }
 
 fn sample_install_log() -> Vec<String> {

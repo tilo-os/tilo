@@ -78,6 +78,7 @@ pub(crate) const SCENARIOS: &[&str] = &[
     "destination-media-chosen",
     "destination-review",
     "destination-review-alongside",
+    "destination-review-hardware",
     "destination-install",
     "destination-finish",
     "destination-finish-recovery",
