@@ -4385,6 +4385,24 @@ impl ResourceStore {
         })
     }
 
+    /// What makes two changes of the resource one act: the invocation and moment they name,
+    /// without what each keeps of its call. That is its own document's — the first change of a
+    /// call in a document keeps the call and the parts of its argument that document holds, and
+    /// the call's other changes there name it — so two changes of one commit would otherwise read
+    /// as two acts.
+    fn act_identity(stamp: &Stamp) -> String {
+        let mut act = stamp.clone();
+        act.acted_for = None;
+        act.args = Vec::new();
+        act.parts = None;
+        act.signed = None;
+        act.call = None;
+        if let Some(context) = act.context.as_deref_mut() {
+            context.signed = None;
+        }
+        serde_json::to_string(&act).unwrap_or_default()
+    }
+
     /// The versions the store holds of the resource `at`, as the runtime reads them: a commit
     /// that changed both the resource's indexed fields and its content wrote a change to each
     /// of its two documents, and is one version, as it is one act. Oldest first, its making
@@ -4425,8 +4443,9 @@ impl ResourceStore {
                 held
             })
             .collect();
-        // The versions so far of each act, by its stamp: a commit's changes are stamped alike,
-        // whoever each of its records was made for ([`Store::made_for`]). Looked up rather than
+        // The versions so far of each act, by the invocation and moment its changes name: a
+        // commit's changes are one act, whoever each of its records was made for
+        // ([`Store::made_for`]) and whatever each keeps of the call. Looked up rather than
         // compared with every version before, so a history of thousands reads in one pass.
         let mut of_act: HashMap<String, Vec<usize>> = HashMap::new();
         for held in held {
@@ -4434,15 +4453,9 @@ impl ResourceStore {
             let content = held.content;
             let of_nested = !held.nested.is_empty();
             let version = self.version_of(at, held, entry);
-            let act = stamp.as_ref().map(|stamp| {
-                serde_json::to_string(&Stamp {
-                    acted_for: None,
-                    ..stamp.clone()
-                })
-                .unwrap_or_default()
-            });
-            // A commit's two changes are stamped alike, and are each the first of their document
-            // not paired yet: two commits of one action, each a version, are two of either. A
+            let act = stamp.as_ref().map(Self::act_identity);
+            // A commit's two changes name one act, and are each the first of their document not
+            // paired yet: two commits of one action, each a version, are two of either. A
             // change of the resources nested in this one joins the latest version of its act.
             let same = act.as_ref().and_then(|act| {
                 let earlier = of_act.get(act)?;
