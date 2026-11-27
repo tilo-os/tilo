@@ -7,13 +7,16 @@
 //! The program is linked statically against bionic, so this Linux host's kernel runs it without
 //! Android's loader; the same program built against rustc's stock Android std shows the abort
 //! the build avoids. It needs the NDK and std's sources, and std's dependencies from crates.io:
-//! the `android-tls` check runs it in the builder image.
+//! the `android-tls` check runs this program in the builder image.
+//!
+//! It builds the two probes itself, with target directories of their own, so it adds no second
+//! build of the workspace to a test run: the check starts it, and it is the check's program.
 
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    reason = "a check that cannot build its probes fails here, and that is its result"
 )]
 
 use std::ffi::OsString;
@@ -22,7 +25,6 @@ use std::path::Path;
 use std::process::Command;
 
 use tilo_app_builder::android::{Toolchain, native_tls_cargo_args};
-use tilo_test_env::SpawnUnderEnvLock as _;
 
 const TRIPLE: &str = "x86_64-linux-android";
 /// Well past bionic's `PTHREAD_KEYS_MAX` of 128, half of them with a destructor.
@@ -72,7 +74,7 @@ fn build_and_run(probe: &Path, target_dir: &Path, cargo_args: &[OsString]) -> st
     // by CPU), which rustc's `-nodefaultlibs` leaves out.
     let builtins = Command::new(&linker)
         .arg("-print-libgcc-file-name")
-        .output_locked()
+        .output()
         .unwrap();
     assert!(builtins.status.success());
     let builtins = String::from_utf8(builtins.stdout).unwrap();
@@ -91,16 +93,14 @@ fn build_and_run(probe: &Path, target_dir: &Path, cargo_args: &[OsString]) -> st
         .current_dir(probe)
         .envs(env)
         .env("RUSTC_BOOTSTRAP", "1")
-        .status_locked()
+        .status()
         .unwrap();
     assert!(status.success(), "building the probe failed with {status}");
     let program = target_dir.join(TRIPLE).join("release").join("tls-probe");
-    Command::new(&program).output_locked().unwrap()
+    Command::new(&program).output().unwrap()
 }
 
-#[test]
-#[ignore = "builds std for Android: the android-tls check runs it in the builder image"]
-fn a_program_built_for_android_holds_more_thread_locals_than_bionic_has_keys() {
+fn main() {
     let scratch = tempfile::tempdir().unwrap();
     let probe = scratch.path().join("tls-probe");
     std::fs::create_dir_all(probe.join("src")).unwrap();

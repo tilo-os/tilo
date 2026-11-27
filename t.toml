@@ -1146,7 +1146,9 @@ heavy = true
 [[check]]
 name = "android-tls"
 egress = { to = ["code.tilo.so:443", "index.crates.io:443", "static.crates.io:443"] }
-run = "cargo test --locked -p tilo-app-builder --test android_thread_locals -- --ignored"
+# The probe program builds itself against the NDK and runs both its builds: the check starts it,
+# so no test run carries a second Cargo build.
+run = "cargo run --locked -p tilo-app-builder --example android_thread_locals"
 env = { CARGO_NET_OFFLINE = "false" }
 requires = ["arch=x86_64"]
 on = ["dispatch", "idle"]
