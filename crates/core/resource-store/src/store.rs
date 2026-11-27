@@ -3104,7 +3104,6 @@ impl Store {
             })
             .collect();
         let heads = doc.get_heads();
-        let count = doc.keys(ROOT).filter(|key| key.starts_with(HELD)).count();
         let mut changes = Vec::with_capacity(reads.len());
         for (id, found) in reads {
             match found {
@@ -3123,11 +3122,6 @@ impl Store {
                 }
             }
         }
-        for change in &changes {
-            if let Change::Put { parent, kind, .. } = change {
-                self.know_document(doc_id, readers, parent.as_deref().unwrap_or(kind), count);
-            }
-        }
         // A content document holds no resources: what its content names is noted instead.
         self.note_named_content(doc_id);
         self.commit(&Commit {
@@ -3136,6 +3130,14 @@ impl Store {
             heads: &heads,
             changes: &changes,
         });
+        // What the document holds now, as the commit left it: the index keeps a row per
+        // resource it holds, so this is its count, not a read of every key of its root.
+        let count = self.index.resources_held(doc_id);
+        for change in &changes {
+            if let Change::Put { parent, kind, .. } = change {
+                self.know_document(doc_id, readers, parent.as_deref().unwrap_or(kind), count);
+            }
+        }
         Ok(())
     }
 

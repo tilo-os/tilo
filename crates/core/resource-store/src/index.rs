@@ -1090,6 +1090,12 @@ impl Index {
         index
     }
 
+    /// The resources the document `doc` holds, as the commits so far left it.
+    #[must_use]
+    pub(crate) fn resources_held(&self, doc: &str) -> usize {
+        self.docs.get(doc).map_or(0, |held| held.resources.len())
+    }
+
     /// The heads of `doc` the index reflects; `None` for a document no commit reached it from.
     #[must_use]
     pub fn heads(&self, doc: &str) -> Option<&[ChangeHash]> {
