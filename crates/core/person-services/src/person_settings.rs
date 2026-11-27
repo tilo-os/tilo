@@ -409,7 +409,9 @@ impl crate::PersonServices {
         }
         let effect = mail_effect(action);
         let asking = (workspace_id, caller, certificate);
-        let reach = self.reaching(asking, Store::MAIL, action, effect).await?;
+        let reach = self
+            .reaching_call(asking, (Store::MAIL, action, effect), request)
+            .await?;
         // An account added from an entry of the workspace's vault is that entry's use,
         // decided at the vault as well: the same path a provider's key takes.
         if action == workspace_accounts::ADD_MAIL_WITH_ITEM {

@@ -2077,44 +2077,151 @@ fn a_confined_daemons_connection_is_no_person() {
     );
 }
 
-const PROGRAM_RUN_TEST: &str =
-    "device::services::tests::a_run_of_the_device_is_certified_as_its_person";
+const MIGRATION_RUN_TEST: &str =
+    "device::services::tests::a_migrations_calls_are_its_agents_under_a_key_its_person_certified";
 
-/// A run the daemon makes for its person (a migration bringing in the address book their desktop
-/// kept) opens a session as a run of its own, certified by the device's key as the person's: the
-/// session admits it, and its calls still ask, being no connection of theirs. A caller that only
-/// says it is the person, with no key behind it, is refused a session.
+/// A migration's calls (an address book its person's desktop kept, a mail account they had
+/// connected) go as the migration's agent, under a key of its own that its person's root
+/// certified for that agent in this workspace alone, never under the device's key: whoever runs
+/// a call checks that key. A caller that only says it is the person, with no key behind it, is
+/// refused a session.
 #[test]
-fn a_run_of_the_device_is_certified_as_its_person() {
-    let Some(root) = isolated_root(PROGRAM_RUN_TEST) else {
+fn a_migrations_calls_are_its_agents_under_a_key_its_person_certified() {
+    let Some(root) = isolated_root(MIGRATION_RUN_TEST) else {
         return;
     };
     let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
     let workspace = daemon.workspace().unwrap();
-    let cert = daemon.workspaces.device_cert();
-    let (tree, caller) = daemon.device_run_in(&workspace).unwrap();
+    let device = daemon.workspaces.device_cert();
+    let session = daemon
+        .agent_session_in(super::super::migrate::AGENT, &workspace)
+        .unwrap();
+    let agent = device_agent_id(&device.user_public_key, super::super::migrate::AGENT);
+    // The session is the person's admission, and every call it makes is signed by the agent's key.
+    let (person, key) = session.key().expect("the migration signs under a key");
+    assert_eq!(person, device.user_public_key);
+    assert_ne!(
+        key, device.device_public_key,
+        "the device's key never speaks for the migration"
+    );
+    let (cert, _) = tilo_app_host::agents::agent_keys::this_device()
+        .unwrap()
+        .made(&key)
+        .expect("this device made the migration's key");
+    tilo_user_identity::verify_device_cert_at(&cert, tilo_clock::unix_now_ns())
+        .expect("the person's root certified the key");
+    let id = WorkspaceId::parse(&workspace).unwrap();
     assert_eq!(
-        caller.acting().person_id(),
-        Some(hex::encode(cert.user_public_key).as_str()),
-        "the program acts as the device's person: {caller:?}"
+        (cert.user_public_key, cert.device_public_key),
+        (device.user_public_key, key)
     );
-    assert_eq!(caller.user_public_key(), Some(&cert.user_public_key));
-    assert_eq!(caller.device_public_key(), Some(&cert.device_public_key));
-    assert!(caller.execution_is_live(), "a run of its own: {caller:?}");
-    assert!(
-        !caller.is_own_connection(),
-        "a program is no connection of the person's, so its calls ask: {caller:?}"
+    assert_eq!(
+        cert.capabilities,
+        tilo_user_identity::DeviceCapabilities::agent_grant(
+            tilo_user_identity::AgentScope::agent_in(*id.as_uuid().as_bytes(), &agent)
+        ),
+        "a grant to the migration's agent in this workspace alone"
     );
-    assert!(
-        tilo_mcp::McpServer::admitted(tree.clone(), caller).is_ok(),
-        "the session admits the certified run"
-    );
-    let claimed = Caller::local_person(hex::encode(cert.user_public_key))
+
+    let (tree, _) = daemon.program_tree_in(&workspace).unwrap();
+    let claimed = Caller::local_person(hex::encode(device.user_public_key))
         .in_workspace(&workspace)
         .in_new_execution();
     assert!(
         tilo_mcp::McpServer::admitted(tree, claimed).is_err(),
         "a caller with no key behind it is refused a session"
+    );
+}
+
+const MIGRATION_ASKS_TEST: &str =
+    "device::services::tests::a_migration_adds_no_mail_account_its_person_did_not_approve";
+
+/// A migration that would connect a mail account its person's desktop had is held to what the
+/// person approves: the workspace offers its agent the account's add, and puts the call to the
+/// person rather than running it, so nothing is kept until they say yes.
+#[test]
+fn a_migration_adds_no_mail_account_its_person_did_not_approve() {
+    let Some(root) = isolated_root(MIGRATION_ASKS_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace().unwrap();
+    let session = daemon
+        .agent_session_in(super::super::migrate::AGENT, &workspace)
+        .unwrap();
+    let ask =
+        |id: u64, method: &str, params: serde_json::Value| {
+            tilo_rt::app()
+                .block_on(session.handle(
+                    json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
+                ))
+                .expect("the runtime runs the session")
+                .expect("the session answers")
+        };
+    ask(
+        1,
+        "initialize",
+        json!({"protocolVersion": "2025-06-18", "capabilities": {},
+               "clientInfo": {"name": "tilo migrate", "version": "0"}}),
+    );
+    let address = "ada@example.test";
+    let tool = |id: u64, path: &str, args: serde_json::Value| {
+        let answer = ask(
+            id,
+            "tools/call",
+            json!({"name": "tilo_do",
+                   "arguments": {"path": path, "args": args, "wait_ms": 1000},
+                   "_meta": {"so.tilo.mcp": {"structured": true}}}),
+        );
+        answer["result"]["structuredContent"].clone()
+    };
+    let added = tool(
+        2,
+        "workspace/mail-accounts#add",
+        json!({
+            "address": address,
+            "incomingHost": "imap.example.test",
+            "incomingPort": 993,
+            "outgoingHost": "smtp.example.test",
+            "outgoingPort": 465,
+            "password": "a made-up password",
+        }),
+    );
+    assert!(
+        matches!(added["status"].as_str(), Some("asked" | "pending")),
+        "the add waits for the person's yes: {added:#}"
+    );
+    assert!(added["result"].is_null(), "nothing was added: {added:#}");
+    let listed = tool(3, "workspace/mail-accounts#list", json!({}));
+    assert!(
+        !listed.to_string().contains(address),
+        "the workspace keeps no account the person did not approve: {listed:#}"
+    );
+}
+
+const SHELL_FOREIGN_KEY_TEST: &str =
+    "device::services::tests::the_shell_names_no_agent_under_a_key_this_device_did_not_make";
+
+/// The person's own session names the agents it runs on its link to this daemon, and only under
+/// the keys this device made them: a caller it names under any other key of the person's, even
+/// one the workspace lists, is given no run, so nothing is listed or called in that agent's name.
+#[test]
+fn the_shell_names_no_agent_under_a_key_this_device_did_not_make() {
+    let Some(root) = isolated_root(SHELL_FOREIGN_KEY_TEST) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).unwrap());
+    let workspace = daemon.workspace().unwrap();
+    let person = daemon.person().unwrap();
+    let user = daemon.workspaces.device_cert().user_public_key;
+    let name = super::super::migrate::AGENT;
+    let id = device_agent_id(&user, name);
+    let named = Caller::delegated_agent(id, user, [7; 32])
+        .named(name)
+        .in_workspace(&workspace);
+    assert!(
+        person.agent_provider(&workspace, &named).is_err(),
+        "an agent named under a key this device did not make has no run"
     );
 }
 

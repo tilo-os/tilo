@@ -207,26 +207,59 @@ impl Workspaces {
         workspace_store_dir(&self.inner.dir, workspace)
     }
 
-    /// Whether `caller`, on the device `certificate` certifies, may do
+    /// Whether `caller`, on the device `certificate` certifies, may be offered
     /// `effect` with `action` of `store` in the workspace `workspace_id`
-    /// names, as the workspace's policy decides it now. What the rules ask a
+    /// names, as the workspace's policy decides it now: what a listing asks,
+    /// which runs nothing. A call decides with [`Self::reaching_call`]. The key `caller` acts
+    /// under is any its person certified: that device's, or an agent's or a
+    /// program's own key the device carries, decided by the policy for that key
+    /// ([`Self::certified_key`]). What the rules ask a
     /// person first is asked of them in every store ([`Answer::Ask`]): making
     /// the call is not their answer, only the confirmation it carries is
     /// ([`Self::allowed`]). An agent its person's session was handed to is
     /// bound by its delegation too: it reads, and a change asks its person
     /// unless they answered that very action in advance.
     ///
+    /// Listing is the only place a device agent's key is taken on this host's own
+    /// certificate without its signature. That holds because every way of building an
+    /// agent caller refuses a key this device did not make the agent; a new way must too.
+    ///
     /// # Errors
     /// [`ActionCallError::UnknownAction`] for a caller the workspace does not
-    /// have, on a device it does not certify, or a workspace not hosted
+    /// have, under a key its person did not certify, or a workspace not hosted
     /// here; [`ActionCallError::NotPermitted`] for one whose grants do not
     /// reach.
     pub async fn reaching(
         &self,
-        (workspace_id, caller, certificate): (Option<WorkspaceId>, &Caller, Option<&DeviceCert>),
+        asked: (Option<WorkspaceId>, &Caller, Option<&DeviceCert>),
         store: Store,
         action: &str,
         effect: ActionKind,
+    ) -> Result<Reach, ActionCallError> {
+        self.reaching_with(asked, (store, action, effect), None)
+            .await
+    }
+
+    /// [`Self::reaching`] for the call `request`, whose signature names the key it is the
+    /// caller's by ([`Self::certified_key`]): what every path that runs an action decides with.
+    ///
+    /// # Errors
+    /// As [`Self::reaching`].
+    pub async fn reaching_call(
+        &self,
+        asked: (Option<WorkspaceId>, &Caller, Option<&DeviceCert>),
+        (store, action, effect): (Store, &str, ActionKind),
+        request: &InvokeRequest,
+    ) -> Result<Reach, ActionCallError> {
+        self.reaching_with(asked, (store, action, effect), Some(request))
+            .await
+    }
+
+    async fn reaching_with(
+        &self,
+        (workspace_id, caller, certificate): (Option<WorkspaceId>, &Caller, Option<&DeviceCert>),
+        (store, action, effect): (Store, &str, ActionKind),
+        request: Option<&InvokeRequest>,
     ) -> Result<Reach, ActionCallError> {
         let workspace = workspace_id.ok_or(ActionCallError::UnknownAction)?;
         let acting = caller.acting();
@@ -258,16 +291,15 @@ impl Workspaces {
                 acting: acting.clone(),
             });
         }
-        let certificate = certificate
-            .filter(|certificate| {
-                caller.device_public_key() == Some(&certificate.device_public_key)
-                    && caller.user_public_key() == Some(&certificate.user_public_key)
-            })
-            .ok_or(ActionCallError::UnknownAction)?;
         let hosted = self
             .held(workspace)
             .await
             .ok_or(ActionCallError::UnknownAction)?;
+        let certificate = self
+            .certified_key(workspace, &hosted, (caller, certificate), request)
+            .await
+            .ok_or(ActionCallError::UnknownAction)?;
+        let certificate = &certificate;
         let now = tilo_clock::wall();
         let access = hosted
             .lock()
@@ -348,7 +380,9 @@ impl Workspaces {
         request: impl Into<Option<&InvokeRequest>>,
     ) -> Result<Reach, ActionCallError> {
         let request = request.into();
-        let reach = self.reaching(asked, store, action, effect).await?;
+        let reach = self
+            .reaching_with(asked, (store, action, effect), request)
+            .await?;
         self.allowed(reach, asked.1, store, action, request).await
     }
 
@@ -396,6 +430,65 @@ impl Workspaces {
             reach.answer = Answer::Allow;
         }
         Ok(reach)
+    }
+
+    /// The certificate of the key `caller` acts under, as its person certified it. The one the
+    /// transport verified (`transport`) where it is that key's. Else, for a key of the person's
+    /// own that a device of theirs carries (an agent's or a program's, which signs its calls
+    /// itself), the certificate it signed `request` with, checked against its person's
+    /// revocations; or, for a listing (no request) this host makes for its own person's key,
+    /// the one the workspace holds for that key: a listing runs nothing, and every call it offers
+    /// is checked by its own signature. What the key may do is then the workspace's policy for
+    /// it, never the carrying device's.
+    ///
+    /// `None` for a key its person did not certify here, a call that key did not sign, a listing
+    /// another device asks in its name, or a device that carries a key of someone else's.
+    async fn certified_key(
+        &self,
+        workspace: WorkspaceId,
+        hosted: &tokio::sync::Mutex<super::HostedWorkspace>,
+        (caller, transport): (&Caller, Option<&DeviceCert>),
+        request: Option<&InvokeRequest>,
+    ) -> Option<DeviceCert> {
+        let (user, key) = (caller.user_public_key()?, caller.device_public_key()?);
+        if let Some(transport) = transport {
+            if transport.user_public_key != *user {
+                return None;
+            }
+            if transport.device_public_key == *key {
+                return Some(transport.clone());
+            }
+        }
+        let held = || async {
+            hosted
+                .lock()
+                .await
+                .peer()
+                .certificates()
+                .into_iter()
+                .find(|held| held.device_public_key == *key && held.user_public_key == *user)
+        };
+        match request {
+            Some(request) => {
+                let agent = caller.acting().agent_id()?;
+                let signed = tilo_server_protocol::invocation::verify_agent_invocation(
+                    &workspace.to_string(),
+                    request,
+                    (user, agent, key),
+                    &self.revocations(),
+                    tilo_clock::unix_now_ns(),
+                )
+                .ok()?;
+                // The key signed it, and the workspace holds it still.
+                held().await.map(|_| signed)
+            }
+            None if caller.is_device_agent()
+                && transport.is_some_and(|transport| transport == self.device_cert()) =>
+            {
+                held().await
+            }
+            None => None,
+        }
     }
 }
 

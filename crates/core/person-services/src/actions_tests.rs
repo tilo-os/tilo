@@ -834,3 +834,217 @@ async fn a_host_reaches_its_own_network_only_with_its_operators_leave() {
     assert!(fake.drain_requests().is_empty());
     server.shutdown().await;
 }
+
+/// An agent signs its calls with a key of its own its person's root certified, not with the
+/// device that carries them: the workspace decides it by its policy for that key. Where the
+/// policy lets the agent ask for it, adding one of the workspace's mail accounts is offered to it
+/// and reaches it, put to its person first; the call itself goes on only signed by the agent's
+/// key. Where a grant of its person's keeps it from the workspace, the add is neither offered nor
+/// reached. A key its person never certified reaches nothing, as though nothing were there, and
+/// neither does a call in the agent's name the agent did not sign, nor another device's listing
+/// in its name.
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn an_agent_under_its_own_certified_key_reaches_mail_accounts_as_the_policy_lets_it() {
+    use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
+    use tilo_action_types::{ActionKind, KindSet};
+    use tilo_actions::remote::WORKSPACE_MAIL_ACCOUNTS;
+    use tilo_user_identity::{AgentScope, DeviceCapabilities};
+    use tilo_workspace_records::accounts::ADD_MAIL;
+    use tilo_workspace_service::workspaces::workspace_stores::Store;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = &crate::PersonServices::of(server.workspaces());
+    let (workspace, workspace_id, host) = hosted(workspaces).await;
+    // The person's root (the hosting device's, `[1; 32]`) certifies a key for their agent in this
+    // workspace alone, which comes in as every key of theirs does.
+    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+    let name = "migrate";
+    let agent = tilo_actions::remote::device_agent_id(&owner.user_public_key, name);
+    let (agent_key, agent_cert) = crate::fixtures::device_cert(
+        &root,
+        name,
+        DeviceCapabilities::agent_grant(AgentScope::agent_in(
+            *workspace_id.as_uuid().as_bytes(),
+            &agent,
+        )),
+    );
+    workspaces
+        .enter_agent_key((&agent_key, &agent_cert), &workspace, name)
+        .await
+        .unwrap();
+    let under = |key: [u8; 32]| {
+        Caller::delegated_agent(agent.clone(), owner.user_public_key, key)
+            .in_workspace(&workspace)
+            .named(name)
+    };
+    let certified = under(agent_cert.device_public_key);
+    let uncertified = under(
+        ed25519_dalek::SigningKey::from_bytes(&[9; 32])
+            .verifying_key()
+            .to_bytes(),
+    );
+    // The person's device carries the agent's calls: its certificate is the one the transport
+    // verified.
+    let carried = host.device_page(workspace_id, &owner);
+    let resource = workspace_governance_child(&workspace, Some(WORKSPACE_MAIL_ACCOUNTS));
+    let query = CatalogueQuery {
+        provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
+        parent_resource: Some(tilo_actions::remote::workspace_governance_resource(
+            &workspace,
+        )),
+        max_results: 200,
+        ..CatalogueQuery::default()
+    };
+    let offered = |caller: Caller| {
+        let (carried, query, resource) = (carried.clone(), query.clone(), resource.clone());
+        async move {
+            settled(carried.query(&caller, query))
+                .await
+                .is_ok_and(|page| {
+                    page.rows.iter().any(|row| {
+                        row.resource.id == resource
+                            && row
+                                .action
+                                .as_ref()
+                                .is_some_and(|found| found.address.action == "add")
+                    })
+                })
+        }
+    };
+    let device = &owner;
+    let reached = |caller: Caller| async move {
+        workspaces
+            .reaching(
+                (Some(workspace_id), &caller, Some(device)),
+                Store::MAIL,
+                ADD_MAIL,
+                ActionKind::Undoable,
+            )
+            .await
+            .map(|reach| reach.answer)
+    };
+
+    assert!(
+        offered(certified.clone()).await,
+        "the agent is offered the add under its own key"
+    );
+    assert_eq!(
+        reached(certified.clone()).await,
+        Ok(Answer::Ask),
+        "the agent's add is put to its person"
+    );
+    assert!(
+        !offered(uncertified.clone()).await,
+        "a key its person never certified is offered nothing"
+    );
+    assert_eq!(
+        reached(uncertified).await,
+        Err(ActionCallError::UnknownAction),
+        "a key its person never certified reaches nothing"
+    );
+
+    // Another device of the person's lists nothing in the agent's name.
+    let (_, laptop) = crate::fixtures::device_cert(&root, "laptop", DeviceCapabilities::member());
+    assert_eq!(
+        workspaces
+            .reaching(
+                (Some(workspace_id), &certified, Some(&laptop)),
+                Store::MAIL,
+                ADD_MAIL,
+                ActionKind::Undoable,
+            )
+            .await
+            .map(|reach| reach.answer),
+        Err(ActionCallError::UnknownAction),
+        "another device lists nothing in the agent's name"
+    );
+    // A call goes on only signed by the agent's own key, and then waits for its person.
+    let adding = crate::fixtures::asking(
+        ADD_MAIL,
+        json!({
+            "address": "ada@example.test",
+            "incomingHost": "imap.example.test",
+            "incomingPort": 993,
+            "outgoingHost": "smtp.example.test",
+            "outgoingPort": 465,
+            "password": "a made-up password",
+        }),
+    );
+    let signed_by = |(cert, key): (&DeviceCert, &ed25519_dalek::SigningKey)| {
+        let mut request = adding.clone();
+        request.signed = Some(Box::new(
+            tilo_server_protocol::invocation::sign_invocation_now(
+                &workspace_id.to_string(),
+                &request,
+                cert,
+                key,
+                tilo_clock::unix_now_ns(),
+            )
+            .unwrap(),
+        ));
+        tilo_server_protocol::invocation::sign_parts_now(&mut request, key).unwrap();
+        request
+    };
+    let called = |request: InvokeRequest| {
+        let certified = certified.clone();
+        async move {
+            workspaces
+                .reaching_allowed(
+                    (Some(workspace_id), &certified, Some(device)),
+                    Store::MAIL,
+                    ADD_MAIL,
+                    ActionKind::Undoable,
+                    &request,
+                )
+                .await
+                .map(|reach| reach.answer)
+        }
+    };
+    assert_eq!(
+        called(adding.clone()).await,
+        Err(ActionCallError::UnknownAction),
+        "a call in the agent's name nobody signed"
+    );
+    assert_eq!(
+        called(signed_by((&owner, &key))).await,
+        Err(ActionCallError::UnknownAction),
+        "a call in the agent's name the device signed"
+    );
+    assert!(
+        matches!(
+            called(signed_by((&agent_cert, &agent_key))).await,
+            Err(ActionCallError::ConfirmationRequired(_))
+        ),
+        "the agent's own signed call waits for its person"
+    );
+
+    workspaces
+        .put_workspace_grants(
+            &workspace,
+            &owner,
+            [63; 32],
+            vec![Grant::new(
+                "test:agent-kept-out",
+                Grantee::agent(&agent, hex::encode(owner.user_public_key)),
+                TreePath::workspace(&workspace),
+                KindSet::ALL,
+                Answer::Deny,
+                Grantee::person(hex::encode(owner.user_public_key)),
+            )],
+        )
+        .await
+        .unwrap();
+    assert!(
+        !offered(certified.clone()).await,
+        "the add is not offered once its person keeps the agent out"
+    );
+    assert_eq!(
+        reached(certified).await,
+        Err(ActionCallError::NotPermitted),
+        "nor reached"
+    );
+    server.shutdown().await;
+}

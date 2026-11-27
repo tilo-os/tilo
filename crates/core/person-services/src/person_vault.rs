@@ -136,11 +136,10 @@ impl crate::PersonServices {
         // A web call's person is shown the vault's own words — the item's kind and the address
         // it would call, never the key — so it is decided here and asked there.
         let reach = if matches!(asked, VaultAction::WebCall { .. }) {
-            self.reaching(
+            self.reaching_call(
                 (workspace_id, caller, certificate),
-                Store::VAULT,
-                action,
-                effect,
+                (Store::VAULT, action, effect),
+                request,
             )
             .await?
         } else {

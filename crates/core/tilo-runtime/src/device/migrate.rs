@@ -7,8 +7,10 @@
 //! call the same actions through the device's one registry of providers. A run lands in the
 //! device's workspace, or another the device is a member of that the step names, as the
 //! migration's own agent acting for the person there, each run one History entry, through a
-//! session this daemon opens for it in its own process; what only the person may do (keeping a
-//! mail account and its sign-in) goes through a session of theirs in that workspace.
+//! session this daemon opens for it in its own process. The agent signs with a key of its own
+//! that its person's root certified for it in that workspace, and acts within what the
+//! workspace's policy gives their agents: what only the person may do (keeping a mail account and
+//! its sign-in) is put to them first, through a second session of the agent's.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -28,7 +30,7 @@ use super::services::Daemon;
 use crate::RuntimeServices as _;
 
 /// The name the migration's agent acts under in the workspace.
-const AGENT: &str = "migrate";
+pub(super) const AGENT: &str = "migrate";
 
 /// Apps whose secrets this device still reads from the old keeper: the App Publisher's engine
 /// signs with the key kept there.
@@ -271,9 +273,10 @@ impl Host for DaemonHost {
                 let daemon = own
                     .upgrade()
                     .ok_or_else(|| anyhow!("this device's daemon is stopping"))?;
-                let (tree, person) = daemon.device_run_in(&workspace)?;
+                // The steps only the person may take are the migration's agent's too, under the
+                // key its person certified it: the workspace puts each to them first.
                 Ok(
-                    Box::new(InProcess(tilo_mcp::McpServer::admitted(tree, person)?))
+                    Box::new(InProcess(daemon.agent_session_in(AGENT, &workspace)?))
                         as Box<dyn Rpc>,
                 )
             }),

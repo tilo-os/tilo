@@ -1834,25 +1834,6 @@ impl Daemon {
         self.tree_in(workspace, caller)
     }
 
-    /// The tree `workspace` reaches for a run the daemon itself makes for its person (a migration
-    /// bringing in what their desktop kept), and the caller it is there: a run of its own,
-    /// certified by this device's key as the person's, so whoever runs its calls checks the key
-    /// rather than taking the program's word. It is no connection of theirs either, so its calls
-    /// ask.
-    ///
-    /// # Errors
-    /// The workspace cannot be admitted to now.
-    pub(crate) fn device_run_in(
-        self: &Arc<Self>,
-        workspace: &str,
-    ) -> io::Result<(tilo_api::session::Provider, Caller)> {
-        let cert = self.workspaces.device_cert();
-        let caller = Caller::authenticated(cert.user_public_key, cert.device_public_key)
-            .in_workspace(workspace)
-            .in_new_execution();
-        self.tree_in(workspace, caller)
-    }
-
     /// The caller a plain connection to this daemon's own socket is, in `workspace` (none: the
     /// account's own list): the person, where the kernel said the peer is this device's own
     /// account (the seats admit it before a connection reaches here) and this device is one of

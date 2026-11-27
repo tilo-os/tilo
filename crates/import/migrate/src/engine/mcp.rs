@@ -1,7 +1,8 @@
 //! The workspace a run lands in, reached through sessions with it: its `tilo_do`, `tilo_read` and
 //! upload tools, asked as JSON-RPC calls of a session the device that runs the migration opens
 //! ([`Rpc`]). The migration's own session is its agent's, acting for the person; what only the
-//! person may do (keeping a mail account and its sign-in) goes through a session of theirs.
+//! person may do (keeping a mail account and its sign-in) goes through a second session, whose
+//! calls wait for the person's yes.
 
 use std::time::Duration;
 
@@ -147,7 +148,7 @@ impl Session {
     }
 }
 
-/// What opens the person's own session, the first time one of their calls is made.
+/// What opens the session the person's own steps are asked through, the first time one is made.
 pub type OpensOwn = Box<dyn FnOnce() -> Result<Box<dyn Rpc>> + Send>;
 
 /// The `_meta` a call asks its typed answer with: what the workspace keeps beside its words, so a
