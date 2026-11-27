@@ -646,6 +646,10 @@ pub struct Autocomplete {
     last_pointer: Point,
     outcome: AutocompleteOutcome,
     edited: bool,
+    /// The field's text is a row's, written by taking or completing to it rather than typed: the
+    /// bound text follows it, but [`Autocomplete::on_change`] hears only what was typed, so a
+    /// row's value (an id the host reads on accept) never reaches the host as a query.
+    from_row: bool,
     /// A row or the typed text was taken since the host last heard: an edit alone is not.
     taken: bool,
     /// The modifier a row was taken with, and the row: fired as [`Autocomplete::on_alternate`].
@@ -682,6 +686,7 @@ impl Autocomplete {
             last_pointer: Point::ZERO,
             outcome: AutocompleteOutcome::None,
             edited: false,
+            from_row: false,
             taken: false,
             alternate_pending: None,
             edits: None,
@@ -997,6 +1002,7 @@ impl Autocomplete {
         if self.input.value() != value {
             self.input.set_text(&value);
             self.edited = true;
+            self.from_row = true;
         }
         self.taken = true;
         self.close();
@@ -1022,6 +1028,7 @@ impl Autocomplete {
             let value = s.value.clone();
             self.input.set_text(&value);
             self.edited = true;
+            self.from_row = true;
             self.recompute();
             self.open = !self.list.rows().is_empty();
             self.list.set_highlight(None);
@@ -1212,6 +1219,7 @@ impl Autocomplete {
                 self.input.handle_event(event, ctx);
                 if self.input.take_dirty().is_some() {
                     self.edited = true;
+                    self.from_row = false;
                     self.recompute();
                     self.open = !self.list.rows().is_empty();
                     self.list.set_highlight(None);
@@ -1240,13 +1248,14 @@ impl Widget for Autocomplete {
         if self.open {
             self.list.advance();
         }
+        let from_row = std::mem::take(&mut self.from_row);
         if let Some(text) = self.take_edited() {
             if let Some(edits) = &self.edits {
                 edits.edited(tilo_ui_base::component::Value::Text(text.clone()));
             }
             // A letter typed is an edit, which the host hears as the text and as the edit it made;
-            // only a row or the text taken is a choice.
-            if let Some(changed) = &self.changed {
+            // only a row or the text taken is a choice, and a row's text is no query.
+            if !from_row && let Some(changed) = &self.changed {
                 changed.fire(Some(tilo_ui_base::component::Value::Text(text)));
             }
         }
@@ -1467,6 +1476,7 @@ impl Widget for Autocomplete {
                 self.input.handle_event(event, ctx);
                 if self.input.take_dirty().is_some() {
                     self.edited = true;
+                    self.from_row = false;
                     self.recompute();
                     self.open = !self.list.rows().is_empty();
                     self.list.set_highlight(None);
@@ -2114,6 +2124,65 @@ fn a_held_modifier_carries_the_row_and_the_way_it_opens() {
     assert_eq!(
         ac.take_outcome(),
         AutocompleteOutcome::Accepted("row:1".into())
+    );
+}
+
+/// A row pressed is a choice of the row: its value is what the bound text holds and what `accept`
+/// carries, but it was never typed, so `change` (which a launcher runs as a query) hears nothing.
+#[test]
+fn a_row_pressed_is_taken_without_reporting_its_value_as_typed() {
+    use crate::component_testing::fired;
+    use crate::testing::dispatch;
+    use tilo_ui_base::synthetic_input::char_key;
+    use tilo_ui_base::{a11y::Action, a11y::hash_key};
+    use tilo_ui_base::{component::Bound, component::Event, component::Intent, component::Value};
+
+    let queue = tilo_ui_base::Intents::default();
+    let mut ac = Autocomplete::new().with_id("search").on_edit(
+        Bound::default(),
+        Event::View(Intent::new(&queue, "search", "accept")),
+    );
+    ac.on_change(Event::View(Intent::new(&queue, "search", "change")));
+    ac.set_open_list(true);
+    ac.set_suggestions(vec![Suggestion::labelled("win:7", "Notes")]);
+    ac.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 300.0, 34.0));
+    ac.begin_edit();
+    let mut doc = automerge::AutoCommit::new();
+    dispatch(&mut ac, &char_key("n"));
+    Widget::update(&mut ac, &doc, &automerge::ROOT);
+    assert_eq!(
+        queue.take(),
+        [fired("search", "change", Some(Value::Text("n".into())))],
+        "a letter typed is reported"
+    );
+    let handled = Widget::perform_action(
+        &mut ac,
+        &Action::Activate,
+        &[
+            hash_key(&"search"),
+            hash_key(&("autocomplete-suggestion", "win:7")),
+        ],
+        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+    );
+    assert!(handled, "the row takes the press");
+    Widget::update(&mut ac, &doc, &automerge::ROOT);
+    assert_eq!(
+        queue.take(),
+        [fired("search", "accept", Some(Value::Text("win:7".into())))],
+        "the row is taken, and its value is no query"
+    );
+    assert_eq!(ac.input.value(), "win:7", "the field holds the row taken");
+    // A letter typed after it is an edit again.
+    dispatch(&mut ac, &char_key("x"));
+    Widget::update(&mut ac, &doc, &automerge::ROOT);
+    assert_eq!(
+        queue.take(),
+        [fired(
+            "search",
+            "change",
+            Some(Value::Text("win:7x".into()))
+        )]
     );
 }
 
