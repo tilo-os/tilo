@@ -553,7 +553,7 @@ pub fn reads_protected_document(
     app: &str,
     document: &str,
     access: Option<&tilo_action_policy::MemberAccess>,
-    now: std::time::SystemTime,
+    now: web_time::SystemTime,
 ) -> bool {
     use tilo_action_policy::{ActionKind, Answer, Context};
     if !requires_independent_document_keys(app, document) {
