@@ -776,7 +776,7 @@ mod tests {
     use crate::release::InternalRelease;
     use crate::setup::internal_bundle;
     use crate::setup::internal_cache::coordinator::{Phase, Worker};
-    use crate::setup::internal_download::tests::{Server, response};
+    use crate::setup::internal_download::tests::{Server, release_responses, response};
     use crate::setup::model::{Capabilities, HostOs};
     use std::sync::{
         Arc,
@@ -786,7 +786,7 @@ mod tests {
     use std::time::Duration;
 
     fn release() -> InternalRelease {
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+        let bytes = internal_bundle::tests::manifest();
         InternalRelease::transport_fixture(&bytes, "https://code.tilo.so/releases/manifest.json")
     }
 
@@ -798,6 +798,28 @@ mod tests {
         }
     }
 
+    /// A download flow over `server`, its cache at `root` and its preference at `preference`,
+    /// offered `catalogs` in turn; staging what it downloads is refused with `staging`'s words.
+    fn download_flow(
+        capabilities: Capabilities,
+        server: &Server,
+        root: &std::path::Path,
+        preference: std::path::PathBuf,
+        catalogs: Vec<Vec<InternalRelease>>,
+        staging: &'static str,
+    ) -> InternalDownloadFlow {
+        let worker = Worker::fixture_for_test(root, server.transport(), move |_, _, _, _| {
+            Err(crate::setup::strings::t(staging))
+        });
+        InternalDownloadFlow::fixture(
+            capabilities,
+            SelectionPreference::at(preference),
+            worker,
+            catalogs,
+            "x86_64",
+        )
+    }
+
     fn wait_for(flow: &mut InternalDownloadFlow, phase: Phase) {
         tilo_test_env::wait_until(format_args!("the download flow to reach {phase:?}"), || {
             flow.poll();
@@ -806,310 +828,257 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn the_internal_download_flow_selects_strictly_and_starts_once;
+            fn the_internal_download_flow_selects_strictly_and_starts_once;
 
-        phase internal_download_selection_and_preference_are_strict_and_advisory;
-        {
-            // Phase `saved_selection_is_bounded_strict_and_versioned`.
-            // Catches accepting a preference that can smuggle authority beyond the exact bounded key.
+            phase internal_download_selection_and_preference_are_strict_and_advisory;
             {
-                let key = SelectionKey::from_release(&release());
-                let bytes = key.encode().unwrap();
-                assert_eq!(SelectionKey::decode(&bytes).unwrap(), key);
+                // Phase `saved_selection_is_bounded_strict_and_versioned`.
+                // Catches accepting a preference that can smuggle authority beyond the exact bounded key.
+                {
+                    let key = SelectionKey::from_release(&release());
+                    let bytes = key.encode().unwrap();
+                    assert_eq!(SelectionKey::decode(&bytes).unwrap(), key);
 
-                let mut extra: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-                extra["manifest_url"] = serde_json::json!("https://evil.test/manifest.json");
-                assert!(SelectionKey::decode(&serde_json::to_vec(&extra).unwrap()).is_err());
-                assert!(SelectionKey::decode(&vec![b' '; MAX_PREFERENCE_BYTES + 1]).is_err());
+                    let mut extra: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                    extra["manifest_url"] = serde_json::json!("https://evil.test/manifest.json");
+                    assert!(SelectionKey::decode(&serde_json::to_vec(&extra).unwrap()).is_err());
+                    assert!(SelectionKey::decode(&vec![b' '; MAX_PREFERENCE_BYTES + 1]).is_err());
 
-                let mut old: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-                old["schema"] = serde_json::json!(0);
-                assert!(SelectionKey::decode(&serde_json::to_vec(&old).unwrap()).is_err());
-            }
+                    let mut old: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                    old["schema"] = serde_json::json!(0);
+                    assert!(SelectionKey::decode(&serde_json::to_vec(&old).unwrap()).is_err());
+                }
 
-            {
-                assert!(offered_selection(Vec::new(), "x86_64").is_err());
-                assert!(offered_selection(vec![release(), release()], "x86_64").is_err());
+                {
+                    assert!(offered_selection(Vec::new(), "x86_64").is_err());
+                    assert!(offered_selection(vec![release(), release()], "x86_64").is_err());
 
-                let key = offered_selection(vec![release()], "x86_64").unwrap();
-                assert_eq!(key.release_id, "fixture-only");
-                assert_eq!(key.architecture, "x86_64");
-            }
+                    let key = offered_selection(vec![release()], "x86_64").unwrap();
+                    assert_eq!(key.release_id, "fixture-only");
+                    assert_eq!(key.architecture, "x86_64");
+                }
 
-            {
-                let temp = tempfile::tempdir().unwrap();
-                let path = temp.path().join("setup").join("internal-download.json");
-                let preference = SelectionPreference::at(path.clone());
-                let key = SelectionKey::from_release(&release());
+                {
+                    let temp = tempfile::tempdir().unwrap();
+                    let path = temp.path().join("setup").join("internal-download.json");
+                    let preference = SelectionPreference::at(path.clone());
+                    let key = SelectionKey::from_release(&release());
 
-                preference.save(&key).unwrap();
-                assert_eq!(preference.load().unwrap(), Some(key.clone()));
-                let mut replacement = key;
-                replacement.release_id = "fixture-replacement".into();
-                preference.save(&replacement).unwrap();
-                assert_eq!(preference.load().unwrap(), Some(replacement));
-                let value: serde_json::Value =
-                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-                assert_eq!(value.as_object().unwrap().len(), 4);
-                assert_eq!(
-                    std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
-                    1
-                );
-            }
+                    preference.save(&key).unwrap();
+                    assert_eq!(preference.load().unwrap(), Some(key.clone()));
+                    let mut replacement = key;
+                    replacement.release_id = "fixture-replacement".into();
+                    preference.save(&replacement).unwrap();
+                    assert_eq!(preference.load().unwrap(), Some(replacement));
+                    let value: serde_json::Value =
+                        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                    assert_eq!(value.as_object().unwrap().len(), 4);
+                    assert_eq!(
+                        std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+                        1
+                    );
+                }
 
-            {
-                let temp = tempfile::tempdir().unwrap();
-                let path = temp.path().join("selection.json");
-                std::fs::write(&path, br#"{"schema":1,"release_id":"x"}"#).unwrap();
-                let preference = SelectionPreference::at(path);
-                assert_eq!(preference.load().unwrap(), None);
+                {
+                    let temp = tempfile::tempdir().unwrap();
+                    let path = temp.path().join("selection.json");
+                    std::fs::write(&path, br#"{"schema":1,"release_id":"x"}"#).unwrap();
+                    let preference = SelectionPreference::at(path);
+                    assert_eq!(preference.load().unwrap(), None);
 
-                let blocker = temp.path().join("not-a-directory");
-                std::fs::write(&blocker, b"ordinary file").unwrap();
-                let failed = SelectionPreference::at(blocker.join("selection.json"));
-                assert!(
-                    failed
-                        .save(&SelectionKey::from_release(&release()))
-                        .is_err()
-                );
-            }
+                    let blocker = temp.path().join("not-a-directory");
+                    std::fs::write(&blocker, b"ordinary file").unwrap();
+                    let failed = SelectionPreference::at(blocker.join("selection.json"));
+                    assert!(
+                        failed
+                            .save(&SelectionKey::from_release(&release()))
+                            .is_err()
+                    );
+                }
 
-            {
-                let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-                let mut changed = bytes.clone();
-                changed.push(b' ');
-                let server = Server::new(Vec::new());
-                let root = tempfile::tempdir().unwrap();
-                let preference_root = tempfile::tempdir().unwrap();
-                let key = SelectionKey::from_release(&server.release(&bytes));
-                let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                    Err(crate::setup::strings::t(
+                {
+                    let bytes = internal_bundle::tests::manifest();
+                    let mut changed = bytes.clone();
+                    changed.push(b' ');
+                    let server = Server::new(Vec::new());
+                    let root = tempfile::tempdir().unwrap();
+                    let preference_root = tempfile::tempdir().unwrap();
+                    let key = SelectionKey::from_release(&server.release(&bytes));
+                    let mut changed_flow = download_flow(
+    supported(),
+    &server,
+    root.path(),
+    preference_root.path().join("changed.json"),
+    vec![vec![server.release(&bytes)], vec![server.release(&changed)]],
+    "imager-setup-error-staging-unavailable",
+    );
+                    assert!(changed_flow.start_selected(key.clone()).is_err());
+                    assert!(changed_flow.token.is_none());
+                    assert!(server.requests().is_empty());
+
+                    let mut ambiguous = download_flow(
+    supported(),
+    &server,
+    root.path(),
+    preference_root.path().join("ambiguous.json"),
+    vec![vec![server.release(&bytes)], vec![server.release(&bytes), server.release(&bytes)]],
+    "imager-setup-error-staging-unavailable",
+    );
+                    assert!(ambiguous.start_selected(key.clone()).is_err());
+                    assert!(ambiguous.token.is_none());
+
+                    let mut unsupported_capabilities = supported();
+                    unsupported_capabilities.internal_dual_boot = false;
+                    let mut unsupported = download_flow(
+                        unsupported_capabilities,
+                        &server,
+                        root.path(),
+                        preference_root.path().join("unsupported.json"),
+                        vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
                         "imager-setup-error-staging-unavailable",
-                    ))
-                });
-                let mut changed_flow = InternalDownloadFlow::fixture(
-                    supported(),
-                    SelectionPreference::at(preference_root.path().join("changed.json")),
-                    worker,
-                    vec![vec![server.release(&bytes)], vec![server.release(&changed)]],
-                    "x86_64",
-                );
-                assert!(changed_flow.start_selected(key.clone()).is_err());
-                assert!(changed_flow.token.is_none());
-                assert!(server.requests().is_empty());
+                    );
+                    assert!(unsupported.start_selected(key).is_err());
+                    assert!(unsupported.token.is_none());
+                    assert!(server.requests().is_empty());
+                }
+            }
 
-                let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                    Err(crate::setup::strings::t(
-                        "imager-setup-error-staging-unavailable",
-                    ))
-                });
-                let mut ambiguous = InternalDownloadFlow::fixture(
-                    supported(),
-                    SelectionPreference::at(preference_root.path().join("ambiguous.json")),
-                    worker,
-                    vec![
-                        vec![server.release(&bytes)],
-                        vec![server.release(&bytes), server.release(&bytes)],
-                    ],
-                    "x86_64",
-                );
-                assert!(ambiguous.start_selected(key.clone()).is_err());
-                assert!(ambiguous.token.is_none());
+            phase internal_download_worker_start_is_idempotent_and_holds_verified_data;
+            {
+                {
+                    let bytes = internal_bundle::tests::manifest();
+                    let server = Server::new(release_responses(&bytes));
+                    let root = tempfile::tempdir().unwrap();
+                    let preference_root = tempfile::tempdir().unwrap();
+                    let key = SelectionKey::from_release(&server.release(&bytes));
+                    let mut flow = download_flow(
+    supported(),
+    &server,
+    root.path(),
+    preference_root.path().join("selection.json"),
+    vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
+    "imager-setup-error-staging-not-built",
+    );
 
-                let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                    Err(crate::setup::strings::t(
-                        "imager-setup-error-staging-unavailable",
-                    ))
-                });
-                let mut unsupported_capabilities = supported();
-                unsupported_capabilities.internal_dual_boot = false;
-                let mut unsupported = InternalDownloadFlow::fixture(
-                    unsupported_capabilities,
-                    SelectionPreference::at(preference_root.path().join("unsupported.json")),
-                    worker,
-                    vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
-                    "x86_64",
-                );
-                assert!(unsupported.start_selected(key).is_err());
-                assert!(unsupported.token.is_none());
-                assert!(server.requests().is_empty());
+                    assert_eq!(flow.offered_selection(), Some(key.clone()));
+                    flow.start_selected(key).unwrap();
+                    assert!(flow.has_pending_operation());
+                    wait_for(&mut flow, Phase::Ready);
+                    assert_eq!(
+                        crate::setup::strings::t(flow.presentation().title_key),
+                        "Download ready"
+                    );
+                    assert!(!flow.has_pending_operation());
+
+                    flow.release().unwrap();
+                    assert!(flow.has_pending_operation());
+                    wait_for(&mut flow, Phase::Released);
+                    assert_eq!(
+                        crate::setup::strings::t(flow.presentation().title_key),
+                        "Kept for later"
+                    );
+                    assert!(!flow.has_pending_operation());
+                }
+
+                {
+                    use std::os::unix::fs::MetadataExt;
+
+                    let bytes = internal_bundle::tests::manifest();
+                    let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
+                    let (continue_tx, continue_rx) = mpsc::sync_channel(0);
+                    let mut request = 0;
+                    let server = Server::on_request(
+                        [release_responses(&bytes), release_responses(&bytes)].concat(),
+                        move || {
+                            request += 1;
+                            if request == 2 {
+                                blocked_tx.send(()).unwrap();
+                                continue_rx.recv().unwrap();
+                            }
+                        },
+                    );
+                    let root = tempfile::tempdir().unwrap();
+                    let preference_root = tempfile::tempdir().unwrap();
+                    let preference_path = preference_root.path().join("selection.json");
+                    let key = SelectionKey::from_release(&server.release(&bytes));
+                    let mut flow = download_flow(
+    supported(),
+    &server,
+    root.path(),
+    preference_path.clone(),
+    vec![vec![server.release(&bytes)], vec![server.release(&bytes)], vec![server.release(&bytes)]],
+    "imager-setup-error-staging-unavailable",
+    );
+                    flow.start_selected(key.clone()).unwrap();
+                    tilo_test_env::recv("the download to block", &blocked_rx);
+                    let token = flow.token.clone().unwrap();
+                    let preference_inode = std::fs::metadata(&preference_path).unwrap().ino();
+                    let catalogs = flow.catalogs.len();
+                    let requests = server.requests().len();
+
+                    let duplicate = flow.start_selected(key);
+                    let token_after = flow.token.clone().unwrap();
+                    let preference_inode_after = std::fs::metadata(&preference_path).unwrap().ino();
+                    let catalogs_after = flow.catalogs.len();
+                    let requests_after = server.requests().len();
+                    continue_tx.send(()).unwrap();
+
+                    assert_eq!(
+                        duplicate.unwrap_err(),
+                        crate::setup::strings::t("imager-setup-error-download-start-unavailable")
+                    );
+                    assert_eq!(token_after, token);
+                    assert_eq!(preference_inode_after, preference_inode);
+                    assert_eq!(catalogs_after, catalogs);
+                    assert_eq!(requests_after, requests);
+                    wait_for(&mut flow, Phase::Ready);
+                    assert_eq!(server.requests().len(), 3);
+                }
+
+                // Phase `stale_start_at_held_ready_preserves_token_and_request_count`.
+                // Catches a stale Start replacing the token and leases held at verified Ready.
+                {
+                    use std::os::unix::fs::MetadataExt;
+
+                    let bytes = internal_bundle::tests::manifest();
+                    let server = Server::new([release_responses(&bytes), release_responses(&bytes)].concat());
+                    let root = tempfile::tempdir().unwrap();
+                    let preference_root = tempfile::tempdir().unwrap();
+                    let preference_path = preference_root.path().join("selection.json");
+                    let key = SelectionKey::from_release(&server.release(&bytes));
+                    let mut flow = download_flow(
+    supported(),
+    &server,
+    root.path(),
+    preference_path.clone(),
+    vec![vec![server.release(&bytes)], vec![server.release(&bytes)], vec![server.release(&bytes)]],
+    "imager-setup-error-staging-unavailable",
+    );
+                    flow.start_selected(key.clone()).unwrap();
+                    wait_for(&mut flow, Phase::Ready);
+                    let token = flow.token.clone().unwrap();
+                    let preference_inode = std::fs::metadata(&preference_path).unwrap().ino();
+                    let catalogs = flow.catalogs.len();
+                    let requests = server.requests().len();
+
+                    assert_eq!(
+                        flow.start_selected(key).unwrap_err(),
+                        crate::setup::strings::t("imager-setup-error-download-start-unavailable")
+                    );
+                    assert_eq!(flow.token.as_ref(), Some(&token));
+                    assert_eq!(
+                        std::fs::metadata(&preference_path).unwrap().ino(),
+                        preference_inode
+                    );
+                    assert_eq!(flow.catalogs.len(), catalogs);
+                    assert_eq!(server.requests().len(), requests);
+
+                    flow.release().unwrap();
+                    wait_for(&mut flow, Phase::Released);
+                    assert_eq!(server.requests().len(), 3);
+                }
             }
         }
-
-        phase internal_download_worker_start_is_idempotent_and_holds_verified_data;
-        {
-            {
-                let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-                let server = Server::new(vec![
-                    response(200, "", &bytes),
-                    response(200, "", &vec![b'E'; 4096]),
-                    response(200, "", &vec![b'R'; 8192]),
-                ]);
-                let root = tempfile::tempdir().unwrap();
-                let preference_root = tempfile::tempdir().unwrap();
-                let key = SelectionKey::from_release(&server.release(&bytes));
-                let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                    Err(crate::setup::strings::t(
-                        "imager-setup-error-staging-not-built",
-                    ))
-                });
-                let mut flow = InternalDownloadFlow::fixture(
-                    supported(),
-                    SelectionPreference::at(preference_root.path().join("selection.json")),
-                    worker,
-                    vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
-                    "x86_64",
-                );
-
-                assert_eq!(flow.offered_selection(), Some(key.clone()));
-                flow.start_selected(key).unwrap();
-                assert!(flow.has_pending_operation());
-                wait_for(&mut flow, Phase::Ready);
-                assert_eq!(
-                    crate::setup::strings::t(flow.presentation().title_key),
-                    "Download ready"
-                );
-                assert!(!flow.has_pending_operation());
-
-                flow.release().unwrap();
-                assert!(flow.has_pending_operation());
-                wait_for(&mut flow, Phase::Released);
-                assert_eq!(
-                    crate::setup::strings::t(flow.presentation().title_key),
-                    "Kept for later"
-                );
-                assert!(!flow.has_pending_operation());
-            }
-
-            {
-                use std::os::unix::fs::MetadataExt;
-
-                let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-                let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
-                let (continue_tx, continue_rx) = mpsc::sync_channel(0);
-                let mut request = 0;
-                let server = Server::on_request(
-                    vec![
-                        response(200, "", &bytes),
-                        response(200, "", &vec![b'E'; 4096]),
-                        response(200, "", &vec![b'R'; 8192]),
-                        response(200, "", &bytes),
-                        response(200, "", &vec![b'E'; 4096]),
-                        response(200, "", &vec![b'R'; 8192]),
-                    ],
-                    move || {
-                        request += 1;
-                        if request == 2 {
-                            blocked_tx.send(()).unwrap();
-                            continue_rx.recv().unwrap();
-                        }
-                    },
-                );
-                let root = tempfile::tempdir().unwrap();
-                let preference_root = tempfile::tempdir().unwrap();
-                let preference_path = preference_root.path().join("selection.json");
-                let key = SelectionKey::from_release(&server.release(&bytes));
-                let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                    Err(crate::setup::strings::t(
-                        "imager-setup-error-staging-unavailable",
-                    ))
-                });
-                let mut flow = InternalDownloadFlow::fixture(
-                    supported(),
-                    SelectionPreference::at(preference_path.clone()),
-                    worker,
-                    vec![
-                        vec![server.release(&bytes)],
-                        vec![server.release(&bytes)],
-                        vec![server.release(&bytes)],
-                    ],
-                    "x86_64",
-                );
-                flow.start_selected(key.clone()).unwrap();
-                tilo_test_env::recv("the download to block", &blocked_rx);
-                let token = flow.token.clone().unwrap();
-                let preference_inode = std::fs::metadata(&preference_path).unwrap().ino();
-                let catalogs = flow.catalogs.len();
-                let requests = server.requests().len();
-
-                let duplicate = flow.start_selected(key);
-                let token_after = flow.token.clone().unwrap();
-                let preference_inode_after = std::fs::metadata(&preference_path).unwrap().ino();
-                let catalogs_after = flow.catalogs.len();
-                let requests_after = server.requests().len();
-                continue_tx.send(()).unwrap();
-
-                assert_eq!(
-                    duplicate.unwrap_err(),
-                    crate::setup::strings::t("imager-setup-error-download-start-unavailable")
-                );
-                assert_eq!(token_after, token);
-                assert_eq!(preference_inode_after, preference_inode);
-                assert_eq!(catalogs_after, catalogs);
-                assert_eq!(requests_after, requests);
-                wait_for(&mut flow, Phase::Ready);
-                assert_eq!(server.requests().len(), 3);
-            }
-
-            // Phase `stale_start_at_held_ready_preserves_token_and_request_count`.
-            // Catches a stale Start replacing the token and leases held at verified Ready.
-            {
-                use std::os::unix::fs::MetadataExt;
-
-                let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-                let server = Server::new(vec![
-                    response(200, "", &bytes),
-                    response(200, "", &vec![b'E'; 4096]),
-                    response(200, "", &vec![b'R'; 8192]),
-                    response(200, "", &bytes),
-                    response(200, "", &vec![b'E'; 4096]),
-                    response(200, "", &vec![b'R'; 8192]),
-                ]);
-                let root = tempfile::tempdir().unwrap();
-                let preference_root = tempfile::tempdir().unwrap();
-                let preference_path = preference_root.path().join("selection.json");
-                let key = SelectionKey::from_release(&server.release(&bytes));
-                let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                    Err(crate::setup::strings::t(
-                        "imager-setup-error-staging-unavailable",
-                    ))
-                });
-                let mut flow = InternalDownloadFlow::fixture(
-                    supported(),
-                    SelectionPreference::at(preference_path.clone()),
-                    worker,
-                    vec![
-                        vec![server.release(&bytes)],
-                        vec![server.release(&bytes)],
-                        vec![server.release(&bytes)],
-                    ],
-                    "x86_64",
-                );
-                flow.start_selected(key.clone()).unwrap();
-                wait_for(&mut flow, Phase::Ready);
-                let token = flow.token.clone().unwrap();
-                let preference_inode = std::fs::metadata(&preference_path).unwrap().ino();
-                let catalogs = flow.catalogs.len();
-                let requests = server.requests().len();
-
-                assert_eq!(
-                    flow.start_selected(key).unwrap_err(),
-                    crate::setup::strings::t("imager-setup-error-download-start-unavailable")
-                );
-                assert_eq!(flow.token.as_ref(), Some(&token));
-                assert_eq!(
-                    std::fs::metadata(&preference_path).unwrap().ino(),
-                    preference_inode
-                );
-                assert_eq!(flow.catalogs.len(), catalogs);
-                assert_eq!(server.requests().len(), requests);
-
-                flow.release().unwrap();
-                wait_for(&mut flow, Phase::Released);
-                assert_eq!(server.requests().len(), 3);
-            }
-        }
-    }
 
     #[test]
     #[allow(
@@ -1118,7 +1087,7 @@ mod tests {
     )]
     fn internal_download_pause_cancel_and_drop_manage_tokens_and_leases() {
         {
-            let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+            let bytes = internal_bundle::tests::manifest();
             let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
             let (continue_tx, continue_rx) = mpsc::sync_channel(0);
             let mut request = 0;
@@ -1139,17 +1108,13 @@ mod tests {
             let preference_root = tempfile::tempdir().unwrap();
             let preference_path = preference_root.path().join("selection.json");
             let key = SelectionKey::from_release(&server.release(&bytes));
-            let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err(crate::setup::strings::t(
-                    "imager-setup-error-staging-unavailable",
-                ))
-            });
-            let mut flow = InternalDownloadFlow::fixture(
+            let mut flow = download_flow(
                 supported(),
-                SelectionPreference::at(preference_path.clone()),
-                worker,
+                &server,
+                root.path(),
+                preference_path.clone(),
                 vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
-                "x86_64",
+                "imager-setup-error-staging-unavailable",
             );
             flow.start_selected(key).unwrap();
             tilo_test_env::recv("the download to block", &blocked_rx);
@@ -1161,26 +1126,17 @@ mod tests {
             drop(flow);
             drop(server);
 
-            let resumed_server = Server::new(vec![
-                response(200, "", &bytes),
-                response(200, "", &vec![b'E'; 4096]),
-                response(200, "", &vec![b'R'; 8192]),
-            ]);
-            let resumed_worker =
-                Worker::fixture_for_test(root.path(), resumed_server.transport(), |_, _, _, _| {
-                    Err(crate::setup::strings::t(
-                        "imager-setup-error-staging-unavailable",
-                    ))
-                });
-            let mut resumed = InternalDownloadFlow::fixture(
+            let resumed_server = Server::new(release_responses(&bytes));
+            let mut resumed = download_flow(
                 supported(),
-                SelectionPreference::at(preference_path),
-                resumed_worker,
+                &resumed_server,
+                root.path(),
+                preference_path,
                 vec![
                     vec![resumed_server.release(&bytes)],
                     vec![resumed_server.release(&bytes)],
                 ],
-                "x86_64",
+                "imager-setup-error-staging-unavailable",
             );
             assert!(resumed.can_resume());
             assert!(!resumed.can_start());
@@ -1192,7 +1148,7 @@ mod tests {
         }
 
         {
-            let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+            let bytes = internal_bundle::tests::manifest();
             let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
             let (continue_tx, continue_rx) = mpsc::sync_channel(0);
             let mut request = 0;
@@ -1213,21 +1169,17 @@ mod tests {
             let root = tempfile::tempdir().unwrap();
             let preference_root = tempfile::tempdir().unwrap();
             let key = SelectionKey::from_release(&server.release(&bytes));
-            let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err(crate::setup::strings::t(
-                    "imager-setup-error-staging-unavailable",
-                ))
-            });
-            let mut flow = InternalDownloadFlow::fixture(
+            let mut flow = download_flow(
                 supported(),
-                SelectionPreference::at(preference_root.path().join("selection.json")),
-                worker,
+                &server,
+                root.path(),
+                preference_root.path().join("selection.json"),
                 vec![
                     vec![server.release(&bytes)],
                     vec![server.release(&bytes)],
                     vec![server.release(&bytes)],
                 ],
-                "x86_64",
+                "imager-setup-error-staging-unavailable",
             );
             flow.start_selected(key).unwrap();
             tilo_test_env::recv("the download to block", &blocked_rx);
@@ -1252,26 +1204,18 @@ mod tests {
         }
 
         {
-            let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-            let server = Server::new(vec![
-                response(200, "", &bytes),
-                response(200, "", &vec![b'E'; 4096]),
-                response(200, "", &vec![b'R'; 8192]),
-            ]);
+            let bytes = internal_bundle::tests::manifest();
+            let server = Server::new(release_responses(&bytes));
             let root = tempfile::tempdir().unwrap();
             let preference_root = tempfile::tempdir().unwrap();
             let key = SelectionKey::from_release(&server.release(&bytes));
-            let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err(crate::setup::strings::t(
-                    "imager-setup-error-staging-unavailable",
-                ))
-            });
-            let mut flow = InternalDownloadFlow::fixture(
+            let mut flow = download_flow(
                 supported(),
-                SelectionPreference::at(preference_root.path().join("selection.json")),
-                worker,
+                &server,
+                root.path(),
+                preference_root.path().join("selection.json"),
                 vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
-                "x86_64",
+                "imager-setup-error-staging-unavailable",
             );
             flow.start_selected(key).unwrap();
             wait_for(&mut flow, Phase::Ready);
@@ -1280,21 +1224,16 @@ mod tests {
             drop(server);
 
             let reopened_server = Server::new(vec![response(200, "", &bytes)]);
-            let reopened_worker =
-                Worker::fixture_for_test(root.path(), reopened_server.transport(), |_, _, _, _| {
-                    Err(crate::setup::strings::t(
-                        "imager-setup-error-staging-unavailable",
-                    ))
-                });
-            let mut reopened = InternalDownloadFlow::fixture(
+            let mut reopened = download_flow(
                 supported(),
-                SelectionPreference::at(preference_root.path().join("selection.json")),
-                reopened_worker,
+                &reopened_server,
+                root.path(),
+                preference_root.path().join("selection.json"),
                 vec![
                     vec![reopened_server.release(&bytes)],
                     vec![reopened_server.release(&bytes)],
                 ],
-                "x86_64",
+                "imager-setup-error-staging-unavailable",
             );
             assert!(reopened.can_resume());
             reopened.resume().unwrap();
@@ -1304,7 +1243,7 @@ mod tests {
         }
 
         {
-            let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+            let bytes = internal_bundle::tests::manifest();
             let (entered_tx, entered_rx) = mpsc::sync_channel(0);
             let (continue_tx, continue_rx) = mpsc::sync_channel(0);
             let request_returned = Arc::new(AtomicBool::new(false));
@@ -1317,17 +1256,13 @@ mod tests {
             let root = tempfile::tempdir().unwrap();
             let preference_root = tempfile::tempdir().unwrap();
             let key = SelectionKey::from_release(&server.release(&bytes));
-            let worker = Worker::fixture_for_test(root.path(), server.transport(), |_, _, _, _| {
-                Err(crate::setup::strings::t(
-                    "imager-setup-error-staging-unavailable",
-                ))
-            });
-            let mut flow = InternalDownloadFlow::fixture(
+            let mut flow = download_flow(
                 supported(),
-                SelectionPreference::at(preference_root.path().join("selection.json")),
-                worker,
+                &server,
+                root.path(),
+                preference_root.path().join("selection.json"),
                 vec![vec![server.release(&bytes)], vec![server.release(&bytes)]],
-                "x86_64",
+                "imager-setup-error-staging-unavailable",
             );
             flow.start_selected(key).unwrap();
             tilo_test_env::recv("the download request", &entered_rx);

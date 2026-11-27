@@ -53,13 +53,10 @@ mod native {
     use super::super::{native::fixture_acquire, *};
     use crate::backend::test_support::isolated;
     use crate::setup::internal_cache::layout;
-    use crate::{
-        release::InternalRelease,
-        setup::{
-            internal_bundle,
-            internal_cache::{Candidate, Kind, Provider, Session},
-            internal_download::SelectedManifest,
-        },
+    use crate::setup::internal_cache::tests::{record_snapshot, selected};
+    use crate::setup::{
+        internal_cache::{Candidate, Kind, Provider, Session},
+        internal_download::SelectedManifest,
     };
     use std::{
         fs::{self, OpenOptions},
@@ -71,14 +68,6 @@ mod native {
         sync::atomic::AtomicBool,
     };
     use tilo_test_env::SpawnUnderEnvLock as _;
-    fn selected() -> SelectedManifest {
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-        let release = InternalRelease::transport_fixture(
-            &bytes,
-            "https://code.tilo.so/releases/manifest.json",
-        );
-        SelectedManifest::from_bytes(&release, bytes).unwrap()
-    }
     fn directory() -> tempfile::TempDir {
         crate::backend::test_support::qualified_tempdir()
     }
@@ -758,17 +747,6 @@ mod native {
             "failed_post_scan_preparation_cannot_publish_or_retire_rejected_records",
             || {
                 use sha2::{Digest, Sha256};
-                fn snapshot(path: &std::path::Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
-                    let mut entries: Vec<_> = fs::read_dir(path)
-                        .unwrap()
-                        .map(|e| {
-                            let e = e.unwrap();
-                            (e.file_name(), fs::read(e.path()).unwrap())
-                        })
-                        .collect();
-                    entries.sort();
-                    entries
-                }
                 for case in 0..3 {
                     let dir = directory();
                     let s = selected();
@@ -805,7 +783,7 @@ mod native {
                         .join("payload")
                         .join(s.bundle().component(0).unwrap().filename);
                     let before_payload = fs::read(&partial).unwrap();
-                    let before_records = snapshot(&journal);
+                    let before_records = record_snapshot(&journal);
                     let [mut a, b] = parts(dir.path(), &s);
                     {
                         let mut session = Session::new(&s, 0, 3, &mut a.provider).unwrap();
@@ -830,13 +808,13 @@ mod native {
                         final_file.verify(&AtomicBool::new(false)).unwrap();
                         assert!(!partial.exists());
                         assert_eq!(fs::read(&final_path).unwrap(), before_payload);
-                        assert!(snapshot(&journal).is_empty());
+                        assert!(record_snapshot(&journal).is_empty());
                     } else {
                         assert!(a.provider.retain(&[]).is_err());
                         assert!(a.publish(&AtomicBool::new(false)).is_err());
                         assert!(!final_path.exists());
                         assert_eq!(fs::read(&partial).unwrap(), before_payload);
-                        assert_eq!(snapshot(&journal), before_records);
+                        assert_eq!(record_snapshot(&journal), before_records);
                     }
                     drop(b);
                 }

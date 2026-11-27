@@ -1,14 +1,10 @@
 use super::*;
 use crate::backend::test_support::isolated;
 use crate::setup::{
-    internal_bundle,
-    internal_download::tests::{Server, response},
+    internal_bundle::tests::manifest,
+    internal_download::tests::{Server, release_responses, response},
 };
 use std::io::Read;
-
-fn manifest() -> Vec<u8> {
-    internal_bundle::tests::bytes(&internal_bundle::tests::fixture())
-}
 
 tilo_test_env::scenario! {
     fn the_coordinator_keeps_roles_and_residue_exact;
@@ -19,11 +15,7 @@ tilo_test_env::scenario! {
             "both_authenticated_roles_remain_held_until_matching_consume",
             || {
                 let bytes = manifest();
-                let server = Server::new(vec![
-                    response(200, "", &bytes),
-                    response(200, "", &vec![b'E'; 4096]),
-                    response(200, "", &vec![b'R'; 8192]),
-                ]);
+                let server = Server::new(release_responses(&bytes));
                 let root = tempfile::tempdir().unwrap();
                 let seen = Arc::new(Mutex::new(Vec::new()));
                 let consumed = seen.clone();
@@ -446,11 +438,7 @@ tilo_test_env::scenario! {
             "ready_corruption_with_same_file_identity_and_length_refuses_consumer",
             || {
                 let bytes = manifest();
-                let server = Server::new(vec![
-                    response(200, "", &bytes),
-                    response(200, "", &vec![b'E'; 4096]),
-                    response(200, "", &vec![b'R'; 8192]),
-                ]);
+                let server = Server::new(release_responses(&bytes));
                 let root = tempfile::tempdir().unwrap();
                 let called = Arc::new(AtomicBool::new(false));
                 let c = called.clone();
@@ -1055,11 +1043,7 @@ tilo_test_env::scenario! {
             || {
                 for error in [false, true] {
                     let bytes = manifest();
-                    let server = Server::new(vec![
-                        response(200, "", &bytes),
-                        response(200, "", &vec![b'E'; 4096]),
-                        response(200, "", &vec![b'R'; 8192]),
-                    ]);
+                    let server = Server::new(release_responses(&bytes));
                     let root = tempfile::tempdir().unwrap();
                     let entered = Arc::new((Mutex::new(false), Condvar::new()));
                     let released = Arc::new((Mutex::new(false), Condvar::new()));
@@ -1116,11 +1100,7 @@ tilo_test_env::scenario! {
             "disconnect_from_held_ready_cancels_and_joins_without_consuming",
             || {
                 let bytes = manifest();
-                let server = Server::new(vec![
-                    response(200, "", &bytes),
-                    response(200, "", &vec![b'E'; 4096]),
-                    response(200, "", &vec![b'R'; 8192]),
-                ]);
+                let server = Server::new(release_responses(&bytes));
                 let root = tempfile::tempdir().unwrap();
                 let worker = fixture_worker(root.path(), server.transport(), noop);
                 worker.start(server.release(&bytes)).unwrap();
@@ -1174,11 +1154,7 @@ tilo_test_env::scenario! {
             "disconnect_signals_scoped_consumer_and_waits_for_its_release",
             || {
                 let bytes = manifest();
-                let server = Server::new(vec![
-                    response(200, "", &bytes),
-                    response(200, "", &vec![b'E'; 4096]),
-                    response(200, "", &vec![b'R'; 8192]),
-                ]);
+                let server = Server::new(release_responses(&bytes));
                 let root = tempfile::tempdir().unwrap();
                 let entered = Arc::new(AtomicBool::new(false));
                 let returned = Arc::new(AtomicBool::new(false));
@@ -1513,11 +1489,7 @@ fn preparation_mutation_failure(cancel: bool) {
 fn cancelled_reader_failure(verification: bool) {
     for boundary in ["reader-restored", "reader-held", "reader-root"] {
         let bytes = manifest();
-        let server = Server::new(vec![
-            response(200, "", &bytes),
-            response(200, "", &vec![b'E'; 4096]),
-            response(200, "", &vec![b'R'; 8192]),
-        ]);
+        let server = Server::new(release_responses(&bytes));
         let root = tempfile::tempdir().unwrap();
         let called = Arc::new(AtomicBool::new(false));
         let c = called.clone();

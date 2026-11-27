@@ -477,6 +477,10 @@ pub(crate) mod tests {
     pub(crate) fn bytes(value: &Value) -> Vec<u8> {
         serde_json::to_vec(value).unwrap()
     }
+    /// The shared fixture manifest, as a release serves it.
+    pub(crate) fn manifest() -> Vec<u8> {
+        bytes(&fixture())
+    }
     fn cmdline() -> String {
         fixture()["boot_binding"]["uki_cmdline"]
             .as_str()
@@ -495,7 +499,7 @@ pub(crate) mod tests {
         {
             {
                 assert!(validate_internal_bundle(SHARED_FIXTURE.as_bytes()).is_ok());
-                assert!(validate_internal_bundle(&bytes(&fixture())).is_ok());
+                assert!(validate_internal_bundle(&manifest()).is_ok());
                 let bundle = validate_internal_bundle(SHARED_FIXTURE.as_bytes()).unwrap();
                 assert_eq!(bundle.purpose(), PURPOSE);
                 assert_eq!(bundle.purpose(), "tilo-internal-installer");
@@ -691,7 +695,7 @@ pub(crate) mod tests {
             }
 
             {
-                let raw = String::from_utf8(bytes(&fixture())).unwrap();
+                let raw = String::from_utf8(manifest()).unwrap();
                 assert!(raw.contains("\"schema\":2"));
                 assert!(
                     validate_internal_bundle(

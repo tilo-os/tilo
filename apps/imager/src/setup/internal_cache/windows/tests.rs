@@ -66,7 +66,7 @@ mod native {
     use std::{fs, io::Write, os::windows::ffi::OsStringExt, sync::atomic::AtomicBool};
     use tilo_test_env::SpawnUnderEnvLock as _;
     fn selected() -> SelectedManifest {
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+        let bytes = internal_bundle::tests::manifest();
         let release = InternalRelease::transport_fixture(
             &bytes,
             "https://code.tilo.so/releases/manifest.json",

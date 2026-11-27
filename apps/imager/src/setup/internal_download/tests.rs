@@ -1,9 +1,7 @@
 use super::*;
 use crate::backend::test_support::isolated;
+use crate::setup::internal_bundle::tests::manifest;
 use test_http::Responder;
-fn manifest() -> Vec<u8> {
-    super::super::internal_bundle::tests::bytes(&super::super::internal_bundle::tests::fixture())
-}
 
 tilo_test_env::scenario! {
     fn an_internal_download_accepts_only_authenticated_resumable_bytes;
@@ -177,6 +175,14 @@ pub(in crate::setup) fn response(status: u16, headers: &str, bytes: &[u8]) -> Ve
         format!("HTTP/1.1 {status} Test\r\nConnection: close\r\n{headers}\r\n").into_bytes();
     result.extend_from_slice(bytes);
     result
+}
+/// The fixture release as a server answers it in order: `manifest`, then its two components.
+pub(in crate::setup) fn release_responses(manifest: &[u8]) -> Vec<Vec<u8>> {
+    vec![
+        response(200, "", manifest),
+        response(200, "", &vec![b'E'; 4096]),
+        response(200, "", &vec![b'R'; 8192]),
+    ]
 }
 fn context(server: &Server) -> SelectedManifest {
     let bytes = manifest();

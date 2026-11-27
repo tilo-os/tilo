@@ -27,7 +27,7 @@ use crate::setup::actions::SETUP_ROW_ID;
 use crate::setup::desktop_flow::{DesktopFailureKind, DesktopRuntime};
 use crate::setup::internal_bundle;
 use crate::setup::internal_cache::coordinator::{Phase as InternalPhase, Worker};
-use crate::setup::internal_download::tests::{Server, response};
+use crate::setup::internal_download::tests::{Server, release_responses};
 
 fn run_inline(_: &str, task: WorkerTask) -> Result<(), String> {
     task();
@@ -54,7 +54,7 @@ fn setup_fixture_in(
     serves: usize,
     runtime: Option<install_flow::StagingRuntime>,
 ) -> HeldFixture {
-    let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+    let bytes = internal_bundle::tests::manifest();
     let root = tempfile::tempdir().unwrap();
     let preference = tempfile::tempdir().unwrap();
     let platform = Capabilities {
@@ -98,12 +98,8 @@ fn setup_fixture(
 
 /// The `handoff` page over the fixture release, three downloads deep.
 fn guarded(handoff: Handoff, fakes: install_flow::tests::Fakes, host: HostOs) -> HeldFixture {
-    let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-    let server = Server::new(vec![
-        response(200, "", &bytes),
-        response(200, "", &vec![b'E'; 4096]),
-        response(200, "", &vec![b'R'; 8192]),
-    ]);
+    let bytes = internal_bundle::tests::manifest();
+    let server = Server::new(release_responses(&bytes));
     setup_fixture_in(handoff, server, fakes, host, 3, None)
 }
 
@@ -504,12 +500,8 @@ fn full_os_download_is_distinct_and_reaches_only_the_real_worker() {
     }
 
     {
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-        let server = Server::new(vec![
-            response(200, "", &bytes),
-            response(200, "", &vec![b'E'; 4096]),
-            response(200, "", &vec![b'R'; 8192]),
-        ]);
+        let bytes = internal_bundle::tests::manifest();
+        let server = Server::new(release_responses(&bytes));
         let (mut setup, _root, _preference) = download_fixture(&server, &bytes, 2);
 
         setup
@@ -548,12 +540,8 @@ fn full_os_download_is_distinct_and_reaches_only_the_real_worker() {
     }
 
     {
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
-        let server = Server::new(vec![
-            response(200, "", &bytes),
-            response(200, "", &vec![b'E'; 4096]),
-            response(200, "", &vec![b'R'; 8192]),
-        ]);
+        let bytes = internal_bundle::tests::manifest();
+        let server = Server::new(release_responses(&bytes));
         let (mut setup, _root, _preference) = download_fixture(&server, &bytes, 2);
         setup.handoff = Handoff::Desktop;
 
@@ -575,19 +563,12 @@ fn full_os_download_is_distinct_and_reaches_only_the_real_worker() {
     }
 
     {
-        let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+        let bytes = internal_bundle::tests::manifest();
         let (blocked_tx, blocked_rx) = mpsc::sync_channel(0);
         let (continue_tx, continue_rx) = mpsc::sync_channel(0);
         let mut request = 0;
         let server = Server::on_request(
-            vec![
-                response(200, "", &bytes),
-                response(200, "", &vec![b'E'; 4096]),
-                response(200, "", &vec![b'R'; 8192]),
-                response(200, "", &bytes),
-                response(200, "", &vec![b'E'; 4096]),
-                response(200, "", &vec![b'R'; 8192]),
-            ],
+            [release_responses(&bytes), release_responses(&bytes)].concat(),
             move || {
                 request += 1;
                 if request == 2 {
@@ -1004,7 +985,7 @@ tilo_test_env::scenario! {
 #[test]
 fn journey_the_review_checks_this_computer_before_offering_the_full_os_install() {
     use crate::setup::staging::probe::Blocker;
-    let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+    let bytes = internal_bundle::tests::manifest();
 
     let fixture = setup_fixture(
         release_server(&bytes),
@@ -1091,7 +1072,7 @@ fn mount(mut fixture: HeldFixture) -> Mounted {
     reason = "one journey keeps each step and its fresh fixture visible"
 )]
 fn journey_a_full_os_download_pauses_resumes_and_installs_alongside_the_current_system() {
-    let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+    let bytes = internal_bundle::tests::manifest();
     let (server, blocked_rx, go_tx) = held_release_server(&bytes);
     let mut hosted = mount(setup_fixture(
         server,
@@ -1246,7 +1227,7 @@ fn journey_a_full_os_download_pauses_resumes_and_installs_alongside_the_current_
 
 #[test]
 fn journey_an_internal_download_can_be_cancelled_and_its_data_discarded() {
-    let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+    let bytes = internal_bundle::tests::manifest();
     let (server, blocked_rx, go_tx) = held_release_server(&bytes);
     let mut hosted = mount(setup_fixture(
         server,
@@ -1291,7 +1272,7 @@ fn journey_an_internal_download_can_be_cancelled_and_its_data_discarded() {
 
 #[test]
 fn journey_a_verified_internal_download_is_kept_for_later_and_can_still_be_discarded() {
-    let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+    let bytes = internal_bundle::tests::manifest();
     let mut hosted = mount(setup_fixture(
         release_server(&bytes),
         install_flow::tests::Fakes::new(Vec::new()),
@@ -1322,7 +1303,7 @@ fn journey_a_verified_internal_download_is_kept_for_later_and_can_still_be_disca
 /// A Full Tilo review whose probe answers with `blockers`, and whose Fast
 /// Startup fix clears them, as a person moving through firmware would find.
 fn remedy_fixture(blockers: Vec<crate::setup::staging::probe::Blocker>) -> Mounted {
-    let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+    let bytes = internal_bundle::tests::manifest();
     let fakes = install_flow::tests::Fakes::new(blockers);
     let facts = Arc::new(std::sync::Mutex::new(fakes.facts.clone()));
     let mut runtime = fakes.runtime();
@@ -1473,7 +1454,7 @@ fn journey_a_refused_full_os_install_opens_firmware_settings_disables_fast_start
 
 #[test]
 fn journey_a_failed_internal_install_retries_the_unfinished_operation_to_a_staged_install() {
-    let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+    let bytes = internal_bundle::tests::manifest();
     let mut fakes = install_flow::tests::Fakes::new(vec![
         crate::setup::staging::probe::Blocker::PendingOperation,
     ]);
@@ -1550,7 +1531,7 @@ fn journey_a_failed_internal_install_retries_the_unfinished_operation_to_a_stage
 #[test]
 fn journey_an_unfinished_internal_install_is_removed_and_its_space_returned() {
     use crate::setup::staging::probe::Blocker;
-    let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
+    let bytes = internal_bundle::tests::manifest();
     let mut fakes = install_flow::tests::Fakes::new(vec![Blocker::PendingOperation]);
     fakes.records = vec![install_flow::tests::record("op-1")];
     let mut hosted = mount(setup_fixture(

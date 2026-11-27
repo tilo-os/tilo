@@ -3,10 +3,8 @@ use super::*;
 use crate::backend::test_support::isolated;
 use crate::release::InternalRelease;
 
-fn selected() -> SelectedManifest {
-    let bytes = super::super::internal_bundle::tests::bytes(
-        &super::super::internal_bundle::tests::fixture(),
-    );
+pub(in crate::setup) fn selected() -> SelectedManifest {
+    let bytes = super::super::internal_bundle::tests::manifest();
     let release =
         InternalRelease::transport_fixture(&bytes, "https://code.tilo.so/releases/manifest.json");
     SelectedManifest::from_bytes(&release, bytes).unwrap()
@@ -1548,7 +1546,7 @@ fn lifecycle_records(selected: &SelectedManifest, dir: &Path) -> (DiskProvider, 
     (disk, file)
 }
 #[cfg(unix)]
-fn record_snapshot(dir: &Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
+pub(in crate::setup) fn record_snapshot(dir: &Path) -> Vec<(std::ffi::OsString, Vec<u8>)> {
     let mut records: Vec<_> = fs::read_dir(dir)
         .unwrap()
         .map(|e| {
