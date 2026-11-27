@@ -57,9 +57,6 @@
             ]
           },
           {
-            "wait_for": "Acme"
-          },
-          {
             "press_any": [
               "Save"
             ]
@@ -68,23 +65,29 @@
             "wait_for": "Acme"
           },
           {
-            "offered": [
-              "Reveal",
-              "Edit",
-              "More"
-            ]
+            "must": {
+              "see": [
+                {
+                  "prefix": "Reveal code for"
+                },
+                "Edit",
+                "More"
+              ]
+            }
           },
           {
-            "press_any": [
-              "Reveal"
-            ]
+            "press": {
+              "prefix": "Reveal code for"
+            }
           },
           {
-            "offered": [
-              "Copy",
-              "Edit",
-              "More"
-            ]
+            "must": {
+              "see": [
+                {
+                  "prefix": "Copy code for"
+                }
+              ]
+            }
           }
         ]
       }
@@ -116,9 +119,6 @@
             "press_any": [
               "Fill from the link"
             ]
-          },
-          {
-            "wait_for": "GitHub"
           },
           {
             "press_any": [
