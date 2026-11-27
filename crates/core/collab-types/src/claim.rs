@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use tilo_action_policy::PersonId;
 pub use tilo_actions::FrameworkChange;
 use tilo_actions::context::ContinuedAction;
-use tilo_actions::stamp::Label;
+use tilo_actions::stamp::{KeptCalls, Label};
 use tilo_actions::{ActionContext, ActionKey, Did, HistoryOp, PathStep};
 
 /// A storage unit, as the path from the record's root to the unit's root
@@ -207,6 +207,10 @@ pub enum ClaimError {
     /// made as.
     #[error("the change's stamp names no invoker")]
     NoInvoker,
+    /// The call a resource store's change names by digest is not kept by the
+    /// changes it came with, or is not the one it keeps.
+    #[error("{0}")]
+    Uncalled(#[from] tilo_actions::stamp::CallUnresolved),
 }
 
 impl ClaimedAction {
@@ -449,14 +453,31 @@ impl ChangeClaim {
     ///
     /// # Errors
     /// As [`ClaimedAction::of`]; a change with no history entry is
-    /// [`ClaimError::Unnamed`].
+    /// [`ClaimError::Unnamed`]. A change that names its call by digest is
+    /// read with the changes it came with ([`Self::of_change_in`]).
     pub fn of_change(
         hash: [u8; 32],
         message: Option<&str>,
         units: Vec<UnitPath>,
     ) -> Result<Self, ClaimError> {
+        Self::of_change_in(hash, message, units, &KeptCalls::default())
+    }
+
+    /// [`Self::of_change`], its call read from `calls`, the calls kept by the
+    /// changes it came with, where it names its call by digest.
+    ///
+    /// # Errors
+    /// As [`Self::of_change`], and [`ClaimError::Uncalled`] when the call it
+    /// names is not among `calls`, or it keeps another than it names.
+    pub fn of_change_in(
+        hash: [u8; 32],
+        message: Option<&str>,
+        units: Vec<UnitPath>,
+        calls: &KeptCalls,
+    ) -> Result<Self, ClaimError> {
         let message = message.ok_or(ClaimError::Unnamed)?;
-        let (label, read) = crate::Stamp::read(message).ok_or(ClaimError::Unnamed)?;
+        let (label, mut read) = crate::Stamp::read(message).ok_or(ClaimError::Unnamed)?;
+        read.resolve(calls)?;
         let mut stamp: Option<crate::Stamp> = None;
         // The call the change keeps, when a host ran it for a caller elsewhere:
         // the caller's own signed invocation, never its re-signing.
@@ -519,8 +540,12 @@ impl ChangeClaim {
         message: Option<&str>,
         units: Vec<UnitPath>,
         imported: Option<&tilo_action_policy::Acting>,
+        calls: &KeptCalls,
     ) -> Result<Self, ClaimError> {
-        match (Self::of_change(hash, message, units.clone()), imported) {
+        match (
+            Self::of_change_in(hash, message, units.clone(), calls),
+            imported,
+        ) {
             (Err(ClaimError::NoInvoker), Some(person)) => Ok(Self {
                 change: hash,
                 action: ClaimedAction::whole_resource_edit(String::new()),
@@ -592,15 +617,16 @@ pub fn claims_of(
     changes: &[automerge::Change],
     mut units: impl FnMut(&automerge::Change) -> Vec<UnitPath>,
 ) -> Result<Vec<ChangeClaim>, ClaimError> {
+    // A store's write keeps its call once per document, in its first change there.
+    let calls = KeptCalls::of_changes(changes);
     changes
         .iter()
         .map(|change| {
-            ChangeClaim::of_change(change.hash().0, change.message(), units(change)).map_err(
-                |error| match error {
+            ChangeClaim::of_change_in(change.hash().0, change.message(), units(change), &calls)
+                .map_err(|error| match error {
                     ClaimError::Unnamed => ClaimError::UnnamedChange(describe(change)),
                     other => other,
-                },
-            )
+                })
         })
         .collect()
 }
@@ -881,8 +907,11 @@ fn describe(change: &automerge::Change) -> String {
 /// The first change that names nothing, described with what it writes so its
 /// producer can be found.
 pub fn check_named(changes: &[automerge::Change]) -> Result<(), String> {
+    let calls = KeptCalls::of_changes(changes);
     for change in changes {
-        if let Err(error) = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new()) {
+        if let Err(error) =
+            ChangeClaim::of_change_in(change.hash().0, change.message(), Vec::new(), &calls)
+        {
             return Err(format!("{}: {error}", describe(change)));
         }
     }

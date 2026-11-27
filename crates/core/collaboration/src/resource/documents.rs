@@ -978,6 +978,11 @@ fn withdrawal(
     reason: &str,
 ) -> (Vec<ChangeHash>, Vec<ResourceRefusal>) {
     let changes = doc.get_changes_meta(&[]);
+    let calls = tilo_actions::stamp::KeptCalls::of_messages(
+        changes
+            .iter()
+            .filter_map(|change| change.message.as_deref()),
+    );
     let mut withdrawn: HashSet<ChangeHash> = HashSet::new();
     let mut refusals = Vec::new();
     // The history lists every change after its dependencies.
@@ -987,10 +992,11 @@ fn withdrawal(
             continue;
         }
         withdrawn.insert(change.hash);
-        let claimed = collab_types::ChangeClaim::of_change(
+        let claimed = collab_types::ChangeClaim::of_change_in(
             change.hash.0,
             change.message.as_deref(),
             Vec::new(),
+            &calls,
         );
         if let Ok(claim) = claimed {
             for (action, item) in claim.action.named() {

@@ -60,6 +60,8 @@ pub use readers::RecordReader;
 
 /// The most resources one document holds before the next one starts.
 pub const DOCUMENT_LIMIT: usize = 4096;
+/// How many calls the store keeps at hand by digest ([`Store::calls`]) before it lets them go.
+const KEPT_CALLS: usize = 1024;
 
 /// What a resource's key at the document's root starts with: each resource is a key of the root
 /// of its own, so two devices starting one document both keep what they wrote.
@@ -278,6 +280,14 @@ pub struct Store {
     /// The documents of resources' content by the newest version each holds, the most recent
     /// first: what [`Self::newest`] reads a page of.
     recent: std::sync::Mutex<recent::Recent>,
+    /// In a staged copy ([`Self::stage`]), each document a change of it keeps a call in, with
+    /// the call's digest: every later change of that call to the document names it by its
+    /// digest alone, so a call that writes many records keeps itself once per document. `None`
+    /// in the live store, whose every change keeps its call whole.
+    called: Option<BTreeSet<(String, String)>>,
+    /// The calls the changes taken in lately keep, by digest: what a change that names its call
+    /// by digest is read with, its call kept by an earlier change of its document.
+    calls: tilo_actions::stamp::KeptCalls,
 }
 
 /// A resource that is live now (a track playing, a timer running): its type's condition holds
@@ -327,6 +337,8 @@ impl Store {
             live: BTreeMap::new(),
             live_revision: 0,
             recent: std::sync::Mutex::default(),
+            called: None,
+            calls: tilo_actions::stamp::KeptCalls::default(),
         }
     }
 
@@ -400,6 +412,8 @@ impl Store {
             reader: self.reader.clone(),
             drafting: self.drafting.clone(),
             touches: std::sync::Arc::clone(&self.touches),
+            called: Some(BTreeSet::new()),
+            calls: self.calls.clone(),
             ..Self::new(self.workspace.clone())
         };
         let result = command(&mut staged);
@@ -1145,9 +1159,10 @@ impl Store {
             }
             None => self.place(kind, resource.parent.as_deref(), &resource.readers),
         };
+        let called = self.stamp_for(&doc_id, stamp);
         let doc = self.doc(&doc_id)?;
         // A put of what the document holds already changes nothing, and writes nothing.
-        let change = put_fields(doc, kind, id, &resource, stamp, under.as_ref())?;
+        let change = put_fields(doc, kind, id, &resource, &called, under.as_ref())?;
         let heads = doc.get_heads();
         self.commit(&Commit {
             doc: &doc_id,
@@ -1165,6 +1180,7 @@ impl Store {
             return Ok(written);
         };
         self.note_group(&doc_id, stamp);
+        self.kept_call(&doc_id, &called);
         written.push(Written {
             doc: doc_id,
             readers: resource.readers,
@@ -1234,6 +1250,7 @@ impl Store {
         let doc_id = self.index.get(kind, id).ok_or_else(missing)?.doc.clone();
         let readers = self.index.readers(&doc_id).unwrap_or_default().to_owned();
         let under = self.drafting.clone();
+        let called = self.stamp_for(&doc_id, stamp);
         let doc = self.doc(&doc_id)?;
         if let Some((actor, _)) = &under {
             doc.set_actor(actor.clone());
@@ -1242,7 +1259,7 @@ impl Store {
         if tx.get(ROOT, held_key(id))?.is_some() {
             tx.delete(ROOT, held_key(id))?;
         }
-        tx.commit_with(commit_options(under.as_ref(), stamp));
+        let (made, _) = tx.commit_with(commit_options(under.as_ref(), &called));
         let change = doc
             .get_last_local_change()
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
@@ -1257,6 +1274,9 @@ impl Store {
             }],
         });
         self.note_group(&doc_id, stamp);
+        if made.is_some() {
+            self.kept_call(&doc_id, &called);
+        }
         Ok(Written {
             doc: doc_id,
             readers,
@@ -1281,8 +1301,10 @@ impl Store {
             .doc
             .clone();
         let readers = self.index.readers(&doc_id).unwrap_or_default().to_owned();
+        let called = self.stamp_for(&doc_id, stamp);
+        self.kept_call(&doc_id, &called);
         let doc = self.doc(&doc_id)?;
-        let hash = doc.empty_commit(CommitOptions::default().with_message(stamp.message()));
+        let hash = doc.empty_commit(CommitOptions::default().with_message(called.message()));
         let change = doc
             .get_change_by_hash(&hash)
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
@@ -1317,14 +1339,16 @@ impl Store {
         let mut written = Vec::new();
         for doc_id in docs {
             let readers = self.index.readers(&doc_id).unwrap_or_default().to_owned();
+            let called = self.stamp_for(&doc_id, stamp);
             let Some(doc) = self.existing(&doc_id)? else {
                 continue;
             };
             let Some(change) =
-                collab_types::history::revert::revert_stamped(doc, invocation, stamp)?
+                collab_types::history::revert::revert_stamped(doc, invocation, &called)?
             else {
                 continue;
             };
+            self.kept_call(&doc_id, &called);
             self.apply(&doc_id, &readers, change.clone())?;
             written.push(Written {
                 doc: doc_id,
@@ -1606,6 +1630,7 @@ impl Store {
         ) -> Result<R, automerge::AutomergeError>,
     ) -> Result<(R, Option<Written>), StoreError> {
         let (doc_id, readers) = self.content_of(kind, id)?;
+        let called = self.stamp_for(&doc_id, stamp);
         let doc = self.doc(&doc_id)?;
         let before = doc.get_heads();
         let mut tx = doc.transaction();
@@ -1617,10 +1642,12 @@ impl Store {
                 return Err(error.into());
             }
         };
-        tx.commit_with(CommitOptions::default().with_message(stamp.message()));
+        tx.commit_with(CommitOptions::default().with_message(called.message()));
         if doc.get_heads() == before {
             return Ok((answer, None));
         }
+        self.kept_call(&doc_id, &called);
+        let doc = self.doc(&doc_id)?;
         let change = doc
             .get_last_local_change()
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
@@ -1674,7 +1701,12 @@ impl Store {
         stamp: &Stamp,
     ) -> Result<Vec<Written>, StoreError> {
         let old_id = content_id(from, kind, id);
+        let new_id = content_id(to, kind, id);
         let under = self.drafting.clone();
+        let (emptying, copying) = (
+            self.stamp_for(&old_id, stamp),
+            self.stamp_for(&new_id, stamp),
+        );
         let Some(old) = self.existing(&old_id)? else {
             return Ok(Vec::new());
         };
@@ -1690,23 +1722,24 @@ impl Store {
         for key in keys {
             tx.delete(ROOT, key.as_str())?;
         }
-        tx.commit_with(commit_options(under.as_ref(), stamp));
+        tx.commit_with(commit_options(under.as_ref(), &emptying));
         let emptied = old
             .get_last_local_change()
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
-        let new_id = content_id(to, kind, id);
         let new = self.doc(&new_id)?;
         if let Some((actor, _)) = &under {
             new.set_actor(actor.clone());
         }
         let mut tx = new.transaction();
         copy_object(&copy, &ROOT, &mut tx, &ROOT)?;
-        tx.commit_with(commit_options(under.as_ref(), stamp));
+        tx.commit_with(commit_options(under.as_ref(), &copying));
         let copied = new
             .get_last_local_change()
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
         self.note_group(&old_id, stamp);
         self.note_group(&new_id, stamp);
+        self.kept_call(&old_id, &emptying);
+        self.kept_call(&new_id, &copying);
         Ok(vec![
             Written {
                 doc: old_id,
@@ -2822,7 +2855,7 @@ impl Store {
         {
             return self.judge_founding(schema, (kind, id), received);
         }
-        let stamp = Stamp::of(&received.change);
+        let stamp = self.stamp_of(doc_id, &received.change)?;
         // The migration verb's two forms. A record's step to a storage version is admitted only
         // as the one its kind and id derive for that version, up to the version its type stands
         // at: the step every holder makes, whoever sends it. The app's rewrite of its content for
@@ -2880,6 +2913,12 @@ impl Store {
     fn apply(&mut self, doc_id: &str, readers: &str, change: AmChange) -> Result<(), StoreError> {
         if let Some(stamp) = Stamp::of(&change) {
             self.note_group(doc_id, &stamp);
+            // A store takes many documents' writes; the calls of writes long taken in are read
+            // from their documents again when a change names one.
+            if self.calls.len() >= KEPT_CALLS {
+                self.calls = tilo_actions::stamp::KeptCalls::default();
+            }
+            self.calls.keep(&stamp);
         }
         let doc = self.doc(doc_id)?;
         let mut log = PatchLog::active();
@@ -3021,6 +3060,59 @@ impl Store {
             }
         }
         Ok(())
+    }
+
+    /// `stamp` as a change of `doc` drafted now keeps it: in a staged copy, its call named by
+    /// its digest, and kept whole only by the first change of the call to `doc`
+    /// ([`Self::kept_call`] notes it), so readers of `doc` receive the call once, with the
+    /// changes that name it.
+    fn stamp_for(&self, doc: &str, stamp: &Stamp) -> Stamp {
+        let mut stamp = stamp.clone();
+        if let Some(called) = &self.called
+            && stamp.signed.is_some()
+        {
+            stamp.name_call(false);
+            let digest = stamp.call.clone().unwrap_or_default();
+            stamp.name_call(called.contains(&(doc.to_owned(), digest)));
+        }
+        stamp
+    }
+
+    /// Note that a change of `doc` drafted under `stamp` ([`Self::stamp_for`]) keeps its call.
+    fn kept_call(&mut self, doc: &str, stamp: &Stamp) {
+        if let (Some(called), Some(_), Some(digest)) =
+            (&mut self.called, &stamp.signed, &stamp.call)
+        {
+            called.insert((doc.to_owned(), digest.clone()));
+        }
+    }
+
+    /// The stamp `change` of `doc_id` carries, with the call it names by digest read from the
+    /// change of its document that keeps it.
+    ///
+    /// # Errors
+    /// [`Refusal::Uncalled`] when no change of the document keeps the call it names, or it
+    /// keeps another than the one it names.
+    fn stamp_of(&mut self, doc_id: &str, change: &AmChange) -> Result<Option<Stamp>, Refusal> {
+        let Some(mut stamp) = Stamp::of(change) else {
+            return Ok(None);
+        };
+        if let Some(named) = stamp.call.as_deref()
+            && stamp.signed.is_none()
+            && !self.calls.holds(named)
+        {
+            // Kept by an earlier change of the same write, taken in before the store last
+            // started or long enough ago that it was let go: read from the document itself.
+            let doc = self.doc(doc_id).map_err(|_| Refusal::Unplaced)?;
+            let kept = tilo_actions::stamp::KeptCalls::of_messages(
+                doc.get_changes_meta(&[])
+                    .iter()
+                    .filter_map(|change| change.message.as_deref()),
+            );
+            self.calls.extend(kept);
+        }
+        stamp.resolve(&self.calls).map_err(Refusal::Uncalled)?;
+        Ok(Some(stamp))
     }
 
     /// Notes that `doc` holds a change stamped `stamp`, when the stamp names a group.

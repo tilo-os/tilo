@@ -217,3 +217,66 @@ async fn a_write_of_two_documents_notices_them_together() {
         );
     }
 }
+
+/// One action writing many records of one document is one write of it: its changes go out in
+/// one frame, kept by the workspace's store together, rather than a frame and an admission for
+/// each record.
+#[tokio::test]
+async fn an_action_writing_many_records_of_one_document_is_one_write_of_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = hosting_device();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    crate::workspaces::fixtures::declare_app(&server, APP, &surface());
+    let created = workspaces.create("Notes").await.unwrap();
+    let workspace = created.workspace.clone();
+    let device = workspaces.signing_device();
+
+    // The first note founds the document; the next two hundred are one write of it.
+    write_notes(&workspaces, &device, &workspace, &["first".to_owned()]).await;
+    let before = served(&server, created.workspace_id, APP).await;
+    let ids: Vec<String> = (0..200).map(|at| format!("note-{at}")).collect();
+    let documents = write_notes(&workspaces, &device, &workspace, &ids).await;
+    assert_eq!(documents.len(), 1, "every note is in one document");
+    let after = served(&server, created.workspace_id, APP).await;
+    assert_eq!(after - before, 1, "one frame for the action's one document");
+    let state = workspaces.workspace(&workspace).await.unwrap();
+    let mut hosted = state.lock().await;
+    let store = workspaces.store_of(&mut hosted);
+    assert_eq!(
+        store.ids_of(NOTE).count(),
+        201,
+        "the store keeps every note"
+    );
+}
+
+/// Write the notes `ids` of the app in one action, as `device`: answers the documents it wrote.
+async fn write_notes(
+    workspaces: &Workspaces,
+    device: &std::sync::Arc<crate::workspaces::MemberDevice>,
+    workspace: &str,
+    ids: &[String],
+) -> BTreeSet<String> {
+    let state = workspaces.workspace(workspace).await.unwrap();
+    crate::workspaces::wanted_keys::write_with_keys(&state, |mut hosted| async move {
+        // Each names its maker, this device's person, as an app's write does.
+        let made_by = |id: &String| {
+            let mut command = write_record(NOTE, id);
+            if let Command::Put { stamp, .. } = &mut command {
+                stamp.invoker = hex::encode(device.cert.user_public_key);
+            }
+            command
+        };
+        let command = Command::Batch(ids.iter().map(made_by).collect());
+        let writes =
+            tilo_resource_store::wire::draft(&mut workspaces.store_of(&mut hosted), command)
+                .map_err(|refused| refused.error.to_string())?;
+        let documents: BTreeSet<String> = writes.iter().map(|write| write.doc.clone()).collect();
+        workspaces
+            .keep_writes(hosted, std::sync::Arc::clone(device), APP, writes, None)
+            .await
+            .map(|_| documents)
+    })
+    .await
+    .unwrap()
+}

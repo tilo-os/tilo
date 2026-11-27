@@ -4050,6 +4050,9 @@ impl ResourceStore {
             },
             moment: self.next_moment(note.at.as_deref()),
             signed: self.inner.serving_signed.borrow().clone(),
+            // The store names the call by its digest where another change of the same write
+            // keeps it.
+            call: None,
             // The workspace service names the device a write was made on, as it names the
             // invoker it certifies: the app's own word for it is never taken.
             device: String::new(),

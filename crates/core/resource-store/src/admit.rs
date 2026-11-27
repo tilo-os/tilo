@@ -73,6 +73,8 @@ pub enum Refusal {
     NotPermitted,
     /// It writes records of other kinds than the op that carried it claims.
     Misclaimed(String),
+    /// The call it names by digest is not kept by its document, or is not the one it keeps.
+    Uncalled(tilo_actions::stamp::CallUnresolved),
 }
 
 /// Whether the kinds a sealed op claims its change writes, `claimed`, are those its holder reads,

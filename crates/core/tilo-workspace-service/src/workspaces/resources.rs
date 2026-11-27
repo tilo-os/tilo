@@ -786,10 +786,11 @@ fn changes_of(
             };
             Ok((document.get_changes(&[]), readers))
         }
-        collab_types::DocumentMutation::Incremental(bytes) => {
-            let change = AmChange::from_bytes(bytes).map_err(|error| error.to_string())?;
-            Ok((vec![change], None))
-        }
+        // A write of one document carries every change one action made of it.
+        collab_types::DocumentMutation::Incremental(bytes) => Ok((
+            tilo_automerge_isolate::parse_changes(&bytes).map_err(|error| error.to_string())?,
+            None,
+        )),
     }
 }
 
@@ -1190,10 +1191,11 @@ impl HostedWorkspace {
         peer: &tilo_peer_state::StatePeer,
         device: &super::MemberDevice,
         app: &str,
-        write: &tilo_resource_store::Written,
+        writes: &[tilo_resource_store::Written],
         action: Option<&collab_types::WorkspaceCommit>,
     ) -> Result<Vec<collab_types::SignedOp>, Unkept> {
         let now = tilo_clock::wall();
+        let write = writes.first().ok_or("a resource write writes no change")?;
         let named = (collab_types::is_store_document(&write.doc)
             && write.readers != collab_types::EVERY_MEMBER)
             .then_some(write.readers.as_str());
@@ -1236,16 +1238,27 @@ impl HostedWorkspace {
         };
         let founding = !peer.holds_document(app, &write.doc);
         let bytes = if founding {
-            if !write.change.deps().is_empty() {
-                return Err("the workspace has not opened this resource's signed history".into());
+            // A document nobody holds yet is founded by its writes alone: each builds on the
+            // ones before it.
+            let mut made = BTreeSet::new();
+            for write in writes {
+                if !write.change.deps().iter().all(|dep| made.contains(dep)) {
+                    return Err(
+                        "the workspace has not opened this resource's signed history".into(),
+                    );
+                }
+                made.insert(write.change.hash());
             }
             let mut document = Automerge::new();
             document
-                .apply_changes([write.change.clone()])
+                .apply_changes(writes.iter().map(|write| write.change.clone()))
                 .map_err(|error| error.to_string())?;
             document.save()
         } else {
-            write.change.raw_bytes().to_vec()
+            writes
+                .iter()
+                .flat_map(|write| write.change.raw_bytes().iter().copied())
+                .collect()
         };
         let (envelopes, _) = tilo_peer_state::owner::draft_local_write(
             peer,
@@ -1266,10 +1279,11 @@ impl HostedWorkspace {
         .map_err(|error| error.to_string())?;
         // A change larger than one frame is drafted as segments, each a write of its own, and
         // each names the kinds the change writes.
-        let kinds: collab_types::claim::RecordKinds =
-            std::iter::once((write.change.hash().0, self.resources.written_kinds(write)))
-                .filter(|(_, kinds)| !kinds.is_empty())
-                .collect();
+        let kinds: collab_types::claim::RecordKinds = writes
+            .iter()
+            .map(|write| (write.change.hash().0, self.resources.written_kinds(write)))
+            .filter(|(_, kinds)| !kinds.is_empty())
+            .collect();
         envelopes
             .into_iter()
             .map(|mut envelope| {
@@ -1616,7 +1630,13 @@ impl Workspaces {
         }
         let mut candidate = hosted.peer().clone();
         let envelope = self
-            .admit_resource_write(hosted, &mut candidate, device, app, (write, None))
+            .admit_resource_write(
+                hosted,
+                &mut candidate,
+                device,
+                app,
+                (std::slice::from_ref(write), None),
+            )
             .await?;
         if !still_live(hosted) {
             return Err("the resource writer is no longer authorized".into());
@@ -1628,9 +1648,17 @@ impl Workspaces {
             write,
             &envelope,
         )?;
-        self.keep_resource_write(hosted, device, app, (write, true), &messages, true, true)
-            .await
-            .map_err(Unkept::Refused)
+        self.keep_resource_write(
+            hosted,
+            device,
+            app,
+            (std::slice::from_ref(write), true),
+            &messages,
+            true,
+            true,
+        )
+        .await
+        .map_err(Unkept::Refused)
     }
 
     async fn admit_resource_write(
@@ -1639,19 +1667,20 @@ impl Workspaces {
         candidate: &mut tilo_peer_state::StatePeer,
         device: &super::MemberDevice,
         app: &str,
-        (write, action): (
-            &tilo_resource_store::Written,
+        (writes, action): (
+            &[tilo_resource_store::Written],
             Option<&collab_types::WorkspaceCommit>,
         ),
     ) -> Result<Vec<collab_types::SignedOp>, Unkept> {
         use neighbour_wire::NeighbourMsg;
 
+        let write = writes.first().ok_or("a resource write writes no change")?;
         let document = &write.doc;
         let author = device.device();
         let now = tilo_clock::wall();
         hosted.may_start(author, (app, document), now)?;
         let envelopes = hosted
-            .draft_resource_document(candidate, device, app, write, action)
+            .draft_resource_document(candidate, device, app, writes, action)
             .await?;
         let named = (collab_types::is_store_document(document)
             && write.readers != collab_types::EVERY_MEMBER)
@@ -1726,7 +1755,10 @@ impl Workspaces {
             "the write names surface {}, the workspace runs {}, which declares no {:?} of it",
             surface(envelopes.last().and_then(|envelope| envelope.surface)),
             surface(candidate.running_surface(app)),
-            undeclared_kinds(app, write),
+            writes
+                .iter()
+                .flat_map(|write| undeclared_kinds(app, write))
+                .collect::<BTreeSet<_>>(),
         );
         let opened = candidate
             .publication()
@@ -1743,7 +1775,9 @@ impl Workspaces {
                     taken.rejected
                 )
             })?;
-        resource_write_landed(&opened, sealed, accepted, write, &decided, &taken)?;
+        for write in writes {
+            resource_write_landed(&opened, sealed, accepted, write, &decided, &taken)?;
+        }
         Ok(envelopes)
     }
 
@@ -1778,17 +1812,20 @@ impl Workspaces {
         hosted: &mut HostedWorkspace,
         device: &super::MemberDevice,
         app: &str,
-        (write, whole): (&tilo_resource_store::Written, bool),
+        (writes, whole): (&[tilo_resource_store::Written], bool),
         messages: &[neighbour_wire::NeighbourMsg],
         compact: bool,
         notice: bool,
     ) -> Result<(), String> {
         let author = device.device();
-        let document = &write.doc;
+        let document = &writes
+            .first()
+            .ok_or("a resource write writes no change")?
+            .doc;
         // A write the store takes later, with the rest of its action, was checked with them.
         if whole {
             self.store_of(&mut *hosted)
-                .check_write(write, author)
+                .check_batch(writes, author)
                 .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
         }
         let count = messages.len();
@@ -2625,11 +2662,11 @@ impl Workspaces {
         mut hosted: tokio::sync::OwnedMutexGuard<HostedWorkspace>,
         device: std::sync::Arc<super::MemberDevice>,
         app: &str,
-        writes: Vec<tilo_resource_store::Written>,
+        mut writes: Vec<tilo_resource_store::Written>,
         action: Option<collab_types::WorkspaceCommit>,
     ) -> Result<collab_types::store::wire::Reply, Unkept> {
-        use collab_types::store::wire::Reply;
         let app = app.to_owned();
+        by_document(&mut writes);
         // The store's types and verbs are declared before the origin's leave reads them.
         drop(self.store_of(&mut hosted));
         // A batch the store refuses a step of keeps none of its steps: check every write against
@@ -2661,15 +2698,17 @@ impl Workspaces {
             }
             candidate = hosted.peer().clone();
         }
-        let mut requests = Vec::with_capacity(writes.len());
-        for write in &writes {
+        let batches: Vec<&[tilo_resource_store::Written]> =
+            writes.chunk_by(|a, b| a.doc == b.doc).collect();
+        let mut requests = Vec::with_capacity(batches.len());
+        for batch in &batches {
             requests.push(
                 self.admit_resource_write(
                     &hosted,
                     &mut candidate,
                     &device,
                     &app,
-                    (write, action.as_ref()),
+                    (batch, action.as_ref()),
                 )
                 .await?,
             );
@@ -2683,54 +2722,22 @@ impl Workspaces {
         // Once retention starts, every write is kept even if the caller goes away: the batch is
         // one action.
         tokio::spawn(async move {
-            let result = async {
-                let author = device.device();
-                let mut messages = Vec::with_capacity(requests.len());
-                for (write, envelopes) in writes.iter().zip(&requests) {
-                    messages.push(Self::resource_write_messages(
-                        hosted.workspace_id(),
-                        author,
-                        &app,
-                        write,
-                        envelopes,
-                    )?);
-                }
-                hosted.resources.batch();
-                // Each write is kept before a frame of it is carried: one the store or the
-                // workspace refuses leaves no bytes on the wire, under the numbers its store's
-                // next draft takes again. The batch was checked whole above.
-                for (index, (write, messages)) in writes.iter().zip(&messages).enumerate() {
-                    workspaces
-                        .keep_resource_write(
-                            &mut hosted,
-                            &device,
-                            &app,
-                            (write, whole),
-                            messages,
-                            // Compaction can consume a sequence the batch already drafted.
-                            index.saturating_add(1) == requests.len(),
-                            // One notice per action, once its every document is kept.
-                            false,
-                        )
-                        .await?;
-                }
-                Ok(Reply::Written)
-            }
-            .await;
+            let result = workspaces
+                .keep_batches(&mut hosted, &device, &app, (&writes, &requests), whole)
+                .await;
             // Every document the action wrote is kept now, so whoever it wakes reads the whole
             // action: a message's files are read with the message they were sent with.
-            let documents = std::sync::Arc::new(
-                writes
-                    .iter()
-                    .map(|write| write.doc.clone())
-                    .collect::<Vec<_>>(),
-            );
-            for write in &writes {
+            let documents: Vec<String> = writes
+                .chunk_by(|a, b| a.doc == b.doc)
+                .filter_map(|batch| batch.first().map(|write| write.doc.clone()))
+                .collect();
+            let together = std::sync::Arc::new(documents.clone());
+            for document in &documents {
                 workspaces.wrote_together(
                     hosted.workspace(),
                     &app,
-                    &write.doc,
-                    std::sync::Arc::clone(&documents),
+                    document,
+                    std::sync::Arc::clone(&together),
                 );
             }
             hosted.resources.batch_kept();
@@ -2743,15 +2750,78 @@ impl Workspaces {
     }
 }
 
+impl Workspaces {
+    /// Keep `writes`, sorted by document ([`by_document`]), one document's at a time with the
+    /// frames `requests` drafted for them, and carry each once it is kept: one the store or the
+    /// workspace refuses leaves no bytes on the wire, under the numbers its store's next draft
+    /// takes again. The batch was checked whole before.
+    async fn keep_batches(
+        &self,
+        hosted: &mut HostedWorkspace,
+        device: &super::MemberDevice,
+        app: &str,
+        (writes, requests): (
+            &[tilo_resource_store::Written],
+            &[Vec<collab_types::SignedOp>],
+        ),
+        whole: bool,
+    ) -> Result<collab_types::store::wire::Reply, String> {
+        let author = device.device();
+        let batches: Vec<&[tilo_resource_store::Written]> =
+            writes.chunk_by(|a, b| a.doc == b.doc).collect();
+        let mut messages = Vec::with_capacity(requests.len());
+        for (batch, envelopes) in batches.iter().zip(requests) {
+            let write = batch.first().ok_or("a resource write writes no change")?;
+            messages.push(Self::resource_write_messages(
+                hosted.workspace_id(),
+                author,
+                app,
+                write,
+                envelopes,
+            )?);
+        }
+        hosted.resources.batch();
+        for (index, (batch, messages)) in batches.iter().zip(&messages).enumerate() {
+            self.keep_resource_write(
+                hosted,
+                device,
+                app,
+                (batch, whole),
+                messages,
+                // Compaction can consume a sequence the batch already drafted.
+                index.saturating_add(1) == requests.len(),
+                // One notice per action, once its every document is kept.
+                false,
+            )
+            .await?;
+        }
+        Ok(collab_types::store::wire::Reply::Written)
+    }
+}
+
+/// `writes` as one admitted write per document: each document's changes together, the first of
+/// them keeping the call they were made for and the rest naming it, so its readers always receive
+/// the call with the changes that name it. Documents keep the order the action first wrote them
+/// in, and each its own changes' order.
+fn by_document(writes: &mut [tilo_resource_store::Written]) {
+    let mut order: Vec<String> = Vec::new();
+    for write in &*writes {
+        if !order.contains(&write.doc) {
+            order.push(write.doc.clone());
+        }
+    }
+    writes.sort_by_key(|write| order.iter().position(|doc| *doc == write.doc));
+}
+
 /// The action `writes`, `device`'s for `app`, are when they change more than one document: one
 /// part per document, naming the changes of it no other change of the batch builds on. `None`
 /// for writes to one document, which its own history keeps whole.
 ///
-/// A write that founds its document is no part: it is drafted as the document's first snapshot,
-/// which claims no change, so a reader holding the record sealed could never find it taken in,
-/// and every record the action names would wait for it for good. A document nobody holds yet
-/// has nothing another record's write could land out of step with, and it is kept in its place
-/// in the batch all the same.
+/// The writes that found their document are no part: they are drafted as the document's first
+/// snapshot, which claims no change, so a reader holding the record sealed could never find them
+/// taken in, and every record the action names would wait for them for good. A document nobody
+/// holds yet has nothing another record's write could land out of step with, and it is kept in
+/// its place in the batch all the same.
 fn action_of(
     hosted: &HostedWorkspace,
     device: &super::MemberDevice,
@@ -2759,9 +2829,10 @@ fn action_of(
     writes: &[tilo_resource_store::Written],
 ) -> Option<collab_types::WorkspaceCommit> {
     let mut parts: Vec<collab_types::CommitPart> = Vec::new();
-    for write in writes.iter().filter(|write| {
-        !write.change.deps().is_empty() || hosted.peer().holds_document(app, &write.doc)
-    }) {
+    for write in writes
+        .iter()
+        .filter(|write| hosted.peer().holds_document(app, &write.doc))
+    {
         let hash = write.change.hash().0;
         match parts.iter_mut().find(|part| part.document == write.doc) {
             Some(part) => part.heads.push(hash),

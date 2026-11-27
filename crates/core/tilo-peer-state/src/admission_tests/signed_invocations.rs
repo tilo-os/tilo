@@ -223,6 +223,48 @@ fn agents_stamped(
     document_message_at((app, &record), envelope)
 }
 
+/// One write of the changes `messages` to the workspace's record of its agents by `signer`'s
+/// device, in order, as a resource store writes several changes of one call there. Signed
+/// without the producer's own check that each change names its call when not `checked`: a
+/// misbehaving device sends such a write.
+fn agents_stamped_together(
+    copy: &StatePeer,
+    signer: &SigningKey,
+    (messages, checked): (&[String], bool),
+    now: SystemTime,
+) -> NeighbourMsg {
+    let (app, record) = agents();
+    let mut doc = AutoCommit::load(&copy.document(app, &record).unwrap()).unwrap();
+    doc.set_actor(automerge::ActorId::from(
+        signer.verifying_key().to_bytes().to_vec(),
+    ));
+    let heads = doc.get_heads();
+    for (at, message) in messages.iter().enumerate() {
+        doc.put(ROOT, "value", format!("stamped {at}")).unwrap();
+        doc.commit_with(CommitOptions::default().with_message(message.as_str()));
+    }
+    let author = collab_types::Ed25519PublicKey::from_bytes(signer.verifying_key().to_bytes());
+    let mut envelope = collab_types::SignedOp::new_unsigned(
+        collab_types::DocumentMutation::Incremental(doc.save_after(&heads))
+            .encode()
+            .unwrap(),
+        collab_types::document_artifact_id(app, WORKSPACE, &record),
+        author,
+        collab_types::document_attestation_id(app, WORKSPACE, &record),
+        collab_types::OpKind::Change,
+        now,
+        1,
+    );
+    if checked {
+        collab_types::sign_op(&mut envelope, signer).unwrap();
+    } else {
+        let bytes = envelope.signing_bytes().unwrap();
+        let signature = collab_types::signer::sign_now(signer, bytes).unwrap();
+        envelope.signature = collab_types::Signature(signature);
+    }
+    document_message_at((app, &record), envelope)
+}
+
 /// The write of `context` by `signer`'s device, as a peer sends it.
 fn written(
     copy: &StatePeer,
@@ -603,6 +645,42 @@ tilo_test_env::scenario! {
         let making = agents_step(&cert, &key, "create-agent", now);
         let message = agents_stamped(&receiver, &b, &making, now);
         take(&mut receiver, message, now).expect("the step the called action declares");
+    }
+
+    phase a_store_change_reads_the_call_it_names_from_its_write;
+    {
+        let (mut receiver, a, _ac, b, _bc, now) = seeded_holding(RevocationList::new(), true);
+        let (key, cert, _person) = add_member_with(&mut receiver, &a, now, 31, 32);
+        // A resource store's call that writes several changes of one record keeps itself in
+        // the first, and the others name it by digest.
+        let making = agents_step(&cert, &key, "create-agent", now);
+        let mut keeping =
+            collab_types::Stamp::of_message(&making.change_message().unwrap()).unwrap();
+        if let Some(context) = keeping.context.as_mut() {
+            context.signed = None;
+        }
+        let mut naming = keeping.clone();
+        keeping.name_call(false);
+        naming.name_call(true);
+        assert!(naming.signed.is_none() && naming.call == keeping.call);
+        // Sent without the change that keeps it, the call it names is missing: refused.
+        let message = agents_stamped_together(&receiver, &b, (&[naming.message()], false), now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("not kept"), "{}", refused.reason);
+        // A change that keeps another call than the one it names is refused.
+        let mut forged = keeping.clone();
+        forged.signed.as_mut().unwrap().argument = Some(InvokeArgument::Text("other".into()));
+        let message = agents_stamped_together(&receiver, &b, (&[forged.message()], false), now);
+        let refused = take(&mut receiver, message, now).unwrap_err();
+        assert!(refused.reason.contains("not the one"), "{}", refused.reason);
+        // With the change that keeps it, in the same write: both are the call's, and admitted.
+        let message = agents_stamped_together(
+            &receiver,
+            &b,
+            (&[keeping.message(), naming.message()], true),
+            now,
+        );
+        take(&mut receiver, message, now).expect("the call the write keeps");
     }
 
     phase an_undo_outside_what_its_call_declares_is_refused;

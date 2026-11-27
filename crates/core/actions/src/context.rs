@@ -477,6 +477,22 @@ impl ActionContext {
         Self::of_label(crate::stamp::Stamp::read(message)?)
     }
 
+    /// [`Self::from_change_message`], the call a store's change names by digest read from
+    /// `calls`, the calls the changes it came with keep: what a holder checks the call by.
+    ///
+    /// # Errors
+    /// The call it names is not among `calls`, or it keeps another than the one it names.
+    pub fn from_change_message_in(
+        message: &str,
+        calls: &crate::stamp::KeptCalls,
+    ) -> Result<Option<Self>, crate::stamp::CallUnresolved> {
+        let Some((label, mut stamp)) = crate::stamp::Stamp::read(message) else {
+            return Ok(None);
+        };
+        stamp.resolve(calls)?;
+        Ok(Self::of_label((label, stamp)))
+    }
+
     /// Read only what an entry says about who made its change, in which run
     /// and step, and what kind of change it is (its group, invoker, invocation,
     /// gesture, kind and change kind; everything else left default): what an index

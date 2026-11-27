@@ -1815,7 +1815,7 @@ impl StatePeer {
         route: &Route,
         source: &[u8; 32],
         envelope: &SignedOp,
-        change: &automerge::Change,
+        (change, calls): (&automerge::Change, &tilo_actions::stamp::KeptCalls),
         keeper: Option<tilo_server_protocol::invocation::RecordHost<'_>>,
         authorization_time: SystemTime,
     ) -> Result<NamedCall, AuthorizeRefusal> {
@@ -1827,9 +1827,17 @@ impl StatePeer {
         if derived_step(change) {
             return Ok(NamedCall::Passed { bare: false });
         }
+        // A store's write keeps its call once per document, and its other changes name it by
+        // digest: one whose call its write does not keep is refused, as a forged call is.
         let entry = change
             .message()
-            .and_then(tilo_actions::ActionContext::from_change_message);
+            .map(|message| {
+                tilo_actions::ActionContext::from_change_message_in(message, calls).map_err(
+                    |error| refused_invocation(route, source, envelope, &error.to_string()),
+                )
+            })
+            .transpose()?
+            .flatten();
         // A resource store's change keeps the invocation its caller signed in its stamp, where
         // its history entry is the verb it ran: it is checked as an entry is.
         let stamped = match entry {
@@ -1933,12 +1941,13 @@ impl StatePeer {
         );
         let mut caller: Option<CallerAccess> = None;
         let mut bare = false;
+        let calls = tilo_actions::stamp::KeptCalls::of_changes(changes);
         for change in changes {
             let (person, effect) = match self.change_named(
                 &route,
                 source,
                 envelope,
-                change,
+                (change, &calls),
                 keeper,
                 authorization_time,
             )? {

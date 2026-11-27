@@ -59,8 +59,9 @@ pub fn check_opened_mutation(
     let changes = crate::claim::parse_changes(bytes).map_err(|_| ReceiptRefusal::Unclaimed)?;
     let hashes: Vec<[u8; 32]> = changes.iter().map(|change| change.hash().0).collect();
     check_claimed_changes(&op.claims, Some(&hashes))?;
+    let calls = tilo_actions::stamp::KeptCalls::of_changes(&changes);
     for change in &changes {
-        let read = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new())
+        let read = ChangeClaim::of_change_in(change.hash().0, change.message(), Vec::new(), &calls)
             .map_err(|error| ReceiptRefusal::Unnamed(error.to_string()))?;
         let claimed = op.claims.iter().find(|claim| claim.change == read.change);
         let made = collab_types::claim::kinds_made_in(change);
@@ -189,18 +190,24 @@ fn cleartext_claims(
     written: Option<&collab_types::units::ByChange>,
     (imported, signer): (Option<&Acting>, Option<&Acting>),
 ) -> Result<Vec<ChangeClaim>, ReceiptRefusal> {
+    let calls = tilo_actions::stamp::KeptCalls::of_changes(changes);
     changes
         .iter()
         .map(|change| {
             let units = written
                 .and_then(|written| written.written.get(&change.hash().0))
                 .map_or_else(|| vec![Vec::new()], |written| written.units.clone());
-            let mut claim =
-                ChangeClaim::of_imported_change(change.hash().0, change.message(), units, imported)
-                    .map_err(|error| match error {
-                        collab_types::claim::ClaimError::NoInvoker => ReceiptRefusal::NoInvoker,
-                        other => ReceiptRefusal::Unnamed(other.to_string()),
-                    })?;
+            let mut claim = ChangeClaim::of_imported_change(
+                change.hash().0,
+                change.message(),
+                units,
+                imported,
+                &calls,
+            )
+            .map_err(|error| match error {
+                collab_types::claim::ClaimError::NoInvoker => ReceiptRefusal::NoInvoker,
+                other => ReceiptRefusal::Unnamed(other.to_string()),
+            })?;
             match crate::claim::maker_of(change) {
                 crate::claim::Maker::Signer => {
                     claim.invoker = signer.cloned().map(collab_types::claim::Invoker::new);
@@ -500,10 +507,16 @@ fn decide_as_document_edit(
     let mut invokers: Vec<(Option<Acting>, TreePath)> = Vec::new();
     match changes {
         Some(changes) => {
+            let calls = tilo_actions::stamp::KeptCalls::of_changes(changes.iter());
             for change in changes {
-                let action = ChangeClaim::of_change(change.hash().0, change.message(), Vec::new())
-                    .ok()
-                    .map(|claim| claim.action);
+                let action = ChangeClaim::of_change_in(
+                    change.hash().0,
+                    change.message(),
+                    Vec::new(),
+                    &calls,
+                )
+                .ok()
+                .map(|claim| claim.action);
                 let verb = action
                     .as_ref()
                     .and_then(|action| action.store_verb().map(str::to_owned));

@@ -317,6 +317,36 @@ impl SignedCall {
         }
     }
 
+    /// What a change names this call by when another change of its document's write keeps the
+    /// call itself ([`crate::stamp::Stamp::call`]): a BLAKE3 hash of the signed statement, its
+    /// signature, the signer's certificate, the kept argument's hash and how the call was
+    /// allowed. Two calls share it only when every part a holder reads of them is alike.
+    #[must_use]
+    pub fn digest(&self) -> [u8; 32] {
+        fn bytes(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+            hasher.update(&u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_le_bytes());
+            hasher.update(bytes);
+        }
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"tilo-signed-call-v1\0");
+        bytes(&mut hasher, &self.signed.statement.signing_message());
+        hasher.update(&self.signed.signature);
+        bytes(&mut hasher, &self.signed.signer_cert);
+        match &self.argument {
+            None => {
+                hasher.update(&[0]);
+            }
+            Some(argument) => {
+                hasher.update(&[1]);
+                hasher.update(&argument_hash(argument));
+            }
+        }
+        // Enums and strings only: its JSON reads the same however often it is written.
+        let allowed = serde_json::to_vec(&self.allowed).unwrap_or_default();
+        bytes(&mut hasher, &allowed);
+        *hasher.finalize().as_bytes()
+    }
+
     /// Whether the kept argument is the one signed: `None` when the change
     /// keeps none to compare.
     #[must_use]
@@ -623,5 +653,75 @@ mod tests {
             argument_hash(&object(CANONICAL_JSON_CORPUS[0].1)),
             PINNED_NESTED_HASH
         );
+    }
+
+    /// A call that writes many records keeps itself once, in its first change, and every other
+    /// change names it by digest: read back through the change messages, the named one is the
+    /// call whole; a change whose call is not kept with it, or not the one it names, is refused.
+    #[test]
+    fn a_call_named_by_digest_reads_back_whole_and_a_tampered_or_missing_one_is_refused() {
+        use crate::stamp::{CallUnresolved, KeptCalls, Stamp};
+        let asked = request(object(r#"{"titles":["one","two"]}"#));
+        let statement = InvocationStatement::of("w1", &asked, 9, [5; 32]);
+        let call = SignedCall::with(
+            &asked,
+            SignedInvocation::new(statement, [7; 64], vec![1; 64]),
+        );
+        let stamped = |kept: bool| {
+            let mut stamp = Stamp {
+                verb: "new_tasks".into(),
+                invoker: "person".into(),
+                signed: Some(Box::new(call.clone())),
+                args: vec![serde_json::json!(["one", "two"])],
+                ..Stamp::default()
+            };
+            stamp.name_call(kept);
+            stamp.message()
+        };
+        let (first, later) = (stamped(false), stamped(true));
+        assert!(
+            later.len() < first.len() / 2,
+            "{} of {}",
+            later.len(),
+            first.len()
+        );
+
+        // Unchanged, the digest verifies: the later change reads the call its write keeps.
+        let calls = KeptCalls::of_messages([first.as_str(), later.as_str()]);
+        let mut read = Stamp::of_message(&later).unwrap();
+        assert_eq!(read.resolve(&calls), Ok(()));
+        assert_eq!(read.signed.as_deref(), Some(&call));
+        assert_eq!(read.args, [serde_json::json!(["one", "two"])]);
+        let mut carrier = Stamp::of_message(&first).unwrap();
+        assert_eq!(carrier.resolve(&calls), Ok(()));
+
+        // Read without the change that keeps it, the call is missing.
+        let mut alone = Stamp::of_message(&later).unwrap();
+        assert_eq!(
+            alone.resolve(&KeptCalls::default()),
+            Err(CallUnresolved::Missing)
+        );
+
+        // A carrier whose call was changed keeps none under the digest it names, and itself
+        // keeps another call than the one it names.
+        let mut forged = Stamp::of_message(&first).unwrap();
+        forged.signed.as_mut().unwrap().argument = Some(object(r#"{"titles":["other"]}"#));
+        let calls = KeptCalls::of_messages([forged.message().as_str()]);
+        assert!(calls.is_empty());
+        let mut read = Stamp::of_message(&later).unwrap();
+        assert_eq!(read.resolve(&calls), Err(CallUnresolved::Missing));
+        assert_eq!(forged.resolve(&calls), Err(CallUnresolved::Mismatch));
+
+        // A change that names its call keeps no arguments of its own.
+        let calls = KeptCalls::of_messages([first.as_str()]);
+        let mut reargued = Stamp::of_message(&later).unwrap();
+        reargued.args = vec![serde_json::json!(["other"])];
+        assert_eq!(reargued.resolve(&calls), Err(CallUnresolved::Mismatch));
+
+        // A change naming another digest finds no call, even beside the real one.
+        let mut renamed = Stamp::of_message(&later).unwrap();
+        renamed.call = Some(hex::encode([0u8; 32]));
+        let calls = KeptCalls::of_messages([first.as_str()]);
+        assert_eq!(renamed.resolve(&calls), Err(CallUnresolved::Missing));
     }
 }

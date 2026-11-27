@@ -65,6 +65,14 @@ pub struct Stamp {
     /// root ([`crate::remote::SignedCall`]); the host never makes one up.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signed: Option<Box<crate::remote::SignedCall>>,
+    /// The call the change was made for and the arguments recorded for it, by their digest
+    /// ([`Self::call_digest`]) in hex: a call that writes many records of one document keeps
+    /// itself once there, in the first change of its write ([`Self::signed`], [`Self::args`]),
+    /// and every other change of that write names it by this. A holder reads such a change with
+    /// the calls its write keeps ([`KeptCalls`]) and refuses one whose call is not there, or is
+    /// not the one named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<String>,
     /// The device that wrote the change, its key in hex: where a resource the change made live
     /// is live (`tilo_resource_store::Store::live`). Empty where the writer named none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -456,4 +464,138 @@ impl Stamp {
     pub fn of(change: &automerge::Change) -> Option<Self> {
         Self::of_message(change.message()?)
     }
+
+    /// The digest a change names the call it keeps by ([`Self::call`]): the signed call's own
+    /// ([`crate::remote::SignedCall::digest`]) and the arguments the runtime recorded for it,
+    /// hashed together. `None` for a stamp that keeps no call.
+    #[must_use]
+    pub fn call_digest(&self) -> Option<String> {
+        let call = self.signed.as_deref()?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"tilo-stamped-call-v1\0");
+        hasher.update(&call.digest());
+        // Read back from the change's message, the arguments write the same bytes again.
+        hasher.update(&serde_json::to_vec(&self.args).unwrap_or_default());
+        Some(hex::encode(hasher.finalize().as_bytes()))
+    }
+
+    /// Name the call this stamp keeps, and the arguments recorded for it, by their digest, and
+    /// drop both where `kept`: what a writer stamps each change of one call's write in one
+    /// document with, so the call and its arguments travel once per document, in the first of
+    /// them, and a call that writes many records writes them in a size that grows with how
+    /// many, not with that times its argument.
+    pub fn name_call(&mut self, kept: bool) {
+        let Some(digest) = self.call_digest() else {
+            return;
+        };
+        self.call = Some(digest);
+        if kept {
+            self.signed = None;
+            self.args.clear();
+        }
+    }
+
+    /// Read the call this stamp names by digest, and the arguments recorded for it, from
+    /// `calls`, the calls its write keeps.
+    ///
+    /// # Errors
+    /// [`CallUnresolved::Missing`] when the call it names is not among them, and
+    /// [`CallUnresolved::Mismatch`] when it keeps a call, or arguments, other than those it
+    /// names.
+    pub fn resolve(&mut self, calls: &KeptCalls) -> Result<(), CallUnresolved> {
+        let Some(named) = self.call.as_deref() else {
+            return Ok(());
+        };
+        if self.signed.is_some() {
+            return if self.call_digest().as_deref() == Some(named) {
+                Ok(())
+            } else {
+                Err(CallUnresolved::Mismatch)
+            };
+        }
+        // A change that names its call keeps no arguments of its own: they are the call's.
+        if !self.args.is_empty() {
+            return Err(CallUnresolved::Mismatch);
+        }
+        let (call, args) = calls.0.get(named).ok_or(CallUnresolved::Missing)?;
+        self.signed = Some(Box::new(call.clone()));
+        self.args.clone_from(args);
+        Ok(())
+    }
+}
+
+/// The calls a write keeps, by their digests ([`Stamp::call_digest`]), each with the arguments
+/// recorded for it: what a change of it that names its call by digest is read with
+/// ([`Stamp::resolve`]).
+#[derive(Clone, Debug, Default)]
+pub struct KeptCalls(
+    std::collections::BTreeMap<String, (crate::remote::SignedCall, Vec<serde_json::Value>)>,
+);
+
+impl KeptCalls {
+    /// The calls the changes whose messages are `messages` keep, each under the digest it is
+    /// named by. A change that keeps a call under a digest that is not the call's adds none:
+    /// it is refused itself when it is read ([`Stamp::resolve`]).
+    #[must_use]
+    pub fn of_messages<'a>(messages: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut calls = Self::default();
+        for message in messages {
+            // Only a stamp that keeps a call and names it keeps one here: no other is parsed.
+            if message.contains("\"call\"")
+                && message.contains("\"signed\"")
+                && let Some(stamp) = Stamp::of_message(message)
+            {
+                calls.keep(&stamp);
+            }
+        }
+        calls
+    }
+
+    /// The calls `changes` keep ([`Self::of_messages`]).
+    #[must_use]
+    pub fn of_changes<'a>(changes: impl IntoIterator<Item = &'a automerge::Change>) -> Self {
+        Self::of_messages(changes.into_iter().filter_map(automerge::Change::message))
+    }
+
+    /// Keep the call `stamp` keeps, under the digest it names it by.
+    pub fn keep(&mut self, stamp: &Stamp) {
+        if let (Some(call), Some(named)) = (stamp.signed.as_deref(), stamp.call.as_deref())
+            && stamp.call_digest().as_deref() == Some(named)
+        {
+            self.0
+                .insert(named.to_owned(), (call.clone(), stamp.args.clone()));
+        }
+    }
+
+    /// Keep the calls `other` keeps too.
+    pub fn extend(&mut self, other: Self) {
+        self.0.extend(other.0);
+    }
+
+    /// Whether it keeps the call named `digest`.
+    #[must_use]
+    pub fn holds(&self, digest: &str) -> bool {
+        self.0.contains_key(digest)
+    }
+
+    /// How many calls it keeps.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether it keeps none.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Why a change's call does not read ([`Stamp::resolve`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum CallUnresolved {
+    #[error("the call the change names is not kept with its write")]
+    Missing,
+    #[error("the call the change keeps is not the one it names")]
+    Mismatch,
 }

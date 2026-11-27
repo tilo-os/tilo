@@ -1929,6 +1929,135 @@ mod store {
         refused
     }
 
+    /// `stamp`, keeping the call a caller signed for it, whose argument names `titles` records.
+    fn signed_stamp(verb: &str, titles: usize) -> Stamp {
+        use tilo_actions::remote::signed_invocation::InvocationStatement;
+        use tilo_actions::remote::{InvokeRequest, SignedCall, SignedInvocation};
+        let titles: Vec<String> = (0..titles)
+            .map(|at| format!("Task {at}, written by the person who asked for it"))
+            .collect();
+        let request: InvokeRequest = serde_json::from_value(serde_json::json!({
+            "invocation": tilo_actions::InvocationId::new(),
+            "target": {"provider": "so.tilo.tasks", "address": {"resource": "so.tilo.tasks", "action": verb}},
+            "argument": {"Json": {"titles": &titles}},
+        }))
+        .unwrap();
+        let statement = InvocationStatement::of(crate::WORKSPACE, &request, 9, [5; 32]);
+        let call = SignedCall::with(
+            &request,
+            SignedInvocation::new(statement, [7; 64], vec![1; 512]),
+        );
+        // The runtime records the arguments beside the call, as an app's action does.
+        Stamp {
+            signed: Some(Box::new(call)),
+            args: vec![serde_json::json!(titles)],
+            ..stamp(verb, "i1")
+        }
+    }
+
+    /// A call that writes many records of one document keeps itself once there, in its first
+    /// change, and every other change names it by digest: what the call writes grows with how
+    /// many records it writes, never with that times its argument. A holder reads each change
+    /// with the call whole, and refuses one whose call is not kept, or not the one it names.
+    #[test]
+    fn a_call_writing_many_records_keeps_itself_once_per_document() {
+        use collab_types::store::wire::Command;
+        let drafted = |count: usize| {
+            let mut store = issues();
+            let stamp = signed_stamp("make", count);
+            let command = Command::Batch(
+                (0..count)
+                    .map(|at| Command::Put {
+                        kind: ISSUE.to_owned(),
+                        id: format!("t{at}"),
+                        resource: resource("board", &format!("a{at:04}"), "Task", "open"),
+                        stamp: stamp.clone(),
+                    })
+                    .collect(),
+            );
+            let written = tilo_resource_store::wire::draft(&mut store, command).unwrap();
+            assert_eq!(written.len(), count);
+            let bytes: usize = written
+                .iter()
+                .map(|write| write.change.raw_bytes().len())
+                .sum();
+            (written, bytes)
+        };
+        let (hundred, _) = drafted(100);
+        let (written, bytes) = drafted(200);
+        let hundred: usize = hundred
+            .iter()
+            .map(|write| write.change.raw_bytes().len())
+            .sum();
+        // Twice the records, about twice the bytes: each change past the first names the call
+        // in a fixed few bytes, whatever its argument holds.
+        assert!(
+            bytes * 10 < hundred * 22,
+            "200 records: {bytes} bytes; 100: {hundred}"
+        );
+        let keeping = written
+            .iter()
+            .filter(|write| Stamp::of(&write.change).unwrap().signed.is_some())
+            .count();
+        let documents: BTreeSet<&str> = written.iter().map(|write| write.doc.as_str()).collect();
+        assert_eq!(keeping, documents.len(), "one copy per document");
+        let naming = written
+            .iter()
+            .filter(|write| Stamp::of(&write.change).unwrap().signed.is_none())
+            .map(|write| write.change.raw_bytes().len())
+            .max()
+            .unwrap();
+        assert!(
+            naming < 1024,
+            "a change naming its call takes {naming} bytes"
+        );
+
+        // Every holder reads every change with the call it was made for.
+        let mut there = issues();
+        let signed = |proposal: &Proposal<'_>| {
+            proposal
+                .stamp
+                .and_then(|stamp| stamp.signed.as_deref())
+                .is_some_and(|call| call.argument_signed() == Some(true))
+        };
+        assert!(deliver(&written, &mut there, &signed).is_empty());
+        assert_eq!(there.index().ids_of(ISSUE).count(), 200);
+
+        // A change naming a call no change of its document keeps, or keeping another call than
+        // the one it names, is refused.
+        let forge = |named: Option<&Stamp>, kept: bool| {
+            let mut forger = issues();
+            let mut stamp = signed_stamp("make", 3);
+            stamp.name_call(kept);
+            if let Some(other) = named {
+                stamp.call.clone_from(&other.call);
+            }
+            let written = forger
+                .put(
+                    ISSUE,
+                    "f",
+                    resource("board", "f0", "Forged", "open"),
+                    &stamp,
+                )
+                .unwrap();
+            deliver(&written, &mut issues(), &signed)
+        };
+        assert_eq!(
+            forge(None, true),
+            [Refusal::Uncalled(
+                tilo_actions::stamp::CallUnresolved::Missing
+            )]
+        );
+        let mut other = signed_stamp("make", 4);
+        other.name_call(false);
+        assert_eq!(
+            forge(Some(&other), false),
+            [Refusal::Uncalled(
+                tilo_actions::stamp::CallUnresolved::Mismatch
+            )]
+        );
+    }
+
     fn stamp(verb: &str, invocation: &str) -> Stamp {
         Stamp {
             invoked: String::new(),
