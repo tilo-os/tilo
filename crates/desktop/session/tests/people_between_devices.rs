@@ -92,9 +92,10 @@ fn never_told_of_a_layout(device: &Device) {
         !told
             .iter()
             .any(|title| title.contains("did not take your window layout")),
-        "{} was told its layout was refused: {told:?}\n{}",
+        "{} was told its layout was refused: {told:?}\n{}\n{}",
         device.label,
-        device.diagnostic()
+        device.diagnostic(),
+        layout_log(device),
     );
 }
 
@@ -387,6 +388,46 @@ fn snapshot_changed(device: &Device, name: &str, previous: &str) {
     }
 }
 
+/// What `device`'s session said of the workspace's shared layout: where a layout the workspace
+/// did not take has to say why.
+fn layout_log(device: &Device) -> String {
+    let state = device.state();
+    let workspaces = &state["state"]["peers"]["workspaces"];
+    let refusals: Vec<Value> = workspaces
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|workspace| {
+            ["write_refusals", "lasting_refusals"]
+                .into_iter()
+                .any(|field| {
+                    workspace
+                        .get(field)
+                        .and_then(Value::as_array)
+                        .is_some_and(|refusals| !refusals.is_empty())
+                })
+        })
+        .cloned()
+        .collect();
+    format!("what the daemon refused:\n{refusals:#?}")
+}
+
+/// What `device`'s session said of the members it publishes to its shell, and of serving them:
+/// where a face that never came has to say why.
+fn members_log(device: &Device) -> String {
+    device
+        .log()
+        .lines()
+        .filter(|line| line.contains("members") || line.contains("people"))
+        .rev()
+        .take(40)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Drop the pictures kept under `name` and its band: a frame a run only looked apart from.
 fn discard(name: &str) {
     if let Some(path) = picture_at(name) {
@@ -427,6 +468,7 @@ fn choose_light(device: &Device) {
 #[test]
 fn two_people_arrive_wave_and_follow_on_each_others_bars() {
     let _settled = tilo_ui_base::motion::testing::settled();
+    crate::common::people::log_sessions_at("info,tilolang_tilo=debug,tilo_session::shell=debug");
     let ada = Person::new("Ada Lovelace");
     let bob = Person::new("Bob Builder");
     let site = Site::start(&ada, "Studio");
@@ -493,7 +535,8 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
     let coloured = coloured_in("arrival", face, false);
     assert!(
         coloured >= 60,
-        "the bar draws Bob as his face, in his colour, not as a glyph: {coloured} coloured pixels in {face:?}"
+        "the bar draws Bob as his face, in his colour, not as a glyph: {coloured} coloured pixels in {face:?}\n{}",
+        members_log(&ada_laptop),
     );
     // No press took it away: the bar says it for its four seconds and then gives it up.
     gone(&ada_laptop, "Bob is here", Duration::from_secs(10));
@@ -561,8 +604,9 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
         || (!shows(&ada_laptop, "Bob Builder waved at you")).then_some(()),
     );
 
-    // Bob stops following her from the same place his bar says whose view it is.
-    bob_laptop.press("Stop");
+    // Bob stops following her from the same place his bar says whose view it is: the control
+    // says whom it stops following.
+    bob_laptop.press("Stop following Ada Lovelace");
     // Nothing on Ada's bar marks him as following her any more; his face stays, named plainly.
     waited(
         &ada_laptop,

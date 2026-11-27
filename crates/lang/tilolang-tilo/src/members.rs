@@ -390,7 +390,12 @@ impl Host {
             .member_id()
             .cloned()
             .unwrap_or_else(|| MemberId::person(""));
-        self.serve_rows(&rows_of(content, &me_id))
+        let rows = rows_of(content, &me_id);
+        tracing::debug!(
+            rows = rows.len(),
+            "a host serves the members it was published"
+        );
+        self.serve_rows(&rows)
     }
 
     /// The members `rows` name, as the runtime's members and every view that names a member

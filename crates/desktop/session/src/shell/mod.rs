@@ -129,6 +129,10 @@ pub(crate) struct Shell {
     /// The workspace whose members the shell last read, and the view's revision it read them at:
     /// its bar's faces and names are the workspace in front's people, read again when they move.
     members_seen: Option<(String, u64)>,
+    /// The names the session's roster gave when the shell last read the workspace's members: a
+    /// person who comes here names the row the workspace keeps no name for, so the members are
+    /// read again when a name arrives.
+    members_named_by: Option<Value>,
     /// Whether the shell's records are the person's, kept in their own workspace by the device's
     /// daemon: the installed shell, which the daemon runs too, on a session the daemon started.
     /// A change of them is then the person's call of the shell's action on the device's dispatch
@@ -243,6 +247,7 @@ impl Shell {
             wells,
             services_seen: None,
             members_seen: None,
+            members_named_by: None,
             kept_elsewhere,
             dispatch_refusals: std::sync::Arc::default(),
             theme,
@@ -566,9 +571,14 @@ impl Shell {
     /// in the person's own workspace, whose members are the person alone, so its host takes these
     /// rows as a reading ([`tilolang_tilo::host::Host::serve_member_reading`]) rather than
     /// reading a store of its own.
+    ///
+    /// A workspace keeps no name of its own for a member who has not given it one, and a person's
+    /// own name is what their devices say of them here (`people`, the session's roster): a row
+    /// without one is named by its person's, so the bar names them and draws their face by it.
     pub(crate) fn publish_members(
         &mut self,
         view: Option<&std::sync::Arc<tilo_session_client::workspace_view::WorkspaceView>>,
+        people: Option<&Value>,
         workspace: &str,
     ) {
         let Some(view) = view else {
@@ -578,26 +588,72 @@ impl Shell {
             return;
         }
         let revision = view.revision();
+        // A name the roster newly gives names a row the workspace keeps none for: the members
+        // are read again for it, though the workspace's own view has not moved.
+        let named_by = people.cloned();
+        let named_moved = named_by != self.members_named_by;
         let seen = self.members_seen.as_ref();
-        if seen.is_some_and(|(held, was)| held == workspace && *was == revision) {
+        if !named_moved && seen.is_some_and(|(held, was)| held == workspace && *was == revision) {
             return;
         }
+        self.members_named_by = named_by;
         let Ok(members) = view.members(workspace) else {
             return;
         };
         self.members_seen = Some((workspace.to_owned(), revision));
+        // The name each person here goes by, by their root and by the device their presence
+        // speaks from: whom the workspace keeps no name for is named by theirs.
+        let mine = hex::encode(view.person());
+        let mut named: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        if let Some(people) = people {
+            let rows = people
+                .get("rows")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .chain(people.get("me"));
+            for row in rows {
+                let (Some(key), Some(name)) = (
+                    row.get("key").and_then(Value::as_str),
+                    row.get("name").and_then(Value::as_str),
+                ) else {
+                    continue;
+                };
+                if key.is_empty() || name.trim().is_empty() {
+                    continue;
+                }
+                // A row of the person at this device names them `self`, and every other row its
+                // person's root or, where their presence named none, the device it speaks from.
+                let key = if key == "self" { mine.as_str() } else { key };
+                named.insert(key.to_owned(), name.to_owned());
+            }
+        }
         let people: Vec<Value> = members
             .members
             .iter()
             .filter(|member| !member.removed)
             .map(|member| {
+                let name = if member.name.trim().is_empty() {
+                    let by_person = member.id.person_id().and_then(|person| named.get(person));
+                    let by_device = members
+                        .devices
+                        .get(&member.id)
+                        .into_iter()
+                        .flatten()
+                        .find_map(|device| named.get(&hex::encode(device)));
+                    by_person
+                        .or(by_device)
+                        .map_or(member.name.as_str(), String::as_str)
+                } else {
+                    member.name.as_str()
+                };
                 let mut row = serde_json::Map::new();
                 row.insert(
                     "actor".to_owned(),
                     serde_json::to_value(tilo_actions::Actor::Member(member.id.clone()))
                         .unwrap_or_default(),
                 );
-                row.insert("name".to_owned(), serde_json::json!(member.name));
+                row.insert("name".to_owned(), serde_json::json!(name));
                 row.insert("role".to_owned(), serde_json::json!(member.role));
                 row.insert("joined_at".to_owned(), serde_json::json!(member.joined_at));
                 if let Some(avatar) = &member.avatar
@@ -2202,7 +2258,12 @@ impl crate::Session {
                 .map(|workspace| workspace.id().to_string())
                 .unwrap_or_default()
         });
-        shell.publish_members(self.shared.view.as_ref(), &front);
+        let here = self
+            .shared
+            .services
+            .borrow()
+            .read(crate::people_device::RESOURCE);
+        shell.publish_members(self.shared.view.as_ref(), here.as_ref(), &front);
         shell.publish_readings(&self.shared.services.borrow());
         shell.follow_places(&layout, &mut self.shared.services.borrow_mut());
         shell.publish_layout(layout);
