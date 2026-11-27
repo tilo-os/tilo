@@ -28,22 +28,59 @@ pub fn workspace_grants_of(doc: &automerge::AutoCommit) -> Vec<WorkspaceGrant> {
         .collect()
 }
 
-/// Whether `doc` lists the key `device` speaks for as revoked by its person: read from that one
-/// key's entry, without reading the others.
-#[must_use]
-pub fn revoked_key_in(doc: &automerge::AutoCommit, device: &[u8; 32]) -> bool {
+/// How the workspace ended the grant of the key `device` speaks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GrantEnded {
+    /// Its person revoked it.
+    Revoked,
+    /// The expiry its person gave it passed.
+    Expired,
+}
+
+/// The grant `doc` records for the key `device` speaks for: read from that one key's entry,
+/// without reading the others. An entry this build cannot read is no grant.
+fn key_grant_in(doc: &automerge::AutoCommit, device: &[u8; 32]) -> Option<WorkspaceGrant> {
     let Ok(Some((Value::Object(ObjType::Map), grants))) = doc.get(ROOT, WORKSPACE_GRANTS_KEY)
     else {
-        return false;
+        return None;
     };
     let id = WorkspaceGrant::id_of(device);
     let Ok(Some((Value::Scalar(value), _))) = doc.get(&grants, id.as_str()) else {
-        return false;
+        return None;
     };
     let automerge::ScalarValue::Str(json) = value.as_ref() else {
-        return false;
+        return None;
     };
-    serde_json::from_str::<WorkspaceGrant>(json).is_ok_and(|grant| grant.revoked_ms.is_some())
+    tilo_failure::ignored!(
+        "a grant entry that does not read back is no grant",
+        serde_json::from_str::<WorkspaceGrant>(json).ok()
+    )
+}
+
+/// Whether `doc` lists the key `device` speaks for as revoked by its person: read from that one
+/// key's entry, without reading the others.
+#[must_use]
+fn revoked_key_in(doc: &automerge::AutoCommit, device: &[u8; 32]) -> bool {
+    key_grant_in(doc, device).is_some_and(|grant| grant.revoked_ms.is_some())
+}
+
+/// How the key `device`'s grant ended at `now_ms`, if it has: its person revoked it, or the
+/// expiry they gave it passed. One rule for every place that reads whether a key's grant still
+/// stands, so nothing that decides a key's authority sees an ended grant as a live one.
+#[must_use]
+pub fn ended_key_in(
+    doc: &automerge::AutoCommit,
+    device: &[u8; 32],
+    now_ms: u64,
+) -> Option<GrantEnded> {
+    let grant = key_grant_in(doc, device)?;
+    if grant.revoked_ms.is_some() {
+        return Some(GrantEnded::Revoked);
+    }
+    grant
+        .expires_ms
+        .is_some_and(|expiry| now_ms >= expiry)
+        .then_some(GrantEnded::Expired)
 }
 
 impl PeerGovernance<'_> {

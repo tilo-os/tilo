@@ -1335,65 +1335,66 @@ impl StatePeer {
     /// ([`collab_types::workspace_grant::key_agent_id`]): what an agent of its
     /// person may ([`tilo_member_types::Acting::handed_preset`]). A key is
     /// approved where the workspace holds its certificate, which its person's
-    /// root signed, live and unrevoked, as an agent's grant reaching this
-    /// workspace, and lists no revocation of its grant. That certificate is
-    /// the grant its person signed when they approved the key, so
-    /// whoever carries the key's calls out and signs what they change decides
-    /// nothing about it: every device that holds the workspace reads the
-    /// same grants, and the person and the signer still bound the agent.
+    /// root signed, live, as an agent's grant reaching this workspace, and
+    /// lists no end of its grant: no revocation, and no expiry reached. That
+    /// certificate is the grant its person signed when they approved the key,
+    /// so whoever carries the key's calls out and signs what they change
+    /// decides nothing about it: every device that holds the workspace reads
+    /// the same grants, and the person and the signer still bound the agent.
     pub(crate) fn approved_keys(&self, now: SystemTime) -> Vec<tilo_action_policy::Grant> {
         #[cfg(any(test, feature = "test-support"))]
         walks::count();
         let workspace = &self.core.workspace;
-        let grants = self.governance().workspace_grants();
         let now_ms = now_ns(now) / 1_000_000;
+        let workspace_doc = self.core.workspace_doc.as_deref();
         // The workspace lists the grant once a server admitted the key to it;
-        // the person revoking it there ends it, whatever its certificate says.
+        // its person revoking it there, or its expiry passing, ends it,
+        // whatever its certificate says. So it ends the grants below, both the
+        // one its certificate names and the one its delegation does.
         let ended = |device: &[u8; 32]| {
-            let id = collab_types::workspace_grant::WorkspaceGrant::id_of(device);
-            grants.iter().any(|grant| {
-                grant.id == id
-                    && (grant.revoked_ms.is_some()
-                        || grant.expires_ms.is_some_and(|expiry| now_ms >= expiry))
+            workspace_doc.is_some_and(|doc| {
+                super::workspace_grants::ended_key_in(doc, device, now_ms).is_some()
             })
         };
-        // An agent device its person delegated, with the delegation their
-        // root signed, which the workspace holds the same way.
-        let delegated = self.core.certificates.keys().filter_map(|device| {
-            match backend::member::role(&self.core, device, now) {
-                Ok((_, Some(delegate)))
-                    if delegate
-                        .actor
-                        .member_id()
-                        .is_some_and(|member| member.agent_id().is_some()) =>
-                {
-                    Some(delegate.grants)
-                }
-                _ => None,
+        let mut grants = Vec::new();
+        for device in self.core.certificates.keys() {
+            if ended(device) {
+                continue;
             }
-        });
-        let delegated: Vec<tilo_action_policy::Grant> = delegated.flatten().collect();
-        self.core
-            .certificates
-            .keys()
-            .filter(|device| !ended(device))
-            .filter_map(|device| {
-                let cert = self.certificate(device, now).ok()?;
-                cert.capabilities
+            // The key's certificate, where its person's root signed it as an agent reaching this
+            // workspace: the grant its calls act as ([`collab_types::workspace_grant::key_agent_id`]).
+            if let Ok(cert) = self.certificate(device, now)
+                && cert
+                    .capabilities
                     .agent
                     .as_ref()
-                    .filter(|scope| scope.reaches(workspace))?;
-                Some(
+                    .is_some_and(|scope| scope.reaches(workspace))
+            {
+                grants.extend(
                     tilo_member_types::Acting::handed_agent(
                         collab_types::workspace_grant::key_agent_id(device),
                         hex::encode(cert.user_public_key),
                     )
                     .handed_preset(workspace),
-                )
-            })
-            .flatten()
-            .chain(delegated)
-            .collect()
+                );
+            }
+            // The agent its person delegated, with the delegation their root signed, which the
+            // workspace holds the same way. An agent its certificate names by id acts as that
+            // id, never as the id its key has, and needs its grants under it.
+            if let Ok((_, Some(delegate))) = backend::member::role(&self.core, device, now)
+                && delegate
+                    .actor
+                    .member_id()
+                    .is_some_and(|member| member.agent_id().is_some())
+            {
+                grants.extend(delegate.grants);
+            }
+        }
+        // One path per live key: a key its certificate and its delegation name the same way
+        // contributes its grants once.
+        let mut seen = std::collections::HashSet::new();
+        grants.retain(|grant| seen.insert(grant.clone()));
+        grants
     }
 
     /// The heads of the workspace's governance as this peer holds it: what a

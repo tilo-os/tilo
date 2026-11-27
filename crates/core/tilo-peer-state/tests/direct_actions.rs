@@ -1024,6 +1024,62 @@ async fn revoking_a_keys_grant_refuses_its_next_call() {
     agent_endpoint.close().await;
 }
 
+/// A key whose grant expires is refused with its next call, though its certificate still has
+/// time: the workspace's grant ends the key's authority, as its revocation does.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_expired_keys_grant_refuses_its_next_call() {
+    let host = host_with_keys().await;
+    let agent = host.agent;
+    let (agent_endpoint, agent_service) = asking(&agent.0).await;
+    let remote = agent_service.remote(&agent_endpoint, &host.engine.addr(), WORKSPACE);
+    let caller = Caller::delegated_agent(
+        tilo_member_types::key_agent_id(&agent.1.device_public_key),
+        agent.1.user_public_key,
+        agent.1.device_public_key,
+    );
+    assert_eq!(
+        queried(&remote, &caller).await,
+        Ok(()),
+        "the workspace's grant names the key"
+    );
+    let owner = host.owner.clone();
+    let now = host.now;
+    let expired = collab_types::workspace_grant::WorkspaceGrant {
+        id: collab_types::workspace_grant::WorkspaceGrant::id_of(&agent.1.device_public_key),
+        person: hex::encode(agent.1.user_public_key),
+        device: hex::encode(agent.1.device_public_key),
+        name: "Bea's agent".into(),
+        scope: None,
+        expires_ms: Some(1),
+        parent: None,
+        created_ms: 1,
+        revoked_ms: None,
+    };
+    assert!(
+        host.engine
+            .replica
+            .write(|peer| peer
+                .governance_mut()
+                .author_workspace_grant(&expired, &owner, now))
+            .unwrap(),
+        "the workspace records the grant's expiry"
+    );
+    let refused = queried(&remote, &caller).await.unwrap_err();
+    assert_eq!(
+        refusal(&refused),
+        "the device's delegation is expired or withdrawn",
+        "the key's expired grant ends its calls"
+    );
+    assert_eq!(
+        host.dispatcher.callers().len(),
+        1,
+        "the expired key reaches no dispatcher"
+    );
+
+    host.engine.close().await;
+    agent_endpoint.close().await;
+}
+
 /// A server key of the person's is them at the key: what its person may do there is theirs.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_server_key_acts_as_its_person() {

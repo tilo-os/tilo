@@ -55,13 +55,23 @@ fn current(
         .workspace_doc
         .as_ref()
         .ok_or(MembershipError::RulesMissing)?;
-    // A grant the workspace revoked ends the key it names at once, whatever its certificate
-    // still says: the key is nobody's agent here, so the delegate its certificate would make it
-    // is no one's either, and every reader of its authority reads the same revocations.
+    // A grant the workspace ended ends the key it names at once, whatever its certificate still
+    // says: its person revoked it, or its expiry passed. The key is nobody's agent here, so the
+    // delegate its certificate would make it is no one's either, and every reader of its
+    // authority reads the same end.
     if removal == Removal::Refuses
-        && super::super::workspace_grants::revoked_key_in(workspace, source)
+        && let Some(ended) = super::super::workspace_grants::ended_key_in(
+            workspace,
+            source,
+            crate::state::now_ns(now) / 1_000_000,
+        )
     {
-        return Err(MembershipError::Revoked);
+        return Err(match ended {
+            super::super::workspace_grants::GrantEnded::Revoked => MembershipError::Revoked,
+            super::super::workspace_grants::GrantEnded::Expired => {
+                MembershipError::Delegate(DelegateInactive::Delegation)
+            }
+        });
     }
     let policy = workspace.workspace_policy(&peer.workspace);
     let key = key_text(source);
