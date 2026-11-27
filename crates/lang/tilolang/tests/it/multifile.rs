@@ -550,6 +550,7 @@ const NEEDS_PUBLISHED_APPS: &[&str] = &[
     "speed-test",
     "store",
     "tasks",
+    "terminal",
     "today",
     "totp",
     "tube",
