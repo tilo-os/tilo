@@ -30,7 +30,9 @@ serde_json.workspace = true
 tracing.workspace = true
 # The reactor a record's write waits on, the blocking thread a host opens on, and the test
 # runtime the record's port is exercised under.
-tokio = { workspace = true, features = ["macros", "rt"] }
+tokio = { workspace = true, features = ["macros", "rt", "sync"] }
+# The records a write moved, as a store reads again what they name.
+collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 
 [build-dependencies]
 # The compiler the packages built into this build are compiled with as it is built.

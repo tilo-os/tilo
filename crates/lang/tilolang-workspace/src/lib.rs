@@ -22,12 +22,16 @@ use tilo_workspace_service::tl_records::Tilolang;
 
 /// What answers for the workspace service: one value, the records, styles and rich text read
 /// through this build's language runtime.
-pub struct Service;
+#[derive(Default)]
+pub struct Service {
+    /// The records read here, each kept open between asks for the person reading it.
+    kept: records::Kept,
+}
 
 /// What the daemon's program hands its workspace service, as it starts.
 #[must_use]
 pub fn host() -> Tilolang {
-    let service: Arc<Service> = Arc::new(Service);
+    let service: Arc<Service> = Arc::new(Service::default());
     Tilolang {
         records: service.clone(),
         styles: service.clone(),

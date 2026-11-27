@@ -1122,4 +1122,158 @@ mod tests {
         );
         server.shutdown().await;
     }
+
+    /// Add `titles` to the tasks of `workspace` as `person`, through a record opened for the
+    /// write as the dispatch opens one: the published id of the tasks' root.
+    async fn add_tasks(
+        workspaces: &Workspaces,
+        workspace: &str,
+        person: &str,
+        titles: Vec<String>,
+    ) -> String {
+        use tilolang_tilo::runtime::Value;
+        let tasks = built_in(TASKS).unwrap().expect("Tasks is built in");
+        let who = member(tilo_actions::MemberId::person(person.to_owned()));
+        with_tl_record(
+            workspaces,
+            workspace,
+            &tasks,
+            (who.clone(), person),
+            move |opened| {
+                let root = opened.open_root()?;
+                opened.invoke(
+                    &who,
+                    (TASKS, "new_tasks"),
+                    vec![
+                        Value::List(titles.into_iter().map(Value::Text).collect()),
+                        Value::Opt(None),
+                    ],
+                    None,
+                )?;
+                Ok(tilolang_tilo::naming::resource_id(TASKS, &root.id_string()))
+            },
+        )
+        .await
+        .expect("the tasks are written")
+    }
+
+    /// A page of what Tasks' provider offers `caller` of `query`, as the dispatch asks it.
+    async fn page_of(
+        tasks: &BuiltInRecords,
+        caller: &Caller,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> tilo_actions::remote::CataloguePage {
+        tasks
+            .query(caller, query)
+            .await
+            .expect("the page is answered")
+            .expect("the record reads")
+    }
+
+    /// A thousand tasks, read a page at a time by the provider the dispatch asks: the record
+    /// stays open for its reader between asks, and a task another write made since is offered
+    /// by the next ask, its rows found by the exact action a caller re-resolves before it
+    /// invokes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_page_after_a_write_offers_what_moved_among_a_thousand_tasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let (key, owner) = hosting_device();
+        let server = test_host(dir.path(), &key, &owner).await;
+        let workspaces = server.workspaces().clone();
+        workspaces
+            .provide_tilolang(crate::host())
+            .expect("the build's tilolang apps declare their surfaces");
+        let workspace = workspaces.create("Team").await.unwrap().workspace;
+        let ada = hex::encode(owner.user_public_key);
+        let tasks = BuiltInRecords {
+            workspaces: workspaces.clone(),
+            app: TASKS,
+            runtime: tokio::runtime::Handle::current(),
+            rooted: Arc::default(),
+        };
+        // As many as one write's sealed history holds here; ten thousand are read through the
+        // same reading in `kept_reading`.
+        let titles = (0..1_000)
+            .map(|at| format!("Task {at}: answer the landlord about the boiler"))
+            .collect();
+        let root = add_tasks(&workspaces, &workspace, &ada, titles).await;
+        let caller = Caller::authenticated(owner.user_public_key, owner.device_public_key)
+            .in_workspace(workspace.clone());
+        let under_root = tilo_actions::remote::CatalogueQuery {
+            parent_resource: Some(root.clone()),
+            max_results: 40,
+            ..tilo_actions::remote::CatalogueQuery::default()
+        };
+        let first = page_of(&tasks, &caller, under_root.clone()).await;
+        assert!(
+            first.rows.len() >= 40 && !first.next_cursor.is_empty(),
+            "a page of 40 rows, and more after it: {} rows",
+            first.rows.len()
+        );
+        let action = first
+            .rows
+            .iter()
+            .find_map(|row| row.action.as_ref())
+            .expect("a task offers its actions")
+            .address
+            .action
+            .clone();
+
+        // Another record, opened for the write as a call opens one, adds a task.
+        let made = {
+            let tasks = built_in(TASKS).unwrap().expect("Tasks is built in");
+            let (who, root) = (ada.clone(), root.clone());
+            with_tl_record(
+                &workspaces,
+                &workspace,
+                &tasks,
+                (member(tilo_actions::MemberId::person(ada.clone())), &ada),
+                move |opened| {
+                    let output = opened
+                        .invoke_published(
+                            &tilo_actions::ActionAddress::new(root, "new_task"),
+                            serde_json::json!({ "title": "Written after the ask" })
+                                .as_object()
+                                .unwrap(),
+                            &tilo_actions::ActionInvoker::person(who),
+                            &tilo_actions::ActionContext::default(),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    output
+                        .resources
+                        .first()
+                        .cloned()
+                        .ok_or_else(|| format!("new_task names what it made: {output:?}"))
+                },
+            )
+            .await
+            .expect("the task is written")
+        };
+        let target = tilo_actions::ActionAddress::new(made.clone(), action);
+        let found = page_of(
+            &tasks,
+            &caller,
+            tilo_actions::remote::CatalogueQuery {
+                target: Some(target.clone()),
+                max_results: 40,
+                ..tilo_actions::remote::CatalogueQuery::default()
+            },
+        )
+        .await;
+        assert!(
+            found.rows.iter().any(|row| row
+                .action
+                .as_ref()
+                .is_some_and(|action| action.address == target)),
+            "the task written after the first ask is offered by the next: {:?}",
+            found.rows
+        );
+        let again = page_of(&tasks, &caller, under_root.clone()).await;
+        assert_eq!(
+            again.rows.len(),
+            first.rows.len(),
+            "a page is as long after a write"
+        );
+        server.shutdown().await;
+    }
 }

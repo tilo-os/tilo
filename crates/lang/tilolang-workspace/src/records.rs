@@ -28,12 +28,16 @@
 //! ([`Opened::open_with`]). The caller names the member it acts as; code on this device that
 //! calls here is the device's own.
 
+mod kept;
 pub mod provided;
+
+pub(crate) use kept::Kept;
 
 include!("records/compile.rs");
 #[cfg(test)]
 mod tests;
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -329,6 +333,17 @@ pub struct Opened {
     app: String,
     /// The Shortcut whose run what is invoked here is ([`Opened::in_run_of`]).
     run_of: Option<String>,
+    /// What the record publishes as its viewer reads it, made by the first read of it and kept:
+    /// the next page publishes again only what moved since ([`Shown`]).
+    shown: RefCell<Option<Shown>>,
+}
+
+/// The record as the host's viewer reads it, kept between reads: one planner, so the action
+/// types of each package are built once, and one publication, which reads again only the
+/// documents the store tells it moved.
+struct Shown {
+    planner: Arc<dyn Planner>,
+    publications: Publications,
 }
 
 impl Opened {
@@ -404,6 +419,7 @@ impl Opened {
             host,
             app: app.to_owned(),
             run_of: None,
+            shown: RefCell::new(None),
         })
     }
 
@@ -575,6 +591,20 @@ impl Opened {
         })
     }
 
+    /// `read` of what the record publishes as the host's viewer reads it, through the planner
+    /// and publication kept between reads ([`Shown`]).
+    fn shown<R>(&self, read: impl FnOnce(&Arc<dyn Planner>, &mut Publications) -> R) -> R {
+        let mut shown = self.shown.borrow_mut();
+        let Shown {
+            planner,
+            publications,
+        } = shown.get_or_insert_with(|| Shown {
+            planner: self.planner(None),
+            publications: Publications::new(&self.host),
+        });
+        read(planner, publications)
+    }
+
     /// What plans an action of the record for `invoker`, or for the host's viewer.
     fn planner(&self, invoker: Option<&ActionInvoker>) -> Arc<dyn Planner> {
         let handle = self.host.handle();
@@ -613,7 +643,17 @@ impl Opened {
     /// as a catalogue lists them.
     #[must_use]
     pub fn rows(&self) -> Vec<CatalogueRow> {
-        let resources = self.published(&self.planner(None));
+        let resources = self.shown(|planner, publications| {
+            // Only the documents that moved since the last read are read again.
+            publications.update(&self.host, planner);
+            let mut out: Vec<ResourceSpec> = publications
+                .everything(&self.host, planner)
+                .into_iter()
+                .map(std::rc::Rc::unwrap_or_clone)
+                .collect();
+            out.extend(self.own(planner));
+            out
+        });
         tilo_actions::api::survey_placed(&resources)
             .into_iter()
             .map(|placed| CatalogueRow::for_placed_action("", &self.app, placed))
@@ -648,18 +688,20 @@ impl Opened {
         if query.app_id.as_deref().is_some_and(|app| app != self.app) {
             return CataloguePage::window(String::new(), Vec::new(), query, false);
         }
-        let planner = self.planner(None);
         // An empty parent names the top, as it does for the rows a query admits.
         let parent = query
             .parent_resource
             .as_deref()
             .filter(|parent| !parent.is_empty());
-        let mut level = Publications::new(&self.host).level(&self.host, &planner, parent);
-        if parent.is_none() {
-            for resource in self.own(&planner) {
-                level.then(resource);
+        let level = self.shown(|planner, publications| {
+            let mut level = publications.level(&self.host, planner, parent);
+            if parent.is_none() {
+                for resource in self.own(planner) {
+                    level.then(resource);
+                }
             }
-        }
+            level
+        });
         let every = query.needle.is_empty()
             && query.resource_name.is_none()
             && query.view_resource.is_none();
@@ -861,6 +903,40 @@ pub async fn with_tl_record<R: Send + 'static>(
     .map_err(|error| error.to_string())?
 }
 
+impl crate::Service {
+    /// `read` of `app`'s built-in record as its reader reads it, on the reading kept for it
+    /// ([`Kept`]): `None`, and a warning, for an app built into no package here, a record that
+    /// does not open, or a read that fails.
+    fn kept_read<R: Send + 'static>(
+        &self,
+        record: Record,
+        policy: Option<Arc<WorkspacePolicy>>,
+        app: &str,
+        read: impl FnOnce(&Opened) -> Result<R, String> + Send + 'static,
+    ) -> Option<R> {
+        let packages = match built_in(app) {
+            Ok(packages) => packages?,
+            Err(error) => {
+                tracing::warn!(%app, %error, "a built-in package does not compile");
+                return None;
+            }
+        };
+        let viewer = Actor::Member(tilo_actions::MemberId::person(record.reader().to_owned()));
+        let open = move |record, policy| {
+            on_record(record, |store| {
+                Opened::open(store, &packages, viewer, policy)
+            })
+        };
+        match self.kept.read(record, policy, open, read) {
+            Ok(Ok(read)) => Some(read),
+            Ok(Err(error)) | Err(error) => {
+                tracing::warn!(%app, %error, "a record read does not answer");
+                None
+            }
+        }
+    }
+}
+
 /// The records of the apps built into this build, as a device's own roles read and change them.
 impl Records for crate::Service {
     fn built_in(&self, app: &str) -> bool {
@@ -900,23 +976,7 @@ impl Records for crate::Service {
         policy: Option<Arc<WorkspacePolicy>>,
         app: &str,
     ) -> Option<Vec<CatalogueRow>> {
-        let packages = match built_in(app) {
-            Ok(packages) => packages?,
-            Err(error) => {
-                tracing::warn!(%app, %error, "a built-in package does not compile");
-                return None;
-            }
-        };
-        let viewer = Actor::Member(tilo_actions::MemberId::person(record.reader().to_owned()));
-        match on_record(record, |store| {
-            Opened::open(store, &packages, viewer, policy)
-        }) {
-            Ok(opened) => Some(opened.rows()),
-            Err(error) => {
-                tracing::warn!(%app, %error, "a record read does not open");
-                None
-            }
-        }
+        self.kept_read(record, policy, app, |opened| Ok(opened.rows()))
     }
 
     fn page(
@@ -926,23 +986,8 @@ impl Records for crate::Service {
         app: &str,
         query: &CatalogueQuery,
     ) -> Option<CataloguePage> {
-        let packages = match built_in(app) {
-            Ok(packages) => packages?,
-            Err(error) => {
-                tracing::warn!(%app, %error, "a built-in package does not compile");
-                return None;
-            }
-        };
-        let viewer = Actor::Member(tilo_actions::MemberId::person(record.reader().to_owned()));
-        match on_record(record, |store| {
-            Opened::open(store, &packages, viewer, policy)
-        }) {
-            Ok(opened) => Some(opened.page(query)),
-            Err(error) => {
-                tracing::warn!(%app, %error, "a record read does not open");
-                None
-            }
-        }
+        let query = query.clone();
+        self.kept_read(record, policy, app, move |opened| Ok(opened.page(&query)))
     }
 
     fn changes(
@@ -951,29 +996,11 @@ impl Records for crate::Service {
         policy: Option<Arc<WorkspacePolicy>>,
         app: &str,
     ) -> Option<Vec<Json>> {
-        let packages = match built_in(app) {
-            Ok(packages) => packages?,
-            Err(error) => {
-                tracing::warn!(%app, %error, "a built-in package does not compile");
-                return None;
-            }
-        };
-        let viewer = Actor::Member(tilo_actions::MemberId::person(record.reader().to_owned()));
-        match on_record(record, |store| {
-            Opened::open(store, &packages, viewer, policy)
-        }) {
-            Ok(opened) => match opened.changes() {
-                Ok(changes) => Some(changes),
-                Err(error) => {
-                    tracing::warn!(%app, %error, "a record's versions do not read");
-                    None
-                }
-            },
-            Err(error) => {
-                tracing::warn!(%app, %error, "a record read does not open");
-                None
-            }
-        }
+        self.kept_read(record, policy, app, |opened| {
+            opened
+                .changes()
+                .map_err(|error| format!("a record's versions do not read: {error}"))
+        })
     }
 
     fn undo(

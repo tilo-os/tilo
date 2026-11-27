@@ -22996,6 +22996,7 @@ dependencies = [
  "tilo-action-types",
  "tilo-actions",
  "tilo-automerge-isolate",
+ "tilo-collab-types",
  "tilo-failure",
  "tilo-lock",
  "tilo-member-types",

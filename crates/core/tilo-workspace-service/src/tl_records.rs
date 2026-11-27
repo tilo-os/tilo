@@ -371,6 +371,26 @@ impl Record {
         &self.reader
     }
 
+    /// The workspace the record is of.
+    #[must_use]
+    pub fn workspace(&self) -> &str {
+        &self.workspace
+    }
+
+    /// The app the record is of.
+    #[must_use]
+    pub fn app(&self) -> &str {
+        &self.app
+    }
+
+    /// Every write to the workspace's records from now on, this device's and the ones it takes
+    /// in, each told once it reads here ([`Workspaces::document_writes`]): what a reading of the
+    /// record kept between asks reads again by.
+    #[must_use]
+    pub fn writes(&self) -> tokio::sync::broadcast::Receiver<crate::workspaces::ResourceWrite> {
+        self.workspaces.document_writes()
+    }
+
     /// The bytes of the content `hash` names that the record's workspace holds: what the app's
     /// own code reads of a file an action is handed ([`Workspaces::workspace_content`]). Only
     /// the record's workspace answers.
