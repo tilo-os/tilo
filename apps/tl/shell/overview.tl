@@ -59,12 +59,14 @@ view workspaces_here() {
     if not layout.workspaces.is_empty() or not layout.people.is_empty() {
         row(gap: .related, align: .center, wrap: true) {
             for w in layout.workspaces.sort_by(w -> w.name) {
-                ui.Chip(
-                    w.name,
-                    icon: if w.current { .layers } else { .folder },
-                    selected: w.current,
-                ) {
-                    on press: session.switch_workspace(workspace: w.key)
+                // The workspace in front is the chip the person is on: it says so, and it takes
+                // no press, because a press of it has nowhere to take them.
+                if w.current {
+                    ui.Chip(w.name, icon: .layers, selected: true)
+                } else {
+                    ui.Chip(w.name, icon: .folder, selected: false) {
+                        on press: session.switch_workspace(workspace: w.key)
+                    }
                 }
             }
             ui.Facts {

@@ -82,6 +82,15 @@ impl MenuItemProps {
         Press::of(choose).leading_to(self.link.take())
     }
 
+    /// Whether the row has nothing to run: no event, no address and no setting it edits, so it
+    /// only marks a state. A row that marks a state is drawn with its check and takes no press.
+    fn marks_a_state(&self) -> bool {
+        !self.disabled
+            && self.choose.is_none()
+            && self.link.as_deref().is_none_or(str::is_empty)
+            && self.value.edits.is_none()
+    }
+
     /// The command as a menu row: choosing it presses the action the view bound to it, or
     /// reports the view's own event.
     #[must_use]
@@ -89,9 +98,11 @@ impl MenuItemProps {
         if self.separator {
             return MenuItem::separator();
         }
+        let marking = self.marks_a_state();
         let press = self.press();
         let props = self;
         let item = MenuItem::bound(props.label, press).with_destructive(props.destructive);
+        let item = if marking { item.with_mark() } else { item };
         let item = match props.icon {
             Some(icon) => item.with_icon(icon),
             None => item,
@@ -130,9 +141,11 @@ impl MenuItemProps {
         if self.separator {
             return MenuEntry::separator();
         }
+        let marking = self.marks_a_state();
         let press = self.press();
         let props = self;
         let entry = MenuEntry::bound(props.label, press).with_destructive(props.destructive);
+        let entry = if marking { entry.with_mark() } else { entry };
         let entry = match props.icon {
             Some(icon) => entry.with_icon(icon),
             None => entry,
@@ -353,6 +366,53 @@ impl Described for MenuButton {
 mod tests {
     use super::*;
     use tilo_ui_base::component::PartType;
+
+    /// A row the view gave nothing to run marks a state rather than offering a command; a row
+    /// with an event, an address or a setting it edits, and a row that says why it cannot run,
+    /// are commands.
+    #[test]
+    fn a_menu_row_with_nothing_to_run_marks_a_state() {
+        let mark = MenuItemProps {
+            label: "Studio".to_owned(),
+            checked: Some(true),
+            ..MenuItemProps::default()
+        }
+        .into_item();
+        assert!(
+            mark.is_mark(),
+            "the workspace in front is marked, never chosen"
+        );
+
+        let queue = tilo_ui_base::Intents::<tilo_ui_base::component::Fired>::default();
+        let command = MenuItemProps {
+            label: "Home".to_owned(),
+            choose: Event::View(tilo_ui_base::component::Intent::new(
+                &queue, "row", "choose",
+            )),
+            ..MenuItemProps::default()
+        }
+        .into_item();
+        assert!(!command.is_mark(), "a row bound to an event is a command");
+
+        let way = MenuItemProps {
+            label: "Release".to_owned(),
+            link: Some("/w/release/desktop".to_owned()),
+            ..MenuItemProps::default()
+        }
+        .into_item();
+        assert!(!way.is_mark(), "a row that leads somewhere is a command");
+
+        let refused = MenuItemProps {
+            label: "Publish".to_owned(),
+            disabled: true,
+            ..MenuItemProps::default()
+        }
+        .into_item();
+        assert!(
+            !refused.is_mark(),
+            "a row that says why it cannot run is still a command"
+        );
+    }
 
     /// A row that is a way to a page leads there when chosen, as a link does; a row bound to a
     /// command keeps its command whatever address it also names.

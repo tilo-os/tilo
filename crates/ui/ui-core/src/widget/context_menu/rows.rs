@@ -49,7 +49,9 @@ impl FloatingRow for MenuRow {
     }
 
     fn pickable(&self) -> bool {
-        self.item.is_enabled()
+        // A row that only marks a state is no command: the keyboard and the armed highlight
+        // never stop on it.
+        self.item.is_enabled() && !self.item.is_mark()
     }
 
     fn alone_row(&self) -> bool {
@@ -102,6 +104,7 @@ impl FloatingRow for MenuRow {
                 destructive,
                 enabled,
                 submenu,
+                mark,
                 ..
             } => {
                 // As it is shown: a row that asks first ends in its marker, as the page draws it.
@@ -118,6 +121,7 @@ impl FloatingRow for MenuRow {
                         destructive: *destructive,
                         enabled: *enabled,
                         submenu: submenu.is_some(),
+                        mark: *mark,
                     },
                     label,
                     sample.as_ref(),
@@ -153,6 +157,8 @@ pub(super) struct Action<'a> {
     destructive: bool,
     enabled: bool,
     submenu: bool,
+    /// It only marks a state: drawn quieter than the commands around it, as a value a menu shows.
+    mark: bool,
 }
 
 /// One command row: the armed lift, its leading state, its label and the
@@ -174,6 +180,7 @@ fn paint_action(
         destructive,
         enabled,
         submenu,
+        mark,
     } = action;
     let theme = ctx.theme;
     let ground = tilo_ui_base::chrome::panel_ground(theme);
@@ -194,7 +201,9 @@ fn paint_action(
             theme,
         )
     });
-    let ink = if !enabled {
+    let ink = if !enabled || mark {
+        // A row that cannot run now, or that only marks a state, is read quieter than the
+        // commands it stands among.
         colors
             .on_surface_at(
                 ground,

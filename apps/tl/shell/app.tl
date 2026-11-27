@@ -34,8 +34,14 @@ view shell_view(a: Layout) window "Desktop shell" {
         // reaches their workspaces anywhere on the shell.
         ui.ContextMenu {
             for w in layout.workspaces {
-                ui.MenuItem(w.name, checked: w.current) {
-                    on choose: session.switch_workspace(workspace: w.key)
+                if w.current {
+                    // The workspace in front is marked, not offered: the person is already here,
+                    // so there is nowhere for a press to take them.
+                    ui.MenuItem(w.name, checked: true)
+                } else {
+                    ui.MenuItem(w.name, checked: false) {
+                        on choose: session.switch_workspace(workspace: w.key)
+                    }
                 }
             }
             ui.MenuItem("New workspace", icon: .plus) {
@@ -447,8 +453,12 @@ view workspace_menu(narrow: Bool, compact: Bool, wide: Bool) {
                     // Where the shell is a page, each workspace is a page of its own: the menu
                     // leads to it as the workspaces' own cards do (`workspaces.tl`).
                     ui.MenuItem(w.name, checked: w.current, link: w.home)
+                } else if w.current {
+                    // The workspace in front is marked, not offered: the person is already here,
+                    // so there is nowhere for a press to take them.
+                    ui.MenuItem(w.name, checked: true)
                 } else {
-                    ui.MenuItem(w.name, checked: w.current) {
+                    ui.MenuItem(w.name, checked: false) {
                         on choose: session.switch_workspace(workspace: w.key)
                     }
                 }
@@ -641,8 +651,13 @@ view person_menu() {
             on choose: open_style_settings(shell)
         }
         for w in layout.workspaces {
-            ui.MenuItem(w.name, checked: w.current, group: "Workspaces") {
-                on choose: session.switch_workspace(workspace: w.key)
+            if w.current {
+                // The workspace in front is marked, not offered: the person is already here.
+                ui.MenuItem(w.name, checked: true, group: "Workspaces")
+            } else {
+                ui.MenuItem(w.name, checked: false, group: "Workspaces") {
+                    on choose: session.switch_workspace(workspace: w.key)
+                }
             }
         }
         ui.MenuItem("New workspace", icon: .plus, group: "Workspaces") {

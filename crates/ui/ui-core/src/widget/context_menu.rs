@@ -100,6 +100,10 @@ pub enum MenuItem {
         /// What a press of the row does, when the view bound it: the action runs through the
         /// menu's ownership, as a control's own press does.
         press: tilo_ui_base::widget::Press,
+        /// It marks a state rather than running a command: the workspace in front, a value the
+        /// menu lists. It is drawn with its check and takes no press — nothing arms under the
+        /// pointer, no key stops on it, and choosing it runs nothing.
+        mark: bool,
     },
     Separator,
     /// A line of secondary text about the rows around it ("Hosted by
@@ -147,6 +151,7 @@ impl MenuItem {
             asks_first: false,
             address: None,
             press: tilo_ui_base::widget::Press::default(),
+            mark: false,
         }
     }
 
@@ -157,6 +162,28 @@ impl MenuItem {
     #[must_use]
     pub fn bound(label: impl Into<String>, press: tilo_ui_base::widget::Press) -> Self {
         Self::command(label.into(), std::rc::Rc::new(|| {})).for_press(press)
+    }
+
+    /// A row that marks a state rather than running a command: the workspace in front, a value a
+    /// menu lists. It is drawn with its check, takes no press and runs nothing.
+    #[must_use]
+    pub fn marking(label: impl Into<String>) -> Self {
+        Self::command(label.into(), std::rc::Rc::new(|| {})).with_mark()
+    }
+
+    /// Make this a row that only marks a state ([`MenuItem::marking`]).
+    #[must_use]
+    pub fn with_mark(mut self) -> Self {
+        if let MenuItem::Action { mark, .. } = &mut self {
+            *mark = true;
+        }
+        self
+    }
+
+    /// Whether it only marks a state rather than running a command.
+    #[must_use]
+    pub fn is_mark(&self) -> bool {
+        matches!(self, MenuItem::Action { mark: true, .. })
     }
 
     pub fn action<F>(label: impl Into<String>, action: F) -> Self
@@ -1325,6 +1352,15 @@ impl ContextMenu {
         let Some(item) = self.items.get(idx) else {
             return;
         };
+        // A row that only marks a state runs nothing: choosing it puts the menu away, as choosing
+        // any row does, and leaves the state it marks as it was.
+        if item.is_mark() {
+            if self.own_rows.is_none_or(|own| idx < own) {
+                self.selection = None;
+            }
+            self.close();
+            return;
+        }
         match item {
             MenuItem::Action {
                 submenu: Some(_),
@@ -1576,6 +1612,15 @@ impl ContextMenu {
     fn enabled_item_at(&self, point: Point) -> Option<usize> {
         self.item_at([point.x, point.y])
             .filter(|index| self.items[*index].takes_click())
+    }
+
+    /// The row under `point` the pointer arms: a command, never a row that only marks a state and
+    /// never one that cannot run now, which are both drawn as they are.
+    fn hoverable_item_at(&self, point: Point) -> Option<usize> {
+        self.item_at([point.x, point.y]).filter(|index| {
+            let item = &self.items[*index];
+            item.takes_click() && !item.is_mark()
+        })
     }
 }
 
@@ -1906,7 +1951,7 @@ impl Widget for ContextMenu {
                     return;
                 }
                 self.opened_under = None;
-                let hovered = self.enabled_item_at(self.last_cursor);
+                let hovered = self.hoverable_item_at(self.last_cursor);
                 if self.hovered != hovered {
                     self.set_hover(hovered);
                     self.dirty = true;
@@ -1944,7 +1989,7 @@ impl Widget for ContextMenu {
                         self.dirty = true;
                     }
                 }
-                let hovered = self.enabled_item_at(self.last_cursor);
+                let hovered = self.hoverable_item_at(self.last_cursor);
                 if self.hovered != hovered {
                     self.set_hover(hovered);
                     self.dirty = true;

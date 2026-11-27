@@ -534,3 +534,60 @@ fn a_clicked_menu_comes_from_the_pointer_and_fades_when_it_closes() {
         assert!(!menu.needs_animation_frame());
     });
 }
+
+/// A row that only marks a state — the workspace in front, a value the menu lists — is no
+/// command: the pointer does not arm it, the keyboard does not stop on it, and choosing it runs
+/// nothing.
+#[test]
+fn a_row_that_marks_a_state_takes_no_press() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let fired = Arc::new(AtomicU32::new(0));
+    let run = fired.clone();
+    let mut menu = ContextMenu::new();
+    menu.push(MenuItem::marking("Studio").with_checked(true));
+    menu.push(MenuItem::separator());
+    menu.push(MenuItem::action("Home", move || {
+        run.fetch_add(1, Ordering::SeqCst);
+    }));
+    menu.open_at([100.0, 100.0]);
+    lay_out(&mut menu);
+
+    // The pointer over the marking row arms nothing; over the command, it arms the row.
+    let marking = menu.item_rect(0).expect("the marking row").center();
+    dispatch(&mut menu, &cursor_at(marking));
+    assert_eq!(
+        menu.hovered(),
+        None,
+        "a row that marks a state is no hover target"
+    );
+    let command = menu.item_rect(2).expect("the command row").center();
+    dispatch(&mut menu, &cursor_at(command));
+    assert_eq!(menu.hovered(), Some(2), "the command it meets is armed");
+
+    // A click on the marking row closes the menu and runs nothing.
+    dispatch(&mut menu, &cursor_at(marking));
+    assert!(dispatch(&mut menu, &mouse_press()));
+    assert!(dispatch(&mut menu, &mouse_release()));
+    assert_eq!(fired.load(Ordering::SeqCst), 0, "the mark runs nothing");
+    assert_eq!(menu.take_selection(), None, "and is chosen by nobody");
+    assert!(
+        !menu.is_open(),
+        "the menu goes as any row's press puts it away"
+    );
+
+    // And the keyboard walks past it to the command.
+    let fired = Arc::new(AtomicU32::new(0));
+    let run = fired.clone();
+    let mut menu = ContextMenu::new();
+    menu.push(MenuItem::marking("Studio").with_checked(true));
+    menu.push(MenuItem::separator());
+    menu.push(MenuItem::action("Home", move || {
+        run.fetch_add(1, Ordering::SeqCst);
+    }));
+    menu.open_at([100.0, 100.0]);
+    lay_out(&mut menu);
+    dispatch(&mut menu, &named_key(NamedKey::ArrowDown));
+    assert_eq!(menu.hovered(), Some(2), "the keys stop on the command");
+    dispatch(&mut menu, &named_key(NamedKey::Enter));
+    assert_eq!(fired.load(Ordering::SeqCst), 1, "and run it");
+}

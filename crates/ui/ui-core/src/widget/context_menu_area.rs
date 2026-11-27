@@ -304,6 +304,13 @@ impl MenuEntry {
         self
     }
 
+    /// Shown as a state it marks rather than a command it runs ([`MenuItem::marking`]).
+    #[must_use]
+    pub fn with_mark(mut self) -> Self {
+        self.item = self.item.with_mark();
+        self
+    }
+
     /// A leading icon for recognition; the label stays its name.
     #[must_use]
     pub fn with_icon(mut self, icon: tilo_ui_base::icons::Icon) -> Self {

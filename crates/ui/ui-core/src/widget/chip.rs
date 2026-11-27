@@ -1542,7 +1542,7 @@ impl Chip {
                 .with_name(self.label.clone())
                 .with_value(self.label.clone())
                 .with_bounds(self.rect)
-                .with_state(AccessState::new().focusable(true))
+                .with_state(AccessState::new().focusable(true).selected(self.selected))
         };
         Some(match self.live {
             Some(politeness) => node.with_live(politeness),

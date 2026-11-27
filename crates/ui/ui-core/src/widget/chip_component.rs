@@ -89,9 +89,13 @@ impl Described for Chip {
         if tone != Tone::Neutral {
             chip = chip.style(ChipStyle::Tinted(tone));
         }
-        if let Some(on) = selected {
-            chip = chip.selectable().selected(on);
-        }
+        chip = match (selected, press.is_none()) {
+            // A chip given a press is a control that shows what it chooses; one given only its
+            // state names a value, and a value takes no press.
+            (Some(on), false) => chip.selectable().selected(on),
+            (Some(on), true) => chip.current(on),
+            (None, _) => chip,
+        };
         chip = match press {
             Event::None => chip,
             Event::Action(binding) => chip.on_action(binding),
@@ -139,7 +143,9 @@ impl Described for Chip {
         } else {
             ChipStyle::Tinted(tone)
         };
-        self.selectable = selected.is_some();
+        // A chip with a press is a control that shows what it chooses; one with only its state
+        // names a value, and a value takes no press.
+        self.selectable = selected.is_some() && !press.is_none();
         self.set_selected(selected.unwrap_or(false));
         self.activation.set_event(press);
         self.set_enabled(enabled);
@@ -154,5 +160,50 @@ impl Described for Chip {
         }
         self.dirty = true;
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_ui_base::widget::Widget;
+
+    /// A chip given a press is a control that shows what it chooses; a chip given only its state
+    /// names a value, which takes no press and is read as the value it shows.
+    #[test]
+    fn a_selected_chip_with_no_press_names_a_value() {
+        use tilo_ui_base::component::{Event, Intent};
+        let queue = tilo_ui_base::Intents::<tilo_ui_base::component::Fired>::default();
+        let control = Chip::from_props(
+            "filter",
+            ChipProps {
+                label: "Design".to_owned(),
+                selected: Some(true),
+                press: Event::View(Intent::new(&queue, "chip", "press")),
+                ..ChipProps::default()
+            },
+        );
+        let node = control.accessibility().expect("a control is read as one");
+        assert_eq!(
+            node.role,
+            tilo_ui_base::a11y::Role::ToggleButton,
+            "a chip that takes a press is a control"
+        );
+
+        let value = Chip::from_props(
+            "tag",
+            ChipProps {
+                label: "Design".to_owned(),
+                selected: Some(true),
+                ..ChipProps::default()
+            },
+        );
+        let node = value.accessibility().expect("a value is read as one");
+        assert_eq!(
+            node.role,
+            tilo_ui_base::a11y::Role::StaticText,
+            "a chip with nothing to run is the value it shows"
+        );
+        assert!(node.state.selected, "and says which value it is");
     }
 }
