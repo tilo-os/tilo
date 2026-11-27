@@ -197,15 +197,21 @@ fn shot_name(name: &str) -> String {
     format!("{name}-{theme}.png")
 }
 
+/// The path a picture of this run is kept at, where the run keeps pictures.
+fn picture_at(name: &str) -> Option<std::path::PathBuf> {
+    let directory = std::env::var_os("TL_SHELL_SHOTS")?;
+    Some(std::path::Path::new(&directory).join(shot_name(name)))
+}
+
 /// Take a picture of `device`'s screen, where this run was asked to keep pictures, and the band
 /// of the bar across its top beside it: what the bar says, close enough to look at.
 #[track_caller]
 fn snapshot(device: &Device, name: &str) {
-    let Some(directory) = std::env::var_os("TL_SHELL_SHOTS") else {
+    let Some(path) = picture_at(name) else {
         return;
     };
-    std::fs::create_dir_all(std::path::Path::new(&directory)).expect("the captures' directory");
-    let path = std::path::Path::new(&directory).join(shot_name(name));
+    std::fs::create_dir_all(path.parent().expect("a picture's directory"))
+        .expect("the captures' directory");
     let answer = device.ask(&json!({"op": "snapshot", "path": path.to_string_lossy()}));
     assert!(
         answer.get("err").is_none(),
@@ -224,6 +230,43 @@ fn snapshot(device: &Device, name: &str) {
 
 /// The rows of the screen the bar stands in.
 const BAR_HEIGHT: u32 = 56;
+
+/// Take the picture `name` once the frame it holds differs from `previous`'s: a word reaches
+/// assistive technology a frame before the bar paints it, so a picture taken on the word alone can
+/// catch the frame from before it. Where this run keeps no pictures, this is one ask and no more.
+#[track_caller]
+fn snapshot_changed(device: &Device, name: &str, previous: &str) {
+    let (Some(path), Some(before)) = (picture_at(name), picture_at(previous)) else {
+        snapshot(device, name);
+        return;
+    };
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(5))
+        .expect("the bound fits in an Instant");
+    loop {
+        snapshot(device, name);
+        let drew = std::fs::read(&path).ok();
+        let was = std::fs::read(&before).ok();
+        if drew.is_some() && drew != was {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{}'s bar never drew {name:?} apart from {previous:?}\n{}",
+            device.label,
+            explain(device),
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Drop the pictures kept under `name` and its band: a frame a run only looked apart from.
+fn discard(name: &str) {
+    if let Some(path) = picture_at(name) {
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("band.png"));
+    }
+}
 
 /// Choose the light theme in the workspace in front, as Settings' Appearance page or Quick
 /// Settings' Dark mode tile does: the field's own published setter, which every device reads.
@@ -279,6 +322,9 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
     // the arrival's four seconds are hers from the moment her session knows he is here.
     let mut bob_laptop = bob.device("Bob's laptop");
     let theirs = site.invite(bob.public, Role::Editor);
+    // What her bar draws with nobody come yet: the arrival's picture is taken apart from this one,
+    // never from a frame still showing it.
+    snapshot(&ada_laptop, "before-arrival");
     bob_laptop.begin(Some(&theirs));
 
     // Ada's bar says Bob is here on its own, in the bar, once her session knows he is here: the
@@ -313,13 +359,22 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
         y + height <= BAR,
         "the arrival notice stands in the bar: {arrival}"
     );
-    snapshot(&ada_laptop, "arrival");
+    snapshot_changed(&ada_laptop, "arrival", "before-arrival");
+    discard("before-arrival");
     // No press took it away: the bar says it for its four seconds and then gives it up.
     gone(&ada_laptop, "Bob is here", Duration::from_secs(10));
+    // Her bar with the notice gone, and the time back where it stands: the wave's picture is taken
+    // apart from this one.
+    snapshot(&ada_laptop, "before-wave");
     bob_laptop.ready();
     bob_laptop.wait_holding(&site.workspace);
     bob_laptop.wait_showing(&site.workspace);
     site.wait_for_member(bob.public);
+    if light() {
+        // A device reads the appearance its person chose: his own bar is drawn in it too, so the
+        // pictures of both bars are the theme this run is taking.
+        choose_light(&bob_laptop);
+    }
 
     // Bob's own bar says Ada is here, as Ada's said of him, and the label beside the faces names
     // her whole name; a press on it opens who is here.
@@ -332,21 +387,26 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
         width > 0.0 && height > 0.0,
         "the row's wave stands on the shell: {wave}"
     );
+    // His roster with the row's wave not yet pressed: the frame the sent wave's picture is told
+    // apart from.
+    snapshot(&bob_laptop, "before-waved");
     bob_laptop.press("Wave at Ada Lovelace");
     // The row says the wave went, to the eye and to assistive technology alike.
     says(&bob_laptop, "You waved at Ada Lovelace");
-    snapshot(&bob_laptop, "waved");
+    snapshot_changed(&bob_laptop, "waved", "before-waved");
+    discard("before-waved");
 
     // Ada's bar says who waved, beside her faces.
     says(&ada_laptop, "Bob Builder waved at you");
-    snapshot(&ada_laptop, "wave");
+    snapshot_changed(&ada_laptop, "wave", "before-wave");
+    discard("before-wave");
 
     // Bob follows Ada from her row: her view becomes the one his bar keeps in front.
     bob_laptop.press("Follow Ada Lovelace");
     says(&bob_laptop, "Following Ada Lovelace");
     // Ada's bar marks his face as following her, and a reader hears it on the face's own control.
     says(&ada_laptop, "Bob Builder, follows you");
-    snapshot(&ada_laptop, "follower");
+    snapshot_changed(&ada_laptop, "follower", "wave");
 
     // The wave at Ada goes by itself, once its six seconds are over: nothing about the wave was
     // pressed since it was heard.
@@ -367,5 +427,37 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
         || (!shows(&ada_laptop, "Bob Builder, follows you")).then_some(()),
     );
     appear(&ada_laptop, "Bob Builder");
-    snapshot(&ada_laptop, "follower-gone");
+    snapshot_changed(&ada_laptop, "follower-gone", "follower");
+}
+
+/// Someone nobody has named arrives where this person is: the bar says so, with their face, as
+/// every surface says an unnamed person — "Someone is here" — and never leaves them out of the
+/// news of who came.
+#[test]
+fn an_unnamed_person_arriving_is_said_on_the_bar() {
+    let ada = Person::new("Ada Lovelace");
+    // A person who has given no name yet, as someone joining before they name themselves.
+    let someone = Person::new("");
+    let site = Site::start(&ada, "Studio");
+    let mut ada_laptop = ada.device("Ada's laptop");
+    let hers = site.invite(ada.public, Role::Editor);
+    ada_laptop.join(&hers);
+    ada_laptop.wait_holding(&site.workspace);
+    ada_laptop.wait_showing(&site.workspace);
+    says(&ada_laptop, "People");
+    if light() {
+        choose_light(&ada_laptop);
+    }
+    let mut their_laptop = someone.device("A laptop");
+    let invitation = site.invite(someone.public, Role::Editor);
+    snapshot(&ada_laptop, "before-unnamed");
+    their_laptop.begin(Some(&invitation));
+    // The first word of the name every surface gives them: "Someone".
+    appear(&ada_laptop, "Someone is here");
+    assert!(
+        shows(&ada_laptop, "Someone is here"),
+        "the bar says who arrived"
+    );
+    snapshot_changed(&ada_laptop, "arrival-unnamed", "before-unnamed");
+    discard("before-unnamed");
 }

@@ -570,6 +570,14 @@ impl Shell {
         // One of the device's settings is read on this device.
         let device = tilo_app::framework::settings_device();
         for (resource, ty) in tilolang_tilo::platform::platform_roots() {
+            // The workspace's members are the host's to read in its workspace, and it hands them
+            // to its views itself ([`tilolang_tilo::host::Host::reads_in_workspace`]). No service
+            // of this device serves them, so publishing "no service" here would hand the shell an
+            // empty roster — every face on the bar drawn as an icon, every follower's mark gone —
+            // for as long as nothing published the resource again.
+            if resource == tilolang_tilo::platform::WORKSPACE_MEMBERS {
+                continue;
+            }
             let reading = services
                 .read(&tilolang_tilo::platform::on_device(&resource, &device))
                 .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));

@@ -2284,7 +2284,7 @@ d-lmr4ktas = Folgen-Chip
 
 d-xr7n4tqa = Gesicht der gefolgten Person
 
-d-ckxeoehf = Uhr, wessen Ansicht du folgst oder Neuigkeiten
+d-ckxeoehf = Uhr, wessen Ansicht du folgst oder Neuigkeiten daneben
 
 d-hkigcrhq = Teilen-Anzeige
     .w-sharing-1-window = 1 Fenster geteilt

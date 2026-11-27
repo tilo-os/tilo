@@ -1035,18 +1035,35 @@ view following_face(who: device.Person, label: Text, words: Bool) {
     }
 }
 
-/// What stands where the bar's glance value does: whose view this person follows, or the news
-/// about people (who arrived, who waved), or else the time. Everything the bar says about people
-/// in a moment is said here, where nothing a person aims at stands: the clock yields for it, as it
-/// yields to whose view this is, and the faces and every control keep their places.
+/// What stands where the bar's glance value does: whose view this person follows, the news about
+/// people (who arrived, who waved) beside the time, or the time alone. The news stands where
+/// nothing a person aims at does, beside the clock rather than over it: the faces and every
+/// control keep their places, and the time stays in view while the bar says who came. A compact
+/// bar has room for one, and the news takes the time's place there.
 view clock_or_news(compact: Bool) {
     let board = device.people
     if board.following != "" or board.stopped != "" {
         follow_chip(compact)
     } else if board.arrived_seen != "" or not board.arrived.is_empty() {
-        arrival_notice()
+        // The news stands beside the time where the bar has room for both, and takes the time's
+        // place on a compact bar, which has room for one.
+        if compact {
+            arrival_notice()
+        } else {
+            row(gap: .related, align: .center) {
+                clock()
+                arrival_notice()
+            }
+        }
     } else if board.waved != "" {
-        wave_notice()
+        if compact {
+            wave_notice()
+        } else {
+            row(gap: .related, align: .center) {
+                clock()
+                wave_notice()
+            }
+        }
     } else {
         clock()
     }

@@ -26,14 +26,20 @@ use tilo_ui_base::{
 pub(crate) const TINT_FILL: f32 = 0.15;
 pub(crate) const TINT_EDGE: f32 = 0.38;
 
+/// How far past the non-text contrast floor a tinted chip's boundary is carried. A pill's edge is
+/// one hairline, and its rounded ends are drawn through antialiasing that reads lighter than the
+/// colour it is mixed from: the margin keeps the ends reading at the floor, not below it.
+const TINT_EDGE_MARGIN: f64 = 0.3;
+
 /// The edge a tinted chip wears on `ground`: its tone carried far enough from the ground to read
 /// as the pill's own boundary at the non-text contrast floor, deeper than [`TINT_EDGE`] where the
 /// tone at that step is too faint, and the ground's primary ink where even the tone's whole self
 /// does not clear it (a pale tone on a light bar). Tokens only: the steps are mixes of the theme's
 /// own tone and ink.
 fn tinted_edge(theme: &Theme, ground: Color, tint: Color) -> Color {
-    let reads =
-        |edge: Color| tilo_ui_base::a11y::contrast_ratio(edge, ground) >= NON_TEXT_MIN_CONTRAST;
+    let reads = |edge: Color| {
+        tilo_ui_base::a11y::contrast_ratio(edge, ground) >= NON_TEXT_MIN_CONTRAST + TINT_EDGE_MARGIN
+    };
     // The tint at the stock step, then deeper a tenth at a time to its whole self.
     for step in 0..=6_u8 {
         let strength = TINT_EDGE + 0.1 * f32::from(step);
