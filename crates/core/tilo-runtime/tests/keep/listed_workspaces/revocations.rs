@@ -35,6 +35,10 @@ fn hello(device: &TestDevice, revocations: Vec<RevocationEntry>) -> NeighbourMsg
     }
 }
 
+/// `device` enters `workspace` as a device of its owner's does: the host's own action hands it an
+/// invitation of its own, and it signs its own row onto the member list, the host signing nothing
+/// for it. A link it opens then is a member's at once, rather than one carrying its own row that
+/// ends so it dials again.
 async fn enter(server: &Server, device: &TestDevice, workspace: &str) {
     let home = asking(server, device, "").await;
     let _: EnteredWorkspace = host_action(
@@ -44,6 +48,12 @@ async fn enter(server: &Server, device: &TestDevice, workspace: &str) {
         serde_json::json!({ "workspace": workspace }),
     )
     .await;
+    server
+        .workspaces()
+        .expect("the server holds workspaces")
+        .enter(workspace, (&device.cert, &device.sk))
+        .await
+        .expect("the workspace lists the device that entered it");
 }
 
 /// `device` of `person` redeems an editor's invitation to `workspace` that
