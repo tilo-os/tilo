@@ -54,7 +54,7 @@ fn shown_resource(device: &Device, app: &str) -> Option<String> {
     windows["answer"]["windows"]
         .as_array()?
         .iter()
-        .find(|row| row["app_id"] == app)
+        .find(|row| row["app_id"] == app && row["resource"].is_string())
         .and_then(|row| row["resource"].as_str())
         .map(str::to_owned)
 }
