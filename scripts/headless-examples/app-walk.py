@@ -394,13 +394,13 @@ class MachineFiles:
 
         The key stays the session account's, owner-only, as the image provisions it: root reads
         it through its own privilege where it needs to, and no group is given it."""
-        cert = self.state / "identity/device/cert.bin"
+        certs = self.state / "identity/device/certs"
         deadline = time.monotonic() + self.START_WITHIN
-        while not cert.is_file():
+        while not any(certs.glob("*.bin")):
             if self.stopping.is_set():
                 return
             if time.monotonic() >= deadline:
-                raise Failed(f"the session minted no identity at {cert}")
+                raise Failed(f"the session minted no identity at {certs}")
             time.sleep(0.1)
 
     def _launch(self) -> None:

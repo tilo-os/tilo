@@ -9,7 +9,6 @@ use std::os::unix::fs::OpenOptionsExt;
 
 use tilo_files::native::FileStamp;
 use tilo_identity_client::KeyProtection;
-use tilo_user_identity::DeviceCert;
 
 use super::{IdentityProfile, IdentityRegistry, short_fingerprint};
 use crate::provisioning::IdentityStorage;
@@ -94,8 +93,8 @@ impl IdentityRegistry {
     /// launcher-bound record, or one a setup wrote after this registry's last read).
     pub fn certified_identity(&self) -> Option<IdentityProfile> {
         let paths = crate::provisioning::collaboration_identity_paths();
-        let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert).ok()?;
-        self.identity_of(&cert.user_public_key)
+        let person = tilo_device_identity::persist::read_public_key(&paths.user_pubkey).ok()?;
+        self.identity_of(&person)
     }
 
     /// The person `user_public_key` names, with the record that key keeps here: registered in
@@ -525,7 +524,7 @@ pub fn selected_identity_path(workspace: &str) -> io::Result<Option<PathBuf>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_cached()?;
     Ok(registry
-        .for_workspace(workspace, device_cert().as_ref())
+        .for_workspace(workspace, presented_person())
         .map(|profile| profile.record_path))
 }
 
@@ -541,7 +540,7 @@ pub fn selected_actor_id_prompt(workspace: &str) -> io::Result<Option<String>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_prompt()?;
     Ok(registry
-        .for_workspace(workspace, device_cert().as_ref())
+        .for_workspace(workspace, presented_person())
         .map(|profile| profile.person_id()))
 }
 
@@ -550,13 +549,13 @@ pub fn selected_actor_id_prompt(workspace: &str) -> io::Result<Option<String>> {
 pub fn identity_for_workspace(workspace: &str) -> io::Result<Option<IdentityProfile>> {
     let store = IdentityRegistryStore::from_env()?;
     let registry = store.load_reconciled_cached()?;
-    Ok(registry.for_workspace(workspace, device_cert().as_ref()))
+    Ok(registry.for_workspace(workspace, presented_person()))
 }
 
-/// This device's certificate, which names the person it presents.
-fn device_cert() -> Option<DeviceCert> {
+/// The person this device presents: the owner named in its `user-identity/pubkey.bin`.
+fn presented_person() -> Option<[u8; 32]> {
     let paths = crate::provisioning::collaboration_identity_paths();
-    tilo_device_identity::persist::read_device_cert(&paths.device_cert).ok()
+    tilo_device_identity::persist::read_public_key(&paths.user_pubkey).ok()
 }
 
 /// Resolve the identity directory from environment variables.

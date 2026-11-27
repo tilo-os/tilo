@@ -2007,11 +2007,11 @@ fn a_slow_daemon_shows_that_tilo_is_starting_and_the_person_is_taken_up() {
     crate::common::device_in(&mut home);
     let identity_dir =
         tilo_identity::store::account_identity_dir(&home.config().join("tilo/identity"));
-    let person = tilo_device_identity::persist::read_device_cert(
-        &tilo_identity::provisioning::collaboration_identity_paths().device_cert,
-    )
-    .expect("this device's certificate")
-    .user_public_key;
+    let paths = tilo_identity::provisioning::collaboration_identity_paths();
+    let cert = tilo_device_identity::persist::read_owner_cert(&paths)
+        .expect("this device's certificate")
+        .expect("the owner's certificate");
+    let person = cert.user_public_key;
     std::fs::remove_dir_all(&identity_dir).expect("the account's identity is not made yet");
     // The daemon at a profile this test names, answering who the account is longer after it was
     // asked than the ten seconds a session used to give its answer.
@@ -2026,13 +2026,7 @@ fn a_slow_daemon_shows_that_tilo_is_starting_and_the_person_is_taken_up() {
     let listener = std::os::unix::net::UnixListener::bind(&socket).expect("the daemon's socket");
     listener.set_nonblocking(true).expect("a socket looked at");
     let answer = serde_json::json!({
-        "device": hex::encode(
-            tilo_device_identity::persist::read_device_cert(
-                &tilo_identity::provisioning::collaboration_identity_paths().device_cert,
-            )
-            .expect("this device's certificate")
-            .device_public_key,
-        ),
+        "device": hex::encode(cert.device_public_key),
         "person": hex::encode(person),
         "claimed": true,
     })

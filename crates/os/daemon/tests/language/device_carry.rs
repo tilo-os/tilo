@@ -141,7 +141,9 @@ fn the_daemon_carries_a_programs_steps_to_another_device_as_its_own() {
     host::in_own_process(|profile| {
         let running = tilo_runtime::daemon::Running::start(profile).unwrap();
         let paths = tilo_identity::provisioning::collaboration_identity_paths();
-        let this = tilo_device_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        let this = tilo_device_identity::persist::read_owner_cert(&paths)
+            .unwrap()
+            .unwrap();
         let root = tilo_identity::store::load_from_path(
             tilo_runtime::device::services::device_root_record().unwrap(),
         )

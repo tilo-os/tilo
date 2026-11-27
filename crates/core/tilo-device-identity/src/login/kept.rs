@@ -87,7 +87,7 @@ pub fn certified_by(place: &Place, device: &[u8; 32]) -> Vec<[u8; 32]> {
             .filter(|cert| cert.device_public_key == *device)
             .map(|cert| cert.user_public_key)
     };
-    let mut people: Vec<[u8; 32]> = person_of(&place.keys.device_cert).into_iter().collect();
+    let mut people: Vec<[u8; 32]> = Vec::new();
     let filed = place.keys.device_cert_for_user(&[0; 32]);
     let entries = filed
         .parent()
@@ -262,7 +262,7 @@ pub fn ticket_cert(keys: &IdentityPaths, device: &[u8; 32]) -> Option<DeviceCert
 /// own, else the newest of those it holds for its persons. `None` before anything certifies it.
 #[must_use]
 pub fn served_cert(keys: &IdentityPaths) -> Option<DeviceCert> {
-    if let Ok(cert) = read_device_cert(&keys.device_cert) {
+    if let Ok(Some(cert)) = crate::persist::read_owner_cert(keys) {
         return Some(cert);
     }
     let persons = keys.device_cert_for_user(&[0; 32]);
@@ -399,7 +399,7 @@ mod tests {
             issuer: None,
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root_key).unwrap();
-        write_device_cert(&keys.device_cert, &cert).unwrap();
+        write_device_cert(&keys.device_cert_for_user(&cert.user_public_key), &cert).unwrap();
         assert!(
             served_device_key(&keys).is_some(),
             "a device of its own is served by its daemon"

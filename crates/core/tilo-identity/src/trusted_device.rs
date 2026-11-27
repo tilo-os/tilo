@@ -141,13 +141,13 @@ pub fn serving_in(
     identity_dir: &std::path::Path,
     paths: &IdentityPaths,
 ) -> io::Result<(SigningKey, DeviceCert)> {
-    // The device's own certificate names the person this computer presents; without one, the
-    // identity the account selected stands.
-    let certificate = tilo_device_identity::persist::read_device_cert(&paths.device_cert).ok();
+    // The person this computer presents is the owner named in its identity tree; without one,
+    // the identity the account selected stands.
+    let presented = tilo_device_identity::persist::read_public_key(&paths.user_pubkey).ok();
     let store = crate::store::IdentityRegistryStore::at(identity_dir);
     let registry = store.load_reconciled_cached()?;
     let profile = registry
-        .for_workspace("", certificate.as_ref())
+        .for_workspace("", presented)
         .ok_or_else(|| io::Error::other("this device has no identity to sign in with"))?;
     checked_in(&profile, paths, false)
 }

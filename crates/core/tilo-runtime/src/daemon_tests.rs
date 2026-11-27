@@ -1198,7 +1198,8 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
         issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, &ada).unwrap();
-    tilo_device_identity::persist::write_device_cert(&keys.device_cert, &cert).unwrap();
+    tilo_device_identity::persist::write_device_cert(&keys.device_cert_for_user(&person), &cert)
+        .unwrap();
     // Ada's account keeps what its identity store names, and the profile records that account as
     // the one the device was set up from: whose identity the device's own actions start as.
     let profile = home.root().to_owned();
@@ -1556,8 +1557,11 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
         &ada.verifying_key().to_bytes(),
     )
     .unwrap();
-    tilo_device_identity::persist::write_device_cert(&keys.device_cert, &certified(&ada, device))
-        .unwrap();
+    tilo_device_identity::persist::write_device_cert(
+        &keys.device_cert_for_user(&ada.verifying_key().to_bytes()),
+        &certified(&ada, device),
+    )
+    .unwrap();
 
     let answers = crate::device::unclaimed::DeviceOnly::new(
         key,

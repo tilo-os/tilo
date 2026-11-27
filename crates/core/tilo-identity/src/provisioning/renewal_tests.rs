@@ -85,7 +85,9 @@ pub(crate) fn aged_throwaway(
     ensure_throwaway_test_identity(&personal, &paths, FILES).expect("provision");
     let identity =
         crate::store::load_from_path(personal.join(PRIMARY_IDENTITY_FILE)).expect("identity");
-    let first = persist::read_device_cert(&paths.device_cert).expect("certificate");
+    let first =
+        persist::read_device_cert(&paths.device_cert_for_user(&identity.group_public_key()))
+            .expect("certificate");
     let aged = issue_device_certificate_at(
         &identity,
         first.device_public_key,
@@ -94,7 +96,6 @@ pub(crate) fn aged_throwaway(
         tilo_clock::unix_now_ns().saturating_sub(age_ns),
     )
     .expect("aged certificate");
-    persist::write_device_cert(&paths.device_cert, &aged).unwrap();
     persist::write_device_cert(
         &paths.device_cert_for_user(&identity.group_public_key()),
         &aged,
@@ -118,10 +119,8 @@ tilo_test_env::scenario! {
         ensure_collaboration_identity(&personal, &paths, FILES).expect("start");
 
         let now = tilo_clock::unix_now_ns();
-        for path in [
-            paths.device_cert.clone(),
-            paths.device_cert_for_user(&expired.user_public_key),
-        ] {
+        {
+            let path = paths.device_cert_for_user(&expired.user_public_key);
             let renewed = persist::read_device_cert(&path).expect("renewed");
             tilo_user_identity::verify_device_cert_at(&renewed, now).expect("valid now");
             assert_eq!(renewed.device_public_key, expired.device_public_key);
@@ -141,7 +140,10 @@ tilo_test_env::scenario! {
         let (personal, paths, young, _taken) = aged_throwaway(tmp.path(), HOUR);
         ensure_collaboration_identity(&personal, &paths, FILES).expect("start");
         assert_eq!(
-            persist::read_device_cert(&paths.device_cert).unwrap(),
+            persist::read_device_cert(
+                &paths.device_cert_for_user(&young.user_public_key),
+            )
+            .unwrap(),
             young
         );
         assert_eq!(
@@ -169,8 +171,6 @@ tilo_test_env::scenario! {
                 DeviceClass::Throwaway,
                 clock.now_ns(),
             )?;
-            persist::write_device_cert(&paths.device_cert, &renewed)
-                .map_err(|error| io::Error::other(error.to_string()))?;
             persist::write_device_cert(
                 &paths.device_cert_for_user(&identity.group_public_key()),
                 &renewed,
@@ -265,7 +265,11 @@ tilo_test_env::scenario! {
         joined.signature = [0; 64];
         let digest = tilo_user_identity::device_cert_signing_digest(&joined).expect("a digest to sign");
         joined.signature = identity.sign(&digest).expect("the joined certificate");
-        persist::write_device_cert(&paths.device_cert, &joined).expect("the joined certificate");
+        persist::write_device_cert(
+            &paths.device_cert_for_user(&joined.user_public_key),
+            &joined,
+        )
+        .expect("the joined certificate");
         assert_eq!(
             joined_device_renewal_due(&paths, now).map(|held| held.device_public_key),
             Some(joined.device_public_key),
@@ -339,13 +343,11 @@ fn renew_at(
         DeviceClass::Throwaway,
         now,
     )?;
-    for path in [
-        paths.device_cert.clone(),
-        paths.device_cert_for_user(&identity.group_public_key()),
-    ] {
-        persist::write_device_cert(&path, &renewed)
-            .map_err(|error| io::Error::other(error.to_string()))?;
-    }
+    persist::write_device_cert(
+        &paths.device_cert_for_user(&identity.group_public_key()),
+        &renewed,
+    )
+    .map_err(|error| io::Error::other(error.to_string()))?;
     Ok(())
 }
 
@@ -438,7 +440,9 @@ tilo_test_env::scenario! {
             tilo_user_identity::CertificateClockError::in_io(&error).is_some(),
             "the identity is intact and the certificate is refused for the clock alone: {error}"
         );
-        let still = persist::read_device_cert(&paths.device_cert).expect("the certificate");
+        let still = persist::read_owner_cert(&paths)
+            .expect("the certificate")
+            .expect("the device holds its certificate");
         assert_eq!(
             still, expired,
             "a joined device's own session writes no renewal: it has no key to sign one with"

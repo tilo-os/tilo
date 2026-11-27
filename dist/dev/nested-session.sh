@@ -759,7 +759,7 @@ if ((fresh_desktop)); then
 fi
 
 # A state directory the caller filled with a real identity keeps it: the two trees a session reads
-# it from (`TILO_IDENTITY_ROOT`, holding `device/cert.bin`) are the person's. `--reset-identity`
+# it from (`TILO_IDENTITY_ROOT`, holding `device/certs/*.bin`) are the person's. `--reset-identity`
 # discards the development person and their desktop; the device daemon founds a new one below.
 identity_dir=$XDG_CONFIG_HOME/tilo/identity
 if ((reset_identity)); then
@@ -771,7 +771,7 @@ if ((reset_identity)); then
         "$XDG_CONFIG_HOME"/tilo/state.owner.json "$XDG_CONFIG_HOME"/tilo/state.automerge*
     mkdir -p "$TILO_IDENTITY_ROOT"
     mkdir -m 700 "$state/secrets"
-elif [[ -f $TILO_IDENTITY_ROOT/device/cert.bin ]]; then
+elif compgen -G "$TILO_IDENTITY_ROOT/device/certs/*.bin" >/dev/null; then
     say "keeping the identity already in $TILO_IDENTITY_ROOT"
 fi
 
@@ -959,7 +959,7 @@ fi
 # computer's own Home in Files instead of the workspace.
 machine_files=0
 if [[ ${TILO_SESSION_MACHINE_FILES:-} == 1 && -n ${TILO_FS_BLOB_SOCKET:-} \
-      && ! -f $TILO_IDENTITY_ROOT/device/cert.bin ]]; then
+      && -z "$(compgen -G "$TILO_IDENTITY_ROOT/device/certs/*.bin")" ]]; then
     # No person is founded here yet: the session founds them as it starts, and the machine's
     # daemon presents their identity, so it starts only after this session has. Waiting for it
     # here would wait for the session itself: the session is handed the machine's workspace, as

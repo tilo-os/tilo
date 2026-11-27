@@ -2209,7 +2209,7 @@ start_native_tls() {
 start_native_server() {
   local name=${1:-server} lounge=${lounge:-$native/lounge} ticket=()
   stack_person >/dev/null
-  if [[ $name == home && ! -s $state/home/identity/device/cert.bin ]]; then
+  if [[ $name == home ]] && ! compgen -G "$state/home/identity/device/certs/*.bin" >/dev/null; then
     local made
     made=$(take_ticket server) \
       || die "the stack's person has no first server ticket left for their own server: one stack.sh up --fresh makes its person again"

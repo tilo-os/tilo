@@ -408,24 +408,21 @@ impl TestDaemon {
             .set("TILO_IDENTITY_ROOT", &root)
             .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
         let paths = tilo_identity::provisioning::collaboration_identity_paths();
-        std::fs::create_dir_all(
-            paths
-                .device_privkey
-                .parent()
-                .expect("the device key has a directory"),
-        )
-        .expect("the identity directory is made");
-        std::fs::create_dir_all(
-            paths
-                .device_cert
-                .parent()
-                .expect("the device certificate has a directory"),
-        )
-        .expect("the identity directory is made");
+        paths
+            .ensure_directories()
+            .expect("the identity directories are made");
         tilo_device_identity::persist::write_device_key(&paths.device_privkey, &self.key)
             .expect("the device key is written");
-        tilo_device_identity::persist::write_device_cert(&paths.device_cert, &self.cert)
-            .expect("the device certificate is written");
+        tilo_device_identity::persist::write_public_key(
+            &paths.user_pubkey,
+            &self.cert.user_public_key,
+        )
+        .expect("the device's person is written");
+        tilo_device_identity::persist::write_device_cert(
+            &paths.device_cert_for_user(&self.cert.user_public_key),
+            &self.cert,
+        )
+        .expect("the device certificate is written");
         // The one process that writes as the device is this one: a session here reads the key it
         // took, as it reads the key of the daemon that started it.
         let lock = tilo_device_identity::persist::take_device_key(&paths)

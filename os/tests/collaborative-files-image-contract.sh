@@ -128,7 +128,7 @@ require_line /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-compo
 require_text /usr/lib/systemd/system/fs.service "/usr/bin/fs serve --mount-point /var/workspace --cache-dir /var/cache/quick-fs"
 require_text /usr/lib/systemd/system/fs.service "--acl /var/lib/tilo/fs-capabilities.json --member person:local"
 require_line /usr/lib/systemd/system/fs.service "ConditionPathExists=/dev/fuse"
-require_line /usr/lib/systemd/system/fs.service "ConditionPathExists=/var/lib/tilo/device/cert.bin"
+require_line /usr/lib/systemd/system/fs.service "ConditionDirectoryNotEmpty=/var/lib/tilo/device/certs"
 # The daemon unmounts itself on systemd's SIGTERM; an ExecStop= naming
 # fusermount3 fails every stop with 203/EXEC (init_t may not execute it).
 if cat "$root/usr/lib/systemd/system/fs.service" "$root"/usr/lib/systemd/system/fs.service.d/*.conf 2>/dev/null \
@@ -156,7 +156,7 @@ require_line /usr/lib/systemd/system/tilo-store-volume.service "ExecStart=/usr/l
 require_line /usr/lib/systemd/system/tilo-store-volume.service "Before=fs.service"
 require_line /usr/lib/systemd/system/tilo-store-volume.service "RuntimeDirectory=tilo-store"
 require_line /usr/lib/systemd/system/tilo-store-loop.service "ExecStart=/usr/libexec/tilo-store-volume attach"
-require_line /usr/lib/systemd/system/fs-identity.path "PathChanged=/var/lib/tilo/device/cert.bin"
+require_line /usr/lib/systemd/system/fs-identity.path "PathChanged=/var/lib/tilo/device/certs"
 require_line /usr/lib/systemd/system/fs-identity.path "Unit=fs.service"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "Requires=graphical-session-pre.target graphical-session.target"
 require_text /usr/lib/systemd/user/tilo-graphical-session.target "PropagatesStopTo=graphical-session.target graphical-session-pre.target"
@@ -350,10 +350,11 @@ if [ "$mode" = runtime ]; then
     || die "login user is not a member of tilo-identity"
   for identity_file in \
     "$HOME/.config/tilo/identity/primary.json" \
-    /var/lib/tilo/user-identity/pubkey.bin \
-    /var/lib/tilo/device/cert.bin; do
+    /var/lib/tilo/user-identity/pubkey.bin; do
     [ -s "$identity_file" ] || die "identity artifact is absent or empty: $identity_file"
   done
+  compgen -G /var/lib/tilo/device/certs/*.bin >/dev/null \
+    || die "identity artifact is absent: no device certificate in /var/lib/tilo/device/certs"
   # Only the device's daemon reads the private key: the person's account is not
   # given it, and signs through the daemon instead.
   if [ -r /var/lib/tilo/device-private/keypair.bin ] \

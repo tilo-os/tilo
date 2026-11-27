@@ -4,7 +4,7 @@
 Description=Start %i's Tilo node session once it is certified
 
 [Path]
-PathExists=/var/lib/tilo-node/%i/session/device/cert.bin
+PathExistsGlob=/var/lib/tilo-node/%i/session/device/certs/*.bin
 Unit=tilo-node-session@%i.service
 
 [Install]

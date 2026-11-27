@@ -650,14 +650,11 @@ impl DeviceOnly {
     /// The name its person's certificate gives this device, once one names it.
     pub(crate) fn label(&self) -> Option<String> {
         let keys = self.0.place.keys();
-        [
-            keys.device_cert.clone(),
-            keys.device_cert_for_user(&self.person()?),
-        ]
-        .iter()
-        .filter_map(|path| tilo_device_identity::persist::read_device_cert(path).ok())
-        .find(|cert| cert.device_public_key == self.public_key())
-        .map(|cert| cert.device_label)
+        tilo_device_identity::persist::read_owner_cert(keys)
+            .ok()
+            .flatten()
+            .filter(|cert| cert.device_public_key == self.public_key())
+            .map(|cert| cert.device_label)
     }
 
     /// Why an action that needs a person is not answered now.

@@ -111,7 +111,6 @@ impl Fixture {
         };
         sign_device_cert(&mut cert, root).unwrap();
         persist::write_public_key(&paths.user_pubkey, &public(root)).unwrap();
-        persist::write_device_cert(&paths.device_cert, &cert).unwrap();
         persist::write_device_cert(&paths.device_cert_for_user(&public(root)), &cert).unwrap();
         record_machine(&paths, &machine(SOURCE)).unwrap();
         let store = FileStore {
@@ -317,7 +316,6 @@ tilo_test_env::scenario! {
         // No root here: the source's certificate is gone and the new device
         // waits, under its name, to be certified.
         assert!(matches!(result.certification, Certification::Pending(_)));
-        assert!(!fixture.paths.device_cert.exists());
         assert!(!fixture.paths.device_cert_for_user(&public(&root)).exists());
         assert_eq!(pending_label(&fixture.paths).unwrap(), Some(result.label));
         // The person's public key stays: it is still theirs.

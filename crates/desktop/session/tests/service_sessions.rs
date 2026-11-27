@@ -85,8 +85,9 @@ fn fixture() -> Fixture {
     .expect("this computer's identity");
     let device = taken.key().clone();
     drop(taken);
-    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
-        .expect("this device's certificate");
+    let cert = tilo_device_identity::persist::read_owner_cert(&paths)
+        .expect("this device's certificate")
+        .expect("the owner's certificate");
     let keys = Keys {
         root: cert.user_public_key,
         device,

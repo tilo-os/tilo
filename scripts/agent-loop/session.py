@@ -193,7 +193,7 @@ def start(args) -> int:
     # A shell with no identity shows setup, not a workspace, so a session that
     # has none mints the throwaway identity a development login opens its shell
     # with, and is started again onto it.
-    if not (session.root / "identity" / "device" / "cert.bin").exists():
+    if not any((session.root / "identity" / "device" / "certs").glob("*.bin")):
         mint_identity(session, env)
     session_process = start_session(session, env)
     display_file = session.run / "tilo-session" / "wayland-display"

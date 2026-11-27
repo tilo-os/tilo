@@ -73,8 +73,9 @@ fn person() -> Person {
         IdentityStorage::Files,
     )
     .expect("this computer's identity");
-    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
-        .expect("this device's certificate");
+    let cert = tilo_device_identity::persist::read_owner_cert(&paths)
+        .expect("this device's certificate")
+        .expect("the owner's certificate");
     let keys = Keys {
         root: cert.user_public_key,
     };

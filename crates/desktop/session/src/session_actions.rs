@@ -891,8 +891,9 @@ mod tests {
         )
         .expect("this computer's identity");
         let device = taken_key.key().clone();
-        let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
-            .expect("this device's certificate");
+        let cert = tilo_device_identity::persist::read_owner_cert(&paths)
+            .expect("this device's certificate")
+            .expect("the owner's certificate");
         drop(taken_key);
         let owner = tilo_peer_state::owner::open_file(
             &tilo_session_client::engine::owner_path(state).expect("this device's state directory"),

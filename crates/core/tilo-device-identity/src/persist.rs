@@ -9,8 +9,7 @@
 //! ├── device-private/
 //! │   └── keypair.bin     # 32-byte Ed25519 secret seed (per-device, always present)
 //! └── device/
-//!     ├── cert.bin        # legacy/default postcard-encoded `DeviceCert`
-//!     └── certs/          # one certificate per user identity trusted by this device
+//!     └── certs/          # one certificate per person this device is certified by
 //! ```
 //!
 //! All files are raw byte blobs; the on-disk format stays simple so it
@@ -49,7 +48,7 @@ use zeroize::Zeroizing;
 
 use tilo_user_identity::CanonicalError;
 use tilo_user_identity::cert::{
-    DeviceCapabilities, DeviceCert, DeviceCertError, verify_device_cert, verify_device_cert_at,
+    DeviceCert, DeviceCertError, verify_device_cert, verify_device_cert_at,
 };
 
 mod one_writer;
@@ -228,7 +227,7 @@ static DEVICE_KEY_CLAIM_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Canonical layout of identity paths under a chosen root.
 ///
-/// Wraps the four paths so callers can inject a test root
+/// Wraps the paths so callers can inject a test root
 /// (`tempdir`) without having to hand-plumb every path through.
 #[derive(Clone, Debug)]
 pub struct IdentityPaths {
@@ -236,8 +235,9 @@ pub struct IdentityPaths {
     pub user_pubkey: std::path::PathBuf,
     /// `<root>/device-private/keypair.bin`
     pub device_privkey: std::path::PathBuf,
-    /// `<root>/device/cert.bin`
-    pub device_cert: std::path::PathBuf,
+    /// `<root>/device`: the certificate of each person this device is certified by lives under
+    /// its `certs/` directory, one per person.
+    pub device_dir: std::path::PathBuf,
     /// Where the device key itself is kept.
     pub device_key_ownership: DeviceKeyOwnership,
 }
@@ -307,7 +307,7 @@ impl IdentityPaths {
         Self {
             user_pubkey: root.join("user-identity/pubkey.bin"),
             device_privkey: root.join("device-private/keypair.bin"),
-            device_cert: root.join("device/cert.bin"),
+            device_dir: root.join("device"),
             device_key_ownership: DeviceKeyOwnership::File,
         }
     }
@@ -342,10 +342,14 @@ impl IdentityPaths {
             #[cfg(not(windows))]
             fs::create_dir_all(parent)?;
         }
-        if let Some(parent) = self.device_cert.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        fs::create_dir_all(self.certs_dir())?;
         Ok(())
+    }
+
+    /// `<root>/device/certs`: one certificate per person this device is certified by.
+    #[must_use]
+    pub fn certs_dir(&self) -> std::path::PathBuf {
+        self.device_dir.join("certs")
     }
 
     /// Certificate issued to this device by `user_public_key`.
@@ -353,15 +357,91 @@ impl IdentityPaths {
     /// A device has one keypair but may act for different local identities in
     /// different workspaces. Keying certificates by their issuing user root
     /// preserves that one-device invariant without crossing identities.
+    #[must_use]
     pub fn device_cert_for_user(&self, user_public_key: &[u8; 32]) -> std::path::PathBuf {
-        let device_dir = self
-            .device_cert
-            .parent()
-            .unwrap_or_else(|| Path::new("device"));
-        device_dir
-            .join("certs")
+        self.certs_dir()
             .join(format!("{}.bin", hex::encode(user_public_key)))
     }
+
+    /// The certificate this device holds for the person it belongs to, the owner named in
+    /// `user-identity/pubkey.bin`: `<root>/device/certs/<owner>.bin`. `None` when no person is
+    /// claimed here or no certificate of theirs is filed.
+    ///
+    /// A program that needs one certificate for the machine, not one identity's, reads this.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the owner's key or certificate is present but cannot be read.
+    pub fn owner_cert(&self) -> Result<Option<std::path::PathBuf>, PersistError> {
+        if !self.user_pubkey.is_file() {
+            return Ok(None);
+        }
+        let owner = read_public_key(&self.user_pubkey)?;
+        let path = self.device_cert_for_user(&owner);
+        Ok(path.is_file().then_some(path))
+    }
+
+    /// Where a build before one certificate per person kept the owner's certificate,
+    /// `<root>/device/cert.bin`. Nothing reads it: [`settle_device_certificate`] moves it to the
+    /// owner's place and removes it.
+    #[must_use]
+    pub fn system_device_cert(&self) -> std::path::PathBuf {
+        self.device_dir.join("cert.bin")
+    }
+}
+
+/// Read the certificate this device holds for the person it belongs to
+/// ([`IdentityPaths::owner_cert`]).
+///
+/// # Errors
+///
+/// Returns an error when the owner's key or certificate is present but cannot be read.
+pub fn read_owner_cert(paths: &IdentityPaths) -> Result<Option<DeviceCert>, PersistError> {
+    let Some(path) = paths.owner_cert()? else {
+        return Ok(None);
+    };
+    match read_device_cert(&path) {
+        Ok(cert) => Ok(Some(cert)),
+        Err(PersistError::Io(error)) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Settle this device's certificates on the one layout it reads: a certificate the device's owner
+/// holds at the pre-per-person path [`IdentityPaths::system_device_cert`] is moved to
+/// `certs/<owner>.bin`, unless the owner's place already holds one, and the previous file is
+/// removed. Idempotent: a machine already on the one layout is left as it is.
+///
+/// Answers whether it moved or removed anything. Runs where a machine's identity is prepared at
+/// boot, so a device imaged before this layout keeps serving its owner without a second copy.
+///
+/// # Errors
+///
+/// Returns an error when the owner's key cannot be read, or the owner's certificate cannot be
+/// moved or removed.
+pub fn settle_device_certificate(paths: &IdentityPaths) -> Result<bool, PersistError> {
+    let system_cert = paths.system_device_cert();
+    match fs::symlink_metadata(&system_cert) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    }
+    let owner = match read_public_key(&paths.user_pubkey) {
+        Ok(owner) => owner,
+        // No person is claimed here, so there is nothing to settle the certificate beside.
+        Err(PersistError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(false);
+        }
+        Err(error) => return Err(error),
+    };
+    let filed = paths.device_cert_for_user(&owner);
+    if filed.exists() {
+        fs::remove_file(&system_cert)?;
+    } else {
+        create_public_dir(&paths.certs_dir())?;
+        fs::rename(&system_cert, &filed)?;
+    }
+    Ok(true)
 }
 
 /// Failure modes for identity persistence.
@@ -1389,70 +1469,6 @@ pub fn write_device_cert(path: &Path, cert: &DeviceCert) -> Result<(), PersistEr
     Ok(())
 }
 
-/// Certify a new device for a person whose root key stays on the setup machine.
-///
-/// `sign` is the person's existing root capability. It receives the device
-/// certificate digest and returns the signature. This function never receives
-/// or writes the root secret. It writes the person's public key, a freshly
-/// generated device key, and the signed certificate under `paths`, both as the
-/// default and the identity-specific certificate used for authorization. An
-/// existing device key is left untouched.
-///
-/// # Errors
-///
-/// Returns [`PersistError::Io`] when the label is empty or longer than 64
-/// bytes, the device key is already present, or signing or writing fails.
-pub fn provision_joined_device(
-    paths: &IdentityPaths,
-    user_public_key: [u8; 32],
-    sign: impl Fn(&[u8]) -> Result<[u8; 64], String>,
-    label: &str,
-    now_ns: u64,
-) -> Result<DeviceCert, PersistError> {
-    if label.is_empty() || label.len() > 64 {
-        return Err(PersistError::Io(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "device label must be 1 to 64 bytes",
-        )));
-    }
-    if paths.device_privkey.exists() || paths.device_cert.exists() {
-        return Err(PersistError::Io(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "target already has a device identity",
-        )));
-    }
-    paths.ensure_directories()?;
-    let device = SigningKey::generate(&mut UnwrapErr(SysRng));
-    let mut cert = DeviceCert {
-        user_public_key,
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: label.to_string(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: now_ns,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    let signer = tilo_user_identity::sign::CallbackSigner::new(user_public_key, &sign);
-    tilo_user_identity::cert::sign_device_cert(&mut cert, &signer).map_err(|error| {
-        PersistError::Io(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("device certificate was not signed: {error}"),
-        ))
-    })?;
-    verify_device_cert_at(&cert, now_ns)
-        .map_err(|error| refused_verification(&cert, now_ns, &error))?;
-    write_public_key(&paths.user_pubkey, &cert.user_public_key)?;
-    if !publish_device_key_no_clobber(&paths.device_privkey, &device)? {
-        return Err(PersistError::Io(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "target already has a device identity",
-        )));
-    }
-    write_device_cert(&paths.device_cert_for_user(&cert.user_public_key), &cert)?;
-    write_device_cert(&paths.device_cert, &cert)?;
-    Ok(cert)
-}
 /// A certificate that did not verify, as the refusal it is. One refused only because the wall clock
 /// reads outside its validity interval keeps that reading
 /// ([`CertificateClockError`](tilo_user_identity::CertificateClockError)), so a caller can wait for the clock to
@@ -1515,7 +1531,6 @@ pub fn install_device_cert(
     }
     write_public_key(&paths.user_pubkey, &cert.user_public_key)?;
     write_device_cert(&paths.device_cert_for_user(&cert.user_public_key), cert)?;
-    write_device_cert(&paths.device_cert, cert)?;
     Ok(())
 }
 
@@ -1533,9 +1548,9 @@ pub fn install_device_cert(
 /// Returns [`PersistError`] when a present identity file cannot be read, the
 /// device key is not accessible, or the certificate does not match its keys.
 pub fn joined_device_is_enrolled(paths: &IdentityPaths) -> Result<bool, PersistError> {
-    if !(paths.user_pubkey.is_file() && paths.device_cert.is_file()) {
+    let Some(cert_path) = paths.owner_cert()? else {
         return Ok(false);
-    }
+    };
     // The key is where `paths` keeps it: a phone's is in the platform store, never in the file.
     let held = match paths.device_key_ownership {
         DeviceKeyOwnership::File => match fs::metadata(&paths.device_privkey) {
@@ -1563,7 +1578,7 @@ pub fn joined_device_is_enrolled(paths: &IdentityPaths) -> Result<bool, PersistE
     }
     let pubkey = read_public_key(&paths.user_pubkey)?;
     let device = device_public_key(paths)?;
-    let cert = read_device_cert(&paths.device_cert)?;
+    let cert = read_device_cert(&cert_path)?;
     // A primary device can admit further devices. That is an ordinary
     // machine, not one the imager already enrolled, so first-boot
     // provisioning must still run
@@ -1604,7 +1619,10 @@ pub fn joined_device_is_ready(paths: &IdentityPaths, now_ns: u64) -> Result<bool
     if !joined_device_is_enrolled(paths)? {
         return Ok(false);
     }
-    let cert = read_device_cert(&paths.device_cert)?;
+    let Some(cert_path) = paths.owner_cert()? else {
+        return Ok(false);
+    };
+    let cert = read_device_cert(&cert_path)?;
     verify_device_cert_at(&cert, now_ns).map_err(|error| {
         // Refused for the clock's reading alone, the certificate still
         // proves the enrolment: say so in a form callers can tell apart.
@@ -1645,6 +1663,7 @@ mod tests {
     use super::*;
     #[cfg(windows)]
     use tilo_test_env::SpawnUnderEnvLock as _;
+    use tilo_user_identity::DeviceCapabilities;
 
     fn identity_tempdir() -> tempfile::TempDir {
         // macOS exposes /var via a symlink; security fixtures must start
@@ -1932,19 +1951,20 @@ mod tests {
         let dir = identity_tempdir();
         let paths = IdentityPaths::under(dir.path());
         paths.ensure_directories().unwrap();
+        let cert_path = paths.certs_dir().join("layout-one.bin");
         let read = std::cell::RefCell::new(None);
         tilo_files::native::migration::assert_golden_bytes(
             DEVICE_CERT.name,
             &kept,
             |bytes| {
-                fs::write(&paths.device_cert, bytes).unwrap();
-                let cert = read_device_cert(&paths.device_cert).unwrap();
+                fs::write(&cert_path, bytes).unwrap();
+                let cert = read_device_cert(&cert_path).unwrap();
                 verify_device_cert(&cert).unwrap();
                 assert_eq!(cert.device_label, "tilo on laptop");
                 assert_eq!(cert.capabilities, DeviceCapabilities::member());
                 assert_eq!(cert.expires_at_ns, None);
                 assert_eq!(
-                    fs::read(&paths.device_cert).unwrap(),
+                    fs::read(&cert_path).unwrap(),
                     bytes,
                     "a current file is read as it is"
                 );
@@ -2058,21 +2078,28 @@ mod tests {
             let root = SigningKey::generate(&mut UnwrapErr(SysRng));
             let dir = identity_tempdir();
             let paths = IdentityPaths::under(dir.path());
-            let cert = provision_joined_device(
-                &paths,
-                root.verifying_key().to_bytes(),
-                |digest| Ok(root.sign(digest).to_bytes()),
-                "orange-pi",
-                1_000,
-            )
-            .unwrap();
+            let (device, _) = load_or_create_device_key(&paths).unwrap();
+            // This process stands in for the device's daemon, which alone answers which key it is.
+            let _taken = take_device_key(&paths).unwrap();
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "orange-pi".into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1_000,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+            install_device_cert(&paths, &cert, 1_000).unwrap();
 
             assert_eq!(cert.user_public_key, root.verifying_key().to_bytes());
             assert_ne!(cert.device_public_key, cert.user_public_key);
             assert!(cert.capabilities.can_own_workspaces);
             assert!(!cert.capabilities.can_admit_devices);
             verify_device_cert_at(&cert, 1_000).unwrap();
-            assert_eq!(read_device_cert(&paths.device_cert).unwrap(), cert);
+            assert_eq!(read_owner_cert(&paths).unwrap(), Some(cert.clone()));
             assert_eq!(
                 read_device_cert(&paths.device_cert_for_user(&cert.user_public_key)).unwrap(),
                 cert
@@ -2083,18 +2110,6 @@ mod tests {
                     .verifying_key()
                     .to_bytes(),
                 cert.device_public_key
-            );
-            assert!(
-                provision_joined_device(
-                    &paths,
-                    root.verifying_key().to_bytes(),
-                    |digest| Ok(root.sign(digest).to_bytes()),
-                    "orange-pi",
-                    2_000,
-                )
-                .unwrap_err()
-                .to_string()
-                .contains("already has a device identity")
             );
         }
 
@@ -2162,7 +2177,6 @@ mod tests {
             let installed = cert(&root, own, node());
             install_device_cert(&paths, &installed, 2_000).unwrap();
             assert!(joined_device_is_ready(&paths, 2_000).unwrap());
-            assert_eq!(read_device_cert(&paths.device_cert).unwrap(), installed);
             assert_eq!(
                 read_device_cert(&paths.device_cert_for_user(&installed.user_public_key)).unwrap(),
                 installed
@@ -2799,8 +2813,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = IdentityPaths::under(dir.path());
         paths.ensure_directories().unwrap();
-        let device_dir = paths.device_cert.parent().unwrap();
+        // The installer leaves the device directory the trust group's, and tmpfiles gives the
+        // certificate directory beside it the same group and setgid bit.
+        let device_dir = &paths.device_dir;
         fs::set_permissions(device_dir, fs::Permissions::from_mode(0o2770)).unwrap();
+        let certs = paths.certs_dir();
+        fs::set_permissions(&certs, fs::Permissions::from_mode(0o2770)).unwrap();
         let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let mut cert = DeviceCert {
             user_public_key: root.verifying_key().to_bytes(),
@@ -2815,11 +2833,78 @@ mod tests {
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
         let cert_path = paths.device_cert_for_user(&cert.user_public_key);
         write_device_cert(&cert_path, &cert).unwrap();
-        let metadata = fs::metadata(cert_path.parent().unwrap()).unwrap();
+        let metadata = fs::metadata(&certs).unwrap();
         assert_eq!(metadata.permissions().mode() & 0o7777, 0o2770);
         assert_eq!(metadata.gid(), fs::metadata(device_dir).unwrap().gid());
         assert_eq!(read_device_cert(&cert_path).unwrap(), cert);
         assert!(!paths.device_privkey.exists());
+    }
+
+    #[test]
+    fn a_previous_system_certificate_settles_beside_its_persons_and_only_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(dir.path());
+        paths.ensure_directories().unwrap();
+        let root = SigningKey::from_bytes(&[9; 32]);
+        let person = root.verifying_key().to_bytes();
+        write_public_key(&paths.user_pubkey, &person).unwrap();
+        let mut cert = DeviceCert {
+            user_public_key: person,
+            device_public_key: [3; 32],
+            device_label: "laptop".into(),
+            capabilities: DeviceCapabilities::member(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+        let system_cert = paths.system_device_cert();
+        write_device_cert(&system_cert, &cert).unwrap();
+
+        assert!(settle_device_certificate(&paths).unwrap());
+        assert!(!system_cert.exists(), "the second copy is gone");
+        let filed = paths.device_cert_for_user(&person);
+        assert_eq!(read_device_cert(&filed).unwrap(), cert);
+
+        assert!(
+            !settle_device_certificate(&paths).unwrap(),
+            "settled already"
+        );
+        assert_eq!(read_device_cert(&filed).unwrap(), cert);
+    }
+
+    #[test]
+    fn a_previous_system_certificate_leaves_a_certificate_already_filed() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = IdentityPaths::under(dir.path());
+        paths.ensure_directories().unwrap();
+        let root = SigningKey::from_bytes(&[9; 32]);
+        let person = root.verifying_key().to_bytes();
+        write_public_key(&paths.user_pubkey, &person).unwrap();
+        let cert = |label: &str, seed: [u8; 32], root: &SigningKey| {
+            let mut cert = DeviceCert {
+                user_public_key: person,
+                device_public_key: seed,
+                device_label: label.into(),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            };
+            tilo_user_identity::sign_device_cert(&mut cert, root).unwrap();
+            cert
+        };
+        let filed_cert = cert("filed", [4; 32], &root);
+        let previous_cert = cert("previous", [5; 32], &root);
+        let filed = paths.device_cert_for_user(&person);
+        write_device_cert(&filed, &filed_cert).unwrap();
+        write_device_cert(&paths.system_device_cert(), &previous_cert).unwrap();
+
+        assert!(settle_device_certificate(&paths).unwrap());
+        assert!(!paths.system_device_cert().exists());
+        assert_eq!(read_device_cert(&filed).unwrap(), filed_cert);
     }
 
     #[cfg(unix)]

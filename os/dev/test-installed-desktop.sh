@@ -172,7 +172,7 @@ sleep 2
 "$vm" test native-atspi-smoke.sh clipboard-keeps tilo-clipboard-sentinel tilosecretprobe42
 "$vm" test native-atspi-smoke.sh oobe-actions
 for attempt in $(seq 1 60); do
-  "$vm" ssh 'test -s "$HOME/.config/tilo/identity/primary.json" && test -s /var/lib/tilo/device/cert.bin' && break
+  "$vm" ssh 'test -s "$HOME/.config/tilo/identity/primary.json" && test -n "$(ls /var/lib/tilo/device/certs/*.bin 2>/dev/null)"' && break
   if [ "$attempt" = 60 ]; then
     "$vm" serial | tail -120
     session_journal

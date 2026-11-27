@@ -96,7 +96,7 @@ impl AccountEntry {
 pub struct MachineIdentity {
     /// A person's identity holds the machine (`user-identity/pubkey.bin`).
     pub person: bool,
-    /// The machine's device key is certified (`device/cert.bin`), which is what starts
+    /// The machine's device key is certified (`device/certs/<person>.bin`), which is what starts
     /// `fs.service`.
     pub certified: bool,
 }

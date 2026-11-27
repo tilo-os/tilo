@@ -137,14 +137,15 @@ fn confined(workspace: tilo_desktop_model::WorkspaceId) {
     let _placing = tilo_identity::provisioning::device_key_taken_as_daemon(&keys).unwrap();
     let record = crate::device::services::device_root_record().unwrap();
     let person = tilo_identity::store::load_from_path(record).unwrap();
-    let held = tilo_device_identity::persist::read_device_cert(&keys.device_cert).unwrap();
+    let held = tilo_device_identity::persist::read_owner_cert(&keys)
+        .unwrap()
+        .unwrap();
     let cert = crate::device::confined::placed_cert(
         &person,
         held.device_public_key,
         tilo_workspace_service::environment::vm_placed_records(workspace).unwrap(),
         "The VM",
     );
-    tilo_device_identity::persist::write_device_cert(&keys.device_cert, &cert).unwrap();
     tilo_device_identity::persist::write_device_cert(
         &keys.device_cert_for_user(&cert.user_public_key),
         &cert,

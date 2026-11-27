@@ -287,7 +287,11 @@ impl Keeping {
             return Ok(());
         };
         let paths = tilo_device_identity::IdentityPaths::under(&self.cfg.identity_root);
-        if paths.device_cert.is_file() {
+        if paths
+            .owner_cert()
+            .map_err(|error| io::Error::other(error.to_string()))?
+            .is_some()
+        {
             return Ok(());
         }
         let token_file = PathBuf::from(token_file);
@@ -446,10 +450,11 @@ fn beside_session(key: &str) -> io::Result<crate::device::keep::web::install::Se
             )
         })?;
     let paths = tilo_device_identity::IdentityPaths::under(&root);
+    let user_key_out = Some(paths.user_pubkey.clone());
     Ok(crate::device::keep::web::install::SessionDevice {
         public_key,
-        cert_out: paths.device_cert,
-        user_key_out: Some(paths.user_pubkey),
+        paths,
+        user_key_out,
     })
 }
 

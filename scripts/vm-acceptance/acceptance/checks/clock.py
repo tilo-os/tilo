@@ -10,7 +10,7 @@ session lists its apps without anyone acting.
 It moves the VM's clock and restarts the session, so it runs after the checks that judge what
 the run opened, and puts the clock and chronyd back however it ends.
 
-fs.service serves the device's own identity (/var/lib/tilo/device/cert.bin) and does not
+fs.service serves the device's own identity (/var/lib/tilo/device/certs) and does not
 start without it (its ConditionPathExists). A tilo-vm account's session keeps a test identity
 of its own under TILO_IDENTITY_ROOT instead, so on such a VM there is no fs to wait: the
 check says so in its numbers and judges the desktop's half alone.
@@ -28,7 +28,7 @@ from ..vm import wait_until
 AREA = "basics"
 YEAR_S = 366 * 24 * 3600
 FS_UNIT = "fs.service"
-DEVICE_CERT = "/var/lib/tilo/device/cert.bin"
+DEVICE_CERTS = "/var/lib/tilo/device/certs"
 # fs is watched for a fixed window while the clock is behind: a restart loop shows as
 # restarts within it.
 FS_WATCH_S = 12
@@ -42,7 +42,7 @@ def _fs(ctx) -> dict:
 
 def _fs_serves_this_device(ctx) -> bool:
     """Whether fs.service has the device identity it serves (see the module's doc)."""
-    return ctx.vm.root_exec(f"test -s {DEVICE_CERT} && echo yes || echo no", timeout=60).split()[-1:] == ["yes"]
+    return ctx.vm.root_exec(f"ls {DEVICE_CERTS}/*.bin >/dev/null 2>&1 && echo yes || echo no", timeout=60).split()[-1:] == ["yes"]
 
 
 def _fs_said(ctx, since: str, text: str) -> bool:
@@ -81,7 +81,7 @@ def clock_behind_the_certificate(ctx, res):
         if not with_fs:
             # The desktop's half still applies and is judged; the fs half is not seen, and
             # the detail says so on a pass as on a failure.
-            why = (f"fs part skipped: no device certificate at {DEVICE_CERT}, so fs.service's "
+            why = (f"fs part skipped: no device certificate at {DEVICE_CERTS}, so fs.service's "
                    "condition never starts it; this account's identity is its own")
             res.metrics["fs"] = why
             res.detail = why

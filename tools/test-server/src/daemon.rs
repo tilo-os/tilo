@@ -119,8 +119,9 @@ impl ServerDaemon {
         let identity = IdentityPaths::under(root.join("identity"));
         let key = tilo_device_identity::persist::read_device_key(&identity.device_privkey)
             .expect("the key the server's login filed");
-        let cert = tilo_device_identity::persist::read_device_cert(&identity.device_cert)
-            .expect("the certificate the server's login filed");
+        let cert = tilo_device_identity::persist::read_owner_cert(&identity)
+            .expect("the certificate the server's login filed")
+            .expect("the person's certificate");
         Self {
             child: Some(child),
             home,

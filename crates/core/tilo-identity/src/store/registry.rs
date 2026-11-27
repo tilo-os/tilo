@@ -8,8 +8,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use tilo_user_identity::DeviceCert;
-
 mod store;
 pub use store::{
     IdentityRegistryStore, identity_for_workspace, selected_actor_id_prompt, selected_identity_path,
@@ -56,18 +54,18 @@ impl IdentityRegistry {
     pub fn for_workspace(
         &self,
         workspace: &str,
-        device: Option<&DeviceCert>,
+        presented: Option<[u8; 32]>,
     ) -> Option<IdentityProfile> {
         self.person_workspace_identity(workspace)
-            .or_else(|| self.person_identity(device))
+            .or_else(|| self.person_identity(presented))
     }
 
-    /// The identity this device presents wherever it goes: the person its own certificate was
-    /// issued by, or, without one, the identity this login marked active.
+    /// The identity this device presents wherever it goes: the person named by
+    /// `user-identity/pubkey.bin`, or, without one, the identity this login marked active.
     #[must_use]
-    pub fn person_identity(&self, device: Option<&DeviceCert>) -> Option<IdentityProfile> {
-        device
-            .and_then(|cert| self.of_root(&cert.user_public_key))
+    pub fn person_identity(&self, presented: Option<[u8; 32]>) -> Option<IdentityProfile> {
+        presented
+            .and_then(|person| self.of_root(&person))
             .or_else(|| {
                 self.default_identity
                     .as_ref()

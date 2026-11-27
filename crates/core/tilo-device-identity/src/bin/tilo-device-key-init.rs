@@ -18,7 +18,7 @@
 
 use tilo_device_identity::persist::{
     DeviceKeyOutcome, IdentityPaths, enforce_device_key_owner_and_mode, holds_device_key,
-    load_or_create_device_key, take_device_key,
+    load_or_create_device_key, settle_device_certificate, take_device_key,
 };
 
 fn main() {
@@ -64,10 +64,16 @@ fn provision(args: &[String]) -> Result<(), String> {
 /// another owner or mode; when the computer has no key yet it is made first.
 fn maintain(paths: &IdentityPaths) -> Result<(), String> {
     if holds_device_key(paths).map_err(|error| error.to_string())? {
-        return enforce_device_key_owner_and_mode(&paths.device_privkey)
-            .map_err(|error| error.to_string());
+        enforce_device_key_owner_and_mode(&paths.device_privkey)
+            .map_err(|error| error.to_string())?;
+    } else {
+        create(paths, "machine")?;
     }
-    create(paths, "machine").map(drop)
+    // A machine imaged before one certificate per person kept the owner's at the old
+    // `device/cert.bin`: keep it beside its person and remove the second copy. Idempotent, so
+    // every boot settles on the one layout every reader expects.
+    settle_device_certificate(paths).map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 /// Make the device key under `paths` when there is none, before the daemon that writes as the
@@ -463,9 +469,10 @@ mod tests {
             paths.device_privkey,
             Path::new("/var/lib/tilo/device-private/keypair.bin")
         );
+        assert_eq!(paths.device_dir, Path::new("/var/lib/tilo/device"));
         assert_eq!(
-            paths.device_cert,
-            Path::new("/var/lib/tilo/device/cert.bin")
+            paths.device_cert_for_user(&[0; 32]).parent().unwrap(),
+            Path::new("/var/lib/tilo/device/certs")
         );
         let unit = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

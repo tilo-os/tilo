@@ -211,12 +211,16 @@ pub fn renewal_due_at(cert: &DeviceCert) -> Option<u64> {
 /// of them expires, or none can be read.
 #[must_use]
 pub fn next_device_certificate_renewal(identity_dir: &Path, paths: &IdentityPaths) -> Option<u64> {
-    let mut certificates = vec![paths.device_cert.clone()];
     // The record's public fields name the person: its root is the daemon's to open.
+    let mut certificates = Vec::new();
     if let Some(record) = crate::store::resolve_active_identity(identity_dir)
         && let Ok(identity) = crate::store::load_metadata_from_path(&record)
     {
         certificates.push(paths.device_cert_for_user(&identity.group_public_key));
+    }
+    if certificates.is_empty() {
+        // No identity resolves here: the device still holds the certificate of its owner.
+        certificates.extend(paths.owner_cert().ok().flatten());
     }
     certificates
         .iter()
@@ -245,7 +249,7 @@ pub fn joined_device_renewal_due(paths: &IdentityPaths, now_ns: u64) -> Option<D
     if !persist::joined_device_is_enrolled(paths).ok()? {
         return None;
     }
-    let held = persist::read_device_cert(&paths.device_cert).ok()?;
+    let held = persist::read_owner_cert(paths).ok()??;
     let due = renewal_due_at(&held)?;
     (now_ns >= due).then_some(held)
 }

@@ -85,8 +85,8 @@ done
 # Missing identity is normal until the compositor OOBE is acknowledged. The
 # boot timer starts existing identities without putting the mount on the login
 # critical path; the change watcher provides activation during first-session OOBE.
-if exactly_once "$fs_unit" 'ConditionPathExists=/var/lib/tilo/device/cert.bin' \
-   && exactly_once "$fs_path" 'PathChanged=/var/lib/tilo/device/cert.bin' \
+if exactly_once "$fs_unit" 'ConditionDirectoryNotEmpty=/var/lib/tilo/device/certs' \
+   && exactly_once "$fs_path" 'PathChanged=/var/lib/tilo/device/certs' \
    && exactly_once "$fs_path" 'Unit=fs.service' \
    && exactly_once "$fs_timer" 'Unit=fs.service'; then
   ok 'QuickFS waits cleanly for identity and starts on certificate creation'
@@ -96,7 +96,7 @@ fi
 
 # A permanently true PathExists path would bypass RestartSec after a real fs
 # crash. Only the service owns crash recovery/backoff.
-if grep -q '^PathExists=/var/lib/tilo/device/cert.bin$' "$fs_path"; then
+if grep -q '^PathExists=/var/lib/tilo/device/certs$' "$fs_path"; then
   bad 'identity path can immediately retrigger every genuine QuickFS failure'
 elif grep -Eq '^RestartSec=([5-9]|[1-9][0-9]+)(s)?$' "$fs_unit"; then
   ok 'genuine QuickFS failures retain a bounded restart backoff'

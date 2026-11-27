@@ -41,8 +41,9 @@ use crate::device::keep::server::ServerError;
 #[derive(Clone, Debug)]
 pub struct SessionDevice {
     pub public_key: [u8; 32],
-    /// Where its certificate is written, in its canonical encoding.
-    pub cert_out: std::path::PathBuf,
+    /// Its identity tree: the certificate its person certified is written under its `certs/`,
+    /// in its canonical encoding, as every device's is.
+    pub paths: IdentityPaths,
     /// Where the person's user key is written beside it, when the session's
     /// identity tree is named: the session then starts as an enrolled device
     /// of that person, not as a new person of its own. Only public halves
@@ -486,7 +487,10 @@ async fn install(
             if let Some(user_key) = &session.user_key_out {
                 write_session_user_key(user_key, &cert.user_public_key)?;
             }
-            tilo_device_identity::persist::write_device_cert(&session.cert_out, &cert)?;
+            tilo_device_identity::persist::write_device_cert(
+                &session.paths.device_cert_for_user(&cert.user_public_key),
+                &cert,
+            )?;
         }
         Ok::<_, tilo_device_identity::persist::PersistError>(())
     })
@@ -621,7 +625,7 @@ mod tests {
             let reply = request(addr, "POST", "/peer/v1/install", &token, &refused).await;
             assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
         }
-        assert!(!paths.device_cert.exists());
+        assert!(paths.owner_cert().unwrap().is_none());
 
         let reply = request(addr, "POST", "/peer/v1/install", &token, [7_u8, 7, 7]).await;
         assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
@@ -650,7 +654,8 @@ mod tests {
                 user_public_key: tilo_device_identity::persist::read_public_key(&paths.user_pubkey)
                     .unwrap(),
                 device_signing_key: device,
-                device_cert: tilo_device_identity::persist::read_device_cert(&paths.device_cert)
+                device_cert: tilo_device_identity::persist::read_owner_cert(&paths)
+                    .unwrap()
                     .unwrap(),
                 revocations: RevocationList::new(),
             },
@@ -705,7 +710,7 @@ mod tests {
         let _taken = tilo_device_identity::persist::take_device_key(&paths).unwrap();
         let own = device.verifying_key().to_bytes();
         let session = SigningKey::from_bytes(&[5; 32]).verifying_key().to_bytes();
-        let cert_out = dir.path().join("session/delivered.cert");
+        let session_paths = IdentityPaths::under(dir.path().join("session"));
         let root = SigningKey::from_bytes(&[7; 32]);
         let listener = InstallListener::bind_with_session(
             &config(dir.path()),
@@ -713,7 +718,7 @@ mod tests {
             TOKEN,
             Some(SessionDevice {
                 public_key: session,
-                cert_out: cert_out.clone(),
+                paths: session_paths.clone(),
                 user_key_out: None,
             }),
         )
@@ -772,7 +777,12 @@ mod tests {
             let reply = request(addr, "POST", "/peer/v1/install", &token, both(refused)).await;
             assert!(reply.starts_with("HTTP/1.1 400"), "{reply}");
         }
-        assert!(!paths.device_cert.exists() && !cert_out.exists());
+        assert!(paths.owner_cert().unwrap().is_none());
+        assert!(
+            !session_paths
+                .device_cert_for_user(&root.verifying_key().to_bytes())
+                .exists()
+        );
 
         let issued = member(&root, session, DeviceCapabilities::member());
         let reply = request(
@@ -786,7 +796,10 @@ mod tests {
         assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
         assert_eq!(listener.installed().await.unwrap().device_public_key, own);
         assert_eq!(
-            tilo_device_identity::persist::read_device_cert(&cert_out).unwrap(),
+            tilo_device_identity::persist::read_device_cert(
+                &session_paths.device_cert_for_user(&issued.user_public_key)
+            )
+            .unwrap(),
             issued
         );
     }

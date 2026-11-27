@@ -7,10 +7,10 @@ ConditionPathExists=/dev/fuse
 ConditionKernelCommandLine=!tilo.install
 
 [Path]
-# Watch for creation/change rather than a permanently true PathExists predicate.
-# Once fs.service starts, daemon failures remain governed by its
+# Watch for a certificate being filed rather than a permanently true PathExists
+# predicate. Once fs.service starts, daemon failures remain governed by its
 # RestartSec backoff instead of being immediately retriggered by this path unit.
-PathChanged=/var/lib/tilo/device/cert.bin
+PathChanged=/var/lib/tilo/device/certs
 Unit=fs.service
 
 [Install]

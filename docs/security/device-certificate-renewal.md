@@ -61,9 +61,8 @@ a join or an enrollment always shows the renewal.
 
 A renewal replaces, never copies:
 
-- the system-facing certificate (`device/cert.bin`), for the identity that
-  owns the device;
-- that identity's own copy under `device/certs/<root>.bin`;
+- the certificate under `device/certs/<root>.bin`, for each identity that
+  certifies the device;
 - the identity's fleet (`fleets/<identity id>.json`), which is where a host
   or a listing reads the certificate a device acts with.
 

@@ -126,7 +126,12 @@ pub fn load_certified_mount_identity(
     device_public_key: [u8; 32],
     now_ns: u64,
 ) -> Result<PeerCredentials, CertifiedIdentityError> {
-    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)?;
+    let cert = tilo_device_identity::persist::read_owner_cert(paths)?.ok_or_else(|| {
+        PersistError::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "this device holds no certificate of its person",
+        ))
+    })?;
     PeerCredentials::certified(cert, device_public_key, now_ns)
 }
 
@@ -148,8 +153,14 @@ pub async fn load_certified_mount_identity_once_valid(
             }
             loaded => return loaded,
         };
-        let valid_from_ns =
-            tilo_device_identity::persist::read_device_cert(&paths.device_cert)?.issued_at_ns;
+        let valid_from_ns = tilo_device_identity::persist::read_owner_cert(paths)?
+            .ok_or_else(|| {
+                PersistError::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "this device holds no certificate of its person",
+                ))
+            })?
+            .issued_at_ns;
         if valid_from_ns <= now_ns {
             // Written anew between the two reads: check it again.
             continue;
@@ -211,6 +222,14 @@ mod tests {
         };
         sign_device_cert(&mut cert, &root).unwrap();
         cert
+    }
+
+    /// File `cert` as the certificate of its person: the person's key and their certificate.
+    fn put_cert(paths: &IdentityPaths, cert: &DeviceCert) {
+        paths.ensure_directories().unwrap();
+        tilo_device_identity::persist::write_public_key(&paths.user_pubkey, &cert.user_public_key)
+            .unwrap();
+        write_device_cert(&paths.device_cert_for_user(&cert.user_public_key), cert).unwrap();
     }
 
     fn certified_error(paths: &IdentityPaths) -> CertifiedIdentityError {
@@ -315,7 +334,7 @@ mod tests {
         let read_at_ns = crate::clock::unix_now_ns();
         let issued_at_ns = read_at_ns + 200_000_000;
         let cert = signed_cert(device_public(), issued_at_ns, None);
-        write_device_cert(&paths.device_cert, &cert).unwrap();
+        put_cert(&paths, &cert);
         assert!(matches!(
             load_certified_mount_identity(&paths, device_public(), read_at_ns),
             Err(CertifiedIdentityError::Certificate(
@@ -331,7 +350,7 @@ mod tests {
 
         let other = ed25519_dalek::SigningKey::from_bytes(&[99; 32]);
         let foreign = signed_cert(other.verifying_key().to_bytes(), 1, None);
-        write_device_cert(&paths.device_cert, &foreign).unwrap();
+        put_cert(&paths, &foreign);
         assert!(matches!(
             load_certified_mount_identity_once_valid(&paths, device_public()).await,
             Err(CertifiedIdentityError::DeviceKeyMismatch)
@@ -348,7 +367,7 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
             let cert = signed_cert(device_public(), NOW_NS - 1, None);
-            write_device_cert(&paths.device_cert, &cert).unwrap();
+            put_cert(&paths, &cert);
 
             let certified = load_certified_mount_identity(&paths, device_public(), NOW_NS).unwrap();
             assert_eq!(certified.device_public_key(), cert.device_public_key);
@@ -369,7 +388,13 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
             paths.ensure_directories().unwrap();
-            std::fs::write(&paths.device_cert, b"not a canonical certificate").unwrap();
+            let person = signed_cert(device_public(), NOW_NS, None).user_public_key;
+            tilo_device_identity::persist::write_public_key(&paths.user_pubkey, &person).unwrap();
+            std::fs::write(
+                paths.device_cert_for_user(&person),
+                b"not a canonical certificate",
+            )
+            .unwrap();
             assert!(matches!(
                 certified_error(&paths),
                 CertifiedIdentityError::CertificateFile(PersistError::Canonical(_))
@@ -380,7 +405,7 @@ mod tests {
             let paths = IdentityPaths::under(tmp.path());
             let mut cert = signed_cert(device_public(), NOW_NS - 1, None);
             cert.device_label.push_str(" (tampered)");
-            write_device_cert(&paths.device_cert, &cert).unwrap();
+            put_cert(&paths, &cert);
             assert!(matches!(
                 certified_error(&paths),
                 CertifiedIdentityError::Certificate(DeviceCertError::BadSignature)
@@ -390,14 +415,14 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let paths = IdentityPaths::under(tmp.path());
             let cert = signed_cert(device_public(), NOW_NS - 100, Some(NOW_NS));
-            write_device_cert(&paths.device_cert, &cert).unwrap();
+            put_cert(&paths, &cert);
             assert!(matches!(
                 certified_error(&paths),
                 CertifiedIdentityError::Certificate(DeviceCertError::Expired)
             ));
 
             let cert = signed_cert(device_public(), NOW_NS + 1, None);
-            write_device_cert(&paths.device_cert, &cert).unwrap();
+            put_cert(&paths, &cert);
             assert!(matches!(
                 certified_error(&paths),
                 CertifiedIdentityError::Certificate(DeviceCertError::NotYetValid)
@@ -408,7 +433,7 @@ mod tests {
             let paths = IdentityPaths::under(tmp.path());
             let other_device = ed25519_dalek::SigningKey::from_bytes(&[99; 32]);
             let cert = signed_cert(other_device.verifying_key().to_bytes(), NOW_NS - 1, None);
-            write_device_cert(&paths.device_cert, &cert).unwrap();
+            put_cert(&paths, &cert);
             assert!(matches!(
                 certified_error(&paths),
                 CertifiedIdentityError::DeviceKeyMismatch
@@ -425,12 +450,15 @@ mod tests {
             let root = tmp.path().join("isolated");
             let paths = IdentityPaths::under(&root);
             let cert = signed_cert(device_public(), NOW_NS - 1, None);
-            write_device_cert(&paths.device_cert, &cert).unwrap();
+            put_cert(&paths, &cert);
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set(IDENTITY_ROOT_ENV, &root);
 
             let selected = identity_paths();
-            assert_eq!(selected.device_cert, paths.device_cert);
+            assert_eq!(
+                selected.owner_cert().unwrap(),
+                paths.owner_cert().unwrap()
+            );
             let certified = load_certified_mount_identity(&selected, device_public(), NOW_NS)
                 .expect("the selected root's certificate");
             assert_eq!(certified.cert(), &cert);
@@ -441,8 +469,8 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.remove(IDENTITY_ROOT_ENV);
             assert_eq!(
-                identity_paths().device_cert,
-                IdentityPaths::default_system().device_cert
+                identity_paths().device_dir,
+                IdentityPaths::default_system().device_dir
             );
         }
     }

@@ -33,8 +33,9 @@ impl IdentityStore for Files {
         // The key this process took as the device's daemon, else the daemon asked to sign.
         let signer =
             crate::trusted_device::device_signer(&self.paths).map_err(|e| e.to_string())?;
-        let cert = tilo_device_identity::persist::read_device_cert(&self.paths.device_cert)
-            .map_err(|e| e.to_string())?;
+        let cert = tilo_device_identity::persist::read_owner_cert(&self.paths)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "this device holds no certificate of its person".to_owned())?;
         if cert.device_public_key != signer.device_public_key() {
             return Err("the collaboration device key and its certificate differ".into());
         }
@@ -49,8 +50,9 @@ impl IdentityStore for Files {
         // The certificate at these paths names this device's key, and the person whose device
         // this is: the registry knows that person, and the host that keeps their devices says
         // which keys they took back.
-        let cert = tilo_device_identity::persist::read_device_cert(&self.paths.device_cert)
-            .map_err(|e| e.to_string())?;
+        let cert = tilo_device_identity::persist::read_owner_cert(&self.paths)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "this device holds no certificate of its person".to_owned())?;
         if cert.device_public_key != device.to_bytes() {
             return Err("native device identity store changed".into());
         }
@@ -74,11 +76,6 @@ impl IdentityStore for Files {
     }
 
     fn directories(&self) -> Vec<PathBuf> {
-        self.paths
-            .device_cert
-            .parent()
-            .map(|device| device.join("certs"))
-            .into_iter()
-            .collect()
+        vec![self.paths.certs_dir()]
     }
 }

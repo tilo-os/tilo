@@ -32,7 +32,7 @@ The identity files are created together by `tilo-session --provision-identity`:
 ~/.config/tilo/identity/primary.json
 /var/lib/tilo/user-identity/pubkey.bin
 /var/lib/tilo/device-private/keypair.bin
-/var/lib/tilo/device/cert.bin
+/var/lib/tilo/device/certs/<person>.bin
 ```
 
 The personal record is the only copy of the root private key; the shared

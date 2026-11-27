@@ -1275,7 +1275,9 @@ impl ServiceWorkspaces {
         tilo_device_identity::persist::DeviceKeyLock,
     ) {
         let key = taken.key().clone();
-        let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        let cert = tilo_device_identity::persist::read_owner_cert(&paths)
+            .unwrap()
+            .unwrap();
         let identity = DeviceIdentity::held(
             cert.clone(),
             key.clone(),

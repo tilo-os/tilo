@@ -1773,9 +1773,7 @@ fn reset_identity(keys: &tilo_device_identity::IdentityPaths) {
     if let Ok(dir) = tilo_identity::store::account_identity_dir_from_env() {
         let _ = std::fs::remove_dir_all(dir);
     }
-    for path in [&keys.user_pubkey, &keys.device_cert] {
-        let _ = std::fs::remove_file(path);
-    }
+    let _ = std::fs::remove_file(&keys.user_pubkey);
     if let Some(certs) = keys.device_cert_for_user(&[0; 32]).parent() {
         let _ = std::fs::remove_dir_all(certs);
     }

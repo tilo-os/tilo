@@ -293,8 +293,9 @@ pub(crate) fn device_actions() -> Option<tilo_device_identity::login::daemon::De
 /// This device's public key, as the certificate its person's root signed names it: the device
 /// key itself stays with the device's daemon.
 fn device_publisher() -> Option<[u8; 32]> {
-    match tilo_device_identity::persist::read_device_cert(&identity_paths().device_cert) {
-        Ok(cert) => Some(cert.device_public_key),
+    match tilo_device_identity::persist::read_owner_cert(&identity_paths()) {
+        Ok(Some(cert)) => Some(cert.device_public_key),
+        Ok(None) => None,
         Err(error) => {
             tracing::debug!(%error, "no device key; tools built here are not trusted by key");
             None

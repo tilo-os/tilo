@@ -696,7 +696,7 @@ impl Apply for SystemdApply {
         let paths = tilo_device_identity::IdentityPaths::default_system();
         crate::apply::MachineIdentity {
             person: paths.user_pubkey.is_file(),
-            certified: paths.device_cert.is_file(),
+            certified: paths.owner_cert().ok().flatten().is_some(),
         }
     }
 

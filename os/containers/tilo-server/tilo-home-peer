@@ -24,7 +24,7 @@ export TILO_SERVER_CONFIG=/etc/tilo/server.toml
 credentials=/run/tilo-server/credentials
 /usr/bin/busybox mkdir -p -m 0700 "$credentials"
 /usr/bin/busybox rm -f "$credentials/tilo.ticket"
-if [ ! -s "$TILO_IDENTITY_ROOT/device/cert.bin" ] \
+if ! ls "$TILO_IDENTITY_ROOT/device/certs/"*.bin >/dev/null 2>&1 \
     || [ ! -s "$XDG_STATE_HOME/tilo/device/login.json" ]; then
     if [ -z "${TILO_TICKET:-}" ]; then
         echo 'no identity on this volume: make a ticket with `tilo device add` and pass it as TILO_TICKET' >&2

@@ -14,12 +14,22 @@ use crate::daemon_fixture::TestDaemon;
 /// started there signs with and the certificate its person's root gave it.
 fn provisioned(root: &Path, daemon: &TestDaemon) {
     let paths = tilo_device_identity::IdentityPaths::under(root);
-    std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
-        .expect("the device's key directory");
+    paths
+        .ensure_directories()
+        .expect("the device's identity directories");
     tilo_device_identity::persist::write_device_key(&paths.device_privkey, &daemon.key())
         .expect("the device's key");
-    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &daemon.certificate())
-        .expect("the device's certificate");
+    let certificate = daemon.certificate();
+    tilo_device_identity::persist::write_public_key(
+        &paths.user_pubkey,
+        &certificate.user_public_key,
+    )
+    .expect("the device's person");
+    tilo_device_identity::persist::write_device_cert(
+        &paths.device_cert_for_user(&certificate.user_public_key),
+        &certificate,
+    )
+    .expect("the device's certificate");
 }
 
 /// The session of the device whose key is `key`, keeping its shell under `state` and its

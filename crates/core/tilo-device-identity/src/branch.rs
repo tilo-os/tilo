@@ -148,7 +148,7 @@ pub fn journal_path(paths: &IdentityPaths) -> PathBuf {
 /// public beside the certificates while it is pending.
 #[must_use]
 pub fn pending_label_path(paths: &IdentityPaths) -> PathBuf {
-    paths.device_cert.with_file_name("branch-label")
+    paths.device_dir.join("branch-label")
 }
 
 /// The name a branched device waits to be certified with, if it waits.
@@ -574,8 +574,9 @@ fn certify(
         .iter()
         .map(|key| key.verifying_key().to_bytes())
         .collect();
-    let held = persist::read_device_cert(&paths.device_cert)
+    let held = persist::read_owner_cert(paths)
         .ok()
+        .flatten()
         .filter(|cert| verify_device_cert_at(cert, now_ns).is_ok());
     let certification = match held {
         Some(cert) if cert.device_public_key == device => Certification::Certified(Box::new(cert)),
@@ -600,13 +601,7 @@ fn remove_stale_certificates(
     let stale = |path: &Path| {
         persist::read_device_cert(path).is_ok_and(|cert| previous.contains(&cert.device_public_key))
     };
-    if stale(&paths.device_cert) {
-        remove_if_present(&paths.device_cert)?;
-    }
-    let certs = paths.device_cert_for_user(&[0; 32]);
-    let Some(directory) = certs.parent() else {
-        return Ok(());
-    };
+    let directory = paths.certs_dir();
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -624,8 +619,9 @@ fn remove_stale_certificates(
 /// The source's name with a suffix of the new key's, so the person tells
 /// the branches apart; renamed like any device later.
 fn branch_label(paths: &IdentityPaths, previous: &SigningKey, next: &SigningKey) -> String {
-    let source = persist::read_device_cert(&paths.device_cert)
+    let source = persist::read_owner_cert(paths)
         .ok()
+        .flatten()
         .filter(|cert| cert.device_public_key == previous.verifying_key().to_bytes())
         .and_then(|cert| device_name(&cert.device_label).map(str::to_owned));
     relabel(source.as_deref().unwrap_or("Branch"), next)

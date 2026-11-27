@@ -715,8 +715,9 @@ pub(crate) mod tests {
             )
             .expect("the certificate filed under the person");
             assert_eq!(filed.device_label, "the kitchen computer");
-            let kept = tilo_device_identity::persist::read_device_cert(&account.paths.device_cert)
-                .expect("this device's certificate");
+            let kept = tilo_device_identity::persist::read_owner_cert(&account.paths)
+                .expect("this device's certificate")
+                .expect("the owner's certificate");
             assert_eq!(kept, filed);
             assert!(
                 !Place::here(account.paths)

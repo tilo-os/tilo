@@ -179,7 +179,7 @@ async fn a_company_node_hosts_and_seals_the_workspace_people_join() {
     let session_paths = IdentityPaths::under(node.path().join("session-identity"));
     let (session, _) = tilo_device_identity::load_or_create_device_key(&session_paths).unwrap();
     let session = session.verifying_key().to_bytes();
-    let session_cert_out = node.path().join("session.cert");
+    let session_cert_out = session_paths.device_cert_for_user(&root.public_key);
     let install = InstallListener::bind_with_session(
         &WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
@@ -194,7 +194,7 @@ async fn a_company_node_hosts_and_seals_the_workspace_people_join() {
         INSTALL_TOKEN,
         Some(SessionDevice {
             public_key: session,
-            cert_out: session_cert_out.clone(),
+            paths: session_paths.clone(),
             user_key_out: None,
         }),
     )
@@ -259,7 +259,7 @@ async fn a_company_node_hosts_and_seals_the_workspace_people_join() {
         ServerIdentity {
             user_public_key: persist::read_public_key(&paths.user_pubkey).unwrap(),
             device_signing_key: persist::read_device_key(&paths.device_privkey).unwrap(),
-            device_cert: persist::read_device_cert(&paths.device_cert).unwrap(),
+            device_cert: persist::read_owner_cert(&paths).unwrap().unwrap(),
             revocations: RevocationList::new(),
         },
     )

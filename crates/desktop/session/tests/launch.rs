@@ -687,8 +687,9 @@ fn this_computer(home: &mut tilo_test_env::TestHome) -> (tempfile::TempDir, Stri
         )
         .expect("this computer's identity"),
     );
-    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
-        .expect("this computer's certificate");
+    let cert = tilo_device_identity::persist::read_owner_cert(&paths)
+        .expect("this computer's certificate")
+        .expect("the owner's certificate");
     (root, hex::encode(cert.user_public_key))
 }
 
@@ -798,8 +799,10 @@ fn probe_session_on(
 fn an_identity_is_here() -> bool {
     std::env::var_os("TILO_IDENTITY_ROOT").is_some_and(|root| {
         tilo_device_identity::IdentityPaths::under(std::path::PathBuf::from(root))
-            .device_cert
-            .exists()
+            .owner_cert()
+            .ok()
+            .flatten()
+            .is_some()
     })
 }
 

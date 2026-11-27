@@ -101,7 +101,6 @@ pub fn held() -> Result<Option<Person>> {
     let user = metadata.group_public_key;
     let paths = paths();
     let cert = read_device_cert(&paths.device_cert_for_user(&user))
-        .or_else(|_| read_device_cert(&paths.device_cert))
         .ok()
         .filter(|cert| cert.user_public_key == user)
         .with_context(|| {

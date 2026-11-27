@@ -121,10 +121,12 @@ run_identity --host-desktop --verify-collaboration-identity \
     }
 primary="$host_home/.config/tilo/identity/primary.json"
 device_key="$host_home/.local/share/tilo/device-private/keypair.bin"
-device_cert="$host_home/.local/share/tilo/device/cert.bin"
+device_certs="$host_home/.local/share/tilo/device/certs"
+device_cert="$(compgen -G "$device_certs/*.bin" | head -n1 || true)"
 test -s "$primary" || fail 'host provisioning omitted the personal identity'
 test -s "$device_key" || fail 'host provisioning omitted the device key'
-test -s "$device_cert" || fail 'host provisioning omitted the device certificate'
+test -n "$device_cert" && test -s "$device_cert" \
+    || fail 'host provisioning omitted the device certificate'
 # The certificate names the device key, so an unchanged certificate is an unchanged key: the key
 # itself is the daemon's alone to read.
 before=$(sha256sum "$primary" "$device_cert")

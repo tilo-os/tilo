@@ -10,6 +10,7 @@ use tilo_test_env::SpawnUnderEnvLock;
 
 use crate::common::publisher;
 use tilo_compositor::OutputConfig;
+use tilo_device_identity::fixture::DeviceDaemon;
 use tilo_device_identity::{IdentityPaths, persist};
 use tilo_identity::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_onboarding_session::identity::IdentityProblem;
@@ -62,7 +63,8 @@ fn the_machines_first_boot_sets_up_and_stops_in_the_new_session() {
 /// certificate, and nothing else on it.
 struct Machine {
     /// The device key this process took while it provisioned the machine, as its daemon takes it:
-    /// let go of before the machine's daemon ([`DeviceDaemon`]) takes it in this process's place.
+    /// let go of before the machine's daemon (the shared `DeviceDaemon` fixture) takes it in this
+    /// process's place.
     taken_key: Option<tilo_device_identity::persist::DeviceKeyLock>,
     // The environment the identity lives in, restored before the directories it names are removed.
     _env: tilo_test_env::ScopedEnv,
@@ -75,88 +77,20 @@ struct Machine {
 }
 
 impl Machine {
+    /// Where this device's certificate of its person is on disk.
+    fn certificate_path(&self) -> PathBuf {
+        let person = persist::read_public_key(&self.paths.user_pubkey).expect("the person's key");
+        self.paths.device_cert_for_user(&person)
+    }
+
     /// This device's certificate as it is on disk.
     fn certificate(&self) -> Vec<u8> {
-        std::fs::read(&self.paths.device_cert).expect("this device's certificate")
+        std::fs::read(self.certificate_path()).expect("this device's certificate")
     }
 
     /// Let go of the device key, so the machine's daemon takes it next.
     fn let_go_of_the_key(&mut self) {
         self.taken_key = None;
-    }
-}
-
-/// The device's daemon of `machine`, as the programs it starts reach it: the one process that
-/// takes the device key answers what the device is at the endpoint every program of the machine
-/// asks ([`tilo_device_identity::persist::device_public_key`]). A machine with an identity
-/// enrolled on it runs one, and a command that only verifies that identity asks it rather than
-/// reading the key, which no program but the daemon may.
-struct DeviceDaemon {
-    /// The key the daemon took, and keeps while it answers.
-    _key: tilo_device_identity::persist::DeviceKeyLock,
-    socket: PathBuf,
-    stopping: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    thread: Option<std::thread::JoinHandle<()>>,
-}
-
-impl DeviceDaemon {
-    /// The daemon of `machine`, answering at the endpoint its programs resolve.
-    fn start(machine: &mut Machine) -> Self {
-        use std::io::{BufRead as _, Write as _};
-        use std::sync::atomic::{AtomicBool, Ordering};
-
-        machine.let_go_of_the_key();
-        let socket =
-            tilo_device_identity::login::daemon::DeviceActions::here(machine.paths.clone())
-                .expect("the machine's daemon endpoint")
-                .native()
-                .to_path_buf();
-        let key =
-            persist::take_device_key(&machine.paths).expect("the daemon takes the device key");
-        let device = hex::encode(key.key().verifying_key().to_bytes());
-        let listener =
-            std::os::unix::net::UnixListener::bind(&socket).expect("the daemon's endpoint");
-        let stopping = std::sync::Arc::new(AtomicBool::new(false));
-        let stopped = std::sync::Arc::clone(&stopping);
-        let thread = std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { return };
-                if stopped.load(Ordering::Relaxed) {
-                    return;
-                }
-                // A caller writes its one call as it connects, and reads the answer it gets.
-                let mut request = String::new();
-                let _ = std::io::BufReader::new(stream.try_clone().expect("a stream of its own"))
-                    .read_line(&mut request);
-                let answer = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "result": {
-                        "content": [{"type": "text", "text": ""}],
-                        "structuredContent": {"status": "ok", "result": {"device": device}},
-                    },
-                });
-                let _ = writeln!(stream, "{answer}");
-            }
-        });
-        Self {
-            _key: key,
-            socket,
-            stopping,
-            thread: Some(thread),
-        }
-    }
-}
-
-impl Drop for DeviceDaemon {
-    fn drop(&mut self) {
-        use std::sync::atomic::Ordering;
-
-        self.stopping.store(true, Ordering::Relaxed);
-        let _ = std::os::unix::net::UnixStream::connect(&self.socket);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
     }
 }
 
@@ -222,7 +156,7 @@ fn certificate_dated_ahead(machine: &Machine, ahead: Duration) -> u64 {
     let issued_at_ns = tilo_clock::unix_now_ns()
         .saturating_add(u64::try_from(ahead.as_nanos()).expect("a wait in nanoseconds"));
     let mut cert =
-        persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate");
+        persist::read_device_cert(&machine.certificate_path()).expect("this device's certificate");
     cert.issued_at_ns = issued_at_ns;
     let person = tilo_identity::store::load_from_path(record()).expect("the person's root key");
     cert.signature = person
@@ -231,7 +165,7 @@ fn certificate_dated_ahead(machine: &Machine, ahead: Duration) -> u64 {
                 .expect("the certificate's signing digest"),
         )
         .expect("the person's signature");
-    persist::write_device_cert(&machine.paths.device_cert, &cert).expect("the certificate");
+    persist::write_device_cert(&machine.certificate_path(), &cert).expect("the certificate");
     issued_at_ns
 }
 
@@ -268,9 +202,9 @@ tilo_test_env::scenario! {
         // A certificate whose signature does not hold: the record and every key are this person's, and
         // the copy of the identity is what is damaged.
         let mut cert =
-            persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate");
+            persist::read_device_cert(&machine.certificate_path()).expect("this device's certificate");
         cert.signature[0] ^= 0xff;
-        persist::write_device_cert(&machine.paths.device_cert, &cert).expect("the damaged certificate");
+        persist::write_device_cert(&machine.certificate_path(), &cert).expect("the damaged certificate");
         let damaged = machine.certificate();
 
         assert_eq!(
@@ -331,7 +265,7 @@ fn the_wait_for_the_clock_shows_until_the_shell_can_open() {
     let identity = startup::identity(true);
     assert!(matches!(identity, Identity::WaitForClock { .. }));
     let before =
-        persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate");
+        persist::read_device_cert(&machine.certificate_path()).expect("this device's certificate");
 
     let setup = startup::before_shell(&identity, false).expect("the wait stands before the shell");
     assert!(matches!(setup, BeforeShell::WaitForClock(_)));
@@ -384,7 +318,7 @@ fn the_wait_for_the_clock_shows_until_the_shell_can_open() {
         "the shell's actions are back"
     );
     assert_eq!(
-        persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate"),
+        persist::read_device_cert(&machine.certificate_path()).expect("this device's certificate"),
         before,
         "waiting for the clock replaced the certificate instead"
     );
@@ -415,7 +349,8 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
     sign_device_cert(&mut cert, &person).expect("the person's signature");
     // The node was enrolled from the factory, never set up here: no root and no key of an identity
     // of its own beside the device key the imager left.
-    for path in [&machine.paths.user_pubkey, &machine.paths.device_cert] {
+    let cert_path = machine.certificate_path();
+    for path in [&machine.paths.user_pubkey, &cert_path] {
         if path.exists() {
             std::fs::remove_file(path).expect("the node holds no identity of its own yet");
         }
@@ -460,7 +395,7 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
         "and it still verifies"
     );
     assert_eq!(
-        persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate"),
+        persist::read_device_cert(&machine.certificate_path()).expect("this device's certificate"),
         cert,
         "taking up the enrollment reissued the certificate instead of keeping it"
     );
@@ -494,7 +429,9 @@ tilo_test_env::scenario! {
         let mut machine = machine();
         // The machine runs its daemon, which holds the device key both commands read the enrolled
         // identity through, as an installed machine's does when the installer runs them.
-        let _daemon = DeviceDaemon::start(&mut machine);
+        machine.let_go_of_the_key();
+        let _daemon =
+            DeviceDaemon::start(&machine.paths).expect("the machine's daemon answers");
         // The host package's installer and its tests start the session this way,
         // so both commands have to answer on the new binary rather than the shell.
         let provisioned = run_session(&mut machine, &["--host-desktop", "--provision-identity"]);

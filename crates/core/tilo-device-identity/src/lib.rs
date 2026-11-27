@@ -43,5 +43,5 @@ pub use clock::{WallClockWait, wait_for_wall_clock};
 pub use persist::{
     DeviceKeyOutcome, IdentityPaths, PersistError, RevocationsError, adopt_device_key,
     append_revocation, install_device_cert, joined_device_is_enrolled, joined_device_is_ready,
-    load_or_create_device_key, provision_joined_device, read_revocations, revocations_path,
+    load_or_create_device_key, read_revocations, revocations_path,
 };

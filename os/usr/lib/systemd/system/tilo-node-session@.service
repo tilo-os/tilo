@@ -7,7 +7,7 @@
 Description=Tilo node session for %i
 Requires=tilo-node-server@%i.service
 After=tilo-node-server@%i.service systemd-user-sessions.service systemd-logind.service
-ConditionPathExists=/var/lib/tilo-node/%i/session/device/cert.bin
+ConditionDirectoryNotEmpty=/var/lib/tilo-node/%i/session/device/certs
 StartLimitIntervalSec=0
 
 [Service]

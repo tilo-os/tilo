@@ -974,8 +974,9 @@ impl Person {
         }
         first.call_until_answered("info", &json!({}));
         first.stop();
-        first.cert = tilo_device_identity::persist::read_device_cert(&first.identity().device_cert)
-            .expect("the certificate the founding filed");
+        first.cert = tilo_device_identity::persist::read_owner_cert(&first.identity())
+            .expect("the certificate the founding filed")
+            .expect("the person's certificate");
         let root = founded_root(home.path());
         assert_eq!(
             root.group_public_key(),
@@ -1027,14 +1028,23 @@ impl Person {
             let digest: [u8; 32] = digest.try_into().map_err(|_| "not a digest")?;
             person_root.sign(&digest).map_err(|error| error.to_string())
         };
-        let mut cert = tilo_device_identity::persist::provision_joined_device(
-            paths,
-            self.public,
-            sign,
-            label,
-            tilo_clock::unix_now_ns(),
-        )
-        .expect("the device is certified under its person's root");
+        let (device, _) = tilo_device_identity::persist::load_or_create_device_key(paths)
+            .expect("this computer's device key");
+        let mut cert = tilo_user_identity::DeviceCert {
+            user_public_key: self.public,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: label.to_owned(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        let digest = tilo_user_identity::device_cert_signing_digest(&cert)
+            .expect("a device certificate digest");
+        cert.signature = sign(&digest).expect("the person's root signs the device");
+        tilo_device_identity::persist::write_public_key(&paths.user_pubkey, &self.public)
+            .expect("this computer's person");
         if let Some(capabilities) = capabilities {
             // What a person lets this device do is theirs to say; the certificate is signed again
             // over what it now says.
@@ -1042,14 +1052,12 @@ impl Person {
             let digest = tilo_user_identity::device_cert_signing_digest(&cert)
                 .expect("a device certificate digest");
             cert.signature = sign(&digest).expect("the person's root signs the device");
-            for path in [
-                paths.device_cert_for_user(&cert.user_public_key),
-                paths.device_cert.clone(),
-            ] {
-                tilo_device_identity::persist::write_device_cert(&path, &cert)
-                    .expect("the device's certificate is written");
-            }
         }
+        tilo_device_identity::persist::write_device_cert(
+            &paths.device_cert_for_user(&cert.user_public_key),
+            &cert,
+        )
+        .expect("the device's certificate is written");
         cert
     }
 
@@ -1430,8 +1438,9 @@ impl Device {
         if issuer_was_off {
             issuer.stop();
         }
-        self.cert = tilo_device_identity::persist::read_device_cert(&self.identity().device_cert)
-            .expect("the certificate the ticket's redemption filed");
+        self.cert = tilo_device_identity::persist::read_owner_cert(&self.identity())
+            .expect("the certificate the ticket's redemption filed")
+            .expect("the person's certificate");
     }
 
     /// The people whose certificates name this device's key, as its daemon says what it is

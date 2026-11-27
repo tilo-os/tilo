@@ -109,8 +109,8 @@ fails_with lounge TILO_WORKSPACES_ADMISSION=closed
 fails_with lounge TILO_WORKSPACES_DEFAULT_ROLE=owner
 
 # A volume that already holds its identity spends no ticket, and needs none.
-mkdir -p "$work/spent/identity/device"
-printf 'cert' > "$work/spent/identity/device/cert.bin"
+mkdir -p "$work/spent/identity/device/certs"
+printf 'cert' > "$work/spent/identity/device/certs/one.bin"
 env -i PATH="$work/bin:/usr/bin:/bin" STUB_ENV="$STUB_ENV" STUB_CONFIG="$STUB_CONFIG" \
   TILO_SERVER_CONFIG="$config_file" TILO_WORKSPACES_STATE="$work/spent" \
   TILO_WORKSPACES_WEB_ENTRY=https://tilo.sh/ \

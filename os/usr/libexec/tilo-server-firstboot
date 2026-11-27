@@ -14,29 +14,57 @@ state_home="${TILO_SERVER_STATE_HOME:-$identity_root/state}"
 login_file="$state_home/tilo/device/login.json"
 # The one secret an empty volume joins with, written by whoever provisioned the machine.
 ticket="${TILO_SERVER_TICKET:-/etc/tilo/ticket}"
-cert="$identity_root/device/cert.bin"
+certs="$identity_root/device/certs"
+system_cert="$identity_root/device/cert.bin"
 decommissioned="${TILO_SERVER_DECOMMISSIONED:-/var/lib/tilo-server/decommissioned}"
 tilo_bin="${TILO_TILO_BIN:-/usr/bin/tilo}"
 
+# Every certificate this device holds for a person must be a regular, root-owned, single-link
+# file of the size a certificate has; one anything else is refused rather than read.
 valid_device_certificate() {
-    local metadata size
-    metadata="$(stat -c '%u:%a:%h:%s' -- "$cert" 2>/dev/null || true)"
-    [[ -f "$cert" && ! -L "$cert" \
-        && "$metadata" =~ ^0:(600|640|644):1:([0-9]+)$ ]] || return 1
-    size="${BASH_REMATCH[2]}"
-    (( size > 0 && size <= 65536 ))
+    local path metadata size found=1
+    for path in "$certs"/*.bin; do
+        [[ -e $path || -L $path ]] || continue
+        metadata="$(stat -c '%u:%a:%h:%s' -- "$path" 2>/dev/null || true)"
+        [[ -f "$path" && ! -L "$path" \
+            && "$metadata" =~ ^0:(600|640|644):1:([0-9]+)$ ]] || return 1
+        size="${BASH_REMATCH[2]}"
+        (( size > 0 && size <= 65536 )) || return 1
+        found=0
+    done
+    return "$found"
+}
+
+# One certificate per person, under certs/. A machine imaged before that kept its owner's at
+# device/cert.bin: keep it beside its person and remove the second copy. Idempotent, so every
+# start settles on the one layout every reader expects.
+settle_certificate() {
+    local owner
+    [[ -e $system_cert || -L $system_cert ]] || return 0
+    owner="$(od -An -v -tx1 -- "$identity_root/user-identity/pubkey.bin" 2>/dev/null | tr -d ' \n')"
+    [[ ${#owner} -eq 64 ]] || return 0
+    install -d -m 2770 "$certs"
+    if [[ ! -e "$certs/$owner.bin" ]]; then
+        mv -- "$system_cert" "$certs/$owner.bin"
+    else
+        rm -f -- "$system_cert"
+    fi
 }
 
 if [[ -e $decommissioned ]]; then
     exit 0
 fi
 
-if [[ -e "$cert" || -L "$cert" ]] && ! valid_device_certificate; then
-    echo "tilo-server-firstboot: refusing unsafe device-certificate inode" >&2
-    exit 1
+settle_certificate
+
+have_cert=0
+if compgen -G "$certs/*.bin" >/dev/null; then
+    have_cert=1
+    valid_device_certificate \
+        || { echo "tilo-server-firstboot: refusing an unsafe device certificate" >&2; exit 1; }
 fi
 
-if valid_device_certificate && [ -s "$login_file" ]; then
+if (( have_cert )) && [ -s "$login_file" ]; then
     exit 0
 fi
 # The name this machine is offered under. `hostnamectl --static` succeeds with

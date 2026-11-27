@@ -522,6 +522,9 @@ tilo-session-test-support = { package = "tilo-session", path = ".", features = [
 # The person's devices as a host holding their record lists them, which the tests' own identities
 # are checked against (`sources::test_trust`).
 tilo-identity = { path = "../../core/tilo-identity", features = ["test-support"] }
+# The device's daemon a test's machine runs: it takes the device key and answers what the device
+# is, at the endpoint the machine's programs resolve.
+tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity", features = ["test-support"] }
 # The displays' tests keep the person's settings in memory, with no session to write them of.
 settings-sections = { path = "../../desktop/settings-sections", features = ["test-support"] }
 # What a session keeps for the next one, held in the test's process as the device's daemon keeps

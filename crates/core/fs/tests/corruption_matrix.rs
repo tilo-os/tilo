@@ -129,6 +129,7 @@ fn a_damaged_device_certificate_is_preserved_and_fails_closed() {
 
     let dir = tempdir().unwrap();
     let paths = IdentityPaths::under(dir.path());
+    paths.ensure_directories().unwrap();
     let root = ed25519_dalek::SigningKey::from_bytes(&[51; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[52; 32]);
     let device_public_key = device.verifying_key().to_bytes();
@@ -143,11 +144,14 @@ fn a_damaged_device_certificate_is_preserved_and_fails_closed() {
         issuer: None,
     };
     sign_device_cert(&mut cert, &root).unwrap();
-    write_device_cert(&paths.device_cert, &cert).unwrap();
+    tilo_device_identity::persist::write_public_key(&paths.user_pubkey, &cert.user_public_key)
+        .unwrap();
+    let cert_path = paths.device_cert_for_user(&cert.user_public_key);
+    write_device_cert(&cert_path, &cert).unwrap();
 
-    let good = stdfs::read(&paths.device_cert).unwrap();
+    let good = stdfs::read(&cert_path).unwrap();
     let damaged = truncated(&good);
-    stdfs::write(&paths.device_cert, &damaged).unwrap();
+    stdfs::write(&cert_path, &damaged).unwrap();
 
     let now = tilo_clock::unix_now_ns();
     assert!(
@@ -155,12 +159,12 @@ fn a_damaged_device_certificate_is_preserved_and_fails_closed() {
         "a present but damaged identity must fail startup"
     );
     assert_eq!(
-        stdfs::read(&paths.device_cert).unwrap(),
+        stdfs::read(&cert_path).unwrap(),
         damaged,
         "identity startup must preserve damaged evidence rather than mint a new identity"
     );
 
-    stdfs::write(&paths.device_cert, good).unwrap();
+    stdfs::write(&cert_path, good).unwrap();
     let restored = tilo_fs::load_certified_mount_identity(&paths, device_public_key, now).unwrap();
     assert_eq!(restored.device_public_key(), device_public_key);
 }

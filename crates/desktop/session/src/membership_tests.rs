@@ -907,8 +907,9 @@ fn this_computer(
 ) {
     let root = tempfile::tempdir().expect("an identity root");
     let paths = tilo_device_identity::IdentityPaths::under(root.path());
-    std::fs::create_dir_all(paths.device_privkey.parent().expect("the key's directory"))
-        .expect("this computer's key directory");
+    paths
+        .ensure_directories()
+        .expect("this computer's identity directories");
     let person = SigningKey::from_bytes(&[0x61; 32]);
     let device = SigningKey::from_bytes(&[0x62; 32]);
     tilo_device_identity::persist::write_device_key(&paths.device_privkey, &device)
@@ -924,8 +925,16 @@ fn this_computer(
         issuer: None,
     };
     tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
-    tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert)
-        .expect("this computer's certificate");
+    tilo_device_identity::persist::write_public_key(
+        &paths.user_pubkey,
+        &person.verifying_key().to_bytes(),
+    )
+    .expect("this computer's person");
+    tilo_device_identity::persist::write_device_cert(
+        &paths.device_cert_for_user(&person.verifying_key().to_bytes()),
+        &cert,
+    )
+    .expect("this computer's certificate");
     env.set("TILO_IDENTITY_ROOT", root.path());
     (root, device, cert)
 }
@@ -1064,8 +1073,9 @@ pub(crate) fn provisioned_identity(
     .expect("this computer is provisioned as a device");
     let key = taken.key().clone();
     drop(taken);
-    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
-        .expect("this computer's certificate");
+    let cert = tilo_device_identity::persist::read_owner_cert(&paths)
+        .expect("this computer's certificate")
+        .expect("the owner's certificate");
     (root, cert, key)
 }
 

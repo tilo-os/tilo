@@ -110,7 +110,7 @@ struct CacheKey {
     workspace: String,
     identity_dir: PathBuf,
     device_key: PathBuf,
-    device_cert: PathBuf,
+    certs_dir: PathBuf,
 }
 
 struct Entry {
@@ -155,7 +155,7 @@ impl Files {
             workspace: workspace.to_owned(),
             identity_dir: self.registry.identity_dir().to_path_buf(),
             device_key: self.paths.device_privkey.clone(),
-            device_cert: self.paths.device_cert.clone(),
+            certs_dir: self.paths.certs_dir(),
         }
     }
 

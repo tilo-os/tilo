@@ -107,8 +107,11 @@ impl Profile {
             issuer: None,
         };
         sign_device_cert(&mut cert, &root_key).expect("sign the device");
-        tilo_device_identity::persist::write_device_cert(&paths.device_cert, &cert)
-            .expect("write the certificate");
+        tilo_device_identity::persist::write_device_cert(
+            &paths.device_cert_for_user(&person),
+            &cert,
+        )
+        .expect("write the certificate");
     }
 
     /// The launch's runtime directory, as the session gives it: this account's own.
@@ -379,7 +382,10 @@ tilo_test_env::scenario! {
             assert_eq!(mode & 0o777, 0o700, "{}", dir.display());
         }
         assert!(
-            profile.path("identity/device/cert.bin").exists(),
+            std::fs::read_dir(profile.path("identity/device/certs"))
+                .unwrap()
+                .next()
+                .is_some(),
             "the launch reads the identity it was given and mints none"
         );
         let defaults = Profile::new();

@@ -114,7 +114,7 @@ account and home, including both identity trees. Real `device`/`vm` accounts do
 not receive this override and cannot be removed this way.
 
 To test what needs the machine's own identity (fs, home servers, anything
-behind `/var/lib/tilo/device/cert.bin`), make one account this VM's person
+behind `/var/lib/tilo/device/certs`), make one account this VM's person
 instead:
 
 ```sh

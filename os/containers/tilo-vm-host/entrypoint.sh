@@ -98,7 +98,7 @@ if [ -d "$profile/identity" ] && [ ! -e "$identity/device-private" ]; then
   cp -a "$profile/identity/." "$identity/" && rm -rf "$profile/identity"
 fi
 certified() {
-  [ -s "$identity/device/cert.bin" ] || ls "$identity/device/certs/"*.bin >/dev/null 2>&1
+  ls "$identity/device/certs/"*.bin >/dev/null 2>&1
 }
 rm -f "$credentials/tilo.ticket"
 if certified; then

@@ -515,7 +515,7 @@ else
 fi
 
 if grep -Fq 'die "setup handoff contains the human root secret"' "$backend" \
-   && grep -Fq 'for public in user-identity/pubkey.bin device/cert.bin' "$backend" \
+   && grep -Fq 'for public in user-identity/pubkey.bin' "$backend" \
    && grep -Fq 'find "$HANDOFF_VAR/lib/tilo/device/certs"' "$backend"; then
   ok "installed handoff refuses the human root secret and keeps the enrolled identity's public files readable"
 else
@@ -655,6 +655,15 @@ if grep -Fq -- '--install-plan) INSTALL_PLAN=1' "$backend" \
   ok "a staged plan installs a server unattended, enrolls it and unlocks its disk"
 else
   bad "a staged plan can install with a person, without one, without enrolling, or with its ticket exposed"
+fi
+
+# A ticket login files the certificate under its person, so the server's first
+# boot waits for one under device/certs/ and never for a system-wide copy.
+if grep -Fq 'certs="$identity_root/device/certs"' "$repo_root/os/usr/libexec/tilo-server-firstboot" \
+   && ! grep -Eq '^cert=' "$repo_root/os/usr/libexec/tilo-server-firstboot"; then
+  ok "the server's first boot waits for the person's certificate under device/certs"
+else
+  bad "the server's first boot still requires the removed system-wide certificate"
 fi
 
 # A staged server installs with nobody at its screen, so its disk recovery key is

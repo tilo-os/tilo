@@ -113,7 +113,7 @@ owner_root=${TILO_WORKSPACES_ROOT_FILE:-}
 if [ -n "$owner_root" ] && [ ! -r "$owner_root" ]; then
   fail "TILO_WORKSPACES_ROOT_FILE names no readable file: $owner_root"
 fi
-if [ ! -s "$state/identity/device/cert.bin" ]; then
+if ! ls "$state/identity/device/certs/"*.bin >/dev/null 2>&1; then
   if [ -n "$owner_root" ]; then
     : # the root the deployment hands makes this device; no ticket joins it
   elif [ -z "${TILO_TICKET:-}" ]; then

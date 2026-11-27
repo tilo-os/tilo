@@ -176,7 +176,8 @@ mod tests {
             issuer: None,
         };
         sign_device_cert(&mut cert, &root_key).expect("sign the device");
-        persist::write_device_cert(&paths.device_cert, &cert).expect("write the certificate");
+        persist::write_device_cert(&paths.device_cert_for_user(&person), &cert)
+            .expect("write the certificate");
     }
 
     /// The device's daemon stand-in at its native endpoint `socket`, answering `info` with the
@@ -295,7 +296,12 @@ mod tests {
             envs[OsStr::new("TILO_IDENTITY_ROOT")],
             Some(home.join("certified").as_os_str())
         );
-        assert!(home.join("certified/device/cert.bin").exists());
+        assert!(
+            std::fs::read_dir(home.join("certified/device/certs"))
+                .unwrap()
+                .next()
+                .is_some()
+        );
         drop(daemon);
     }
 }

@@ -4301,7 +4301,8 @@ fn founding_writes_only_where_the_daemons_system_unit_lets_it() {
         unit_path.display()
     );
 
-    for read_by_the_session in [&keys.user_pubkey, &keys.device_cert] {
+    let owner_cert = keys.owner_cert().unwrap().unwrap();
+    for read_by_the_session in [&keys.user_pubkey, &owner_cert] {
         let mode = std::fs::metadata(read_by_the_session)
             .unwrap_or_else(|error| {
                 panic!("founding leaves {}: {error}", read_by_the_session.display())

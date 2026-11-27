@@ -488,8 +488,9 @@ pub fn answer_sign_in(
     let root = rooted.root;
     let device = tilo_device_identity::persist::taken_device_key(keys)
         .map_err(|error| io::Error::other(error.to_string()))?;
-    let cert = tilo_device_identity::persist::read_device_cert(&keys.device_cert)
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    let cert = tilo_device_identity::persist::read_owner_cert(keys)
+        .map_err(|error| io::Error::other(error.to_string()))?
+        .ok_or_else(|| io::Error::other("this device holds no certificate of its person"))?;
     let signed = block_on_owned(async move {
         let ask = SignInAsk {
             audience: &audience,

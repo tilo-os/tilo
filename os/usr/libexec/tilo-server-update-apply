@@ -27,7 +27,7 @@ FIELD="${TILO_SERVER_UPDATE_FIELD:-/usr/bin/tilo-image-trust}"
 WINDOW="${TILO_SERVER_UPDATE_WINDOW:-/usr/libexec/tilo-server-update-window}"
 HEALTH="${TILO_SERVER_UPDATE_HEALTH:-tilo-boot-health.service}"
 TILO="${TILO_SERVER_UPDATE_CLI:-/usr/bin/tilo}"
-CERT="${TILO_SERVER_UPDATE_CERT:-/var/lib/tilo/device/cert.bin}"
+CERTS="${TILO_SERVER_UPDATE_CERTS:-/var/lib/tilo/device/certs}"
 ROLLBACK="${TILO_SERVER_UPDATE_ROLLBACK:-/usr/libexec/tilo/tilo-rollback}"
 ROLLBACK_COMMON="${TILO_SERVER_UPDATE_ROLLBACK_COMMON:-/usr/libexec/tilo-rollback-common}"
 UPDATES="${TILO_SERVER_UPDATE_UPDATES:-/usr/libexec/tilo-update-channel}"
@@ -41,7 +41,7 @@ status="$("$BOOTC" status --format json 2>/dev/null)" || true
 field() { "$FIELD" bootc-status-field "$1" <<<"$status" 2>/dev/null || true; }
 staged="$(field staged-image)"
 paired=no
-[ -e "$CERT" ] && paired=yes
+compgen -G "$CERTS/*.bin" >/dev/null && paired=yes
 
 # The running generation's verdict. A boot the boot loader counts keeps
 # tilo-boot-health, and only an active unit means the boot was judged good and

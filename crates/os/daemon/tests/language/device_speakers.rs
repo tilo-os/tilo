@@ -33,8 +33,9 @@ const BACK: [u8; 16] = [2; 16];
 /// device's session is signed as.
 fn this_device() -> DeviceCert {
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
-    tilo_device_identity::persist::read_device_cert(&paths.device_cert)
+    tilo_device_identity::persist::read_owner_cert(&paths)
         .expect("this device's daemon holds its certificate")
+        .expect("the owner's certificate")
 }
 
 /// `invoke`, a typed action on the record of the person's devices, run by their daemon as them.

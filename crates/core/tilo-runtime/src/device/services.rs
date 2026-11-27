@@ -904,17 +904,13 @@ pub(crate) fn renew_certificates(uid: u32, device: [u8; 32]) -> Result<u64, Stri
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
     let now = tilo_clock::unix_now_ns();
     let mut due: Vec<(std::path::PathBuf, DeviceCert)> = Vec::new();
-    for path in [paths.device_cert_for_user(&person), paths.device_cert] {
-        let Ok(cert) = persist::read_device_cert(&path) else {
-            continue;
-        };
-        if cert.user_public_key == person
-            && cert.device_public_key == device
-            && tilo_identity::provisioning::renewal_due_at(&cert).is_some_and(|at| at <= now)
-            && !due.iter().any(|(held, _)| *held == path)
-        {
-            due.push((path, cert));
-        }
+    let path = paths.device_cert_for_user(&person);
+    if let Ok(cert) = persist::read_device_cert(&path)
+        && cert.user_public_key == person
+        && cert.device_public_key == device
+        && tilo_identity::provisioning::renewal_due_at(&cert).is_some_and(|at| at <= now)
+    {
+        due.push((path, cert));
     }
     if due.is_empty() {
         return Ok(0);
@@ -3385,12 +3381,7 @@ impl Daemon {
                         &keys.device_cert_for_user(&person),
                     )
                     .ok()
-                    .filter(|cert| cert.user_public_key == person)
-                    .or_else(|| {
-                        tilo_device_identity::persist::read_device_cert(&keys.device_cert)
-                            .ok()
-                            .filter(|cert| cert.user_public_key == person)
-                    });
+                    .filter(|cert| cert.user_public_key == person);
                     let Some(cert) = cert else {
                         tracing::warn!(
                             person = %hex::encode(person),

@@ -30,7 +30,7 @@ set -uo pipefail
 log()  { printf 'tilo-server-health: %s\n' "$*"; }
 warn() { printf 'tilo-server-health: WARNING: %s\n' "$*" >&2; }
 
-CERT="${TILO_SERVER_HEALTH_CERT:-/var/lib/tilo/device/cert.bin}"
+CERTS="${TILO_SERVER_HEALTH_CERTS:-/var/lib/tilo/device/certs}"
 # The command that asks the daemon, as every client finds it: it computes the
 # sockets' directory by the one function the daemon binds by, so nothing here
 # names where they are.
@@ -54,7 +54,7 @@ final_state() {
 
 # Not paired yet: the machine is at its pairing prompt, and reaching
 # multi-user.target is the whole of what it can prove.
-if [ ! -e "$CERT" ]; then
+if ! compgen -G "$CERTS/*.bin" >/dev/null; then
   end=$(( $(date +%s) + DEADLINE ))
   while :; do
     if systemctl is-active --quiet multi-user.target; then

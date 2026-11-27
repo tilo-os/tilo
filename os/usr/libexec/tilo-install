@@ -2048,7 +2048,7 @@ if [ -d /run/tilo-installer/setup-handoff ]; then
   # The copy leaves every new file private. The enrolled person's public key
   # and the device certificates are public; a root-only copy makes the
   # session fall back to the Unix account instead of the enrolled person.
-  for public in user-identity/pubkey.bin device/cert.bin; do
+  for public in user-identity/pubkey.bin; do
     path="$HANDOFF_VAR/lib/tilo/$public"
     if [ -f "$path" ] && [ ! -L "$path" ]; then
       chmod 0644 "$path"

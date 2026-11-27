@@ -102,7 +102,9 @@ fn the_daemon_seals_proves_and_signs_with_the_key_it_alone_takes() {
         assert_eq!(checked(forged).unwrap()["proven"], false);
 
         // The device endorses a system image under the grant its person's root gave it.
-        let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert).unwrap();
+        let cert = tilo_device_identity::persist::read_owner_cert(&paths)
+            .unwrap()
+            .unwrap();
         let now = tilo_clock::unix_now_ns();
         let mut grant = ImageSigningAuthorization {
             user_public_key: cert.user_public_key,

@@ -64,8 +64,9 @@ pub fn this_computer(
     let device = taken.key().clone();
     drop(taken);
     env.set("TILO_IDENTITY_ROOT", root.path());
-    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
-        .expect("this device's certificate");
+    let cert = tilo_device_identity::persist::read_owner_cert(&paths)
+        .expect("this device's certificate")
+        .expect("the owner's certificate");
     (root, device, cert)
 }
 
@@ -119,8 +120,9 @@ pub fn fixture() -> Fixture {
     .expect("this computer's identity");
     let device = taken.key().clone();
     drop(taken);
-    let cert = tilo_device_identity::persist::read_device_cert(&paths.device_cert)
-        .expect("this device's certificate");
+    let cert = tilo_device_identity::persist::read_owner_cert(&paths)
+        .expect("this device's certificate")
+        .expect("the owner's certificate");
     workspace_held_here(&state, WORKSPACE, &cert, &device);
     Fixture {
         device,
