@@ -1200,10 +1200,16 @@ fn an_apps_own_list_window_gets_the_platforms_title_bar_rows_menu_and_swipe() {
         marks(&row(&mut session, "Piranesi")).is_empty(),
         "the book read stands marked, the one unread not"
     );
+    let menu = super::menus::row_menu(&mut session, "Piranesi");
     assert_eq!(
-        super::menus::row_menu(&mut session, "Piranesi"),
-        ["Mark read", "Remove"],
-        "the book's menu carries its own action and the shelf's"
+        menu.get(..2),
+        Some(&["Mark read".to_owned(), "Remove".to_owned()][..]),
+        "the book's menu carries its own action and the shelf's first: {menu:?}"
+    );
+    assert_eq!(
+        menu.len(),
+        4,
+        "the platform's Export… and Copy link close it: {menu:?}"
     );
     assert_eq!(
         swipe(&row(&mut session, "Piranesi")),

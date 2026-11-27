@@ -258,21 +258,30 @@ fn menu_commands(session: &mut Session) -> Vec<String> {
 pub(super) fn row_menu(session: &mut Session, title: &str) -> Vec<String> {
     session.window.show_context_menu(title);
     session.settle();
-    // What the app offers on its row: the system's Export… and Copy link stand on every
-    // resource and run the platform's own actions, so they are not the app's commands.
+    // The menu the app offers on its row: each run of commands under one group opens with the
+    // group's own row, as the person reads it, and the platform's offers close it.
     let row = super::window::row(session, title);
-    row.of_kind("ui.MenuItem")
-        .into_iter()
-        .filter(|item| !runs_a_system_offer(item))
-        .filter_map(|item| item.props.get("label").map(display))
-        .collect()
+    let mut menu = Vec::new();
+    let mut group: Option<String> = None;
+    for item in row.of_kind("ui.MenuItem") {
+        let item_group = item.props.get("group").map(display);
+        if let Some(name) = &item_group
+            && group.as_deref() != Some(name.as_str())
+        {
+            menu.push(name.clone());
+        }
+        group = item_group;
+        if let Some(label) = item.props.get("label").map(display) {
+            menu.push(label);
+        }
+    }
+    menu
 }
 
-/// Whether `item` runs one of the platform's offers on every resource (`$export`, the `$save`
-/// around an app's own export, `$copy_link`) rather than a command of the app's.
-fn runs_a_system_offer(item: &tilo_app_window::UiNode) -> bool {
+/// Whether `item` is one of the platform's offers on every resource (Export…, Copy link): a row
+/// that runs nothing the app publishes, neither an action of its own nor a state of its views.
+pub(super) fn is_the_platforms_offer(item: &tilo_app_window::UiNode) -> bool {
     item.events
         .get("choose")
-        .and_then(|event| event.invokes.as_ref())
-        .is_some_and(|run| matches!(run.action.as_str(), "$export" | "$save" | "$copy_link"))
+        .is_some_and(|event| event.invokes.is_none() && event.toggles.is_none())
 }
