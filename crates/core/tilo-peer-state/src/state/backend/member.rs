@@ -55,6 +55,14 @@ fn current(
         .workspace_doc
         .as_ref()
         .ok_or(MembershipError::RulesMissing)?;
+    // A grant the workspace revoked ends the key it names at once, whatever its certificate
+    // still says: the key is nobody's agent here, so the delegate its certificate would make it
+    // is no one's either, and every reader of its authority reads the same revocations.
+    if removal == Removal::Refuses
+        && super::super::workspace_grants::revoked_key_in(workspace, source)
+    {
+        return Err(MembershipError::Revoked);
+    }
     let policy = workspace.workspace_policy(&peer.workspace);
     let key = key_text(source);
     // Decoded once per document state, not on every lookup.

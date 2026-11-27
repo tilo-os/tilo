@@ -820,6 +820,8 @@ fn agent_key(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
 struct HostWithKeys {
     engine: Engine,
     dispatcher: Arc<TestProvider>,
+    /// The owner's own device key: it writes the workspace's governance, its grants included.
+    owner: SigningKey,
     /// The owner's own device: the person's access, where an agent's key is the agent's.
     owner_device: [u8; 32],
     agent: (SigningKey, DeviceCert),
@@ -869,6 +871,7 @@ async fn host_with_keys() -> HostWithKeys {
     HostWithKeys {
         engine,
         dispatcher,
+        owner: a.0.clone(),
         owner_device,
         agent,
         server,
@@ -962,6 +965,59 @@ async fn a_key_the_workspace_lists_acts_as_its_agent() {
     assert!(
         !agent_access.allows(&settings, write, host.now),
         "the agent's own grants leave its person's settings alone"
+    );
+
+    host.engine.close().await;
+    agent_endpoint.close().await;
+}
+
+/// A key the person approved for an agent and the workspace then revoked the grant of is refused
+/// on its next call: its certificate is as valid as it was, and the workspace's grant no longer
+/// names it, so it is nobody's agent here.
+#[tokio::test(flavor = "multi_thread")]
+async fn revoking_a_keys_grant_refuses_its_next_call() {
+    let host = host_with_keys().await;
+    let agent = host.agent;
+    let (agent_endpoint, agent_service) = asking(&agent.0).await;
+    let remote = agent_service.remote(&agent_endpoint, &host.engine.addr(), WORKSPACE);
+    let caller = Caller::delegated_agent(
+        tilo_member_types::key_agent_id(&agent.1.device_public_key),
+        agent.1.user_public_key,
+        agent.1.device_public_key,
+    );
+    assert_eq!(
+        queried(&remote, &caller).await,
+        Ok(()),
+        "the workspace's grant names the key"
+    );
+    let owner = host.owner.clone();
+    let now = host.now;
+    assert!(
+        host.engine
+            .replica
+            .write(|peer| {
+                peer.governance_mut().author_workspace_grant_revoked(
+                    &collab_types::workspace_grant::WorkspaceGrant::id_of(
+                        &agent.1.device_public_key,
+                    ),
+                    42,
+                    &owner,
+                    now,
+                )
+            })
+            .unwrap(),
+        "the workspace records the revocation"
+    );
+    let refused = queried(&remote, &caller).await.unwrap_err();
+    assert_eq!(
+        refusal(&refused),
+        "the device is revoked",
+        "the key's revoked grant ends its calls"
+    );
+    assert_eq!(
+        host.dispatcher.callers().len(),
+        1,
+        "the revoked key reaches no dispatcher"
     );
 
     host.engine.close().await;
