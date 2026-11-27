@@ -335,9 +335,10 @@ fn describe(composition: &Composition) -> String {
 }
 
 /// The wheel over a long page's content moves it: the harness hands the window the wheel a real
-/// one gets, at the pointer it last saw, and the page under it scrolls.
+/// one gets, at the pointer it last saw, and the page under it scrolls. The next page the sidebar
+/// picks opens at its top, not where the person left the one before it.
 #[test]
-fn the_wheel_over_the_page_scrolls_its_content() {
+fn the_wheel_over_the_page_scrolls_its_content_and_the_next_page_opens_at_its_top() {
     crate::support::installed("gallery");
     let mut app = TestApp::<TlApp>::drive_at("controls", (1280, 800)).expect("the scenario stages");
     let harness = app.harness();
@@ -370,4 +371,18 @@ fn the_wheel_over_the_page_scrolls_its_content() {
         .and_then(|node| node.scroll)
         .expect("the page's scroller")[0];
     assert!(offset > 0.0, "the wheel moves the page's content: {offset}");
+
+    let composition = pick(harness, "Feedback");
+    let next = content_scroller_at(&composition, point).unwrap_or_else(|| {
+        panic!(
+            "the next page's content scrolls under {point:?}:\n  {}",
+            describe(&composition)
+        )
+    });
+    let offset = next.scroll.expect("its offset")[0];
+    assert!(
+        offset.abs() < f64::EPSILON,
+        "the next page opens at its top, not at {offset}:\n  {}",
+        describe(&composition)
+    );
 }

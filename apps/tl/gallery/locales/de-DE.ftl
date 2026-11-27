@@ -948,8 +948,6 @@ d-jxnozq52 = Bedienelemente Notizen
 
 d-fqnths44 = Bedienelemente Hintergrund
 
-d-rbbe5kqg = Entwurf des Backlogs
-
 d-oj2bybhm = Dateien der Daten
 
 d-emr3i6eu = Nachrichten der Daten
@@ -986,8 +984,10 @@ d-haqpp6u6 = Füllen
     .doc = Womit eine neue Galerie beginnt: ein Dokument jeder Gruppe, damit ein Mensch die Komponenten trifft statt ein leeres Fenster.
 
 d-6obnc5qh = Eintrag hinzufügen
-    .doc = Fügt hinzu, was die Zeile des Backlogs sagt, als zu erledigenden Eintrag, und leert die Zeile.
+    .doc = Fügt hinzu, was die Zeile des Backlogs sagt, als zu erledigenden Eintrag.
     .w-write-the-item-first = Schreib zuerst den Eintrag
+
+d-6obnc5qh-text = Text
 
 d-qt2z24yc = Erledigen
     .doc = Markiert einen Eintrag als erledigt.

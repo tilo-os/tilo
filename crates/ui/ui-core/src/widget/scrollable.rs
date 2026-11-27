@@ -263,6 +263,9 @@ pub struct Scrollable {
     placed_scale: Option<f32>,
     /// See [`Scrollable::following_end`].
     follow_end: bool,
+    /// What the content stands for ([`Scrollable::shows`]): the page a sidebar chose, the item a
+    /// list opened.
+    shows: Option<String>,
     /// The offsets along each axis the detents its content offers sit at
     /// ([`Widget::snap_points`]), in content coordinates and ascending: a
     /// board's gutters, a page each. Empty where the content offers none, and
@@ -383,6 +386,7 @@ impl Scrollable {
             shown: tilo_ui_base::scroll_copy::ShownFrames::default(),
             placed_scale: None,
             follow_end: false,
+            shows: None,
             snap_x: Vec::new(),
             snap_y: Vec::new(),
         }
@@ -916,6 +920,30 @@ impl Scrollable {
     /// see it. The latest asked wins; one never placed is never shown.
     pub fn reveal_on_layout(&mut self, id: impl Into<String>) {
         self.reveal_id = Some(id.into());
+    }
+
+    /// Say what the content stands for: the page a sidebar chose, the item a list opened. When
+    /// it stands for something else, the view starts that from its start (the top of a page, the
+    /// end of a transcript that follows its end) and lands there at once, so a page never opens
+    /// where the person left the one before it. The same thing shown again with new content (an
+    /// edit, a sync) keeps the place the person scrolled to.
+    pub fn shows(&mut self, what: Option<String>) {
+        if self.shows == what {
+            return;
+        }
+        let other = self.shows.is_some();
+        self.shows = what;
+        if other {
+            let y = if self.follow_end {
+                self.max_offset_y()
+            } else {
+                0.0
+            };
+            self.glide.stop();
+            self.scroll_to
+                .land(vello::kurbo::Vec2::new(0.0, f64::from(y)));
+            self.move_by(-self.offset_x, y - self.offset_y);
+        }
     }
 
     /// Keep the descendant that names itself `name` ([`Widget::kept_in_view`]) in view: when

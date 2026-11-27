@@ -704,7 +704,8 @@ template view tree<R, T>(
         }
         content: {
             if opened != .none {
-                ui.Scroll {
+                // Another item opens at its top, not where the last one was left.
+                ui.Scroll(shows: if let x = opened { path(x) }) {
                     // The page is the view's: `doc` gives its blocks as one stack at the page's
                     // own rhythm, so a heading keeps its content a step under it and more room
                     // under the block over it.

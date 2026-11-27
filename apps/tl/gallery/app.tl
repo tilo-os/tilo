@@ -50,9 +50,8 @@ type Gallery (title: name) {
     states_wrong: Text = "Ada_99"
     states_share: Float = 0.4
     states_room: Text = "Studio"
-    /// The backlog's items, and the line being written at its foot.
+    /// The backlog's items.
     backlog_items: Collection<Item>
-    backlog_draft: RichText
     /// The release's items, one list per stage.
     release_items: Collection<Item>
     /// The data page's collections: a table's rows, a tree's nodes, a conversation's lines, a
@@ -282,7 +281,9 @@ view gallery(g: Gallery) {
             } else if showing == "places" {
                 places(g, fill)
             } else {
-                ui.Scroll {
+                // The scroller stays as the sidebar picks another page, so it is told which page
+                // it shows: each opens at its top.
+                ui.Scroll(shows: showing) {
                     stack(padding: .group, max: 72rem) {
                         if showing == "basics" {
                             basics(g)
@@ -487,18 +488,18 @@ view type_and_scripts(g: Gallery) {
 /// The backlog's page: its items as rows, each with a menu, a swipe and a hover toolbar,
 /// over the line that adds the next one.
 view backlog_list(g: Gallery) {
+    // The line being written is the person's own, as any composer's is: kept in the window, not
+    // in the gallery everyone shares, so two people typing never overwrite each other, and the
+    // field is called what it says.
+    state draft: RichText = RichText("")
     ui.Docked {
         foot: {
             row(gap: .related) {
-                ui.RichInput(
-                    bind: g.backlog_draft,
-                    placeholder: "Add an item to the backlog",
-                    fill,
-                ) {
-                    on submit: add_item(g)
+                ui.RichInput(bind: draft, placeholder: "Add an item to the backlog", fill) {
+                    on submit: add_item(g, draft).then(set(draft, RichText("")))
                 }
                 ui.Button("Add", icon: .plus, icon_only: true) {
-                    on press: add_item(g)
+                    on press: add_item(g, draft).then(set(draft, RichText("")))
                 }
             }
         }
@@ -572,13 +573,10 @@ view item_row(g: Gallery, x: Item) {
     }
 }
 
-/// Adds what the backlog's line says as an item to do, and clears the line.
-action add_item(g: Gallery) {
-    require not g.backlog_draft.is_empty() "Write the item first"
-    g.backlog_items.insert(
-        Item(title: g.backlog_draft.excerpt, notes: g.backlog_draft, stage: "To do"),
-    )
-    g.backlog_draft = RichText("")
+/// Adds what the backlog's line says as an item to do.
+action add_item(g: Gallery, text: RichText) {
+    require not text.is_empty() "Write the item first"
+    g.backlog_items.insert(Item(title: text.excerpt, notes: text, stage: "To do"))
 }
 
 /// Marks an item done.

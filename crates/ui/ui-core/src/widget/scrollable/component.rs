@@ -32,6 +32,11 @@ pub struct ScrollProps {
     /// move between windows.
     #[component(data)]
     pub keep: Option<String>,
+    /// What the content stands for: the page a sidebar chose, the item a list opened. When it
+    /// stands for another, the region shows the new one from its top, not where the last was
+    /// left; while it stands for the same one, an edit keeps the place the person scrolled to.
+    #[component(data)]
+    pub shows: Option<String>,
     /// What scrolls.
     #[component(part(default))]
     pub content: Option<Element>,
@@ -49,6 +54,7 @@ impl Described for Scrollable {
             label,
             reveals_focus,
             keep,
+            shows,
             content,
         } = props;
         let mut scroll = if both {
@@ -73,6 +79,7 @@ impl Described for Scrollable {
         if let Some(keep) = keep {
             scroll.keep_in_view(keep);
         }
+        scroll.shows(shows);
         match content {
             Some(content) => scroll.with_child(content),
             None => scroll,
@@ -97,6 +104,7 @@ impl Described for Scrollable {
         if let Some(keep) = &props.keep {
             self.keep_in_view(keep.clone());
         }
+        self.shows(props.shows);
         props.follow_end == self.follow_end && same_axis
     }
 

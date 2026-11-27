@@ -7307,6 +7307,14 @@
             "option": "text"
           },
           "data": true
+        },
+        {
+          "name": "shows",
+          "doc": "What the content stands for: the page a sidebar chose, the item a list opened. When it stands for another, the region shows the new one from its top, not where the last was left; while it stands for the same one, an edit keeps the place the person scrolled to.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
         }
       ],
       "parts": [
