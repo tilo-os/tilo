@@ -87,8 +87,12 @@ impl PersonServices {
                 services.forget_push_address_of(user, device);
             }
         }));
-        let carrying = self.clone();
-        tokio::spawn(async move { carrying.carry_vaults_over().await });
+        // A host with its device keys carries the sign-ins it kept before the vault over into it.
+        #[cfg(feature = "device-keys")]
+        {
+            let carrying = self.clone();
+            tokio::spawn(async move { carrying.carry_vaults_over().await });
+        }
     }
 }
 

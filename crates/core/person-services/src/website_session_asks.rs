@@ -182,6 +182,7 @@ mod tests {
 
     use browser_continuity_core::sessions::{Cookie, SameSite, Service};
 
+    #[cfg(feature = "device-keys")]
     use crate::fixtures::{hosting_device, test_host_keyed};
 
     /// The person's selected Slack session, made under `binding`.
@@ -239,6 +240,7 @@ mod tests {
     /// device made: the person's is listed and opened for them alone, and once they forget it
     /// its account is gone from the workspace and it no longer opens. Forgetting it again
     /// answers that it is forgotten; another member's is never theirs to forget.
+    #[cfg(feature = "device-keys")]
     #[tokio::test(flavor = "multi_thread")]
     async fn a_selection_the_workspaces_vault_keeps_is_listed_opened_and_forgotten() {
         let dir = tempfile::tempdir().unwrap();

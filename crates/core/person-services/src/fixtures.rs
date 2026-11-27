@@ -47,6 +47,7 @@ pub(crate) async fn test_host_holding(
 
 /// [`test_host`] on a device that takes part in its workspaces' key groups through its own key
 /// service.
+#[cfg(feature = "device-keys")]
 pub(crate) async fn test_host_keyed(
     state_root: &Path,
     key: &SigningKey,

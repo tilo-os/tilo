@@ -1,16 +1,21 @@
 //! A workspace's vault as the person services reach it: through the accounts that sign in with
 //! its entries, and, once, what a host kept of it before the vault was the workspace's document.
 
-use accounts::vault_items::{VaultChange, VaultItems};
+#[cfg(feature = "device-keys")]
+use accounts::vault_items::VaultChange;
+use accounts::vault_items::VaultItems;
 use tilo_actions::remote::InvokeRequest;
 use tilo_member_types::Acting;
+#[cfg(feature = "device-keys")]
 use tilo_workspace_service::workspaces::vault::OpenVault;
 
 use crate::PersonServices;
+#[cfg(feature = "device-keys")]
 use crate::person_settings::kept_sign_ins::HostSignIns;
 
 /// How many changes one write carries when a host carries its earlier vault over: each write of
 /// a document is bounded in size.
+#[cfg(feature = "device-keys")]
 const CARRIED_PER_WRITE: usize = 16;
 
 /// Where code outside the workspaces' own (a connection's sign-in) reaches a workspace's vault:
@@ -240,6 +245,7 @@ impl PersonServices {
     }
 }
 
+#[cfg(feature = "device-keys")]
 impl PersonServices {
     /// Carry what this host kept of each of its workspaces' vaults before into their vault
     /// documents, once, as it starts ([`Self::carry_over`]): no read of a vault converts
