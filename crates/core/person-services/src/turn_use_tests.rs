@@ -14,7 +14,8 @@
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
-use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, Rule, TreePath};
+use tilo_action_policy::{Answer, Grant, Grantee, Rule, TreePath};
+use tilo_action_types::{ActionKind, KindSet};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionCallError::{
     self, InvalidRequest, NotPermitted, Refused, UnknownAction,

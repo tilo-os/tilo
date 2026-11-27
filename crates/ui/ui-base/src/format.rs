@@ -533,8 +533,8 @@ pub fn day_range_numeric(start: Date, end: Date) -> String {
 /// How long a permission lasts, as every list of them says it: `Once`, `Always`, and for one that
 /// ends at a time, when it ends in the **day fact** style (`Until Tomorrow 5:30 PM`).
 #[must_use]
-pub fn lifetime(lifetime: tilo_action_policy::Lifetime) -> String {
-    let tilo_action_policy::Lifetime::Until(at) = lifetime else {
+pub fn lifetime(lifetime: tilo_action_types::Lifetime) -> String {
+    let tilo_action_types::Lifetime::Until(at) = lifetime else {
         return lifetime_kind(lifetime.key());
     };
     let at = i64::try_from(at)
@@ -551,7 +551,7 @@ pub fn lifetime(lifetime: tilo_action_policy::Lifetime) -> String {
     )
 }
 
-/// What a lifetime is called by its [`tilo_action_policy::Lifetime::key`], as a picker offers it:
+/// What a lifetime is called by its [`tilo_action_types::Lifetime::key`], as a picker offers it:
 /// `Once`, `Until`, `Always`.
 #[must_use]
 pub fn lifetime_kind(key: &str) -> String {

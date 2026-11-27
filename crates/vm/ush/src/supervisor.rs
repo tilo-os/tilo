@@ -483,7 +483,7 @@ pub enum ServeRequest {
     /// took it back: the session hands their answer whenever it changes. Only
     /// a caller outside every app sandbox — the session — may hand it.
     AllowHost {
-        expiry: Option<tilo_action_policy::Lifetime>,
+        expiry: Option<tilo_action_types::Lifetime>,
     },
     CreateEnvironment {
         name: String,
@@ -1144,7 +1144,7 @@ pub fn unbuildable(
 /// the session, which keeps the answer — may hand it.
 fn allow_host(
     caller: &crate::host::Caller,
-    expiry: Option<tilo_action_policy::Lifetime>,
+    expiry: Option<tilo_action_types::Lifetime>,
 ) -> ServeResponse {
     if *caller != crate::host::Caller::Session {
         return ServeResponse::Denied {

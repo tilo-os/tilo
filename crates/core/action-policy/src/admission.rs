@@ -11,7 +11,8 @@
 //! a window checking its own and a page admitting its person's agree on
 //! every answer.
 
-use crate::{ActionKind, Answer};
+use crate::Answer;
+use tilo_action_types::ActionKind;
 
 /// How far an invocation was admitted to reach: the kind of action it is,
 /// and whether it exercises authority over the workspace or others in it.

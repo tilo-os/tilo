@@ -1,11 +1,12 @@
 use tilo_action_policy::ActingPolicy as _;
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Basis, Change, Context, Grant, GrantId, Grantee, Ids, KindSet,
-    Labels, Level, Lifetime, Party, Preset, PresetError, Refusal, Role, Rule, TreePath,
-    WorkspacePolicy, decide, describe, describe_node,
+    Answer, Authority, Basis, Change, Context, Grant, GrantId, Grantee, Ids, Labels, Level, Party,
+    Preset, PresetError, Refusal, Role, Rule, TreePath, WorkspacePolicy, decide, describe,
+    describe_node,
     roles::{self, governance},
     sentences,
 };
+use tilo_action_types::{ActionKind, KindSet, Lifetime};
 use tilo_member_types::Acting;
 
 const NOW: u64 = 1_000_000;
@@ -603,7 +604,7 @@ tilo_test_env::scenario! {
             [
                 Lifetime::Once,
                 Lifetime::Session,
-                Lifetime::Until(NOW + tilo_action_policy::OFFERED_SPAN_MS),
+                Lifetime::Until(NOW + tilo_action_types::OFFERED_SPAN_MS),
                 Lifetime::UntilRevoked,
             ]
         );

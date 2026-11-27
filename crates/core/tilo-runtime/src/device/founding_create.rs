@@ -27,7 +27,8 @@ use std::time::Duration;
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use serde_json::{Value, json};
 use tilo_action_policy::roles::person_workspace_id;
-use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
+use tilo_action_policy::{Answer, Context, TreePath};
+use tilo_action_types::ActionKind;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::asked::AskedFacts;
 use tilo_actions::remote::{

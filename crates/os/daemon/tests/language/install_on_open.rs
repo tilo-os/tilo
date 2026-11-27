@@ -2,7 +2,8 @@
 //! as the person opening it, through the workspace's own `install`, and then opens it.
 
 use serde_json::Value;
-use tilo_action_policy::{ActionKind, Answer, Authority, Context, TreePath, roles};
+use tilo_action_policy::{Answer, Authority, Context, TreePath, roles};
+use tilo_action_types::ActionKind;
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, RemoteActionTarget, workspace_provider,

@@ -12,8 +12,9 @@ use std::sync::Arc;
 
 use fs_protocol::tree::{self, FILES_APP};
 use serde_json::{Map, Value};
-use tilo_action_policy::{ActionKind, Answer, TreePath};
+use tilo_action_policy::{Answer, TreePath};
 use tilo_action_services::device_files as wire;
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::admitted::top_level;
 use tilo_actions::remote::{
     Admits, Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending,

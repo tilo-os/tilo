@@ -369,13 +369,11 @@ pub use widget::ViewPresence;
 pub use {gesture::DragSelect, gesture::Granularity};
 #[cfg(feature = "model")]
 pub use {
-    permissions::Access, permissions::CapDecision, permissions::CapOverride,
+    permissions::Access, permissions::CapDecision, permissions::CapOverride, permissions::Grantee,
     permissions::PermissionContext, permissions::PermissionScope, permissions::ResourceRef,
     permissions::Role, permissions::Scope as CapScope,
 };
-pub use {
-    permissions::Acting, permissions::ActionKind, permissions::Grantee, permissions::MemberId,
-};
+pub use {permissions::Acting, permissions::ActionKind, permissions::MemberId};
 pub use {
     presence::PathSegment, presence::PresenceCtx, presence::PresenceKey, presence::SelectionRange,
     presence::human_label,

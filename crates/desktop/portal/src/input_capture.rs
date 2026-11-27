@@ -668,7 +668,7 @@ impl InputCapture {
             insert(&mut results, "capabilities", Value::U32(requested));
             insert(&mut results, "clipboard_enabled", Value::Bool(clipboard));
             // The access decision is what is remembered; no restore data.
-            if kept != Some(tilo_action_policy::Lifetime::Once) {
+            if kept != Some(tilo_action_types::Lifetime::Once) {
                 insert(&mut results, "persist_mode", Value::U32(0));
             }
             Ok(results)

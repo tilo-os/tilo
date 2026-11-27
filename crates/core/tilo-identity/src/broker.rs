@@ -14,7 +14,8 @@ use tilo_files::native::socket::Stream;
 use collab_types::DocumentMutation;
 use collab_types::{Ed25519PublicKey, SignedOp, document_artifact_id, document_attestation_id};
 use ed25519_dalek::Signer;
-use tilo_action_policy::{ActionKind, Answer};
+use tilo_action_policy::Answer;
+use tilo_action_types::ActionKind;
 use tilo_clock::unix_now;
 use tilo_identity_client::wire::{FRAMING, HANDSHAKE_FRAMING, Request, Response};
 use wire_frame::FrameError;
@@ -790,7 +791,8 @@ mod tests {
             }
         }
     }
-    use tilo_action_policy::{Grant, Grantee, KindSet, Role};
+    use tilo_action_policy::{Grant, Grantee, Role};
+    use tilo_action_types::KindSet;
 
     /// A signature grant naming this device's document-save action.
     fn signing_grant(workspace: &Workspace) -> Grant {

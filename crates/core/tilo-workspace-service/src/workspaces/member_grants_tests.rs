@@ -7,7 +7,8 @@
     reason = "the test reads the server until its shutdown, which consumes it"
 )]
 
-use tilo_action_policy::{Answer, Grantee, KindSet, TreePath};
+use tilo_action_policy::{Answer, Grantee, TreePath};
+use tilo_action_types::KindSet;
 
 use super::OwnWorkspaceOffer;
 use super::fixtures::{hosting_device, test_host};

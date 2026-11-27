@@ -194,7 +194,7 @@ fn racing_joins(lanes: &[Arc<tilo_live::app_call::AppLane>]) -> Vec<serde_json::
     })
 }
 
-/// A join given once ([`tilo_action_policy::Lifetime::Once`]) admits the app's join once: the
+/// A join given once ([`tilo_action_types::Lifetime::Once`]) admits the app's join once: the
 /// device's dispatch spends the grant as it admits the call, so of two joins at the same moment
 /// only one is admitted, and the app's next join is decided afresh and refused.
 #[test]
@@ -227,11 +227,11 @@ fn a_join_given_once_joins_the_call_once() {
         "discord-joins-once",
         tilo_action_policy::Grantee::app(APP),
         tilo_action_policy::TreePath::workspace(&workspace).app(super::PROVIDER),
-        tilo_action_policy::KindSet::ALL,
+        tilo_action_types::KindSet::ALL,
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(person),
     )
-    .with_lifetime(tilo_action_policy::Lifetime::Once);
+    .with_lifetime(tilo_action_types::Lifetime::Once);
     tilo_rt::app()
         .block_on(live.workspaces().copies().commit_own_change(
             &workspace,
@@ -354,7 +354,7 @@ fn an_app_with_no_grant_asks_its_person_once_to_join_calls() {
     // Approve lets one join through; the next is asked again.
     the_persons_answer(&workspaces, &store, &person, &workspace, Offer::Approve);
     let once = the_apps_grant(&workspaces, &workspace).expect("the approve is the app's grant");
-    assert_eq!(once.lifetime, tilo_action_policy::Lifetime::Once);
+    assert_eq!(once.lifetime, tilo_action_types::Lifetime::Once);
     let joined = a_join(&daemon, &at, 3);
     assert_eq!(joined, serde_json::json!({ "Ok": null }), "{joined}");
     assert_eq!(in_call(), Some(CALL.to_owned()));
@@ -394,7 +394,7 @@ fn an_app_with_no_grant_asks_its_person_once_to_join_calls() {
     );
     let granted = the_apps_grant(&workspaces, &workspace).expect("the grant names the app");
     assert_eq!(granted.id, once.id, "the same grant, given for good");
-    assert_ne!(granted.lifetime, tilo_action_policy::Lifetime::Once);
+    assert_ne!(granted.lifetime, tilo_action_types::Lifetime::Once);
 
     // Approve and grant lets every join through, unasked.
     until("the granted join", || {
@@ -642,7 +642,7 @@ fn grant_the_app(live: &crate::device::live_relay::Live, workspace: &str, id: &s
         id,
         tilo_action_policy::Grantee::app(APP),
         tilo_action_policy::TreePath::workspace(workspace).app(super::PROVIDER),
-        tilo_action_policy::KindSet::ALL,
+        tilo_action_types::KindSet::ALL,
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(person),
     );

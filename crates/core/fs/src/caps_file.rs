@@ -355,14 +355,14 @@ mod tests {
 
                 write_caps(
                     &path,
-                    &[read_grant("/w/docs").lasting(tilo_action_policy::Lifetime::Until((now + 3600) * 1000))],
+                    &[read_grant("/w/docs").lasting(tilo_action_types::Lifetime::Until((now + 3600) * 1000))],
                 );
                 let live = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
                 assert!(live.handle().permits(&ALICE, "/w/docs/a.md", Access::Read));
 
                 write_caps(
                     &path,
-                    &[read_grant("/w/docs").lasting(tilo_action_policy::Lifetime::Until((now - 1) * 1000))],
+                    &[read_grant("/w/docs").lasting(tilo_action_types::Lifetime::Until((now - 1) * 1000))],
                 );
                 let lapsed = CapabilityFile::load(&path, ALICE, Vec::new()).expect("loads");
                 assert!(

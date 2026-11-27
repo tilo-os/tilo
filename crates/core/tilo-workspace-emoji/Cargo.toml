@@ -21,6 +21,7 @@ tilo-app-id = { version = "0.1.0", path = "../../core/tilo-app-id" }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-action-types.workspace = true
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 

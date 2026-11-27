@@ -520,9 +520,8 @@ tilo_test_env::scenario! {
     // Where nothing can revoke it, it is never relied on at all.
     {
         use std::sync::{Arc, Mutex};
-        use tilo_app::permissions::policy::{
-            Answer, Grant, GrantId, Grantee, KindSet, Lifetime, TreePath,
-        };
+        use tilo_action_types::{KindSet, Lifetime};
+        use tilo_app::permissions::policy::{Answer, Grant, GrantId, Grantee, TreePath};
         let mut app = TestApp::<ChecklistApp>::new().unwrap();
         app.set_role(tilo_app::permissions::Role::Viewer);
         let viewer = app.permissions();

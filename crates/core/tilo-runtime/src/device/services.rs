@@ -2046,7 +2046,7 @@ impl Daemon {
             tilo_workspace_records::accounts::sign_in_grant_id(app, workspace),
             tilo_action_policy::Grantee::app(app),
             tilo_workspace_records::accounts::sign_ins_node(workspace),
-            tilo_action_policy::KindSet::READ,
+            tilo_action_types::KindSet::READ,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(self.person_id()),
         )])

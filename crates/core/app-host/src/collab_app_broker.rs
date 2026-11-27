@@ -165,7 +165,8 @@ use collab_types::presence::PresenceKey;
 use collab_types::presence::PresencePayload;
 use runtime_collab::event::CollabEvent;
 use runtime_collab::wire::ContextUpdate;
-use tilo_action_policy::{ActionKind, Answer, TreePath, roles};
+use tilo_action_policy::{Answer, TreePath, roles};
+use tilo_action_types::ActionKind;
 #[cfg(test)]
 use tilo_desktop_model::Layout;
 

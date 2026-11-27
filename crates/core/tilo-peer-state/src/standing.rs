@@ -632,7 +632,7 @@ mod tests {
                 "refused",
                 tilo_action_policy::Grantee::person("7".repeat(64)),
                 tilo_action_policy::TreePath::workspace("w"),
-                tilo_action_policy::KindSet::ALL,
+                tilo_action_types::KindSet::ALL,
                 Answer::Deny,
                 tilo_action_policy::Grantee::person("8".repeat(64)),
             )],

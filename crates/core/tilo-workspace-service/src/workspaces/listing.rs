@@ -1388,7 +1388,7 @@ pub(crate) mod entry_tests {
             .unwrap();
         member.allows(
             &member.policy.node().app(CHAT),
-            tilo_action_policy::ActionKind::Undoable,
+            tilo_action_types::ActionKind::Undoable,
             now,
         )
     }

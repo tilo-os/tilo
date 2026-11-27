@@ -210,7 +210,8 @@ const ACTION_AUTHORITY_DIRECTORY: &str = "action-authority";
 mod tests {
     use super::*;
     use std::path::Path;
-    use tilo_action_policy::{ActionKind, Answer, Context, Role, WorkspacePolicy};
+    use tilo_action_policy::{Answer, Context, Role, WorkspacePolicy};
+    use tilo_action_types::ActionKind;
 
     const APP: &str = "so.tilo.notes";
     const OWNER: &str = "person-a";

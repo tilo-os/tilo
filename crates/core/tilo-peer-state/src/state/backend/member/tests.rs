@@ -11,7 +11,8 @@ use automerge::ReadDoc;
 use automerge::transaction::Transactable;
 use ed25519_dalek::SigningKey;
 use tilo_action_policy::Grant;
-use tilo_action_policy::{ActionKind, Answer, Grantee, KindSet, TreePath, roles};
+use tilo_action_policy::{Answer, Grantee, TreePath, roles};
+use tilo_action_types::{ActionKind, KindSet};
 use web_time::Duration;
 
 /// The person tests name the workspace's owner, and the device they sign with.

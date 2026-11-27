@@ -13,7 +13,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
-use tilo_action_policy::{Grant, Grantee, KindSet, TreePath};
+use tilo_action_policy::{Grant, Grantee, TreePath};
+use tilo_action_types::KindSet;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::WORKSPACE_AGENT_CREATE;
 use tilo_actions::remote::{

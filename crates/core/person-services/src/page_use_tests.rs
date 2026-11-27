@@ -12,7 +12,8 @@
 )]
 
 use serde_json::{Value, json};
-use tilo_action_policy::{ActionKind, Answer, KindSet};
+use tilo_action_policy::Answer;
+use tilo_action_types::{ActionKind, KindSet};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionCallError as Refusal;
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};

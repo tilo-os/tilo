@@ -214,8 +214,8 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
     // Bea lets her agent read and write in Chat as she may: her answers for it, which the
     // workspace's policy decides its calls by, as any person answers for their own agent.
     for kind in [
-        tilo_action_policy::ActionKind::Read,
-        tilo_action_policy::ActionKind::Undoable,
+        tilo_action_types::ActionKind::Read,
+        tilo_action_types::ActionKind::Undoable,
     ] {
         let answer = tilo_action_policy::agent_answers::grant(
             &workspace,
@@ -544,7 +544,8 @@ fn mentioned(body: &Json) -> Option<tilo_member_types::MemberId> {
 /// and Ada's own agent of the same id is another member, which nothing Bea says reaches.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_added_to_someone_elses_conversation_stays_its_persons() {
-    use tilo_action_policy::{ActionKind, Answer, Authority, Context, TreePath, WorkspacePolicy};
+    use tilo_action_policy::{Answer, Authority, Context, TreePath, WorkspacePolicy};
+    use tilo_action_types::ActionKind;
     use tilo_member_types::{Acting, MemberId};
     let states = [(); 2].map(|()| tempfile::tempdir().unwrap());
     let keys = Arc::new(TestGroupKeys::default());
@@ -725,7 +726,8 @@ async fn an_agent_added_to_someone_elses_conversation_stays_its_persons() {
 /// well: nothing of it reads the workspace's record of its agents.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn only_its_person_answers_for_or_stops_an_agent() {
-    use tilo_action_policy::{ActionKind, Answer, Authority, Context, TreePath, WorkspacePolicy};
+    use tilo_action_policy::{Answer, Authority, Context, TreePath, WorkspacePolicy};
+    use tilo_action_types::ActionKind;
     use tilo_member_types::Acting;
     let states = [(); 3].map(|()| tempfile::tempdir().unwrap());
     let keys = Arc::new(TestGroupKeys::default());

@@ -452,7 +452,7 @@ impl PeerWorkspaceMut<'_> {
         let member = self.peer.membership(caller.device_public_key, now)?;
         if !member.allows(
             &tilo_action_policy::TreePath::workspace(&self.peer.core.workspace),
-            tilo_action_policy::ActionKind::Read,
+            tilo_action_types::ActionKind::Read,
             now,
         ) {
             return Err("refusal recorder cannot currently read this workspace".into());

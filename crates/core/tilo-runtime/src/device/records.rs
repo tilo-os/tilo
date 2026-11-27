@@ -217,7 +217,7 @@ impl DeviceRecords {
         caller: &Caller,
         workspace: &str,
         name: &str,
-        kind: tilo_action_policy::ActionKind,
+        kind: tilo_action_types::ActionKind,
     ) -> Result<(), ActionCallError> {
         let refused = || ActionCallError::Refused {
             reason: DEVICE_SETTINGS_REFUSED.into(),
@@ -313,7 +313,7 @@ impl DeviceRecords {
             caller,
             &workspace,
             name,
-            tilo_action_policy::ActionKind::Undoable,
+            tilo_action_types::ActionKind::Undoable,
         )?;
         match action {
             SET => {
@@ -393,7 +393,7 @@ impl ResourceReads for DeviceRecords {
                 caller,
                 &address.workspace,
                 &address.record,
-                tilo_action_policy::ActionKind::Read,
+                tilo_action_types::ActionKind::Read,
             )?;
             if !self.names(address) {
                 return Ok(ResourceCopy::Absent);
@@ -416,7 +416,7 @@ impl ResourceReads for DeviceRecords {
                 caller,
                 &address.workspace,
                 &address.record,
-                tilo_action_policy::ActionKind::Read,
+                tilo_action_types::ActionKind::Read,
             )
             .and_then(|()| {
                 if self.names(address) {
@@ -450,13 +450,8 @@ impl ResourceReads for DeviceRecords {
             }
             let mut names: Vec<String> = self.records.lock_recover().keys().cloned().collect();
             names.retain(|name| {
-                self.allows(
-                    caller,
-                    workspace,
-                    name,
-                    tilo_action_policy::ActionKind::Read,
-                )
-                .is_ok()
+                self.allows(caller, workspace, name, tilo_action_types::ActionKind::Read)
+                    .is_ok()
             });
             Ok(names
                 .into_iter()
@@ -482,7 +477,7 @@ impl ResourceReads for DeviceRecords {
                 caller,
                 &address.workspace,
                 &address.record,
-                tilo_action_policy::ActionKind::Read,
+                tilo_action_types::ActionKind::Read,
             )?;
             if !self.names(address) {
                 return Ok(());

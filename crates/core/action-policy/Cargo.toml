@@ -18,6 +18,7 @@ path = "src/lib.rs"
 # wall clock as well as the native one.
 
 [dependencies]
+tilo-action-types.workspace = true
 tilo-member-types.workspace = true
 blake3 = { workspace = true }
 hex = { workspace = true }

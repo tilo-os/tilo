@@ -7,6 +7,7 @@ license.workspace = true
 description = "The session's xdg-desktop-portal backend: file chooser, screenshots, settings, access and inhibit, asking the person through the session's questions"
 
 [dependencies]
+tilo-action-types.workspace = true
 tilo-actions = { path = "../../core/actions" }
 # How long an answer stands: the lifetime every permission prompt offers.
 tilo-action-policy = { path = "../../core/action-policy" }

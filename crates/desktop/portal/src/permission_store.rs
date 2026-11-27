@@ -31,7 +31,8 @@ use zbus::zvariant::{OwnedValue, Str};
 
 use crate::Portal;
 use collab_types::caps::DeviceCap;
-use tilo_action_policy::{Answer, Lifetime};
+use tilo_action_policy::Answer;
+use tilo_action_types::Lifetime;
 use tilo_peer_state::DeviceGrants;
 
 /// The frontend's table of device permissions.

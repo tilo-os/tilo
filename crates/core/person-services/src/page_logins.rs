@@ -24,7 +24,8 @@ use accounts::vault_items::{
     self, Allowance, ItemFacts, ItemId, NewItem, Place, SiteLogin, UsedFor,
 };
 use serde_json::Value;
-use tilo_action_policy::{ActionKind, Answer, Context, Grantee, TreePath, decide};
+use tilo_action_policy::{Answer, Context, Grantee, TreePath, decide};
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 

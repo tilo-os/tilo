@@ -966,7 +966,8 @@ mod tests {
 
     use automerge::transaction::{CommitOptions, Transactable as _};
     use collab_types::store::wire::{Bytes, Command, Edit, RECORD_PAGE_BYTES, Reply};
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
+    use tilo_action_types::KindSet;
     use tilo_actions::remote::Caller;
     use tilo_actions::{Actor, MemberId};
     use tilo_resource_store::Stamp;

@@ -2431,7 +2431,7 @@ fn admitted(workspace: &str, agent: &str, person: &str) -> tilo_action_policy::G
         format!("agent-member:{agent}"),
         tilo_action_policy::Grantee::agent(agent, person),
         tilo_action_policy::TreePath::workspace(workspace),
-        tilo_action_policy::KindSet::READ_UNDOABLE,
+        tilo_action_types::KindSet::READ_UNDOABLE,
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(person),
     )

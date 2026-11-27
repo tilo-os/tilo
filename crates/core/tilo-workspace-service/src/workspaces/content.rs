@@ -33,7 +33,7 @@ use neighbour_wire::content::ContentWants;
 
 use super::readings::Reading;
 use super::{CollaborationError, Workspaces};
-use tilo_action_policy::ActionKind;
+use tilo_action_types::ActionKind;
 use tilo_lock::{MutexRecover as _, RwLockRecover as _};
 use tilo_peer_state::StatePeer;
 use tilo_resource_store::content::may_read_content;
@@ -1139,7 +1139,8 @@ mod tests {
         test_host, write_store,
     };
     use collab_types::EVERY_MEMBER;
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
+    use tilo_action_types::KindSet;
     use tilo_peer_state::peer_handle;
     use tilo_user_identity::DeviceCert;
 

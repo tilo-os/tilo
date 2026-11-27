@@ -323,7 +323,8 @@ mod tests {
 
     #[test]
     fn a_decision_without_a_table_reads_what_the_process_registered() {
-        use crate::{ActionKind, Answer, Context, Grant, Grantee, KindSet, decide};
+        use crate::{Answer, Context, Grant, Grantee, decide};
+        use tilo_action_types::{ActionKind, KindSet};
         let node = TreePath::workspace("r")
             .app("so.tilo.lang.tasks")
             .kind("tl.so.tilo.lang.tasks.TodoItem")

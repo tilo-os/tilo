@@ -17,7 +17,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use collab_types::caps::DeviceCap;
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::{Answer, Lifetime};
+use tilo_action_policy::Answer;
+use tilo_action_types::Lifetime;
 use tilo_lock::MutexRecover as _;
 use tilo_user_identity::DeviceCert;
 

@@ -215,7 +215,7 @@ impl TurnTeam {
         // Its grants hold until they are taken back: no time decides them.
         let decided = Party::new(vec![Grantee::agent(agent, own.clone())], &grants).decide(
             &node,
-            tilo_action_policy::ActionKind::Undoable,
+            tilo_action_types::ActionKind::Undoable,
             &Context::at(0),
         );
         decided.answer == Answer::Allow

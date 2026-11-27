@@ -6,7 +6,8 @@ use std::task::{Context, Poll, Waker};
 
 use serde_json::{Value, json};
 use tilo_action_calls::InvocationLog;
-use tilo_action_policy::{Answer, KindSet, Level, Rule, TreePath};
+use tilo_action_policy::{Answer, Level, Rule, TreePath};
+use tilo_action_types::KindSet;
 use tilo_actions::ActionKey;
 use tilo_actions::action::{ExecutionLocus, OperationKind};
 use tilo_actions::api::{ActionAddress, ActionDescriptor, InputSpec};

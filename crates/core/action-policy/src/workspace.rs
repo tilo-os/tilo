@@ -6,10 +6,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActionKind, Answer, Authority, Context, Grant, GrantId, Grantee, Lifetime, Party, Role,
-    TreePath, Verdict,
+    Answer, Authority, Context, Grant, GrantId, Grantee, Party, Role, TreePath, Verdict,
     roles::{self, governance},
 };
+use tilo_action_types::{ActionKind, Lifetime};
 use tilo_member_types::PersonId;
 
 /// Everything that decides authority in one workspace.
@@ -466,7 +466,7 @@ impl WorkspacePolicy {
             grant.grantee.person_id() == Some(person)
                 && grant.node == workspace
                 && grant.answer == Answer::Deny
-                && grant.kinds == crate::KindSet::ALL
+                && grant.kinds == tilo_action_types::KindSet::ALL
         })
     }
 

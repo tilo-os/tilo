@@ -17,11 +17,12 @@
 
 use std::sync::Arc;
 
-use tilo_action_policy::{ActionKind, TreePath};
+use tilo_action_policy::TreePath;
 use tilo_action_services::workspace_invocations::{
     Invocation, InvocationBy, InvocationStatus, Invocations as Listed, InvocationsQuery, MOST,
     Origin,
 };
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::{
     ActionCallError, Caller, CataloguePage, CatalogueQuery, InvokeRequest, resource_parts,
 };

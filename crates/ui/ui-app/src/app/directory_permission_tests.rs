@@ -7,7 +7,7 @@ fn directory_sampled_permission(
     tilo_ui_base::permissions::PermissionContext::granted(
         &tilo_ui_base::permissions::MemberId::person("fixture-user"),
         &tilo_ui_base::permissions::TreePath::root(),
-        tilo_ui_base::permissions::policy::KindSet::ALL,
+        tilo_action_types::KindSet::ALL,
         Some(110),
     )
     .at_unix_time(now)
@@ -91,7 +91,7 @@ tilo_test_env::scenario! {
                 },
                 policy::Grantee::person("owner"),
             )
-            .with_lifetime(policy::Lifetime::Until(105_000));
+            .with_lifetime(tilo_action_types::Lifetime::Until(105_000));
             fixture
                 .permissions
                 .set(directory_sampled_permission(time.clone(), fail).with_grant(grant));
@@ -240,7 +240,7 @@ tilo_test_env::scenario! {
             Answer::Deny,
             policy::Grantee::person("owner"),
         )
-        .with_lifetime(policy::Lifetime::Until(105_000));
+        .with_lifetime(tilo_action_types::Lifetime::Until(105_000));
         let mut fixture = ActionFixture::broker();
         fixture.permissions.set(
             directory_sampled_permission(time.clone(), Arc::new(AtomicBool::new(false)))

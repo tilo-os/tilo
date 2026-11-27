@@ -884,7 +884,7 @@ fn app_grant(workspace: &str, person: &str) -> tilo_action_policy::Grant {
             .any(tilo_action_policy::Level::Kind)
             .resource("target.document")
             .action("open"),
-        tilo_action_policy::KindSet::ALL,
+        tilo_action_types::KindSet::ALL,
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(person),
     )

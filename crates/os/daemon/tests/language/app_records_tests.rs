@@ -13,9 +13,8 @@
 
 use std::sync::Arc;
 
-use tilo_action_policy::{
-    ActionKind, Answer, Authority, Context, TreePath, WorkspacePolicy, roles,
-};
+use tilo_action_policy::{Answer, Authority, Context, TreePath, WorkspacePolicy, roles};
+use tilo_action_types::ActionKind;
 use tilo_member_types::Acting;
 use tilo_workspace_service::tl_records::{Compiled, Package};
 use tilo_workspace_service::workspaces::Workspaces;

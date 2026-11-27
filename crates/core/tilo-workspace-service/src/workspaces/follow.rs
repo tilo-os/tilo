@@ -203,7 +203,7 @@ impl HostedWorkspace {
             .permissions(author, now)
             .map_err(|error| error.to_string())?;
         let node = collab_types::validator::document_node(&member.policy.workspace, app, document);
-        if !member.allows(&node, tilo_action_policy::ActionKind::Undoable, now) {
+        if !member.allows(&node, tilo_action_types::ActionKind::Undoable, now) {
             return Err(format!(
                 "{app} record written by a device that may not edit"
             ));

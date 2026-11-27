@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::Lifetime;
+use tilo_action_types::Lifetime;
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Answer, Question};
 use zbus::interface;

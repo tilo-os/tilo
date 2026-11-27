@@ -2136,7 +2136,7 @@ pub async fn admit_scribe(workspaces: &Workspaces, workspace: &str) -> (SigningK
             "scribe-bridges",
             tilo_action_policy::Grantee::agent("scribe", person.as_str()),
             tilo_action_policy::TreePath::workspace(workspace).rest(),
-            tilo_action_policy::KindSet::ALL,
+            tilo_action_types::KindSet::ALL,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(person),
         )],

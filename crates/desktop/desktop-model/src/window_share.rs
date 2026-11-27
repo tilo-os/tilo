@@ -10,9 +10,8 @@
 use std::collections::BTreeMap;
 
 use tilo_action_policy::share::{is_of_share, share_id_prefix};
-use tilo_action_policy::{
-    ActionKind, Answer, Context, GrantId, Level, Segment, TreePath, WorkspacePolicy,
-};
+use tilo_action_policy::{Answer, Context, GrantId, Level, Segment, TreePath, WorkspacePolicy};
+use tilo_action_types::ActionKind;
 
 use crate::ids::{TabId, device_salt_of_key, peer_salt_of};
 use crate::layout::TileContent;
@@ -196,7 +195,7 @@ pub fn window_shares(
             continue;
         };
         let until_ms = match grant.lifetime {
-            tilo_action_policy::Lifetime::Until(at) => Some(at),
+            tilo_action_types::Lifetime::Until(at) => Some(at),
             _ => None,
         };
         shares.entry(tab).or_insert_with(|| WindowShare {
@@ -355,7 +354,7 @@ mod tests {
             // A share that ended by its time is no share.
             policy.grants = grants
                 .into_iter()
-                .map(|grant| grant.with_lifetime(tilo_action_policy::Lifetime::Until(10)))
+                .map(|grant| grant.with_lifetime(tilo_action_types::Lifetime::Until(10)))
                 .collect();
             assert_eq!(window_shares(&policy, &owners, 9)[&tab].until_ms, Some(10));
             assert!(window_shares(&policy, &owners, 10).is_empty());

@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
+use tilo_action_types::KindSet;
 use tilo_actions::ActionOutput;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, InvocationReceipt, InvokeRequest, Pending,
@@ -698,7 +699,7 @@ impl ActionProvider for BridgeProcess {
                     kind: tilo_actions::OperationKind::Effect,
                     // Both reach outside the workspace, as a bridge's sends do.
                     contract: tilo_actions::ActionContract {
-                        kind: tilo_action_policy::ActionKind::Outside,
+                        kind: tilo_action_types::ActionKind::Outside,
                         ..tilo_actions::ActionContract::for_operation(
                             tilo_actions::OperationKind::Effect,
                         )
@@ -783,7 +784,7 @@ fn app_calls(
                     kind: CHANNEL_KIND.into(),
                     action: "send".into(),
                 },
-                tilo_action_policy::ActionKind::Outside,
+                tilo_action_types::ActionKind::Outside,
             ),
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(person.clone()),
@@ -883,7 +884,7 @@ fn bridge_answer(workspace: &str, action: &str, answer: tilo_action_policy::Answ
                 kind: CHANNEL_KIND.into(),
                 action: action.into(),
             },
-            tilo_action_policy::ActionKind::Outside,
+            tilo_action_types::ActionKind::Outside,
         ),
         answer,
         tilo_action_policy::Grantee::person(person.as_str()),

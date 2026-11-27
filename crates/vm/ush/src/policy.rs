@@ -242,7 +242,7 @@ mod tests {
             );
 
             let mut expiring = granted("/var/home/you/src", true);
-            expiring.capabilities[0].lifetime = tilo_action_policy::Lifetime::Until(500_000);
+            expiring.capabilities[0].lifetime = tilo_action_types::Lifetime::Until(500_000);
             assert_eq!(expiring.trusted_dirs(Some(499)).len(), 1);
             assert!(expiring.trusted_dirs(Some(501)).is_empty());
         }
@@ -260,7 +260,7 @@ mod tests {
             assert!(egress.allows("github.com").is_some());
             assert!(egress.allows("example.com").is_none());
 
-            policy.capabilities[0].lifetime = tilo_action_policy::Lifetime::Until(500_000);
+            policy.capabilities[0].lifetime = tilo_action_types::Lifetime::Until(500_000);
             assert_eq!(policy.net_hosts(Some(501)), [".crates.io"]);
 
             let mut other = tilo_environment::host_grant("example.com").unwrap();

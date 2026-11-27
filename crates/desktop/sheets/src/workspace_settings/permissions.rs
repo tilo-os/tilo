@@ -43,7 +43,7 @@ pub struct Composer {
     pub what: String,
     pub permissions: Vec<Choice>,
     pub how_long: String,
-    /// How long it may last, by [`tilo_action_policy::Lifetime::key`]: `always`, and `until`, which
+    /// How long it may last, by [`tilo_action_types::Lifetime::key`]: `always`, and `until`, which
     /// asks for the day and time it ends. The first is what a new permission starts with.
     pub expiries: Vec<Choice>,
     pub grant: String,

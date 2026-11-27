@@ -45,7 +45,7 @@ pub fn control_grant(
         format!("desktop-control:{app_id}"),
         tilo_action_policy::Grantee::app(app_id),
         policy.node().app(APP_ID),
-        tilo_action_policy::KindSet::ALL,
+        tilo_action_types::KindSet::ALL,
         tilo_action_policy::Answer::Allow,
         by,
     )
@@ -64,7 +64,7 @@ pub fn has_control_at(
         .party_of(tilo_action_policy::Grantee::app(app_id))
         .decide(
             &policy.node().app(APP_ID),
-            tilo_action_policy::ActionKind::Undoable,
+            tilo_action_types::ActionKind::Undoable,
             &tilo_action_policy::Context::at_secs(now),
         )
         .answer

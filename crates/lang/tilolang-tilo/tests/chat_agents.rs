@@ -298,9 +298,8 @@ fn a_workspace_without_an_assistant_says_so_in_the_sub_agents_place() {
 
 #[test]
 fn starting_a_sub_agent_asks_the_assistant_in_the_conversation_it_answers_in() {
-    use tilo_action_policy::{
-        Answer, Grant, Grantee, KindSet, MemberAccess, TreePath, WorkspacePolicy,
-    };
+    use tilo_action_policy::{Answer, Grant, Grantee, MemberAccess, TreePath, WorkspacePolicy};
+    use tilo_action_types::KindSet;
 
     let mut policy = WorkspacePolicy::new("workspace", "ada");
     // Ada's assistant, admitted by her: an agent is the pair of its id and its person.

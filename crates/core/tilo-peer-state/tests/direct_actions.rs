@@ -940,7 +940,7 @@ async fn a_key_the_workspace_lists_acts_as_its_agent() {
     // own settings. The person's access allows it; the agent's, decided by the grants it carries,
     // does not.
     let settings = tilo_action_policy::roles::workspace_resource(WORKSPACE);
-    let write = tilo_action_policy::ActionKind::Undoable;
+    let write = tilo_action_types::ActionKind::Undoable;
     let access = host
         .engine
         .replica
@@ -994,7 +994,7 @@ async fn a_server_key_acts_as_its_person() {
     assert!(
         server_access.allows(
             &tilo_action_policy::roles::workspace_resource(WORKSPACE),
-            tilo_action_policy::ActionKind::Undoable,
+            tilo_action_types::ActionKind::Undoable,
             host.now
         ),
         "a server key holds its person's own"

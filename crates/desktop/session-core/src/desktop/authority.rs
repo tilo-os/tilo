@@ -6,7 +6,8 @@ use collab_types::caps::{
     Access, CapDecision, CapOverride, ResourceRef, decide_capability, sandbox,
 };
 use collab_types::role::Role as CapRole;
-use tilo_action_policy::{ActionKind, Answer, Grant, TreePath, roles};
+use tilo_action_policy::{Answer, Grant, TreePath, roles};
+use tilo_action_types::ActionKind;
 use tilo_clock::unix_now;
 use tilo_desktop_model::{Workspace, WorkspaceDefaultError};
 use tilo_member_types::Acting;

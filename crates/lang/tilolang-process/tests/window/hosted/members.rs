@@ -134,7 +134,7 @@ fn the_composers_drawer_offers_the_members_of_the_conversation_by_the_names_the_
                 "agent-member:planner",
                 Grantee::agent("planner", "ada"),
                 policy::TreePath::workspace(workspace),
-                policy::KindSet::READ_UNDOABLE,
+                tilo_action_types::KindSet::READ_UNDOABLE,
                 policy::Answer::Allow,
                 Grantee::person("ada"),
             ));

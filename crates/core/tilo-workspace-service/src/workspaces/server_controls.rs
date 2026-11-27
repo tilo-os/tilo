@@ -10,9 +10,8 @@
 //! the server or the administrator no longer stands for. Every grant here is written for a member
 //! ([`Grantee::person`]), never an agent: an agent acts through the person's grant.
 
-use tilo_action_policy::{
-    ActionKind, Answer, Context, Grant, GrantId, Grantee, KindSet, TreePath, WorkspacePolicy,
-};
+use tilo_action_policy::{Answer, Context, Grant, GrantId, Grantee, TreePath, WorkspacePolicy};
+use tilo_action_types::{ActionKind, KindSet};
 use tilo_actions::remote::Caller;
 use tilo_server_protocol::servers::person_workspace_id;
 
@@ -62,7 +61,7 @@ pub fn grant(workspace: &str, device: &[u8; 32], person: &str, by: &str) -> Gran
         node: settings_node(workspace, device, CONTROL),
         kinds: KindSet::READ_UNDOABLE.with(ActionKind::Outside),
         answer: Answer::Allow,
-        lifetime: tilo_action_policy::Lifetime::UntilRevoked,
+        lifetime: tilo_action_types::Lifetime::UntilRevoked,
         granted_by: Grantee::person(by.to_owned()),
     }
 }

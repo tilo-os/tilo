@@ -6,10 +6,10 @@
 
 use tilo_action_policy::ActingPolicy as _;
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Change, Context, Grant, Grantee, KindSet, Refusal, Role,
-    TreePath, WorkspacePolicy,
+    Answer, Authority, Change, Context, Grant, Grantee, Refusal, Role, TreePath, WorkspacePolicy,
     roles::{self, governance},
 };
+use tilo_action_types::{ActionKind, KindSet};
 use tilo_member_types::Acting;
 
 const NOW: u64 = 1_000_000;

@@ -650,9 +650,8 @@ fn shell_access(
     app: &str,
     person: &str,
 ) -> impl Fn() -> Option<tilo_action_policy::MemberAccess> + 'static {
-    use tilo_action_policy::{
-        Answer, Grant, Grantee, KindSet, MemberAccess, TreePath, WorkspacePolicy,
-    };
+    use tilo_action_policy::{Answer, Grant, Grantee, MemberAccess, TreePath, WorkspacePolicy};
+    use tilo_action_types::KindSet;
     let mut policy = WorkspacePolicy::new(SHELL_ROOM, person);
     policy.grants.push(Grant::new(
         format!("shell:{app}:session"),

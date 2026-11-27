@@ -1060,7 +1060,8 @@ async fn an_agents_key_asks_before_deleting_a_workspace_and_deletes_only_on_yes(
 #[tokio::test]
 async fn an_agent_allowed_to_delete_still_waits_for_its_persons_confirmation() {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
-    use tilo_action_policy::{ActionKind, Answer, Grantee};
+    use tilo_action_policy::{Answer, Grantee};
+    use tilo_action_types::ActionKind;
     let site = Site::new().await;
     let (workspaces, host, root, person) = site.parts();
     let (workspace, _, _) = site.own_workspace().await;

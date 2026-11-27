@@ -392,7 +392,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
         "bridge-writes-the-conversations",
         tilo_action_policy::Grantee::bot("bridge"),
         tilo_action_policy::TreePath::workspace(device.workspace.as_str()),
-        tilo_action_policy::KindSet::UNDOABLE,
+        tilo_action_types::KindSet::UNDOABLE,
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
     );

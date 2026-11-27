@@ -7,6 +7,7 @@ use crate::certificate_authority::CertificateAuthority;
 use crate::policy_clock::{OwnerPolicyClock, PolicyOrigin};
 use crate::services::{WorkspaceAuthority, WorkspaceMemberships};
 use ed25519_dalek::{Signer as _, SigningKey};
+use tilo_action_types::KindSet;
 use tilo_broker_core::workspace_commits::{EffectFuture, WorkspaceCommits};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 
@@ -268,7 +269,7 @@ impl Fixture {
                     hex::encode(native.certificate.user_public_key),
                 ),
                 tilo_action_policy::TreePath::workspace(workspace_id().to_string()),
-                tilo_action_policy::KindSet::READ,
+                tilo_action_types::KindSet::READ,
                 tilo_action_policy::Answer::Allow,
                 tilo_action_policy::Grantee::person(hex::encode(
                     native.certificate.user_public_key,
@@ -605,7 +606,7 @@ async fn an_agents_session_steps_are_taken_while_it_goes_and_nobody_elses_are() 
 /// Let the turn's agent `place` on the session's layout, or refuse it, as the person who
 /// started the turn.
 fn grant_the_layout(f: &Fixture, may: bool) {
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
     let node = tilo_actions::action_node(
         &TreePath::workspace(workspace_id().to_string()),
         tilo_actions::remote::session_actions::PROVIDER,
@@ -832,7 +833,7 @@ fn taken(wrote: &Result<InvocationReceipt, ActionCallError>) -> bool {
 /// still goes.
 #[tokio::test(flavor = "current_thread")]
 async fn a_rule_on_an_apps_node_holds_for_its_record_whoever_applies_it() {
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
     tokio::task::LocalSet::new()
         .run_until(async {
             let directory = Arc::new(ContactDirectory::default());

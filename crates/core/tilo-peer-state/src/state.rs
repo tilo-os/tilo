@@ -14,9 +14,8 @@ use collab_types::{
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use tilo_action_policy::{
-    ActionKind, Grant, GrantId, Grantee, MemberAccess, TreePath, WorkspacePolicy,
-};
+use tilo_action_policy::{Grant, GrantId, Grantee, MemberAccess, TreePath, WorkspacePolicy};
+use tilo_action_types::ActionKind;
 use tilo_lock::MutexRecover;
 use tilo_user_identity::{DeviceCert, RevocationList};
 pub use tilo_workspace_join::{DocumentRow, Member, MemberId, MemberList};

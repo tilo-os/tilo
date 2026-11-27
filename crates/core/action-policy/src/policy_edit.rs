@@ -8,9 +8,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    ActionKind, Answer, Authority, Change, Context, Grant, GrantId, Grantee, KindSet, Lifetime,
-    Preset, PresetError, Refusal, Role, TreePath, WorkspacePolicy, roles,
+    Answer, Authority, Change, Context, Grant, GrantId, Grantee, Preset, PresetError, Refusal,
+    Role, TreePath, WorkspacePolicy, roles,
 };
+use tilo_action_types::{ActionKind, KindSet, Lifetime};
 
 /// What a change wrote into one workspace's policy. Empty means nothing
 /// changed: the actor lacked authority, or there was nothing to do.

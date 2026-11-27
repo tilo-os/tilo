@@ -15,7 +15,7 @@
 
 use std::cell::RefCell;
 
-use tilo_action_policy::ActionKind;
+use tilo_action_types::ActionKind;
 use tilo_app::tilo_workspace_agent::{
     KIND, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
 };

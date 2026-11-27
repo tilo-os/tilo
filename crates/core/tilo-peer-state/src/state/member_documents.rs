@@ -1,6 +1,6 @@
 //! A record a member creates: empty, where the member may change the record.
 use super::{AutoCommit, DocumentMutation, MemberAccess, Route, SignedOp, StatePeer, SystemTime};
-use tilo_action_policy::ActionKind;
+use tilo_action_types::ActionKind;
 
 impl StatePeer {
     /// Whether `member` may create `route`'s record empty: they may change

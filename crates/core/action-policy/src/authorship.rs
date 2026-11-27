@@ -14,7 +14,8 @@
 //! undoable changes and asks before reaching outside; code nobody trusts asks
 //! before everything.
 
-use crate::{Answer, Grant, Grantee, KindSet, Party, TreePath};
+use crate::{Answer, Grant, Grantee, Party, TreePath};
+use tilo_action_types::KindSet;
 
 /// The grants code written by `author` holds in `workspace` as a party of its
 /// own: [`trusted`](self) code reads and makes undoable changes and asks
@@ -71,7 +72,8 @@ fn grantee_key(grantee: &Grantee) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ActionKind, Authority, Context};
+    use crate::{Authority, Context};
+    use tilo_action_types::ActionKind;
 
     const WORKSPACE: &str = "workspace";
 

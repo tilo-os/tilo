@@ -749,7 +749,7 @@ fn a_chosen_workspace_file_is_a_grant_on_its_node_and_reopen_reads_it() {
             .kind(tilo_workspace_records::search::FOUND_FILE)
             .resource(id.0.to_string())
     );
-    assert_eq!(held.kinds, tilo_action_policy::KindSet::READ);
+    assert_eq!(held.kinds, tilo_action_types::KindSet::READ);
     assert_eq!(
         held.granted_by,
         tilo_action_policy::Grantee::person(PERSON),
@@ -899,7 +899,7 @@ fn a_save_grants_writing_the_node_and_keeps_the_record() {
         .expect("the save's grant covers writing the node");
     assert_eq!(
         held.kinds,
-        tilo_action_policy::KindSet::READ_UNDOABLE,
+        tilo_action_types::KindSet::READ_UNDOABLE,
         "reading it and changing it"
     );
     assert_eq!(

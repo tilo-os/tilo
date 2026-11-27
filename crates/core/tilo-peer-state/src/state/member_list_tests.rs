@@ -94,7 +94,7 @@ fn a_members_row_counts_the_permissions_given_beyond_their_role() {
             &workspace,
             tilo_action_policy::roles::governance::ADD_MEMBER,
         ),
-        tilo_action_policy::KindSet::OUTSIDE,
+        tilo_action_types::KindSet::OUTSIDE,
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(hex::encode(owner_cert.user_public_key)),
     );

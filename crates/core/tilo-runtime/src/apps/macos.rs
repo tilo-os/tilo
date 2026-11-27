@@ -386,7 +386,8 @@ impl tilo_capture::broker::Answers for DeviceAnswers {
     }
 
     fn keep(&self, device: tilo_capture::DeviceKind, allowed: bool) -> Result<(), String> {
-        use tilo_action_policy::{Answer, Lifetime};
+        use tilo_action_policy::Answer;
+        use tilo_action_types::Lifetime;
         let answer = if allowed { Answer::Allow } else { Answer::Deny };
         self.grants.answer(
             &self.app,

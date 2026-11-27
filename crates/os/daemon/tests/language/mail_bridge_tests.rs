@@ -13,7 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
-use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
+use tilo_action_types::KindSet;
 use tilo_actions::remote::Caller;
 use tilo_workspace_records::vault as workspace_vault;
 use tilo_workspace_service::work::{

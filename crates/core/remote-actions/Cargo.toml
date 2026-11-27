@@ -14,6 +14,7 @@ name = "tilo_remote_actions"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-action-types.workspace = true
 tilo-actions = { version = "0.1.0", path = "../actions" }
 tilo-action-line = { version = "0.1.0", path = "../action-line" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }

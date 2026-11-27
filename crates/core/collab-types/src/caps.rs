@@ -18,7 +18,8 @@ pub mod net;
 pub mod sandbox;
 
 pub use net::{Allowed, EgressPolicy, HostPattern, NetHostError, NetHostPattern, host_covers};
-use tilo_action_policy::{Grantee, Lifetime};
+use tilo_action_policy::Grantee;
+use tilo_action_types::Lifetime;
 use tilo_member_types::{Acting, MemberId};
 
 /// How far a sandbox capability reaches into its resource.

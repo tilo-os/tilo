@@ -299,7 +299,8 @@ impl Members {
     /// A rule of the workspace that answers the member's every read of Passwords with `answer`:
     /// refused ([`Answer::Deny`], Passwords left out of their role) or asked first.
     async fn rule_passwords_for_the_member(&self, answer: tilo_action_policy::Answer) {
-        use tilo_action_policy::{Grant, Grantee, KindSet, TreePath};
+        use tilo_action_policy::{Grant, Grantee, TreePath};
+        use tilo_action_types::KindSet;
         let refused = Grant::new(
             "no-passwords-for-the-member",
             Grantee::person(hex::encode(self.member_cert.user_public_key)),
@@ -1203,7 +1204,7 @@ async fn an_editor_the_rules_ask_first_reads_mail_where_the_vault_is_and_holds_n
                     .kind(workspace_vault::ITEM_KIND)
                     .resource(named.to_string())
                     .action(workspace_vault::RELEASE),
-                tilo_action_policy::KindSet::READ,
+                tilo_action_types::KindSet::READ,
                 tilo_action_policy::Answer::Allow,
                 tilo_action_policy::Grantee::person(person),
             )],

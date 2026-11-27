@@ -9,7 +9,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ActionKind, Answer, Grant, GrantId, Grantee, KindSet, Lifetime, Role, TreePath};
+use crate::{Answer, Grant, GrantId, Grantee, Role, TreePath};
+use tilo_action_types::{ActionKind, KindSet, Lifetime};
 
 /// The app that keeps what visitors leave at a workspace's entry: one resource per address left
 /// there by someone asking to be let in.

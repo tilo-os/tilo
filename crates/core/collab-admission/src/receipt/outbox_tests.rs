@@ -172,7 +172,7 @@ fn policy() -> WorkspacePolicy {
         "vic-reads-mail",
         Grantee::person("vic"),
         TreePath::workspace(WORKSPACE),
-        tilo_action_policy::KindSet::READ,
+        tilo_action_types::KindSet::READ,
         Answer::Allow,
         Grantee::person("ada"),
     ));
@@ -188,7 +188,7 @@ fn writes_mail(person: &str) -> WorkspacePolicy {
         format!("{person}-writes-mail"),
         Grantee::person(person),
         TreePath::workspace(WORKSPACE).app(APP),
-        tilo_action_policy::KindSet::READ_UNDOABLE,
+        tilo_action_types::KindSet::READ_UNDOABLE,
         Answer::Allow,
         Grantee::person("ada"),
     ));

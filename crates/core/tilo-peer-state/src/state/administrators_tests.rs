@@ -3,8 +3,8 @@
 //! own rule on its resource does not outrank, so workspaces that held the grant
 //! where it did are rewritten to govern through it.
 use super::*;
-use tilo_action_policy::KindSet;
 use tilo_action_policy::roles::{self, governance};
+use tilo_action_types::KindSet;
 
 /// How many of the workspace's governance actions the member with device
 /// `device` may run, as `peer`'s workspace policy decides it now.
@@ -79,7 +79,7 @@ tilo_test_env::scenario! {
         let moderates = |peer: &StatePeer| {
             peer.permissions(editor.device_public_key, now)
                 .unwrap()
-                .allows(&node, tilo_action_policy::ActionKind::Undoable, now)
+                .allows(&node, tilo_action_types::ActionKind::Undoable, now)
         };
         assert!(!moderates(&peer));
         assert!(
@@ -174,7 +174,7 @@ tilo_test_env::scenario! {
                 SettingsChange::AssignPreset {
                     preset: "Readers".into(),
                     subject: tilo_action_policy::Grantee::agent("scribe", "ada"),
-                    lifetime: tilo_action_policy::Lifetime::UntilRevoked,
+                    lifetime: tilo_action_types::Lifetime::UntilRevoked,
                 },
                 now,
             )
@@ -217,7 +217,7 @@ tilo_test_env::scenario! {
         let assign = SettingsChange::AssignPreset {
             preset: "Readers".into(),
             subject: tilo_action_policy::Grantee::agent("scribe", "ada"),
-            lifetime: tilo_action_policy::Lifetime::UntilRevoked,
+            lifetime: tilo_action_types::Lifetime::UntilRevoked,
         };
         assert!(change_settings(&mut peer.clone(), &editor, assign.clone(), now).is_err());
         let owner = hex::encode(peer.owner());

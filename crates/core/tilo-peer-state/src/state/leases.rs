@@ -345,7 +345,7 @@ impl PeerWorkspaceMut<'_> {
         let member = self.peer.membership(device.device_public_key, now)?;
         if !member.allows(
             &tilo_action_policy::TreePath::workspace(&self.peer.core.workspace),
-            tilo_action_policy::ActionKind::Undoable,
+            tilo_action_types::ActionKind::Undoable,
             now,
         ) {
             return Err("lease claimant may not change this workspace".into());

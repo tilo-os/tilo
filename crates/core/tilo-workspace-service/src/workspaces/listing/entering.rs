@@ -1308,7 +1308,7 @@ mod tests {
         assert!(
             !access.allows(
                 &tilo_action_policy::TreePath::workspace(&workspace),
-                tilo_action_policy::ActionKind::Undoable,
+                tilo_action_types::ActionKind::Undoable,
                 now
             ),
             "a viewer's agent edits nothing"

@@ -10,7 +10,8 @@
 //! view a shared window, their presence — and nothing else.
 
 use neighbour_wire::NeighbourMsg;
-use tilo_action_policy::{ActionKind, Answer, TreePath, roles::COMMENTS_FIELD};
+use tilo_action_policy::{Answer, TreePath, roles::COMMENTS_FIELD};
+use tilo_action_types::ActionKind;
 use tilo_desktop_model::Layout;
 
 /// What a workspace message is: the node below the workspace it acts at, and the kind of action it

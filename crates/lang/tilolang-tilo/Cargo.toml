@@ -16,6 +16,7 @@ homepage.workspace = true
 test-support = ["tilo-clock/test-support"]
 
 [dependencies]
+tilo-action-types.workspace = true
 tilo-member-types.workspace = true
 tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }

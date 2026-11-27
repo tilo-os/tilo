@@ -380,7 +380,7 @@ fn grant(
     PermissionContext::granted(
         &tilo_ui_base::permissions::MemberId::person(actor),
         &TreePath::root().app(app),
-        policy::KindSet::ALL,
+        tilo_action_types::KindSet::ALL,
         until,
     )
     .at_unix_time(100)

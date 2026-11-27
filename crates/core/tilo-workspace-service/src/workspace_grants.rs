@@ -14,8 +14,9 @@
 
 use collab_types::caps::{Access, Effect, Scope};
 use tilo_action_policy::{
-    ActionKind, Answer, Context, Grant, Grantee, Labels, Level, TreePath, WorkspacePolicy, roles,
+    Answer, Context, Grant, Grantee, Labels, Level, TreePath, WorkspacePolicy, roles,
 };
+use tilo_action_types::ActionKind;
 use tilo_desktop_model::Workspace;
 use tilo_member_types::MemberId;
 
@@ -335,7 +336,8 @@ mod tests {
 
     use super::*;
     use collab_types::caps::{Access, CapOverride, Effect, Scope};
-    use tilo_action_policy::{Change, KindSet, Role};
+    use tilo_action_policy::{Change, Role};
+    use tilo_action_types::KindSet;
     use tilo_desktop_model::WorkspaceId;
 
     const OWNER: &str = "owner0000000000000000000000000000000000000000000000000000000000000";
@@ -513,7 +515,7 @@ mod tests {
             Answer::Allow,
             Grantee::person(OWNER),
         )
-        .with_lifetime(tilo_action_policy::Lifetime::Until(1_000_000));
+        .with_lifetime(tilo_action_types::Lifetime::Until(1_000_000));
         workspace
             .policy
             .change_all_as_at(OWNER, vec![Change::Grant(grant)], NOW_MS / 1_000)
@@ -525,7 +527,7 @@ mod tests {
                 Access::Read,
             )
             .with_id("cap-lapsed")
-            .lasting(tilo_action_policy::Lifetime::Until(1_000_000)),
+            .lasting(tilo_action_types::Lifetime::Until(1_000_000)),
         );
         assert!(shared_out(&workspace, OWNER, NOW_MS).is_empty());
     }

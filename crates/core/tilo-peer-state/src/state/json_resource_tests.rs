@@ -42,7 +42,8 @@ pub(crate) fn identity_fixture() -> (DeviceRow, SystemTime) {
 }
 
 pub(crate) fn grant_fixture() -> tilo_action_policy::Grant {
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
+    use tilo_action_types::{KindSet, Lifetime};
     Grant::new(
         "grant \u{0003}id",
         Grantee::person("person 🦀\n\"named\"\\"),

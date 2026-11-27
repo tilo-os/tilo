@@ -33,11 +33,11 @@ pub enum EffectClass {
 }
 
 /// What a person's own press of an action waits for: the rule every app shares
-/// ([`tilo_action_policy::ActionKind::confirms`]), read for a tilolang action by
+/// ([`tilo_action_types::ActionKind::confirms`]), read for a tilolang action by
 /// [`crate::meta::ActionMeta::confirms`].
-pub use tilo_action_policy::Confirms;
+pub use tilo_action_types::Confirms;
 
-impl From<EffectClass> for tilo_action_policy::ActionKind {
+impl From<EffectClass> for tilo_action_types::ActionKind {
     fn from(class: EffectClass) -> Self {
         match class {
             EffectClass::Read => Self::Read,

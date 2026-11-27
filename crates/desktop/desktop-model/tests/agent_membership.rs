@@ -3,9 +3,8 @@
 //! because the failure worth catching is a roster showing or hiding the
 //! wrong people.
 
-use tilo_action_policy::{
-    ActionKind, Answer, Change, Grant, GrantId, Grantee, KindSet, Lifetime, Role, TreePath,
-};
+use tilo_action_policy::{Answer, Change, Grant, GrantId, Grantee, Role, TreePath};
+use tilo_action_types::{ActionKind, KindSet, Lifetime};
 use tilo_desktop_model::*;
 use tilo_member_types::MemberId;
 

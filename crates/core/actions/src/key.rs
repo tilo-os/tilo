@@ -33,4 +33,4 @@ impl std::fmt::Display for ActionKey {
     }
 }
 
-pub use tilo_action_policy::ActionKind;
+pub use tilo_action_types::ActionKind;

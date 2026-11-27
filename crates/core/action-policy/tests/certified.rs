@@ -2,9 +2,10 @@
 //! workspace's own grants naming it then narrow.
 
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Context, Grantee, TreePath, WorkspacePolicy,
+    Answer, Authority, Context, Grantee, TreePath, WorkspacePolicy,
     roles::{GOVERNANCE_KIND, certified_agent, workspace_resource},
 };
+use tilo_action_types::ActionKind;
 
 const WORKSPACE: &str = "r";
 const PERSON: &str = "ada";

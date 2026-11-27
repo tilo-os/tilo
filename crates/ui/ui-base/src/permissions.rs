@@ -6,9 +6,9 @@
 //! [`WidgetAuthority`]: may the person act on what this widget guards? A window drawn under no
 //! authority, such as any window of a toolkit built without Tilo's model, may act on everything.
 
-/// Who a member is, and what kind of action a grant reaches: plain values of the action policy,
+/// Who a member is, and what kind of action a grant reaches: plain values of the action model,
 /// which the toolkit names without the collaboration model.
-pub use tilo_action_policy::{ActionKind, Grantee};
+pub use tilo_action_types::ActionKind;
 pub use tilo_member_types::{Acting, MemberId};
 
 #[cfg(feature = "model")]

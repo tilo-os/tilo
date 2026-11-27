@@ -27,6 +27,7 @@ broker-transport = ["local-daemons", "runtime-collab/client", "tokio/full"]
 test-support = ["dep:tilo-test-env", "dep:tracing-subscriber", "runtime-collab/settings-host"]
 
 [dependencies]
+tilo-action-types.workspace = true
 tilo-member-types.workspace = true
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 key-group = { package = "tilo-key-group", version = "0.1.0", path = "../key-group" }

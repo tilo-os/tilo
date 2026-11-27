@@ -41,7 +41,7 @@ fn chat_with_an_agent() -> (Session, String) {
         format!("agent-member:{AGENT}"),
         policy::Grantee::agent(AGENT, "ada"),
         policy::TreePath::workspace(&workspace),
-        policy::KindSet::READ_UNDOABLE,
+        tilo_action_types::KindSet::READ_UNDOABLE,
         policy::Answer::Allow,
         policy::Grantee::person("ada"),
     ));

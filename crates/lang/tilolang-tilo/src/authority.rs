@@ -226,7 +226,7 @@ fn package_records(workspace: &str, app: &str, runner: &Grantee) -> Grant {
         format!("package-records:{app}"),
         runner.clone(),
         TreePath::workspace(workspace).app(app.to_owned()),
-        tilo_action_policy::KindSet::READ_UNDOABLE,
+        tilo_action_types::KindSet::READ_UNDOABLE,
         Answer::Allow,
         runner.clone(),
     )
@@ -460,8 +460,9 @@ mod tests {
     use tilolang_runtime::ids::AppId;
 
     use super::*;
+    use tilo_action_policy::WorkspacePolicy;
     use tilo_action_policy::agent_answers::{self, AnswerScope};
-    use tilo_action_policy::{ActionKind, WorkspacePolicy};
+    use tilo_action_types::ActionKind;
     use tilolang_runtime::meta::EffectClass;
 
     const WORKSPACE: &str = "workspace";
@@ -644,7 +645,7 @@ mod tests {
                 "ada-everything",
                 Grantee::person(PERSON),
                 TreePath::workspace(WORKSPACE),
-                tilo_action_policy::KindSet::ALL,
+                tilo_action_types::KindSet::ALL,
                 Answer::Allow,
                 Grantee::person(PERSON),
             );
@@ -657,7 +658,7 @@ mod tests {
                 "ada-sends",
                 Grantee::person(PERSON),
                 TreePath::workspace(WORKSPACE).app(APP),
-                tilo_action_policy::KindSet::OUTSIDE,
+                tilo_action_types::KindSet::OUTSIDE,
                 Answer::Allow,
                 Grantee::person(PERSON),
             );
@@ -728,7 +729,7 @@ mod tests {
                 id,
                 Grantee::app(APP),
                 TreePath::workspace(WORKSPACE).app(APP),
-                tilo_action_policy::KindSet::OUTSIDE,
+                tilo_action_types::KindSet::OUTSIDE,
                 Answer::Deny,
                 Grantee::person(PERSON),
             )
@@ -809,7 +810,7 @@ mod tests {
             "no-todo-for-bob",
             Grantee::person("bob"),
             TreePath::workspace(WORKSPACE).app(APP).rest(),
-            tilo_action_policy::KindSet::ALL,
+            tilo_action_types::KindSet::ALL,
             Answer::Deny,
             Grantee::person(PERSON),
         );
@@ -817,7 +818,7 @@ mod tests {
             "bob-edits",
             Grantee::person("bob"),
             TreePath::workspace(WORKSPACE),
-            tilo_action_policy::KindSet::ALL,
+            tilo_action_types::KindSet::ALL,
             Answer::Allow,
             Grantee::person(PERSON),
         );

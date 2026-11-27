@@ -7,7 +7,8 @@
 )]
 
 use ed25519_dalek::SigningKey;
-use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath, roles};
+use tilo_action_policy::{Answer, Grant, Grantee, TreePath, roles};
+use tilo_action_types::KindSet;
 use tilo_actions::remote::{
     ActionCallError, Caller, DEVICE_SETTINGS, ResourceAddress, ResourceCopy, ResourceReads,
 };

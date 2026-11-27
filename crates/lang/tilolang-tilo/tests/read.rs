@@ -8,9 +8,8 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use serde_json::{Map, Value as Json, json};
-use tilo_action_policy::{
-    Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
-};
+use tilo_action_policy::{Answer, Grant, Grantee, MemberAccess, Role, TreePath, WorkspacePolicy};
+use tilo_action_types::KindSet;
 use tilolang_runtime::origin::OriginWrite;
 use tilolang_runtime::value::{ActionRef, ResourceRef};
 use tilolang_runtime::{Actor, InvokeOutcome, Meta, Value};

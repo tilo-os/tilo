@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::PathStep;
 pub use crate::field_type::{FieldType, NamedType, TypeCase, TypeField, TypeSet};
-use tilo_action_policy::ActionKind;
+use tilo_action_types::ActionKind;
 
 #[allow(
     clippy::trivially_copy_pass_by_ref,
@@ -478,7 +478,7 @@ pub fn content_verb(id: &str, label: &str) -> VerbSurface {
         name: String::new(),
         label: label.to_owned(),
         description: None,
-        kind: tilo_action_policy::ActionKind::Undoable,
+        kind: tilo_action_types::ActionKind::Undoable,
         destructive: false,
         incoming_message: false,
         params: Vec::new(),

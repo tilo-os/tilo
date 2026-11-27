@@ -329,9 +329,9 @@ impl crate::PersonServices {
         }
         let action = request.target.address.action.as_str();
         let effect = if action == LIST {
-            tilo_action_policy::ActionKind::Read
+            tilo_action_types::ActionKind::Read
         } else {
-            tilo_action_policy::ActionKind::Undoable
+            tilo_action_types::ActionKind::Undoable
         };
         let reach = self
             .reaching_allowed(

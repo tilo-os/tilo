@@ -193,7 +193,7 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
                     .policy
                     .node()
                     .app(env.route.app_id.clone()),
-                tilo_action_policy::KindSet::ALL,
+                tilo_action_types::KindSet::ALL,
                 tilo_action_policy::Answer::Allow,
                 person,
             );
@@ -284,7 +284,7 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
                     .policy
                     .node()
                     .app(env.route.app_id.clone()),
-                tilo_action_policy::KindSet::ALL,
+                tilo_action_types::KindSet::ALL,
                 tilo_action_policy::Answer::Allow,
                 person,
             );

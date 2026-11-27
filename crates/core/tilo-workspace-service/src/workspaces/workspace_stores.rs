@@ -23,7 +23,8 @@
 use std::path::{Path, PathBuf};
 use tilo_action_policy::ActingPolicy as _;
 
-use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
+use tilo_action_policy::{Answer, Context, TreePath};
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_member_types::Acting;

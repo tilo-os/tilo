@@ -335,7 +335,7 @@ tilo_test_env::scenario! {
                 "agent-member:scribe",
                 tilo_action_policy::Grantee::agent("scribe", &owner),
                 tilo_action_policy::TreePath::workspace(workspace),
-                tilo_action_policy::KindSet::READ,
+                tilo_action_types::KindSet::READ,
                 tilo_action_policy::Answer::Allow,
                 tilo_action_policy::Grantee::person(&owner),
             )]
@@ -1345,7 +1345,7 @@ fn export_shortcut() -> tilo_automation::Shortcut {
             policy::TreePath::root()
                 .any(policy::Level::Workspace)
                 .app("so.tilo.test"),
-            policy::KindSet::ALL,
+            tilo_action_types::KindSet::ALL,
             policy::Answer::Allow,
         )],
         triggers: Vec::new(),
@@ -1524,7 +1524,7 @@ fn agent_answered(
             ("scribe", owner.as_str()),
             (
                 &AnswerScope::app("so.tilo.test"),
-                tilo_action_policy::ActionKind::Undoable,
+                tilo_action_types::ActionKind::Undoable,
             ),
             answer,
             person.clone(),
@@ -1631,7 +1631,8 @@ async fn an_app_taking_another_apps_action_waits_for_its_person_or_is_refused() 
 )]
 async fn an_agents_turn_does_only_what_both_it_and_its_asker_may() {
     use tilo_action_policy::agent_answers::AnswerScope;
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Role};
+    use tilo_action_policy::{Answer, Grant, Grantee, Role};
+    use tilo_action_types::KindSet;
     use tilo_user_identity::{AgentScope, DeviceCapabilities as Caps};
     let root = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
     let ada = root.verifying_key().to_bytes();
@@ -1653,7 +1654,7 @@ async fn an_agents_turn_does_only_what_both_it_and_its_asker_may() {
             ("scribe", owner.as_str()),
             (
                 &AnswerScope::app("so.tilo.test"),
-                tilo_action_policy::ActionKind::Undoable,
+                tilo_action_types::ActionKind::Undoable,
             ),
             Answer::Allow,
             Grantee::person(owner.clone()),

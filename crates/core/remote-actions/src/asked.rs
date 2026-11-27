@@ -605,7 +605,7 @@ impl AskedStore {
         Ok(match resolution {
             Offer::ApproveAndGrant => Some(grant_of(record, Answer::Allow)?),
             Offer::Approve if runs_nothing => Some(
-                grant_of(record, Answer::Allow)?.with_lifetime(tilo_action_policy::Lifetime::Once),
+                grant_of(record, Answer::Allow)?.with_lifetime(tilo_action_types::Lifetime::Once),
             ),
             Offer::Decline if runs_nothing => Some(grant_of(record, Answer::Deny)?),
             Offer::Approve | Offer::Decline => None,

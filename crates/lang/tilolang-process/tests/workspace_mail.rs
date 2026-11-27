@@ -5,7 +5,8 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use collaboration::{CollabEvent, CollabRequest, CollaborationManager, RouteSpec};
-use tilo_action_policy::{Answer, Grant, Grantee, KindSet, MemberAccess, Role, WorkspacePolicy};
+use tilo_action_policy::{Answer, Grant, Grantee, MemberAccess, Role, WorkspacePolicy};
+use tilo_action_types::KindSet;
 use tilo_member_types::Acting;
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;

@@ -394,7 +394,8 @@ mod tests {
 
     use super::*;
     use crate::records::{built_in, with_tl_record};
-    use tilo_action_policy::{Answer, KindSet, TreePath};
+    use tilo_action_policy::{Answer, TreePath};
+    use tilo_action_types::KindSet;
     use tilo_actions::remote::ReceiptStatus;
     use tilo_workspace_service::workspaces::fixtures::{hosting_device, test_host};
 

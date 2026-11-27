@@ -5,9 +5,9 @@
 //! without a wildcard ask for its bytes.
 
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Change, Context, Grant, GrantId, Grantee, KindSet, Lifetime,
-    Role, TreePath, WorkspacePolicy,
+    Answer, Authority, Change, Context, Grant, GrantId, Grantee, Role, TreePath, WorkspacePolicy,
 };
+use tilo_action_types::{ActionKind, KindSet, Lifetime};
 
 fn read_as<T: serde::de::DeserializeOwned>(_: &T, bytes: &[u8]) -> postcard::Result<T> {
     postcard::from_bytes(bytes)

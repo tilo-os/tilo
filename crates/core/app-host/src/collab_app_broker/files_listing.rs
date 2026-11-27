@@ -21,7 +21,8 @@ use fs_protocol::tree::{
     FILES_APP, FOLDER_KIND, LIST, READ_TEXT, file_of_resource, file_resource, folder_of_resource,
     folder_resource,
 };
-use tilo_action_policy::{ActionKind, Answer};
+use tilo_action_policy::Answer;
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::{
     APPLICATION_RESOURCE_KIND, APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller, CataloguePage,
     CatalogueQuery, CatalogueRow, InvokeArgument, InvokeRequest, Pending, pending,

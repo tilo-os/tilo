@@ -19,11 +19,11 @@ fn member_with(answer: Answer) -> PermissionContext {
             "fixture",
             policy::Grantee::person("member"),
             TreePath::workspace(LOCAL_WORKSPACE).app("fixture"),
-            policy::KindSet::UNDOABLE,
+            tilo_action_types::KindSet::UNDOABLE,
             answer,
             policy::Grantee::person("owner"),
         )
-        .with_lifetime(policy::Lifetime::Until(100_000)),
+        .with_lifetime(tilo_action_types::Lifetime::Until(100_000)),
     );
     context.with_access(access)
 }

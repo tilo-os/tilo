@@ -212,7 +212,7 @@ fn grant() -> Vec<tilo_action_policy::Rule> {
         tilo_action_policy::TreePath::root()
             .any(tilo_action_policy::Level::Workspace)
             .app(AGENT_APP_ID),
-        tilo_action_policy::KindSet::ALL,
+        tilo_action_types::KindSet::ALL,
         tilo_action_policy::Answer::Allow,
     )]
 }

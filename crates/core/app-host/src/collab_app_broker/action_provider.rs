@@ -477,13 +477,13 @@ pub(super) fn app_start_descriptor(package_id: &str, display_name: &str) -> Acti
 /// record, an item of one, such as a note shared with a Viewer), whose
 /// window is then read-only to a person who may only read; leave to change
 /// it for anything else, an app opened on nothing in particular included.
-fn launch_kind(request: &InvokeRequest) -> tilo_action_policy::ActionKind {
+fn launch_kind(request: &InvokeRequest) -> tilo_action_types::ActionKind {
     if request.target.address.action == APPLICATION_OPEN_ACTION
         && application_provider(&request.target.provider).is_some()
     {
-        tilo_action_policy::ActionKind::Read
+        tilo_action_types::ActionKind::Read
     } else {
-        tilo_action_policy::ActionKind::Undoable
+        tilo_action_types::ActionKind::Undoable
     }
 }
 
@@ -1533,7 +1533,7 @@ impl AppBrokerState {
                     if policy.may_in(
                         &workspace,
                         &app_node(&workspace, &app.package_id),
-                        tilo_action_policy::ActionKind::Undoable,
+                        tilo_action_types::ActionKind::Undoable,
                         now,
                     ) {
                         rows.push(CatalogueRow::for_action(
@@ -1557,7 +1557,7 @@ impl AppBrokerState {
                             policy.may_in(
                                 &workspace,
                                 &app_node(&workspace, &app.package_id),
-                                tilo_action_policy::ActionKind::Undoable,
+                                tilo_action_types::ActionKind::Undoable,
                                 now,
                             )
                         })
@@ -1717,7 +1717,7 @@ impl AppBrokerState {
                 && policy.may_in(
                     workspace,
                     &app_node(workspace, &surface.app_id),
-                    tilo_action_policy::ActionKind::Undoable,
+                    tilo_action_types::ActionKind::Undoable,
                     now,
                 )
         }) {
@@ -1774,7 +1774,7 @@ impl AppBrokerState {
                 && policy.may_in(
                     workspace,
                     &app_node(workspace, &app.package_id),
-                    tilo_action_policy::ActionKind::Undoable,
+                    tilo_action_types::ActionKind::Undoable,
                     now,
                 )
         }) {
@@ -2691,7 +2691,7 @@ impl AppBrokerState {
         self.reauthorize_launch_effect_as(
             ownership,
             admitted,
-            (app_id, tilo_action_policy::ActionKind::Undoable),
+            (app_id, tilo_action_types::ActionKind::Undoable),
         )
     }
 
@@ -2701,7 +2701,7 @@ impl AppBrokerState {
         &self,
         ownership: (&Caller, Option<&super::InvocationCaller>, &str),
         admitted: &super::host_action_admission::AdmittedHostAction,
-        (app_id, kind): (&str, tilo_action_policy::ActionKind),
+        (app_id, kind): (&str, tilo_action_types::ActionKind),
     ) -> Result<Workspace, ActionCallError> {
         let (caller, origin, workspace) = ownership;
         let result = self
@@ -3117,7 +3117,7 @@ impl AppBrokerState {
             if !policy.may_in(
                 &workspace,
                 &app_node(&workspace, app_id),
-                tilo_action_policy::ActionKind::Undoable,
+                tilo_action_types::ActionKind::Undoable,
                 now,
             ) {
                 return Err(ActionCallError::NotPermitted);

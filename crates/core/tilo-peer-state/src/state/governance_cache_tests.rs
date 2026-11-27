@@ -48,7 +48,7 @@ fn crowded_workspace(
                 format!("hidden-{n}"),
                 Grantee::person(hidden.as_str()),
                 collab_types::document_node(workspace, "so.tilo.chat", &format!("tab:{n}")),
-                tilo_action_policy::KindSet::READ,
+                tilo_action_types::KindSet::READ,
                 tilo_action_policy::Answer::Deny,
                 Grantee::person(hex::encode(owner.user_public_key)),
             ))

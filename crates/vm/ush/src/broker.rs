@@ -758,7 +758,7 @@ impl BrokerState {
 
     fn perm_entries(&self) -> Vec<PermEntry> {
         use collab_types::caps::{Effect, Scope};
-        use tilo_action_policy::Lifetime;
+        use tilo_action_types::Lifetime;
         self.environment
             .current()
             .grants

@@ -2,9 +2,10 @@
 
 use tilo_action_policy::ActingPolicy as _;
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Context, Grant, Grantee, KindSet, TreePath, WorkspacePolicy,
+    Answer, Authority, Context, Grant, Grantee, TreePath, WorkspacePolicy,
     agent_answers::{self, AnswerScope},
 };
+use tilo_action_types::{ActionKind, KindSet};
 
 const WORKSPACE: &str = "r";
 const AGENT: &str = "helper";

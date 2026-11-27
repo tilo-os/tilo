@@ -6,7 +6,8 @@
 //! for decide one invocation, and every host decides it the same way — the
 //! Linux broker over its app sockets and the page over the apps it runs.
 
-use tilo_action_policy::{ActionKind, Answer, Authority, MemberAccess, TreePath};
+use tilo_action_policy::{Answer, Authority, MemberAccess, TreePath};
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::Caller;
 use tilo_desktop_model::Workspace;
 use tilo_member_types::AppId;

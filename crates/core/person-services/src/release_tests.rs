@@ -1320,7 +1320,7 @@ async fn a_tilolang_process_of_the_apps_own_keeps_and_reads_back_only_what_it_ke
     }
 }
 
-/// A read given once ([`tilo_action_policy::Lifetime::Once`]) releases the item once: the grant
+/// A read given once ([`tilo_action_types::Lifetime::Once`]) releases the item once: the grant
 /// is taken back as it is used, of two releases at the same moment only one is admitted, and the
 /// next release asks the person again.
 #[tokio::test]
@@ -1346,11 +1346,11 @@ async fn a_read_given_once_releases_the_item_once() {
         "bridge-reads-once",
         tilo_action_policy::Grantee::app(BRIDGE),
         release::read_node(&workspace, &token),
-        tilo_action_policy::KindSet::of(tilo_action_policy::ActionKind::Read),
+        tilo_action_types::KindSet::of(tilo_action_types::ActionKind::Read),
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(hex::encode(owner.user_public_key)),
     )
-    .with_lifetime(tilo_action_policy::Lifetime::Once);
+    .with_lifetime(tilo_action_types::Lifetime::Once);
     workspaces
         .put_workspace_grants(&workspace, &owner, [0x71; 32], vec![once])
         .await

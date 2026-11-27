@@ -9,9 +9,9 @@ use std::rc::Rc;
 use tilo_action_policy::reading::published_node;
 use tilo_action_policy::roles::{self, governance};
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Change, Context, Grant, Grantee, KindSet, MemberAccess, Role,
-    WorkspacePolicy,
+    Answer, Authority, Change, Context, Grant, Grantee, MemberAccess, Role, WorkspacePolicy,
 };
+use tilo_action_types::{ActionKind, KindSet};
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
     WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, workspace_governance_child,

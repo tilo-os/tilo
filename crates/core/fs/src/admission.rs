@@ -20,7 +20,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tilo_action_policy::{ActionKind, Answer, Context, MemberAccess, WorkspacePolicy};
+use tilo_action_policy::{Answer, Context, MemberAccess, WorkspacePolicy};
+use tilo_action_types::ActionKind;
 use tilo_lock::MutexRecover as _;
 use tilo_member_types::{Acting, MemberId};
 
@@ -269,7 +270,7 @@ mod tests {
                 tilo_action_policy::Grantee::agent("claude", OWNER),
                 tilo_action_policy::TreePath::workspace("w")
                     .joined(&fs_protocol::file_action::tree_node()),
-                tilo_action_policy::KindSet::UNDOABLE,
+                tilo_action_types::KindSet::UNDOABLE,
                 Answer::Deny,
                 tilo_action_policy::Grantee::person(OWNER),
             ));

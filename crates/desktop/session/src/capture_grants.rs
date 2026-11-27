@@ -50,7 +50,8 @@ pub(crate) fn ended(
 mod tests {
     use super::*;
     use collab_types::caps::{Access, CapOverride};
-    use tilo_action_policy::{Grantee, Lifetime};
+    use tilo_action_policy::Grantee;
+    use tilo_action_types::Lifetime;
     use tilo_desktop_model::Workspace;
 
     fn shell(caps: Vec<CapOverride>) -> Layout {

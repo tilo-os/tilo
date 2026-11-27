@@ -5,7 +5,8 @@
 use crate::ActingPolicy as _;
 use serde::{Deserialize, Serialize};
 
-use crate::{ActionKind, Answer, Authority, Context, Grant, TreePath, Verdict, WorkspacePolicy};
+use crate::{Answer, Authority, Context, Grant, TreePath, Verdict, WorkspacePolicy};
+use tilo_action_types::ActionKind;
 use tilo_clock::time::SystemTime;
 use tilo_member_types::Acting;
 

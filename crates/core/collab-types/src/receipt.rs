@@ -18,7 +18,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use tilo_actions::stamp::Label;
 
-use tilo_action_policy::{ActionKind, Answer, Context, Level, MemberAccess, TreePath};
+use tilo_action_policy::{Answer, Context, Level, MemberAccess, TreePath};
+use tilo_action_types::ActionKind;
 use tilo_actions::{HistoryOp, PathStep};
 use tilo_member_types::Acting;
 

@@ -534,7 +534,8 @@ impl Workspaces {
     /// Whether the device `device` may write `app`'s records in `workspace`
     /// now: what a host takes content pushed to it from.
     pub async fn may_push_content(&self, workspace: &str, device: [u8; 32], app: &str) -> bool {
-        use tilo_action_policy::{ActionKind, TreePath};
+        use tilo_action_policy::TreePath;
+        use tilo_action_types::ActionKind;
         let Some(peer) = self.state(workspace).await else {
             return false;
         };

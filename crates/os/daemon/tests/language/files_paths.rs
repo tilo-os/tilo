@@ -936,7 +936,7 @@ fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
             tilo_action_policy::Grantee::agent("scout", person.clone()),
             tilo_action_policy::TreePath::workspace(workspace.as_str())
                 .app(fs_protocol::tree::FILES_APP),
-            tilo_action_policy::KindSet::READ_UNDOABLE,
+            tilo_action_types::KindSet::READ_UNDOABLE,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(person.clone()),
         );
@@ -990,7 +990,7 @@ fn an_agent_on_a_turn_keeps_and_reads_the_folder_as_its_rules_allow() {
                 tilo_action_policy::Grantee::agent("scout", host.person().to_owned()),
                 tilo_action_policy::TreePath::workspace(workspace.as_str())
                     .app(fs_protocol::tree::FILES_APP),
-                tilo_action_policy::KindSet::READ_UNDOABLE,
+                tilo_action_types::KindSet::READ_UNDOABLE,
                 tilo_action_policy::Answer::Deny,
                 tilo_action_policy::Grantee::person(host.person().to_owned()),
             )],

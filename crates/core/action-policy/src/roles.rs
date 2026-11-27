@@ -3,10 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    Answer, Authority, Context, Grant, GrantId, Grantee, KindSet, Level, Lifetime, Role, TreePath,
-    Verdict,
-};
+use crate::{Answer, Authority, Context, Grant, GrantId, Grantee, Level, Role, TreePath, Verdict};
+use tilo_action_types::{KindSet, Lifetime};
 
 /// The id of `person`'s record of `kind`: a version-8 uuid derived from both, the same on every
 /// device of theirs, naming neither. `None` when `person` is not a person id (the lowercase hex
@@ -215,7 +213,7 @@ pub mod governance {
 /// beyond the document — it decides what other people see and do — so an
 /// agent's default asks before it, and the wire never lets one through on an
 /// answer that would need asking.
-pub const GOVERNANCE_KIND: crate::ActionKind = crate::ActionKind::Outside;
+pub const GOVERNANCE_KIND: tilo_action_types::ActionKind = tilo_action_types::ActionKind::Outside;
 
 /// The workspace's own resource: `workspace:<id>/kind:tilo.workspace`.
 #[must_use]
@@ -668,7 +666,7 @@ pub fn outside_capability_denial(
 pub fn outside_denial_stops(grant: &Grant, app: &str, capability: &str) -> bool {
     grant.grantee == Grantee::app(app)
         && grant.answer == Answer::Deny
-        && grant.kinds.contains(crate::ActionKind::Outside)
+        && grant.kinds.contains(tilo_action_types::ActionKind::Outside)
         && outside_capability_of(grant.id.as_str())
             .is_none_or(|(named_app, named)| named_app == app && named == capability)
 }

@@ -180,7 +180,8 @@ impl AppActionAuthorityProjection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_action_policy::{ActionKind, Answer, Context, Grant, Grantee, KindSet, Role};
+    use tilo_action_policy::{Answer, Context, Grant, Grantee, Role};
+    use tilo_action_types::{ActionKind, KindSet};
 
     fn policy() -> AppActionAuthorityProjection {
         let mut workspace = WorkspacePolicy::new("workspace-a", "person-a");

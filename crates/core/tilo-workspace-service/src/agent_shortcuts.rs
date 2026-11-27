@@ -255,7 +255,7 @@ fn answering_grant(agent: &str, triggers: &[TriggerSpec]) -> Vec<tilo_action_pol
         AGENT_KIND,
         Some(&agent_resource(agent)),
         ANSWER,
-        tilo_action_policy::KindSet::UNDOABLE,
+        tilo_action_types::KindSet::UNDOABLE,
         tilo_action_policy::Answer::Allow,
     )];
     grant.extend(tilo_automation::grant::trigger_rules(triggers));
@@ -316,7 +316,8 @@ fn watching(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_action_policy::{ActionKind, Answer};
+    use tilo_action_policy::Answer;
+    use tilo_action_types::ActionKind;
     use tilo_automation::{StepKind, grant_answer, step_node};
 
     /// The shortcut an agent comes with may start that agent's answer, the one step it has, and

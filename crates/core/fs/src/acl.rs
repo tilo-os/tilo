@@ -54,7 +54,7 @@ struct CapBinding {
     /// restrictions, grantees and expiries stay intact.
     caps: Vec<CapOverride>,
     /// The instant capability expiry is evaluated at. `None` reads the system clock every check, so
-    /// a [`tilo_action_policy::Lifetime::Until`] expires mid-mount; `Some(t)` pins every check for tests.
+    /// a [`tilo_action_types::Lifetime::Until`] expires mid-mount; `Some(t)` pins every check for tests.
     /// Distinct from `decide_capability`'s `now: None`, which skips expiry and would make every
     /// expired capability immortal.
     fixed_now: Option<u64>,
@@ -638,7 +638,7 @@ mod tests {
                 Scope::FsPath("/var/workspace/team/documents".into()),
                 CapAccess::Read,
             )
-            .lasting(tilo_action_policy::Lifetime::Until(20_000));
+            .lasting(tilo_action_types::Lifetime::Until(20_000));
             let acl =
                 WorkspaceAcl::from_capabilities(ALICE, std::slice::from_ref(&grant), &[], Some(10));
             assert!(!acl.permits(&ALICE, "/", Access::Read));

@@ -1,6 +1,7 @@
 //! Shared current authority decisions.
 use super::SystemTime;
-use tilo_action_policy::{ActionKind, Answer, Authority};
+use tilo_action_policy::{Answer, Authority};
+use tilo_action_types::ActionKind;
 
 /// Whether `authority` may read the record `record` of `app` in `workspace`.
 pub(in crate::state) fn document_read(

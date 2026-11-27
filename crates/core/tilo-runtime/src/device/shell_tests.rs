@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use tilo_action_policy::share::{ShareAccess, is_of_share};
-use tilo_action_policy::{ActionKind, Answer, Authority, Context, Grantee, Role, TreePath};
+use tilo_action_policy::{Answer, Authority, Context, Grantee, Role, TreePath};
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::RemoteActionTarget;
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 

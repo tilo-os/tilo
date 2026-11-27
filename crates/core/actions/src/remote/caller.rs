@@ -1133,7 +1133,7 @@ pub struct KeptCaller {
     device_public_key: Option<[u8; 32]>,
     workspace: Option<String>,
     session_delegated: bool,
-    within: Option<(tilo_action_policy::ActionKind, bool)>,
+    within: Option<(tilo_action_types::ActionKind, bool)>,
     turn: Option<tilo_action_policy::turn::Turn>,
     roster_created_at: Option<i64>,
     approved_as: Option<String>,

@@ -112,7 +112,7 @@ fn preset(name: &str) -> tilo_action_policy::Preset {
         description: String::new(),
         rules: vec![tilo_action_policy::Rule::new(
             tilo_action_policy::TreePath::root().app("so.tilo.notes"),
-            tilo_action_policy::KindSet::READ,
+            tilo_action_types::KindSet::READ,
             tilo_action_policy::Answer::Allow,
         )],
     }

@@ -17,7 +17,7 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use tilo_action_policy::Lifetime;
+use tilo_action_types::Lifetime;
 
 /// How long the person allows the Host target on this device, as the session last handed it. Their
 /// answer lives in their own store with their other device answers; nothing of it is written here,

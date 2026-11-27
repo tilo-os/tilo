@@ -1420,9 +1420,10 @@ fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
 fn a_reply_goes_out_as_far_as_the_workspace_lets_mail_send() {
     use collaboration::RouteSpec;
     use tilo_action_policy::roles::outside_capability_denial;
+    use tilo_action_types::KindSet;
     use tilolang_process::hosted::Spec;
     use ui::permissions::policy::{
-        Answer, Grant, Grantee, KindSet, MemberAccess, TreePath, WorkspacePolicy,
+        Answer, Grant, Grantee, MemberAccess, TreePath, WorkspacePolicy,
     };
 
     type Denials = fn(&str) -> Vec<Grant>;

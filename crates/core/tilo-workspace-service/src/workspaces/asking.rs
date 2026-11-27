@@ -13,7 +13,8 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use tilo_action_policy::{ActionKind, Answer, Context, Grantee, TreePath, decide};
+use tilo_action_policy::{Answer, Context, Grantee, TreePath, decide};
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::asked::{
     AskedBy, AskedDispatch, AskedFacts, AskedRecords, Named, RecordRef, Resolve,
 };

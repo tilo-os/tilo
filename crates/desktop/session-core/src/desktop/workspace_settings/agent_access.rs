@@ -8,7 +8,8 @@
 //! take back.
 
 use tilo_action_policy::agent_answers::{self, AnswerScope};
-use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, PolicyEdit, decide};
+use tilo_action_policy::{Answer, Grant, Grantee, PolicyEdit, decide};
+use tilo_action_types::ActionKind;
 use tilo_desktop_model::Workspace;
 use tilo_sort::CompactSort as _;
 

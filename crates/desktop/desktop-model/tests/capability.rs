@@ -5,7 +5,8 @@
 const NOW: u64 = 1_800_000_000;
 
 use collab_types::caps::{Access, CapDecision, CapOverride, DeviceCap, ResourceRef, Scope};
-use tilo_action_policy::{Grantee, Lifetime};
+use tilo_action_policy::Grantee;
+use tilo_action_types::Lifetime;
 use tilo_desktop_model::*;
 
 fn grant(app: &str, scope: Scope, access: Access, lifetime: Lifetime) -> CapOverride {
@@ -111,7 +112,8 @@ tilo_test_env::scenario! {
     // What the broker re-checks at: the earliest expiry still ahead, over every
     // workspace, and nothing for grants that never expire or already did.
     {
-        use tilo_action_policy::{Answer, Grant, KindSet, TreePath};
+        use tilo_action_policy::{Answer, Grant, TreePath};
+        use tilo_action_types::KindSet;
         const SOON: u64 = NOW + 5;
         const LATER: u64 = NOW + 60;
         let member = |person: &str, until: Option<u64>| {

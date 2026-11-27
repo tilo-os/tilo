@@ -4,7 +4,8 @@
 //! has. A developer pushes a version and a bot's program through that API
 //! (`tilolang push`, proved in `workspace_actions/api_apps.rs`); here the
 //! workspace's server is asked directly and every member follows.
-use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
+use tilo_action_policy::{Answer, Grant, Grantee, roles, roles::governance};
+use tilo_action_types::KindSet;
 use tilo_peer_state::workspace_membership::{AppRelease, WorkspaceMembershipCommand};
 
 use super::*;

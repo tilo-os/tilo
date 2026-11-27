@@ -2,9 +2,8 @@
 //! policy, as the host gives it to the runtime for `members(r)`. A member the grants let read
 //! reads, one they keep out does not, and someone who is no member of the workspace never does.
 
-use tilo_action_policy::{
-    Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
-};
+use tilo_action_policy::{Answer, Grant, Grantee, MemberAccess, Role, TreePath, WorkspacePolicy};
+use tilo_action_types::KindSet;
 use tilo_member_types::PersonId;
 use tilolang_runtime::{Actor, ResourceRef, Value};
 use tilolang_tilo::meta::MetaExt as _;

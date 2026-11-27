@@ -21,7 +21,8 @@
 use std::time::Duration;
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
-use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
+use tilo_action_policy::{Answer, Grant, Grantee, roles, roles::governance};
+use tilo_action_types::KindSet;
 use tilo_actions::remote::{
     CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage,
     RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_INVITATIONS,

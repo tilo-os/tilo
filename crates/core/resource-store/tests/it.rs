@@ -5855,7 +5855,7 @@ fn app_surface(kind: &str) -> tilo_actions::surface::Surface {
             name: String::new(),
             label: "Save".to_owned(),
             description: None,
-            kind: tilo_actions::policy::ActionKind::Undoable,
+            kind: tilo_action_types::ActionKind::Undoable,
             destructive: false,
             incoming_message: false,
             params: Vec::new(),

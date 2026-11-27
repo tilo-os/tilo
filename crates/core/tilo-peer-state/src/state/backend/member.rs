@@ -21,7 +21,7 @@ pub(in crate::state) fn role_in(
         grant.grantee.person_id() == Some(person)
             && grant.node == node
             && grant.answer == tilo_action_policy::Answer::Deny
-            && grant.kinds == tilo_action_policy::KindSet::ALL
+            && grant.kinds == tilo_action_types::KindSet::ALL
     });
     (!blocked).then_some(role)
 }

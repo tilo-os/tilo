@@ -86,7 +86,7 @@ impl DeviceAnswers {
     #[must_use]
     pub fn answering(answer: &DeviceAnswer) -> tilo_resource::Invoke<Self> {
         let until_ms = match answer.lifetime {
-            tilo_action_policy::Lifetime::Until(ms) => Some(i64::try_from(ms).unwrap_or(i64::MAX)),
+            tilo_action_types::Lifetime::Until(ms) => Some(i64::try_from(ms).unwrap_or(i64::MAX)),
             _ => None,
         };
         Self::ANSWER.with((
@@ -121,8 +121,8 @@ impl DeviceAnswers {
                     },
                     lifetime: kept
                         .until_ms
-                        .map_or(tilo_action_policy::Lifetime::UntilRevoked, |ms| {
-                            tilo_action_policy::Lifetime::Until(u64::try_from(ms).unwrap_or(0))
+                        .map_or(tilo_action_types::Lifetime::UntilRevoked, |ms| {
+                            tilo_action_types::Lifetime::Until(u64::try_from(ms).unwrap_or(0))
                         }),
                 })
             })

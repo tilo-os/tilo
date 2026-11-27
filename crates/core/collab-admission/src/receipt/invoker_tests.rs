@@ -5,9 +5,8 @@
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ROOT};
 use tilo_action_policy::ActingPolicy as _;
-use tilo_action_policy::{
-    Answer, Context, Grant, Grantee, KindSet, MemberAccess, Role, WorkspacePolicy,
-};
+use tilo_action_policy::{Answer, Context, Grant, Grantee, MemberAccess, Role, WorkspacePolicy};
+use tilo_action_types::KindSet;
 use tilo_actions::{ActionContext, ActionInvoker, ActionKey, Did, VerbCall};
 use tilo_member_types::Acting;
 

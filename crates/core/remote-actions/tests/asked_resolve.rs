@@ -13,7 +13,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet};
+use tilo_action_policy::{Answer, Grant, Grantee};
+use tilo_action_types::{ActionKind, KindSet};
 use tilo_actions::InvocationId;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::asked::{

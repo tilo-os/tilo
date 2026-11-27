@@ -1822,7 +1822,7 @@ mod tests {
             "agent-member:helper",
             tilo_action_policy::Grantee::agent("helper", &keeper),
             node,
-            tilo_action_policy::KindSet::READ,
+            tilo_action_types::KindSet::READ,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(&keeper),
         ));

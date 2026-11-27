@@ -919,7 +919,7 @@ impl ActionFixture {
             tilo_ui_base::permissions::PermissionContext::granted(
                 &tilo_ui_base::permissions::MemberId::person("fixture-user"),
                 &tilo_ui_base::permissions::TreePath::root(),
-                tilo_ui_base::permissions::policy::KindSet::ALL,
+                tilo_action_types::KindSet::ALL,
                 Some(110),
             )
             .at_unix_time(100),
@@ -1535,7 +1535,7 @@ fn bound_controls_read_the_host_authority_only_when_it_changes() {
     const WORKSPACE: &str = "00000000-0000-0000-0000-000000000004";
     const APP: &str = "so.tilo.binding-probe";
     let owner = AppActionAuthorityProjection::project(
-        &tilo_action_policy::WorkspacePolicy::new(WORKSPACE, "fixture-user"),
+        &tilo_actions::policy::WorkspacePolicy::new(WORKSPACE, "fixture-user"),
         APP,
         "fixture-user",
         false,

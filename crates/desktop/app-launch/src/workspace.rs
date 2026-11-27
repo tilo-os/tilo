@@ -190,7 +190,7 @@ impl Workspace {
             .person_on_device(&self.person, false)
             .decide(
                 &policy.node().app(app),
-                tilo_action_policy::ActionKind::Undoable,
+                tilo_action_types::ActionKind::Undoable,
                 &tilo_action_policy::Context::at_time(std::time::SystemTime::now()),
             )
             .answer

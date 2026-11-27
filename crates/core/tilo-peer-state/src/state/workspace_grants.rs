@@ -256,7 +256,8 @@ mod tests {
     )]
     fn an_approved_key_acts_as_its_persons_agent_until_its_grant_is_revoked() -> TestResult {
         use ed25519_dalek::SigningKey;
-        use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
+        use tilo_action_policy::{Answer, Context, TreePath};
+        use tilo_action_types::ActionKind;
         use tilo_member_types::Acting;
         use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
         let (mut peer, owner_copy, _, server, now) = crate::admission_tests::seeded();

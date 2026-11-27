@@ -12,9 +12,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use tilo_action_policy::ActingPolicy as _;
 
-use tilo_action_policy::{
-    ActionKind, Answer, Authority as Policy, Context, Grantee, MemberAccess, TreePath,
-};
+use tilo_action_policy::{Answer, Authority as Policy, Context, Grantee, MemberAccess, TreePath};
+use tilo_action_types::ActionKind;
 use tilo_member_types::Acting;
 use tilo_member_types::{MemberId, PersonId};
 use tilolang_runtime::members::{Member, Reads};
@@ -599,7 +598,8 @@ fn reads_node(access: &MemberAccess, me: &PersonId, who: &Actor, node: &TreePath
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_action_policy::{Grant, KindSet, Role, WorkspacePolicy};
+    use tilo_action_policy::{Grant, Role, WorkspacePolicy};
+    use tilo_action_types::KindSet;
 
     fn access() -> MemberAccess {
         let mut policy = WorkspacePolicy::new("workspace", "ada");

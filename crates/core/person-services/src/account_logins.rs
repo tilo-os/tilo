@@ -102,7 +102,8 @@ impl crate::PersonServices {
         app: Option<&str>,
         confirmed: bool,
     ) -> Result<(), String> {
-        use tilo_action_policy::{ActionKind, Answer, Context};
+        use tilo_action_policy::{Answer, Context};
+        use tilo_action_types::ActionKind;
         let now = tilo_clock::wall();
         let device = by.device_public_key().ok_or(NOT_A_MEMBER_DEVICE)?;
         let state = self

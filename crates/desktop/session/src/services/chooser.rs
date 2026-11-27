@@ -350,7 +350,8 @@ pub(crate) fn launch_binds(
     app: &str,
 ) -> Vec<launcher::run::GrantedPath> {
     use std::collections::BTreeMap;
-    use tilo_action_policy::{ActionKind, Answer, Context, Grantee, Level};
+    use tilo_action_policy::{Answer, Context, Grantee, Level};
+    use tilo_action_types::ActionKind;
     let Ok(policy) = view.policy(workspace) else {
         return Vec::new();
     };
@@ -442,7 +443,7 @@ impl PolicyFiles {
         node: &WorkspaceNode,
         app: &str,
         write: bool,
-    ) -> Option<tilo_action_policy::KindSet> {
+    ) -> Option<tilo_action_types::KindSet> {
         let policy = self.view.policy(&node.workspace).ok()?;
         granted_kinds(&policy, node, app, write, tilo_clock::unix_now())
     }
@@ -549,7 +550,7 @@ fn granted_kinds(
     app: &str,
     write: bool,
     now: u64,
-) -> Option<tilo_action_policy::KindSet> {
+) -> Option<tilo_action_types::KindSet> {
     let id = grant_id(node, app, write);
     policy
         .grants
@@ -563,16 +564,16 @@ fn granted_kinds(
 }
 
 /// What a choice gives: reading it, and changing it when `write`.
-fn kinds_of(write: bool) -> tilo_action_policy::KindSet {
+fn kinds_of(write: bool) -> tilo_action_types::KindSet {
     if write {
-        tilo_action_policy::KindSet::READ_UNDOABLE
+        tilo_action_types::KindSet::READ_UNDOABLE
     } else {
-        tilo_action_policy::KindSet::READ
+        tilo_action_types::KindSet::READ
     }
 }
 
 /// Whether `held` covers every kind in `wanted`.
-fn covers(held: tilo_action_policy::KindSet, wanted: tilo_action_policy::KindSet) -> bool {
+fn covers(held: tilo_action_types::KindSet, wanted: tilo_action_types::KindSet) -> bool {
     wanted.iter().all(|kind| held.contains(kind))
 }
 

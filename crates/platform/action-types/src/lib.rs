@@ -14,7 +14,11 @@ use uuid::Uuid;
 use uuid::timestamp::{Timestamp, context::ContextV7};
 
 pub mod history;
+mod kind;
+mod lifetime;
 pub use history::HistoryEntryId;
+pub use kind::{ActionKind, Confirms, KindSet};
+pub use lifetime::{Lifetime, OFFERED_SPAN_MS};
 
 /// Field separator inside a flattened composite key — a unit-separator
 /// control char never appears in a resource or action id.

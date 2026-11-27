@@ -518,7 +518,7 @@ async fn assert_scribed_as_agent(
         "scribe-writes-the-issues",
         tilo_action_policy::Grantee::agent("scribe", acted_for.clone()),
         tilo_action_policy::TreePath::workspace(context.workspace_id()),
-        tilo_action_policy::KindSet::UNDOABLE,
+        tilo_action_types::KindSet::UNDOABLE,
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(acted_for.clone()),
     );

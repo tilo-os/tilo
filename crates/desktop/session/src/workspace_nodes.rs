@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use serde_json::json;
 use tilo_action_policy::share::{ShareAccess, is_of_share};
-use tilo_action_policy::{ActionKind, Authority, Context, TreePath, WorkspacePolicy};
+use tilo_action_policy::{Authority, Context, TreePath, WorkspacePolicy};
+use tilo_action_types::ActionKind;
 use tilo_broker_core::services::{WorkspaceNodeActions, WorkspaceNodeAsk, WorkspaceNodeOutcome};
 use tilo_desktop_model::WorkspaceId;
 

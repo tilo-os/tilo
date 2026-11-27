@@ -37,7 +37,7 @@ fn broker() -> (
             format!("{agent}-runs-jobs"),
             tilo_action_policy::Grantee::agent(agent, "owner"),
             workspace.policy.node().app(APP),
-            tilo_action_policy::KindSet::ALL,
+            tilo_action_types::KindSet::ALL,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person("owner"),
         );

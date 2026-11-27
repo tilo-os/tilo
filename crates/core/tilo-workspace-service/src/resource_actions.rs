@@ -253,7 +253,7 @@ fn under_policy(
     scoped
         .policy
         .grants
-        .retain(|grant| grant.lifetime != tilo_action_policy::Lifetime::Once);
+        .retain(|grant| grant.lifetime != tilo_action_types::Lifetime::Once);
     Some(scoped)
 }
 

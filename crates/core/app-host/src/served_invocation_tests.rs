@@ -877,7 +877,7 @@ async fn a_person_stops_their_agents_run_and_another_member_learns_nothing_of_it
                         id,
                         grantee,
                         node.clone(),
-                        tilo_action_policy::KindSet::ALL,
+                        tilo_action_types::KindSet::ALL,
                         tilo_action_policy::Answer::Allow,
                         tilo_action_policy::Grantee::person(person_id.clone()),
                     ));

@@ -168,7 +168,7 @@ pub struct Invocation<'a> {
     /// The action's node.
     pub node: &'a TreePath,
     /// The kind of action it is.
-    pub kind: crate::ActionKind,
+    pub kind: tilo_action_types::ActionKind,
     /// Whether it exercises authority over the workspace or others in it
     /// ([`crate::Verdict::privileged`]).
     pub privileged: bool,
@@ -190,7 +190,7 @@ pub struct Invocation<'a> {
 #[must_use]
 pub fn answer_at(
     authority: &Authority<'_>,
-    (node, kind, privileged): (&TreePath, crate::ActionKind, bool),
+    (node, kind, privileged): (&TreePath, tilo_action_types::ActionKind, bool),
     ceiling: Option<Reach>,
     cx: &Context<'_>,
 ) -> (Answer, Vec<GrantId>) {
@@ -203,7 +203,7 @@ pub fn answer_at(
 /// now.
 fn verdict_at<'a>(
     authority: &'a Authority<'_>,
-    (node, kind, privileged): (&TreePath, crate::ActionKind, bool),
+    (node, kind, privileged): (&TreePath, tilo_action_types::ActionKind, bool),
     ceiling: Option<Reach>,
     cx: &Context<'_>,
 ) -> crate::Verdict<'a> {
@@ -253,7 +253,7 @@ pub fn admit_invocation(
         Invoked {
             answer,
             attended: invocation.attended,
-            outside: invocation.kind == crate::ActionKind::Outside,
+            outside: invocation.kind == tilo_action_types::ActionKind::Outside,
             answered_in_advance,
             resource,
         },
@@ -265,10 +265,8 @@ pub fn admit_invocation(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        ActionKind, Answer, Context, Grant, Grantee, KindSet, Role, SESSION_ANSWER_PREFIX, Verdict,
-        roles,
-    };
+    use crate::{Answer, Context, Grant, Grantee, Role, SESSION_ANSWER_PREFIX, Verdict, roles};
+    use tilo_action_types::{ActionKind, KindSet};
     use tilo_member_types::Acting;
 
     const WORKSPACE: &str = "w";
@@ -610,7 +608,7 @@ mod tests {
                 "manifest",
                 Grantee::app(app),
                 node.clone(),
-                crate::KindSet::READ,
+                tilo_action_types::KindSet::READ,
                 Answer::Allow,
                 Grantee::person("owner"),
             )];

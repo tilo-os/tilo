@@ -33,7 +33,7 @@ impl WorkspaceGovernanceServices for Governance {
             address: tilo_actions::ActionAddress::new(RESOURCE, ACTION),
             resource_kind: RESOURCE.into(),
             contract: tilo_actions::ActionContract {
-                kind: tilo_action_policy::ActionKind::Outside,
+                kind: tilo_action_types::ActionKind::Outside,
                 confirmation: tilo_actions::ConfirmationPolicy::Confirm,
                 ..Default::default()
             },
@@ -141,7 +141,7 @@ fn waits_to_import() -> ActionCallError {
         destructive: true,
         plural: Some("Legacy media".into()),
         kind: RESOURCE.into(),
-        effect: Some(tilo_action_policy::ActionKind::Outside),
+        effect: Some(tilo_action_types::ActionKind::Outside),
         ..AskedFacts::default()
     })
 }

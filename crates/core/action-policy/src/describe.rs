@@ -4,7 +4,8 @@
 use std::cmp::Reverse;
 use std::collections::BTreeMap;
 
-use crate::{ActionKind, Answer, Grant, Level, Lifetime, Segment, TreePath};
+use crate::{Answer, Grant, Level, Segment, TreePath};
+use tilo_action_types::{ActionKind, Lifetime};
 
 /// Names for nodes. The default uses ids; a host that knows app and resource
 /// names supplies them, and the words the whole tree is called in the
@@ -179,7 +180,7 @@ const HIDDEN_NOT_SEALED: &str = " Tilo keeps it from them, but it is not encrypt
 /// What one grant answers for each kind of action it covers: "everything
 /// allowed", "reading allowed", "undoable changes and outside effects allowed".
 fn grant_clauses(grant: &Grant) -> String {
-    if grant.kinds == crate::KindSet::ALL {
+    if grant.kinds == tilo_action_types::KindSet::ALL {
         return match grant.answer {
             Answer::Ask => "everything asks first".to_owned(),
             answer => format!("everything {}", answer.phrase()),

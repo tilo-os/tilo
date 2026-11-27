@@ -7,9 +7,8 @@
 //! comes in with both of its people, or with that person alone when no person opened it.
 
 use collab_types::history::verbs::HistoryView;
-use tilo_action_policy::{
-    Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
-};
+use tilo_action_policy::{Answer, Grant, Grantee, MemberAccess, Role, TreePath, WorkspacePolicy};
+use tilo_action_types::KindSet;
 use tilo_actions::ResourceSpec;
 use tilo_member_types::PersonId;
 use tilolang_runtime::rich::{Reference, RichValue};

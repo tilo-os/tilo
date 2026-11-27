@@ -36,7 +36,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
-use tilo_action_policy::Lifetime;
+use tilo_action_types::Lifetime;
 
 use peer_facts::PeerFacts;
 use serde::{Deserialize, Serialize};

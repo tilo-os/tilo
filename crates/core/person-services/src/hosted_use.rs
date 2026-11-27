@@ -69,7 +69,8 @@ use std::path::Path;
 
 use accounts::vault_items::{self, Allowance, ItemId, Place, UsedFor, VaultItems};
 use serde_json::{Map, Value, json};
-use tilo_action_policy::{ActionKind, Answer, Context, Grantee, Party, TreePath, WorkspacePolicy};
+use tilo_action_policy::{Answer, Context, Grantee, Party, TreePath, WorkspacePolicy};
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::ActionCallError::{self, InvalidRequest, NotPermitted, UnknownAction};
 #[cfg(feature = "agents")]
 use tilo_actions::remote::CatalogueRow;

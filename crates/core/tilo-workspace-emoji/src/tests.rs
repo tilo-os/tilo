@@ -1,5 +1,6 @@
 use super::{EmojiImage, MAX_EMOJI, MAX_IMAGE_BYTES, WorkspaceEmoji, workspace_emoji};
-use tilo_action_policy::{ActionKind, Answer, Authority, Context, Role, WorkspacePolicy, roles};
+use tilo_action_policy::{Answer, Authority, Context, Role, WorkspacePolicy, roles};
+use tilo_action_types::ActionKind;
 use tilo_resource::AppNamed;
 use tilo_resource::{Model as _, Replica, Resource as _};
 

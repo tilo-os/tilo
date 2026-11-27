@@ -10,7 +10,8 @@
 //! The whole batch is refused or the whole candidate is returned: a partial
 //! merge would advance local heads past refused operations.
 use automerge::AutoCommit;
-use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
+use tilo_action_policy::{Answer, Context, TreePath};
+use tilo_action_types::ActionKind;
 
 /// How the receiver knows the sender's access in the workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

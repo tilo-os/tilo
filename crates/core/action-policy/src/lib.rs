@@ -2,8 +2,8 @@
 //!
 //! Authority is granted over the published tree of workspaces, apps,
 //! resources, items and actions. A [`Grant`] names a [`Grantee`], a node ([`TreePath`]),
-//! the kinds of action it covers ([`KindSet`]), an [`Answer`] and a
-//! [`Lifetime`]. [`decide`] is the one function every action API, host and receiver
+//! the kinds of action it covers ([`KindSet`](tilo_action_types::KindSet)), an [`Answer`] and a
+//! [`Lifetime`](tilo_action_types::Lifetime). [`decide`] is the one function every action API, host and receiver
 //! uses: the most specific covering node wins, then a personal override takes
 //! precedence over a role rule. Otherwise Deny beats Ask beats Allow, and no
 //! grant means Deny.
@@ -36,7 +36,6 @@ pub mod earlier;
 pub mod edits;
 pub mod entry;
 mod grant;
-mod kind;
 mod member_access;
 mod path;
 mod policy_edit;
@@ -79,8 +78,7 @@ pub fn session_answers<'g>(
         .filter(move |grant| grant.id.as_str().starts_with(&prefix))
 }
 
-pub use grant::{Answer, Context, Grant, GrantId, Grantee, Lifetime, OFFERED_SPAN_MS, Role};
-pub use kind::{ActionKind, Confirms, KindSet};
+pub use grant::{Answer, Context, Grant, GrantId, Grantee, Role};
 pub use member_access::MemberAccess;
 pub use path::{Level, PathError, Segment, Specificity, TreePath};
 pub use policy_edit::{PolicyEdit, PresetMutationError, sort_presets, until_secs};

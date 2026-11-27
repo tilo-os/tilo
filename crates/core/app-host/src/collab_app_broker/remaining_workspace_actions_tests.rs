@@ -259,7 +259,7 @@ fn keyboard_rechecks_live_policy_and_execution_after_ownership() {
                             tilo_action_policy::Grantee::person("owner"),
                             tilo_action_policy::TreePath::workspace(workspace_id)
                                 .app("so.tilo.settings"),
-                            tilo_action_policy::KindSet::READ,
+                            tilo_action_types::KindSet::READ,
                             tilo_action_policy::Answer::Deny,
                             tilo_action_policy::Grantee::person("owner"),
                         ));

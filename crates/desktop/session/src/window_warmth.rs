@@ -186,7 +186,7 @@ fn workspace_sync(
         workspace.policy.answer_at(
             &person,
             &workspace.policy.node().app(app),
-            tilo_action_policy::ActionKind::Undoable,
+            tilo_action_types::ActionKind::Undoable,
             tilo_clock::unix_now(),
         ) == tilo_action_policy::Answer::Allow
     });

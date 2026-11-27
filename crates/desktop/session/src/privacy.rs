@@ -650,8 +650,8 @@ fn capability_of_device(cap: collab_types::caps::DeviceCap) -> Option<Capability
 }
 
 /// How long an answer stands, and the moment it ends at when it is timed.
-fn standing_of(lifetime: tilo_action_policy::Lifetime) -> (Standing, i64) {
-    use tilo_action_policy::Lifetime;
+fn standing_of(lifetime: tilo_action_types::Lifetime) -> (Standing, i64) {
+    use tilo_action_types::Lifetime;
     match lifetime {
         Lifetime::Once => (Standing::Once, 0),
         Lifetime::Session => (Standing::Session, 0),
@@ -726,7 +726,7 @@ mod tests {
                 } else {
                     tilo_action_policy::Answer::Deny
                 },
-                lifetime: tilo_action_policy::Lifetime::UntilRevoked,
+                lifetime: tilo_action_types::Lifetime::UntilRevoked,
             },
             device_label: "Laptop".into(),
             this_device: true,

@@ -951,7 +951,7 @@ mod tests {
             "session-answer:scribe",
             tilo_action_policy::Grantee::agent("scribe", "ada".to_owned()),
             node,
-            tilo_action_policy::KindSet::ALL,
+            tilo_action_types::KindSet::ALL,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person("ada".to_owned()),
         );

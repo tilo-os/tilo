@@ -11,6 +11,7 @@ name = "tilolang_workspace"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-action-types.workspace = true
 tilo-member-types.workspace = true
 tilolang-tilo = { version = "0.1.0", path = "../tilolang-tilo" }
 # The service whose records these are: its store, its policy, its lifecycle, and the route a

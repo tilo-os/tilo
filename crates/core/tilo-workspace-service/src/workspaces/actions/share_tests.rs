@@ -66,8 +66,8 @@ async fn invoke(workspaces: &Workspaces, device: &DeviceCert, ask: Ask) -> Resul
                 .map_err(|error| error.to_string())?;
             drop(held);
             return Ok(json!({
-                "read": member.allows(&node, tilo_action_policy::ActionKind::Read, now),
-                "undoable": member.allows(&node, tilo_action_policy::ActionKind::Undoable, now),
+                "read": member.allows(&node, tilo_action_types::ActionKind::Read, now),
+                "undoable": member.allows(&node, tilo_action_types::ActionKind::Undoable, now),
             }));
         }
     }

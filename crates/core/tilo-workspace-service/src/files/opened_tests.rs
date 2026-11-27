@@ -366,7 +366,7 @@ impl Put {
                 format!("{id}-files"),
                 tilo_action_policy::Grantee::agent(id, person),
                 tilo_action_policy::TreePath::workspace(&self.name).app(FILES_APP),
-                tilo_action_policy::KindSet::READ_UNDOABLE,
+                tilo_action_types::KindSet::READ_UNDOABLE,
                 tilo_action_policy::Answer::Allow,
                 tilo_action_policy::Grantee::person(person),
             )],

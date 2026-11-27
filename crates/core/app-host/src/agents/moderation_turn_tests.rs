@@ -227,9 +227,9 @@ async fn a_moderation_turns_caller_carries_the_saver_and_the_author() {
 fn a_moderation_turn_removes_a_message_only_when_the_moderator_who_saved_it_may() {
     use tilo_action_policy::agent_answers::{self, AnswerScope};
     use tilo_action_policy::{
-        ActionKind, Answer, Context, Grant, Grantee, KindSet, MemberAccess, Role, TreePath,
-        WorkspacePolicy,
+        Answer, Context, Grant, Grantee, MemberAccess, Role, TreePath, WorkspacePolicy,
     };
+    use tilo_action_types::{ActionKind, KindSet};
 
     let root = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
     let owner = hex::encode(root.verifying_key().to_bytes());

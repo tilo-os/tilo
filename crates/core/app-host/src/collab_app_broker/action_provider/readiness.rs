@@ -71,7 +71,7 @@ impl AppBrokerState {
         if !policy.may_in(
             &workspace,
             &app_node(&workspace, app_id),
-            tilo_action_policy::ActionKind::Undoable,
+            tilo_action_types::ActionKind::Undoable,
             now,
         ) {
             let node = app_node(&workspace, app_id);
@@ -80,7 +80,7 @@ impl AppBrokerState {
                 caller = %policy.actor(),
                 owner = workspace.policy.owner().unwrap_or("none"),
                 direct = policy.direct(),
-                answer = ?policy.answer_in(&workspace, &node, tilo_action_policy::ActionKind::Undoable, now),
+                answer = ?policy.answer_in(&workspace, &node, tilo_action_types::ActionKind::Undoable, now),
                 "opening an app was refused: the workspace does not let the caller open it"
             );
             return Err(ActionCallError::NotPermitted);
@@ -94,7 +94,7 @@ impl AppBrokerState {
             policy.may_in(
                 &workspace,
                 &workspace.policy.node(),
-                tilo_action_policy::ActionKind::Undoable,
+                tilo_action_types::ActionKind::Undoable,
                 now,
             )
         });

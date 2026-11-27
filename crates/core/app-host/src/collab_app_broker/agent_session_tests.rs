@@ -36,7 +36,7 @@ fn agent_in_session(f: &Fixture) -> (AgentConnection, Caller) {
             ("scribe", &person),
             (
                 &AnswerScope::app("so.tilo.notes"),
-                tilo_action_policy::ActionKind::Undoable,
+                tilo_action_types::ActionKind::Undoable,
             ),
             tilo_action_policy::Answer::Ask,
             tilo_action_policy::Grantee::person(person.clone()),

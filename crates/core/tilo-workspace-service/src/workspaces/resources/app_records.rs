@@ -5,7 +5,8 @@
 //! where nobody looks.
 
 use collab_types::store::wire::Command;
-use tilo_action_policy::{ActionKind, Answer, Authority, Context, TreePath};
+use tilo_action_policy::{Answer, Authority, Context, TreePath};
+use tilo_action_types::ActionKind;
 use tilo_resource_store::Stamp;
 
 use super::super::Workspaces;

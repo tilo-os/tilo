@@ -23,7 +23,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use tilo_action_policy::{ActionKind, Answer, Context};
+use tilo_action_policy::{Answer, Context};
+use tilo_action_types::ActionKind;
 use tilo_actions::ResourceSpec;
 use tilo_app_launch::Connects as _;
 use tilo_desktop_model::TileContent;

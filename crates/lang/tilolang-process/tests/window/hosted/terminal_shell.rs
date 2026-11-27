@@ -463,7 +463,7 @@ fn a_terminal_window_runs_a_real_shell_its_refusals_are_offered_again_and_exit_c
     let again = control_named(&mut app, REFUSED).expect("the refusal is offered again");
 
     // They allow it, as their Settings does, and try again: the shell opens, at the device.
-    ush::host::hand_allow(Some(tilo_action_policy::Lifetime::Once));
+    ush::host::hand_allow(Some(tilo_action_types::Lifetime::Once));
     app.harness().click_named(&again).unwrap();
     wait_for(&mut app, "the device's own shell opens", live);
 

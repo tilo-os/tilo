@@ -1,6 +1,7 @@
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ROOT};
-use tilo_action_policy::{Answer, Context, Grant, Grantee, KindSet, Party, roles};
+use tilo_action_policy::{Answer, Context, Grant, Grantee, Party, roles};
+use tilo_action_types::KindSet;
 use tilo_actions::{ActionContext, ActionKey, Did, EditOp, FieldEdit, VerbCall};
 use tilo_member_types::MemberId;
 

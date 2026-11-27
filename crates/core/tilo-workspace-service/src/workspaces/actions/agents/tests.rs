@@ -5,7 +5,8 @@
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_action_policy::agent_answers::{self, AnswerScope};
-use tilo_action_policy::{ActionKind, Answer, Grantee};
+use tilo_action_policy::{Answer, Grantee};
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, ReceiptStatus, WORKSPACE_GOVERNANCE_KIND,
     WORKSPACE_GOVERNANCE_PROVIDER,
@@ -298,7 +299,7 @@ async fn set_under_agents(
         ("claude", &person),
         (
             &AnswerScope::app(app),
-            tilo_action_policy::ActionKind::Outside,
+            tilo_action_types::ActionKind::Outside,
         ),
         tilo_action_policy::Answer::parse(answer).expect("an answer"),
         tilo_action_policy::Grantee::person(person.clone()),

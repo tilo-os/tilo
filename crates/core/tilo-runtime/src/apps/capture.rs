@@ -25,7 +25,8 @@ impl Writes {
     /// app alone, for this one launch.
     pub(crate) fn grants(&self, app: &str) -> Vec<collab_types::caps::CapOverride> {
         use collab_types::caps::{Access, CapOverride, Scope};
-        use tilo_action_policy::{Grantee, Lifetime};
+        use tilo_action_policy::Grantee;
+        use tilo_action_types::Lifetime;
         self.dirs
             .iter()
             .map(|dir| {

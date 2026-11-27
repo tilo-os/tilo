@@ -474,12 +474,12 @@ impl Service for Served {
                     consider(at);
                 }
                 for grant in &workspace.policy.grants {
-                    if let tilo_action_policy::Lifetime::Until(at) = grant.lifetime {
+                    if let tilo_action_types::Lifetime::Until(at) = grant.lifetime {
                         consider(at);
                     }
                 }
                 for capability in &workspace.sandbox {
-                    if let tilo_action_policy::Lifetime::Until(at) = capability.lifetime {
+                    if let tilo_action_types::Lifetime::Until(at) = capability.lifetime {
                         consider(at);
                     }
                 }
@@ -813,7 +813,7 @@ fn chosen_entry(key: &AppKey, token: &str, held: &tilo_dialogs::chosen::Chosen) 
         "section": tilo_session_core::desktop::workspace_settings::RecipientKind::App.section_label(),
         "holder": crate::app_names::claimant(key.app()),
         "allows": allows,
-        "expiry": tilo_ui_base::format::lifetime(tilo_action_policy::Lifetime::UntilRevoked),
+        "expiry": tilo_ui_base::format::lifetime(tilo_action_types::Lifetime::UntilRevoked),
         "granted_by": name,
         "app": key.app(),
         "path": held.host.to_string_lossy(),
@@ -1241,7 +1241,7 @@ mod tests {
             "bo-plan",
             Grantee::person("bo"),
             plan,
-            tilo_action_policy::KindSet::READ_UNDOABLE,
+            tilo_action_types::KindSet::READ_UNDOABLE,
             tilo_action_policy::Answer::Allow,
             Grantee::person("ada"),
         );

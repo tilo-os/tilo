@@ -28,7 +28,8 @@ use crate::shortcut::{AiTransform, Binding, Condition, Selector, Shortcut, Step,
 use crate::template::{self, Piece, is_identifier};
 use crate::types::{Ty, assignable, literal_fits, pointer_tokens, schema_at};
 use crate::{AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, shortcut_id_of};
-use tilo_action_policy::{ActionKind, Answer, Rule, TreePath};
+use tilo_action_policy::{Answer, Rule, TreePath};
+use tilo_action_types::ActionKind;
 
 /// One reason a shortcut cannot be saved as written.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]

@@ -58,7 +58,8 @@ use crate::template::{self, Piece, render_value};
 use crate::{
     AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, TriggerSpec, shortcut_id_of,
 };
-use tilo_action_policy::{ActionKind, Answer, TreePath};
+use tilo_action_policy::{Answer, TreePath};
+use tilo_action_types::ActionKind;
 
 /// How many catalogue pages the interpreter reads looking for one action.
 const MAX_CATALOGUE_PAGES: usize = 32;

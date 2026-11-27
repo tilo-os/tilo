@@ -135,7 +135,7 @@ pub enum ControlEffect {
 struct Remote {
     devices: u32,
     selected: bool,
-    kept: tilo_action_policy::Lifetime,
+    kept: tilo_action_types::Lifetime,
     restore: Option<Grant>,
     starting: bool,
     started: bool,

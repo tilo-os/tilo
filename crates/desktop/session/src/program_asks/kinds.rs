@@ -6,7 +6,7 @@
 //! network's name) is shown as it said it, never as our words.
 
 use serde_json::Value;
-use tilo_action_policy::Lifetime;
+use tilo_action_types::Lifetime;
 use tilo_actions::remote::asked::{
     AskedBy, AskedFacts, Fact, FileType, FilesAsked, FilesMode, Take,
 };

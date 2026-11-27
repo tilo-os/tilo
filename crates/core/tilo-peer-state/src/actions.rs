@@ -1828,7 +1828,7 @@ fn visitor_may(
     tilo_action_policy::Authority::of_acting(&visitor, &policy, &[])
         .decide(
             &node,
-            tilo_action_policy::ActionKind::Undoable,
+            tilo_action_types::ActionKind::Undoable,
             &tilo_action_policy::Context::at(now_ns() / 1_000_000),
         )
         .answer

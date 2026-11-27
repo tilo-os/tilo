@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
-use tilo_action_policy::ActionKind;
+use tilo_action_types::ActionKind;
 use tilo_actions::PathStep;
 use tilo_actions::surface::Surface;
 use tilo_lock::MutexRecover;

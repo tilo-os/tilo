@@ -24,6 +24,7 @@ framework = true
 test-support = ["tilo-actions/test-support"]
 
 [dependencies]
+tilo-action-types.workspace = true
 tilo-member-types.workspace = true
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # Sorts without a copy of std's sort per call site, which kept the web

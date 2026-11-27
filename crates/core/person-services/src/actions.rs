@@ -380,7 +380,7 @@ impl PersonServices {
                 (call.workspace, call.caller, call.certificate),
                 Store::MAIL,
                 tilo_workspace_records::accounts::WATCH,
-                tilo_action_policy::ActionKind::Read,
+                tilo_action_types::ActionKind::Read,
                 request,
             )
             .await?;

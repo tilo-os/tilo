@@ -4,9 +4,8 @@ use std::cmp::Ordering;
 
 use tilo_member_types::AppId;
 
-use crate::{
-    ActionKind, Answer, Context, Grant, GrantId, Grantee, KindSet, Level, Lifetime, TreePath,
-};
+use crate::{Answer, Context, Grant, GrantId, Grantee, Level, TreePath};
+use tilo_action_types::{ActionKind, KindSet, Lifetime};
 
 /// Why a party answered as it did.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

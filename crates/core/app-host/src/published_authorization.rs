@@ -6,7 +6,8 @@ mod tests {
     use crate::collab_app_broker::{BrokerActor, PublishedAction, PublishedSurface};
     use crate::route::CrdtRoute;
     use crate::test_support::{Workspace, WorkspaceId};
-    use tilo_action_policy::{Grant, Grantee, KindSet, Lifetime, Role};
+    use tilo_action_policy::{Grant, Grantee, Role};
+    use tilo_action_types::{KindSet, Lifetime};
 
     const OWNER: &str = "owner-person";
     const WORKSPACE: &str = "workspace-7";

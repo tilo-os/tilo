@@ -3,7 +3,8 @@
 //! grants let that person, the server's own person included.
 
 use ed25519_dalek::SigningKey;
-use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
+use tilo_action_policy::{Answer, Grant, Grantee, roles, roles::governance};
+use tilo_action_types::KindSet;
 use tilo_peer_state::join::Role;
 use tilo_server_protocol::operator::WaitListStatus;
 use tilo_server_protocol::workspaces::{JoinReply, WorkspacesReply, WorkspacesRequest};

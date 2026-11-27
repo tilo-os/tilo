@@ -9,6 +9,7 @@ use crate::services::{
     LocalPersonServices, ProcessServices, ShortcutLibraryRequest, ShortcutLibraryServices,
 };
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+use tilo_action_types::KindSet;
 use tilo_invocation_journal::{InvocationJournal, InvocationKey};
 
 struct Library(tokio::runtime::Handle);
@@ -162,7 +163,7 @@ impl Fixture {
                     tilo_automation::SHORTCUT_RESOURCE_KIND,
                     None,
                     "run",
-                    tilo_action_policy::KindSet::ALL,
+                    tilo_action_types::KindSet::ALL,
                     tilo_action_policy::Answer::Allow,
                 )];
             }
@@ -620,7 +621,7 @@ fn waiting_shortcut() -> tilo_automation::Shortcut {
             tilo_automation::SHORTCUT_RESOURCE_KIND,
             None,
             "run",
-            tilo_action_policy::KindSet::ALL,
+            tilo_action_types::KindSet::ALL,
             tilo_action_policy::Answer::Allow,
         )],
         triggers: Vec::new(),
@@ -1005,7 +1006,7 @@ fn guarded_shortcut() -> tilo_automation::Shortcut {
             tilo_automation::SHORTCUT_RESOURCE_KIND,
             None,
             "run",
-            tilo_action_policy::KindSet::ALL,
+            tilo_action_types::KindSet::ALL,
             tilo_action_policy::Answer::Ask,
         )],
         ..waiting_shortcut()
@@ -1149,7 +1150,7 @@ async fn a_step_the_grant_leaves_to_the_person_asks_before_the_run_starts() {
 /// ask, and only the person's approve of the asked record it was kept as admits it.
 #[tokio::test(flavor = "current_thread")]
 async fn a_workspace_ask_is_answered_only_by_the_persons_approve_of_its_record() {
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Role};
+    use tilo_action_policy::{Answer, Grant, Grantee, Role};
 
     let person = hex::encode([0xaa; 32]);
     let owner = hex::encode([0xbb; 32]);

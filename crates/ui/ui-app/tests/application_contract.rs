@@ -61,7 +61,7 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
         authority.set(tilo_ui_base::permissions::PermissionContext::granted(
             &tilo_ui_base::permissions::MemberId::person("probe-author"),
             &tilo_ui_base::permissions::TreePath::root(),
-            tilo_ui_base::permissions::policy::KindSet::ALL,
+            tilo_action_types::KindSet::ALL,
             None,
         ));
         let context = ProcessContext::prepare(
@@ -875,7 +875,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
             authority.set(tilo_ui_base::permissions::PermissionContext::granted(
                 &tilo_ui_base::permissions::MemberId::person("probe-author"),
                 &tilo_ui_base::permissions::TreePath::root(),
-                tilo_ui_base::permissions::policy::KindSet::ALL,
+                tilo_action_types::KindSet::ALL,
                 None,
             ));
         }
@@ -946,7 +946,7 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         authority.set(tilo_ui_base::permissions::PermissionContext::granted(
             &tilo_ui_base::permissions::MemberId::person("probe-author"),
             &tilo_ui_base::permissions::TreePath::root(),
-            tilo_ui_base::permissions::policy::KindSet::ALL,
+            tilo_action_types::KindSet::ALL,
             None,
         ));
         let target = existing(&record);

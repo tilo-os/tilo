@@ -7,7 +7,8 @@
 //! the mount, the service and every receiver answer the same question.
 
 use collab_types::caps::Access;
-use tilo_action_policy::{ActionKind, Answer, Context, TreePath, WorkspacePolicy};
+use tilo_action_policy::{Answer, Context, TreePath, WorkspacePolicy};
+use tilo_action_types::ActionKind;
 
 /// The nodes a member's access to `workspace`'s files is decided at: the tree's records, listing
 /// them and writing a file.
@@ -78,7 +79,8 @@ pub fn list<'a>(
     device: Option<[u8; 32]>,
 ) -> Listed {
     use collab_types::caps::{CapOverride, Effect, Scope};
-    use tilo_action_policy::{Grantee, Lifetime};
+    use tilo_action_policy::Grantee;
+    use tilo_action_types::Lifetime;
     use tilo_member_types::Acting;
 
     let acting = person_key(person).map(|key| Acting::person(hex::encode(key)));
@@ -211,7 +213,8 @@ mod tests {
     use super::*;
     use collab_types::caps::FsAuthority;
     use collab_types::caps::{Access, CapOverride, Effect, Scope};
-    use tilo_action_policy::{Answer, Grantee, Lifetime, Role};
+    use tilo_action_policy::{Answer, Grantee, Role};
+    use tilo_action_types::Lifetime;
     use tilo_desktop_model::{Layout, Workspace};
     use tilo_member_types::Acting;
 
@@ -304,7 +307,7 @@ mod tests {
                 id: tilo_action_policy::GrantId("files-override".into()),
                 grantee: Grantee::person(MEMBER),
                 node,
-                kinds: tilo_action_policy::KindSet::READ,
+                kinds: tilo_action_types::KindSet::READ,
                 answer: Answer::Deny,
                 lifetime: Lifetime::UntilRevoked,
                 granted_by: Grantee::person(PERSON),
@@ -343,7 +346,7 @@ mod tests {
                 Grantee::person(MEMBER),
                 tilo_action_policy::TreePath::workspace(workspace)
                     .joined(&fs_protocol::file_action::tree_node()),
-                tilo_action_policy::KindSet::UNDOABLE,
+                tilo_action_types::KindSet::UNDOABLE,
                 Answer::Deny,
                 Grantee::person(PERSON),
             ));
@@ -403,7 +406,7 @@ mod tests {
                 Access::Read,
             )
             .through("so.tilo.notes")
-            .lasting(tilo_action_policy::Lifetime::Session);
+            .lasting(tilo_action_types::Lifetime::Session);
             let device_only = CapOverride::grant(
                 Grantee::person(PERSON),
                 Scope::Device(collab_types::caps::DeviceCap::Camera),

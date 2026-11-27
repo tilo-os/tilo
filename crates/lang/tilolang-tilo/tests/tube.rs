@@ -4,9 +4,8 @@
 //! from the first, each member's watch history and playback preferences are their own, and the
 //! watch queue plays in the order videos were added to it.
 
-use tilo_action_policy::{
-    Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
-};
+use tilo_action_policy::{Answer, Grant, Grantee, MemberAccess, Role, TreePath, WorkspacePolicy};
+use tilo_action_types::KindSet;
 use tilolang_runtime::store::Store as _;
 use tilolang_runtime::{Actor, InvokeOutcome, Meta, ResourceRef, UiNode, Value};
 use tilolang_tilo::runtime::ids::MemberId;

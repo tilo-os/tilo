@@ -4,7 +4,8 @@
 //! own confirmation can be asked for.
 
 use serde_json::{Map, Value, json};
-use tilo_action_policy::{Answer, Grant, Grantee, KindSet, roles, roles::governance};
+use tilo_action_policy::{Answer, Grant, Grantee, roles, roles::governance};
+use tilo_action_types::KindSet;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, CatalogueRow, InvokeRequest,
     ReceiptStatus, RemoteActionMessage, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER,

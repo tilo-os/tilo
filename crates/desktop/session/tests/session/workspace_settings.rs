@@ -199,7 +199,8 @@ fn workspace_settings_sets_each_members_role() {
 
 #[test]
 fn workspace_settings_assigns_a_custom_role_and_uses_it_for_document_access() {
-    use tilo_action_policy::{ActionKind, Answer, Context};
+    use tilo_action_policy::{Answer, Context};
+    use tilo_action_types::ActionKind;
 
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
@@ -536,7 +537,8 @@ fn chat_posts(workspace: &str) -> tilo_desktop_search::providers::PublishedActio
 #[test]
 fn workspace_settings_lists_an_apps_grant_under_apps_and_revokes_it() {
     use tilo_action_policy::agent_answers::{AnswerScope, answer_grant};
-    use tilo_action_policy::{ActionKind, Answer, Grantee};
+    use tilo_action_policy::{Answer, Grantee};
+    use tilo_action_types::ActionKind;
     let _settled = tilo_ui_base::motion::testing::settled();
     let actions = Rc::new(Publishing::default());
     let mut session = crate::common::headless(Options {
@@ -1513,7 +1515,7 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
             format!("agent-member:{agent}:observer"),
             tilo_action_policy::Grantee::agent(agent, admitted_by.to_owned()),
             front.policy.node(),
-            tilo_action_policy::KindSet::READ,
+            tilo_action_types::KindSet::READ,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(admitted_by.to_owned()),
         ));

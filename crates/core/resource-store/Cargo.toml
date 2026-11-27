@@ -33,6 +33,9 @@ workspace-hack = { version = "0.1" }
 uuid = { workspace = true, features = ["js"] }
 getrandom = { workspace = true, features = ["wasm_js"] }
 
+[dev-dependencies]
+tilo-action-types.workspace = true
+
 [[test]]
 name = "it"
 path = "tests/it.rs"

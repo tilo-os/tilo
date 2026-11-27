@@ -40,7 +40,7 @@ impl PersonServices {
             (call.workspace, call.caller, call.certificate),
             Store::MODELS,
             model_providers::ASK,
-            tilo_action_policy::ActionKind::Read,
+            tilo_action_types::ActionKind::Read,
             request,
         )
         .await?;

@@ -21,9 +21,8 @@ use collab_types::{
     InboundState, OpKind, ReceiptSurface, Role, SignedOp, SurfaceSource, Surfaces, UnitPath,
     ValidationError, WrittenDocument, generate_keypair, sign_op,
 };
-use tilo_action_policy::{
-    ActionKind, Answer, Authority, Grant, Grantee, KindSet, Party, TreePath, roles,
-};
+use tilo_action_policy::{Answer, Authority, Grant, Grantee, Party, TreePath, roles};
+use tilo_action_types::{ActionKind, KindSet};
 use tilo_actions::{ActionContext, ActionKey, Did, EditOp, FieldEdit, PathStep, VerbCall};
 
 const APP: &str = "notes";

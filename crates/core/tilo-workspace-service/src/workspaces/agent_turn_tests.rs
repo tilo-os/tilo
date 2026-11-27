@@ -9,7 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
-use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
+use tilo_action_types::KindSet;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 use super::super::Workspaces;

@@ -3,9 +3,10 @@
 //! Editor and one of its administrators.
 
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Change, Context, Grant, Grantee, KindSet, Refusal, Role,
-    TreePath, WorkspacePolicy, roles,
+    Answer, Authority, Change, Context, Grant, Grantee, Refusal, Role, TreePath, WorkspacePolicy,
+    roles,
 };
+use tilo_action_types::{ActionKind, KindSet};
 
 const NOW: u64 = 1_000_000;
 const OWNER: &str = "a11ce";

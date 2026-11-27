@@ -1875,13 +1875,13 @@ pub fn person_asked_next(session: &mut Session) -> tilo_service::Question {
 }
 
 /// The answer that allows a permission question for the `nth` of the durations it offers, as
-/// they stand in the one list every prompt offers ([`tilo_action_policy::Lifetime::offered`]),
+/// they stand in the one list every prompt offers ([`tilo_action_types::Lifetime::offered`]),
 /// the timed one left out as a question of buttons leaves it out.
 pub fn allowed_for(nth: usize) -> tilo_service::Answer {
-    let choice = tilo_action_policy::Lifetime::offered(tilo_clock::unix_now_ms())
+    let choice = tilo_action_types::Lifetime::offered(tilo_clock::unix_now_ms())
         .into_iter()
         .enumerate()
-        .filter(|(_, lifetime)| !matches!(lifetime, tilo_action_policy::Lifetime::Until(_)))
+        .filter(|(_, lifetime)| !matches!(lifetime, tilo_action_types::Lifetime::Until(_)))
         .nth(nth)
         .map(|(choice, _)| choice)
         .expect("that many durations are offered");

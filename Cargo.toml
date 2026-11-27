@@ -649,6 +649,7 @@ must_use_candidate = "allow"
 browser-continuity = { path = "crates/import/browser-continuity", version = "0.1.0" }
 browser-continuity-core = { package = "tilo-browser-continuity-core", path = "crates/core/browser-continuity-core", version = "0.1.0" }
 tilo-app-id = { path = "crates/core/tilo-app-id", version = "0.1.0" }
+tilo-action-types = { path = "crates/platform/action-types", version = "0.1.0" }
 tilo-member-types = { path = "crates/platform/member-types", version = "0.1.0" }
 tilo-presence = { path = "crates/platform/tilo-presence", version = "0.1.0" }
 

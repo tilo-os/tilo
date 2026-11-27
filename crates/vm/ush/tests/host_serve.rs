@@ -8,7 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use tilo_action_policy::Lifetime;
+use tilo_action_types::Lifetime;
 use tilo_test_env::{DiesWithTheTest as _, SpawnUnderEnvLock as _};
 use ush::host::{TERMINAL_APP_ID, encode_handoff};
 use ush::store::Store;

@@ -276,7 +276,6 @@ tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 # What a reference in rich text refers to: a person, or the catalogue's resource reference.
 tilo-reference = { version = "0.1.0", path = "../../core/reference", optional = true }
 # Who may invoke which action: grants over the published tree.
-tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 # Other people's presence and the colour they wear, as the toolkit draws them.
 tilo-presence = { version = "0.1.0", path = "../../platform/tilo-presence" }
 # Who sits at this device: the identity a host installs, read with or without the model.

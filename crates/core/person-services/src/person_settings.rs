@@ -525,8 +525,8 @@ impl crate::PersonServices {
 /// What `action` of the workspace's mail accounts does, as the workspace's policy decides it:
 /// a reading, or a change kept in the accounts record and the vault. What leaves — a message
 /// sent — is Mail's action, decided where the app's own actions are.
-pub(super) fn mail_effect(action: &str) -> tilo_action_policy::ActionKind {
-    use tilo_action_policy::ActionKind;
+pub(super) fn mail_effect(action: &str) -> tilo_action_types::ActionKind {
+    use tilo_action_types::ActionKind;
     match action {
         workspace_accounts::LIST
         | workspace_accounts::WATCH

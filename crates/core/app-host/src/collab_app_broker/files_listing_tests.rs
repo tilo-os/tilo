@@ -417,7 +417,8 @@ fn messages() -> Recorder {
 /// The workspace's rules: the owner refuses their agent Files, and the lapsed person read the
 /// workspace until [`lapsed_at`].
 fn rules(workspace: &mut Workspace) {
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
+    use tilo_action_types::{KindSet, Lifetime};
     let id = workspace.id().to_string();
     workspace.policy.grant(Grant::new(
         "scout-reads-no-files",
@@ -716,7 +717,8 @@ fn naming(workspace: &str) -> Vec<Named> {
 
 /// The workspace's rules: Bo reads the workspace, and is refused its secrets app.
 fn bo_reads(workspace: &mut Workspace) {
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
+    use tilo_action_types::KindSet;
     let id = workspace.id().to_string();
     workspace.policy.grant(Grant::new(
         "bo-reads",

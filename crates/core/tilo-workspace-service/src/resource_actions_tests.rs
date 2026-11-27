@@ -3,7 +3,8 @@
 
 use serde_json::json;
 use tilo_action_policy::agent_answers::{self, AnswerScope};
-use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, TreePath};
+use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
+use tilo_action_types::{ActionKind, KindSet};
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, RESOURCE_PROVIDER, ReceiptStatus,
     RemoteActionTarget,

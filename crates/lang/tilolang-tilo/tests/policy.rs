@@ -4,7 +4,8 @@
 use crate::fixtures::Workspace;
 use serde_json::json;
 use tilo_action_policy::agent_answers::{self, AnswerScope};
-use tilo_action_policy::{ActionKind, Answer, Grantee, MemberAccess, WorkspacePolicy};
+use tilo_action_policy::{Answer, Grantee, MemberAccess, WorkspacePolicy};
+use tilo_action_types::ActionKind;
 use tilolang_runtime::{Actor, AgentBlock};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::publish::{Caller, PlanRequest};

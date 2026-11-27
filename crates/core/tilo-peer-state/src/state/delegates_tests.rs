@@ -291,7 +291,7 @@ fn a_delegated_agent_acts_as_its_person_within_its_window_and_never_after() {
     );
     assert!(authority_of_agent.allows(
         &workspace_node,
-        tilo_action_policy::ActionKind::Undoable,
+        tilo_action_types::ActionKind::Undoable,
         now
     ));
     assert!(!authority_of_agent.allows(

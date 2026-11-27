@@ -666,7 +666,7 @@ pub fn next_policy_change(
                 .grants
                 .into_iter()
                 .filter_map(|grant| match grant.lifetime {
-                    tilo_action_policy::Lifetime::Until(ms) => Some(ms.div_ceil(1_000)),
+                    tilo_action_types::Lifetime::Until(ms) => Some(ms.div_ceil(1_000)),
                     _ => None,
                 });
             Ok((

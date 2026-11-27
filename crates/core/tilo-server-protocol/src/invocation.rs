@@ -1844,9 +1844,8 @@ mod tests {
         // Bo and Ada are both named, but the member it names is Bo's and her
         // device may not write for him. Only Bo's own call carries it.
         {
-            use tilo_action_policy::{
-                ActionKind, Answer, Context, MemberAccess, Role, TreePath, WorkspacePolicy,
-            };
+            use tilo_action_policy::{Answer, Context, MemberAccess, Role, TreePath, WorkspacePolicy};
+            use tilo_action_types::ActionKind;
             let (ada_root, _) = UserIdentity::generate("Ada", 1);
             let (bo_root, _) = UserIdentity::generate("Bo", 1);
             let (eve_root, _) = UserIdentity::generate("Eve", 1);

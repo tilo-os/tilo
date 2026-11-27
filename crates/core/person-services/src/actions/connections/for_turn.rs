@@ -257,7 +257,7 @@ impl crate::PersonServices {
             (turn.workspace, turn.caller),
             Store::CONNECTIONS,
             person_connections::LIST,
-            tilo_action_policy::ActionKind::Read,
+            tilo_action_types::ActionKind::Read,
         )
         .await
     }

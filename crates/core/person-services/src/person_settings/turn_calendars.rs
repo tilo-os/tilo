@@ -14,7 +14,7 @@
 //! narrows holds a rule that names the very action. Unknown and forbidden are one answer.
 
 use serde_json::Value;
-use tilo_action_policy::ActionKind;
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::{ActionCallError, CatalogueRow, InvokeRequest, RemoteActionTarget};
 use tilo_workspace_records::accounts::{self as workspace_accounts, AccountsAction};
 

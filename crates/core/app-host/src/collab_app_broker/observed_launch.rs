@@ -145,7 +145,7 @@ impl super::AppBrokerState {
                 if !actor.may_in(
                     workspace,
                     &super::app_node(workspace, target),
-                    tilo_action_policy::ActionKind::Undoable,
+                    tilo_action_types::ActionKind::Undoable,
                     now,
                 ) {
                     return Err("the caller may not open that application");

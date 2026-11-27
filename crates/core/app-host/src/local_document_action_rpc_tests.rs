@@ -270,11 +270,11 @@ async fn local_report_admission(
                         .policy
                         .node()
                         .app(env.route.app_id.clone()),
-                    tilo_action_policy::KindSet::ALL,
+                    tilo_action_types::KindSet::ALL,
                     tilo_action_policy::Answer::Allow,
                     actor,
                 )
-                .with_lifetime(tilo_action_policy::Lifetime::Once)
+                .with_lifetime(tilo_action_types::Lifetime::Once)
             };
             let first_grant = once_grant("first-report");
             let first_grant = env.membership.write().workspaces[0]

@@ -13,9 +13,10 @@
 //! keeping out someone their role lets read writes a Deny of their own.
 
 use crate::{
-    ActionKind, Authority, Change, Context, Grant, GrantId, Grantee, KindSet, Level, Refusal,
-    TreePath, WorkspacePolicy, roles::governance,
+    Authority, Change, Context, Grant, GrantId, Grantee, Level, Refusal, TreePath, WorkspacePolicy,
+    roles::governance,
 };
+use tilo_action_types::{ActionKind, KindSet};
 
 /// The node a published resource of a tilolang app (`tl:<app>:<id>`) stands at in `workspace`:
 /// the resource under its app, of whatever kind it is. `None` for any other resource.

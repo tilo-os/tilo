@@ -683,7 +683,7 @@ tilo_test_env::scenario! {
             app.permission_ctx = tilo_ui_base::permissions::PermissionContext::granted(
                 &tilo_ui_base::permissions::MemberId::person("fixture-user"),
                 &tilo_ui_base::permissions::TreePath::root(),
-                tilo_ui_base::permissions::policy::KindSet::ALL,
+                tilo_action_types::KindSet::ALL,
                 Some(110),
             )
             .at_unix_time(100)

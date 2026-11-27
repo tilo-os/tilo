@@ -40,7 +40,8 @@ use std::sync::Arc;
 
 use accounts::vault_items::{Allowance, ItemFacts, ItemId, ItemKind, NewItem, Place, UsedFor};
 use serde_json::Value;
-use tilo_action_policy::{ActionKind, Answer, Context, Grantee, TreePath, decide};
+use tilo_action_policy::{Answer, Context, Grantee, TreePath, decide};
+use tilo_action_types::ActionKind;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::asked::{AskedDispatch, AskedFacts, AskedRecords, Fact};
 use tilo_actions::remote::{ActionCallError, ActionProvider, Caller, InvokeRequest, Pending};
@@ -316,7 +317,7 @@ impl crate::PersonServices {
     }
 
     /// Whether a grant of `workspace`'s lets `app`, acting by itself, take an action of `kind` at
-    /// `node`. A grant given for one use ([`tilo_action_policy::Lifetime::Once`]) that the answer
+    /// `node`. A grant given for one use ([`tilo_action_types::Lifetime::Once`]) that the answer
     /// rests on is taken back as it is used, so the next use is asked again.
     pub(super) async fn app_granted(
         &self,
@@ -341,7 +342,7 @@ impl crate::PersonServices {
         else {
             return false;
         };
-        if grant.lifetime == tilo_action_policy::Lifetime::Once {
+        if grant.lifetime == tilo_action_types::Lifetime::Once {
             let grant = grant.id.clone();
             if let Err(error) = self.spend_once(workspace, &grant).await {
                 // A use given once that another call took, or that cannot be taken back, is not

@@ -2018,7 +2018,7 @@ async fn app_may(
         .party_of(tilo_action_policy::Grantee::app(app))
         .decide(
             &node,
-            tilo_action_policy::ActionKind::Undoable,
+            tilo_action_types::ActionKind::Undoable,
             &tilo_action_policy::Context::at_secs(tilo_clock::unix_now()),
         );
     if decision.answer == tilo_action_policy::Answer::Allow {

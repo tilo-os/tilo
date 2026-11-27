@@ -974,7 +974,7 @@ mod tests {
             "agent-member:scribe:session",
             tilo_action_policy::Grantee::agent("scribe", person_id.to_owned()),
             workspace.policy.node(),
-            tilo_action_policy::KindSet::ALL,
+            tilo_action_types::KindSet::ALL,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(person_id.to_owned()),
         ));

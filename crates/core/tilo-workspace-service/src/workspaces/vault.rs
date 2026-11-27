@@ -639,7 +639,7 @@ pub fn may_read_vault(
     let node = collab_types::document_node(workspace, APP, VAULT_RECORD);
     let cx = tilo_action_policy::Context::at_time(tilo_clock::wall());
     tilo_action_policy::Authority::of_acting(acting, policy, &granted)
-        .decide(&node, tilo_action_policy::ActionKind::Read, &cx)
+        .decide(&node, tilo_action_types::ActionKind::Read, &cx)
         .answer
         == tilo_action_policy::Answer::Allow
 }

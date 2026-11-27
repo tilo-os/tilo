@@ -8,9 +8,9 @@
 //! answer is the stricter of the two.
 
 use tilo_action_policy::{
-    ActionKind, Answer, Context, Grant, GrantId, Grantee, KindSet, Level, Lifetime, Rule, Segment,
-    TreePath, decide,
+    Answer, Context, Grant, GrantId, Grantee, Level, Rule, Segment, TreePath, decide,
 };
+use tilo_action_types::{ActionKind, KindSet, Lifetime};
 use tilo_actions::ActionKey;
 use tilo_actions::api::{ActionAddress, ActionDescriptor};
 use tilo_actions::params::ActionParam;
@@ -231,7 +231,7 @@ pub fn action_rule(
     resource_kind: &str,
     resource: Option<&str>,
     action: &str,
-    kinds: tilo_action_policy::KindSet,
+    kinds: tilo_action_types::KindSet,
     answer: Answer,
 ) -> Rule {
     let node = TreePath::root()

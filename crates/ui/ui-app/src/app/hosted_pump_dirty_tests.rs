@@ -398,7 +398,7 @@ tilo_test_env::scenario! {
         fixture.app.permission_ctx = tilo_ui_base::permissions::PermissionContext::granted(
             &tilo_ui_base::permissions::MemberId::person("fixture-user"),
             &tilo_ui_base::permissions::TreePath::root(),
-            tilo_ui_base::permissions::policy::KindSet::ALL,
+            tilo_action_types::KindSet::ALL,
             Some(110),
         )
         .with_policy_time_sampler(Arc::new(move || Ok(sample.load(Ordering::Acquire))));

@@ -12,7 +12,8 @@
 //!
 //! [`CertificateAuthority::own_device`]: crate::certificate_authority::CertificateAuthority::own_device
 
-use tilo_action_policy::{ActionKind, Answer};
+use tilo_action_policy::Answer;
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeRequest, RESOURCE_READ_REFUSED, RESOURCE_READS_FOR_AGENTS,
 };

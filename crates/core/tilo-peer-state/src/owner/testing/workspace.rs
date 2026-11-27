@@ -301,7 +301,7 @@ impl TestWorkspace {
             format!("fixture-administrator:{action}"),
             tilo_action_policy::Grantee::person(person.to_owned()),
             tilo_action_policy::roles::governance_action(self.workspace(), action),
-            tilo_action_policy::KindSet::OUTSIDE,
+            tilo_action_types::KindSet::OUTSIDE,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(hex::encode(self.peer.owner())),
         );

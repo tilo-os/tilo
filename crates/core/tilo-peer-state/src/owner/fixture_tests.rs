@@ -149,7 +149,7 @@ async fn grant(fixture: &Fixture, id: &str) {
             id,
             tilo_action_policy::Grantee::person(hex::encode(fixture.certificate.user_public_key)),
             tilo_action_policy::TreePath::workspace(testing::WORKSPACE),
-            tilo_action_policy::KindSet::READ,
+            tilo_action_types::KindSet::READ,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(hex::encode(fixture.certificate.user_public_key)),
         ),

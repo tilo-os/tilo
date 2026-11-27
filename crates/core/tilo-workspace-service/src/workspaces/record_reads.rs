@@ -25,7 +25,7 @@
 use std::sync::Arc;
 
 use collab_types::workspace_grant::WorkspaceGrant;
-use tilo_action_policy::ActionKind;
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::{
     ActionCallError, Caller, DEVICE_JOBS, KEY_GRANTS, PRESENCE, RESOURCE_READ_REFUSED,
     RESOURCE_WRITE_REFUSED, ReadingAnswer, ReadsAnswer, RemoteActionMessage, ResourceAddress,

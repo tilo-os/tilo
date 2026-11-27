@@ -12,7 +12,8 @@
 
 use std::sync::{Arc, Weak};
 
-use tilo_action_policy::{ActionKind, TreePath};
+use tilo_action_policy::TreePath;
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::{
     ActionCallError, CONTENT_PUTS_UNAVAILABLE, Caller, ContentPut, ContentPuts,
 };

@@ -566,7 +566,8 @@ pub fn reads_protected_document(
     access: Option<&tilo_action_policy::MemberAccess>,
     now: web_time::SystemTime,
 ) -> bool {
-    use tilo_action_policy::{ActionKind, Answer, Context};
+    use tilo_action_policy::{Answer, Context};
+    use tilo_action_types::ActionKind;
     if !requires_independent_document_keys(app, document) {
         return true;
     }
@@ -597,7 +598,8 @@ pub fn document_access_changes(
     (who, app, document): (&str, &str, &str),
     access: &str,
 ) -> Result<Vec<tilo_action_policy::Change>, tilo_action_policy::Refusal> {
-    use tilo_action_policy::{Answer, Change, Grant, Grantee, KindSet, Refusal, Role};
+    use tilo_action_policy::{Answer, Change, Grant, Grantee, Refusal, Role};
+    use tilo_action_types::KindSet;
     use tilo_member_types::MemberId;
     let path = access_rule_node(&policy.workspace, app, document)
         .ok_or_else(|| Refusal::NotPermitted("this target has no workspace access rules".into()))?;

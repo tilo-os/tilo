@@ -33,6 +33,7 @@ tracing.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+tilo-action-types.workspace = true
 tilo-action-calls = { path = "../action-calls" }
 # The Lounge seeder (`examples/seed-lounge.rs`) enters a public workspace's people through its
 # entry on a session with the server, as a page's Join does.

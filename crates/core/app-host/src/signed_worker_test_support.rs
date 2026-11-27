@@ -406,11 +406,11 @@ impl OriginalWorkspace {
             "changes-for-a-while",
             tilo_action_policy::Grantee::person(actor.clone()),
             workspace.policy.node(),
-            tilo_action_policy::KindSet::ALL,
+            tilo_action_types::KindSet::ALL,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(actor),
         )
-        .with_lifetime(tilo_action_policy::Lifetime::Until(
+        .with_lifetime(tilo_action_types::Lifetime::Until(
             start / 1_000_000 + 50_000,
         ));
         workspace.policy.grant(changes);

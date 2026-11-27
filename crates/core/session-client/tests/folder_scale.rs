@@ -104,7 +104,8 @@ async fn grant_agents(
     workspace: &str,
     root: &SigningKey,
 ) {
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
+    use tilo_action_types::KindSet;
     let person = hex::encode(root.verifying_key().to_bytes());
     let grants: Vec<Grant> = (0..3)
         .map(|n| {

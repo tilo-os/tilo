@@ -78,7 +78,7 @@ tilo_test_env::scenario! {
                 "everything",
                 policy::Grantee::person("mallory"),
                 TreePath::root(),
-                policy::KindSet::ALL,
+                tilo_action_types::KindSet::ALL,
                 Answer::Allow,
                 policy::Grantee::person("owner"),
             ))
@@ -215,7 +215,7 @@ tilo_test_env::scenario! {
                 "terminal",
                 policy::Grantee::person("alice"),
                 TreePath::workspace(tilo_ui_base::permissions::LOCAL_WORKSPACE).join(&terminal),
-                policy::KindSet::ALL,
+                tilo_action_types::KindSet::ALL,
                 Answer::Allow,
                 policy::Grantee::person("owner"),
             ));
@@ -242,11 +242,11 @@ tilo_test_env::scenario! {
                 "terminal",
                 policy::Grantee::person("alice"),
                 TreePath::workspace(tilo_ui_base::permissions::LOCAL_WORKSPACE).join(&terminal),
-                policy::KindSet::ALL,
+                tilo_action_types::KindSet::ALL,
                 Answer::Allow,
                 policy::Grantee::person("owner"),
             )
-            .with_lifetime(policy::Lifetime::Until(2_000_000));
+            .with_lifetime(tilo_action_types::Lifetime::Until(2_000_000));
             let ctx = || PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("alice"), Role::Editor).with_grant(grant.clone());
             let live = ctx().at_unix_time(1_999);
             assert_eq!(live.answer(&terminal, ActionKind::Outside), Answer::Allow);

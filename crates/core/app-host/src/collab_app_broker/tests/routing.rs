@@ -243,7 +243,7 @@ async fn a_native_context_subscriber_is_told_where_the_members_are() {
             "guest-reads",
             tilo_action_policy::Grantee::person("guest"),
             tilo_action_policy::TreePath::workspace(&workspace_id),
-            tilo_action_policy::KindSet::READ,
+            tilo_action_types::KindSet::READ,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(person_id_for_root(
                 root.verifying_key().to_bytes(),

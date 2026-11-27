@@ -1,4 +1,4 @@
-//! A grant given once ([`tilo_action_policy::Lifetime::Once`]) admits exactly one call. Two
+//! A grant given once ([`tilo_action_types::Lifetime::Once`]) admits exactly one call. Two
 //! calls decided at the same moment both find it in the workspace's grants; the one that claims
 //! it here goes on, and the other is refused. The grant is then taken back from the workspace,
 //! and the claim holds until that change is committed, after which the workspace no longer has

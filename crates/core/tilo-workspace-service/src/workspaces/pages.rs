@@ -529,7 +529,7 @@ impl Workspaces {
         let now = system_time(tilo_clock::unix_now_ns());
         let member = hosted.peer().permissions(device.device_public_key, now)?;
         drop(hosted);
-        Ok(member.allows(&node, tilo_action_policy::ActionKind::Undoable, now))
+        Ok(member.allows(&node, tilo_action_types::ActionKind::Undoable, now))
     }
 
     /// A page listing the servers keeping a workspace, the one the workspace

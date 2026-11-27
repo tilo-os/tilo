@@ -5,7 +5,8 @@ use web_time::{Duration, SystemTime};
 
 use collab_types::validator::{validate_log, verify_inbound_time};
 use collab_types::{InboundState, SignedOp, ValidationError};
-use tilo_action_policy::{ActionKind, Answer, Context};
+use tilo_action_policy::{Answer, Context};
+use tilo_action_types::ActionKind;
 
 /// Validate an op whose author and role were established by a certified
 /// device join plus the live workspace roster. This is the production

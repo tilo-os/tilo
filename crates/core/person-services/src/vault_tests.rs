@@ -48,7 +48,7 @@ async fn install_passwords(workspaces: &crate::PersonServices, workspace: &str) 
 async fn reach(
     workspaces: &crate::PersonServices,
     (workspace_id, caller, device): (WorkspaceId, &Caller, Option<&DeviceCert>),
-    (store, action, effect): (Store, &str, tilo_action_policy::ActionKind),
+    (store, action, effect): (Store, &str, tilo_action_types::ActionKind),
 ) -> Result<tilo_action_policy::Answer, ActionCallError> {
     workspaces
         .reaching((Some(workspace_id), caller, device), store, action, effect)
@@ -750,7 +750,8 @@ async fn a_members_agent_reads_the_workspace_vault_and_its_changes_ask_its_perso
 /// told; nothing in the vault moves.
 #[tokio::test]
 async fn a_workspace_grant_writes_nothing_into_the_vault() {
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
+    use tilo_action_types::KindSet;
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -2438,7 +2439,8 @@ async fn last_allowed(
 /// asks its person before that and again once that grant is taken back.
 #[tokio::test]
 async fn an_app_reaches_a_store_by_its_grants_never_by_its_name() {
-    use tilo_action_policy::{ActionKind, Answer};
+    use tilo_action_policy::Answer;
+    use tilo_action_types::ActionKind;
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -2463,7 +2465,7 @@ async fn an_app_reaches_a_store_by_its_grants_never_by_its_name() {
         workspace_accounts::sign_in_grant_id(mail, &workspace),
         tilo_action_policy::Grantee::app(mail),
         workspace_accounts::sign_ins_node(&workspace),
-        tilo_action_policy::KindSet::READ,
+        tilo_action_types::KindSet::READ,
         Answer::Allow,
         tilo_action_policy::Grantee::person(hex::encode(ada.user_public_key)),
     )]);

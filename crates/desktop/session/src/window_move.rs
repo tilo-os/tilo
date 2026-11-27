@@ -1139,7 +1139,8 @@ verbs = [
         /// `workspace` answers what the person writes there with `answer`, as its owners
         /// granted: reading stays theirs, so what they did there still reads.
         fn grant(&self, workspace: &str, answer: tilo_action_policy::Answer) {
-            use tilo_action_policy::{Grant, Grantee, KindSet, TreePath};
+            use tilo_action_policy::{Grant, Grantee, TreePath};
+            use tilo_action_types::KindSet;
             let person = hex::encode(self.device.certificate().user_public_key);
             let workspaces = self.device.workspaces().clone();
             let workspace = workspace.to_owned();

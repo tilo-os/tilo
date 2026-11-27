@@ -18,9 +18,8 @@
 //! lifts it. Allowing "changes" in Mail therefore never quietly lets an agent
 //! empty the Trash.
 
-use crate::{
-    ActionKind, Answer, Basis, Decision, Grant, GrantId, Grantee, KindSet, Level, TreePath,
-};
+use crate::{Answer, Basis, Decision, Grant, GrantId, Grantee, Level, TreePath};
+use tilo_action_types::{ActionKind, KindSet};
 
 /// The id prefix of every answer grant.
 pub const PREFIX: &str = "agent-answer:";

@@ -71,7 +71,7 @@ impl VerbGrants {
             .app(self.app.as_str())
             .kind(kind)
             .action(verb);
-        access.allows(&node, tilo_action_policy::ActionKind::Undoable, self.now)
+        access.allows(&node, tilo_action_types::ActionKind::Undoable, self.now)
     }
 
     /// Whether `author` may take back the step `stamp` names, on a record of `kind`: a step
@@ -112,8 +112,9 @@ mod tests {
     use std::sync::Arc;
 
     use tilo_action_policy::{
-        Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
+        Answer, Grant, Grantee, MemberAccess, Role, TreePath, WorkspacePolicy,
     };
+    use tilo_action_types::KindSet;
     use tilo_member_types::{Actor, MemberId};
 
     use super::VerbGrants;

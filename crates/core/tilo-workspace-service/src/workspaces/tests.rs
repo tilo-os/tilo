@@ -284,7 +284,8 @@ async fn an_entry_cut_off_before_its_settle_is_settled_by_the_next() {
 
 #[tokio::test]
 async fn every_settled_decision_is_announced_with_its_workspace() {
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Role};
+    use tilo_action_policy::{Answer, Grant, Grantee, Role};
+    use tilo_action_types::KindSet;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = hosting_device();
     let server = test_host(dir.path(), &key, &cert).await;

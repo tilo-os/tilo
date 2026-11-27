@@ -617,7 +617,7 @@ async fn a_call_is_judged_at_the_kind_its_action_declares() {
             "viewer-retouches",
             tilo_action_policy::Grantee::person(hex::encode(viewer.user_public_key)),
             tilo_action_policy::TreePath::workspace(&workspace).app(PHOTOS),
-            tilo_action_policy::KindSet::UNDOABLE,
+            tilo_action_types::KindSet::UNDOABLE,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(hex::encode(cert.user_public_key)),
         ),

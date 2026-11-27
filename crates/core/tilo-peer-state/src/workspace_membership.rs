@@ -404,7 +404,7 @@ pub enum SettingsChange {
     AssignPreset {
         preset: String,
         subject: tilo_action_policy::Grantee,
-        lifetime: tilo_action_policy::Lifetime,
+        lifetime: tilo_action_types::Lifetime,
     },
     /// Record a sandbox capability for the workspace's apps.
     GrantSandbox {

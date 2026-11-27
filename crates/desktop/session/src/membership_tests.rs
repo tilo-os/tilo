@@ -307,7 +307,7 @@ fn what_one_member_lets_an_app_reach_reaches_every_members_session() {
         Access::Read,
     )
     .through("so.tilo.notes")
-    .lasting(tilo_action_policy::Lifetime::Session);
+    .lasting(tilo_action_types::Lifetime::Session);
     let taken_back = CapOverride::grant(
         Grantee::person(owner),
         Scope::NetHost("old.example.test".into()),
@@ -839,7 +839,7 @@ fn a_refused_grant_change_says_why_and_keeps_the_grant() {
             collab_types::caps::Access::Read,
         )
         .through("so.tilo.notes")
-        .lasting(tilo_action_policy::Lifetime::Session),
+        .lasting(tilo_action_types::Lifetime::Session),
     );
     session.session().handle().replace_tree(tree);
     let mut app = settings_sheet(&mut session);

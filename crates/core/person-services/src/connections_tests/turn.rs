@@ -20,7 +20,8 @@ use std::sync::{Arc, Mutex};
 
 use collab_types::WorkspaceId;
 use serde_json::{Map, Value, json};
-use tilo_action_policy::{ActionKind, Answer, Grant, GrantId, Grantee, KindSet, Rule, TreePath};
+use tilo_action_policy::{Answer, Grant, GrantId, Grantee, Rule, TreePath};
+use tilo_action_types::{ActionKind, KindSet};
 use tilo_actions::remote::asked::{AskedFacts, asked_person};
 use tilo_actions::remote::{
     Caller, CatalogueRow, InvokeArgument, InvokeRequest, RemoteActionTarget,

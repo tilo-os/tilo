@@ -26,6 +26,7 @@ path = "src/lib.rs"
 # no compositor dependency. See `src/lib.rs` for the wire contract.
 
 [dependencies]
+tilo-action-types.workspace = true
 tilo-member-types.workspace = true
 # A file's record id, kept in the extended attribute the filesystem serves.
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }

@@ -54,7 +54,8 @@ tilo_test_env::scenario! {
 
     phase cached_policy_rechecks_membership_expiry_and_governance_replacement;
     {
-        use tilo_action_policy::{ActionKind, Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
+        use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
+        use tilo_action_types::{ActionKind, KindSet, Lifetime};
         let (key, cert, _, other, now) = fixtures();
         let workspace_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
         let mut doc = crate::workspace::candidate(

@@ -59,7 +59,8 @@ pub use collab_types::caps::{
 };
 pub use collab_types::role::Role;
 pub use tilo_action_policy as policy;
-pub use tilo_action_policy::{ActionKind, Answer, KindSet, MemberAccess, TreePath};
+pub use tilo_action_policy::{Answer, MemberAccess, TreePath};
+pub use tilo_action_types::{ActionKind, KindSet};
 
 /// The id the local, unrestricted user acts as under
 /// [`PermissionContext::permissive`].
@@ -166,7 +167,7 @@ pub fn action_node(
 fn local_grant(
     subject: policy::Grantee,
     relative: &TreePath,
-    kinds: policy::KindSet,
+    kinds: tilo_action_types::KindSet,
     until: Option<u64>,
 ) -> policy::Grant {
     let grant = policy::Grant::new(
@@ -178,7 +179,9 @@ fn local_grant(
         policy::Grantee::person(LOCAL_USER),
     );
     match until {
-        Some(at) => grant.with_lifetime(policy::Lifetime::Until(at.saturating_mul(1000))),
+        Some(at) => {
+            grant.with_lifetime(tilo_action_types::Lifetime::Until(at.saturating_mul(1000)))
+        }
         None => grant,
     }
 }
@@ -369,7 +372,7 @@ impl PermissionContext {
     pub fn granted(
         person: &MemberId,
         relative: &TreePath,
-        kinds: policy::KindSet,
+        kinds: tilo_action_types::KindSet,
         until: Option<u64>,
     ) -> Self {
         let grant = local_grant(
@@ -383,14 +386,22 @@ impl PermissionContext {
 
     /// The owner of [`LOCAL_WORKSPACE`] acting through agent `agent`, which is
     /// granted exactly `kinds` at `relative`.
-    pub fn agent_granted(agent: &str, relative: &TreePath, kinds: policy::KindSet) -> Self {
+    pub fn agent_granted(
+        agent: &str,
+        relative: &TreePath,
+        kinds: tilo_action_types::KindSet,
+    ) -> Self {
         Self::agent_granted_at(agent, std::slice::from_ref(relative), kinds)
     }
 
     /// The owner of [`LOCAL_WORKSPACE`] acting through agent `agent`, which is
     /// granted exactly `kinds` at each of `nodes` (paths below the workspace):
     /// the scope an invitation gave it.
-    pub fn agent_granted_at(agent: &str, nodes: &[TreePath], kinds: policy::KindSet) -> Self {
+    pub fn agent_granted_at(
+        agent: &str,
+        nodes: &[TreePath],
+        kinds: tilo_action_types::KindSet,
+    ) -> Self {
         let subject = policy::Grantee::agent(agent, LOCAL_USER);
         let grants = nodes
             .iter()
@@ -534,9 +545,11 @@ impl PermissionContext {
     pub fn next_change_in(&self) -> Option<std::time::Duration> {
         let sampler = self.policy_time.as_ref()?;
         let now = (sampler.0)().ok()?;
-        let ends = |lifetime: policy::Lifetime| match lifetime {
+        let ends = |lifetime: tilo_action_types::Lifetime| match lifetime {
             // Live while the clock's milliseconds are before it.
-            policy::Lifetime::Until(at) => Some(at.div_ceil(1000)).filter(|at| *at > now),
+            tilo_action_types::Lifetime::Until(at) => {
+                Some(at.div_ceil(1000)).filter(|at| *at > now)
+            }
             _ => None,
         };
         let after = |grants: &mut dyn Iterator<Item = &policy::Grant>| {
@@ -741,7 +754,8 @@ impl PermissionContext {
     fn usable<'s>(&self, held: &'s MemberAccess, once: bool) -> std::borrow::Cow<'s, MemberAccess> {
         let usable = once && self.once_spender.is_some();
         let keep = |grant: &policy::Grant| {
-            grant.lifetime != policy::Lifetime::Once || (usable && !self.spent.contains(&grant.id))
+            grant.lifetime != tilo_action_types::Lifetime::Once
+                || (usable && !self.spent.contains(&grant.id))
         };
         let all_kept = held
             .policy
@@ -1784,7 +1798,7 @@ mod refused_listing_tests {
                 "scribe-notes",
                 policy::Grantee::agent("scribe", person.id()),
                 TreePath::workspace(LOCAL_WORKSPACE),
-                policy::KindSet::READ_UNDOABLE,
+                tilo_action_types::KindSet::READ_UNDOABLE,
                 Answer::Allow,
                 policy::Grantee::person(person.id()),
             )],
@@ -1821,7 +1835,7 @@ mod refused_listing_tests {
                 "scribe-all",
                 policy::Grantee::agent("scribe", person.id()),
                 TreePath::workspace(LOCAL_WORKSPACE),
-                policy::KindSet::READ_UNDOABLE,
+                tilo_action_types::KindSet::READ_UNDOABLE,
                 Answer::Allow,
                 policy::Grantee::person(person.id()),
             )]
@@ -1932,7 +1946,7 @@ mod refused_listing_tests {
                 "scribe-chat",
                 policy::Grantee::agent("scribe", person.id()),
                 TreePath::workspace(LOCAL_WORKSPACE),
-                policy::KindSet::READ_UNDOABLE,
+                tilo_action_types::KindSet::READ_UNDOABLE,
                 Answer::Allow,
                 policy::Grantee::person(person.id()),
             )],
@@ -1960,7 +1974,11 @@ mod refused_listing_tests {
 mod tests {
     use super::*;
 
-    fn grant(subject: policy::Grantee, node: TreePath, kinds: policy::KindSet) -> policy::Grant {
+    fn grant(
+        subject: policy::Grantee,
+        node: TreePath,
+        kinds: tilo_action_types::KindSet,
+    ) -> policy::Grant {
         policy::Grant::new(
             "grant",
             subject,
@@ -2027,7 +2045,7 @@ mod tests {
                         "notes.page:1",
                         "note.open",
                     )),
-                    policy::KindSet::READ,
+                    tilo_action_types::KindSet::READ,
                 )]);
                 assert!(narrow.check(&open("notes.page:1", "note.open")));
                 assert!(!narrow.check(&open("notes.page:1", "note.delete")));
@@ -2039,7 +2057,7 @@ mod tests {
                 let broad = agent(vec![grant(
                     policy::Grantee::agent("scribe", "owner"),
                     workspace.clone().app("notes"),
-                    policy::KindSet::READ,
+                    tilo_action_types::KindSet::READ,
                 )]);
                 assert!(broad.check(&open("notes.page:2", "note.delete")));
                 assert!(
@@ -2055,7 +2073,7 @@ mod tests {
                     Scope::FsPath("/var/workspace/shared".into()),
                     Access::Write,
                 )
-                .lasting(policy::Lifetime::Until(1_000_000));
+                .lasting(tilo_action_types::Lifetime::Until(1_000_000));
                 let scope = PermissionScope::path("/var/workspace/shared/notes.md", Access::Write);
                 let context =
                     || PermissionContext::member(&crate::permissions::MemberId::person("u_guest"), Role::Viewer).granting(cap.clone());
@@ -2098,12 +2116,12 @@ mod tests {
                         vec![grant(policy::Grantee::agent("scribe", "owner"), node.clone(), kinds)],
                     ))
             };
-            let outside = context(policy::KindSet::OUTSIDE);
+            let outside = context(tilo_action_types::KindSet::OUTSIDE);
             assert!(outside.permits_action("notes", "notes.page", "notes.page:1", &action));
             assert!(!outside.permits_action("notes", "notes.page", "notes.page:2", &action));
             assert!(!outside.permits_action("other", "notes.page", "notes.page:1", &action));
             assert!(
-                !context(policy::KindSet::READ_UNDOABLE).permits_action(
+                !context(tilo_action_types::KindSet::READ_UNDOABLE).permits_action(
                     "notes",
                     "notes.page",
                     "notes.page:1",
@@ -2136,7 +2154,7 @@ mod tests {
                         "terminal-read-only",
                         policy::Grantee::role(Role::Editor),
                         TreePath::workspace(LOCAL_WORKSPACE).app(AppKind::Terminal.app_id()),
-                        policy::KindSet::UNDOABLE,
+                        tilo_action_types::KindSet::UNDOABLE,
                         Answer::Deny,
                         policy::Grantee::person("owner"),
                     ));

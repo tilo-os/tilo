@@ -30,9 +30,9 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActionKind, Answer, Authority, Context, Grant, Grantee, KindSet, Level, Role, Segment,
-    TreePath, WorkspacePolicy,
+    Answer, Authority, Context, Grant, Grantee, Level, Role, Segment, TreePath, WorkspacePolicy,
 };
+use tilo_action_types::{ActionKind, KindSet};
 
 /// What a share lets the workspace do with the resource.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

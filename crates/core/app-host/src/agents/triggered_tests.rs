@@ -10,7 +10,8 @@
 
 use super::{CHAT, turn_caller, typed};
 use serde_json::{Map, json};
-use tilo_action_policy::{ActionKind, Answer};
+use tilo_action_policy::Answer;
+use tilo_action_types::ActionKind;
 use tilo_actions::ActionKey;
 use tilo_actions::entry::{Did, VerbCall};
 use tilo_actions::remote::Caller;

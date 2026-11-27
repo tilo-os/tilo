@@ -8,7 +8,7 @@ use automerge::{AutoCommit, ObjType, ROOT};
 use collab_types::claim::ClaimedAction;
 use collab_types::{ReceiptSurface, SurfaceSource, Surfaces, UnitPath, WrittenDocument};
 use ed25519_dalek::SigningKey;
-use tilo_action_policy::ActionKind;
+use tilo_action_types::ActionKind;
 use tilo_actions::{
     ActionContext, ActionItem, ActionKey, Did, EditOp, FieldEdit, PathStep, VerbCall,
 };

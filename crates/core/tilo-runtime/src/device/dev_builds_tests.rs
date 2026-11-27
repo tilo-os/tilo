@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use tilo_action_policy::{ActionKind, Answer, Authority, Context, TreePath};
+use tilo_action_policy::{Answer, Authority, Context, TreePath};
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
     WORKSPACE_GOVERNANCE_PROVIDER,

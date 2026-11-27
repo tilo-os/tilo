@@ -1,7 +1,8 @@
 //! Test-only mutable policy fixture. Production hosts implement `WorkspaceAuthority`.
 use crate::services::WorkspaceAuthority;
 use std::sync::Arc;
-pub use tilo_action_policy::{Answer, GrantId, Grantee, KindSet, Level, Role, TreePath};
+pub use tilo_action_policy::{Answer, GrantId, Grantee, Level, Role, TreePath};
+pub use tilo_action_types::KindSet;
 pub use tilo_desktop_model::{Workspace, WorkspaceId};
 
 /// The grants fixtures give, in the workspace's own terms.

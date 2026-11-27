@@ -224,7 +224,8 @@ impl tilo_resource_store::RecordReader for PolicyReaders {
         kind: &str,
         id: &str,
     ) -> Option<tilo_member_types::PersonId> {
-        use tilo_action_policy::{ActionKind, Answer, Authority as Policy, Context, TreePath};
+        use tilo_action_policy::{Answer, Authority as Policy, Context, TreePath};
+        use tilo_action_types::ActionKind;
         use tilo_member_types::{Acting, MemberId};
         let policy = self
             .0
@@ -3347,7 +3348,7 @@ fn caller_may(
             node = node.resource(kind.as_str());
         }
         let node = node.action(verb.as_str());
-        let decided = authority.decide(&node, tilo_action_policy::ActionKind::Undoable, &cx);
+        let decided = authority.decide(&node, tilo_action_types::ActionKind::Undoable, &cx);
         if decided.answer != tilo_action_policy::Answer::Allow {
             return Err(verb.clone());
         }

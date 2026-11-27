@@ -108,7 +108,7 @@ impl crate::PersonServices {
         // What the action is, as its declaration states it: asking a model, a search or a
         // model's description reads with the key the workspace keeps.
         let effect = model_providers::declaration(action)
-            .map_or(tilo_action_policy::ActionKind::Undoable, |decl| {
+            .map_or(tilo_action_types::ActionKind::Undoable, |decl| {
                 decl.action_kind
             });
         let reach = self
@@ -300,7 +300,7 @@ impl crate::PersonServices {
                 (workspace_id, caller, certificate),
                 Store::MODELS,
                 model_providers::ASK,
-                tilo_action_policy::ActionKind::Read,
+                tilo_action_types::ActionKind::Read,
                 request,
             )
             .await?;

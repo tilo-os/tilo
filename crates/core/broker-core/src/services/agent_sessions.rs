@@ -38,7 +38,7 @@ pub fn session_answer_id(
     session: &str,
     (scope, kind): (
         &tilo_action_policy::agent_answers::AnswerScope,
-        tilo_action_policy::ActionKind,
+        tilo_action_types::ActionKind,
     ),
 ) -> String {
     format!(

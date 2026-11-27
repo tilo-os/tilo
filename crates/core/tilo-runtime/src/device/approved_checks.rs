@@ -887,7 +887,7 @@ impl CheckJobs {
         caller: &Caller,
         workspace: &str,
         job: &str,
-        kind: tilo_action_policy::ActionKind,
+        kind: tilo_action_types::ActionKind,
     ) -> Result<(), tilo_actions::remote::ActionCallError> {
         let refused = || tilo_actions::remote::ActionCallError::Refused {
             reason: JOBS_REFUSED.into(),
@@ -960,7 +960,7 @@ impl ResourceReads for CheckJobs {
                 caller,
                 &address.workspace,
                 &address.record,
-                tilo_action_policy::ActionKind::Read,
+                tilo_action_types::ActionKind::Read,
             )?;
             if !self.names(address) {
                 return Ok(ResourceCopy::Absent);
@@ -987,7 +987,7 @@ impl ResourceReads for CheckJobs {
             }
             let mut names: Vec<String> = self.records.lock_recover().keys().cloned().collect();
             names.retain(|job| {
-                self.allows(caller, workspace, job, tilo_action_policy::ActionKind::Read)
+                self.allows(caller, workspace, job, tilo_action_types::ActionKind::Read)
                     .is_ok()
             });
             Ok(names
@@ -1014,7 +1014,7 @@ impl ResourceReads for CheckJobs {
                 caller,
                 &address.workspace,
                 &address.record,
-                tilo_action_policy::ActionKind::Read,
+                tilo_action_types::ActionKind::Read,
             )?;
             if !self.names(address) {
                 return Ok(());

@@ -17,7 +17,7 @@ use tilo_sort::CompactSort as _;
 use collab_types::caps::{Access, CapOverride, DeviceCap, Effect, Scope, sandbox};
 use collab_types::role::Role as CapRole;
 use collab_types::{Member, MemberId};
-use tilo_action_policy::Lifetime;
+use tilo_action_types::Lifetime;
 use tilo_desktop_model::Workspace;
 
 pub mod agent_access;
@@ -1033,7 +1033,8 @@ mod members_tests {
 
     use super::*;
     use crate::desktop::authority::WorkspaceAuthority as _;
-    use tilo_action_policy::{ActionKind, Answer, Change, Grant, KindSet, roles};
+    use tilo_action_policy::{Answer, Change, Grant, roles};
+    use tilo_action_types::{ActionKind, KindSet};
     use tilo_desktop_model::WorkspaceId;
 
     const OWNER: &str = "owner-user";
@@ -1233,7 +1234,8 @@ mod agents_tests {
 
     use super::*;
     use crate::desktop::authority::WorkspaceAuthority as _;
-    use tilo_action_policy::{ActionKind, Answer, Change, Grant, KindSet};
+    use tilo_action_policy::{Answer, Change, Grant};
+    use tilo_action_types::{ActionKind, KindSet};
     use tilo_desktop_model::WorkspaceId;
 
     const OWNER: &str = "owner-user";
@@ -1545,7 +1547,7 @@ mod permissions_tests {
                         "editors-camera-app",
                         tilo_action_policy::Grantee::role(CapRole::Editor),
                         ws.policy.node().app("so.tilo.camera"),
-                        tilo_action_policy::KindSet::READ,
+                        tilo_action_types::KindSet::READ,
                         tilo_action_policy::Answer::Allow,
                         tilo_action_policy::Grantee::person(OWNER),
                     )),
@@ -1991,7 +1993,8 @@ mod permissions_tests {
     #[test]
     fn an_action_grant_reads_as_the_apps_catalogue_names_the_action() {
         use tilo_action_policy::agent_answers::{AnswerScope, answer_grant};
-        use tilo_action_policy::{ActionKind, Answer, Grantee};
+        use tilo_action_policy::{Answer, Grantee};
+        use tilo_action_types::ActionKind;
 
         let mut ws = Workspace::new(WorkspaceId::from_u128(6), "action-names");
         ws.policy.set_owner(OWNER);

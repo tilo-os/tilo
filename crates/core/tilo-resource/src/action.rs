@@ -517,7 +517,7 @@ impl<E: Into<Refusal>> Outcome for Result<(), E> {
     }
 }
 
-pub use tilo_action_policy::ActionKind;
+pub use tilo_action_types::ActionKind;
 
 pub use tilo_actions::ActionKey;
 

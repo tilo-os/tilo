@@ -4355,7 +4355,7 @@ impl DirectSync {
                     document_id,
                 );
                 let cx = tilo_action_policy::Context::at_time(now);
-                member.answer(&node, tilo_action_policy::ActionKind::Undoable, &cx)
+                member.answer(&node, tilo_action_types::ActionKind::Undoable, &cx)
                     == tilo_action_policy::Answer::Allow
             })
     }

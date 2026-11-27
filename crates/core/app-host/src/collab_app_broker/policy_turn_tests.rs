@@ -8,7 +8,8 @@ use super::*;
 #[cfg(target_os = "linux")]
 use crate::policy_schedule::RECHECK_INTERVAL;
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
-use tilo_action_policy::{Answer, Grant, Grantee, KindSet, Lifetime, TreePath};
+use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
+use tilo_action_types::{KindSet, Lifetime};
 #[cfg(target_os = "linux")]
 use tilo_identity::policy_change;
 

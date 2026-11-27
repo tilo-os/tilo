@@ -235,7 +235,7 @@ async fn a_windows_page_signs_in_with_the_vaults_logins_through_its_grants() {
                 "test:scout-fills-the-browsers-login",
                 tilo_action_policy::Grantee::agent("scout", person_id.clone()),
                 super::fill_node(&workspace, &kept.reference),
-                tilo_action_policy::KindSet::ALL,
+                tilo_action_types::KindSet::ALL,
                 tilo_action_policy::Answer::Allow,
                 tilo_action_policy::Grantee::person(person_id),
             )],

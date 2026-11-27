@@ -833,7 +833,7 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
                         &laptop_cert.device_public_key,
                         "display",
                     ),
-                    tilo_action_policy::KindSet::READ,
+                    tilo_action_types::KindSet::READ,
                     tilo_action_policy::Answer::Allow,
                     tilo_action_policy::Grantee::person(root_hex.clone()),
                 )),
@@ -963,7 +963,7 @@ async fn the_persons_devices_and_administrators_control_a_server_and_nobody_else
             &laptop_cert.device_public_key,
             tilo_workspace_service::workspaces::server_controls::CONTROL,
         ),
-        tilo_action_policy::KindSet::READ_UNDOABLE.with(tilo_action_policy::ActionKind::Outside),
+        tilo_action_types::KindSet::READ_UNDOABLE.with(tilo_action_types::ActionKind::Outside),
         tilo_action_policy::Answer::Allow,
         tilo_action_policy::Grantee::person(root_hex.clone()),
     );

@@ -6,7 +6,7 @@
 //! be retried, how it completes, and what it returns.
 
 use serde::{Deserialize, Serialize};
-pub use tilo_action_policy::{ActionKind, Confirms};
+pub use tilo_action_types::{ActionKind, Confirms};
 
 use crate::action::{OperationKind, undo_takes_back};
 use crate::context::ChangeKind;

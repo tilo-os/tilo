@@ -447,7 +447,8 @@ async fn ask_first(
     owner: &DeviceCert,
     (who, app): (&DeviceCert, &str),
 ) {
-    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
+    use tilo_action_types::KindSet;
     let person = hex::encode(who.user_public_key);
     let rule = Grant::new(
         format!("ask-first:{app}:{person}"),
