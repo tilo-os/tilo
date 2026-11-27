@@ -63,6 +63,16 @@ field added inside a type one of them reaches changes the digest of the root
 that reaches it. A name with more than one definition is skipped, as is one
 with none (a std or external type).
 
+What a definition hashes is what decides the bytes, not how it is written. A
+struct or enum contributes its fields or variants, in order, by name, each
+with the serde attributes that encode it and its type reduced to the type's
+own name (a path's crate or module, and a derive's ``serde::`` prefix, are
+where the name lives, not what it stores). A function, constant, alias or
+static contributes its text without its paths. A type moved to another file,
+module or crate therefore keeps its digest, while a field or variant added,
+removed, reordered or retyped, a serde ``rename``/``tag``/``skip`` changed, or
+a derivation's body changed, changes it.
+
 ``check`` fails when a listed definition no longer matches the digest recorded
 for the format's current version: a layout that changed is a new version of its
 format, with the step that brings up what the version before wrote. ``pin``
@@ -103,7 +113,13 @@ from functools import lru_cache
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rust_source import is_test_file, lex, split_top_level, strip_tests  # noqa: E402
+from rust_source import (  # noqa: E402
+    is_test_file,
+    lex,
+    matching,
+    split_top_level,
+    strip_tests,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 DECLARATION = re.compile(
@@ -420,12 +436,10 @@ def item_references(body: str, kind: str) -> list[str]:
     return TYPE_NAME.findall(text)
 
 
-def item(text: str, name: str) -> tuple[str | None, list[str]]:
-    """The definition of item `name` in `text` (a struct, enum, union, trait,
-    function, constant, static or type alias), with the serde attributes on it
-    and its fields, without comments or doc text, its whitespace collapsed:
-    what decides the bytes it is stored as, or the value it derives; and the
-    type names its body uses."""
+def item_span(text: str, name: str) -> tuple[str, str, re.Match[str], int] | None:
+    """The item `name` of `text`: the code with its literals kept, the code
+    with them blanked, the match that names it, and the offset just past its
+    end (`None` when it is not there)."""
     code, scan = definition_region(text)
     found = None
     for match in ITEM.finditer(code):
@@ -433,7 +447,7 @@ def item(text: str, name: str) -> tuple[str | None, list[str]]:
             found = match
             break
     if found is None:
-        return None, []
+        return None
     # A body ends at its closing brace; a declaration at its `;`. Parens and
     # brackets only nest: a function's parameters close before its body, and a
     # tuple body's `)` before its `;`. Angles are no brackets either:
@@ -454,13 +468,239 @@ def item(text: str, name: str) -> tuple[str | None, list[str]]:
             end = at + 1
             break
     if end is None:
+        return None
+    return code, scan, found, end
+
+
+def item(text: str, name: str) -> tuple[str | None, list[str]]:
+    """The definition of item `name` in `text` (a struct, enum, union, trait,
+    function, constant, static or type alias), with the serde attributes on it
+    and its fields, without comments or doc text, its whitespace collapsed:
+    what decides the bytes it is stored as, or the value it derives; and the
+    type names its body uses."""
+    span = item_span(text, name)
+    if span is None:
         return None, []
+    code, scan, found, end = span
     attrs = " ".join(
         attr for attr in re.findall(r"#\[[^\n]*\]", found.group("attrs")) if "serde" in attr
     )
     body = code[found.start("kind") : end]
     definition = re.sub(r"\s+", " ", f"{attrs} {body}").strip()
     return definition, item_references(scan[found.start("kind") : end], found.group("kind"))
+
+
+# A path's crate and module are where a type lives, never what it stores: the
+# attribute, expression or type is canonical once they are gone.
+PATH = re.compile(r"(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)+([A-Za-z_][A-Za-z0-9_]*)")
+# The derives that decide a stored byte: the others (`Debug`, `Clone`) write
+# nothing.
+ENCODING_DERIVES = ("Deserialize", "Serialize")
+
+
+def canonical_expr(text: str) -> str:
+    """`text` as an expression, constant value or type, without the paths that
+    only name where something lives, its whitespace collapsed. A literal's bytes
+    are as they are: a `::` inside a string is no path."""
+    blanked, literals = lex(text)
+    pieces, placeholders, last = [], [], 0
+    for at, literal in enumerate(literals):
+        token = f"\x00{at}\x00"
+        pieces.append(blanked[last : literal.start])
+        pieces.append(token)
+        placeholders.append((token, text[literal.start : literal.end]))
+        last = literal.end
+    pieces.append(blanked[last:])
+    merged = re.sub(r"\s+", " ", "".join(pieces)).strip()
+    merged = PATH.sub(r"\1", merged)
+    for token, original in placeholders:
+        merged = merged.replace(token, original)
+    return merged
+
+
+def leading_attributes(part: str) -> tuple[list[str], str]:
+    """The `#[...]` attributes a field or variant begins with, and the rest."""
+    attrs = []
+    rest = part.lstrip()
+    while rest.startswith("#"):
+        bracket = rest.find("[")
+        if bracket < 0:
+            break
+        end = matching(rest, bracket)
+        attrs.append(rest[:end])
+        rest = rest[end:].lstrip()
+    return attrs, rest
+
+
+def without_visibility(part: str) -> str:
+    """A field without its `pub`, `pub(crate)` or `pub(in ...)`."""
+    return re.sub(r"^pub(?:\s*\([^)]*\))?\s+", "", part.strip())
+
+
+def encoding_attributes(attrs: list[str]) -> str:
+    """The part of a definition's attributes that decides the bytes, canonical:
+    a derive path's `serde::` and the like dropped, a serde attribute's options
+    sorted and its whitespace collapsed, and every other attribute (a doc, a
+    `repr`, a `cfg`) left out."""
+    forms = []
+    for attr in attrs:
+        body = re.sub(r"^#\s*\[\s*", "", attr.strip())
+        body = re.sub(r"\]\s*$", "", body)
+        derived = re.fullmatch(
+            r"(?:::\s*)?(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*derive\s*\((.*)\)", body, re.S
+        )
+        if derived is not None:
+            names = set()
+            for entry in split_top_level(derived.group(1)):
+                name = re.sub(r"\s+", "", entry).rsplit("::", 1)[-1]
+                if name in ENCODING_DERIVES:
+                    names.add(name)
+            if names:
+                forms.append("derive(" + ",".join(sorted(names)) + ")")
+            continue
+        serde = re.fullmatch(
+            r"(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)*serde\s*(?:\((.*)\))?", body, re.S
+        )
+        if serde is None:
+            # An attribute that carries a serde one, such as a `cfg_attr`, is
+            # kept whole: what it applies may encode.
+            if "serde" in body:
+                forms.append(canonical_expr(body))
+            continue
+        if serde.group(1) is None:
+            forms.append("serde")
+            continue
+        entries = []
+        for entry in split_top_level(serde.group(1)):
+            entry = re.sub(r"\s+", " ", entry.strip())
+            entries.append(re.sub(r"\s*=\s*", "=", entry))
+        forms.append("serde(" + ",".join(sorted(entries)) + ")")
+    return " ".join(forms)
+
+
+def body_start(region: str, name: str) -> tuple[str, int]:
+    """Where the body of the item whose text is `region` begins: its opening
+    `(` or `{`, or the `;` of a unit body, after the name and its generic
+    parameters (whose angles are skipped, so a const generic's braces are no
+    body)."""
+    at = region.find(name) + len(name)
+    depth = 0
+    while at < len(region):
+        char = region[at]
+        if char == "<":
+            depth += 1
+        elif char == ">":
+            depth = max(0, depth - 1)
+        elif depth == 0 and char in "({;":
+            return char, at
+        at += 1
+    return "", len(region)
+
+
+def inner_of(region: str, at: int) -> str:
+    """The text between the bracket opening at `at` and the one matching it."""
+    return region[at + 1 : matching(region, at) - 1]
+
+
+def split_fields(text: str) -> list[str]:
+    """The fields or variants `text` holds, split on its top-level commas: a
+    comma inside `(...)`, `[...]`, `{...}` or a generic's `<...>` separates no
+    field (`->` and `>=` close no generic)."""
+    parts, depth, current, previous = [], 0, [], ""
+    for char in text:
+        if char in "([{<":
+            depth += 1
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+        elif char == ">" and previous not in "-=":
+            depth = max(0, depth - 1)
+        if char == "," and depth == 0:
+            parts.append("".join(current))
+            current = []
+        else:
+            current.append(char)
+        previous = char
+    parts.append("".join(current))
+    return [part.strip() for part in parts if part.strip()]
+
+
+def named_field_forms(inner: str) -> list[str]:
+    """A struct's or variant's named fields, in order: each field's name, serde
+    attributes and type, its path-free type."""
+    forms = []
+    for part in split_fields(inner):
+        attrs, rest = leading_attributes(part)
+        encoded = encoding_attributes(attrs)
+        field = re.match(r"(?s)([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(.*)", without_visibility(rest))
+        if field is None:
+            forms.append(f"{encoded} {canonical_expr(rest)}".strip())
+            continue
+        forms.append(
+            f"{encoded} {field.group(1)}: {canonical_expr(field.group(2))}".strip()
+        )
+    return forms
+
+
+def tuple_field_forms(inner: str) -> list[str]:
+    """A tuple struct's or variant's fields, in order: each serde attributes and
+    type, its path-free type."""
+    forms = []
+    for part in split_fields(inner):
+        attrs, rest = leading_attributes(part)
+        forms.append(
+            f"{encoding_attributes(attrs)} {canonical_expr(without_visibility(rest))}".strip()
+        )
+    return forms
+
+
+def variant_forms(inner: str) -> list[str]:
+    """An enum's variants, in order: each variant's name, serde attributes and
+    payload (its fields by name or position, or its discriminant), path-free."""
+    forms = []
+    for part in split_fields(inner):
+        attrs, rest = leading_attributes(part)
+        encoded = encoding_attributes(attrs)
+        name = re.match(r"[A-Za-z_][A-Za-z0-9_]*", rest)
+        if name is None:
+            forms.append(f"{encoded} {canonical_expr(rest)}".strip())
+            continue
+        after = rest[name.end() :].strip()
+        if after.startswith("("):
+            payload = "(" + ";".join(tuple_field_forms(inner_of(after, 0))) + ")"
+        elif after.startswith("{"):
+            payload = "{" + ";".join(named_field_forms(inner_of(after, 0))) + "}"
+        elif after.startswith("="):
+            payload = "=" + canonical_expr(after[1:])
+        else:
+            payload = ""
+        forms.append(f"{encoded} {name.group(0)}{payload}".strip())
+    return forms
+
+
+def definition_form(text: str, name: str) -> str | None:
+    """What item `name` of `text` stores, canonical: the fields or variants of
+    a struct, enum or union by name, in order, with their serde attributes and
+    their types' paths gone; the text of a function, constant, static or alias
+    without its paths. Where a type lives is not part of what it stores."""
+    span = item_span(text, name)
+    if span is None:
+        return None
+    code, _scan, found, end = span
+    kind = found.group("kind")
+    attrs, _rest = leading_attributes(found.group("attrs"))
+    region = code[found.start("kind") : end]
+    encoded = encoding_attributes(attrs)
+    if kind in ("struct", "enum", "union"):
+        opening, at = body_start(region, name)
+        if opening == "(":
+            body = "(" + ";".join(tuple_field_forms(inner_of(region, at))) + ")"
+        elif opening == "{":
+            forms = variant_forms if kind == "enum" else named_field_forms
+            body = "{" + ";".join(forms(inner_of(region, at))) + "}"
+        else:
+            body = ""
+        return f"{encoded} {kind} {name}{body}".strip()
+    return f"{encoded} {canonical_expr(region)}".strip()
 
 
 def item_definition(text: str, name: str) -> str | None:
@@ -490,6 +730,7 @@ class Definitions:
         self._names: dict[str, list[str]] | None = None
         self._texts: dict[str, str | None] = {}
         self._items: dict[tuple[str, str], tuple[str | None, list[str]]] = {}
+        self._forms: dict[tuple[str, str], str | None] = {}
         self._verified: dict[str, list[str]] = {}
 
     def text(self, path: str) -> str | None:
@@ -544,6 +785,16 @@ class Definitions:
 
     def definition(self, path: str, name: str) -> str | None:
         return self._item(path, name)[0]
+
+    def form(self, path: str, name: str) -> str | None:
+        """What the definition of `name` in `path` stores, canonical: its
+        fields or variants, or its text, without the paths that only name where
+        a type or an item lives."""
+        key = (path, name)
+        if key not in self._forms:
+            text = self.text(path)
+            self._forms[key] = definition_form(text, name) if text is not None else None
+        return self._forms[key]
 
     def references(self, path: str, name: str) -> list[str]:
         return self._item(path, name)[1]
@@ -618,9 +869,9 @@ def layout_digest(entries: list[str], definitions: Definitions) -> tuple[str | N
     found, missing = reached_definitions(entries, definitions)
     if missing:
         return None, missing
-    # The definitions alone, not the files that hold them: moving a type to another file or
-    # crate changes no byte it writes.
-    parts = sorted(f"{name}={definition}" for (_path, name), definition in found.items())
+    # What each definition stores, not the files that hold it or the paths its types are
+    # named by: moving a type to another file, module or crate changes no byte it writes.
+    parts = sorted(f"{name}={definitions.form(path, name)}" for (path, name) in found)
     return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16], []
 
 

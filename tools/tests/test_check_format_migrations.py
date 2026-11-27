@@ -297,6 +297,156 @@ class FormatMigrationTests(unittest.TestCase):
             self.assertIsNotNone(before)
             self.assertEqual(before, after)
 
+    def digest(self, root, entry):
+        digest, missing = formats.layout_digest([entry], formats.definitions_for(root))
+        self.assertEqual(missing, [])
+        self.assertIsNotNone(digest)
+        return digest
+
+    def test_moving_a_type_a_stored_one_names_keeps_the_digest(self):
+        # A covered type moving crate or module changes how the field that
+        # names it writes the path, not a byte either stores.
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            types = root / "crates/x/src/types.rs"
+            types.parent.mkdir(parents=True)
+            inner = "pub struct Inner {\n    pub count: u64,\n}\n"
+            for crate in ("alpha", "beta"):
+                (root / f"crates/{crate}/src").mkdir(parents=True)
+            (root / "crates/alpha/src/inner.rs").write_text(inner)
+            types.write_text("pub struct Root {\n    pub inner: alpha::Inner,\n}\n")
+            before = self.digest(root, "crates/x/src/types.rs:Root")
+            # The same type in another crate, and the field names it there.
+            (root / "crates/alpha/src/inner.rs").unlink()
+            (root / "crates/beta/src/inner.rs").write_text(inner)
+            types.write_text("pub struct Root {\n    pub inner: beta::Inner,\n}\n")
+            self.assertEqual(self.digest(root, "crates/x/src/types.rs:Root"), before)
+            # And in another module of the stored type's own crate.
+            (root / "crates/beta/src/inner.rs").unlink()
+            (root / "crates/x/src/inner.rs").write_text(inner)
+            types.write_text("pub struct Root {\n    pub inner: crate::inner::Inner,\n}\n")
+            self.assertEqual(self.digest(root, "crates/x/src/types.rs:Root"), before)
+
+    def test_a_derive_spelled_with_its_path_changes_no_digest(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            file = root / "crates/x/src/journal.rs"
+            file.parent.mkdir(parents=True)
+
+            def digest(text):
+                file.write_text(text)
+                return self.digest(root, "crates/x/src/journal.rs:Entry")
+
+            plain = digest(
+                "#[derive(Serialize, Deserialize)]\nstruct Entry {\n    revision: u64,\n}\n"
+            )
+            self.assertEqual(
+                digest(
+                    "#[derive(serde::Serialize, serde::Deserialize)]\n"
+                    "struct Entry {\n    revision: u64,\n}\n"
+                ),
+                plain,
+            )
+            # A derive that writes nothing is no part of the layout.
+            self.assertEqual(
+                digest(
+                    "#[derive(Debug, Clone, serde::Serialize, Deserialize)]\n"
+                    "struct Entry {\n    revision: u64,\n}\n"
+                ),
+                plain,
+            )
+
+    def test_a_field_or_variant_change_anywhere_in_the_closure_changes_the_digest(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            (root / "crates/x/src").mkdir(parents=True)
+            types = root / "crates/x/src/types.rs"
+            inner = root / "crates/x/src/inner.rs"
+            frames = root / "crates/x/src/frames.rs"
+
+            def digest(entry):
+                return self.digest(root, entry)
+
+            types.write_text("pub struct Root {\n    pub inner: Inner,\n    pub other: u8,\n}\n")
+            inner.write_text("pub struct Inner {\n    pub a: u64,\n    pub b: u64,\n}\n")
+            frames.write_text("pub enum Frames {\n    One(u64),\n    Two,\n}\n")
+            base = digest("crates/x/src/types.rs:Root")
+            enum = digest("crates/x/src/frames.rs:Frames")
+            # A field added, removed, reordered or retyped, also inside a type
+            # the stored one names.
+            for changed in (
+                "pub struct Root {\n    pub inner: Inner,\n"
+                "    pub other: u8,\n    pub more: u8,\n}\n",
+                "pub struct Root {\n    pub inner: Inner,\n}\n",
+                "pub struct Root {\n    pub other: u8,\n    pub inner: Inner,\n}\n",
+                "pub struct Root {\n    pub inner: Inner,\n    pub other: u16,\n}\n",
+            ):
+                types.write_text(changed)
+                self.assertNotEqual(digest("crates/x/src/types.rs:Root"), base, changed)
+            types.write_text("pub struct Root {\n    pub inner: Inner,\n    pub other: u8,\n}\n")
+            self.assertEqual(digest("crates/x/src/types.rs:Root"), base)
+            for changed in (
+                "pub struct Inner {\n    pub b: u64,\n    pub a: u64,\n}\n",
+                "pub struct Inner {\n    pub a: u64,\n    pub b: u64,\n    pub c: u8,\n}\n",
+                "pub struct Inner {\n    pub a: u32,\n    pub b: u64,\n}\n",
+            ):
+                inner.write_text(changed)
+                self.assertNotEqual(digest("crates/x/src/types.rs:Root"), base, changed)
+            # A variant reordered, retyped or removed changes the bytes an
+            # earlier build wrote too.
+            for changed in (
+                "pub enum Frames {\n    Two,\n    One(u64),\n}\n",
+                "pub enum Frames {\n    One(u64),\n    Two(u8),\n}\n",
+                "pub enum Frames {\n    One(u64),\n}\n",
+            ):
+                frames.write_text(changed)
+                self.assertNotEqual(digest("crates/x/src/frames.rs:Frames"), enum, changed)
+
+    def test_a_serde_attribute_that_encodes_a_stored_type_changes_the_digest(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            file = root / "crates/x/src/journal.rs"
+            file.parent.mkdir(parents=True)
+
+            def digest(text):
+                file.write_text(text)
+                return self.digest(root, "crates/x/src/journal.rs:Entry")
+
+            plain = digest("struct Entry {\n    revision: u64,\n}\n")
+            # A name a person's bytes carry, whether it renames every field or one.
+            self.assertNotEqual(
+                digest(
+                    "#[serde(rename_all = \"camelCase\")]\n"
+                    "struct Entry {\n    revision: u64,\n}\n"
+                ),
+                plain,
+            )
+            renamed = digest(
+                "struct Entry {\n    #[serde(rename = \"rev\")]\n    revision: u64,\n}\n"
+            )
+            self.assertNotEqual(renamed, plain)
+            self.assertNotEqual(
+                digest(
+                    "struct Entry {\n    #[serde(rename = \"revision\")]\n    revision: u64,\n}\n"
+                ),
+                renamed,
+            )
+            # How an enum is tagged is part of every byte it writes.
+            tagged = digest(
+                "#[serde(tag = \"kind\")]\nenum Entry {\n    One { revision: u64 },\n}\n"
+            )
+            self.assertNotEqual(
+                digest("#[serde(tag = \"t\")]\nenum Entry {\n    One { revision: u64 },\n}\n"),
+                tagged,
+            )
+            # A field the encoding skips is still a layout this build reads.
+            self.assertNotEqual(
+                digest(
+                    "struct Entry {\n    revision: u64,\n    #[serde(skip)]\n    cached: u64,\n}\n"
+                ),
+                plain,
+            )
+
     def test_a_stored_layout_a_version_kept_never_changes(self):
         with tempfile.TemporaryDirectory() as root:
             root = Path(root)
