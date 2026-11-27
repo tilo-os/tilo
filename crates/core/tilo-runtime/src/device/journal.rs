@@ -337,3 +337,35 @@ impl PublishedResources for Published {
         answered
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Published;
+    use tilo_system_resources::journal::{FIXTURE_ENV, Journal};
+
+    /// The provider reads the journal a capture's profile stages and publishes it as the
+    /// reading the Logs window shows.
+    #[test]
+    fn the_staged_journal_is_the_reading_the_provider_publishes() {
+        let dir = tempfile::tempdir().expect("a directory for the staged journal");
+        let path = dir.path().join("journal.jsonl");
+        std::fs::write(
+            &path,
+            "{\"__REALTIME_TIMESTAMP\":\"1700000000000000\",\"__CURSOR\":\"s=one\",\"SYSLOG_IDENTIFIER\":\"test\",\"PRIORITY\":\"3\",\"MESSAGE\":\"a record\"}\n",
+        )
+        .expect("the staged journal is written");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(FIXTURE_ENV, &path);
+        let published = Published::new();
+        published.inner.read(None, 500, "refresh", true);
+        let (_, reading) = published.inner.encoded();
+        let journal: Journal = serde_json::from_slice(&reading.expect("the reading is encoded"))
+            .expect("the reading is the journal's own");
+        assert!(journal.serving, "the journal was read");
+        assert_eq!(journal.read_error, None);
+        assert_eq!(journal.entries.len(), 1);
+        assert_eq!(journal.entries[0].message, "a record");
+        assert_eq!(journal.entries[0].priority, 3);
+        assert_eq!(journal.cursor, "s=one");
+    }
+}
