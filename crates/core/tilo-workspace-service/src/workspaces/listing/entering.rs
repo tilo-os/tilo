@@ -837,6 +837,16 @@ impl Workspaces {
         {
             return Err("the agent's key is not granted this workspace".to_owned());
         }
+        // A key the workspace lists already comes in as it is, as a member's device asking the
+        // entry again does ([`Self::member_already`]). Another invitation for it would be one
+        // more change to the member list, sent to every device of the workspace's, each time
+        // the key opens a session: every `tilo mcp` connection is one. A key the workspace
+        // revoked is decided below, as any other.
+        if self.refuse_revoked_key(workspace, cert).await.is_ok()
+            && self.member_already(cert, workspace).await.is_some()
+        {
+            return Ok(());
+        }
         // The key comes in at its person's own place, an Editor's at most, as a device of
         // theirs entering is invited: never above them, and for no one the workspace lacks. A
         // redemption by a person the list has adds the key and leaves their place as it is.
