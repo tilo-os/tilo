@@ -116,7 +116,7 @@ use tilo_workspace_service::workspaces::{DocumentRoute, MemberDevice, ResourceWr
 
 /// Mount the language runtime the daemon links on `workspaces`, as its program does when it
 /// opens: its own roles read and change the built-in apps' records, and the records are served
-/// to whoever the workspace's dispatch admits.
+/// to whoever the device's one record reader admits.
 pub(crate) fn mount(workspaces: &Workspaces) {
     workspaces
         .provide_tilolang(tilolang_workspace::host())
@@ -124,6 +124,7 @@ pub(crate) fn mount(workspaces: &Workspaces) {
     if let Some(tilolang) = workspaces.tilolang() {
         tilolang.records.serve(workspaces);
     }
+    tilo_app_host::test_support::decide_record_reads(workspaces);
 }
 
 /// A test's device: its own state on disk, the workspace service with the language mounted, and

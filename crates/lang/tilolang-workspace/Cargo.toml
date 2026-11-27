@@ -49,6 +49,8 @@ hex.workspace = true
 tilo-user-identity = { path = "../../core/tilo-user-identity" }
 # The service its own fixtures stand, with the search index and app store the tests read.
 tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps", "content", "test-support"] }
+# The broker that names who a caller inside a device reads records as, as the daemon decides it.
+tilo-app-host = { path = "../../core/app-host", features = ["test-support"] }
 
 [lints]
 workspace = true

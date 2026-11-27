@@ -5,7 +5,9 @@
 //! yet, so only the host that dispatched them can answer for them. Once they are store records,
 //! this trait goes and those reads go to the store like any other.
 
+use tilo_action_policy::{Answer, TreePath};
 use tilo_action_services::workspace_invocations::{Invocation, InvocationBy, InvocationStatus};
+use tilo_action_types::ActionKind;
 use tilo_actions::remote::{ActionCallError, Caller, ResourceAddress, ResourceCopy, ResourceWake};
 use tilo_broker_core::actor::BrokerActor;
 use tilo_desktop_model::Workspace;
@@ -81,6 +83,15 @@ pub type WeakAppInvocations = std::sync::Weak<dyn AppInvocations>;
 /// was admitted to it by its connection; any other caller must be a
 /// member.
 pub fn may_act_in(caller: &Caller, workspace: &Workspace, now: u64) -> bool {
+    may_act_at(caller, workspace, &workspace.policy.node(), now)
+}
+
+/// [`may_act_in`], what the caller reads decided at `node` (a record's, for an agent of one app).
+pub fn may_act_at(caller: &Caller, workspace: &Workspace, node: &TreePath, now: u64) -> bool {
+    let reads = || {
+        BrokerActor::for_caller(caller).answer_in(workspace, node, ActionKind::Read, now)
+            != Answer::Deny
+    };
     // A placed device's caller takes part in no workspace's actions: it reads its records
     // where records are read, and nothing here.
     if caller.placed_records().is_some() {
@@ -96,7 +107,7 @@ pub fn may_act_in(caller: &Caller, workspace: &Workspace, now: u64) -> bool {
         Some(confined) => {
             confined == workspace.id().to_string()
                 && if caller.acting().is_agent() {
-                    BrokerActor::for_caller(caller).reads_in(workspace, now)
+                    reads()
                 } else {
                     true
                 }
@@ -109,7 +120,7 @@ pub fn may_act_in(caller: &Caller, workspace: &Workspace, now: u64) -> bool {
             } else {
                 // Anyone else takes part in a workspace they may read; a foreign
                 // device reads wherever its person does.
-                BrokerActor::for_caller(caller).reads_in(workspace, now)
+                reads()
             }
         }
     }

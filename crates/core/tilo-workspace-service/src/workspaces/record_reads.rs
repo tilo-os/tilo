@@ -42,7 +42,7 @@ use tilo_server_protocol::workspaces::MEMBERSHIP_APP;
 use super::{WeakWorkspaces, Workspaces};
 
 #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-use super::app_invocations::{AppInvocations, WeakAppInvocations, may_act_in, questions_reading};
+use super::app_invocations::{AppInvocations, WeakAppInvocations, may_act_at, questions_reading};
 
 /// The engine jobs a device's daemon runs ([`DEVICE_JOBS`]): kept in the device's own record
 /// space, read and followed through the one record API like any record. The daemon owns them, so
@@ -638,13 +638,16 @@ impl RecordReads {
         let seconds = now
             .duration_since(web_time::SystemTime::UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());
-        if !may_act_in(&decided, &policy, seconds) {
+        // Who reads a record takes part in the workspace there: an agent granted only its app too.
+        let node = collab_types::document_node(&address.workspace, &address.app, &address.record);
+        let presence = (address.app == PRESENCE).then(|| policy.policy.node());
+        let at = presence.unwrap_or_else(|| node.clone());
+        if !may_act_at(&decided, &policy, &at, seconds) {
             return Err(refused());
         }
         if address.app == PRESENCE {
             return Ok(());
         }
-        let node = collab_types::document_node(&address.workspace, &address.app, &address.record);
         match actor.answer_in(&policy, &node, kind, seconds) {
             Answer::Allow => Ok(()),
             // The person is asked once, where the action is asked for; it is never let by.

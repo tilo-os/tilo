@@ -1194,6 +1194,9 @@ struct WorkspacesInner {
     /// apps built into the build.
     #[cfg(not(target_arch = "wasm32"))]
     tilolang: std::sync::OnceLock<crate::tl_records::Tilolang>,
+    /// Who reads a record served with no window open ([`Workspaces::decide_record_reads_by`]).
+    #[cfg(feature = "content")]
+    record_reads: std::sync::OnceLock<tilo_workspace_search::MayRead>,
     /// How this host starts an app with no window on one of its records, where its program can
     /// ([`Workspaces::start_apps_with`]): what runs an action on a record no app process holds.
     app_starts: std::sync::OnceLock<AppStarts>,
@@ -1789,6 +1792,8 @@ impl Workspaces {
                 own_opened: reads::OwnOpened::default(),
                 #[cfg(not(target_arch = "wasm32"))]
                 tilolang: std::sync::OnceLock::new(),
+                #[cfg(feature = "content")]
+                record_reads: std::sync::OnceLock::new(),
                 app_starts: std::sync::OnceLock::new(),
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
@@ -2339,6 +2344,39 @@ impl Workspaces {
         }
         let _ = self.inner.tilolang.set(tilolang);
         Ok(())
+    }
+
+    /// Decide who reads a record served here with no window open (a built-in app's page, rows
+    /// and history) by `may_read`, the decision search makes of each of its results.
+    #[cfg(feature = "content")]
+    pub fn decide_record_reads_by(&self, may_read: tilo_workspace_search::MayRead) {
+        let _ = self.inner.record_reads.set(may_read);
+    }
+
+    /// Whether `caller` reads `app`'s record `record` of `workspace`, as decided
+    /// ([`Self::decide_record_reads_by`]).
+    ///
+    /// # Errors
+    /// The read is refused, saying nothing of the record.
+    ///
+    /// # Panics
+    /// The program served a record before it decided who reads records.
+    #[cfg(feature = "content")]
+    #[expect(clippy::expect_used, reason = "a wiring bug of the program")]
+    pub async fn may_read_record(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        workspace: &str,
+        app: &str,
+        record: &str,
+    ) -> Result<(), tilo_actions::remote::ActionCallError> {
+        let decided = self.inner.record_reads.get();
+        let may_read = decided.expect("records are read once decided");
+        let key = tilo_workspace_search::IndexKey::new(app, workspace, record);
+        let refused = tilo_actions::remote::ActionCallError::Refused {
+            reason: tilo_actions::remote::RESOURCE_READ_REFUSED.into(),
+        };
+        may_read(caller, &key).await.then_some(()).ok_or(refused)
     }
 
     /// Start apps with no window through `starts` from now on: the app's process opens the

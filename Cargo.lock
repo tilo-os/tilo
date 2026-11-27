@@ -23080,6 +23080,7 @@ dependencies = [
  "tilo-action-policy",
  "tilo-action-types",
  "tilo-actions",
+ "tilo-app-host",
  "tilo-automerge-isolate",
  "tilo-collab-types",
  "tilo-failure",

@@ -2887,3 +2887,17 @@ pub async fn hear_revocations(
 pub fn restart_asks_placements(workspaces: &Workspaces) {
     workspaces.inner.asks_placed.forget();
 }
+
+/// Decide who reads `workspaces`' records as the daemon does, through `broker`, kept alive here.
+#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
+pub fn decide_record_reads(
+    workspaces: &Workspaces,
+    broker: Arc<impl super::app_invocations::AppInvocations + 'static>,
+) {
+    let reads = super::RecordReads::with_apps(workspaces, &broker, None);
+    let may_read = tilo_workspace_search::reading_records(reads);
+    workspaces.decide_record_reads_by(Arc::new(move |caller, key| {
+        let _kept = &broker;
+        may_read(caller, key)
+    }));
+}

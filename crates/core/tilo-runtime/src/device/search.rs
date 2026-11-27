@@ -13,12 +13,11 @@
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
-use tilo_actions::remote::{Caller, ResourceAddress, ResourceReads as _};
 use tilo_app_host::services::SearchIndexServices;
 use tilo_desktop_model::WorkspaceId;
 use tilo_workspace_search::records::{RecordIndex, RecordReader, StoreReader};
-use tilo_workspace_search::{AppContentIndex, IndexKey, IndexSearch, ReadDecision};
-use tilo_workspace_service::workspaces::{RecordReads, Workspaces};
+use tilo_workspace_search::{AppContentIndex, IndexSearch, MayRead};
+use tilo_workspace_service::workspaces::Workspaces;
 
 /// Where under the daemon's profile the index is kept.
 const INDEX_DIR: &str = "state/search/app-content";
@@ -78,22 +77,12 @@ impl DeviceSearch {
         Arc::new(Publications(Arc::clone(&self.index)))
     }
 
-    /// Search the index from now on, each result's record decided by the device's one reader
-    /// (`reads`) for the caller asking, as a read of that record is.
-    pub(crate) fn serve(&self, reads: Arc<RecordReads>) {
+    /// Search the index from now on, each result's record decided by `may_read` for the caller
+    /// asking, as a read of that record is: a hit it would refuse is left out.
+    pub(crate) fn serve(&self, may_read: MayRead) {
         let _ = self.search.set(Arc::new(IndexSearch::new(
             Arc::clone(&self.index),
-            Arc::new(move |caller: &Caller, key: &IndexKey| -> ReadDecision {
-                let address = ResourceAddress {
-                    workspace: key.workspace.clone(),
-                    app: key.app.clone(),
-                    record: key.record.clone(),
-                };
-                // The device's reader decides as it is asked, awaited; a hit it would ask about is
-                // left out.
-                let (reads, caller) = (Arc::clone(&reads), caller.clone());
-                Box::pin(async move { reads.may_read(&caller, &address).await.is_ok() })
-            }),
+            may_read,
         )));
     }
 

@@ -340,3 +340,12 @@ impl crate::triggers::StartRun for Started {
         })
     }
 }
+
+/// Decide who reads `workspaces`' records as the daemon does, through a real broker.
+pub fn decide_record_reads(workspaces: &tilo_workspace_service::workspaces::Workspaces) {
+    let broker = crate::collab_app_broker::AppBrokerState::test_broker_with_idle_directory_queue();
+    tilo_workspace_service::workspaces::fixtures::decide_record_reads(
+        workspaces,
+        Arc::clone(broker.state()),
+    );
+}

@@ -75,12 +75,13 @@ async fn test_host_holding_as_member(
     )
 }
 
-/// `host` with its mounted records serving their workspace's reads, as the daemon's program has
-/// them.
+/// `host` with its mounted records serving their workspace's reads, decided by the device's one
+/// record reader, as the daemon's program has them.
 fn mounted(host: TestHost) -> TestHost {
     if let Some(tilolang) = host.workspaces().tilolang() {
         tilolang.records.serve(host.workspaces());
     }
+    tilo_app_host::test_support::decide_record_reads(host.workspaces());
     host
 }
 

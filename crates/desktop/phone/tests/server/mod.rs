@@ -60,6 +60,7 @@ impl Server {
             host.workspaces()
                 .list_known_for(&person.verifying_key().to_bytes())
                 .await;
+            tilo_app_host::test_support::decide_record_reads(host.workspaces());
         });
         Self {
             runtime,

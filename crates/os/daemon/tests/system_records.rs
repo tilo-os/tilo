@@ -33,7 +33,7 @@ use tilo_workspace_service::workspaces::{MemberDevice, Workspaces};
 tilo_automerge_isolate::test_worker!();
 
 /// Mount the language runtime the daemon links on `workspaces`, as its program does when it
-/// opens: the records of the built-in apps are served to whoever the workspace's dispatch
+/// opens: the records of the built-in apps are served to whoever the device's one record reader
 /// admits.
 fn mount(workspaces: &Workspaces) {
     workspaces
@@ -42,6 +42,7 @@ fn mount(workspaces: &Workspaces) {
     if let Some(tilolang) = workspaces.tilolang() {
         tilolang.records.serve(workspaces);
     }
+    tilo_app_host::test_support::decide_record_reads(workspaces);
 }
 
 /// What a pending answer comes to, on this runtime.

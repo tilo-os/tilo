@@ -12,7 +12,9 @@ pub mod records;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tilo_actions::remote::{APPLICATION_OPEN_ACTION, ActionCallError, Caller, Pending};
+use tilo_actions::remote::{
+    APPLICATION_OPEN_ACTION, ActionCallError, Caller, Pending, ResourceAddress, ResourceReads,
+};
 use tilo_resource::search_index::{IndexDelta, IndexEntry, IndexWeight};
 use tilo_resource::search_index::{IndexKind, IndexPerson};
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
@@ -44,6 +46,20 @@ pub type MayRead = Arc<dyn Fn(&Caller, &IndexKey) -> ReadDecision + Send + Sync>
 pub fn deciding(decide: impl Fn(&Caller, &IndexKey) -> bool + Send + Sync + 'static) -> MayRead {
     Arc::new(move |caller: &Caller, key: &IndexKey| -> ReadDecision {
         Box::pin(std::future::ready(decide(caller, key)))
+    })
+}
+
+/// The [`MayRead`] of a device's one record reader: a key's record is read by whoever `reads`
+/// lets read it, in search and wherever a record is served with no window open.
+pub fn reading_records(reads: Arc<dyn ResourceReads>) -> MayRead {
+    Arc::new(move |caller: &Caller, key: &IndexKey| -> ReadDecision {
+        let address = ResourceAddress {
+            workspace: key.workspace.clone(),
+            app: key.app.clone(),
+            record: key.record.clone(),
+        };
+        let (reads, caller) = (Arc::clone(&reads), caller.clone());
+        Box::pin(async move { reads.may_read(&caller, &address).await.is_ok() })
     })
 }
 

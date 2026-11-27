@@ -5,7 +5,8 @@
 //! answers for its record where nobody has it open. Each is registered under the provider a
 //! record of it is named by (`record:<app>:`) with the application whose grants decide its
 //! actions ([`register`]). The dispatch admits a call against the workspace's policy, asks the
-//! person where the action's contract says so, and hands it here; this lists what the record
+//! person where the action's contract says so, and hands it here; this decides each page and
+//! call again by search's read decision ([`Workspaces::may_read_record`]), lists what the record
 //! publishes, as the person the caller acts for reads it, and runs the published action through
 //! the app's own package: a read answers the core read as that person reads it (a direct
 //! conversation's messages only for its people), and a write lands stamped with the caller as its
@@ -160,6 +161,10 @@ impl BuiltInRecords {
         ),
         (invoker, context): (&ActionInvoker, &ActionContext),
     ) -> Result<tilo_actions::ActionOutput, String> {
+        self.workspaces
+            .may_read_record(caller, workspace, self.app, "")
+            .await
+            .map_err(|refused| refused.to_string())?;
         self.rooted(workspace, person).await?;
         // The action is read where its address says, by running the app's program as a page is
         // read ([`Self::query`]): never every row of the record.
@@ -253,9 +258,17 @@ impl ActionProvider for BuiltInRecords {
         else {
             return Pending::ready(Ok(nothing()));
         };
-        let records = self.clone();
+        let (records, caller) = (self.clone(), caller.clone());
         let (done, page) = pending();
         self.runtime.spawn(async move {
+            if let Err(refused) = records
+                .workspaces
+                .may_read_record(&caller, &workspace, records.app, "")
+                .await
+            {
+                done.complete(Err(refused));
+                return;
+            }
             if let Err(error) = records.rooted(&workspace, &person).await {
                 tracing::warn!(app = records.app, %workspace, %error, "a built-in app's record has no root");
             }
@@ -409,10 +422,13 @@ mod tests {
 
     use super::*;
     use crate::records::{built_in, with_tl_record};
-    use tilo_action_policy::{Answer, TreePath};
+    use tilo_action_policy::{Answer, Grant, Grantee, TreePath};
     use tilo_action_types::KindSet;
     use tilo_actions::remote::ReceiptStatus;
-    use tilo_workspace_service::workspaces::fixtures::{hosting_device, test_host};
+    use tilo_workspace_service::workspaces::RemoveMemberRequest;
+    use tilo_workspace_service::workspaces::fixtures::{
+        hosting_device, record_grants, revoke_grants, test_host,
+    };
 
     const CHAT: &str = "so.tilo.chat";
     const DISCUSSION: &str = "so.tilo.lang.discussion";
@@ -588,6 +604,7 @@ mod tests {
         workspaces
             .provide_tilolang(crate::host())
             .expect("the build's tilolang apps declare their surfaces");
+        tilo_app_host::test_support::decide_record_reads(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
         for app in [
@@ -744,6 +761,7 @@ mod tests {
         workspaces
             .provide_tilolang(crate::host())
             .expect("the build's tilolang apps declare their surfaces");
+        tilo_app_host::test_support::decide_record_reads(&workspaces);
         declare_chat(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
@@ -787,6 +805,7 @@ mod tests {
         workspaces
             .provide_tilolang(crate::host())
             .expect("the build's tilolang apps declare their surfaces");
+        tilo_app_host::test_support::decide_record_reads(&workspaces);
         declare_chat(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
@@ -888,6 +907,7 @@ mod tests {
         workspaces
             .provide_tilolang(crate::host())
             .expect("the build's tilolang apps declare their surfaces");
+        tilo_app_host::test_support::decide_record_reads(&workspaces);
         declare_chat(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         register(&workspaces);
@@ -1032,8 +1052,10 @@ mod tests {
 
     /// Search over Tasks, read with no window of it open, finds a workspace's task for its
     /// members and nothing for a person who is not one: the record reads as the person searching,
-    /// never as the person whose device serves it.
+    /// never as the person whose device serves it. Its provider, called directly, refuses that
+    /// person a page, the rows and a call by the same decision, whoever let them through.
     #[tokio::test]
+    #[expect(clippy::too_many_lines, reason = "one flow")]
     async fn search_finds_nothing_of_another_apps_record_for_a_person_outside_the_workspace() {
         const TASKS: &str = "so.tilo.tasks";
         let dir = tempfile::tempdir().unwrap();
@@ -1043,6 +1065,7 @@ mod tests {
         workspaces
             .provide_tilolang(crate::host())
             .expect("the build's tilolang apps declare their surfaces");
+        tilo_app_host::test_support::decide_record_reads(&workspaces);
         declare_chat(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         let ada_person = hex::encode(owner.user_public_key);
@@ -1058,11 +1081,8 @@ mod tests {
             found(&ada_person).contains("Quokka census"),
             "search finds the task for a member"
         );
-        let stranger = hex::encode(
-            ed25519_dalek::SigningKey::from_bytes(&[5; 32])
-                .verifying_key()
-                .to_bytes(),
-        );
+        let stranger_key = ed25519_dalek::SigningKey::from_bytes(&[5; 32]).verifying_key();
+        let stranger = hex::encode(stranger_key.to_bytes());
         assert!(
             !found(&stranger).contains("Quokka census"),
             "search finds nothing of it for a person outside the workspace"
@@ -1096,41 +1116,81 @@ mod tests {
             .expect("Tasks offers new_tasks");
         let cy = Caller::authenticated(cy_root.verifying_key().to_bytes(), [4; 32])
             .in_workspace(workspace.clone());
-        let receipt = tasks_records
-            .run(
-                &cy,
-                InvokeRequest {
-                    asks: false,
-                    invocation: tilo_actions::InvocationId::new(),
-                    target: tilo_actions::remote::RemoteActionTarget {
-                        provider: format!("{RESOURCE_PROVIDER}:{TASKS}:"),
-                        address: new_tasks.address,
+        let outsider = Caller::authenticated(stranger_key.to_bytes(), [6; 32]);
+        let outsider = outsider.in_workspace(workspace.clone());
+        let target = Some(new_tasks.address.clone());
+        for query in [
+            CatalogueQuery::default(),
+            CatalogueQuery {
+                target,
+                ..CatalogueQuery::default()
+            },
+        ] {
+            let asked = tasks_records.query(&outsider, query).await;
+            assert!(
+                matches!(asked, Some(Err(ActionCallError::Refused { .. }))),
+                "{asked:?}"
+            );
+        }
+        for caller in [&cy, &outsider] {
+            let receipt = tasks_records
+                .run(
+                    caller,
+                    InvokeRequest {
+                        asks: false,
+                        invocation: tilo_actions::InvocationId::new(),
+                        target: tilo_actions::remote::RemoteActionTarget {
+                            provider: format!("{RESOURCE_PROVIDER}:{TASKS}:"),
+                            address: new_tasks.address.clone(),
+                        },
+                        argument: InvokeArgument::Json(
+                            serde_json::json!({ "titles": ["Wombat survey"] })
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                        ),
+                        context: None,
+                        confirmation: None,
+                        revision: None,
+                        on_behalf_of: None,
+                        wait_ms: None,
+                        appearance: None,
+                        signed: None,
                     },
-                    argument: InvokeArgument::Json(
-                        serde_json::json!({ "titles": ["Wombat survey"] })
-                            .as_object()
-                            .unwrap()
-                            .clone(),
-                    ),
-                    context: None,
-                    confirmation: None,
-                    revision: None,
-                    on_behalf_of: None,
-                    wait_ms: None,
-                    appearance: None,
-                    signed: None,
-                },
-                Admitted::default(),
-            )
-            .await
-            .expect("the call is answered");
-        assert!(
-            !matches!(
-                &receipt,
-                Ok(receipt) if matches!(receipt.status, ReceiptStatus::Completed { .. })
-            ),
-            "a viewer adds no task: {receipt:?}"
+                    Admitted::default(),
+                )
+                .await
+                .expect("the call is answered");
+            assert!(
+                !matches!(
+                    &receipt,
+                    Ok(receipt) if matches!(receipt.status, ReceiptStatus::Completed { .. })
+                ),
+                "a viewer or an outsider adds no task: {receipt:?}"
+            );
+        }
+        // Cy's agent granted Tasks alone reads it, until the grant is taken back or Cy leaves.
+        let cy_key = cy_root.verifying_key().to_bytes();
+        let cy_person = hex::encode(cy_key);
+        let (agent, by) = (
+            Grantee::agent("scout", cy_person.clone()),
+            Grantee::person(cy_person),
         );
+        let path = TreePath::workspace(&workspace).app(TASKS);
+        let grant = Grant::new("t", agent, path, KindSet::READ, Answer::Allow, by);
+        record_grants(&workspaces, &workspace, std::slice::from_ref(&grant)).await;
+        let scout = Caller::delegated_agent("scout", cy_key, [7; 32]).in_workspace(&workspace);
+        let read = |app| workspaces.may_read_record(&scout, &workspace, app, "");
+        assert!(read(TASKS).await.is_ok() && read(CHAT).await.is_err());
+        revoke_grants(&workspaces, &workspace, std::slice::from_ref(&grant.id)).await;
+        assert!(read(TASKS).await.is_err(), "its grant was taken back");
+        record_grants(&workspaces, &workspace, &[grant]).await;
+        let leaves = RemoveMemberRequest {
+            request_id: [8; 32],
+            user_public_key: cy_key,
+        };
+        let left = workspaces.remove_member(&workspace, &owner, leaves).await;
+        assert!(left.is_ok() && read(TASKS).await.is_err(), "Cy left");
         assert!(
             !found(&ada_person).contains("Wombat survey"),
             "nothing of the refused call reaches the record"
@@ -1198,6 +1258,7 @@ mod tests {
         workspaces
             .provide_tilolang(crate::host())
             .expect("the build's tilolang apps declare their surfaces");
+        tilo_app_host::test_support::decide_record_reads(&workspaces);
         let workspace = workspaces.create("Team").await.unwrap().workspace;
         let ada = hex::encode(owner.user_public_key);
         let tasks = BuiltInRecords {

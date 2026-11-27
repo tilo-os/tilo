@@ -154,6 +154,9 @@ impl TurnHistory {
     /// The versions of `app`'s record, oldest first, read as the person `caller` acts for: an
     /// agent sees no more of the record's history than its person may read.
     async fn versions(&self, caller: &Caller, app: &str) -> Result<Vec<Value>, ActionCallError> {
+        self.workspaces
+            .may_read_record(caller, &self.workspace, app, "")
+            .await?;
         let reader = tilo_workspace_service::workspaces::person_reading(caller);
         let route = DocumentRoute {
             app_id: app.to_owned(),

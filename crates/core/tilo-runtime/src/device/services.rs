@@ -3202,7 +3202,12 @@ impl Daemon {
                 },
             ));
             broker.state().serve_records(Arc::clone(&reads) as _);
-            search.serve(reads);
+            // One decision of who reads a record, for search and for records served windowless.
+            let may_read = tilo_workspace_search::reading_records(reads);
+            workspaces
+                .copies()
+                .decide_record_reads_by(Arc::clone(&may_read));
+            search.serve(may_read);
         }
         // The services the daemon's program mounted (the device's image model among them),
         // which apps ask by the addresses they publish rather than through a connection of their
