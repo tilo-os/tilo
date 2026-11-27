@@ -157,21 +157,43 @@ fn locking_options(
     }
 }
 
+/// The session of `options` on the device's daemon in this test's own process, its apps served on
+/// `socket` , in the device's own workspace: the screen's app reaches the session over the shell
+/// link the daemon hands out, as it does on the person's machine, opens its window's record in the
+/// workspace a launch outside every workspace keeps it in, reads the lock the session publishes
+/// and takes the password on it.
+pub(super) fn on_its_daemon(outputs: &[OutputConfig], socket: &Path, options: Options) -> Session {
+    let mut person = String::new();
+    let session = crate::common::on_its_daemon_with(outputs, |device| {
+        person.clone_from(&device.person);
+        Options {
+            app_socket: AppSocket::At(socket.to_path_buf()),
+            ..options
+        }
+    });
+    let mut own = tilo_desktop_model::Workspace::new(
+        tilo_desktop_model::WorkspaceId::parse(ui::application::PERSONAL_WORKSPACE)
+            .expect("the device's own workspace id"),
+        "Personal",
+    );
+    own.policy.set_owner(person);
+    let own_id = own.id();
+    session.handle().replace_tree(tilo_desktop_model::Layout {
+        active: own_id,
+        workspaces: vec![own],
+        ..tilo_desktop_model::Layout::default()
+    });
+    session
+}
+
 /// A session that starts its lock screen when it locks, serving its services on `socket` and
-/// showing on `outputs` .
+/// showing on `outputs` , on the device's daemon in this test's own process.
 pub(super) fn lockable_session(
     socket: &Path,
     outputs: &[OutputConfig],
     verifier: std::sync::Arc<dyn tilo_session::unlock::PasswordVerifier>,
 ) -> Session {
-    Session::headless(
-        Options {
-            app_socket: AppSocket::At(socket.to_path_buf()),
-            ..locking_options(verifier)
-        },
-        outputs,
-    )
-    .expect("session")
+    on_its_daemon(outputs, socket, locking_options(verifier))
 }
 
 /// What the displays show, as a grid each: what the person in front of them sees.

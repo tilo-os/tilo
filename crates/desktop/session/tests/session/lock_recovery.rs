@@ -3,12 +3,11 @@
 //! itself rather than lift the lock, which only the right password lifts.
 
 use super::lock::{
-    GONE_QUIET, apart, left_alone, lock_screen, lockable_session, pictures, private_home,
-    take_back_the_notice_of_the_locks_own_view, type_and_enter, until_back, until_drawn,
+    GONE_QUIET, apart, left_alone, lock_screen, lockable_session, on_its_daemon, pictures,
+    private_home, take_back_the_notice_of_the_locks_own_view, type_and_enter, until_back,
+    until_drawn,
 };
 use super::*;
-
-use tilo_session::AppSocket;
 
 const DISPLAYS: [&str; 2] = ["HEADLESS-1", "HEADLESS-2"];
 
@@ -64,14 +63,12 @@ fn a_lock_screen_whose_process_goes_comes_back_and_still_unlocks() {
         "the lock screen's process is gone"
     );
 
-    // The session is still locked, and what shows the lock is there again: the screen it started
-    // again when that screen can stay up, and the session's own view of the lock when it cannot.
-    // This session serves its apps nothing — no device's daemon stands behind it — so the screen
-    // it starts reaches nothing and goes; what a person gets either way is the lock over their
-    // shell, never the shell, and what the screen that went drew is not the lock any more, so
-    // nothing waits for it or types into it.
+    // The session is still locked, and starts its screen again: the person is not left looking at
+    // their shell, and not let into it either. The lock stands on the displays from the pass that
+    // starts the screen again — the session's own view of it until the new screen draws — and what
+    // the screen that went drew is not the lock any more, so nothing waits for it or types into it.
     pump(&mut session, &mut [], |session, _| {
-        session.compositor().lock_drawn() && !session.compositor().lock_client_drawn()
+        session.surfaces().running("lock")
     });
     assert!(
         session.compositor().locked(),
@@ -81,6 +78,10 @@ fn a_lock_screen_whose_process_goes_comes_back_and_still_unlocks() {
         session.compositor().lock_drawn(),
         "the lock is on the displays while the screen that shows it is started again, not a frame \
          of the screen that went and not nothing"
+    );
+    assert!(
+        !session.compositor().lock_client_drawn(),
+        "what the screen that went drew is not the lock: the screen started again has drawn nothing"
     );
     let again = until_drawn(&mut session, &DISPLAYS, &shots);
     for (index, display) in DISPLAYS.iter().enumerate() {
@@ -197,13 +198,13 @@ fn a_session_left_locked_comes_back_locked() {
             recovery.starts_locked(),
             "a session left locked is recovered locked"
         );
-        crate::common::headless_on(
+        on_its_daemon(
             &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
+            &home.path().join("collab.sock"),
             Options {
                 user: "ada".to_owned(),
                 verifier: std::sync::Arc::new(Sesame),
                 collab: false,
-                app_socket: AppSocket::At(home.path().join("collab.sock")),
                 surfaces: vec![lock_screen()],
                 recovery: Some(recovery),
                 ..Options::default()
@@ -273,13 +274,13 @@ fn a_session_back_locked_takes_keys_typed_as_it_comes_up_and_the_password_after_
     drop(tilo_session::recovery::Recovery::begin(&request).expect("the lock state"));
     let recovery = tilo_session::recovery::Recovery::begin(&request).expect("the lock state");
     assert!(recovery.starts_locked(), "the restart comes back locked");
-    let mut session = crate::common::headless_on(
+    let mut session = on_its_daemon(
         &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
+        &home.path().join("collab.sock"),
         Options {
             user: "ada".to_owned(),
             verifier: std::sync::Arc::new(Sesame),
             collab: false,
-            app_socket: AppSocket::At(home.path().join("collab.sock")),
             surfaces: vec![lock_screen()],
             recovery: Some(recovery),
             ..Options::default()
