@@ -35,6 +35,8 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_de
 use tilo_workspace_service::workspaces::PreAdmitRequest;
 
 pub const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+/// One step's wait: the longest passing test waiting on these takes 36 s whole on a loaded node.
+const STEP: Duration = Duration::from_secs(60);
 
 /// A test's scratch directory for a host's or a member's state, removed
 /// with it. It is in memory where the system has one
@@ -491,9 +493,7 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Option<T>>,
 {
-    // A loaded runner makes reconnects and replays slow, not wrong: wait on
-    // the shared hang bound rather than a count of polls.
-    let deadline = tilo_test_env::hang_deadline();
+    let deadline = std::time::Instant::now().checked_add(STEP).unwrap();
     loop {
         if let Some(value) = probe().await {
             return value;
@@ -669,7 +669,7 @@ pub async fn arrive_on(
 }
 
 pub async fn ready(peers: &[&Link]) {
-    let deadline = tilo_test_env::hang_deadline();
+    let deadline = std::time::Instant::now().checked_add(STEP).unwrap();
     loop {
         let snapshots: Vec<_> = peers.iter().map(|peer| peer.snapshot()).collect();
         if snapshots.iter().all(|snapshot| snapshot.phase == "ready") {
@@ -692,7 +692,7 @@ pub async fn ready(peers: &[&Link]) {
 /// A session the host never admits fails here naming the workspace, where its link stands and
 /// what the host last refused or answered.
 pub async fn admitted_to(peer: &Link, workspace: tilo_server_protocol::WorkspaceId) {
-    let deadline = tilo_test_env::hang_deadline();
+    let deadline = std::time::Instant::now().checked_add(STEP).unwrap();
     loop {
         let status = peer.status();
         let ready = status.workspaces.get(&workspace);
@@ -938,7 +938,7 @@ async fn in_replica<T>(
     what: &str,
     mut probe: impl FnMut() -> Option<T>,
 ) -> T {
-    let deadline = tilo_test_env::hang_deadline();
+    let deadline = std::time::Instant::now().checked_add(STEP).unwrap();
     loop {
         if let Some(found) = probe() {
             return found;
@@ -961,7 +961,7 @@ pub async fn durable(peer: &Link) {
     // barrier, where a poll found the answer up to a whole interval later, once for every write
     // of a history written one write at a time.
     let receipt = peer.barrier().unwrap();
-    let deadline = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
+    let deadline = tokio::time::Instant::now().checked_add(STEP).unwrap();
     let unanswered = match tokio::time::timeout_at(deadline, receipt).await {
         Ok(Ok(answer)) => {
             answer.unwrap();
