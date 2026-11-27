@@ -280,6 +280,44 @@ fn carrying_a_windows_edge_resizes_it_and_the_neighbour_keeps_its_share() {
     crate::common::shot(&mut session, "strips-edge-resized");
 }
 
+/// Three windows on a 1280 display each keep the least its row shares out — the `44rem` a bar,
+/// its tabs and an app need — so the row stands wider than the display it is drawn on.
+#[test]
+fn three_windows_keep_their_least_width_and_stand_wider_than_the_display() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (mut session, notes) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let mut names = Vec::new();
+    for (index, note) in notes.iter().take(3).enumerate() {
+        place(&mut session, note);
+        names.push(shown_as(&session, TITLES[index]));
+    }
+    // The least the row keeps a window at, in the shell's pixels: `44rem`.
+    let least = 44.0 * f64::from(tilo_ui_base::tokens::REFERENCE_BODY_PX);
+    let drawn: Vec<(f64, f64, f64, f64)> = names
+        .iter()
+        .map(|name| bar_of(&mut session, name))
+        .collect();
+    for (name, rect) in names.iter().zip(&drawn) {
+        assert!(
+            rect.2 >= least - 1.0,
+            "the window {name} keeps the least width its row shares out: {drawn:?}, least {least}"
+        );
+    }
+    // The three are wider than the display: the row keeps their least and stands past its edge,
+    // so it has that far to scroll.
+    let past = drawn
+        .iter()
+        .map(|rect| rect.0 + rect.2)
+        .fold(0.0_f64, f64::max);
+    assert!(
+        past > f64::from(WIDTH) + 100.0,
+        "the row stands wider than the display it is drawn on: {drawn:?}"
+    );
+}
+
 /// A row wider than the screen settles on a window's edge after it is scrolled: a wheel's step
 /// takes the row to the next window, so no rest leaves two windows cut.
 #[test]

@@ -905,12 +905,14 @@ impl WindowFrame {
                 crate::widget::EdgeSide::Leading => 0,
                 _ => 1,
             };
+            let least = self.narrowest.unwrap_or(LEAST_WIDTH).round() as i64;
             self.resize
                 .fire(Some(tilo_ui_base::component::Value::List(vec![
                     tilo_ui_base::component::Value::Int(taking),
                     tilo_ui_base::component::Value::Int(width),
                     tilo_ui_base::component::Value::Int(side),
                     tilo_ui_base::component::Value::Int(i64::from(u8::from(grip.zero_sum))),
+                    tilo_ui_base::component::Value::Int(least),
                 ])));
         }
     }
@@ -2270,8 +2272,10 @@ mod tests {
                 tilo_ui_base::component::Value::Int(480),
                 tilo_ui_base::component::Value::Int(1),
                 tilo_ui_base::component::Value::Int(0),
+                tilo_ui_base::component::Value::Int(160),
             ])),
-            "the width it is taking, the width it had, its trailing edge, and no Shift"
+            "the width it is taking, the width it had, its trailing edge, no Shift, and the \
+             toolkit's own least it kept"
         );
     }
 
@@ -2358,8 +2362,10 @@ mod tests {
                 tilo_ui_base::component::Value::Int(480),
                 tilo_ui_base::component::Value::Int(0),
                 tilo_ui_base::component::Value::Int(1),
+                tilo_ui_base::component::Value::Int(160),
             ])),
-            "the width it is taking, the width it had, its leading edge, and Shift held"
+            "the width it is taking, the width it had, its leading edge, Shift held, and the \
+             toolkit's own least"
         );
     }
 
@@ -2457,8 +2463,10 @@ mod tests {
                 tilo_ui_base::component::Value::Int(340),
                 tilo_ui_base::component::Value::Int(1),
                 tilo_ui_base::component::Value::Int(0),
+                tilo_ui_base::component::Value::Int(704),
             ])),
-            "the width it took and the width it had, on its trailing edge"
+            "the width it took, the width it had, its trailing edge, no Shift, and the least \
+             its row keeps"
         );
     }
 }

@@ -386,13 +386,6 @@ action drop_strip_here(held: LayoutRow, before: Text, target: host.Resource) (
     }
 }
 
-/// The narrowest a window in a row may be dragged: the `44rem` the row keeps every window it
-/// shares out (`row_window`), in the shell's pixels, so a carried edge stops where the layout
-/// stops shrinking the window.
-fn least_window_width() -> Float {
-    44.0 * 16.0
-}
-
 /// One strip's window as its row stands it: its share of the shell, the per-mille width the person
 /// gave it (a usual window where it names none), so two windows the shell holds stand half each
 /// and a lone window takes the room its neighbours left. Never narrower than 44rem — the room a
@@ -466,10 +459,12 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
             lists_actions: lists_the_shown(shown),
             carries: if s.floating { floating_bar(shown) } else { window_resource(shown) },
             resizable: resizable,
-            narrowest: if resizable { .some(least_window_width()) } else { .none },
+            narrowest: if resizable { .some(44.0 * space.rem) } else { .none },
             leads: leads,
             fill,
         ) {
+            // The narrowest a drag may leave it is the row's own floor, in the columns it draws
+            // with: `44rem` where one rem is the text size the theme sets, never a guess at it.
             // A window edge carried and let go: one arranging action sets the share of its row it
             // takes, recorded and undoable, so a press, a script and an agent resize the same way.
             on resize(at: List<Int>): resize_strip(a, s, at)
@@ -1546,9 +1541,10 @@ action move_right(w: device.Window (label: "The window")) (
 
 /// Resize the strip `s` from an edge carried and let go, as the frame reports it: the width it is
 /// taking, the width it had when it was grabbed (both in the shell's pixels), which edge (`0`
-/// leading, `1` trailing), and whether Shift was held. One arranging action of the session's
+/// leading, `1` trailing), whether Shift was held, and the least width the frame let the edge
+/// leave the window (its `44rem`, in those same pixels). One arranging action of the session's
 /// (`layout.strip.resize`), recorded and undoable like every other, so a press, a script and an
-/// agent resize the same way.
+/// agent resize the same way. A caller naming only the first four keeps a small floor of its own.
 ///
 /// A leading edge is the previous window's trailing edge: a window that has one before it moves
 /// that window's share, whose width is the one whose edge the pointer holds. Shift trades width
@@ -1575,7 +1571,8 @@ action resize_strip(a: Layout, s: LayoutStrip, at: List<Int>) (
             if let l = left {
                 if let r = strips.find(x -> x.key == after_key) {
                     let pair = row_px * (strip_weight(l) + strip_weight(r)) / total
-                    let least = least_window_width().to_int()
+                    // The floor the frame clamped the drag to, in the row's own pixels.
+                    let least = at.at(4) ?? 44
                     let left_px = row_px * strip_weight(l) / total
                     let new_left = (left_px + travel).clamp(least, (pair - least).max(least))
                     let new_right = pair - new_left

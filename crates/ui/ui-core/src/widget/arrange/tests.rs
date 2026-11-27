@@ -889,3 +889,69 @@ tilo_test_env::scenario! {
         }
     }
 }
+
+tilo_test_env::scenario! {
+    /// A filled part's `min` is a floor: a row gives every filled part at least what it names,
+    /// and the part that does not fit stands past the row's edge rather than being squeezed
+    /// under it, so a scroll around the row has more to pan than its viewport holds. This is
+    /// the shell's row of windows, each at least the `44rem` a bar, its tabs and an app need.
+    fn a_filled_row_keeps_each_parts_least_width;
+
+    phase a_row_of_parts_that_do_not_fit_keeps_their_least_width_and_overflows;
+    {
+        let theme = Theme::dark();
+        let rem = rem_of(&theme);
+        let least = f64::from(44.0 * rem);
+        let mut row = Row::row().fill_width().gap(Rhythm::None);
+        for index in 0..3 {
+            row = row.push_fit(
+                Box::new(Spacer::fixed(10.0).with_id(format!("window{index}"))),
+                Fit::fill(1.0).width(Sizing::fill(1.0).min(Length::Rem(44.0))),
+            );
+        }
+        let width = 1280.0_f32;
+        solve(&mut row, &theme, width);
+        let drawn = rects(&row);
+        for pair in drawn.windows(2) {
+            let (before, after) = (pair[0], pair[1]);
+            assert!(
+                after.x0 >= before.x0 + least - 0.5,
+                "each window takes its least width in the row: {drawn:?}, least {least}"
+            );
+        }
+        let last = drawn.last().copied().unwrap_or_default();
+        assert!(
+            last.x0 + least > f64::from(width),
+            "the row overflows the width it was given, so a scroll around it pans: {drawn:?}"
+        );
+    }
+
+    phase three_parts_that_fit_share_the_row_as_their_weights_say;
+    {
+        let theme = Theme::dark();
+        let rem = rem_of(&theme);
+        let mut row = Row::row().fill_width().gap(Rhythm::None);
+        for index in 0..3 {
+            row = row.push_fit(
+                Box::new(Spacer::fixed(10.0).with_id(format!("window{index}"))),
+                Fit::fill(1.0).width(Sizing::fill(1.0).min(Length::Rem(44.0))),
+            );
+        }
+        // Room for three windows at their least and a little to spare.
+        let wide = 3.3 * 44.0 * rem;
+        solve(&mut row, &theme, wide);
+        let drawn = rects(&row);
+        let apart = drawn[1].x0 - drawn[0].x0;
+        let share = f64::from(wide) / 3.0;
+        assert!(
+            (apart - share).abs() < 2.0,
+            "equal weights share the row equally: {drawn:?}, {share} each"
+        );
+        assert!(
+            drawn
+                .last()
+                .is_some_and(|last| last.x0 + share <= f64::from(wide) + 0.5),
+            "parts that fit stay inside the row: {drawn:?}"
+        );
+    }
+}
