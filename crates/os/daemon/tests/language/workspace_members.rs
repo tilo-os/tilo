@@ -260,16 +260,17 @@ fn an_administrators_page_may_not_unmake_an_administrator_nor_take_the_workspace
     });
 }
 
-/// An agent's grant is the agent and no more: a key the person's root certified for an agent is
-/// refused letting someone in, which the person may do, and the workspace invites no one.
+/// An agent's grant is the agent and no more: a key the person's root certified for an agent
+/// asks its person before letting someone in, which the person may do, and until they say yes
+/// the workspace invites no one.
 #[test]
-fn an_agents_grant_is_refused_what_its_grant_does_not_allow() {
+fn an_agents_invitation_waits_for_its_persons_yes() {
     host::run(|host| async move {
         let workspace = host.workspace().to_owned();
         let agent = host.agent_key("Reviewer's agent");
         let inviting =
             format!("/v1/workspaces/{workspace}/resources/workspace/invitations/actions/invite");
-        let (status, refused) = agent
+        let (_, asked) = agent
             .request(
                 "POST",
                 &inviting,
@@ -282,21 +283,39 @@ fn an_agents_grant_is_refused_what_its_grant_does_not_allow() {
                     .as_bytes(),
             )
             .await;
-        assert_ne!(status, 200, "an agent's grant invites no one: {refused}");
         assert_eq!(
-            refused["error"]["code"], "not_permitted",
-            "the agent is refused by its own grant: {refused}"
+            asked["status"], "pending",
+            "the agent's invitation asks: {asked}"
         );
         assert!(
-            refused["error"]["message"]
-                .as_str()
-                .is_some_and(|said| said.contains("permissions don't let you")),
-            "the agent is told its grant is what refuses it: {refused}"
+            asked.get("ask").is_some(),
+            "it waits for its person: {asked}"
         );
 
-        // The same invitation, by a device of the person's: the request is the workspace's to
-        // take, and the key's grant is what refused it.
+        // The person's own computer lists no invitation the agent asked for.
         let computer = host.member("Ada's computer", &workspace).await;
+        let open = computer
+            .call(
+                WORKSPACE_GOVERNANCE_PROVIDER,
+                at(&workspace, "invitation.list"),
+                &json!({}),
+            )
+            .await;
+        let Ok(InvocationUpdate::Succeeded { output, .. }) = &open else {
+            panic!("the computer lists the invitations: {open:?}");
+        };
+        assert!(
+            !output
+                .value
+                .as_ref()
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .any(|invited| invited["invitee_name"] == "Gooseberry jam"),
+            "the workspace invites no one before the person's yes: {output:?}"
+        );
+
+        // The same invitation, by a device of the person's, is the workspace's to take at once.
         let invited = computer
             .call(
                 WORKSPACE_GOVERNANCE_PROVIDER,
