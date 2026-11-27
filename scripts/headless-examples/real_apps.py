@@ -1169,18 +1169,20 @@ class Session:
         return found
 
     def answering(self, app: str, deadline: float = 60.0) -> bool:
-        """Whether `app` is up: a process of it runs from the session's own
-        store, and the shell holds its window.
+        """Whether `app` is up: the shell holds its window, and a process the
+        compositor attributes to the app has drawn into it.
 
-        Both are the shell's, not a guess: the launcher's sandbox runs the app
-        under `/var/tilo-apps/<id>/`, and the window is the one the shell placed
-        for it. What it draws is proved by what comes next: a control of its own
-        pressed, and what that changes."""
+        Both are the system's, not a guess: the window is the one the shell
+        placed for the app, and its frames are the commits of the client the
+        compositor bound to that app (the app's own process, or the window
+        process bound to a tilolang app), never the shell's card for a window
+        still to come. What it draws is proved by what comes next: a control of
+        its own pressed, and what that changes."""
         ident = app if "." in app else app_id(app)
 
         def up() -> bool:
-            return bool(self.processes(ident)) and any(
-                w.get("app_id") == ident for w in self.windows(ident))
+            return any(w.get("app_id") == ident and (w.get("frames") or 0) > 0
+                       for w in self.windows(ident))
 
         return until(f"{ident} to run with its window on the shell", up, deadline)
 
