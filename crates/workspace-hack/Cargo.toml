@@ -110,6 +110,7 @@ icu_properties = { version = "2", features = ["serde"] }
 icu_provider = { version = "2", default-features = false, features = ["alloc", "baked", "deserialize_postcard_1", "sync"] }
 icu_segmenter = { version = "2", features = ["serde"] }
 idna = { version = "1" }
+if-addrs = { version = "0.15", default-features = false, features = ["link-local"] }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 imagesize = { version = "0.14" }
 indexmap = { version = "2", features = ["rayon", "serde"] }
@@ -340,6 +341,7 @@ icu_properties = { version = "2", features = ["serde"] }
 icu_provider = { version = "2", default-features = false, features = ["alloc", "baked", "deserialize_postcard_1", "sync"] }
 icu_segmenter = { version = "2", features = ["serde"] }
 idna = { version = "1" }
+if-addrs = { version = "0.15", default-features = false, features = ["link-local"] }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 imagesize = { version = "0.14" }
 indexmap = { version = "2", features = ["rayon", "serde"] }

@@ -214,55 +214,23 @@ fn interfaces() -> Vec<WakeRoute> {
     Vec::new()
 }
 
-/// Each interface's first IPv4 subnet. Android's bionic has `getifaddrs` too: the VPN exit on a
-/// phone reads its home networks here.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+/// Each interface's first IPv4 subnet: the networks the VPN exit routes to and a wake-up is sent
+/// on, on every platform the daemon runs on.
 #[must_use]
 pub fn ipv4_subnets() -> std::collections::BTreeMap<String, Ipv4Subnet> {
     let mut subnets = std::collections::BTreeMap::new();
-    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
-    // SAFETY: `getifaddrs` fills `head` with a list we free below.
-    if unsafe { libc::getifaddrs(&raw mut head) } != 0 {
-        return subnets;
-    }
-    let mut cursor = head;
-    while !cursor.is_null() {
-        // SAFETY: `cursor` walks the list `getifaddrs` returned, which stays
-        // valid until `freeifaddrs`.
-        let entry = unsafe { &*cursor };
-        cursor = entry.ifa_next;
-        if entry.ifa_addr.is_null() || entry.ifa_netmask.is_null() || entry.ifa_name.is_null() {
+    for interface in if_addrs::get_if_addrs().unwrap_or_default() {
+        let if_addrs::IfAddr::V4(address) = &interface.addr else {
             continue;
-        }
-        // SAFETY: a non-null `ifa_addr` points at a `sockaddr` whose family
-        // says which layout follows.
-        if i32::from(unsafe { (*entry.ifa_addr).sa_family }) != libc::AF_INET {
-            continue;
-        }
-        // SAFETY: both are `sockaddr_in` for an `AF_INET` entry.
-        let (address, mask) = unsafe {
-            (
-                (*entry.ifa_addr.cast::<libc::sockaddr_in>())
-                    .sin_addr
-                    .s_addr,
-                (*entry.ifa_netmask.cast::<libc::sockaddr_in>())
-                    .sin_addr
-                    .s_addr,
-            )
         };
-        // SAFETY: `ifa_name` is a NUL-terminated interface name.
-        let name = unsafe { std::ffi::CStr::from_ptr(entry.ifa_name) }
-            .to_string_lossy()
-            .into_owned();
-        let prefix = u32::from_be(mask).count_ones();
-        if let Some(subnet) = u8::try_from(prefix).ok().and_then(|prefix| {
-            Ipv4Subnet::containing(std::net::Ipv4Addr::from(u32::from_be(address)), prefix)
-        }) {
-            subnets.entry(name).or_insert(subnet);
+        let prefix = u32::from(address.netmask).count_ones();
+        if let Some(subnet) = u8::try_from(prefix)
+            .ok()
+            .and_then(|prefix| Ipv4Subnet::containing(address.ip, prefix))
+        {
+            subnets.entry(interface.name).or_insert(subnet);
         }
     }
-    // SAFETY: `head` came from `getifaddrs` and is freed once.
-    unsafe { libc::freeifaddrs(head) };
     subnets
 }
 
