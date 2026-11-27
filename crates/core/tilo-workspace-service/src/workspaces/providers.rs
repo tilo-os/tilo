@@ -234,6 +234,10 @@ impl WeakProviders {
 #[derive(Default)]
 struct Inner {
     provided: std::sync::RwLock<BTreeMap<Arc<str>, Registered>>,
+    /// The application each provider answering in the workspaces is decided as
+    /// ([`Providers::answer_in_workspaces`]), kept for when this device's own calls of it go back
+    /// to the workspaces' governance ([`Providers::withdraw`]).
+    answering_as: std::sync::RwLock<BTreeMap<Arc<str>, Arc<str>>>,
     /// Which provider took each invocation another device asked for, or that was sent to a
     /// workspace's host, so its observations and its cancellation reach that provider.
     taken: std::sync::Mutex<HashMap<InvocationId, Taker>>,
@@ -370,20 +374,43 @@ impl Providers {
         app: &str,
         answers: Arc<dyn WorkspaceAnswers>,
     ) {
-        let through = Arc::new(ThroughGovernance(self.downgrade()));
-        self.0.provided.write_recover().insert(
+        self.0
+            .answering_as
+            .write_recover()
+            .insert(Arc::from(provider), Arc::from(app));
+        let mut registry = self.0.provided.write_recover();
+        // A provider the person's seat serves under the same id keeps this device's own calls of
+        // it ([`Self::serve`]); the workspaces' calls reach `answers` beside it.
+        if let Some(registered) = registry.get_mut(provider)
+            && registered.in_workspace.is_none()
+        {
+            registered.in_workspace = Some(answers);
+            return;
+        }
+        registry.insert(
             Arc::from(provider),
-            Registered {
-                provider: Arc::from(provider),
-                app: Arc::from(app),
-                reach: Reach::ThisDevice,
-                answers: through,
-                published: Vec::new(),
-                placed_for: None,
-                in_workspace: Some(answers),
-                package: None,
-            },
+            self.reached_in_workspaces(provider, app, answers),
         );
+    }
+
+    /// The registration of `provider` whose calls on this device reach the workspaces' governance,
+    /// and whose calls in a workspace reach `answers`, decided as the application `app`.
+    fn reached_in_workspaces(
+        &self,
+        provider: &str,
+        app: &str,
+        answers: Arc<dyn WorkspaceAnswers>,
+    ) -> Registered {
+        Registered {
+            provider: Arc::from(provider),
+            app: Arc::from(app),
+            reach: Reach::ThisDevice,
+            answers: Arc::new(ThroughGovernance(self.downgrade())),
+            published: Vec::new(),
+            placed_for: None,
+            in_workspace: Some(answers),
+            package: None,
+        }
     }
 
     /// What answers `target` in a workspace ([`Self::answer_in_workspaces`]): the provider it
@@ -636,11 +663,18 @@ impl Providers {
         placed_for: Option<[u8; 32]>,
     ) -> Result<(), String> {
         let mut served = self.0.provided.write_recover();
-        if let Some(registered) = served.get(provider)
-            && !Arc::ptr_eq(&registered.answers, &answers)
-        {
-            return Err(format!("{provider} is served on this device already"));
-        }
+        // A provider answering in the workspaces under the same id (the person's models, which
+        // their seat lists and a workspace's members ask) keeps answering there: this device's
+        // own calls of it reach `answers` from now on.
+        let in_workspace = match served.get(provider) {
+            Some(registered) if registered.in_workspace.is_some() => {
+                registered.in_workspace.clone()
+            }
+            Some(registered) if !Arc::ptr_eq(&registered.answers, &answers) => {
+                return Err(format!("{provider} is served on this device already"));
+            }
+            _ => None,
+        };
         served.insert(
             Arc::from(provider),
             Registered {
@@ -650,7 +684,7 @@ impl Providers {
                 published: answers.published(),
                 answers,
                 placed_for,
-                in_workspace: None,
+                in_workspace,
                 package: None,
             },
         );
@@ -659,14 +693,29 @@ impl Providers {
     }
 
     /// Answer no more calls of `provider` with `answers`: a call that names it from now on finds
-    /// no provider. A provider registered since under that name by another is left as it is.
+    /// no provider, or, where one answers in the workspaces under that name, reaches it through
+    /// their governance again. A provider registered since under that name by another is left as
+    /// it is.
     pub fn withdraw(&self, provider: &str, answers: &Arc<dyn ActionProvider + Send + Sync>) {
         let mut served = self.0.provided.write_recover();
-        if served
-            .get(provider)
-            .is_some_and(|registered| Arc::ptr_eq(&registered.answers, answers))
-        {
-            served.remove(provider);
+        let Some(registered) = served.get(provider) else {
+            return;
+        };
+        if !Arc::ptr_eq(&registered.answers, answers) {
+            return;
+        }
+        // What answers in the workspaces under that id stays, reached through their governance.
+        let kept = registered.in_workspace.clone().and_then(|in_workspace| {
+            let app = self.0.answering_as.read_recover().get(provider).cloned()?;
+            Some(self.reached_in_workspaces(provider, &app, in_workspace))
+        });
+        match kept {
+            Some(kept) => {
+                served.insert(Arc::from(provider), kept);
+            }
+            None => {
+                served.remove(provider);
+            }
         }
     }
 
@@ -1411,5 +1460,136 @@ mod tests {
             *seen.lock().expect("the certificates seen"),
             vec![Some(handshake), Some(guest)],
         );
+    }
+
+    /// What the person's seat serves on this device (their models, which their desktop lists)
+    /// under the id a provider answering in the workspaces has too.
+    struct Seat;
+
+    impl ActionProvider for Seat {
+        fn query(
+            &self,
+            _caller: &Caller,
+            _query: CatalogueQuery,
+        ) -> Pending<Result<CataloguePage, ActionCallError>> {
+            Pending::ready(Err(ActionCallError::UnknownAction))
+        }
+
+        fn invoke(
+            &self,
+            _caller: &Caller,
+            _request: InvokeRequest,
+        ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+            Pending::ready(Err(ActionCallError::UnknownAction))
+        }
+
+        fn observe(&self, _caller: &Caller, _id: &InvocationId) -> Option<InvocationState> {
+            None
+        }
+
+        fn cancel(
+            &self,
+            _caller: &Caller,
+            _id: &InvocationId,
+        ) -> Pending<Result<(), ActionCallError>> {
+            Pending::ready(Ok(()))
+        }
+    }
+
+    /// The person's seat serves this device's own calls of a provider that also answers in the
+    /// workspaces, in either order the two start, and the workspaces keep reaching it all along;
+    /// once the seat lets go, this device's calls reach it through the governance again. Another
+    /// provider under an id that is served already is still refused.
+    #[test]
+    fn a_seat_serves_beside_a_provider_answering_in_the_workspaces() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let in_workspace = |providers: &Providers| {
+            providers.answer_in_workspaces(
+                "test.models",
+                "test.models-app",
+                Arc::new(Certified(Arc::clone(&seen))),
+            );
+        };
+        let target = |provider: &str| RemoteActionTarget {
+            provider: provider.into(),
+            address: tilo_actions::ActionAddress::new("models", "list"),
+        };
+        for seat_first in [false, true] {
+            let providers = Providers::default();
+            let seat = Arc::new(Seat) as Arc<dyn ActionProvider + Send + Sync>;
+            if seat_first {
+                providers
+                    .serve(
+                        "test.models",
+                        "so.tilo.settings",
+                        Reach::ThisDevice,
+                        Arc::clone(&seat),
+                    )
+                    .expect("the seat serves its provider");
+                in_workspace(&providers);
+            } else {
+                in_workspace(&providers);
+                providers
+                    .serve(
+                        "test.models",
+                        "so.tilo.settings",
+                        Reach::ThisDevice,
+                        Arc::clone(&seat),
+                    )
+                    .expect("the seat serves beside what answers in the workspaces");
+            }
+            let served = providers
+                .get("test.models")
+                .expect("the provider is registered");
+            assert!(
+                Arc::ptr_eq(&served.answers, &seat),
+                "this device's calls reach the seat"
+            );
+            assert_eq!(&*served.app, "so.tilo.settings");
+            assert!(
+                providers.in_workspace(&target("test.models")).is_some(),
+                "the workspaces still reach what answers in them"
+            );
+            assert!(
+                providers
+                    .serve(
+                        "test.models",
+                        "so.tilo.other",
+                        Reach::ThisDevice,
+                        Arc::new(Seat)
+                    )
+                    .is_ok(),
+                "a later seat takes over from the one before it"
+            );
+            assert!(
+                providers
+                    .serve(
+                        "test.other",
+                        "so.tilo.other",
+                        Reach::ThisDevice,
+                        Arc::new(Seat)
+                    )
+                    .is_ok()
+            );
+            assert!(
+                providers
+                    .serve(
+                        "test.other",
+                        "so.tilo.other",
+                        Reach::ThisDevice,
+                        Arc::new(Seat)
+                    )
+                    .is_err(),
+                "an id served already is refused to another provider"
+            );
+            let current = providers.get("test.models").expect("registered").answers;
+            providers.withdraw("test.models", &current);
+            let back = providers
+                .get("test.models")
+                .expect("the workspaces' provider stays");
+            assert!(!Arc::ptr_eq(&back.answers, &current), "the seat let go");
+            assert_eq!(&*back.app, "test.models-app");
+            assert!(providers.in_workspace(&target("test.models")).is_some());
+        }
     }
 }
