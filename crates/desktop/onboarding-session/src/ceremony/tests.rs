@@ -133,8 +133,8 @@ struct Device {
     _home: tilo_test_env::TestHome,
     paths: tilo_device_identity::IdentityPaths,
     _settings: settings_store::SourceScope,
-    /// The daemon this device's programs ask, answering the device's public key.
-    _daemon: crate::nearby::testing::FakeDaemon,
+    /// The daemon this device's programs ask, answering the device's public key, until it stops.
+    daemon: Option<crate::nearby::testing::FakeDaemon>,
 }
 
 impl Device {
@@ -159,8 +159,13 @@ impl Device {
             _home: home,
             paths,
             _settings: settings_store::scoped_source(Some(settings)),
-            _daemon: daemon,
+            daemon: Some(daemon),
         }
+    }
+
+    /// This device's daemon stops answering, and no process here holds the device's key.
+    fn daemon_stops(&mut self) {
+        self.daemon = None;
     }
 
     fn identity(&self) -> session::SystemIdentity {
@@ -966,6 +971,40 @@ tilo_test_env::scenario! {
             "nothing the person had not finished is skipped"
         );
         assert!(resumed.page().progress_error.is_some());
+    }
+
+    phase a_restart_mid_setup_with_no_daemon_to_name_the_device_keeps_setup_open;
+    {
+        let directory = TempDir::new().expect("identity directory");
+        write_fixture_identity(directory.path());
+        let mut device = Device::new();
+        device.reached(Stage::TourOrganise);
+        device.daemon_stops();
+        assert!(
+            progress::unfinished(&device.paths),
+            "a step nobody can look up is setup under way, never setup finished"
+        );
+        let resumed = device.restarted(directory.path());
+        assert_eq!(resumed.page().screen, Screen::Done);
+        assert!(
+            !resumed.page().identity_ready_page,
+            "setup resumes at its earliest step, so nothing unfinished is skipped"
+        );
+        assert!(
+            resumed.page().progress_error.is_some(),
+            "the person is told the step could not be read"
+        );
+    }
+
+    phase a_device_with_no_key_and_no_daemon_has_no_step_to_resume;
+    {
+        let mut device = Device::new();
+        device.daemon_stops();
+        std::fs::remove_file(&device.paths.device_privkey).expect("the device's key goes");
+        assert!(
+            !progress::unfinished(&device.paths),
+            "before its identity a device starts setup over from its first page"
+        );
     }
 
     phase a_step_the_settings_refuse_holds_setup_where_it_is;

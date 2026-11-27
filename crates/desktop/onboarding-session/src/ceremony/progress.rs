@@ -51,9 +51,19 @@ pub(super) fn leaf(paths: &IdentityPaths) -> std::io::Result<String> {
 
 /// The step the person's settings hold for this device: `None` when its setup is finished or
 /// was never begun, and when this device has no key yet, as before its identity is made. A value
-/// this build cannot read is an `Err`: setup is under way, at a step nobody can name.
+/// this build cannot read is an `Err`: setup is under way, at a step nobody can name. So is a
+/// device that holds a key nobody answers for, its daemon down or refusing: its step cannot be
+/// looked up, and a step that cannot be looked up is never read as setup finished.
 pub(super) fn recorded(paths: &IdentityPaths) -> Option<Result<Stage, String>> {
-    let leaf = leaf(paths).ok()?;
+    let leaf = match leaf(paths) {
+        Ok(leaf) => leaf,
+        Err(error) => {
+            return match tilo_device_identity::persist::holds_device_key(paths) {
+                Ok(false) => None,
+                Ok(true) | Err(_) => Some(Err(error.to_string())),
+            };
+        }
+    };
     match settings_store::load_section(SECTION).remove(&leaf)? {
         Value::Null => None,
         value => Some(serde_json::from_value(value).map_err(|error| error.to_string())),
@@ -78,7 +88,7 @@ pub(super) fn record(paths: &IdentityPaths, stage: Option<Stage>) -> std::io::Re
 }
 
 /// Whether the setup of the device whose key `paths` hold is unfinished, as the person's
-/// settings say.
+/// settings say, or may be: a device whose key cannot be read keeps its setup open.
 #[must_use]
 pub fn unfinished(paths: &IdentityPaths) -> bool {
     recorded(paths).is_some()

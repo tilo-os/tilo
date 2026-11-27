@@ -88,9 +88,9 @@ pub fn resource() -> tilo_actions::ResourceSpec {
 const BACKGROUND_POLL: Duration = Duration::from_millis(250);
 
 /// Whether this device's setup is under way and unfinished, as the person's settings hold it
-/// ([`progress`]): a starting session opens setup again at the step it reached. A device whose key
-/// cannot be read has no step to resume; its identity does not verify either, and startup opens
-/// recovery for that instead.
+/// ([`progress`]): a starting session opens setup again at the step it reached. A device that
+/// holds a key nobody can read has a step nobody can name, and its setup opens again at the
+/// earliest step an identity has.
 #[must_use]
 pub fn setup_unfinished() -> bool {
     progress::unfinished(&crate::firstboot::collaboration_identity_paths())

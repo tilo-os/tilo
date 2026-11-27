@@ -166,6 +166,21 @@ mod tests {
             );
         }
 
+        phase a_restart_mid_setup_with_no_daemon_and_no_key_held_opens_it_again;
+        {
+            let (mut env, home) = home();
+            let (_settings, taken) = device(&mut env, home.path(), |this_device| {
+                serde_json::Map::from_iter([(this_device.to_owned(), "tour-organise".into())])
+            });
+            // The daemon that took the device's key is gone and none answers in its place: the
+            // device holds its key, but nothing here can say which it is.
+            drop(taken);
+            assert!(
+                setup_due(false, false),
+                "a step nobody can look up keeps setup open, never skips it"
+            );
+        }
+
         phase setup_another_device_of_theirs_is_in_stays_there;
         {
             let (mut env, home) = home();
