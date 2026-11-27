@@ -1,13 +1,22 @@
 //! What the policy reads of every app's committed catalogue entry (`fleet.json`, beside a native
 //! app's manifest or a tilolang package's `app.tl`): whose its windows are and which of its kinds
 //! of record are sealed. The rest of the entry is `fleet_catalogue`'s to read.
+//!
+//! The entries this reads are the ones `apps/fleet-index.json` names (`tilolang describe --fleet
+//! --write`), and those files are all it watches. Watching the app directories instead would rerun
+//! this script for any file in any app, so every edit to an app would rebuild everything above it;
+//! the index is what changes when an app is added or removed.
 
+use std::env;
 use std::error::Error;
 use std::fmt::Write as _;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
+
+/// The names of every app's entry, in the order the fleet reads them, from the root of the tree.
+const FLEET_INDEX: &str = "apps/fleet-index.json";
 
 /// The fields of an app's entry the policy reads.
 #[derive(Deserialize)]
@@ -21,18 +30,25 @@ struct Entry {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let apps_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
-    // The native apps first, in the order their ids sort, then the tilolang packages; a packaged
-    // crate carries no apps and compiles none.
-    let native = dirs(&apps_dir)
-        .into_iter()
-        .filter(|dir| dir.join("tilo-app.toml").is_file());
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let mut entries = Vec::new();
-    for dir in native.chain(dirs(&apps_dir.join("tl"))) {
-        let file = dir.join("fleet.json");
-        if file.is_file() {
+    // A packaged crate carries no apps and compiles none.
+    if root.join("apps").is_dir() {
+        let index = root.join(FLEET_INDEX);
+        println!("cargo::rerun-if-changed={}", index.display());
+        let text = fs::read_to_string(&index).map_err(|error| {
+            format!(
+                "{}: {error}; write it with `tilolang describe --fleet --write`",
+                index.display()
+            )
+        })?;
+        let paths: Vec<String> =
+            serde_json::from_str(&text).map_err(|error| format!("{}: {error}", index.display()))?;
+        for path in paths {
+            let file = root.join(path);
             println!("cargo::rerun-if-changed={}", file.display());
-            let text = fs::read_to_string(&file)?;
+            let text = fs::read_to_string(&file)
+                .map_err(|error| format!("{}: {error}", file.display()))?;
             let entry: Entry = serde_json::from_str(&text)
                 .map_err(|error| format!("{}: {error}", file.display()))?;
             entries.push(entry);
@@ -51,25 +67,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     out.push_str("];\n");
-    fs::write(Path::new(&std::env::var("OUT_DIR")?).join("kinds.rs"), out)?;
+    fs::write(Path::new(&env::var("OUT_DIR")?).join("kinds.rs"), out)?;
     Ok(())
-}
-
-/// The directories under `dir`, in the order files sort, each watched for an app added or
-/// removed; none when `dir` does not exist.
-fn dirs(dir: &Path) -> Vec<PathBuf> {
-    println!("cargo::rerun-if-changed={}", dir.display());
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut dirs: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .collect();
-    dirs.sort();
-    for dir in &dirs {
-        println!("cargo::rerun-if-changed={}", dir.display());
-    }
-    dirs
 }

@@ -2,14 +2,15 @@
 //!
 //! Each app commits its catalogue entry beside itself — `fleet.json` next to a native app's
 //! manifest, next to a tilolang package's `app.tl` — written and checked by `tilolang describe
-//! --fleet --write` and `--check`. This script reads those files, one per app, and nothing else:
-//! no app is compiled, and no file every app shares is written from all of them. A change to one
-//! app's entry rebuilds this crate; a change to anything else does not.
+//! --fleet --write` and `--check`. This script reads those files, one per app, the surfaces a
+//! native app names, and `apps/fleet-index.json`, which lists the entries: no app is compiled, and
+//! no file every app shares is written from all of them. A change to one app's entry rebuilds this
+//! crate; a change to anything else does not.
 
 use std::env;
 use std::error::Error;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 
@@ -107,24 +108,23 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
         return write(&render(&[], &[]));
     }
+    // Every app's committed entry, in the order the fleet reads them, from the index the fleet
+    // tooling writes (`tilolang describe --fleet --write`). The entries are what this reads, and
+    // the index is how it learns an app was added or removed: watching the app directories
+    // instead would rerun this script for any file in any app, rebuilding everything above it.
+    let index = root.join("apps/fleet-index.json");
+    watch(&index);
+    let text = fs::read_to_string(&index).map_err(|error| {
+        format!(
+            "{}: {error}; write it with `tilolang describe --fleet --write`",
+            index.display()
+        )
+    })?;
+    let paths: Vec<String> =
+        serde_json::from_str(&text).map_err(|error| format!("{}: {error}", index.display()))?;
     let mut apps: Vec<App> = Vec::new();
-    watch(&apps_dir);
-    // The native apps first, in the order their ids sort: a manifest and the entry beside it.
-    for dir in dirs(&apps_dir) {
-        watch(&dir);
-        if !dir.join("tilo-app.toml").is_file() {
-            continue;
-        }
-        apps.push(read(&dir)?);
-    }
-    // Then the tilolang packages that declare an app; one that declares none commits no entry.
-    let tilolang = apps_dir.join("tl");
-    watch(&tilolang);
-    for dir in dirs(&tilolang) {
-        watch(&dir);
-        if dir.join("fleet.json").is_file() {
-            apps.push(read(&dir)?);
-        }
+    for path in paths {
+        apps.push(read(&root.join(path))?);
     }
     // Each settings section is a resource of the workspace whichever app shows it, typed by the
     // surface the sections publish: a package in a crate of its own.
@@ -156,24 +156,19 @@ fn write(module: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// `dir`'s committed catalogue entry and the surface it points at.
-fn read(dir: &Path) -> Result<App, Box<dyn Error>> {
-    let file = dir.join("fleet.json");
-    if !file.is_file() {
-        return Err(format!(
-            "{}: no fleet.json: write it with `tilolang describe --fleet --write`",
-            file.display()
-        )
-        .into());
-    }
-    watch(&file);
-    let text = fs::read_to_string(&file)?;
+/// An entry file's app and the surface it points at.
+fn read(file: &Path) -> Result<App, Box<dyn Error>> {
+    watch(file);
+    let text = fs::read_to_string(file)?;
     let entry: Entry =
         serde_json::from_str(&text).map_err(|error| format!("{}: {error}", file.display()))?;
     let surface = match (&entry.surface, &entry.surface_file) {
         (Some(surface), _) => surface.clone(),
         (None, Some(name)) => {
-            let path = dir.join(name);
+            let path = file
+                .parent()
+                .ok_or_else(|| format!("{}: no directory", file.display()))?
+                .join(name);
             watch(&path);
             fs::read_to_string(&path)?
         }
@@ -191,20 +186,6 @@ fn watch(path: &Path) {
 fn line(out: &mut String, text: &str) {
     out.push_str(text);
     out.push('\n');
-}
-
-/// The directories under `dir`, in the order files sort; none when `dir` does not exist.
-fn dirs(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut dirs: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_dir())
-        .collect();
-    dirs.sort();
-    dirs
 }
 
 /// Refuse two apps claimed by one id: a device could not tell them apart.

@@ -572,7 +572,8 @@ fn describe_command(args: &[String]) -> Result<(), String> {
     }
     if write || check {
         // Each app's entry beside it, rather than one printed here: a change to an app writes
-        // the one file of that app, never a file every app shares.
+        // the one file of that app, never a file every app shares. The index beside them names
+        // the files, so it changes only when an app is added or removed.
         if write && check {
             return Err(format!(
                 "--write and --check are one or the other\n{}",

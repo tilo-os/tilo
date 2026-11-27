@@ -366,6 +366,10 @@ fn inner_type(ty: &str) -> &str {
 /// search, the Store and a server running none of the app's own programs show for it. The fleet
 /// crate gathers them at build time, one per app, so a change to one app writes one file.
 pub const FLEET_FILE: &str = "fleet.json";
+/// The file naming every app's committed entry, in the order the fleet reads them, from the root
+/// of the tree: what the crates that gather the entries at build time watch to learn an app was
+/// added or removed. Watching the app trees instead would rerun them for any edit to any app.
+pub const FLEET_INDEX: &str = "apps/fleet-index.json";
 /// A native app's compiled surface, beside its manifest.
 const NATIVE_SURFACE_FILE: &str = "surface.json";
 /// Where a native app's manifest names no `platforms`.
@@ -453,8 +457,8 @@ impl FleetFile {
 }
 
 /// Write every app's catalogue entry under `root`: one [`FLEET_FILE`] beside each native app's
-/// manifest and each tilolang package of `apps/tl` that declares an app, and none for a package
-/// that no longer declares one. Answers how many it wrote.
+/// manifest and each tilolang package of `apps/tl` that declares an app, none for a package that
+/// no longer declares one, and [`FLEET_INDEX`] naming them. Answers how many entries it wrote.
 pub fn write_fleet(root: &Path, search: &[PathBuf]) -> Result<usize, String> {
     let files = fleet_files(root, search)?;
     for (path, text) in &files {
@@ -466,10 +470,14 @@ pub fn write_fleet(root: &Path, search: &[PathBuf]) -> Result<usize, String> {
                 .map_err(|error| format!("{}: {error}", stale.display()))?;
         }
     }
+    let index = root.join(FLEET_INDEX);
+    std::fs::write(&index, index_text(root, &files)?)
+        .map_err(|error| format!("{}: {error}", index.display()))?;
     Ok(files.len())
 }
 
-/// Say whether every app's committed catalogue entry is the one its files say.
+/// Say whether every app's committed catalogue entry is the one its files say, and whether
+/// [`FLEET_INDEX`] names exactly them.
 ///
 /// # Errors
 /// Says which entries are stale or missing, and the command that writes them.
@@ -494,6 +502,12 @@ pub fn check_fleet(root: &Path, search: &[PathBuf]) -> Result<(), String> {
             stale.push(format!("{} names no app any more", relative(&path)));
         }
     }
+    let index = root.join(FLEET_INDEX);
+    match std::fs::read_to_string(&index) {
+        Ok(current) if current == index_text(root, &files)? => {}
+        Ok(_) => stale.push(format!("{} is stale", relative(&index))),
+        Err(_) => stale.push(format!("{} is missing", relative(&index))),
+    }
     if stale.is_empty() {
         return Ok(());
     }
@@ -501,6 +515,22 @@ pub fn check_fleet(root: &Path, search: &[PathBuf]) -> Result<(), String> {
         "{}\nwrite them with `tilolang describe --fleet --write`",
         stale.join("\n")
     ))
+}
+
+/// [`FLEET_INDEX`]'s text: every entry's path from `root`, in the order the fleet reads them.
+fn index_text(root: &Path, files: &[(PathBuf, String)]) -> Result<String, String> {
+    let paths: Vec<String> = files
+        .iter()
+        .map(|(path, _)| {
+            path.strip_prefix(root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    let mut text = serde_json::to_string_pretty(&paths).map_err(|error| error.to_string())?;
+    text.push('\n');
+    Ok(text)
 }
 
 /// The committed catalogue entry of every app under `root`, by the file it is written to.
@@ -1476,6 +1506,18 @@ mod tests {
         assert!(dir.join(FLEET_FILE).is_file());
         assert!(package.join(FLEET_FILE).is_file());
         check_fleet(root.path(), &[]).expect("the committed entries are current");
+        // The index names both entries, in the order the fleet reads them: the native app, then
+        // the tilolang package.
+        let index = || {
+            serde_json::from_str::<Vec<String>>(
+                &std::fs::read_to_string(root.path().join(FLEET_INDEX)).expect("the index writes"),
+            )
+            .expect("the index lists the entries' paths")
+        };
+        assert_eq!(
+            index(),
+            ["apps/leaf/fleet.json", "apps/tl/thing/fleet.json"]
+        );
 
         // The app whose search words changed is the one the check names, and writing it back
         // leaves the other app's entry as it was.
@@ -1490,9 +1532,22 @@ mod tests {
         write_fleet(root.path(), &[]).expect("the entry writes");
         check_fleet(root.path(), &[]).expect("the committed entries are current");
 
-        // A package that stops declaring an app loses the entry it committed.
+        // The index is a committed file too, and an app added or removed leaves it stale.
+        std::fs::write(
+            root.path().join(FLEET_INDEX),
+            "[\"apps/leaf/fleet.json\"]\n",
+        )
+        .unwrap();
+        let stale = check_fleet(root.path(), &[]).expect_err("the index is stale");
+        assert!(stale.contains("apps/fleet-index.json is stale"), "{stale}");
+        write_fleet(root.path(), &[]).expect("the index writes");
+        check_fleet(root.path(), &[]).expect("the committed entries are current");
+
+        // A package that stops declaring an app loses the entry it committed, and the index
+        // stops naming it.
         std::fs::write(package.join("app.tl"), "type Thing {\n    name: Text\n}\n").unwrap();
         write_fleet(root.path(), &[]).expect("the entry goes");
         assert!(!package.join(FLEET_FILE).is_file());
+        assert_eq!(index(), ["apps/leaf/fleet.json"]);
     }
 }
