@@ -477,9 +477,9 @@ fn a_folder_put_again_sends_none_of_its_bytes() {
 
 const FIRST_CONNECT_TEST: &str = "device::local::tests::a_command_right_after_the_daemon_starts_is_answered_in_a_workspace_it_opens";
 
-/// `tilo ls` right after the daemon starts, on a computer whose person has no workspace yet: the
-/// daemon opens it as the command connects, through the one way it opens it for anyone, and the
-/// command is answered there.
+/// `tilo ls` right after the daemon starts, on a computer that just made its person's root: the
+/// start founds their workspace, the one step that founds it, and the command that connects right
+/// after is answered there.
 #[test]
 fn a_command_right_after_the_daemon_starts_is_answered_in_a_workspace_it_opens() {
     let Some(root) = isolated_root(FIRST_CONNECT_TEST) else {
@@ -495,8 +495,8 @@ fn a_command_right_after_the_daemon_starts_is_answered_in_a_workspace_it_opens()
             .expect("the runtime asks")
     };
     assert!(
-        !held(Arc::clone(daemon.serving())),
-        "nothing founded the person's workspace before the command"
+        held(Arc::clone(daemon.serving())),
+        "the start that made the person's root founded their workspace"
     );
     let socket = native_endpoint(&daemon, &root);
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -514,14 +514,10 @@ fn a_command_right_after_the_daemon_starts_is_answered_in_a_workspace_it_opens()
         listed.get("rows").and_then(Value::as_array).is_some(),
         "{listed}"
     );
-    assert!(
-        held(Arc::clone(daemon.serving())),
-        "the command's connection opened the person's workspace"
-    );
     assert_eq!(
         daemon.workspace().expect("the workspace"),
         own.to_string(),
-        "it is the person's own, the one the daemon opens for anyone"
+        "the command is answered in the person's own workspace"
     );
 }
 

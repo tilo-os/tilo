@@ -2638,9 +2638,10 @@ impl Daemon {
                 .block_on(workspaces.claim_workspaces_here(&identity.cert.user_public_key));
             // The computer that just made the person's root founds their workspace now, in the
             // step that made it, before anyone is told the person is here: the founding call
-            // answers once their services run. Any other start founds nothing.
+            // answers once their services run. Any other start founds nothing, and a device
+            // placed for one workspace of theirs founds none: it holds no keys.
             let person = identity.cert.user_public_key;
-            if ROOTS_MADE_HERE.lock_recover().contains(&person) {
+            if !confined && ROOTS_MADE_HERE.lock_recover().contains(&person) {
                 stage("founding the person's workspace");
                 let founding = Arc::clone(&first);
                 block_on_owned(async move { founding.found().await }).map_err(io::Error::other)?;

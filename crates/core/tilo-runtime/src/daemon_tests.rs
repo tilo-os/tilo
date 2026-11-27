@@ -3559,13 +3559,15 @@ fn founding_ask(
     serde_json::from_str(&line).unwrap()
 }
 
-/// What a test asks the device's own actions as one typed call.
+/// What a test asks the device's own actions as one typed call, waiting on it within the time its
+/// connection reads: a founding call is answered once the person's services run.
 fn founding_call(uid: u32, socket: &std::path::Path, path: &str) -> serde_json::Value {
     founding_ask(
         uid,
         socket,
         &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": "tilo_do", "arguments": {"path": path, "args": {}}}}),
+            "params": {"name": "tilo_do", "arguments": {
+                "path": path, "args": {}, "wait_ms": 25_000}}}),
     )
 }
 
@@ -3586,6 +3588,9 @@ fn founded_daemon() -> Founded {
         tilo_api::daemon::admission::Admission::new(DAEMON, true),
     ));
     let answers = crate::device::unclaimed::DeviceOnly::at(key, place, root.clone(), DAEMON);
+    // The daemon's other half, which this fixture stands in for: this computer's person's services
+    // run, as they do once a daemon starts serving them. A founding call is answered when they do.
+    answers.founding_record().person_serves();
     let native = std::sync::Arc::new(super::Native::new(answers, founding_peer, admission));
     let sockets = root.join("sockets");
     std::fs::create_dir_all(&sockets).unwrap();
@@ -3811,7 +3816,8 @@ fn a_shell_link_answers_why_the_persons_part_did_not_start() {
     let found = ask(
         &socket,
         &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": "tilo_do", "arguments": {"path": "devices#found"}}}),
+            "params": {"name": "tilo_do", "arguments": {
+                "path": "devices#found", "wait_ms": 55_000}}}),
     );
     assert_ne!(found["result"]["isError"], true, "{found}");
     let who = ask(&socket, &json!({"native": "account#who"}));
