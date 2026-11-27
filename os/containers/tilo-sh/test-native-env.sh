@@ -12,6 +12,8 @@
 #     the server ticket the person's founding issued;
 #   - each server finds the runtimes its apps execute in the data directory of its runtime
 #     profile, which the daemon names itself whatever XDG_DATA_HOME it was started with;
+#   - what the stack starts finds bwrap at /usr/bin/bwrap, where the image installs it and
+#     where the launcher starts each app's sandbox from, on a machine whose own is elsewhere;
 #   - a variable the stack hands a service whose image does not set it stops
 #     the start, instead of being left out without a word;
 #   - the web entry's image sets the two folders its start hands it, so it is
@@ -115,6 +117,17 @@ grep -Fqx 'TILO_TICKET=tilo1test' "$told/home.env" \
 ! grep -q '^TILO_TICKET=' "$told/server.env" \
   || fault "the deployment's server, which its owner root makes, was handed a person's ticket"
 [[ ! -s $state/owner/tickets ]] || fault "the ticket the person's server took is still offered: $(cat "$state/owner/tickets")"
+
+# -- bwrap where the image has it ------------------------------------------------
+
+# Judged where bubblewrap runs here at all; a machine with /usr/bin/bwrap is handed nothing.
+if bwrap=$(command -v bwrap) && "$bwrap" --dev-bind / / -- true 2> /dev/null; then
+  placed=()
+  mapfile -d '' -t placed < <(system_bwrap)
+  "$bwrap" --dev-bind / / "${placed[@]}" -- sh -c '[ -x /usr/bin/bwrap ] && /usr/bin/bwrap --dev-bind / / -- true' \
+    > "$work/bwrap.said" 2>&1 \
+    || fault "a program the stack starts finds no bwrap at /usr/bin/bwrap to start an app's sandbox with: $(cat "$work/bwrap.said")"
+fi
 
 # -- a variable the image does not set ----------------------------------------
 

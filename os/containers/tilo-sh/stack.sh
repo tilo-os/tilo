@@ -1180,14 +1180,28 @@ as_owner() {
   owner_run "$(find_tilo)" "$@"
 }
 
+# system_bwrap: the bwrap arguments that put this machine's bubblewrap at /usr/bin/bwrap, where
+# the image installs it, for the program they start and what it starts. Tilo's launcher starts
+# every app's sandbox as `bwrap` with the app's environment cleared, so the lookup falls back to
+# /bin and /usr/bin and no PATH names another: on a machine whose bwrap is elsewhere (one built
+# into the user's own ~/.local/bin) no app would start. None where /usr/bin has it already.
+system_bwrap() {
+  [[ ! -x /usr/bin/bwrap ]] || return 0
+  printf '%s\0' --overlay-src /usr/bin --tmp-overlay /usr/bin --ro-bind "$(command -v bwrap)" /usr/bin/bwrap
+}
+
 # owner_run COMMAND…: COMMAND as the stack's own person (as_owner), with their home and
-# runtime directory.
+# runtime directory, seeing bwrap where the image has it (system_bwrap): the device holder it
+# starts launches the person's apps.
 owner_run() {
   local home=$state/owner/home run
   mkdir -p "$home"
   # Their own runtime directory, where the holder of their device listens: the stack's own,
   # private and short (stack_runtime).
   run=$(stack_runtime owner) || exit 1
+  local placed=()
+  mapfile -d '' -t placed < <(system_bwrap)
+  [[ ${#placed[@]} == 0 ]] || set -- "$(command -v bwrap)" --dev-bind / / "${placed[@]}" -- "$@"
   # No session bus of this login's: every stack's person here would take the same name on it.
   env -u DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR=$run \
   HOME=$home XDG_CONFIG_HOME=$home/.config XDG_STATE_HOME=$home/.local/state \
@@ -2122,12 +2136,15 @@ run_native() {
   local name=$1 dir=$2
   shift 2
   stop_native "$name"
-  local envs=()
+  local envs=() placed=()
   mapfile -t envs < "$runs/$name.env"
+  # The server's apps start in bwrap as the image places it (system_bwrap).
+  mapfile -d '' -t placed < <(system_bwrap)
   # bwrap as the caller's PATH finds it (the preflight's check), since the service's own
   # environment, which env -i starts it with, need not name where it is.
   setsid env -i "${envs[@]}" \
-    "$(command -v bwrap)" --dev-bind / / --ro-bind "$state/trust-bundle.pem" "$ca_path" --chdir "$dir" -- "$@" \
+    "$(command -v bwrap)" --dev-bind / / --ro-bind "$state/trust-bundle.pem" "$ca_path" "${placed[@]}" \
+    --chdir "$dir" -- "$@" \
     >> "$state/logs/$name.log" 2>&1 < /dev/null 9>&- &
   echo $! > "$runs/$name.pid"
 }
