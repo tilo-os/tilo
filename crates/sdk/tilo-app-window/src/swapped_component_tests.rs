@@ -62,12 +62,12 @@ struct Shown {
 
 impl Shown {
     fn open(shown: &str, words: &str, reduced: bool, now: Instant) -> Self {
-        Self::open_view(view(shown, words), reduced, now)
+        Self::open_view(&view(shown, words), reduced, now)
     }
 
-    fn open_view(batch: Vec<ToUi>, reduced: bool, now: Instant) -> Self {
+    fn open_view(batch: &[ToUi], reduced: bool, now: Instant) -> Self {
         let (mut app, end) = local::pair();
-        app.send(wire::encode_batch(&batch).expect("encodes"))
+        app.send(wire::encode_batch(batch).expect("encodes"))
             .expect("sends");
         let window = Box::new(AppWindow::new(Box::new(end), Vec::new()));
         let harness = clock(now, || {
@@ -236,7 +236,7 @@ fn well_place(widget: &dyn Widget) -> Option<String> {
 #[test]
 fn a_windows_well_is_kept_under_the_well_that_comes_and_then_let_go() {
     let start = ui::time::now();
-    let mut shown = Shown::open_view(well_view("p-1"), false, start);
+    let mut shown = Shown::open_view(&well_view("p-1"), false, start);
     assert_eq!(
         well_place(shown.swapped().current()),
         Some("p-1".to_owned()),
