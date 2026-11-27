@@ -62,11 +62,12 @@ invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", 
 [[situation.steps]]
 invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "new_task", args = { title = "Collect feedback from last offsite" }, bind = "feedback" }
 
+# The window goes to its Tasks place, where the task a row shows is published: it is checked
+# off there.
 [[situation.steps]]
-invoke = { resource = "{{feedback.value.id}}", action = "check_task", args = { done = true } }
-
+invoke = { resource = "tl:so.tilo.calendar:root-53uahg6d", action = "show-tasks" }
 [[situation.steps]]
-perform = { target = "key:item:tasks", action = "activate" }
+invoke = { resource = "{{feedback.resources.0}}", action = "check_task", args = { done = true } }
 
 [[situation]]
 name = "month"

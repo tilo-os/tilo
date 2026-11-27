@@ -1144,6 +1144,91 @@ impl ui::widget::WindowHistory for HostedWindow {
     }
 }
 
+/// A call delivered to this window names one of its app's actions: the app runs it and answers
+/// what it made, as it answers the calls a session's broker delivers to it
+/// ([`Hosted::run_for_window`]). A person's own choice from the window's palette is their press,
+/// which the app runs as it stands, so it keeps the app window's own answer.
+impl tilo_ui_base::host_operation::ResourceOperations for HostedWindow {
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[tilo_app_window::catalogue::HOSTED_ACTION]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &ui::automerge::ObjId,
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
+        if let Some(started) = self.run_in_app(op)? {
+            return Ok(Some(started));
+        }
+        // Every other operation is the app window's, as it was before the window answered any:
+        // its own handler first, then the children it routes to.
+        let inner = ui::widget::Decorator::inner_mut(self);
+        tilo_ui_base::host_operation::start_operation(&mut *inner, op, doc, path)
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &ui::automerge::AutoCommit,
+        path: &ui::automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        let inner = ui::widget::Decorator::inner_mut(self);
+        tilo_ui_base::host_operation::poll_resource_operation(
+            &mut *inner,
+            invocation,
+            cancellation_requested,
+            doc,
+            path,
+        )
+    }
+}
+
+impl HostedWindow {
+    /// What the app makes of a call delivered to this window, when `op` is one of its actions:
+    /// `None` for a press the person chose, and for everything the app window answers itself.
+    fn run_in_app(
+        &mut self,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
+        let request = op.request();
+        if request.type_id != tilo_app_window::catalogue::HOSTED_ACTION
+            || collaboration::invocation_scope::delivered_invocation().is_none()
+        {
+            return Ok(None);
+        }
+        let chosen: tilo_app_window::catalogue::Chosen = serde_json::from_slice(request.payload)
+            .map_err(|error| format!("a delivered action did not read back: {error}"))?;
+        // A window whose app runs in a session's host asks that host nothing here: what the app
+        // makes of the call is that host's to answer, and this window only shows it.
+        let Some(running) = self.in_process.as_mut() else {
+            return Ok(None);
+        };
+        let app = running.app.clone();
+        let hosted = running
+            .host
+            .instances_mut()
+            .find(|hosted| hosted.spec().app == app)
+            .ok_or_else(|| "the app's instance is not running".to_owned())?;
+        let invoker = collaboration::invocation_scope::current_invoker()
+            .unwrap_or_else(|| tilo_actions::ActionInvoker::person(hosted.spec().person.as_str()));
+        let argument = chosen.argument();
+        let address = tilo_actions::ActionAddress::new(chosen.resource, chosen.action);
+        let answer = hosted.run_for_window(
+            op.invocation(),
+            &address,
+            argument.as_deref(),
+            &invoker,
+            None,
+        )?;
+        Ok(Some(
+            tilo_ui_base::host_operation::ResourceOperationStart::Completed(answer),
+        ))
+    }
+}
+
 /// Until the app's patch connection arrived the window shows its loading state: what the person
 /// types waits for the app's first view.
 impl ui::widget::AwaitsContent for HostedWindow {
@@ -1169,7 +1254,8 @@ impl ui::widget::Decorator for HostedWindow {
         dyn ui::undo::LocalUndo,
         dyn ui::component_lifecycle::HearsElsewhere,
         dyn ui::widget::AwaitsContent,
-        dyn ui::widget::WindowHistory;
+        dyn ui::widget::WindowHistory,
+        dyn tilo_ui_base::host_operation::ResourceOperations;
         decorated
     );
 

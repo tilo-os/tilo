@@ -29,14 +29,15 @@ pub const HOSTED_ACTION: &str = "tilo.tilolang.hosted.action";
 /// What the person chose from the window's command palette, as that operation's payload: the
 /// action's address, and the arguments the palette collected.
 #[derive(serde::Serialize, serde::Deserialize)]
-struct Chosen {
-    resource: String,
-    action: String,
-    arguments: serde_json::Value,
+pub struct Chosen {
+    pub resource: String,
+    pub action: String,
+    pub arguments: serde_json::Value,
 }
 
 impl Chosen {
-    fn argument(&self) -> Option<String> {
+    #[must_use]
+    pub fn argument(&self) -> Option<String> {
         match &self.arguments {
             serde_json::Value::Object(arguments) if arguments.is_empty() => None,
             serde_json::Value::Null => None,
@@ -246,6 +247,12 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
     ty.contract.set_audience(descriptor.contract.audience());
     // One that acts on an item it was not given is offered where the item is.
     ty.contract.item.clone_from(&descriptor.contract.item);
+    // What the action answers is the app's to declare, and it checks the answer where it runs:
+    // the window carries an answer to its caller as the app said it, and reads nothing of its
+    // own into it — an action that returns a record must answer that record.
+    ty.contract.result = tilo_actions::ResultSpec::Json {
+        schema: serde_json::json!({}),
+    };
     spec
 }
 

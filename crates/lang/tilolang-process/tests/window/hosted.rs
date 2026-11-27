@@ -34,6 +34,8 @@ mod facts;
 
 #[path = "hosted/cost.rs"]
 mod cost;
+#[path = "hosted/delivered_call.rs"]
+mod delivered_call;
 
 #[path = "hosted/language.rs"]
 mod language;

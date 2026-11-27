@@ -2184,6 +2184,72 @@ impl Hosted {
         &self.spec
     }
 
+    /// Run the call `invocation` at `address`, which the window beside this instance was
+    /// delivered, and answer what the app made of it: what a session's broker reads from the
+    /// instance's own update, for a caller that waits in this process. `Err` is the app's
+    /// refusal, in its words.
+    ///
+    /// The run is kept as a delivered call is ([`Self::serve`]): its writes are stamped with the
+    /// invocation, the calls its code makes continue it, and the instance takes up what it
+    /// queued before the answer goes out.
+    pub(crate) fn run_for_window(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        address: &ActionAddress,
+        argument: Option<&str>,
+        invoker: &tilo_actions::ActionInvoker,
+        ambient: Option<&ActionContext>,
+    ) -> Result<tilo_actions::ActionOutput, String> {
+        let person = invoker
+            .acting
+            .by
+            .member_id()
+            .and_then(MemberId::person_id)
+            .or_else(|| invoker.acting.acted_for_person());
+        let route = self.connection.route();
+        let reaches = route
+            .document
+            .as_deref()
+            .and_then(collab_types::person_document_context)
+            .is_none()
+            || person.and_then(collab_types::person_workspace_of) == Some(route.cluster_id);
+        if !reaches {
+            return Err("permission_denied: this is another member's own document".to_owned());
+        }
+        let signed = ambient.and_then(|context| context.signed.clone());
+        self.store.serve(Some(invocation.0.to_string()));
+        self.store.serve_signed(signed);
+        SERVING.with(|slot| {
+            *slot.borrow_mut() = Some(Serving {
+                invocation,
+                person: person.map(str::to_owned),
+                action: address.action.clone(),
+            });
+        });
+        let approval = ambient.and_then(|context| context.approval.clone());
+        let pressed = ambient.is_some_and(|context| context.pressed);
+        let outcome = tilolang_tilo::page::answering((approval, pressed), || {
+            self.invoke(address, argument, invoker, ambient)
+        });
+        SERVING.with(|slot| *slot.borrow_mut() = None);
+        self.store.serve(None);
+        self.store.serve_signed(None);
+        // The action's writes reached the store as it ran: the instance takes up what it queued
+        // outside them on its next frame, as it does what a person's own action queues.
+        self.instance.commit_planned();
+        match outcome {
+            Ok(Ran::Done(output)) => Ok(output),
+            // The run waits on a call it made: its answer comes to the broker that served it,
+            // which a window running the instance itself is not.
+            Ok(Ran::Waits { .. }) => Err(
+                "the app answers this once the call it made ends, which this window cannot wait \
+                 for"
+                .to_owned(),
+            ),
+            Err(refused) => Err(format!("{}: {}", refused.code, refused.message)),
+        }
+    }
+
     /// The instance's runtime and views.
     #[must_use]
     pub fn instance(&self) -> &Instance {

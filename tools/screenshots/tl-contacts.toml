@@ -111,34 +111,34 @@ END:VCARD
 invoke = { resource = "tl:so.tilo.contacts:root-etcwj7o5", action = "new_contact", args = { name = "Amira Haddad" }, bind = "amira" }
 
 [[situation.steps]]
-invoke = { resource = "{{amira.value.id}}", action = "add_phone", args = { number = "+49 151 2345 6789", label = "mobile" } }
+invoke = { resource = "{{amira.resources.0}}", action = "add_phone", args = { number = "+49 151 2345 6789", label = "mobile" } }
 
 [[situation.steps]]
-invoke = { resource = "{{amira.value.id}}", action = "add_email", args = { address = "amira@northwind.studio", label = "work" } }
+invoke = { resource = "{{amira.resources.0}}", action = "add_email", args = { address = "amira@northwind.studio", label = "work" } }
 
 [[situation.steps]]
-invoke = { resource = "{{amira.value.id}}", action = "favorite", args = { on = true } }
+invoke = { resource = "{{amira.resources.0}}", action = "favorite", args = { on = true } }
 
 [[situation.steps]]
 invoke = { resource = "tl:so.tilo.contacts:root-etcwj7o5", action = "new_contact", args = { name = "Priya Raman" }, bind = "priya" }
 
 [[situation.steps]]
-invoke = { resource = "{{priya.value.id}}", action = "add_phone", args = { number = "+49 30 9012 3344", label = "mobile" } }
+invoke = { resource = "{{priya.resources.0}}", action = "add_phone", args = { number = "+49 30 9012 3344", label = "mobile" } }
 
 [[situation.steps]]
-invoke = { resource = "{{priya.value.id}}", action = "add_email", args = { address = "p.raman@parks.berlin.de", label = "work" } }
+invoke = { resource = "{{priya.resources.0}}", action = "add_email", args = { address = "p.raman@parks.berlin.de", label = "work" } }
 
 [[situation.steps]]
-invoke = { resource = "{{priya.value.id}}", action = "favorite", args = { on = true } }
+invoke = { resource = "{{priya.resources.0}}", action = "favorite", args = { on = true } }
 
 [[situation.steps]]
 invoke = { resource = "tl:so.tilo.contacts:root-etcwj7o5", action = "new_contact", args = { name = "Wen Zhao" }, bind = "wen" }
 
 [[situation.steps]]
-invoke = { resource = "{{wen.value.id}}", action = "add_phone", args = { number = "+49 176 5550 1212", label = "mobile" } }
+invoke = { resource = "{{wen.resources.0}}", action = "add_phone", args = { number = "+49 176 5550 1212", label = "mobile" } }
 
 [[situation.steps]]
-invoke = { resource = "{{wen.value.id}}", action = "favorite", args = { on = true } }
+invoke = { resource = "{{wen.resources.0}}", action = "favorite", args = { on = true } }
 
 [[situation.steps]]
 # A place in the sidebar is a row of its list, which it publishes as `key:item:<place>`.
