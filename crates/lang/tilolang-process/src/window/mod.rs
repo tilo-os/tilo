@@ -92,7 +92,13 @@ pub fn install_from_env() -> Result<(), InstallError> {
             });
         }
     }
-    install(bundle)
+    install(bundle)?;
+    // A window without a session runs its instance in this process, and the platform's
+    // published resources — this device's journal, its disks, its sound, Settings — are read
+    // from the session's services over the connection the device made for it: installed here,
+    // or a view of one reads the type's defaults and says the device publishes nothing.
+    crate::session_readings::install();
+    Ok(())
 }
 
 /// The app a spare window process was bound to: its windows are that app's, and show instances

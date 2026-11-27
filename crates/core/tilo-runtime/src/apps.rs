@@ -82,7 +82,8 @@ enum Shows {
     /// No window, for the app's long-lived connection: it runs until the device stops it.
     Connection,
     /// No window, for one of the app's captures: the process runs the app's own capture and
-    /// ends, and is no connection of the app's to attest or to take a call with.
+    /// ends. No call is taken with it — no instance is offered — but its connection is attested
+    /// like any launch's, so the app reads this device's own readings while it runs.
     Capture,
 }
 
@@ -1058,9 +1059,10 @@ impl Apps {
             );
         }
         // The instance's connections, made here and attested as the instance they name before the
-        // capture's process holds them.
+        // capture's process holds them: whatever process draws the app's window, its instance
+        // joins the workspace over these.
         #[cfg(target_os = "linux")]
-        let joined = if joins && crate::device::package_runs::runs_in_process(app_id) {
+        let joined = if joins {
             let (person, instance, collaboration, identity) =
                 self.instances.window_here(app_id, workspace)?;
             tracing::info!(
@@ -1269,17 +1271,14 @@ impl Apps {
             let _ = (&app, &sockets, shows, open_uri, &runs.args, &runs.origin);
             return Err("refusing to launch: no app sandbox on this platform".into());
         };
-        // A capture ends by itself, and is no connection of the app's: nothing attests it and
-        // nothing takes a call with it.
-        if shows != Shows::Capture
-            && !self.launched.record_showing(
-                launch.pid,
-                &app.app_id,
-                workspace,
-                shows,
-                open,
-                ticket,
-            )
+        // A capture's process is a launch like any other: it connects the services its launcher
+        // was handed, and the broker admits that connection against this record. Nothing takes a
+        // call *with* a capture — no instance is offered, and it ends by itself — but a connection
+        // refused here leaves the app's own platform readings (its journal, its sound, its
+        // settings) unread, and a capture that joins its workspace unreachable.
+        if !self
+            .launched
+            .record_showing(launch.pid, &app.app_id, workspace, shows, open, ticket)
         {
             launch.kill();
             return Err(format!(

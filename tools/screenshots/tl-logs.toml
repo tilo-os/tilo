@@ -102,10 +102,12 @@ message = "the catalogue's database could not be opened: permission denied"
 
 [[situation]]
 name = "journal"
+workspace = true
 title = "The journal"
 
 [[situation]]
 name = "live-tail"
+workspace = true
 title = "Following new entries"
 
 [[situation.steps]]
@@ -113,6 +115,7 @@ invoke = { resource = "tl:so.tilo.logs:root-ydaofznc", action = "follow", args =
 
 [[situation]]
 name = "errors"
+workspace = true
 title = "Only the errors"
 
 [[situation.steps]]
