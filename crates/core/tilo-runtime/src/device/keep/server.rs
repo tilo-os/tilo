@@ -455,6 +455,9 @@ impl Server {
             trust_policy: cfg.trust_policy.clone(),
             max_workspace_grants: cfg.max_workspace_grants,
             apps,
+            // Its workspaces open while the endpoint names its relay, and name it once it
+            // answers, as a person's computer does: a net report's wait is not added to its start.
+            reaching: Reaching::WhenNeeded,
             // Its member copies act as its own device, as every device's do: a workspace of
             // its person's that another device serves, it keeps as a member copy, entering it
             // as their device the way their other devices do.
@@ -1105,19 +1108,18 @@ fn reaching_of(relay_mode: &iroh::RelayMode) -> Reaching {
 
 /// Bind the one endpoint of a device that keeps what `cfg` names: on the address it names,
 /// reached through the packet relay it runs or is given, else the public relays. The relay runs
-/// for as long as the returned [`PacketRelay`] is kept.
+/// for as long as the returned [`PacketRelay`] is kept. The endpoint names its relay while the
+/// device opens its workspaces; [`PacketRelay::reached`] says whether it did.
 ///
 /// # Errors
 ///
-/// The relay does not start, or the endpoint does not bind or reaches no relay it was given.
+/// The relay does not start, or the endpoint does not bind.
 pub async fn bind_keeping(
     cfg: &ServerConfig,
     device_key: &ed25519_dalek::SigningKey,
 ) -> Result<(Endpoint, PacketRelay), ServerError> {
     let relay = PacketRelay::start(cfg, false).await?;
     let endpoint = bind_endpoint(cfg, device_key, relay.mode()).await?;
-    Reaching::ByRelay.awaited(&endpoint).await;
-    relay.reached(&endpoint)?;
     Ok((endpoint, relay))
 }
 

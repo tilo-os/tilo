@@ -342,6 +342,12 @@ impl Keeping {
             #[cfg(feature = "agents")]
             browsers,
         } = on;
+        // What it keeps is served once its endpoint names where it is reached: a relay it was
+        // given that never answered stops it here, named.
+        runtime.block_on(tilo_workspace_service::Reaching::ByRelay.awaited(&endpoint));
+        relay
+            .reached(&endpoint)
+            .map_err(|error| io::Error::other(format!("this server's endpoint: {error}")))?;
         let state_root = dir.to_path_buf();
         state_root.clone_into(&mut cfg.state_root);
         #[cfg_attr(
