@@ -1046,6 +1046,55 @@ mod tests {
         }
     }
 
+    /// A write to the process that fails is the session's connection lost, in words, and
+    /// finishes no run: a command whose keys never reached the shell has no completion to
+    /// report.
+    #[test]
+    fn a_write_that_fails_is_lost_and_finishes_no_run() {
+        struct Broken;
+        impl std::io::Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("injected PTY write failure"))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let (output, received) = std::sync::mpsc::channel();
+        let far_side = crate::session::FarSide {
+            writer: Box::new(Broken),
+            reader: Box::new(Output(received)),
+            resize: Box::new(|_, _| {}),
+            close: Box::new(|| {}),
+            shell_name: "ush".to_owned(),
+            ended: Arc::default(),
+            relay_session: None,
+            commands: None,
+        };
+        let live =
+            Live::carrying(far_side, tilo_content::ContentStore::memory(), 80, 24, None).unwrap();
+        assert!(live.write(b"ls\r").is_err(), "the write fails");
+        let (events, _) = live.events(0);
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                Event::Lost(reason) if reason.starts_with("terminal input failed")
+            )),
+            "the window hears its connection lost: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, Event::Finished(_))),
+            "a command whose keys never reached the shell reports no completion: {events:?}"
+        );
+        assert!(live.run("cargo build").is_err(), "a run writes too");
+        drop(output);
+        live.close();
+    }
+
     /// A far end built from channels: the bytes it was sent, the output it feeds, and the size
     /// and close it heard.
     #[derive(Clone, Default)]

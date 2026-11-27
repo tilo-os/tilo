@@ -596,6 +596,31 @@ tilo_test_env::scenario! {
             },
         );
         assert_eq!(spelled.len(), 2, "the same case matches");
+        // A whole-word search skips the cells a word only stands inside: "needl" in "needle" is
+        // no match, while every row that holds it as a word is.
+        let whole = crate::widget::Findable::find(
+            &mut widget,
+            "needle",
+            crate::widget::FindOptions {
+                whole_word: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(whole.len(), 2, "both rows hold `needle` as a word");
+        let inside = crate::widget::Findable::find(
+            &mut widget,
+            "needl",
+            crate::widget::FindOptions {
+                whole_word: true,
+                ..Default::default()
+            },
+        );
+        assert!(inside.is_empty(), "`needl` only stands inside `needle`");
+        assert_eq!(
+            crate::widget::Findable::find(&mut widget, "needl", Default::default()).len(),
+            2,
+            "without whole-word it matches anywhere"
+        );
     }
 
     phase images_a_program_placed_are_drawn_on_the_cells_they_occupy;
@@ -616,5 +641,28 @@ tilo_test_env::scenario! {
         assert!(!scene.encoding().is_empty(), "a placement without bytes is still framed");
         assert_eq!(widget.screen().lines.len(), 1);
     }
+
+    phase a_pasted_text_reaches_the_process_as_a_paste;
+    {
+        let fake = std::sync::Arc::new(Fake::with_lines(&["$ "]));
+        let mut widget = Terminal::new(fake.clone());
+        widget.set_focus(true);
+        let (tree, node) = placed(&mut widget);
+        paint(&mut widget);
+        tilo_ui_base::text_selection::clipboard_copy("echo pasted");
+        let before = fake.state().keys.len();
+        send_with(
+            &mut widget,
+            &tree,
+            node,
+            &tilo_ui_base::synthetic_input::char_key("v"),
+            ModifiersState::CONTROL | ModifiersState::SHIFT,
+        );
+        let state = fake.state();
+        assert_eq!(state.pastes, vec!["echo pasted".to_owned()]);
+        assert_eq!(state.keys.len(), before, "a paste is no keystroke");
+        assert_eq!(state.texts, Vec::<String>::new(), "and no IME commit");
+    }
+
 
 }

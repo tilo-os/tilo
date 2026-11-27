@@ -405,3 +405,139 @@ fn cell_color(color: Color) -> CellColor {
             .map_or(CellColor::Default, CellColor::Indexed),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::CellColor;
+
+    /// The bytes a shell prints are the text the screen shows once its escapes are applied: the
+    /// colours and weights stay as cells' attributes, a title is reported, and a carriage return
+    /// rewrites the row it lands on.
+    #[test]
+    fn styled_output_reads_as_the_text_the_screen_shows() {
+        let content = ContentStore::memory();
+        let mut emulator = Emulator::with_history(20, 5, TEST_HISTORY);
+        emulator.feed(
+            b"\x1b[1;31merror\x1b[0m: it broke\r\nok\r\n",
+            &content,
+            false,
+        );
+        let lines: Vec<&str> = emulator
+            .screen()
+            .active()
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect();
+        assert_eq!(&lines[..2], ["error: it broke", "ok"]);
+        assert!(lines[2..].iter().all(|line| line.is_empty()));
+        let error = &emulator.screen().active()[0].attrs;
+        assert!(error[0].bold, "SGR 1 is the cell's weight");
+        assert_ne!(
+            error[0].fg,
+            CellColor::Default,
+            "SGR 31 is the cell's colour"
+        );
+        assert!(!error[5].bold, "SGR 0 ends the style");
+        assert_eq!(error[5].fg, CellColor::Default);
+
+        let rewritten = emulator.feed(b"10%\r50%\r100%\r\nbroke\r\n", &content, false);
+        assert_eq!(rewritten.title, None);
+        let lines: Vec<&str> = emulator
+            .screen()
+            .active()
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect();
+        assert_eq!(
+            &lines[2..4],
+            ["100%", "broke"],
+            "a carriage return rewrites the row it returns to"
+        );
+    }
+
+    /// A program's title and the link a cell belongs to are reported as they are set, and the
+    /// link is one the screen's own id names.
+    #[test]
+    fn a_program_sets_the_title_and_a_cells_link() {
+        let content = ContentStore::memory();
+        let mut emulator = Emulator::with_history(20, 5, TEST_HISTORY);
+        let printed = emulator.feed(
+            b"\x1b]0;build\x07\x1b]8;;https://example.test/doc\x1b\\clicked\x1b]8;;\x1b\\",
+            &content,
+            false,
+        );
+        assert_eq!(printed.title.as_deref(), Some("build"));
+        let line = &emulator.screen().active()[0];
+        assert_eq!(line.text, "clicked");
+        let id = line.attrs[0].link_id;
+        assert_ne!(id, 0, "the text belongs to the link it was printed in");
+        assert_eq!(
+            emulator.screen().links.get(&id).map(String::as_str),
+            Some("https://example.test/doc")
+        );
+        assert!(
+            line.attrs[..7].iter().all(|attr| attr.link_id == id),
+            "every cell the words cover belongs to the link"
+        );
+    }
+
+    /// The kitty keyboard protocol is pushed and popped around a program without the cursor
+    /// moving: the pushes are the program's keyboard, not its drawing.
+    #[test]
+    fn kitty_keyboard_pushes_and_pops_do_not_move_the_cursor() {
+        let content = ContentStore::memory();
+        let mut emulator = Emulator::with_history(20, 5, TEST_HISTORY);
+        emulator.feed(b"abc", &content, false);
+        assert_eq!(emulator.cursor(), (3, 0));
+        emulator.feed(b"\x1b[>1u", &content, false);
+        assert_eq!(emulator.cursor(), (3, 0), "a push moves nothing");
+        emulator.feed(b"\x1b[<u", &content, false);
+        assert_eq!(emulator.cursor(), (3, 0), "a pop moves nothing either");
+        assert_eq!(emulator.screen().active()[0].text, "abc");
+    }
+
+    /// Only the rows new output changed are new lines: the output above them is the same lines,
+    /// which a frame that draws the grid again pays nothing for.
+    #[test]
+    fn only_the_rows_that_changed_are_new() {
+        let content = ContentStore::memory();
+        let mut emulator = Emulator::with_history(20, 5, TEST_HISTORY);
+        emulator.feed(b"one\r\ntwo\r\n", &content, false);
+        let before: Vec<*const crate::screen::Line> =
+            emulator.screen().main.iter().map(Rc::as_ptr).collect();
+        emulator.feed(b"three\r\n", &content, false);
+        let after: Vec<*const crate::screen::Line> =
+            emulator.screen().main.iter().map(Rc::as_ptr).collect();
+        assert_eq!(
+            before[0], after[0],
+            "a line above the new output stays the line it was"
+        );
+        assert_eq!(before[1], after[1]);
+        assert_ne!(before[2], after[2], "the line the output landed on is new");
+        // Rewriting one row in place leaves the lines above it as they were.
+        emulator.feed(b"\rdone", &content, false);
+        let rewritten: Vec<*const crate::screen::Line> =
+            emulator.screen().main.iter().map(Rc::as_ptr).collect();
+        for row in 0..3 {
+            assert_eq!(after[row], rewritten[row], "row {row} did not change");
+        }
+        assert_ne!(after[3], rewritten[3], "the rewritten row is a new line");
+        assert_eq!(emulator.screen().active()[3].text, "done");
+    }
+
+    /// A query a program asks is answered on its own input, and a status report is one.
+    #[test]
+    fn a_programs_query_is_answered_on_its_input() {
+        let content = ContentStore::memory();
+        let mut emulator = Emulator::with_history(20, 5, TEST_HISTORY);
+        let printed = emulator.feed(b"\x1b[6n", &content, false);
+        assert_eq!(
+            String::from_utf8_lossy(&printed.responses),
+            "\x1b[1;1R",
+            "the device answers where the cursor is"
+        );
+        let printed = emulator.feed(b"\x1b[c", &content, false);
+        assert!(!printed.responses.is_empty(), "the device says what it is");
+    }
+}
