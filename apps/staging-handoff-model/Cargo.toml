@@ -10,6 +10,11 @@ install-profile-model = { path = "../../crates/os/install-profile-model" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 
+[dev-dependencies]
+# The load-option fixture is compared as bytes.
+hex.workspace = true
+tilo-test-env = { path = "../../tools/test-env" }
+
 [lints]
 workspace = true
 

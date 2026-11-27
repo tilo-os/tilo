@@ -1,6 +1,7 @@
 //! Firmware observation and the compile-time native test-override check.
 
-use crate::{efi, platform::Platform};
+use crate::platform::Platform;
+use staging_handoff_model::efi;
 
 /// Firmware facts of the running host, as the plan's basis records them.
 pub fn read_firmware(

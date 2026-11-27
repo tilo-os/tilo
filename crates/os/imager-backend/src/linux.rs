@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tilo_clock::time::Duration;
 
-use super::efi::GLOBAL_GUID;
+use staging_handoff_model::gpt::EFI_GLOBAL_VARIABLE as GLOBAL_GUID;
+
 use super::linux_parse::{self, MountSource, PowerSupply};
 use super::model::{Blocker, HostFacts};
 use super::platform::{Disk, IoResult, NewPartition, Platform, SystemVolume};

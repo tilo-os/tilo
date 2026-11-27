@@ -32,6 +32,7 @@ use serde_json::{Map, Value, json};
 
 use crate::args::{self, Arg, Command};
 use crate::py::Dumps;
+use staging_handoff_model::efi::{self, HardDriveLoadOption};
 
 pub mod backend_commands;
 
@@ -702,116 +703,12 @@ fn boot_ids(host: &dyn Host, name: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-/// A load option's single GPT hard-drive node.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BootEntry {
-    pub partition_number: u32,
-    pub start_lba: u64,
-    pub size_lba: u64,
-    pub partuuid: String,
-    pub path: Option<String>,
-}
-
-fn u16_at(data: &[u8], at: usize) -> Option<u16> {
-    let bytes = data.get(at..at.checked_add(2)?)?;
-    Some(u16::from_le_bytes(bytes.try_into().ok()?))
-}
-
-fn u32_at(data: &[u8], at: usize) -> Option<u32> {
-    let bytes = data.get(at..at.checked_add(4)?)?;
-    Some(u32::from_le_bytes(bytes.try_into().ok()?))
-}
-
-fn u64_at(data: &[u8], at: usize) -> Option<u64> {
-    let bytes = data.get(at..at.checked_add(8)?)?;
-    Some(u64::from_le_bytes(bytes.try_into().ok()?))
-}
-
-/// `str(uuid.UUID(bytes_le=signature))`.
-fn uuid_le(signature: &[u8]) -> Option<String> {
-    let b = |at: usize| signature.get(at).copied();
-    let order = [3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15];
-    let mut text = String::new();
-    for (index, at) in order.iter().enumerate() {
-        if matches!(index, 4 | 6 | 8 | 10) {
-            text.push('-');
-        }
-        let _ = write!(text, "{:02x}", b(*at)?);
-    }
-    Some(text)
-}
-
-/// Decodes an `EFI_LOAD_OPTION` (without efivarfs attributes) into its single
-/// GPT hard-drive node; anything else (MBR, several HD nodes, a truncated
-/// path) is not a staging entry and decodes to `None`.
-#[must_use]
-pub fn decode_load_option(data: &[u8]) -> Option<BootEntry> {
-    if data.len() < 6 {
-        return None;
-    }
-    let path_length = usize::from(u16_at(data, 4)?);
-    let mut offset = 6usize;
-    loop {
-        if offset.checked_add(2)? > data.len() {
-            return None;
-        }
-        if data.get(offset..offset.checked_add(2)?)? == [0, 0] {
-            offset = offset.checked_add(2)?;
-            break;
-        }
-        offset = offset.checked_add(2)?;
-    }
-    let path = data.get(offset..)?;
-    let path = path.get(..path_length)?;
-    let mut hd = Vec::new();
-    let mut file_path = None;
-    let mut cursor = 0usize;
-    while cursor.checked_add(4)? <= path.len() {
-        let kind = *path.get(cursor)?;
-        let subtype = *path.get(cursor.checked_add(1)?)?;
-        let length = usize::from(u16_at(path, cursor.checked_add(2)?)?);
-        if length < 4 || cursor.checked_add(length)? > path.len() {
-            return None;
-        }
-        let body = path.get(cursor.checked_add(4)?..cursor.checked_add(length)?)?;
-        if kind == 0x7F {
-            break;
-        }
-        if kind == 0x04 && subtype == 0x01 {
-            if length != 42 {
-                return None;
-            }
-            let (number, start, size) = (u32_at(body, 0)?, u64_at(body, 4)?, u64_at(body, 12)?);
-            let (signature, mbr_type, signature_type) =
-                (body.get(20..36)?, *body.get(36)?, *body.get(37)?);
-            if mbr_type != 0x02 || signature_type != 0x02 {
-                return None;
-            }
-            hd.push(BootEntry {
-                partition_number: number,
-                start_lba: start,
-                size_lba: size,
-                partuuid: uuid_le(signature)?,
-                path: None,
-            });
-        } else if kind == 0x04 && subtype == 0x04 {
-            file_path = Some(utf16(body)?.trim_end_matches('\0').to_owned());
-        }
-        cursor = cursor.checked_add(length)?;
-    }
-    let [entry] = <[BootEntry; 1]>::try_from(hd).ok()?;
-    Some(BootEntry {
-        path: file_path,
-        ..entry
-    })
-}
-
-fn read_boot_entry(host: &dyn Host, entry_id: &str) -> Result<Option<BootEntry>> {
+fn read_boot_entry(host: &dyn Host, entry_id: &str) -> Result<Option<HardDriveLoadOption>> {
     Ok(read_efivar(host, &format!("Boot{entry_id}"), EFI_GLOBAL)?
-        .and_then(|data| decode_load_option(&data)))
+        .and_then(|data| efi::decode_load_option(&data).ok()))
 }
 
-fn all_boot_entries(host: &dyn Host) -> Result<Vec<(String, Option<BootEntry>)>> {
+fn all_boot_entries(host: &dyn Host) -> Result<Vec<(String, Option<HardDriveLoadOption>)>> {
     let mut names: Vec<String> = match fs::read_dir(host.efivars()) {
         Ok(entries) => entries
             .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
@@ -821,7 +718,7 @@ fn all_boot_entries(host: &dyn Host) -> Result<Vec<(String, Option<BootEntry>)>>
     };
     names.sort();
     let suffix = format!("-{EFI_GLOBAL}");
-    let mut entries: Vec<(String, Option<BootEntry>)> = Vec::new();
+    let mut entries: Vec<(String, Option<HardDriveLoadOption>)> = Vec::new();
     for name in names {
         let Some(id) = name
             .strip_prefix("Boot")
@@ -1425,7 +1322,7 @@ fn delete_owned_entry(host: &dyn Host, handoff: &Handoff, out: &mut String) -> R
     }
     let entry = read_boot_entry(host, entry_id)?;
     let points_at_staging = entry.is_some_and(|entry| {
-        entry.partuuid == esp.partuuid()
+        entry.partition_guid == esp.partuuid()
             && i128::from(entry.start_lba) == esp.first_lba
             && i128::from(entry.size_lba)
                 == esp.last_lba.saturating_sub(esp.first_lba).saturating_add(1)
@@ -1458,7 +1355,7 @@ fn target_entries(host: &dyn Host, target_esp: &str) -> Result<Vec<String>> {
         .filter(|(_, entry)| {
             entry
                 .as_ref()
-                .is_some_and(|entry| entry.partuuid == target_esp)
+                .is_some_and(|entry| entry.partition_guid == target_esp)
         })
         .map(|(id, _)| id)
         .collect();

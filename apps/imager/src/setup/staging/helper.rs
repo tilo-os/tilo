@@ -13,9 +13,9 @@ use super::record::{
     RecordedComponent, ReleaseRef, Step, StepState,
 };
 use crate::setup::internal_bundle::BundleFacts;
-use imager_backend::efi;
 use imager_backend::platform::{Disk, NewPartition, Partition, Platform};
 use imager_backend::staging::fat::{self, Range};
+use staging_handoff_model::efi;
 
 pub use imager_backend::staging::protocol::{REQUEST_SCHEMA, STAGING_HELPER_ARG};
 const MAX_MANIFEST_BYTES: u64 = crate::setup::internal_bundle::MAX_MANIFEST_BYTES as u64;

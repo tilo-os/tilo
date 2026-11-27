@@ -1,11 +1,12 @@
-//! `EFI_LOAD_OPTION` encoding for the owned installer boot entry, shared by both platforms so one
-//! tested encoder produces the bytes firmware sees.
+//! `EFI_LOAD_OPTION` records: the bytes firmware keeps in `Boot####`, encoded for the owned
+//! installer entry and decoded from whatever firmware wrote, shared by the imager, the installer
+//! and boot-order so one tested codec produces and reads what firmware sees.
 //!
 //! Layout (UEFI 2.10 §3.1.3): `u32 Attributes`, `u16 FilePathListLength`, NUL-terminated UTF-16LE
 //! `Description`, `FilePathList`, `OptionalData`.
 
 /// `EFI_GLOBAL_VARIABLE` vendor GUID.
-pub const GLOBAL_GUID: &str = staging_handoff_model::gpt::EFI_GLOBAL_VARIABLE;
+pub const GLOBAL_GUID: &str = crate::gpt::EFI_GLOBAL_VARIABLE;
 pub const LOAD_OPTION_ACTIVE: u32 = 0x0000_0001;
 /// Owned entries are allocated at or above this number.
 pub const FIRST_OWNED_BOOT_NUMBER: u16 = 0x0100;
@@ -15,10 +16,11 @@ const MEDIA_HARDDRIVE_DP: u8 = 0x01;
 const MEDIA_FILEPATH_DP: u8 = 0x04;
 const END_DEVICE_PATH_TYPE: u8 = 0x7f;
 const END_ENTIRE_DEVICE_PATH_SUBTYPE: u8 = 0xff;
-const HD_NODE_LEN: usize = 42;
+/// An `HD()` node: four header bytes and the 38-byte hard-drive body.
+const HD_BODY_LEN: usize = 38;
 const MBR_TYPE_GPT: u8 = 0x02;
 const SIGNATURE_TYPE_GUID: u8 = 0x02;
-/// Bounds on what this encoder will produce or accept.
+/// Bounds on what this codec will produce or accept.
 const MAX_TEXT_UNITS: usize = 256;
 
 /// Inputs for an HD(...)/File(...) load option.
@@ -87,17 +89,44 @@ pub fn allocate_boot_number(
 /// Mixed-endian EFI GUID bytes from canonical text.
 pub fn guid_bytes(text: &str) -> Result<[u8; 16], String> {
     let lower = text.to_ascii_lowercase();
-    if !super::is_guid(&lower) {
+    if !crate::is_guid(&lower) {
         return Err(format!("invalid GUID {text:?}"));
     }
-    uuid::Uuid::parse_str(&lower)
-        .map(|guid| guid.to_bytes_le())
-        .map_err(|error| error.to_string())
+    let digits: Vec<u8> = lower.bytes().filter(|byte| *byte != b'-').collect();
+    let mut bytes = [0u8; 16];
+    for (slot, pair) in bytes.iter_mut().zip(digits.as_chunks::<2>().0) {
+        let pair = std::str::from_utf8(pair).unwrap_or_default();
+        *slot = u8::from_str_radix(pair, 16).unwrap_or_default();
+    }
+    bytes.swap(0, 3);
+    bytes.swap(1, 2);
+    bytes.swap(4, 5);
+    bytes.swap(6, 7);
+    Ok(bytes)
 }
 
 /// Canonical lowercase text from mixed-endian EFI GUID bytes.
 pub fn guid_text(bytes: &[u8; 16]) -> String {
-    uuid::Uuid::from_bytes_le(*bytes).to_string()
+    let byte = |at: usize| bytes.get(at).copied().unwrap_or(0);
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        byte(3),
+        byte(2),
+        byte(1),
+        byte(0),
+        byte(5),
+        byte(4),
+        byte(7),
+        byte(6),
+        byte(8),
+        byte(9),
+        byte(10),
+        byte(11),
+        byte(12),
+        byte(13),
+        byte(14),
+        byte(15)
+    )
 }
 
 fn utf16z(text: &str, what: &str) -> Result<Vec<u8>, String> {
@@ -110,6 +139,52 @@ fn utf16z(text: &str, what: &str) -> Result<Vec<u8>, String> {
         .chain(std::iter::once(&0))
         .flat_map(|u| u.to_le_bytes())
         .collect())
+}
+
+/// Even-length UTF-16LE text with its trailing NUL padding removed, as firmware pads a field it
+/// wrote. An odd length, an interior NUL or text beyond the bound is refused.
+pub fn utf16_text(bytes: &[u8]) -> Result<String, String> {
+    if !bytes.len().is_multiple_of(2) {
+        return Err("odd-length UTF-16 string".into());
+    }
+    let units: Vec<u16> = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
+        .collect();
+    if units.len() > MAX_TEXT_UNITS {
+        return Err("UTF-16 string too long".into());
+    }
+    let text = String::from_utf16(&units).map_err(|e| e.to_string())?;
+    let text = text.trim_end_matches('\0');
+    if text.contains('\0') {
+        return Err("NUL inside UTF-16 text".into());
+    }
+    Ok(text.to_owned())
+}
+
+fn read_utf16z(bytes: &[u8]) -> Result<(String, usize), String> {
+    let mut units = Vec::new();
+    let mut remaining = bytes;
+    loop {
+        let (pair, rest) = remaining
+            .split_first_chunk::<2>()
+            .ok_or("unterminated UTF-16 string")?;
+        remaining = rest;
+        let unit = u16::from_le_bytes(*pair);
+        if unit == 0 {
+            break;
+        }
+        units.push(unit);
+        if units.len() > MAX_TEXT_UNITS {
+            return Err("UTF-16 string too long".into());
+        }
+    }
+    Ok((
+        String::from_utf16(&units).map_err(|e| e.to_string())?,
+        bytes.len().saturating_sub(remaining.len()),
+    ))
 }
 
 fn valid_file_path(path: &str) -> bool {
@@ -159,58 +234,90 @@ pub fn encode_load_option(option: &HardDriveLoadOption) -> Result<Vec<u8>, Strin
     Ok(out)
 }
 
-fn read_utf16z(bytes: &[u8]) -> Result<(String, usize), String> {
-    let mut units = Vec::new();
-    let mut remaining = bytes;
-    loop {
-        let (pair, rest) = remaining
-            .split_first_chunk::<2>()
-            .ok_or("unterminated UTF-16 string")?;
-        remaining = rest;
-        let unit = u16::from_le_bytes(*pair);
-        if unit == 0 {
-            break;
-        }
-        units.push(unit);
-        if units.len() > MAX_TEXT_UNITS {
-            return Err("UTF-16 string too long".into());
-        }
+/// A load option's header and device-path list, before the nodes are read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadOption<'a> {
+    /// `EFI_LOAD_OPTION.Attributes`.
+    pub attributes: u32,
+    pub description: String,
+    /// The `FilePathList` bytes, exactly as firmware wrote them.
+    pub device_path: &'a [u8],
+}
+
+/// Splits a `Boot####` payload (efivarfs's own attributes already removed) into its header and
+/// device-path list. Trailing optional data is not part of the list.
+pub fn split_load_option(bytes: &[u8]) -> Result<LoadOption<'_>, String> {
+    let ([a, b, c, d, low, high], rest) = bytes
+        .split_first_chunk::<6>()
+        .ok_or("load option too short")?;
+    let attributes = u32::from_le_bytes([*a, *b, *c, *d]);
+    let list_len = usize::from(u16::from_le_bytes([*low, *high]));
+    let (description, used) = read_utf16z(rest)?;
+    let device_path = rest
+        .get(used..)
+        .and_then(|rest| rest.get(..list_len))
+        .ok_or("device path is truncated")?;
+    Ok(LoadOption {
+        attributes,
+        description,
+        device_path,
+    })
+}
+
+/// One node of a device-path list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DevicePathNode<'a> {
+    pub kind: u8,
+    pub subtype: u8,
+    pub body: &'a [u8],
+}
+
+/// A device-path list as its nodes. A node shorter than its four-byte header is malformed; a node
+/// or list that runs past the bytes written is truncated.
+pub fn device_path_nodes(list: &[u8]) -> Result<Vec<DevicePathNode<'_>>, String> {
+    let mut nodes = Vec::new();
+    let mut at = 0usize;
+    while at < list.len() {
+        let ([kind, subtype, low, high], rest) = list
+            .get(at..)
+            .and_then(<[u8]>::split_first_chunk::<4>)
+            .ok_or("device path is truncated")?;
+        let len = usize::from(u16::from_le_bytes([*low, *high]));
+        let body = len
+            .checked_sub(4)
+            .and_then(|len| rest.get(..len))
+            .ok_or_else(|| {
+                if len < 4 {
+                    "malformed device path".to_owned()
+                } else {
+                    "device path is truncated".to_owned()
+                }
+            })?;
+        nodes.push(DevicePathNode {
+            kind: *kind,
+            subtype: *subtype,
+            body,
+        });
+        at = at.checked_add(len).ok_or("malformed device path")?;
     }
-    Ok((
-        String::from_utf16(&units).map_err(|e| e.to_string())?,
-        bytes.len().saturating_sub(remaining.len()),
-    ))
+    Ok(nodes)
 }
 
 /// Decodes an `HD` node, one or more `File` nodes (joined as firmware concatenates them) and
 /// `End`; trailing optional data is ignored. A device path that starts elsewhere (`PciRoot`, URI)
 /// is rejected, and callers compare those by bytes only.
 pub fn decode_load_option(bytes: &[u8]) -> Result<HardDriveLoadOption, String> {
-    let ([_, _, _, _, low, high], rest) = bytes
-        .split_first_chunk::<6>()
-        .ok_or("load option too short")?;
-    let list_len = usize::from(u16::from_le_bytes([*low, *high]));
-    let (description, used) = read_utf16z(rest)?;
-    let list = rest
-        .get(used..)
-        .and_then(|rest| rest.get(..list_len))
-        .ok_or("device path list exceeds the load option")?;
-    let node = |at: usize| -> Result<(u8, u8, &[u8]), String> {
-        let ([kind, subtype, low, high], rest) = list
-            .get(at..)
-            .and_then(<[u8]>::split_first_chunk::<4>)
-            .ok_or("truncated device path node")?;
-        let len = usize::from(u16::from_le_bytes([*low, *high]));
-        let body = len
-            .checked_sub(4)
-            .and_then(|len| rest.get(..len))
-            .ok_or("device path node exceeds the list")?;
-        Ok((*kind, *subtype, body))
+    let option = split_load_option(bytes)?;
+    let nodes = device_path_nodes(option.device_path)?;
+    let Some((hd, rest)) = nodes.split_first() else {
+        return Err("device path has no HD()".into());
     };
-    let (kind, subtype, hd) = node(0)?;
-    if (kind, subtype) != (MEDIA_DEVICE_PATH, MEDIA_HARDDRIVE_DP) || hd.len() != 38 {
+    if (hd.kind, hd.subtype) != (MEDIA_DEVICE_PATH, MEDIA_HARDDRIVE_DP)
+        || hd.body.len() != HD_BODY_LEN
+    {
         return Err("device path does not start with HD()".into());
     }
+    let hd = hd.body;
     let field = |at: usize, len: usize| {
         hd.get(at..)
             .and_then(|rest| rest.get(..len))
@@ -227,34 +334,31 @@ pub fn decode_load_option(bytes: &[u8]) -> Result<HardDriveLoadOption, String> {
         ))
     };
     let signature = field(20, 16)?.try_into().map_err(|_| "invalid HD() GUID")?;
-    let mut at = HD_NODE_LEN;
     let mut file_path = String::new();
-    loop {
-        let (kind, subtype, body) = node(at)?;
-        at = at
-            .checked_add(4)
-            .and_then(|at| at.checked_add(body.len()))
-            .ok_or("device path offset overflow")?;
-        match (kind, subtype) {
+    let mut ended = false;
+    for node in rest {
+        if ended {
+            return Err("device path continues past End".into());
+        }
+        match (node.kind, node.subtype) {
             (MEDIA_DEVICE_PATH, MEDIA_FILEPATH_DP) => {
-                let (part, used) = read_utf16z(body)?;
-                if used != body.len() {
-                    return Err("File() node has trailing bytes".into());
-                }
+                let part = utf16_text(node.body)?;
                 if !file_path.is_empty() && !file_path.ends_with('\\') && !part.starts_with('\\') {
                     file_path.push('\\');
                 }
                 file_path.push_str(&part);
             }
-            (END_DEVICE_PATH_TYPE, END_ENTIRE_DEVICE_PATH_SUBTYPE) if body.is_empty() => break,
+            (END_DEVICE_PATH_TYPE, END_ENTIRE_DEVICE_PATH_SUBTYPE) if node.body.is_empty() => {
+                ended = true;
+            }
             _ => return Err("unsupported device path node".into()),
         }
     }
-    if at != list_len || file_path.is_empty() {
+    if !ended || file_path.is_empty() {
         return Err("device path list is not HD/File/End".into());
     }
     Ok(HardDriveLoadOption {
-        description,
+        description: option.description,
         partition_number: u32::from_le_bytes(
             field(0, 4)?
                 .try_into()
@@ -326,6 +430,10 @@ mod tests {
 
             {
                 assert_eq!(decode_load_option(FIXTURE).unwrap(), fixture_option());
+                let split = split_load_option(FIXTURE).unwrap();
+                assert_eq!(split.attributes, LOAD_OPTION_ACTIVE);
+                assert_eq!(split.description, "Tilo installer");
+                assert_eq!(split.device_path, &FIXTURE[36..]);
             }
 
             {
@@ -356,6 +464,16 @@ mod tests {
             }
 
             {
+                // Firmware may pad a File() node with NUL units.
+                let mut padded = FIXTURE[..126].to_vec();
+                padded.extend([0, 0]); // one more NUL unit inside the File() node
+                padded.extend(&FIXTURE[126..]);
+                padded[4] = 0x60; // 96: the extra NUL unit belongs to the list
+                padded[80] = 0x32; // File() length 50
+                assert_eq!(decode_load_option(&padded).unwrap(), fixture_option());
+            }
+
+            {
                 assert!(decode_load_option(&FIXTURE[..40]).is_err());
                 let mut long = FIXTURE.to_vec();
                 long[4] = 0xff;
@@ -369,6 +487,13 @@ mod tests {
                 let mut unterminated = FIXTURE[..6].to_vec();
                 unterminated.extend([b'T', 0]);
                 assert!(decode_load_option(&unterminated).is_err());
+                let mut short_node = FIXTURE.to_vec();
+                short_node[80] = 0; // a File() node shorter than its header
+                short_node[81] = 0;
+                assert_eq!(
+                    decode_load_option(&short_node).unwrap_err(),
+                    "malformed device path"
+                );
             }
 
             {

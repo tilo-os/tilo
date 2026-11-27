@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use staging_handoff_model::efi;
 
 use super::{EFI_GLOBAL, Machine, Refusal, ids, option, refuse, var};
 
@@ -240,55 +241,17 @@ fn nodes(machine: &dyn Machine, boot_id: &str) -> Result<Vec<(u8, u8)>, Refusal>
         Some(raw) if raw.len() >= 10 => raw,
         _ => return refuse(format!("{name} is absent or truncated")),
     };
-    let attributes = raw
-        .get(..4)
-        .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
-        .map_or(0, u32::from_le_bytes);
-    if attributes & 1 == 0 {
+    let header =
+        efi::split_load_option(&raw).map_err(|error| Refusal(format!("{name} {error}")))?;
+    if header.attributes & efi::LOAD_OPTION_ACTIVE == 0 {
         return refuse(format!("{name} is inactive"));
     }
-    let length = raw
-        .get(4..6)
-        .and_then(|bytes| <[u8; 2]>::try_from(bytes).ok())
-        .map_or(0, u16::from_le_bytes);
-    let length = usize::from(length);
-    let mut cursor = 6usize;
-    while cursor.saturating_add(1) < raw.len()
-        && raw.get(cursor..cursor.saturating_add(2)) != Some(&[0, 0][..])
-    {
-        cursor = cursor.saturating_add(2);
-    }
-    if cursor.saturating_add(2) > raw.len() {
-        return refuse(format!("{name} has no description terminator"));
-    }
-    cursor = cursor.saturating_add(2);
-    let path = raw
-        .get(cursor..)
-        .and_then(|path| path.get(..length.min(path.len())))
-        .unwrap_or_default();
-    if path.len() != length {
-        return refuse(format!("{name} device path is truncated"));
-    }
-    let mut nodes = Vec::new();
-    let mut at = 0usize;
-    while at.saturating_add(4) <= path.len() {
-        let kind = path.get(at).copied().unwrap_or(0);
-        let subtype = path.get(at.saturating_add(1)).copied().unwrap_or(0);
-        let size = path
-            .get(at.saturating_add(2)..at.saturating_add(4))
-            .and_then(|bytes| <[u8; 2]>::try_from(bytes).ok())
-            .map_or(0, u16::from_le_bytes);
-        let size = usize::from(size);
-        if size < 4 || at.saturating_add(size) > path.len() {
-            return refuse(format!("{name} has a malformed device path"));
-        }
-        nodes.push((kind, subtype));
-        at = at.saturating_add(size);
-    }
-    if at != path.len() {
-        return refuse(format!("{name} has a malformed device path"));
-    }
-    Ok(nodes)
+    let nodes = efi::device_path_nodes(header.device_path)
+        .map_err(|error| Refusal(format!("{name} {error}")))?;
+    Ok(nodes
+        .into_iter()
+        .map(|node| (node.kind, node.subtype))
+        .collect())
 }
 
 fn write_order(machine: &dyn Machine, order: &[String]) -> Result<(), Refusal> {

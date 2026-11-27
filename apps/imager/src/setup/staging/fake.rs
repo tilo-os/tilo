@@ -364,8 +364,9 @@ mod tests {
     use super::super::record::{RecordStatus, RecordStore, ReleaseRef, Step, StepState};
     use super::*;
     use crate::setup::internal_bundle::{BundleFacts, ComponentFacts};
-    use imager_backend::{efi, staging::fat};
+    use imager_backend::staging::fat;
     use sha2::{Digest, Sha256};
+    use staging_handoff_model::efi;
 
     const MIB: u64 = 1 << 20;
     const GIB: u64 = 1 << 30;

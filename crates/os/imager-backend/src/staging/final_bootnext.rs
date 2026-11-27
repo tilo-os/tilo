@@ -5,7 +5,8 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::efi::{self, HardDriveLoadOption};
+use staging_handoff_model::efi::{self, HardDriveLoadOption};
+
 use super::platform::{Disk, IoResult, Platform};
 use super::{ESP_TYPE, fat, same_guid};
 

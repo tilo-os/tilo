@@ -48,9 +48,8 @@ impl Host for Fixture {
     }
 }
 
-/// `decode-load-option EFIVAR`: the installer's decoding of a `Boot####`
-/// efivarfs file (attributes first), as JSON, or `null` when it is not a
-/// staging entry.
+/// `decode-load-option EFIVAR`: the shared decoding of a `Boot####` efivarfs
+/// file (attributes first), as JSON, or `null` when it is not a staging entry.
 fn decode(path: &Path) -> ExitCode {
     let Ok(raw) = std::fs::read(path) else {
         eprintln!("cannot read {}", path.display());
@@ -58,14 +57,14 @@ fn decode(path: &Path) -> ExitCode {
     };
     let entry = raw
         .get(4..)
-        .and_then(staging_handoff::decode_load_option)
+        .and_then(|data| staging_handoff_model::efi::decode_load_option(data).ok())
         .map_or(Value::Null, |entry| {
             serde_json::json!({
                 "partition_number": entry.partition_number,
                 "start_lba": entry.start_lba,
                 "size_lba": entry.size_lba,
-                "partuuid": entry.partuuid,
-                "path": entry.path,
+                "partuuid": entry.partition_guid,
+                "path": entry.file_path,
             })
         });
     println!("{entry}");

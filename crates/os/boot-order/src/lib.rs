@@ -28,10 +28,11 @@ use std::process::{Command, Output, Stdio};
 
 use rustix::fs::{CWD, FileType, Mode, OFlags, fstat, openat};
 use rustix::io::Errno;
+use staging_handoff_model::{efi, is_guid};
 
 pub use args::{Parsed, Request, parse};
 
-pub const EFI_GLOBAL: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
+pub const EFI_GLOBAL: &str = efi::GLOBAL_GUID;
 pub const LOADER_VENDOR: &str = "4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
 pub const LOADERS: [&str; 2] = [
     r"\EFI\systemd\systemd-bootaa64.efi",
@@ -149,17 +150,15 @@ pub fn ids(machine: &dyn Machine, name: &str) -> Result<Option<Vec<String>>, Ref
     let Some(raw) = var(machine, name, EFI_GLOBAL)? else {
         return Ok(None);
     };
-    if !raw.len().is_multiple_of(2) {
-        return refuse(format!("{name} has odd length"));
-    }
-    Ok(Some(
-        raw.chunks_exact(2)
-            .map(|pair| match pair {
-                [low, high] => format!("{:04X}", u16::from_le_bytes([*low, *high])),
-                _ => String::new(),
-            })
-            .collect(),
-    ))
+    efi::parse_u16_list(&raw)
+        .map(|list| {
+            Some(
+                list.iter()
+                    .map(|number| efi::format_boot_number(*number))
+                    .collect(),
+            )
+        })
+        .map_err(|_| Refusal(format!("{name} has odd length")))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,56 +168,8 @@ pub struct BootOption {
     pub loader: String,
 }
 
-fn utf16le(bytes: &[u8]) -> Option<String> {
-    if !bytes.len().is_multiple_of(2) {
-        return None;
-    }
-    let units = bytes.chunks_exact(2).map(|pair| match pair {
-        [low, high] => u16::from_le_bytes([*low, *high]),
-        _ => 0,
-    });
-    char::decode_utf16(units)
-        .collect::<Result<String, _>>()
-        .ok()
-}
-
-fn u16_at(bytes: &[u8], at: usize) -> Option<u16> {
-    let pair = bytes.get(at..at.checked_add(2)?)?;
-    Some(u16::from_le_bytes([*pair.first()?, *pair.get(1)?]))
-}
-
-/// `uuid.UUID(bytes_le=…)` as a lowercase hyphenated string.
-fn guid_le(bytes: &[u8]) -> Option<String> {
-    let b: &[u8; 16] = bytes.try_into().ok()?;
-    Some(format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        b[3],
-        b[2],
-        b[1],
-        b[0],
-        b[5],
-        b[4],
-        b[7],
-        b[6],
-        b[8],
-        b[9],
-        b[10],
-        b[11],
-        b[12],
-        b[13],
-        b[14],
-        b[15]
-    ))
-}
-
-struct Node<'a> {
-    kind: u8,
-    subtype: u8,
-    data: &'a [u8],
-    size: usize,
-}
-
-/// `Boot####`: active, one GPT hard-drive node, one file node, the end node.
+/// `Boot####`: active, one GPT hard-drive node, one or more file nodes, the
+/// end node.
 ///
 /// # Errors
 /// An absent, inactive, truncated or malformed option, or one that does not
@@ -229,76 +180,20 @@ pub fn option(machine: &dyn Machine, boot_id: &str) -> Result<BootOption, Refusa
         Some(raw) if raw.len() >= 10 => raw,
         _ => return refuse(format!("{name} is absent or truncated")),
     };
-    let attributes = raw
-        .get(..4)
-        .and_then(|b| <[u8; 4]>::try_from(b).ok())
-        .map_or(0, u32::from_le_bytes);
-    let length = usize::from(u16_at(&raw, 4).unwrap_or(0));
-    if attributes & 1 == 0 {
+    let header =
+        efi::split_load_option(&raw).map_err(|error| Refusal(format!("{name} {error}")))?;
+    if header.attributes & efi::LOAD_OPTION_ACTIVE == 0 {
         return refuse(format!("{name} is inactive"));
     }
-    let mut cursor = 6usize;
-    while cursor.saturating_add(1) < raw.len()
-        && raw.get(cursor..cursor.saturating_add(2)) != Some(&[0, 0][..])
-    {
-        cursor = cursor.saturating_add(2);
-    }
-    if cursor.saturating_add(2) > raw.len() {
-        return refuse(format!("{name} has no description terminator"));
-    }
-    let description = utf16le(raw.get(6..cursor).unwrap_or_default())
-        .ok_or_else(|| Refusal(format!("{name} description is invalid")))?;
-    cursor = cursor.saturating_add(2);
-    let path = raw.get(cursor..).unwrap_or_default();
-    let path = path.get(..length.min(path.len())).unwrap_or_default();
-    if path.len() != length {
-        return refuse(format!("{name} device path is truncated"));
-    }
-    let mut nodes = Vec::new();
-    let mut at = 0usize;
-    while at.saturating_add(4) <= path.len() {
-        let kind = path.get(at).copied().unwrap_or(0);
-        let subtype = path.get(at.saturating_add(1)).copied().unwrap_or(0);
-        let size = usize::from(u16_at(path, at.saturating_add(2)).unwrap_or(0));
-        if size < 4 || at.saturating_add(size) > path.len() {
-            return refuse(format!("{name} has malformed device-path node"));
-        }
-        let data = path
-            .get(at.saturating_add(4)..at.saturating_add(size))
-            .unwrap_or_default();
-        nodes.push(Node {
-            kind,
-            subtype,
-            data,
-            size,
-        });
-        at = at.saturating_add(size);
-    }
-    let shape: Vec<(u8, u8)> = nodes.iter().map(|n| (n.kind, n.subtype)).collect();
-    let [hd, file, end] = nodes.as_slice() else {
-        return refuse(format!("{name} is not a single GPT partition and EFI file"));
-    };
-    if at != path.len() || shape != [(4, 1), (4, 4), (0x7f, 0xff)] {
-        return refuse(format!("{name} is not a single GPT partition and EFI file"));
-    }
-    if hd.size != 42 || end.size != 4 || hd.data.get(36..) != Some(&[2, 2][..]) {
-        return refuse(format!("{name} does not name a GPT partition"));
-    }
-    let partuuid = hd
-        .data
-        .get(20..36)
-        .and_then(guid_le)
-        .ok_or_else(|| Refusal(format!("{name} does not name a GPT partition")))?;
-    let loader =
-        utf16le(file.data).ok_or_else(|| Refusal(format!("{name} EFI path is invalid")))?;
-    let loader = loader.trim_end_matches('\0').to_owned();
-    if !loader.starts_with('\\') || loader.contains('\0') {
+    let decoded =
+        efi::decode_load_option(&raw).map_err(|error| Refusal(format!("{name} {error}")))?;
+    if !decoded.file_path.starts_with('\\') {
         return refuse(format!("{name} EFI path is malformed"));
     }
     Ok(BootOption {
-        description,
-        partuuid,
-        loader,
+        description: decoded.description,
+        partuuid: decoded.partition_guid,
+        loader: decoded.file_path,
     })
 }
 
@@ -376,8 +271,8 @@ fn checked_state(
     let Some(reported) = var(machine, "LoaderDevicePartUUID", LOADER_VENDOR)? else {
         return refuse("systemd-boot did not report its loaded ESP");
     };
-    let loaded_esp = utf16le(&reported)
-        .ok_or_else(|| Refusal("LoaderDevicePartUUID is malformed".to_owned()))?;
+    let loaded_esp = efi::utf16_text(&reported)
+        .map_err(|_| Refusal("LoaderDevicePartUUID is malformed".to_owned()))?;
     if loaded_esp.trim_end_matches('\0').to_lowercase() != esp {
         return refuse("the running systemd-boot loaded from another ESP");
     }
@@ -432,15 +327,6 @@ pub fn enlist(
     Ok(format!(
         "Boot{boot_id} appended to BootOrder; Windows remains first"
     ))
-}
-
-fn is_guid(text: &str) -> bool {
-    let groups: Vec<&str> = text.split('-').collect();
-    groups.len() == 5
-        && groups
-            .iter()
-            .zip([8, 4, 4, 4, 12])
-            .all(|(group, len)| group.len() == len && group.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// The command line and the exit status.

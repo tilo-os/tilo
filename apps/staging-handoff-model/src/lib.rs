@@ -1,8 +1,9 @@
 //! The staging ESP handoff: what Tilo Imager leaves at `/EFI/tilo-staging/handoff.json` for
-//! the live installer it staged beside the retained OS.
+//! the live installer it staged beside the retained OS, and the EFI boot records around it.
 
 use serde::{Deserialize, Serialize};
 
+pub mod efi;
 pub mod gpt;
 pub mod sizes;
 

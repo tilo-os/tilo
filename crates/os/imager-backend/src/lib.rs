@@ -81,7 +81,6 @@ pub mod startup_password;
 pub mod support_report;
 pub mod write;
 
-pub mod efi;
 pub mod firmware;
 #[cfg(target_os = "linux")]
 pub mod linux;

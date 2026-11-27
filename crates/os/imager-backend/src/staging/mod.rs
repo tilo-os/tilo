@@ -36,7 +36,7 @@ pub fn probe_host() -> crate::model::HostFacts {
 
 pub use crate::model as probe;
 pub use crate::{ESP_TYPE, is_guid, random_guid, same_guid};
-pub use crate::{efi, plan, platform};
+pub use crate::{plan, platform};
 
 /// GPT type reserved for the temporary installer root.
 pub const STAGING_ROOT_TYPE: &str = staging_handoff_model::gpt::TILO_STAGING_ROOT;
