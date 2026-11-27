@@ -9,8 +9,8 @@
 /// switch turn the same record on and off.
 ///
 /// No hint begins while something else has the person's attention (a surface over the windows,
-/// the style's settings), while they type, and none while they follow someone, whose view is not
-/// their own.
+/// a question that waits for their yes, the style's settings), while they type, and none while
+/// they follow someone, whose view is not their own.
 view control_hints() {
     let here = device.overlays.here
     let learned = settings.control_hints.learned
@@ -23,7 +23,8 @@ view control_hints() {
         searching: here == "launcher",
         busy: here != "" and here != "none" and here != "launcher"
             or shell.settings_open
-            or shell.reporting,
+            or shell.reporting
+            or not asked_elsewhere().is_empty(),
         engaged: device.people.following != "",
         typing: device.input.typing,
         fill,
