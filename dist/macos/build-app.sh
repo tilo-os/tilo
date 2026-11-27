@@ -164,6 +164,25 @@ root="$("$tools/tilo-app-package" inspect "${whole[0]}" | sed -n 's/^package-id:
 [[ "$root" =~ ^[0-9a-f]{64}$ ]] || { printf 'unexpected runtime package id %s\n' "$root" >&2; exit 1; }
 mkdir -p "$contents/Resources/runtimes"
 cp "${whole[0]}" "$contents/Resources/runtimes/$root.tapp"
+# The Tilo runtime the app is: its daemon binary, sealed as the runtime package of the release the
+# apps it runs were built for. The daemon installs it on its first start beside the tilolang
+# runtime, so a package naming `tilo-runtime/<release>` finds it in the device's store, and one
+# naming another release is refused by name. `TILO_RUNTIME_RELEASE` must be the release those apps
+# name (dist/apps' plan and the app manifests carry it).
+runtime_release="${TILO_RUNTIME_RELEASE:-2026.07}"
+[[ $runtime_release =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]] \
+  || { printf 'unexpected runtime release %s\n' "$runtime_release" >&2; exit 1; }
+"$tools/tilo-runtime-bundle" build --binaries-only --version "$runtime_release" \
+  --arch aarch64+x86_64 --identity "$runtime_identity" \
+  --include-bin "$contents/MacOS/tilo-runtime" --out "$runtime_work/tilo-runtime-bundle" >/dev/null
+tools/apps/pack-runtime-package.sh "$runtime_work/tilo-runtime-bundle" so.tilo.runtime \
+  "Tilo runtime" "$version" "$runtime_identity" "$tools" "$runtime_work/tilo-runtime-package" macos >/dev/null
+tilo_runtime=("$runtime_work"/tilo-runtime-package/whole-*.tapp)
+[ "${#tilo_runtime[@]}" = 1 ] && [ -f "${tilo_runtime[0]}" ] \
+  || { printf 'no Tilo runtime package was packed\n' >&2; exit 1; }
+root="$("$tools/tilo-app-package" inspect "${tilo_runtime[0]}" | sed -n 's/^package-id: //p')"
+[[ "$root" =~ ^[0-9a-f]{64}$ ]] || { printf 'unexpected Tilo runtime package id %s\n' "$root" >&2; exit 1; }
+cp "${tilo_runtime[0]}" "$contents/Resources/runtimes/$root.tapp"
 "$tools/tilo-runtime-bundle" key pubkey --identity "$runtime_identity" \
   >"$contents/Resources/runtime-bundle-trusted-publishers.txt"
 "${sign[@]}" --entitlements "$here/Tilo.entitlements" "$app"

@@ -216,7 +216,20 @@ pub fn apply(
     on_progress: &mut dyn FnMut(DownloadProgress),
 ) -> ExitCode {
     match prepare(source, change, trust, on_progress) {
-        Ok((file, accepted)) => run_installer(&file.path, accepted),
+        Ok((file, verdict, accepted)) => {
+            // The runtimes the package names travel with it, the same way an install from the
+            // Store brings them: a file is no reason to land an app this computer cannot run.
+            let runtime = app_cli::install::tapp_manifest(&file.path).and_then(|manifest| {
+                app_cli::install::ensure_runtimes(&verdict.id, &manifest, None, on_progress)
+            });
+            match runtime {
+                Ok(()) => run_installer(&file.path, accepted),
+                Err(error) => {
+                    eprintln!("app: {}", error.user_message());
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Err(error) => {
             eprintln!("app: {error}");
             ExitCode::FAILURE
@@ -229,7 +242,7 @@ fn prepare(
     change: &Change<'_>,
     trust: &FileTrust,
     on_progress: &mut dyn FnMut(DownloadProgress),
-) -> Result<(Source, bool), String> {
+) -> Result<(Source, Verdict, bool), String> {
     let file = fetch(source, on_progress)?;
     let verdict = check(&file.path, trust)?;
     if let Change::Update(id) = change
@@ -238,7 +251,7 @@ fn prepare(
         return Err(format!("{source} is {}, not {id}", verdict.id));
     }
     let accepted = accepted(&verdict, trust)?;
-    Ok((file, accepted))
+    Ok((file, verdict, accepted))
 }
 
 /// Install the package file at `path` in the workspace (`accepted` a self-signed one): an update

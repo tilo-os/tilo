@@ -223,8 +223,8 @@ def read_me(bundles, tapps):
     if tapps:
         lines.append('The tapp packages are Tilo\'s own signed apps: open one in the Store, or run '
                      '`tilo app install <file>`, the installer every Tilo app comes from. Each runs on '
-                     'the tilo-runtime build its manifest names, which installing an app from the Store '
-                     'brings.')
+                     'the Tilo runtime release its manifest names; Tilo.app carries and installs its own, '
+                     'and the installer brings one this Mac lacks from the Store.')
     lines.append('No apps are installed automatically.')
     lines.append('This image is signed but has not been notarized. See the external receipt.')
     return '\n'.join(lines) + '\n'

@@ -20,10 +20,12 @@ with `tilolang build` and signs it with the publisher key exactly as
 `tools/apps/tilolang_packages.sh` does; it invents no second format. Its payload
 is a compiled module, so one tapp serves every architecture, and the Keychain
 identity signs the image, never the tapp. A package's manifest also names the
-Tilo runtime build it needs (`tilo-runtime/<release>`, stamped from the
-catalogue); installing an app from the Store fetches and installs the runtime
-this device lacks, while installing a bare file does not, so a Mac whose runtime
-predates the package's needs the Store to bring it first.
+Tilo runtime release it needs (`tilo-runtime/<release>`, stamped from the
+catalogue); `Tilo.app` carries and installs a runtime package of that release
+itself, and a package install — from the Store or from a file — fetches any
+other runtime this device lacks from the repositories it can reach. A package
+naming a release `Tilo.app` does not run is refused by name rather than
+fetching a runtime a Mac cannot execute.
 
 For receipt-backed private macOS 27 bundles with the reviewed media/runtime overlay,
 use the separate [staged runtime signer](collection-staged-sign.md). Its signed

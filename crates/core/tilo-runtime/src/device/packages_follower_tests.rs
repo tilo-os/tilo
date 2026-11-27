@@ -117,6 +117,19 @@ type = "gui"
 /// The owner-signed catalogue offering `tapp` as `app` at `version`, downloaded from `url`, its
 /// version naming `surface` (empty for none).
 fn catalogue(app: &str, version: &str, url: &str, tapp: &[u8], surface: &str) -> String {
+    snapshot_of(vec![entry_of(app, version, url, tapp, surface, None)])
+}
+
+/// The registry entry of a package offering `tapp` at `url`; `runtime` names the build a runtime
+/// package provides, and no app names one.
+fn entry_of(
+    app: &str,
+    version: &str,
+    url: &str,
+    tapp: &[u8],
+    surface: &str,
+    runtime: Option<&str>,
+) -> RegistryEntry {
     let publisher = SigningKey::from_bytes(&PUBLISHER);
     let (architecture, _, isa) = native_target();
     let mut entry = RegistryEntry {
@@ -147,7 +160,7 @@ fn catalogue(app: &str, version: &str, url: &str, tapp: &[u8], surface: &str) ->
                     platform: registry_types::TILO_OS_PLATFORM.into(),
                     architecture: architecture.into(),
                     isa: isa.into(),
-                    runtime: None,
+                    runtime: runtime.map(str::to_owned),
                     interfaces: Vec::new(),
                 },
             }),
@@ -156,7 +169,25 @@ fn catalogue(app: &str, version: &str, url: &str, tapp: &[u8], surface: &str) ->
         signature_hex: String::new(),
     };
     sign_entry(&mut entry, &publisher);
+    entry
+}
+
+/// The owner-signed snapshot listing `entries`.
+fn snapshot_of(entries: Vec<RegistryEntry>) -> String {
     let now = tilo_clock::try_unix_now().unwrap();
+    let mut publishers: Vec<PublisherAuthorization> = Vec::new();
+    for entry in &entries {
+        if publishers
+            .iter()
+            .any(|listed| listed.pubkey_hex == entry.publisher_pubkey_hex)
+        {
+            continue;
+        }
+        publishers.push(PublisherAuthorization {
+            pubkey_hex: entry.publisher_pubkey_hex.clone(),
+            can_add_new: true,
+        });
+    }
     let mut snapshot = SignedRegistrySnapshot {
         protocol: registry_types::PACKAGE_FORMAT_VERSION,
         sequence: 1,
@@ -164,11 +195,8 @@ fn catalogue(app: &str, version: &str, url: &str, tapp: &[u8], surface: &str) ->
         expires_at_unix: now.saturating_add(3600),
         previous_snapshot_hash_hex: String::new(),
         moderation_head_hex: String::new(),
-        publishers: vec![PublisherAuthorization {
-            pubkey_hex: entry.publisher_pubkey_hex.clone(),
-            can_add_new: true,
-        }],
-        entries: vec![entry],
+        publishers,
+        entries,
         owner_signature_hex: String::new(),
         channel_authorization: None,
     };
@@ -198,11 +226,15 @@ impl Registry {
             tapp,
             surface,
         ));
-        let served = Arc::new(served);
+        let served = Arc::new(vec![("/app.tapp".to_owned(), served)]);
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(stream) = stream else { break };
-                serve(stream, &entries, &served);
+                let tapps: Vec<(&str, Vec<u8>)> = served
+                    .iter()
+                    .map(|(at, bytes)| (at.as_str(), bytes.clone()))
+                    .collect();
+                serve(stream, &entries, &tapps);
             }
         });
         Self { port }
@@ -221,7 +253,7 @@ impl Registry {
     }
 }
 
-fn serve(mut stream: TcpStream, entries: &str, tapp: &[u8]) {
+fn serve(mut stream: TcpStream, entries: &str, tapps: &[(&str, Vec<u8>)]) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut request = String::new();
     if reader.read_line(&mut request).is_err() {
@@ -237,13 +269,11 @@ fn serve(mut stream: TcpStream, entries: &str, tapp: &[u8]) {
         }
     }
     let path = request.split_whitespace().nth(1).unwrap_or("/");
-    let (status, body) = if path.starts_with("/entries") {
+    let served = tapps.iter().find(|(at, _)| *at == path);
+    let (status, body): (&str, &[u8]) = if path.starts_with("/entries") {
         ("200 OK", entries.as_bytes())
-    } else if std::path::Path::new(path)
-        .extension()
-        .is_some_and(|extension| extension == "tapp")
-    {
-        ("200 OK", tapp)
+    } else if let Some((_, bytes)) = served {
+        ("200 OK", bytes)
     } else {
         ("404 Not Found", b"no".as_slice())
     };
@@ -794,4 +824,169 @@ fn an_install_compiles_the_modules_the_app_runs() {
             "the install compiled every module the app runs, so its first open reads it"
         );
     }
+}
+
+/// The runtime package of `runtime`, sealed as `pack-runtime-package.sh` seals one: a signed
+/// bundle of the program a runtime is, in a `kind = "runtime"` package named by its root.
+fn runtime_package(dir: &std::path::Path, runtime: &str) -> Vec<u8> {
+    let key = SigningKey::from_bytes(&PUBLISHER);
+    let identity = dir.join("runtime-identity.json");
+    std::fs::write(&identity, registry_types::key_file::encode(&key)).unwrap();
+    let binary = dir.join("tilo-runtime");
+    std::fs::write(&binary, b"#!/bin/true\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let (_, version) = runtime.split_once('/').expect("a runtime names its build");
+    let bundle = dir.join("runtime-bundle");
+    runtime_bundle::build_binaries_bundle(
+        &bundle,
+        version,
+        Some(runtime_bundle::host_arch()),
+        Some(&identity),
+        &[binary],
+        &[],
+    )
+    .expect("the runtime bundle bakes");
+    let (architecture, isa, _) = native_target();
+    let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
+        r#"
+[package]
+id = "so.tilo.runtime"
+name = "Tilo runtime"
+category = "System"
+version = "0.1.0"
+kind = "runtime"
+provides = "{runtime}"
+
+[package.isa]
+{architecture} = "{isa}"
+
+[publisher]
+identity = "ed25519:{publisher}"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+"#,
+        publisher = hex::encode(key.verifying_key().to_bytes()),
+    ))
+    .expect("the runtime package manifest parses");
+    let packed = tilo_app_package::pack::pack(
+        &bundle,
+        &manifest,
+        &tilo_app_package::SigningIdentity::from_signing_key(key),
+    )
+    .expect("the runtime package packs");
+    tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap()
+}
+
+/// A file install whose app names a runtime this device lacks fetches it from the registry the
+/// workspace's registries offer it in, then installs the app beside it.
+#[test]
+fn an_app_whose_runtime_a_registry_offers_is_installed_with_it() {
+    const APP: &str = "so.tilo.follower-fetches-runtime";
+    // Not the build the host-carried tests below declare this process has: a runtime this device
+    // lacks is the one a registry's offer must bring.
+    const RUNTIME: &str = "tilo-runtime/2026.09";
+    // The host-carried tests in this binary declare, once for its life, the runtimes the process
+    // carries, and a host that carries any never fetches one. This install needs a process that
+    // carries none, so it runs this test alone in a child of the same binary.
+    if std::env::var_os("TILO_FOLLOWER_RUNTIME_FETCH_CHILD").is_none() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "device::packages::follower_tests::an_app_whose_runtime_a_registry_offers_is_installed_with_it",
+                "--nocapture",
+            ])
+            .env("TILO_FOLLOWER_RUNTIME_FETCH_CHILD", "1")
+            .status()
+            .expect("the child runs this test");
+        assert!(
+            status.success(),
+            "the runtime fetch test failed in its own process"
+        );
+        return;
+    }
+    let (dir, cache, mut env) = device();
+    // The runtime bundle's publisher is the one this device trusts.
+    let trusted = dir.path().join("trusted-runtimes.txt");
+    std::fs::write(
+        &trusted,
+        format!(
+            "{}\n",
+            hex::encode(
+                SigningKey::from_bytes(&PUBLISHER)
+                    .verifying_key()
+                    .to_bytes()
+            )
+        ),
+    )
+    .unwrap();
+    env.set("TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE", &trusted);
+
+    let runtime_bytes = runtime_package(dir.path(), RUNTIME);
+    let app = author_bound_to(APP, "1.0.0", None, Some(RUNTIME), &[]);
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let surface = app_registry::publisher::entry::surface_hex(&app).unwrap();
+    let entries = Arc::new(snapshot_of(vec![
+        entry_of(
+            APP,
+            "1.0.0",
+            &format!("http://127.0.0.1:{port}/app.tapp"),
+            &app,
+            &surface,
+            None,
+        ),
+        entry_of(
+            "so.tilo.runtime",
+            "0.1.0",
+            &format!("http://127.0.0.1:{port}/runtime.tapp"),
+            &runtime_bytes,
+            "",
+            Some(RUNTIME),
+        ),
+    ]));
+    let served = Arc::new(vec![
+        ("/app.tapp".to_owned(), app.clone()),
+        ("/runtime.tapp".to_owned(), runtime_bytes),
+    ]);
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { break };
+            let tapps: Vec<(&str, Vec<u8>)> = served
+                .iter()
+                .map(|(at, bytes)| (at.as_str(), bytes.clone()))
+                .collect();
+            serve(stream, &entries, &tapps);
+        }
+    });
+    let registries = app_cli::config::registries_from_rows(&serde_json::json!({"registries": [{
+        "name": "local",
+        "base_url": format!("http://127.0.0.1:{port}"),
+        "owner_pubkey_hex": hex::encode(SigningKey::from_bytes(&OWNER).verifying_key().to_bytes()),
+        "enabled": true,
+        "channel": "stable",
+    }]}))
+    .unwrap();
+
+    let mut release = release_of(APP, "1.0.0", &app);
+    release.file = Some(blake3::hash(&app).to_hex().to_string());
+    cache.install_named(&release, &app, &TrustLists::default(), &registries);
+    assert!(
+        package_store::runtime_installed(RUNTIME),
+        "the runtime the app names was fetched from the registry the workspace offers"
+    );
+    assert!(
+        cache.runs(&release.package),
+        "the app installed beside the runtime it needs"
+    );
 }

@@ -191,20 +191,16 @@ fn installed_install_bin() -> String {
 /// moves here, every device of the workspace fetches it from the registries and checks it
 /// against what the workspace recorded. The runtime it runs on, when this device lacks it, is
 /// asked for first, the same way.
-fn to_tree(app: &CatalogueApp, change: Change) -> Result<(), InstallError> {
+fn to_tree(
+    app: &CatalogueApp,
+    change: Change,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
     let refused = |detail: String| InstallError::Refused { detail };
     if let Some(runtime) = app.runtime.as_deref()
         && !registry_types::is_runtime_package_id(&app.package_id)
-        && !crate::runtime_installed(runtime)
     {
-        let offer = crate::runtime_offer(runtime, &app.registry)
-            .map_err(|detail| InstallError::Download { detail })?
-            .ok_or_else(|| InstallError::RuntimeUnavailable {
-                package_id: app.package_id.clone(),
-                runtime: runtime.to_owned(),
-                registry: app.registry.clone(),
-            })?;
-        crate::device::install_offered(&crate::device::release_of(&offer)).map_err(refused)?;
+        ensure_runtime(&app.package_id, runtime, Some(&app.registry), on_progress)?;
     }
     let release = crate::device::release_of(app);
     match change {
@@ -213,6 +209,144 @@ fn to_tree(app: &CatalogueApp, change: Change) -> Result<(), InstallError> {
     }
     .map(drop)
     .map_err(|detail| refused(installer_complaint(&detail)))
+}
+
+/// Which computer this is, for the one runtime it is itself rather than a bundle it installs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Host {
+    Linux,
+    Macos,
+    Windows,
+}
+
+/// This computer.
+pub const HOST: Host = if cfg!(target_os = "linux") {
+    Host::Linux
+} else if cfg!(target_os = "macos") {
+    Host::Macos
+} else {
+    Host::Windows
+};
+
+/// The runtimes an install of `manifest` demands: the Tilo runtime it binds to (a native app's
+/// exact target build among them) and the runtimes its programs run on, each once. A runtime
+/// package names none.
+#[must_use]
+pub fn named_runtimes(manifest: &tilo_app_package::Manifest) -> Vec<String> {
+    if manifest.package.kind == tilo_app_package::Kind::Runtime {
+        return Vec::new();
+    }
+    let mut named: Vec<String> = manifest
+        .target
+        .as_ref()
+        .map(|target| target.runtime.clone())
+        .filter(|runtime| !runtime.is_empty())
+        .into_iter()
+        .chain(
+            manifest
+                .package
+                .runtime
+                .clone()
+                .filter(|runtime| !runtime.is_empty()),
+        )
+        .chain(
+            tilo_app_package::desktop::required_runtime_dependencies(manifest)
+                .iter()
+                .cloned(),
+        )
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    named.retain(|runtime| seen.insert(runtime.clone()));
+    named
+}
+
+/// Why `runtime` is not fetched on `host`: a Mac's Tilo.app and a Windows computer's daemon are
+/// the Tilo runtime itself, not a bundle a repository offers, so a build this computer does not
+/// run is refused by name. `None` on Linux, where a runtime is an installed bundle like any
+/// package, and for every runtime but the Tilo runtime.
+#[must_use]
+pub fn host_refusal(runtime: &str, host: Host) -> Option<String> {
+    let (computer, program) = match host {
+        Host::Linux => return None,
+        Host::Macos => ("this Mac", "Tilo.app"),
+        Host::Windows => ("this computer", "the Tilo daemon"),
+    };
+    if !runtime.starts_with("tilo-runtime/") {
+        return None;
+    }
+    Some(format!(
+        "{computer}'s Tilo runtime is the one {program} ships, and this package needs \
+         {runtime}: install a {program} whose runtime is that release, or a package built for \
+         this one"
+    ))
+}
+
+/// Move `runtime` onto this computer: from `registry`, the repository that offered the package,
+/// or from the first enabled repository that offers the exact build. A runtime this computer
+/// lacks and no repository offers is named, with where to get it.
+pub fn ensure_runtime(
+    package_id: &str,
+    runtime: &str,
+    registry: Option<&str>,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    if runtime.is_empty()
+        || crate::runtime_installed(runtime)
+        || runtime_bundle::carried(runtime).is_some()
+    {
+        return Ok(());
+    }
+    if let Some(detail) = host_refusal(runtime, HOST) {
+        return Err(InstallError::Refused { detail });
+    }
+    let found = match registry {
+        Some(name) => crate::runtime_offer(runtime, name)
+            .map_err(|detail| InstallError::Download { detail })?,
+        None => crate::runtime_offer_from_enabled(runtime)
+            .map_err(|detail| InstallError::Download { detail })?,
+    };
+    let Some(offer) = found else {
+        return Err(match registry {
+            Some(name) => InstallError::RuntimeUnavailable {
+                package_id: package_id.to_owned(),
+                runtime: runtime.to_owned(),
+                registry: name.to_owned(),
+            },
+            None => InstallError::Refused {
+                detail: format!(
+                    "{package_id} needs the runtime {runtime}, which this computer does not have \
+                     and no repository it can reach offers. Install the runtime package with \
+                     `tilo-install install <runtime.tapp>`, or an app from the Store that brings it"
+                ),
+            },
+        });
+    };
+    install_app_reporting(&offer, on_progress)
+}
+
+/// The runtimes `manifest` names that this computer lacks, each [`ensure_runtime`].
+pub fn ensure_runtimes(
+    package_id: &str,
+    manifest: &tilo_app_package::Manifest,
+    registry: Option<&str>,
+    on_progress: &mut dyn FnMut(DownloadProgress),
+) -> Result<(), InstallError> {
+    for runtime in named_runtimes(manifest) {
+        ensure_runtime(package_id, &runtime, registry, on_progress)?;
+    }
+    Ok(())
+}
+
+/// The manifest a package file carries: what installing it demands before any device takes it.
+pub fn tapp_manifest(path: &Path) -> Result<tilo_app_package::Manifest, InstallError> {
+    let file = std::fs::File::open(path).map_err(|error| InstallError::Integrity {
+        detail: format!("{}: {error}", path.display()),
+    })?;
+    tilo_app_package::tapp::read(file, &mut tilo_app_package::DiscardBlobs)
+        .map(|tapp| tapp.meta.manifest)
+        .map_err(|error| InstallError::Integrity {
+            detail: format!("{}: {error}", path.display()),
+        })
 }
 
 /// The base URL of the registry that offered `app`, which also serves the
@@ -665,7 +799,7 @@ fn install_or_update_app_reporting(
             elapsed: Duration::ZERO,
         },
     });
-    to_tree(app, change)
+    to_tree(app, change, on_progress)
 }
 
 /// A file in the staging directory that this process is downloading into or
@@ -1303,5 +1437,109 @@ mod tests {
             }
         });
         (format!("http://{address}"), asked)
+    }
+
+    /// A package manifest that binds to `runtime` and names `optional` beside it.
+    fn bound(runtime: &str, optional: &[&str]) -> tilo_app_package::Manifest {
+        use std::fmt::Write as _;
+        let mut named = format!("runtime = \"{runtime}\"\n");
+        if !optional.is_empty() {
+            let listed: Vec<String> = optional.iter().map(|one| format!("\"{one}\"")).collect();
+            let _ = writeln!(named, "optional-runtimes = [{}]", listed.join(", "));
+        }
+        tilo_app_package::Manifest::from_toml_str(&format!(
+            r#"
+[package]
+id = "so.tilo.notes"
+version = "1.0.0"
+kind = "app"
+{named}
+
+[publisher]
+identity = "ed25519:{publisher}"
+signature = ""
+
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin = "bin/app"
+type = "gui"
+"#,
+            publisher = "00".repeat(32),
+        ))
+        .expect("the fixture manifest parses")
+    }
+
+    #[test]
+    fn the_runtimes_a_package_names_are_its_own_and_the_ones_its_programs_run_on() {
+        let manifest = bound(
+            "tilo-runtime/2026.07",
+            &["tilolang/0.1.0+tilolang.abc", "bun/1.4.5+bun"],
+        );
+        assert_eq!(
+            named_runtimes(&manifest),
+            [
+                "tilo-runtime/2026.07".to_owned(),
+                "tilolang/0.1.0+tilolang.abc".to_owned(),
+                "bun/1.4.5+bun".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_runtime_package_names_no_runtime_of_its_own() {
+        let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
+            r#"
+[package]
+id = "so.tilo.runtime"
+version = "0.1.0"
+kind = "runtime"
+provides = "tilo-runtime/2026.07"
+
+[package.isa]
+x86_64 = "v3"
+aarch64 = "aarch64"
+
+[publisher]
+identity = "ed25519:{publisher}"
+signature = ""
+
+[sandbox]
+namespaces = []
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+"#,
+            publisher = "00".repeat(32),
+        ))
+        .expect("the runtime manifest parses");
+        assert!(named_runtimes(&manifest).is_empty());
+    }
+
+    #[test]
+    fn the_tilo_runtime_a_mac_or_windows_computer_is_is_never_fetched() {
+        let said = host_refusal("tilo-runtime/2027.01", Host::Macos)
+            .expect("a Mac's Tilo runtime is its app, not a bundle");
+        assert!(
+            said.contains("Tilo.app") && said.contains("tilo-runtime/2027.01"),
+            "the refusal names the runtime the package needs and what this Mac runs: {said}"
+        );
+        assert!(host_refusal("tilo-runtime/2027.01", Host::Windows).is_some());
+        assert!(
+            host_refusal("tilo-runtime/2027.01", Host::Linux).is_none(),
+            "on Linux a runtime is a bundle like any package"
+        );
+        assert!(
+            host_refusal("tilolang/0.1.0+tilolang.abc", Host::Macos).is_none(),
+            "the tilolang runtime is a package the Mac installs, not the program it is"
+        );
     }
 }

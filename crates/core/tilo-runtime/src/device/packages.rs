@@ -1585,31 +1585,7 @@ impl PackageCache {
         )
         .map_err(|error| error.to_string())?;
         let manifest = &tapp.meta.manifest;
-        let runtime_package = registry_types::is_runtime_package_id(&release.app);
-        let mut wanted: Vec<String> = manifest
-            .target
-            .as_ref()
-            .map(|target| target.runtime.clone())
-            .filter(|runtime| !runtime.is_empty() && !runtime_package)
-            .into_iter()
-            .collect();
-        // The Tilo runtime the manifest binds to is what the store's install demands too, so an
-        // app it is not here for is refused here, where the words can say which it is.
-        wanted.extend(
-            manifest
-                .package
-                .runtime
-                .clone()
-                .filter(|runtime| !runtime.is_empty() && !runtime_package),
-        );
-        wanted.extend(
-            tilo_app_package::desktop::required_runtime_dependencies(manifest)
-                .iter()
-                .cloned(),
-        );
-        let mut seen = std::collections::BTreeSet::new();
-        wanted.retain(|runtime| seen.insert(runtime.clone()));
-        for runtime in wanted {
+        for runtime in app_cli::install::named_runtimes(manifest) {
             if package_store::runtime_installed(&runtime) {
                 continue;
             }
@@ -1618,6 +1594,11 @@ impl PackageCache {
             // for it, since the device starts no process to run a fetched bundle in.
             if runtime_bundle::carried(&runtime).is_some() {
                 continue;
+            }
+            // A Mac's or a Windows computer's Tilo runtime is the program it installed, not a
+            // bundle a repository offers: a build it does not run is refused here, by name.
+            if let Some(reason) = app_cli::install::host_refusal(&runtime, app_cli::install::HOST) {
+                return Err(reason);
             }
             if !runtime_bundle::carried_builds().is_empty() {
                 return Err(format!(

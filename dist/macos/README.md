@@ -16,7 +16,7 @@ Tilo.app/Contents/
   MacOS/Tilo                          the store binary (CFBundleExecutable), universal
   MacOS/tilo-runtime                  the runtime, universal
   MacOS/tilo-runtime-update           the self-updater, universal
-  Resources/runtimes/<root>.tapp      the tilolang runtime package, named by its package root
+  Resources/runtimes/<root>.tapp      the Tilo and tilolang runtime packages, each named by its root
   Resources/runtime-bundle-trusted-publishers.txt
                                       the runtime publishers this Mac trusts
   Library/LaunchAgents/so.tilo.runtime.plist
@@ -37,6 +37,14 @@ carries on its first start, through the installer the Store uses: the
 architecture and publisher checks apply, and a Mac trusts only the publishers
 its Tilo.app lists. Later versions arrive from the registry.
 `runtime_plays.py` proves a staged runtime plays a generated clip.
+
+Tilo.app also carries the Tilo runtime it is (`so.tilo.runtime`): a runtime
+package whose bundle is the app's own universal `tilo-runtime`, sealed for the
+release the apps it runs are built for (`TILO_RUNTIME_RELEASE`, default
+`2026.07`). The daemon installs both on its first start, so a package naming
+`tilo-runtime/<release>` finds it in the device's store exactly as a package a
+registry offers would, and a package naming another release is refused by name
+instead of fetching a bundle the Mac cannot run.
 
 Opening Tilo starts the store, which finds the sibling `tilo-runtime` (the
 lookup in `crates/core/runtime-portal/src/native.rs`) and re-executes
