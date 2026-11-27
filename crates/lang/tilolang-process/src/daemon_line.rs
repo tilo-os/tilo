@@ -298,9 +298,12 @@ impl std::io::Read for Printed {
                 Err(_) => return Ok(0),
             }
         }
-        let taken = (self.pending.len() - self.at).min(buffer.len());
-        buffer[..taken].copy_from_slice(&self.pending[self.at..self.at + taken]);
-        self.at += taken;
+        let unread = self.pending.get(self.at..).unwrap_or_default();
+        let taken = unread.len().min(buffer.len());
+        for (to, from) in buffer.iter_mut().zip(unread) {
+            *to = *from;
+        }
+        self.at = self.at.saturating_add(taken);
         Ok(taken)
     }
 }

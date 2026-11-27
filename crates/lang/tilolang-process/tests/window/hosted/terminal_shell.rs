@@ -98,11 +98,16 @@ impl tilolang_tilo::platform_apps::PublishedSource for Settings {
         if !resource.starts_with("settings/apps/") {
             return Err(NOTHING_READ.to_owned());
         }
-        let mut apps = self.apps.lock().unwrap();
-        let app = apps.entry(resource.to_owned()).or_default();
+        let (stored, fresh) = {
+            let mut apps = self.apps.lock().unwrap();
+            let app = apps.entry(resource.to_owned()).or_default();
+            let section = (app.stored.clone(), Arc::clone(&app.fresh));
+            drop(apps);
+            section
+        };
         // A section nobody set yet reads as its defaults.
-        *app.fresh.lock().unwrap() = Some(Json::Object(app.stored.clone()).to_string());
-        Ok(Box::new(Followed(Arc::clone(&app.fresh))))
+        *fresh.lock().unwrap() = Some(Json::Object(stored).to_string());
+        Ok(Box::new(Followed(fresh)))
     }
 
     fn invoke(
@@ -126,6 +131,7 @@ impl tilolang_tilo::platform_apps::PublishedSource for Settings {
         let app = apps.entry(resource.to_owned()).or_default();
         app.stored.insert(field, value);
         *app.fresh.lock().unwrap() = Some(Json::Object(app.stored.clone()).to_string());
+        drop(apps);
         Ok(())
     }
 }
@@ -176,8 +182,7 @@ fn line_to(control: &'static ControlLine) -> LineClient {
     let (app, daemon) = UnixStream::pair().unwrap();
     let writer = Mutex::new(daemon.try_clone().unwrap());
     let out: ush::app_shells::Out = Arc::new(move |line: String| {
-        let mut writer = writer.lock().unwrap();
-        let _ = writeln!(writer, "{line}");
+        let _ = writeln!(writer.lock().unwrap(), "{line}");
     });
     let shells = ush::app_shells::AppShells::new("", Ok(()), Arc::new(|| Ok(())), control, out);
     let input = BufReader::new(daemon.try_clone().unwrap());
@@ -196,7 +201,7 @@ fn line_to(control: &'static ControlLine) -> LineClient {
 }
 
 /// The window's session record.
-fn session_of(app: &mut super::Session) -> tilolang_tilo::runtime::ResourceRef {
+fn session_of(app: &super::Session) -> tilolang_tilo::runtime::ResourceRef {
     app.instance_host()
         .root_of_layer(
             TERMINAL,
@@ -209,10 +214,10 @@ fn session_of(app: &mut super::Session) -> tilolang_tilo::runtime::ResourceRef {
 }
 
 /// What the window's session says of itself: `field` of its record, as text.
-fn said(app: &mut super::Session, field: &str) -> String {
+fn said(app: &super::Session, field: &str) -> String {
     let session = session_of(app);
     match app.instance_host().runtime().read(&session, field) {
-        Ok(tilolang_tilo::runtime::Value::Text(text)) => text.to_string(),
+        Ok(tilolang_tilo::runtime::Value::Text(text)) => text,
         Ok(other) => format!("{other:?}"),
         Err(error) => panic!("the session reads its {field}: {error:?}"),
     }
@@ -230,11 +235,13 @@ fn session_address(app: &mut super::Session) -> String {
                 .iter()
                 .any(|action| action.label == "Inspect session")
         })
-        .map(|resource| resource.id.as_str().to_owned())
-        .unwrap_or_else(|| {
-            let ids: Vec<_> = published.iter().map(|r| r.id.as_str()).collect();
-            panic!("the window publishes no session, only {ids:?}")
-        })
+        .map_or_else(
+            || {
+                let ids: Vec<_> = published.iter().map(|r| r.id.as_str()).collect();
+                panic!("the window publishes no session, only {ids:?}")
+            },
+            |resource| resource.id.as_str().to_owned(),
+        )
 }
 
 /// How the window's session stands, in its own words (`failed: This device, why`), as its
@@ -298,7 +305,7 @@ fn live(app: &mut super::Session) -> bool {
 }
 
 /// What the engine says of the window's shell now.
-fn inspected(app: &mut super::Session) -> Json {
+fn inspected(app: &super::Session) -> Json {
     let shell = said(app, "shell");
     let inspect = tilo_terminal::ops::call(
         "inspect",
@@ -317,11 +324,13 @@ fn grid_rect(app: &mut super::Session) -> [f64; 4] {
     nodes
         .iter()
         .find(|node| node.widget == "Terminal")
-        .map(|node| node.rect)
-        .unwrap_or_else(|| {
-            let shown: Vec<_> = nodes.iter().map(|node| node.widget.clone()).collect();
-            panic!("the window shows no shell: {shown:?}")
-        })
+        .map_or_else(
+            || {
+                let shown: Vec<_> = nodes.iter().map(|node| node.widget.clone()).collect();
+                panic!("the window shows no shell: {shown:?}")
+            },
+            |node| node.rect,
+        )
 }
 
 /// Open the grid's menu, as a person does with a secondary click on it.
@@ -362,7 +371,7 @@ fn choose_in_grid_menu(app: &mut super::Session, name: &str) {
 }
 
 /// The text the window's shell shows now.
-fn screen(app: &mut super::Session) -> String {
+fn screen(app: &super::Session) -> String {
     let shell = said(app, "shell");
     let read = tilo_terminal::ops::call(
         "read_screen",
@@ -428,10 +437,7 @@ fn a_terminal_window_runs_a_real_shell_its_refusals_are_offered_again_and_exit_c
     wait_for(&mut app, "the default environment is refused", |app| {
         standing(app).starts_with("failed")
     });
-    assert!(
-        !said(&mut app, "trouble").is_empty(),
-        "the refusal says why"
-    );
+    assert!(!said(&app, "trouble").is_empty(), "the refusal says why");
     assert!(
         control_named(&mut app, REFUSED).is_some(),
         "a refused shell is offered again"
@@ -452,7 +458,7 @@ fn a_terminal_window_runs_a_real_shell_its_refusals_are_offered_again_and_exit_c
     // They allow it, as their Settings does, and try again: the shell opens, at the device.
     ush::host::hand_allow(Some(tilo_action_policy::Lifetime::Once));
     app.harness().click_named(&again).unwrap();
-    wait_for(&mut app, "the device's own shell opens", |app| live(app));
+    wait_for(&mut app, "the device's own shell opens", live);
 
     // What they type runs in that shell, and what it prints is in the window.
     type_line(&mut app, "echo hi");
@@ -463,7 +469,7 @@ fn a_terminal_window_runs_a_real_shell_its_refusals_are_offered_again_and_exit_c
     // The person lets programs set the clipboard from the grid's own menu: the shell follows
     // at once, and the menu shows the setting on when it opens again.
     assert!(
-        !inspected(&mut app)["allows_clipboard"].as_bool().unwrap(),
+        !inspected(&app)["allows_clipboard"].as_bool().unwrap(),
         "off until allowed"
     );
     assert_eq!(
@@ -498,7 +504,7 @@ fn a_terminal_window_runs_a_real_shell_its_refusals_are_offered_again_and_exit_c
         assert!(
             Instant::now() < until,
             "the window never closed: its screen is {:?}",
-            screen(&mut app)
+            screen(&app)
         );
         pump(&mut app);
         asked.extend(ui::shell_tabs::take_requests());

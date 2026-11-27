@@ -277,11 +277,3 @@ pub(super) fn row_menu(session: &mut Session, title: &str) -> Vec<String> {
     }
     menu
 }
-
-/// Whether `item` is one of the platform's offers on every resource (Export…, Copy link): a row
-/// that runs nothing the app publishes, neither an action of its own nor a state of its views.
-pub(super) fn is_the_platforms_offer(item: &tilo_app_window::UiNode) -> bool {
-    item.events
-        .get("choose")
-        .is_some_and(|event| event.invokes.is_none() && event.toggles.is_none())
-}

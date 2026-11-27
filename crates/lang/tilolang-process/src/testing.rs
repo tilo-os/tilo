@@ -71,8 +71,8 @@ impl tilo_resource_store::RecordReader for MembersReadAsThemselves {
         _id: &str,
     ) -> Option<tilo_actions::PersonId> {
         match actor.member_id()? {
-            tilo_actions::MemberId::Person(person) => Some(person.clone()),
-            tilo_actions::MemberId::Agent { person, .. } => Some(person.clone()),
+            tilo_actions::MemberId::Person(person)
+            | tilo_actions::MemberId::Agent { person, .. } => Some(person.clone()),
             tilo_actions::MemberId::Bot(_) => None,
         }
     }
