@@ -595,6 +595,12 @@ async fn a_removed_member_loses_access_at_once_and_other_tenants_keep_theirs() {
         &t.bob_phone.device_pubkey(),
     )
     .await;
+    // Ann's link opens with the workspace's changes and state its host keeps, which her copy
+    // already holds: they are heard before Globex's removal, so the quiet below is the removal's.
+    tilo_test_env::within("Ann's link has brought what it opens with", async {
+        while next_within_quiet(&mut ann_in_acme).await.is_some() {}
+    })
+    .await;
 
     t.workspaces()
         .remove_member(
