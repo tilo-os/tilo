@@ -725,8 +725,8 @@ fn pass() -> Vec<Step> {
 /// A Discord channel imported into Chat: a category's channel or a top-level one, text or voice,
 /// then mapped to its Discord channel.
 fn imported_channel() -> Vec<Step> {
-    let made = |action: &str, target: Selector, id: &str| {
-        let args: Vec<(&str, Binding)> = if action.contains("voice") {
+    let made = |action: &str, id: &str, in_category: bool| {
+        let mut args: Vec<(&str, Binding)> = if action.contains("voice") {
             vec![("name", item("name"))]
         } else {
             vec![
@@ -734,7 +734,17 @@ fn imported_channel() -> Vec<Step> {
                 ("topic", Binding::Literal(json!(""))),
             ]
         };
-        let mut steps = vec![chat(id, &kind_of(action), action, target, &args)];
+        // Chat makes a channel on its Conversations, naming the category it stands under.
+        if in_category {
+            args.push(("category", reference(text(CATEGORY), item("category"))));
+        }
+        let mut steps = vec![chat(
+            id,
+            CONVERSATIONS,
+            action,
+            Selector::FirstOfKind(CONVERSATIONS.into()),
+            &args,
+        )];
         steps.push(map(
             &format!("map-{id}"),
             "channel",
@@ -744,10 +754,8 @@ fn imported_channel() -> Vec<Step> {
         ));
         steps
     };
-    let in_category =
-        |action: &str, id: &str| made(action, Selector::FromBinding(item("category")), id);
-    let at_top =
-        |action: &str, id: &str| made(action, Selector::FirstOfKind(CONVERSATIONS.into()), id);
+    let in_category = |action: &str, id: &str| made(action, id, true);
+    let at_top = |action: &str, id: &str| made(action, id, false);
     vec![Step::new(
         "import-channel-kind",
         StepKind::If {
@@ -759,7 +767,7 @@ fn imported_channel() -> Vec<Step> {
                 "import-voice-place",
                 StepKind::If {
                     cond: Condition::Truthy(item("category")),
-                    then: in_category("add_voice_channel", "add-voice"),
+                    then: in_category("new_voice_channel", "add-voice"),
                     otherwise: at_top("new_voice_channel", "new-voice"),
                 },
             )],
@@ -767,20 +775,12 @@ fn imported_channel() -> Vec<Step> {
                 "import-text-place",
                 StepKind::If {
                     cond: Condition::Truthy(item("category")),
-                    then: in_category("add_channel", "add-text"),
+                    then: in_category("new_channel", "add-text"),
                     otherwise: at_top("new_channel", "new-text"),
                 },
             )],
         },
     )]
-}
-
-/// The kind an action is published under: the type of the resource it is invoked on.
-fn kind_of(action: &str) -> String {
-    match action {
-        "add_voice_channel" | "add_channel" => CATEGORY.to_owned(),
-        _ => CONVERSATIONS.to_owned(),
-    }
 }
 
 /// A channel of the workspace's the server had no match for and nothing was written in: deleted
