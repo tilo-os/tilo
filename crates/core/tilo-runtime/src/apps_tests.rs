@@ -584,7 +584,7 @@ tilo_test_env::scenario! {
         let apps = apps(&store, &root, vec![launcher.path().to_owned()]);
 
         let mut start = apps
-            .windowless(VIEWER, WORKSPACE, None)
+            .windowless(VIEWER, WORKSPACE, None, None)
             .unwrap()
             .expect("a Rust app installed here runs its own process with no window");
         start
@@ -641,7 +641,7 @@ tilo_test_env::scenario! {
 
         // The next call finds the process that runs: nothing starts.
         let mut again = apps
-            .windowless(VIEWER, WORKSPACE, None)
+            .windowless(VIEWER, WORKSPACE, None, None)
             .unwrap()
             .expect("the running process takes the next call");
         again
@@ -672,7 +672,7 @@ tilo_test_env::scenario! {
         let first = "uuid:00000000-0000-0000-0000-000000000001";
         let second = "uuid:00000000-0000-0000-0000-000000000002";
         let mut start = apps
-            .windowless(VIEWER, WORKSPACE, Some(first))
+            .windowless(VIEWER, WORKSPACE, Some(first), None)
             .unwrap()
             .expect("a call on a record starts the app's process with no window");
         start
@@ -686,7 +686,7 @@ tilo_test_env::scenario! {
         );
 
         let mut other = apps
-            .windowless(VIEWER, WORKSPACE, Some(second))
+            .windowless(VIEWER, WORKSPACE, Some(second), None)
             .unwrap()
             .expect("a call on another record starts a process of its own");
         other
@@ -706,7 +706,7 @@ tilo_test_env::scenario! {
         let store = Store::new(&root);
         let apps = apps(&store, &root, Vec::new());
         assert!(
-            apps.windowless("so.tilo.unknown", WORKSPACE, None).unwrap().is_none(),
+            apps.windowless("so.tilo.unknown", WORKSPACE, None, None).unwrap().is_none(),
             "an app that is not installed runs nowhere"
         );
         assert!(apps.launched.0.lock().unwrap().is_empty(), "nothing started");
@@ -719,7 +719,7 @@ tilo_test_env::scenario! {
         store.install(VIEWER, &manifest(VIEWER, "gui", ""), &[("probe", b"binary")]);
         let apps = apps(&store, &root, Vec::new());
         let refused = apps
-            .windowless(VIEWER, "4f1d0f7a-9d0e-4c43-8d3b-2f6f7b8f3a21", None)
+            .windowless(VIEWER, "4f1d0f7a-9d0e-4c43-8d3b-2f6f7b8f3a21", None, None)
             .map(|_| ())
             .unwrap_err();
         assert!(refused.contains("not served by this runtime"), "{refused}");
@@ -1649,7 +1649,7 @@ fn the_daemons_own_instances_are_attested_as_the_view_they_were_opened_for() {
 
     let _no_view = apps
         .instances
-        .connect(VIEWER, WORKSPACE, 8, Shows::Nothing)
+        .connect(VIEWER, WORKSPACE, 8, Shows::Nothing(None))
         .unwrap();
     let launch = apps
         .authenticated_launch(ours, VIEWER, WORKSPACE, Some(8))
@@ -1678,7 +1678,9 @@ fn the_daemons_own_instances_are_attested_as_the_view_they_were_opened_for() {
         .unwrap_err();
     assert!(refused.contains("no tilolang app"), "{refused}");
     assert!(
-        apps.windowless(VIEWER, WORKSPACE, None).unwrap().is_none(),
+        apps.windowless(VIEWER, WORKSPACE, None, None)
+            .unwrap()
+            .is_none(),
         "an app that is not installed here starts nothing without a window"
     );
 }

@@ -77,6 +77,8 @@ pub(crate) mod shell_runtime;
 mod api_lane;
 pub(crate) mod confined;
 pub mod control;
+/// A folder of a workspace's tree, followed by the views that show it as `files/folder~<path>`.
+mod files_readings;
 mod files_tree;
 #[cfg(test)]
 mod files_tree_tests;

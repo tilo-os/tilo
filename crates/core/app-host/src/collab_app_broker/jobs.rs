@@ -164,7 +164,7 @@ impl AppBrokerState {
         if !self.publishes_in(workspace, app)
             && let Some(launcher) = self.services.launcher.as_ref()
         {
-            let _ = launcher.windowless(app, workspace, None);
+            let _ = launcher.windowless(app, workspace, None, None);
         }
         let request = InvokeRequest {
             asks: false,

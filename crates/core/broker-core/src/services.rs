@@ -363,10 +363,11 @@ pub trait LauncherServices: Send + Sync {
     /// Have an instance of `app` with no window run in `workspace`, started now
     /// unless one runs there already, to take an invocation of the app's
     /// actions on `record`: what a closed app gets in place of a window for an
-    /// action that shows nothing. `Some` when this host runs one there: how its
-    /// start ends, which the action waits on with its delivery; `None` when it
-    /// runs none of `app` (its actions then launch it as before). It ends with
-    /// the session.
+    /// action that shows nothing. `caller` is who asked, when the instance runs
+    /// for one: the caller the app's view reads for, whose grants its reads are
+    /// decided by. `Some` when this host runs one there: how its start ends,
+    /// which the action waits on with its delivery; `None` when it runs none of
+    /// `app` (its actions then launch it as before). It ends with the session.
     ///
     /// # Errors
     /// Why the instance this host runs of `app` there failed.
@@ -375,8 +376,9 @@ pub trait LauncherServices: Send + Sync {
         app: &str,
         workspace: &str,
         record: Option<&str>,
+        caller: Option<&tilo_actions::remote::Caller>,
     ) -> Result<Option<WindowlessStart>, String> {
-        let _ = (app, workspace, record);
+        let _ = (app, workspace, record, caller);
         Ok(None)
     }
     /// Snapshot the original launch facts while admitting this connection.

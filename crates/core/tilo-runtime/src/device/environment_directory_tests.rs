@@ -152,6 +152,7 @@ fn an_app_makes_changes_and_lists_environments() {
     let app = AppCaller {
         app_id: "so.tilo.terminal".to_owned(),
         workspace,
+        opened_for: None,
     };
     let first = published(&reading, &app);
     let made_entry = entry_named(&first, "Prose")
@@ -226,6 +227,7 @@ fn an_app_makes_changes_and_lists_environments() {
     let elsewhere = AppCaller {
         app_id: app.app_id,
         workspace: "00000000-0000-4000-8000-000000000000".to_owned(),
+        opened_for: None,
     };
     assert!(
         published(&reading, &elsewhere)["environments"]

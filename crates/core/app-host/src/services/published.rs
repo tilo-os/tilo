@@ -22,6 +22,12 @@ use tokio::sync::{mpsc, oneshot};
 pub struct Caller {
     pub app_id: String,
     pub workspace: String,
+    /// The caller the host opened this instance's view for, when the dispatch
+    /// admitted one that asked for it (an agent reading the app's window, a page
+    /// showing it): what the instance reads outside a call of its own is decided
+    /// for them, as the workspace decides what they may read. `None` for a person
+    /// at their own window, whose reads are the device's own.
+    pub opened_for: Option<tilo_actions::remote::Caller>,
 }
 
 /// A resource's reading as the wire carries it: the services' revision it was

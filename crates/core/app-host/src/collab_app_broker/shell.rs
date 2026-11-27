@@ -796,6 +796,7 @@ async fn published_invoke_answer(
         &ServiceCaller {
             app_id: app.to_owned(),
             workspace: workspace.clone().unwrap_or_default(),
+            opened_for: None,
         },
         record,
     )
@@ -818,6 +819,7 @@ async fn published_invoke_answer(
             &ServiceCaller {
                 app_id: app.to_owned(),
                 workspace: workspace.unwrap_or_default(),
+                opened_for: None,
             },
             record,
             &request.target.address.action,
@@ -1029,6 +1031,7 @@ async fn published_revision(
     let caller = ServiceCaller {
         app_id: read.app.clone(),
         workspace: read.workspace.clone(),
+        opened_for: None,
     };
     let asked = published
         .snapshot(&caller, &read.record)
@@ -1059,6 +1062,7 @@ pub(super) async fn published_read(
     let caller = ServiceCaller {
         app_id: read.app.clone(),
         workspace: read.workspace.clone(),
+        opened_for: None,
     };
     let mut current = published
         .snapshot(&caller, &read.record)

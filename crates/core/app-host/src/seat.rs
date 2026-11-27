@@ -955,8 +955,9 @@ impl LauncherServices for SeatLauncher {
         app: &str,
         workspace: &str,
         record: Option<&str>,
+        caller: Option<&tilo_actions::remote::Caller>,
     ) -> Result<Option<tilo_broker_core::services::WindowlessStart>, String> {
-        self.own.windowless(app, workspace, record)
+        self.own.windowless(app, workspace, record, caller)
     }
 
     fn authenticated_launch(

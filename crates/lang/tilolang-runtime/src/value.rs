@@ -121,6 +121,12 @@ fn split_path(text: &str) -> Option<(&str, Option<&str>)> {
     if let Some(app) = text.strip_prefix("settings/apps/") {
         return (!app.is_empty() && !app.contains('/')).then_some((text, None));
     }
+    // A folder of a workspace's tree is published as one reading however deep its path is
+    // (`files/folder~Tasks/12 Plan`): the whole path names the document, so a step of it is
+    // never read as an item of another.
+    if text.starts_with("files/folder~") {
+        return Some((text, None));
+    }
     let Some((doc, rest)) = text.split_once('/') else {
         return (!text.is_empty()).then_some((text, None));
     };

@@ -965,6 +965,7 @@ impl LauncherServices for Launches {
         app: &str,
         workspace: &str,
         record: Option<&str>,
+        _caller: Option<&tilo_actions::remote::Caller>,
     ) -> Result<Option<tilo_broker_core::services::WindowlessStart>, String> {
         let launch = match (record, tilo_app_launch::Launch::parse(app)) {
             // A record the invocation names: the app opens or founds it, as a window launched on

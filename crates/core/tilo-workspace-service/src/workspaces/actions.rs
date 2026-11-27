@@ -5334,7 +5334,7 @@ mod surface_tests {
     /// governance tree, named after what it holds. Each is a resource type of its own, so a verb
     /// several offer (`list` on the members, the invitations and the servers) is one action of
     /// each, named by its type.
-    const RESOURCES: [(&str, &str); 13] = [
+    const RESOURCES: [(&str, &str); 14] = [
         ("members", "Members"),
         ("member", "Member"),
         ("invitations", "Invitations"),
@@ -5348,6 +5348,9 @@ mod surface_tests {
         ("app", "App"),
         ("permission", "Permission"),
         ("grants", "Grants"),
+        // A folder of the workspace's tree, read as what Files' `list` answers for it: what a
+        // view of Files follows as `files/folder~<path>` (the language's `workspace.Folder`).
+        ("folder", "Folder"),
     ];
 
     /// The resource the action published at `child` stands on: the child of the governance tree
@@ -5399,7 +5402,52 @@ mod surface_tests {
         if kind == "content" {
             content_reading(&mut resource);
         }
+        if kind == "folder" {
+            folder_reading(&mut resource);
+        }
         resource
+    }
+
+    /// A folder of the workspace's tree, as a view of Files reads it: the folder's path, what it
+    /// holds a page at a time, and where the next page starts. It is the answer Files' `list`
+    /// gives for the path, published as the reading `files/folder~<path>` so a view follows it
+    /// as the workspace's tree changes and holds no copy of its own.
+    fn folder_reading(resource: &mut Value) {
+        resource["fields"] = json!([
+            { "path": "folder", "type": "text", "readonly": true },
+            {
+                "path": "entries",
+                "type": { "list": { "named": "FolderEntry" } },
+                "readonly": true,
+            },
+            { "path": "from", "type": "int", "readonly": true },
+            { "path": "next", "type": { "option": "int" }, "readonly": true },
+            { "path": "total", "type": "int", "readonly": true },
+        ]);
+        resource["types"] = json!([
+            {
+                "name": "Folder",
+                "doc": "A folder of the workspace's tree, as Files lists it.",
+                "fields": [
+                    { "name": "folder", "type": "text", "title": "The folder's path in the workspace; empty for the workspace's own folder." },
+                    { "name": "entries", "type": { "list": { "named": "FolderEntry" } }, "title": "What the folder holds, this page of it." },
+                    { "name": "from", "type": "int", "title": "Where this page starts among all the folder holds." },
+                    { "name": "next", "type": { "option": "int" }, "title": "Where the next page starts, while there is more." },
+                    { "name": "total", "type": "int", "title": "How many entries the folder holds in all." },
+                ],
+            },
+            {
+                "name": "FolderEntry",
+                "doc": "One file or folder of a folder of the workspace's tree.",
+                "fields": [
+                    { "name": "name", "type": "text", "title": "What it is called, as its folder shows it." },
+                    { "name": "path", "type": "text", "title": "Its path in the workspace." },
+                    { "name": "kind", "type": "text", "title": "Whether it is a `file` or a `folder`." },
+                    { "name": "size", "type": { "option": "int" }, "title": "How many bytes its content is; none for a folder." },
+                    { "name": "changed", "type": "time", "title": "When the workspace last changed it." },
+                ],
+            },
+        ]);
     }
 
     /// The access reading's actions, fields and types, in the words the workspace's

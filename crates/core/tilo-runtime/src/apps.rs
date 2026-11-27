@@ -49,6 +49,12 @@ pub(crate) use failures::{Failures, Retry};
 mod executor;
 pub(crate) use executor::DeviceLauncher;
 mod instances;
+
+/// The device's chosen files as the chooser's table keeps them, over the record a session's
+/// chooser writes: what an embedder's test grants a pick through
+/// ([`crate::device::services::Daemon::keep_chosen_folder`]).
+#[cfg(unix)]
+pub(crate) use instances::chosen_store;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -439,7 +445,7 @@ impl Apps {
     }
 
     /// Keep the files people choose for hosted apps in the device's records from now on.
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     pub(crate) fn keep_chosen_records(&self, records: Arc<crate::device::records::DeviceRecords>) {
         self.instances.keep_chosen_records(records);
     }
@@ -1717,12 +1723,19 @@ impl LauncherServices for Apps {
         app: &str,
         workspace: &str,
         record: Option<&str>,
+        caller: Option<&tilo_actions::remote::Caller>,
     ) -> Result<Option<tilo_app_host::services::WindowlessStart>, String> {
         if crate::device::package_runs::runs_in_process(app) {
             let origin = self.origin_connection(app, workspace)?;
             return self
                 .instances
-                .start_with_no_view(app, workspace, origin, self.access_for(workspace, app))
+                .start_with_no_view(
+                    app,
+                    workspace,
+                    origin,
+                    self.access_for(workspace, app),
+                    caller,
+                )
                 .map(Some);
         }
         // The process that runs on that record already takes the call: nothing starts. One on

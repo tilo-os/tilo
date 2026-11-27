@@ -19,7 +19,7 @@
 //! ([`tilo_app_host::services::AuthenticatedApplicationLaunch::opened_for`]):
 //! stamped as theirs, refused where they may not make it, and reading only what they may read.
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,8 +36,9 @@ use crate::device::processes::{Instance, Launcher, Processes};
 
 /// What an instance shows.
 pub(super) enum Shows {
-    /// Nothing: it takes the calls the dispatch delivers.
-    Nothing,
+    /// Nothing: it takes the calls the dispatch delivers, opened for `caller` when the dispatch
+    /// admitted one that asked for the app's view, whose grants its reads are decided by.
+    Nothing(Option<Box<Caller>>),
     /// A window the daemon launched, or one whose instance runs in the daemon's own process (a
     /// phone's), for the member the device acts as.
     Window,
@@ -81,7 +82,7 @@ pub(crate) struct Instances {
     /// The tilolang processes, once one was asked for.
     processes: OnceLock<Arc<Processes>>,
     /// The files people choose for hosted apps, kept in this device's records.
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     chosen: Arc<tilo_dialogs::chosen::ChosenTable>,
     /// The member the device acts as: the one an instance that shows nothing is run for.
     person: OnceLock<String>,
@@ -117,6 +118,36 @@ impl Instances {
     fn chooser_for(&self, app: &str, workspace: &str) -> Option<Descriptor> {
         let serving = tilo_dialogs::chooser_service::Serving {
             person: Some(Arc::new(MacPerson)),
+            grants: Arc::new(ChosenGrants {
+                chosen: Arc::clone(&self.chosen),
+            }),
+            opens: Arc::new(NoOpen),
+        };
+        tilo_dialogs::chooser_service::pair(serving, app, workspace)
+            .inspect_err(|error| tracing::warn!(app, %error, "a hosted app gets no file chooser"))
+            .ok()
+            .map(descriptor_of)
+    }
+}
+
+/// The file chooser a hosted instance of `app` in `workspace` reaches on Linux: the desktop
+/// session's own chooser where one serves, which asks the person at their window, and otherwise
+/// a connection this daemon serves where what the person chose already opens again and nobody
+/// is asked for anything new.
+#[cfg(target_os = "linux")]
+impl Instances {
+    fn chooser_for(&self, app: &str, workspace: &str) -> Option<Descriptor> {
+        // A session at this computer answers the person's pick: the app reaches its chooser,
+        // named for the app and the workspace as the launcher names one.
+        match launcher::services::resolve_chooser_bind(app, Some(workspace), false) {
+            Ok(Some(bound)) => return Some(bound.host),
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(app, %error, "the session's chooser is not reached");
+            }
+        }
+        let serving = tilo_dialogs::chooser_service::Serving {
+            person: None,
             grants: Arc::new(ChosenGrants {
                 chosen: Arc::clone(&self.chosen),
             }),
@@ -195,12 +226,12 @@ fn pick_request(
 
 /// The device's chosen files, as the chooser reaches it: a choice is a grant, and only a grant
 /// this app was given opens again.
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 struct ChosenGrants {
     chosen: Arc<tilo_dialogs::chosen::ChosenTable>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 impl tilo_dialogs::chooser_service::Grants for ChosenGrants {
     fn grant(
         &self,
@@ -233,7 +264,7 @@ impl tilo_dialogs::chooser_service::Grants for ChosenGrants {
 }
 
 /// The app's key, as its launcher names it on the connection.
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn chosen_key(
     caller: &tilo_dialogs::chooser_service::Caller,
 ) -> Result<tilo_dialogs::chosen::AppKey, String> {
@@ -241,7 +272,7 @@ fn chosen_key(
         .ok_or_else(|| tilo_dialogs::chooser_service::CANNOT_HAND.to_owned())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn kind_of(choice: tilo_dialogs::chooser_service::Choice) -> tilo_dialogs::chosen::Kind {
     use tilo_dialogs::chooser_service::Choice;
     match choice {
@@ -251,7 +282,7 @@ fn kind_of(choice: tilo_dialogs::chooser_service::Choice) -> tilo_dialogs::chose
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn granted_of(chosen: tilo_dialogs::chosen::Chosen) -> tilo_dialogs::chooser_service::Granted {
     use tilo_dialogs::chooser_service::{Choice, Granted};
     let choice = match chosen.kind {
@@ -270,21 +301,15 @@ fn granted_of(chosen: tilo_dialogs::chosen::Chosen) -> tilo_dialogs::chooser_ser
 
 /// The device's own records, as the chosen files are kept: the same path the desktop session
 /// keeps them by, so a hosted instance and a window see one table of choices.
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 struct ChosenRecords {
     records: Arc<crate::device::records::DeviceRecords>,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 impl tilo_dialogs::chosen::Store for ChosenRecords {
     fn load(&self) -> Vec<tilo_dialogs::chosen::Kept> {
-        match self.records.get(tilo_dialogs::chosen::RECORD) {
-            Some(serde_json::Value::Array(entries)) => entries
-                .into_iter()
-                .filter_map(|entry| serde_json::from_value(entry).ok())
-                .collect(),
-            _ => Vec::new(),
-        }
+        chosen_in(&self.records)
     }
 
     fn keep(&self, kept: Vec<tilo_dialogs::chosen::Kept>) {
@@ -294,13 +319,45 @@ impl tilo_dialogs::chosen::Store for ChosenRecords {
             tracing::warn!(%error, "the files people chose are not written");
         }
     }
+
+    /// The record is followed as it changes, whoever writes it: the files a session's chooser
+    /// keeps reach this daemon's instances as they are chosen, not only at the next start.
+    fn follow(&self, changed: Arc<dyn Fn(Vec<tilo_dialogs::chosen::Kept>) + Send + Sync>) -> bool {
+        let records = Arc::clone(&self.records);
+        tilo_rt::app().handle().spawn(async move {
+            let mut moved = records.changed();
+            while moved.changed().await.is_ok() {
+                changed(chosen_in(&records));
+            }
+        });
+        true
+    }
 }
 
-/// A daemon opens no links in an app.
-#[cfg(target_os = "macos")]
+/// The device's chosen files as the chooser's table keeps them, over the record a session's
+/// chooser writes: what an embedder's test grants a pick through.
+#[cfg(unix)]
+pub(crate) fn chosen_store(
+    records: Arc<crate::device::records::DeviceRecords>,
+) -> Arc<dyn tilo_dialogs::chosen::Store> {
+    Arc::new(ChosenRecords { records })
+}
+
+/// The choices `records` keeps, as the table reads them.
+#[cfg(unix)]
+fn chosen_in(records: &crate::device::records::DeviceRecords) -> Vec<tilo_dialogs::chosen::Kept> {
+    match records.get(tilo_dialogs::chosen::RECORD) {
+        Some(serde_json::Value::Array(entries)) => entries
+            .into_iter()
+            .filter_map(|entry| serde_json::from_value(entry).ok())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// A daemon opens no links in an app of its own.
 struct NoOpen;
 
-#[cfg(target_os = "macos")]
 impl tilo_dialogs::chooser_service::Opens for NoOpen {
     fn open(&self, _workspace: &str, _uri: &str) -> Result<Option<()>, String> {
         Ok(None)
@@ -321,7 +378,7 @@ impl Instances {
             launcher,
             launched: started,
             processes: OnceLock::new(),
-            #[cfg(target_os = "macos")]
+            #[cfg(unix)]
             chosen: Arc::new(tilo_dialogs::chosen::ChosenTable::new()),
             person: OnceLock::new(),
             locale: Mutex::default(),
@@ -394,7 +451,7 @@ impl Instances {
 
     /// Keep the files people choose for hosted apps in the device's records from now on, the same
     /// place the desktop session keeps its choices.
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     pub(crate) fn keep_chosen_records(&self, records: Arc<crate::device::records::DeviceRecords>) {
         self.chosen.bind(Arc::new(ChosenRecords { records }));
     }
@@ -461,11 +518,12 @@ impl Instances {
         workspace: &str,
         origin: Option<Descriptor>,
         access: Option<tilo_action_policy::MemberAccess>,
+        caller: Option<&Caller>,
     ) -> Result<WindowlessStart, String> {
         let instance = self.start(
             (app, workspace, origin),
             self.person()?,
-            Shows::Nothing,
+            Shows::Nothing(caller.map(|caller| Box::new(caller.clone()))),
             None,
             (None, None),
             access,
@@ -749,7 +807,7 @@ impl Instances {
             made.remove(at)
         };
         let (windowless, opened_for, opened_with) = match made.shows {
-            Shows::Nothing => (true, None, None),
+            Shows::Nothing(caller) => (true, caller.map(|caller| *caller), None),
             Shows::Window => (false, None, None),
             Shows::View(view) => {
                 let (caller, certificate) = *view;

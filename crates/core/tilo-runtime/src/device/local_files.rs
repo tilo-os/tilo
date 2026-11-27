@@ -39,6 +39,14 @@ pub(crate) trait Folders: Send + Sync {
     fn now(&self) -> u64;
     /// What puts files into a workspace's tree, where this device keeps one.
     fn puts(&self) -> Option<Arc<dyn FilesTreePuts>>;
+    /// The writes the workspaces this device holds take, as they are taken: what a reading of a
+    /// folder follows to be made again when the tree changes.
+    fn writes(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<tilo_workspace_service::workspaces::ResourceWrite>;
+    /// The person this device acts for, by the id the workspaces name them by (hex): whose reads
+    /// a view at a window of theirs is.
+    fn person(&self) -> String;
 }
 
 impl Folders for ServiceWorkspaces {
@@ -54,6 +62,16 @@ impl Folders for ServiceWorkspaces {
         self.content_shelf().map(|shelf| {
             Arc::new(OpenedFiles::new(self.copies().clone(), shelf)) as Arc<dyn FilesTreePuts>
         })
+    }
+
+    fn writes(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<tilo_workspace_service::workspaces::ResourceWrite> {
+        self.copies().document_writes()
+    }
+
+    fn person(&self) -> String {
+        hex::encode(self.copies().device_person())
     }
 }
 

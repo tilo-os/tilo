@@ -204,6 +204,13 @@ impl DeviceRecords {
         *self.revision.borrow()
     }
 
+    /// Follow the records: each write or removal of one moves what the watch answers, so a
+    /// reader another process keeps is read again.
+    #[must_use]
+    pub fn changed(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.revision.subscribe()
+    }
+
     /// Whether the device's record `name` is `caller`'s to take `kind` at in `workspace`.
     ///
     /// Its own space, before anyone claims it, is the device's alone: its operating system, the

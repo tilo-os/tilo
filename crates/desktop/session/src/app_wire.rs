@@ -675,6 +675,7 @@ mod tests {
         let caller = Caller {
             app_id: "so.tilo.quick-settings".to_owned(),
             workspace: String::new(),
+            opened_for: None,
         };
         let _watch = link.watch(&caller, "power:battery", sink);
         let mut services = Services::default();
@@ -782,6 +783,7 @@ mod tests {
             caller: Caller {
                 app_id: "so.tilo.settings".to_owned(),
                 workspace: "team".to_owned(),
+                opened_for: None,
             },
             resource: "workspace/content".to_owned(),
             action: "set-policy".to_owned(),

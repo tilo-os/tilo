@@ -193,6 +193,25 @@ pub fn folder_of_resource(resource: &str) -> Option<&str> {
         .filter(|path| !path.is_empty())
 }
 
+/// What a folder of the workspace's tree is published as for a view to follow, its path after
+/// this: `files/folder~Tasks/12 Plan`, and `files/folder~` for the workspace's own folder. A
+/// view reads what the folder holds from it, and reads it again when the tree changes, never
+/// holding a copy of its own.
+pub const FOLDER_READING_PREFIX: &str = "files/folder~";
+
+/// The reading of the folder at `path` in the workspace's tree ([`FOLDER_READING_PREFIX`]).
+#[must_use]
+pub fn folder_reading(path: &str) -> String {
+    format!("{FOLDER_READING_PREFIX}{}", path.trim_matches('/'))
+}
+
+/// The path the reading `resource` names, when it is one of a folder's
+/// ([`folder_reading`]): `""` for the workspace's own folder.
+#[must_use]
+pub fn folder_of_reading(resource: &str) -> Option<&str> {
+    resource.strip_prefix(FOLDER_READING_PREFIX)
+}
+
 /// The read of Files that answers the changes of a workspace's own folder, newest last: what
 /// each did to which path, who did it and for whom, and the change [`UNDO`] takes back by its
 /// `step`. Whoever wrote it (a person, an agent through a mounted folder, a call by a path) is

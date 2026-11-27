@@ -633,6 +633,7 @@ impl SeatProvider {
             (Some(app_id), Some(workspace)) => tilo_app_host::services::Caller {
                 app_id: app_id.to_owned(),
                 workspace: workspace.to_owned(),
+                opened_for: None,
             },
             _ => {
                 return Box::pin(std::future::ready(Err(

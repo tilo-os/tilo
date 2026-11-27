@@ -111,6 +111,8 @@ impl FilesTreePuts for Recorder {
 struct Folder {
     workspace: Workspace,
     recorder: Arc<Recorder>,
+    /// The writes nothing here follows: a reading of a folder is no part of these tests.
+    writes: tokio::sync::broadcast::Sender<tilo_workspace_service::workspaces::ResourceWrite>,
 }
 
 impl Folders for Folder {
@@ -124,6 +126,16 @@ impl Folders for Folder {
 
     fn puts(&self) -> Option<Arc<dyn FilesTreePuts>> {
         Some(Arc::clone(&self.recorder) as Arc<dyn FilesTreePuts>)
+    }
+
+    fn writes(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<tilo_workspace_service::workspaces::ResourceWrite> {
+        self.writes.subscribe()
+    }
+
+    fn person(&self) -> String {
+        owner_id()
     }
 }
 
@@ -172,6 +184,7 @@ fn a_folder() -> (Folder, Arc<Recorder>) {
         Folder {
             workspace,
             recorder: Arc::clone(&recorder),
+            writes: tokio::sync::broadcast::channel(1).0,
         },
         recorder,
     )

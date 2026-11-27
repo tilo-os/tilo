@@ -24,11 +24,6 @@ use tilo_permissions::caps::Effect;
 use tilo_permissions::caps::LaunchGrants;
 use tilo_permissions::caps::Scope;
 
-/// The one app that browses this device's own files. It is handed the home
-/// of the machine it runs on; every other app reaches files through what the
-/// person granted it in the workspace.
-use ui::apps::FILE_EXPLORER as FILE_MANAGER;
-
 /// One workspace, as a launch into it needs it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Workspace {
@@ -88,20 +83,14 @@ impl Workspace {
         !self.id.is_empty()
     }
 
-    /// What a launch of `app` is granted: this workspace's grants for it, and
-    /// for the file manager, this device's `home`.
+    /// What a launch of `app` is granted: this workspace's grants for it.
     ///
     /// Only what the workspace's grants hand this app reaches it — a
     /// capability naming a person, a workspace or another app never does
-    /// ([`LaunchGrants::for_app`]).
-    ///
-    /// Files is handed the home of the machine it runs on because that is the
-    /// folder it exists to show. The grant is minted here, per launch, and
-    /// never written into [`Self::grants`]: that record is synced, and a
-    /// grant naming one machine's home is honoured by a peer's sandbox —
-    /// binding the sender's home read-write into it — while the peer's own
-    /// Files still opened on its sandbox directory, seeing none of their
-    /// files. Each device mints its own.
+    /// ([`LaunchGrants::for_app`]). No app is handed a folder of the device it
+    /// runs on by standing: Files shows the workspace's own tree through the
+    /// workspace's files resource, and a folder on this device only once the
+    /// person picks it, which is a choice kept for that app alone.
     #[must_use]
     pub fn grants_for_launch(&self, app: &str, home: Option<PathBuf>) -> LaunchGrants {
         let mut grants = self.grants.for_app(app);
@@ -121,32 +110,9 @@ impl Workspace {
                 .through(app),
             );
         }
-        if app != FILE_MANAGER {
-            return grants;
-        }
-        let Some(home) = home.filter(|home| home.is_absolute()) else {
-            return grants;
-        };
-        grants.sandbox.push(
-            CapOverride::grant(
-                Grantee::person(self.person.clone()),
-                Scope::FsPath(home.display().to_string()),
-                Access::Write,
-            )
-            .through(app),
-        );
-        // The workspaces' files, which the filesystem mounts here: a file manager shows them as
-        // places of their own, and the grant names the mount as each device has it.
-        for root in crate::downloaded::workspace_roots() {
-            grants.sandbox.push(
-                CapOverride::grant(
-                    Grantee::person(self.person.clone()),
-                    Scope::FsPath(root.display().to_string()),
-                    Access::Write,
-                )
-                .through(app),
-            );
-        }
+        // The parameter stays for the launchers' callers: a device mints no folder's grant here
+        // any more, for Files or for any other app.
+        let _ = home;
         grants
     }
 
@@ -264,34 +230,15 @@ mod tests {
             "nothing granted, no capability file and no flag"
         );
 
-        // Files is handed this device's home and the folders the workspaces mount
-        // here, and the workspace's own record never names either.
+        // No app is handed this machine's home by standing, Files included: a folder on the
+        // device is the person's to pick, and Files shows the workspace's own tree otherwise.
         workspace.person = "person-7".to_owned();
         let home = PathBuf::from("/home/you");
-        let mut expected = vec![
-            CapOverride::grant(
-                Grantee::person("person-7"),
-                Scope::FsPath(home.display().to_string()),
-                Access::Write,
-            )
-            .through("so.tilo.file-explorer"),
-        ];
-        for root in crate::downloaded::workspace_roots() {
-            expected.push(
-                CapOverride::grant(
-                    Grantee::person("person-7"),
-                    Scope::FsPath(root.display().to_string()),
-                    Access::Write,
-                )
-                .through("so.tilo.file-explorer"),
-            );
-        }
-        assert_eq!(
-            workspace.grants_for_launch("so.tilo.file-explorer", Some(home.clone())),
-            LaunchGrants {
-                author: false,
-                sandbox: expected,
-            }
+        assert!(
+            workspace
+                .grants_for_launch("so.tilo.file-explorer", Some(home.clone()))
+                .is_empty(),
+            "Files is handed no folder of this device by standing"
         );
         assert!(
             workspace.grants.sandbox.is_empty(),
@@ -452,19 +399,23 @@ mod tests {
             "a launch outside a workspace names no workspace"
         );
 
-        // Every launch path writes it where the launcher reads it, from the
-        // home this machine is actually running as.
+        // Every launch path writes what it is granted where the launcher reads it, and a launch
+        // granted nothing writes no file at all: Files opens on the workspace's own tree here,
+        // whatever home this machine runs as.
         let Some(home) = tilo_paths::home() else {
             return;
         };
-        let path = workspace
-            .write_grants("so.tilo.file-explorer")
-            .expect("written")
-            .expect("a capability file");
         assert_eq!(
-            read(&path),
+            workspace
+                .write_grants("so.tilo.file-explorer")
+                .expect("written"),
+            None,
+            "Files is handed no folder of this device, so no capability file is written"
+        );
+        assert_eq!(
             workspace.grants_for_launch("so.tilo.file-explorer", Some(home)),
-            "the launcher is handed the home of this device"
+            LaunchGrants::default(),
+            "the launcher is handed only what the workspace granted"
         );
     }
 }

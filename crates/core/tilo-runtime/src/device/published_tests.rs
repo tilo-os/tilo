@@ -99,6 +99,7 @@ fn caller() -> Caller {
     Caller {
         app_id: "so.tilo.testing".to_owned(),
         workspace: "home".to_owned(),
+        opened_for: None,
     }
 }
 

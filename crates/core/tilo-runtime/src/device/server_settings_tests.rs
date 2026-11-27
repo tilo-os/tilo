@@ -11,6 +11,7 @@ fn settings() -> Caller {
     Caller {
         app_id: SETTINGS_APP.to_owned(),
         workspace: "home".to_owned(),
+        opened_for: None,
     }
 }
 
@@ -19,6 +20,7 @@ fn other() -> Caller {
     Caller {
         app_id: "so.tilo.notes".to_owned(),
         workspace: "home".to_owned(),
+        opened_for: None,
     }
 }
 

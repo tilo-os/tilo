@@ -1559,7 +1559,7 @@ impl Daemon {
                 use tilo_app_host::services::LauncherServices as _;
                 let started = daemon
                     .upgrade()
-                    .map(|daemon| daemon.apps().windowless(app, workspace, Some(record)));
+                    .map(|daemon| daemon.apps().windowless(app, workspace, Some(record), None));
                 let app = app.to_owned();
                 Box::pin(async move {
                     match started {

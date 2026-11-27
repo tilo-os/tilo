@@ -126,6 +126,7 @@ impl crate::services::LauncherServices for TestStarts {
         app: &str,
         workspace: &str,
         _: Option<&str>,
+        _: Option<&tilo_actions::remote::Caller>,
     ) -> Result<Option<crate::services::WindowlessStart>, String> {
         (self.0)(app, workspace)
     }

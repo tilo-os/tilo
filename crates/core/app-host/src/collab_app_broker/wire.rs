@@ -1572,6 +1572,7 @@ impl WireConnection {
                 caller: crate::services::Caller {
                     app_id: crate::shell::SHELL_APP.to_owned(),
                     workspace: String::new(),
+                    opened_for: None,
                 },
             });
         }
@@ -1589,6 +1590,7 @@ impl WireConnection {
             caller: crate::services::Caller {
                 app_id: launch.app_id.clone(),
                 workspace: launch.workspace_id.clone(),
+                opened_for: launch.opened_for.clone(),
             },
         })
     }

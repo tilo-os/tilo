@@ -70,6 +70,8 @@ tilo-secrets.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 # The clock as a person reads it on this device: their zone and local time.
 tilo-local-time = { path = "../../platform/local-time" }
+# A folder's changed times, as a view reads a `Time`: an instant in RFC 3339 text.
+jiff.workspace = true
 # Where this device is, read here and answered as the device's own action (src/device/location.rs).
 tilo-location = { path = "../../platform/tilo-location" }
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
@@ -311,6 +313,9 @@ tilo-environment = { path = "../environment" }
 # What a harness asks for when a request to the daemon goes unanswered: the same thread report a
 # session answers at its liveness socket, on this daemon's own.
 tilo-liveness = { path = "../../platform/liveness" }
+# The file chooser a hosted app asks this daemon for: the files a person chooses for it, kept by
+# reference, and the session's own chooser where one serves at the computer.
+tilo-dialogs = { path = "../../platform/tilo-dialogs" }
 
 # App Sandbox or Seatbelt: how every app launches on stock macOS.
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -1663,6 +1663,38 @@ impl Daemon {
         self.workspaces.copies()
     }
 
+    /// `folder` picked on this device for `app` in `workspace`, kept as the person's chooser
+    /// keeps a choice: the record this device's chosen files are, answering the reference the
+    /// app reaches the folder by afterwards. What a test uses where a person would answer a
+    /// chooser, without a display.
+    ///
+    /// # Errors
+    /// The device keeps no records yet, the app or the workspace is not a name a choice carries,
+    /// or the folder is not one that can be reached by a reference.
+    #[cfg(all(feature = "test-support", unix))]
+    pub fn keep_chosen_folder(
+        &self,
+        workspace: &str,
+        app: &str,
+        folder: &std::path::Path,
+        write: bool,
+    ) -> Result<std::path::PathBuf, String> {
+        let records = self
+            .workspaces
+            .device_records()
+            .cloned()
+            .ok_or_else(|| "this device keeps no records".to_owned())?;
+        let table = tilo_dialogs::chosen::ChosenTable::new();
+        table.bind(super::super::apps::chosen_store(records));
+        let key = tilo_dialogs::chosen::AppKey::new(workspace, app)
+            .ok_or_else(|| format!("`{app}` in `{workspace}` names no choice"))?;
+        let kind = tilo_dialogs::chosen::Kind::Folder { write };
+        table
+            .grant(&key, folder, kind)
+            .map(|chosen| chosen.reference)
+            .map_err(|error| error.to_string())
+    }
+
     /// The device's workspace service, which a login answered while this part runs enters its
     /// workspaces through, as a start does.
     pub(crate) fn service_workspaces(&self) -> &Arc<ServiceWorkspaces> {
@@ -2613,7 +2645,7 @@ impl Daemon {
         records.carry_into(&identity.cert.user_public_key);
         // The files people choose for hosted apps are kept in the same records: one table for a
         // window and a hosted instance alike.
-        #[cfg(target_os = "macos")]
+        #[cfg(unix)]
         apps.keep_chosen_records(Arc::clone(&records));
         workspaces.hold_device_records(Arc::clone(&records));
         // A device placed for records of one workspace reaches it through the host its ticket's
@@ -4105,6 +4137,12 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
     #[cfg(target_os = "linux")]
     let environments: Arc<dyn PublishedResources> =
         super::environment_readings::published(parts.workspaces);
+    // A folder of a workspace's tree, as a view of Files follows it: what the tree holds, read
+    // where this device keeps it and made again whenever the tree changes. The session's own
+    // windows and the instances this daemon starts read it here, one reading for both.
+    let files_folders: Arc<dyn PublishedResources> = super::files_readings::published(
+        &(Arc::clone(parts.workspaces) as Arc<dyn super::local_files::Folders>),
+    );
     // What this device's daemon keeps itself, each resource served by the provider that keeps it.
     let kept_here = || {
         #[cfg(target_os = "linux")]
@@ -4141,6 +4179,10 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
             Arc::clone(&models),
         )
         .serving_prefix("vault.item:", Arc::clone(&vault_codes))
+        .serving_prefix(
+            fs_protocol::tree::FOLDER_READING_PREFIX,
+            Arc::clone(&files_folders),
+        )
         .serving(
             &[tilo_workspace_records::accounts::RESOURCE],
             Arc::clone(&accounts),

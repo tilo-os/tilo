@@ -37,6 +37,7 @@ mod tests {
         Caller {
             app_id: "so.tilo.console".to_owned(),
             workspace: "home".to_owned(),
+            opened_for: None,
         }
     }
 
