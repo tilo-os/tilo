@@ -81,11 +81,39 @@ impl super::Workspaces {
         workspace: Option<&str>,
     ) -> Result<WorkspaceSummary, String> {
         let person = self.device_cert().user_public_key;
+        let server = self
+            .persons_server(&person)
+            .await
+            .map(|(server, addr)| (server.host.device_public_key, addr));
+        self.found_at(name, workspace, server)
+            .await
+            .map(|(summary, _)| summary)
+    }
+
+    /// [`Self::found`], placing the workspace at the device `at` names, at its address: their
+    /// server, or another site that keeps their workspaces. Kept here alone with none. Answers
+    /// the address that device signed for the workspace, where it took it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::found`].
+    pub(super) async fn found_at(
+        &self,
+        name: &str,
+        workspace: Option<&str>,
+        at: Option<([u8; 32], iroh_base::EndpointAddr)>,
+    ) -> Result<
+        (
+            WorkspaceSummary,
+            Option<tilo_peer_state::join::TransportHint>,
+        ),
+        String,
+    > {
+        let person = self.device_cert().user_public_key;
         let summary = self.create_for(name, workspace, person).await?;
-        let Some((server, addr)) = self.persons_server(&person).await else {
-            return Ok(summary);
+        let Some((device, addr)) = at else {
+            return Ok((summary, None));
         };
-        let device = server.host.device_public_key;
         let hint = self
             .attach_server(
                 &summary.workspace,
@@ -102,9 +130,9 @@ impl super::Workspaces {
             ),
         };
         if !self.list_kept_by(&person, device, &[kept]).await {
-            tracing::warn!(workspace = %summary.workspace, "a workspace placed at the person's server was not listed as kept there");
+            tracing::warn!(workspace = %summary.workspace, "a workspace placed for the person was not listed as kept there");
         }
-        Ok(summary)
+        Ok((summary, Some(hint)))
     }
 
     /// Create a hosted workspace named `name`, under the identity `workspace` when

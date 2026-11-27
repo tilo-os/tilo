@@ -291,7 +291,13 @@ pub(super) fn follow(
         while moves.changed().await.is_ok() {
             sequence = sequence.saturating_add(1);
             let now = moves.borrow_and_update().clone();
-            let ended = matches!(now, Live::Ended(_));
+            let ended = match &now {
+                Live::Item(_) => false,
+                Live::Ended(_) => true,
+                Live::There(update) => {
+                    InvocationState::new(invocation, update.clone()).is_terminal()
+                }
+            };
             kept.log()
                 .complete(&invocation, live_state(invocation, sequence, now));
             if ended {
@@ -321,5 +327,6 @@ fn live_state(invocation: InvocationId, sequence: u64, live: Live) -> Invocation
         ),
         Live::Ended(Ok(value)) => succeeded(invocation, value),
         Live::Ended(Err(why)) => failed(invocation, &why),
+        Live::There(update) => InvocationState::new(invocation, update),
     }
 }

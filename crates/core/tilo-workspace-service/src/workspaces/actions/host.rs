@@ -37,10 +37,26 @@ use super::{
 use crate::service_authority::ServiceOperation;
 use crate::workspaces::authority::WorkspaceOp;
 use crate::workspaces::blocked::Blocked;
+use crate::workspaces::collaboration::InvitedAt;
+use crate::workspaces::providers::Answered;
 use crate::workspaces::{IssueInvitationRequest, WorkspaceSummary, Workspaces};
+use tilo_peer_state::join::TransportHint;
 use tilo_server_protocol::WorkspaceId;
 
+mod founding;
 mod machine;
+
+/// Whether `caller` is `device`'s person's own device asking itself, or a key they made for their
+/// own programs: an agent's grant from their consent is neither.
+fn persons_own((caller, device): (&Caller, &DeviceCert)) -> bool {
+    caller.device_public_key() == Some(&device.device_public_key)
+        && !device.capabilities.stand_in
+        && if device.capabilities.agent.is_none() {
+            caller.acting().is_person()
+        } else {
+            device.capabilities.own_key_in("all")
+        }
+}
 
 /// The host's own operations.
 pub(super) const ACCOUNT: Publisher = Publisher {
@@ -727,18 +743,28 @@ impl Workspaces {
         caller: &Caller,
         device: &DeviceCert,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionCallError> {
+    ) -> Result<Answered, ActionCallError> {
         let (verb, operation) = self.account_operation(device, request)?;
         let now = tilo_clock::unix_now_ns();
         let args = Args::of(&request.argument)?;
         let request_id = request_id(&device.user_public_key, request.invocation);
+        // A new workspace of their own that this host founds nothing for the key asking (an
+        // agent's) is its person's device's to found: that device decides the key's call, asks
+        // the person there what the key's grants leave to them, and places it here.
+        if operation == ServiceOperation::CreateOwnWorkspace
+            && let Some(handed) = self
+                .found_through_their_device((caller, device), request, (&args, now))
+                .await?
+        {
+            return Ok(handed);
+        }
         // What needs no answer from an agent's person is checked first; they
         // are asked last, so their yes is never refused after.
         self.check_account(device, operation, &args, request_id, now)
             .await?;
         self.admit_account(workspace_id, caller, device, verb, request)
             .await?;
-        match operation {
+        let answered = match operation {
             ServiceOperation::CreateWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
@@ -806,7 +832,8 @@ impl Workspaces {
                 self.serve_web_invoke(device, serving).await
             }
             _ => Err(ActionCallError::UnknownAction),
-        }
+        };
+        answered.map(Answered::Value)
     }
 
     /// Enter through the host action for redemption on this same endpoint.
@@ -822,7 +849,12 @@ impl Workspaces {
             return Err(ActionCallError::UnknownAction);
         }
         let caller = crate::service::local_caller(device);
-        Box::pin(self.account_invoke(None, &caller, device, request)).await
+        match Box::pin(self.account_invoke(None, &caller, device, request)).await? {
+            Answered::Value(value) => Ok(value),
+            Answered::Live(_) => Err(ActionCallError::invalid_request(
+                "an entry is answered at once",
+            )),
+        }
     }
 
     /// Answer the page's administration request the host action carries
@@ -1091,7 +1123,7 @@ impl Workspaces {
         // of their own now, so their listings, their branches of it and this
         // host's member lists know it before the next start claims what this
         // device keeps.
-        let summary = self.found_for((caller, device), name, workspace).await?;
+        let (summary, _) = self.found_for((caller, device), name, workspace).await?;
         if let Some(own) = self.own() {
             own.record(&device.user_public_key, &summary.workspace)
                 .map_err(ActionCallError::refused)?;
@@ -1269,6 +1301,7 @@ impl Workspaces {
         let theirs = moving.filter(|moving| own.is_of(&person, moving));
         // A key the workspace keeps as revoked is told so, and invited no more.
         self.refuse_revoked_agent_key(device, moving).await?;
+        let mut placed = None;
         let summary = if let Some(moving) = theirs {
             // One of theirs: a device of theirs entering it, or a grant's
             // parent asking for the invitation into it.
@@ -1305,14 +1338,17 @@ impl Workspaces {
             // Another one, for a person the site let in ([`Self::check_account`]): one they did
             // not name is named in their language. The person's own workspace and the entry in
             // their list are their own device's to write: this host founds and writes neither.
-            self.make_own_workspace((caller, device), (name, moving, language), own)
-                .await?
+            let (made, at) = self
+                .make_own_workspace((caller, device), (name, moving, language), own)
+                .await?;
+            placed = at;
+            made
         };
         if let Some(labels) = labels {
             self.label(&summary.workspace, &labels).await?;
         }
         drop(making);
-        self.own_person_enters(summary, device).await
+        self.own_person_enters_at(summary, device, placed).await
     }
 
     /// The wait that makes a workspace two asks at once would make one by the name the ask gives,
@@ -1346,18 +1382,19 @@ impl Workspaces {
     }
 
     /// `device`'s person's new workspace, made under `name` or the one its language names, and
-    /// recorded as theirs ([`Self::found_for`]).
+    /// recorded as theirs ([`Self::found_for`]), with the address the device that carried the
+    /// call signed for it, where it was placed.
     async fn make_own_workspace(
         &self,
         (caller, device): (&Caller, &DeviceCert),
         (name, moving, language): (Option<&str>, Option<&str>, Option<&str>),
         own: &crate::workspaces::own::OwnWorkspaces,
-    ) -> Result<WorkspaceSummary, ActionCallError> {
+    ) -> Result<(WorkspaceSummary, Option<TransportHint>), ActionCallError> {
         let name = name.map_or_else(|| crate::i18n::workspace_name(language), str::to_owned);
-        let summary = self.found_for((caller, device), &name, moving).await?;
+        let (summary, placed) = self.found_for((caller, device), &name, moving).await?;
         own.record(&device.user_public_key, &summary.workspace)
             .map_err(ActionCallError::refused)?;
-        Ok(summary)
+        Ok((summary, placed))
     }
 
     /// Found the workspace `device` asks for, called `name` (under `workspace` when given), for
@@ -1366,30 +1403,35 @@ impl Workspaces {
     /// server and lists it ([`Workspaces::found`]). Any other host founds one for this device's
     /// own code, asked in process, for a device of the person's asking itself and for a key they
     /// made for their own programs; an agent their consent let in is refused: their person's
-    /// device founds theirs.
+    /// device founds theirs. A call another device carried here for the key that signed it (a
+    /// site that keeps the person's workspaces, handing over an agent's make) places the
+    /// workspace at that device, and answers the address it signed for it.
     async fn found_for(
         &self,
         (caller, device): (&Caller, &DeviceCert),
         name: &str,
         workspace: Option<&str>,
-    ) -> Result<WorkspaceSummary, ActionCallError> {
+    ) -> Result<(WorkspaceSummary, Option<TransportHint>), ActionCallError> {
         let person = device.user_public_key;
-        // The person's own device asking itself, or a key they made for their own programs; an
-        // agent's grant from their consent is neither.
-        let persons_own = caller.device_public_key() == Some(&device.device_public_key)
-            && !device.capabilities.stand_in
-            && if device.capabilities.agent.is_none() {
-                caller.acting().is_person()
-            } else {
-                device.capabilities.own_key_in("all")
-            };
         match self.founding_here(&person).await {
-            Ok(()) => self.found(name, workspace).await,
+            Ok(()) => match caller.forwarder() {
+                Some(site) => {
+                    let addr = crate::workspaces::servers::reached(&self.inner.host.endpoint, site)
+                        .await
+                        .map_err(ActionCallError::refused)?;
+                    self.found_at(name, workspace, Some((*site, addr))).await
+                }
+                None => self
+                    .found(name, workspace)
+                    .await
+                    .map(|summary| (summary, None)),
+            },
             // Pages and hosted agents can't found on their own device yet; this path goes once
             // they can.
-            Err(_) if caller.is_in_process() || persons_own => {
-                self.create_for(name, workspace, person).await
-            }
+            Err(_) if caller.is_in_process() || persons_own((caller, device)) => self
+                .create_for(name, workspace, person)
+                .await
+                .map(|summary| (summary, None)),
             Err(refused) => return Err(refused),
         }
         .map_err(ActionCallError::refused)
@@ -1515,6 +1557,17 @@ impl Workspaces {
         summary: WorkspaceSummary,
         device: &DeviceCert,
     ) -> Result<Value, ActionCallError> {
+        self.own_person_enters_at(summary, device, None).await
+    }
+
+    /// [`Self::own_person_enters`], where a key's invitation names `placed`, the address the
+    /// device the workspace was placed at signed for it, where that key enters it.
+    async fn own_person_enters_at(
+        &self,
+        summary: WorkspaceSummary,
+        device: &DeviceCert,
+        placed: Option<TransportHint>,
+    ) -> Result<Value, ActionCallError> {
         let person = device.user_public_key;
         let invitation = if crate::workspace_access::person_device(device) {
             None
@@ -1527,7 +1580,10 @@ impl Workspaces {
                 expires_at_ns: expiry(tilo_clock::unix_now_ns(), OWN_INVITATION_SECONDS),
                 inviter_name: None,
             };
-            let address = self.invitation_addr_for(device).await;
+            let at = match placed {
+                Some(hint) => InvitedAt::There(Box::new(hint)),
+                None => InvitedAt::Here(self.invitation_addr_for(device).await),
+            };
             let issued = self
                 .issue_from(
                     &summary.workspace,
@@ -1535,7 +1591,7 @@ impl Workspaces {
                     terms,
                     false,
                     None,
-                    address,
+                    at,
                 )
                 .await
                 .map_err(|error| ActionCallError::refused(error.to_string()))?;

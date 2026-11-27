@@ -142,6 +142,9 @@ pub enum Live {
     Item(serde_json::Value),
     /// It ended: its output, or why it failed.
     Ended(Result<serde_json::Value, String>),
+    /// How the device that does its work answered it last, as it answered it: waiting there in
+    /// its person's question, or how it ended, a no among them.
+    There(tilo_actions::InvocationUpdate),
 }
 
 /// What an answer in a workspace is waited for as.

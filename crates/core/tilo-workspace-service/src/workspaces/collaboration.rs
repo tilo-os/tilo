@@ -180,6 +180,14 @@ fn random<const N: usize>() -> Result<[u8; N], CollaborationError> {
     Ok(bytes)
 }
 
+/// Where an invitation says its workspace answers the one who redeems it.
+pub(super) enum InvitedAt {
+    /// This device, at its address.
+    Here(iroh_base::EndpointAddr),
+    /// Another device that holds the workspace, at the address it signed for it.
+    There(Box<tilo_peer_state::join::TransportHint>),
+}
+
 impl Workspaces {
     /// Issue an invitation to `workspace` for `administrator`: a device of this
     /// server's own user, or of a member the workspace lets invite with the
@@ -229,7 +237,7 @@ impl Workspaces {
             request,
             makes_administrator,
             wait_list_entry,
-            self.invitation_addr().await,
+            InvitedAt::Here(self.invitation_addr().await),
         )
         .await
     }
@@ -241,7 +249,7 @@ impl Workspaces {
         mut request: IssueInvitationRequest,
         makes_administrator: bool,
         wait_list_entry: Option<[u8; 32]>,
-        address: iroh_base::EndpointAddr,
+        at: InvitedAt,
     ) -> Result<IssuedInvitation, CollaborationError> {
         let now = tilo_clock::unix_now_ns();
         let issued = {
@@ -267,12 +275,15 @@ impl Workspaces {
                     "that address is no longer on the wait list",
                 ));
             }
-            let issued = self.stage_issue(
+            let transport = match at {
+                InvitedAt::Here(address) => self.invitation_hint(&hosted, &address)?,
+                InvitedAt::There(hint) => *hint,
+            };
+            let issued = self.stage_issue_through(
                 &mut hosted,
                 administrator,
-                request,
-                makes_administrator,
-                &address,
+                (request, makes_administrator),
+                vec![transport],
                 now,
             )?;
             if let Some(entry) = wait_list_entry {
@@ -372,8 +383,27 @@ impl Workspaces {
         address: &iroh_base::EndpointAddr,
         now: u64,
     ) -> Result<IssuedInvitation, CollaborationError> {
-        let role = request.role;
         let transport = vec![self.invitation_hint(workspace, address)?];
+        self.stage_issue_through(
+            workspace,
+            administrator,
+            (request, makes_administrator),
+            transport,
+            now,
+        )
+    }
+
+    /// [`Self::stage_issue`], naming `transport` as where the workspace answers whoever redeems
+    /// it.
+    fn stage_issue_through(
+        &self,
+        workspace: &mut HostedWorkspace,
+        administrator: &DeviceCert,
+        (request, makes_administrator): (IssueInvitationRequest, bool),
+        transport: Vec<tilo_peer_state::join::TransportHint>,
+        now: u64,
+    ) -> Result<IssuedInvitation, CollaborationError> {
+        let role = request.role;
         let mut log = workspace.collaboration().clone();
         let issued = log.issue_as(
             &workspace.hosted(self.device_cert()),

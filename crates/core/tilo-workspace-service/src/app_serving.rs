@@ -1115,6 +1115,13 @@ impl ActionProvider for HostOperations {
             )));
         }
         let caller = tilo_peer_state::key_caller::caller_of_key_here(&certificate);
+        // Another device carrying the key's own signed call (a site handing an agent's make to
+        // its person's founding device) is named beside it: the call runs as the key, never as
+        // the device that brought it, which may only follow it.
+        let caller = match asking {
+            Some(device) if device != certificate.device_public_key => caller.forwarded_by(device),
+            _ => caller,
+        };
         let server = Arc::clone(&self.server);
         let followed = Arc::clone(&self.followed);
         let (completer, answer) = tilo_actions::remote::pending();

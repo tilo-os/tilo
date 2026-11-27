@@ -2110,21 +2110,24 @@ impl Workspaces {
     /// Answer one of the host's own operations `request` asks for, as the device `certificate`
     /// certifies: a page's whole administration as one action
     /// ([`Self::administer_invoke`]), else one of the operations the catalogue publishes
-    /// ([`Self::account_invoke`]).
+    /// ([`Self::account_invoke`]): once, or, where another device does its work, as that
+    /// device answers it.
     async fn host_operation_invoke(
         &self,
         workspace_id: Option<WorkspaceId>,
         caller: &Caller,
         certificate: Option<&DeviceCert>,
         request: &InvokeRequest,
-    ) -> Result<Value, ActionCallError> {
+    ) -> Result<Answered, ActionCallError> {
         let certificate = Self::host_actions_certificate(caller, certificate)?;
         // A page's whole administration as one action of the host's own: its requests name no
         // workspace, and each is decided as the workspace it names decides it.
         if request.target.address.resource == HOST_WORKSPACES_RESOURCE
             && request.target.address.action == ADMINISTER_WORKSPACES
         {
-            return Box::pin(self.administer_invoke(caller, certificate, request)).await;
+            return Box::pin(self.administer_invoke(caller, certificate, request))
+                .await
+                .map(Answered::Value);
         }
         Box::pin(self.account_invoke(workspace_id, caller, certificate, request)).await
     }
@@ -2180,6 +2183,15 @@ impl Workspaces {
                 certificate,
             };
             return answers.answer(call, request).await;
+        }
+        if request.target.provider == HOST_ACTIONS_PROVIDER {
+            return Box::pin(self.host_operation_invoke(
+                workspace_id,
+                caller,
+                certificate,
+                request,
+            ))
+            .await;
         }
         Box::pin(self.answer_here(workspace_id, caller, certificate, request))
             .await
@@ -2238,10 +2250,6 @@ impl Workspaces {
                     self.governance_invoke(workspace_id, caller, certificate, &asked, &published)
                         .await
                 }
-            }
-            (HOST_ACTIONS_PROVIDER, _) => {
-                Box::pin(self.host_operation_invoke(workspace_id, caller, certificate, request))
-                    .await
             }
             (mcp_server::PROVIDER, _) => self.mcp_stop(caller, certificate, request),
             // The formats and zone the person reads dates in: theirs alone,
