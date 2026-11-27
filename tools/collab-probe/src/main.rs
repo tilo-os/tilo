@@ -210,7 +210,9 @@ async fn changes_after(
 
 /// Load `changes` into `doc` and read the probe's field.
 fn apply_changes(doc: &mut AutoCommit, changes: &[u8]) -> Result<Option<String>, String> {
-    doc.load_incoming(changes)
+    // Whole or not at all: a record's changes are read to diagnose what the store holds, so a
+    // run of bytes that is not exactly the changes it claims is refused, never partly taken.
+    doc.load_incoming_whole(changes)
         .map_err(|error| format!("the record's changes did not load: {error}"))?;
     doc.get(&ROOT, FIELD)
         .map(|value| value.map(|(value, _)| value.as_str().unwrap_or_default().to_string()))
