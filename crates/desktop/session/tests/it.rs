@@ -343,6 +343,7 @@ mod window_menu;
 mod window_menu_probe;
 #[path = "window_notes.rs"]
 mod window_notes;
+mod window_room;
 #[path = "window_share_live.rs"]
 mod window_share_live;
 #[path = "windows_compat.rs"]

@@ -989,6 +989,20 @@ outputs = ["/target/shell-magnify-shots/**"]
 timeout_secs = 3600
 default = false
 
+# Pictures of a window filling the room the shell's bar and dock leave, on the foot and up the
+# leading edge, in both themes: the captures of the session tests that hold the front window's
+# rect to the bar's band and the dock's resting band. They start the shell's own session, so the
+# command is the nextest wrapper, whose setup builds the programs those tests start. Only when
+# named.
+[[check]]
+name = "window-room-shots"
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "rm -rf /target/window-room-shots\nWINDOW_ROOM_OUT=/target/window-room-shots bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --tests -p tilo-session -E 'test(window_room::)'\n"
+env = { CARGO_PROFILE_DEV_DEBUG = "0" }
+outputs = ["/target/window-room-shots/**"]
+timeout_secs = 3600
+default = false
+
 # Every app's committed surface.toml against its code, on every change: an
 # app's types, its actions and its stored fields are what the SDK's generated
 # types, the OS's view of an app that is not running and another device's
