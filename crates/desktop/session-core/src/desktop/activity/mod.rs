@@ -411,6 +411,9 @@ pub struct TaskRunUndo {
     /// The one change of those documents to take back, as each record's own history names it;
     /// absent to take back the run's whole share of them.
     pub step: Option<String>,
+    /// The whole run is taken back, every call of its group, as the workspace's record of its
+    /// calls takes it back; else only the records `steps` names, each through its own history.
+    pub whole: bool,
 }
 pub struct UnavailableActivityHost;
 impl ActivityHost for UnavailableActivityHost {}

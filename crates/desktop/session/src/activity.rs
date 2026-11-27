@@ -570,10 +570,9 @@ impl Activity {
         *self.0.api.borrow_mut() = Some(api);
     }
 
-    /// Take back the work of the run `run` in `workspace`, as the person at the screen: each
-    /// document `steps` names is asked through the session's action API, on a thread of its own, as the
-    /// history's own Undo run asks. Answers whether it started; what came of it is in the
-    /// documents, which a person reads there.
+    /// Take back the whole run `run` in `workspace`, as the person at the screen, as the
+    /// activity's Undo run does: `steps` names the documents it changed. Answers whether it
+    /// started; what came of it is in the documents, which a person reads there.
     ///
     /// # Errors
     /// The session serves no action API to ask, so nothing was undone.
@@ -584,25 +583,14 @@ impl Activity {
         run: &str,
         steps: Vec<(String, String)>,
     ) -> Result<(), String> {
-        let Some(api) = self.0.api.borrow().as_ref().map(Arc::clone) else {
-            return Err(tilo_session_core::desktop::i18n::t(
-                "activity-undo-task-unavailable",
-            ));
-        };
-        let woken = Arc::clone(&self.0.woken);
-        let wake = self.0.wake.clone();
-        self.0.undos.start(
-            api,
-            self.0.person.clone(),
-            TaskRunUndo {
-                workspace: workspace.to_owned(),
-                invocation: uuid::Uuid::new_v4(),
-                task_id: run.to_owned(),
-                steps,
-                step: None,
-            },
-            move || ask_for_frame(&woken, wake.as_ref()),
-        )
+        Host(Rc::clone(&self.0)).undo_task_run(TaskRunUndo {
+            workspace: workspace.to_owned(),
+            invocation: uuid::Uuid::new_v4(),
+            task_id: run.to_owned(),
+            steps,
+            step: None,
+            whole: true,
+        })
     }
 
     /// Read the output of command runs from `content` .
@@ -2024,8 +2012,9 @@ mod tests {
     }
 }
 
-/// Taking back an agent's run in the records it changed, through the invocation record's own
-/// take-back: the same one `<record>#undo` runs, keyed by the run.
+/// Taking back an agent's run: whole through the workspace's record of its calls, the same
+/// take-back `<invocation>#undo` runs, asked of the run's group; one record of it, or one change
+/// there, through that record's own history.
 #[cfg(target_os = "linux")]
 mod run_undo {
     use std::collections::BTreeMap;
@@ -2034,7 +2023,7 @@ mod run_undo {
 
     use tilo_actions::remote::session_actions;
     use tilo_actions::remote::{ActionCallError, ActionProvider, Caller};
-    use tilo_invocations::NO_HISTORY;
+    use tilo_invocations::{NO_HISTORY, Route};
     use tilo_lock::MutexRecover as _;
     use tilo_session_core::desktop::activity::{TaskRunDocument, TaskRunUndo};
 
@@ -2044,8 +2033,8 @@ mod run_undo {
     /// How long a record has to answer one request at all.
     const ANSWER: Duration = Duration::from_millis(100);
 
-    /// Where `step`'s changes may be taken back, in the order asked: the app's record, the app's
-    /// own record of the workspace, and the session's services for the records they keep.
+    /// Where one record's changes may be taken back, in the order asked: the app's record, the
+    /// app's own record of the workspace, and the session's services for the records they keep.
     fn candidates(app: &str, record: &str) -> Vec<(String, Option<String>)> {
         let mut at = Vec::new();
         if !record.is_empty() {
@@ -2059,23 +2048,33 @@ mod run_undo {
         at
     }
 
-    /// Take back what the run `run` changed in each of `steps`' records, through the record's own
-    /// history: the one take-back `#undo` runs, asked of the app that holds each record.
+    /// Take back `undo` as `route`'s caller: the run whole through the workspace's record of its
+    /// group's calls, or its share of each of the records `steps` names through that record's
+    /// history.
     fn undo_run(
-        api: Arc<crate::mcp_server::Host>,
-        caller: Caller,
-        run: &str,
-        steps: &[(String, String)],
-        step: Option<&str>,
+        route: &Route,
+        undo: &TaskRunUndo,
         timeout: Duration,
     ) -> Result<Vec<TaskRunDocument>, String> {
+        let document = |(app, record): &(String, String)| TaskRunDocument {
+            app: app.clone(),
+            record: record.clone(),
+        };
+        if undo.whole {
+            // Every record the run changed is taken back, or the answer says which were not.
+            return match tilo_invocations::undo_recorded(route, &undo.task_id).wait_timeout(timeout)
+            {
+                Ok(Some(Ok(_))) => Ok(undo.steps.iter().map(document).collect()),
+                Ok(Some(Err(error))) => Err(error.to_string()),
+                _ => Err("the record did not answer".to_owned()),
+            };
+        }
         let now = Instant::now();
         let until = now.checked_add(timeout).unwrap_or(now);
-        let provider: Arc<dyn ActionProvider + Send + Sync> = api;
-        let route: (Arc<dyn ActionProvider + Send + Sync>, Caller) = (provider, caller);
         let mut done = Vec::new();
         let mut refused = Vec::new();
-        for (app, record) in steps {
+        for step in &undo.steps {
+            let (app, record) = step;
             let mut failure = None;
             let mut taken = false;
             for (at, root) in candidates(app, record) {
@@ -2085,7 +2084,12 @@ mod run_undo {
                     root: root.as_deref(),
                     near: None,
                 };
-                let pending = tilo_invocations::take_back_run(&route, &at, run, step);
+                let pending = tilo_invocations::take_back_run(
+                    route,
+                    &at,
+                    &undo.task_id,
+                    undo.step.as_deref(),
+                );
                 match pending.wait_timeout(left.max(ANSWER)) {
                     Ok(Some(Ok(_))) => {
                         taken = true;
@@ -2098,10 +2102,7 @@ mod run_undo {
                 }
             }
             if taken {
-                done.push(TaskRunDocument {
-                    app: app.clone(),
-                    record: record.clone(),
-                });
+                done.push(document(step));
             } else {
                 refused.push(format!(
                     "{app}: {}",
@@ -2117,7 +2118,7 @@ mod run_undo {
             });
         }
         if !refused.is_empty() {
-            tracing::warn!(run, refused = %refused.join("; "), "a run was undone only in part");
+            tracing::warn!(run = undo.task_id, refused = %refused.join("; "), "a run was undone only in part");
         }
         Ok(done)
     }
@@ -2148,13 +2149,7 @@ mod run_undo {
             undo: TaskRunUndo,
             done: impl FnOnce() + Send + 'static,
         ) -> Result<(), String> {
-            let TaskRunUndo {
-                workspace,
-                invocation,
-                task_id,
-                steps,
-                step,
-            } = undo;
+            let invocation = undo.invocation;
             self.running.lock_recover().insert(invocation, None);
             let running = Arc::clone(&self.running);
             std::thread::Builder::new()
@@ -2163,10 +2158,10 @@ mod run_undo {
                     // The caller's workspace decides what the API opens, so the undo asks as
                     // itself.
                     let caller = Caller::local_person(person)
-                        .in_workspace(workspace)
+                        .in_workspace(undo.workspace.clone())
                         .in_new_execution();
-                    let outcome =
-                        undo_run(api, caller, &task_id, &steps, step.as_deref(), UNDO_TIMEOUT);
+                    let provider: Arc<dyn ActionProvider + Send + Sync> = api;
+                    let outcome = undo_run(&(provider, caller), &undo, UNDO_TIMEOUT);
                     running.lock_recover().insert(invocation, Some(outcome));
                     done();
                 })

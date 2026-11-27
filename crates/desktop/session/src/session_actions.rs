@@ -445,21 +445,10 @@ mod tests {
     /// person who typed it.
     #[cfg(target_os = "linux")]
     fn run_line(line: &str) -> tilo_actions::remote::InvokeRequest {
-        tilo_actions::remote::InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
-            on_behalf_of: None,
-            target: tilo_actions::remote::session_actions::run_line_target(),
-            argument: tilo_actions::remote::InvokeArgument::Json(serde_json::Map::from_iter([(
-                "line".to_owned(),
-                serde_json::json!(line),
-            )])),
-            context: None,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
-        }
+        tilo_actions::remote::InvokeRequest::plain(
+            tilo_actions::remote::session_actions::run_line_target(),
+            serde_json::Map::from_iter([("line".to_owned(), serde_json::json!(line))]),
+        )
     }
 
     /// What the line `request` answered as `person`, running the session until the invocation
@@ -852,19 +841,14 @@ mod tests {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> tilo_actions::remote::InvokeRequest {
         tilo_actions::remote::InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
-            on_behalf_of: None,
-            target: tilo_actions::remote::RemoteActionTarget {
-                provider: tilo_actions::remote::session_actions::PROVIDER.to_owned(),
-                address: tilo_actions::ActionAddress::new(resource, action),
-            },
             argument: tilo_actions::remote::InvokeArgument::Json(arguments),
-            context: None,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
+            ..tilo_actions::remote::InvokeRequest::plain(
+                tilo_actions::remote::RemoteActionTarget {
+                    provider: tilo_actions::remote::session_actions::PROVIDER.to_owned(),
+                    address: tilo_actions::ActionAddress::new(resource, action),
+                },
+                serde_json::Map::new(),
+            )
         }
     }
 

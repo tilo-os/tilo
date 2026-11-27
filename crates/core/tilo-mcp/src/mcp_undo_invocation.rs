@@ -7,8 +7,8 @@
 //! and a decline takes a waiting run back through the same take-back.
 
 use tilo_action_services::workspace_invocations;
-use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
-use tilo_actions::{ActionAddress, InvocationId};
+use tilo_actions::ActionAddress;
+use tilo_actions::remote::{InvokeRequest, ReceiptStatus, RemoteActionTarget};
 
 use super::{ActionProvider, Failure, McpServer, Reply, invocation_id, json};
 
@@ -20,21 +20,11 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         structured: bool,
     ) -> Result<Reply, Failure> {
         let id = invocation_id(invocation)?;
-        let request = InvokeRequest {
-            invocation: InvocationId::new(),
-            target: RemoteActionTarget {
-                provider: workspace_invocations::PROVIDER.to_owned(),
-                address: ActionAddress::new(id.0.to_string(), workspace_invocations::UNDO),
-            },
-            argument: InvokeArgument::None,
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
+        let target = RemoteActionTarget {
+            provider: workspace_invocations::PROVIDER.to_owned(),
+            address: ActionAddress::new(id.0.to_string(), workspace_invocations::UNDO),
         };
+        let request = InvokeRequest::plain(target, serde_json::Map::new());
         let receipt = self
             .host()
             .invoke(&self.caller(), request)

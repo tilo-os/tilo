@@ -78,21 +78,13 @@ fn echoing(page: CataloguePage) -> Arc<TestProvider> {
 fn request(provider: &str, resource: &str, action: &str, echo: &str) -> InvokeRequest {
     let mut arguments = Map::new();
     arguments.insert("echo".into(), json!(echo));
-    InvokeRequest {
-        invocation: tilo_actions::InvocationId::new(),
-        target: RemoteActionTarget {
+    InvokeRequest::plain(
+        RemoteActionTarget {
             provider: provider.into(),
             address: ActionAddress::new(resource, action),
         },
-        argument: InvokeArgument::Json(arguments),
-        context: None,
-        confirmation: None,
-        revision: None,
-        on_behalf_of: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    }
+        arguments,
+    )
 }
 
 /// The shell's end of a link the daemon made, as the shell it starts holds it.

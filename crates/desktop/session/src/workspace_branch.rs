@@ -394,27 +394,22 @@ mod tests {
             ["garden-id".to_owned(), "Garden".to_owned()],
         ];
         let branch = |source: Option<&str>| tilo_actions::remote::InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
-            target: tilo_actions::remote::RemoteActionTarget {
-                provider: tilo_actions::remote::session_actions::PROVIDER.to_owned(),
-                address: tilo_actions::ActionAddress::new(
-                    tilo_session_core::desktop::verbs::CHROME_RESOURCE,
-                    tilo_session_core::desktop::host::contract::BRANCH_WORKSPACE,
-                ),
-            },
             argument: source.map_or(tilo_actions::remote::InvokeArgument::None, |source| {
                 tilo_actions::remote::InvokeArgument::Json(serde_json::Map::from_iter([(
                     "source".to_owned(),
                     serde_json::Value::from(source),
                 )]))
             }),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
+            ..tilo_actions::remote::InvokeRequest::plain(
+                tilo_actions::remote::RemoteActionTarget {
+                    provider: tilo_actions::remote::session_actions::PROVIDER.to_owned(),
+                    address: tilo_actions::ActionAddress::new(
+                        tilo_session_core::desktop::verbs::CHROME_RESOURCE,
+                        tilo_session_core::desktop::host::contract::BRANCH_WORKSPACE,
+                    ),
+                },
+                serde_json::Map::new(),
+            )
         };
         for own in ["Studio", "studio", "studio-id"] {
             assert!(

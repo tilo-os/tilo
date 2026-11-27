@@ -578,7 +578,8 @@ fn a_caller_neither_its_own_nor_a_writer_of_its_origin_is_refused() {
 
 /// An agent's run that wrote a message is taken back whole by its record's `undo`: the write
 /// goes, the record says what it changed was taken back, a caller who may not manage the run is
-/// refused, and asking again is refused in words a person reads.
+/// refused, and asking again is refused in words a person reads. Another agent session's two
+/// messages go together through the `undo` of its group, as the activity's Undo run asks.
 #[test]
 fn an_agents_run_is_taken_back_whole_through_its_record() {
     use crate::language::chat::{chat_holds, chat_stands_with, opens};
@@ -687,6 +688,44 @@ fn an_agents_run_is_taken_back_whole_through_its_record() {
         assert!(
             reason.contains("already taken back"),
             "a person reads what stands: {reason}"
+        );
+
+        let session = host.agent();
+        let group_of =
+            async |call: &str| one(dispatch.as_ref(), &person, call).await["group"]["id"].clone();
+        let mut groups = vec![group_of(&run).await];
+        for body in ["bulk two", "bulk three"] {
+            let call = tilo_actions::InvocationId::new().0.to_string();
+            let args = json!({"path": format!("{CHAT}/{channel}#send"), "args": {"body": body}, "invocation_id": call});
+            let (sent, failed) = said(&session.tool("tilo_do", &args).await);
+            assert!(!failed, "the session writes {body:?}: {sent}");
+            groups.push(group_of(&call).await);
+        }
+        assert!(
+            groups[1].is_string() && groups[1] == groups[2] && groups[0] != groups[1],
+            "{groups:?}"
+        );
+        let group = groups[1].as_str().unwrap_or_default();
+        let undo = || record_action(group, workspace_invocations::UNDO);
+        completed(
+            invoked(dispatch.as_ref(), &person, undo())
+                .await
+                .expect("the person takes the session back"),
+        );
+        for body in ["bulk two", "bulk three"] {
+            let stands = chat_stands_with(host.as_ref(), body)
+                .await
+                .unwrap_or_else(|error| panic!("{error}"));
+            assert_eq!(stands, Some(false), "the session's {body:?} is gone");
+        }
+        let again = rejected(
+            invoked(dispatch.as_ref(), &person, undo())
+                .await
+                .expect("the record answers"),
+        );
+        assert!(
+            matches!(&again, ActionCallError::Refused { reason } if reason.contains("already taken back")),
+            "{again:?}"
         );
     });
 }

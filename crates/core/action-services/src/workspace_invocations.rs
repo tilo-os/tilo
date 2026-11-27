@@ -36,7 +36,8 @@ pub const RESOURCE: &str = "workspace";
 pub const CANCEL: &str = "cancel";
 /// Run one invocation again: the same request, by the same caller, under a new id.
 pub const RETRY: &str = "retry";
-/// Take back what one invocation changed, through its record's own history.
+/// Take back what one invocation changed, through its record's own history; addressed to a work
+/// group's id instead, what every call of that group changed.
 pub const UNDO: &str = "undo";
 
 /// Why an invocation is not taken back at a provider: the record there offers no history, so the

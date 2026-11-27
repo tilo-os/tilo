@@ -106,18 +106,7 @@ impl ActionProvider for Host {
 }
 
 pub fn ask(action: &str) -> InvokeRequest {
-    InvokeRequest {
-        on_behalf_of: None,
-        invocation: InvocationId::new(),
-        target: mcp_server::target(action),
-        argument: InvokeArgument::None,
-        context: None,
-        confirmation: None,
-        revision: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    }
+    InvokeRequest::plain(mcp_server::target(action), serde_json::Map::new())
 }
 
 pub fn answer(

@@ -1155,21 +1155,16 @@ impl Shell {
                 continue;
             }
             let request = tilo_actions::remote::InvokeRequest {
-                invocation: tilo_actions::InvocationId::new(),
-                target: tilo_actions::remote::RemoteActionTarget {
-                    provider: tilo_actions::remote::application_provider_token(
-                        workspace, &self.app,
-                    ),
-                    address: address.clone(),
-                },
                 argument: tilo_actions::remote::InvokeArgument::Json(arguments),
-                context: None,
-                confirmation: None,
-                revision: None,
-                on_behalf_of: None,
-                wait_ms: None,
-                appearance: None,
-                signed: None,
+                ..tilo_actions::remote::InvokeRequest::plain(
+                    tilo_actions::remote::RemoteActionTarget {
+                        provider: tilo_actions::remote::application_provider_token(
+                            workspace, &self.app,
+                        ),
+                        address: address.clone(),
+                    },
+                    serde_json::Map::new(),
+                )
             };
             let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
             let (daemon_at, workspace) = (daemon.clone(), workspace.to_owned());
@@ -1192,19 +1187,14 @@ impl Shell {
         // each record is in, whichever workspace is in front.
         for (workspace, address, arguments) in self.link.take_answers() {
             let request = tilo_actions::remote::InvokeRequest {
-                invocation: tilo_actions::InvocationId::new(),
-                target: tilo_actions::remote::RemoteActionTarget {
-                    provider: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
-                    address: address.clone(),
-                },
                 argument: tilo_actions::remote::InvokeArgument::Json(arguments),
-                context: None,
-                confirmation: None,
-                revision: None,
-                on_behalf_of: None,
-                wait_ms: None,
-                appearance: None,
-                signed: None,
+                ..tilo_actions::remote::InvokeRequest::plain(
+                    tilo_actions::remote::RemoteActionTarget {
+                        provider: tilo_action_services::workspace_invocations::PROVIDER.to_owned(),
+                        address: address.clone(),
+                    },
+                    serde_json::Map::new(),
+                )
             };
             let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
             let daemon_at = daemon.clone();
@@ -1957,19 +1947,14 @@ fn serve_shell(shared: &crate::Shared, shell: &Shell, workspace: &str) {
                 && !ui::widget::shift_skips_confirmation(spec.contract.can_be_undone())
             {
                 let request = tilo_actions::remote::InvokeRequest {
-                    invocation: tilo_actions::InvocationId::new(),
-                    target: tilo_actions::remote::RemoteActionTarget {
-                        provider: crate::services::app_wire::SERVICES_PROVIDER.to_owned(),
-                        address: address.clone(),
-                    },
                     argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
-                    context: None,
-                    confirmation: None,
-                    revision: None,
-                    on_behalf_of: None,
-                    wait_ms: None,
-                    appearance: None,
-                    signed: None,
+                    ..tilo_actions::remote::InvokeRequest::plain(
+                        tilo_actions::remote::RemoteActionTarget {
+                            provider: crate::services::app_wire::SERVICES_PROVIDER.to_owned(),
+                            address: address.clone(),
+                        },
+                        serde_json::Map::new(),
+                    )
                 };
                 let message = tilo_actions::remote::RemoteActionMessage::Invoke(request);
                 let workspace = workspace.to_owned();

@@ -1102,6 +1102,7 @@ impl WorkspaceActivityPane {
             task_id: run.named.clone(),
             steps: steps.clone(),
             step: step.map(str::to_owned),
+            whole: only.is_none() && step.is_none(),
         };
         match self.host.undo_task_run(undo) {
             Ok(()) => {

@@ -145,19 +145,14 @@ impl WifiContinuity {
     fn ask(&self, action: &str, arguments: Map<String, Value>) -> Result<Value, String> {
         let link = self.daemon.link()?;
         let request = InvokeRequest {
-            invocation: tilo_actions::InvocationId::new(),
-            target: RemoteActionTarget {
-                provider: PROVIDER.to_owned(),
-                address: tilo_actions::ActionAddress::new(RESOURCE, action),
-            },
             argument: InvokeArgument::Json(arguments),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
+            ..InvokeRequest::plain(
+                RemoteActionTarget {
+                    provider: PROVIDER.to_owned(),
+                    address: tilo_actions::ActionAddress::new(RESOURCE, action),
+                },
+                serde_json::Map::new(),
+            )
         };
         let (answered, answer) = std::sync::mpsc::sync_channel(1);
         let workspace = self.workspace.clone();

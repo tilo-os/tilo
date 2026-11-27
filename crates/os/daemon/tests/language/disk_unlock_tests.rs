@@ -27,9 +27,8 @@ use iroh::endpoint::{Endpoint, RecvStream, SendStream};
 use serde_json::json;
 use tilo_action_services::workspace_invocations;
 use tilo_actions::ActionAddress;
-use tilo_actions::InvocationId;
 use tilo_actions::remote::asked::{Asked, AskedRecords as _, RESOLVE};
-use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
+use tilo_actions::remote::{Caller, InvokeRequest, RemoteActionTarget};
 use tilo_unlock_protocol::published::{UnlockEnrolment, UnlockFabricState};
 use tilo_unlock_protocol::{
     BootId, ClientFrame, Half, PROTOCOL_VERSION, SiblingFrame, SlotId, UNLOCK_ALPN, UnlockHello,
@@ -227,21 +226,13 @@ async fn answer(host: &Host, asked: &Asked, resolution: &str) {
     let caller = Caller::local_person(host.person()).in_workspace(host.workspace());
     let argument = serde_json::from_value(json!({ "resolution": resolution }))
         .expect("a resolution is a JSON object");
-    let request = InvokeRequest {
-        on_behalf_of: None,
-        invocation: InvocationId::new(),
-        target: RemoteActionTarget {
+    let request = InvokeRequest::plain(
+        RemoteActionTarget {
             provider: workspace_invocations::PROVIDER.to_owned(),
             address: ActionAddress::new(&asked.record.record, RESOLVE),
         },
-        argument: InvokeArgument::Json(argument),
-        context: None,
-        confirmation: None,
-        revision: None,
-        wait_ms: None,
-        appearance: None,
-        signed: None,
-    };
+        argument,
+    );
     host.daemon()
         .workspaces()
         .resolve_asked(&caller, &request)

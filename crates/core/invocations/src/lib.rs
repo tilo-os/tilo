@@ -451,10 +451,6 @@ impl Invocations {
         let run = std::sync::Arc::new(ToolRun::started(id));
         let request = InvokeRequest {
             invocation: id,
-            target: tilo_action_services::agent_tools::target(
-                tilo_action_services::agent_tools::CALL,
-            ),
-            argument: InvokeArgument::None,
             context: Some(tilo_actions::ActionContext {
                 group: Some(tilo_actions::WorkGroup {
                     id: tool.to_owned(),
@@ -465,12 +461,10 @@ impl Invocations {
                 }),
                 ..tilo_actions::ActionContext::default()
             }),
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
+            ..InvokeRequest::plain(
+                tilo_action_services::agent_tools::target(tilo_action_services::agent_tools::CALL),
+                serde_json::Map::new(),
+            )
         };
         let route: Route = (
             std::sync::Arc::new(ToolRoute(std::sync::Arc::clone(&run))),
@@ -628,16 +622,22 @@ impl Invocations {
         if target.provider != PROVIDER || ![CANCEL, RETRY, UNDO].contains(&action) {
             return None;
         }
-        let Some(id) = uuid::Uuid::parse_str(&target.address.resource)
+        let found = uuid::Uuid::parse_str(&target.address.resource)
             .ok()
-            .map(InvocationId)
-        else {
+            .and_then(|id| self.find(&InvocationId(id)));
+        // Taken back, a work group's calls go as one: an agent session's run.
+        let asked = match found {
+            Some(recorded) => vec![recorded],
+            None if action == UNDO => self.of_group(caller, &target.address.resource),
+            None => Vec::new(),
+        };
+        let Some(recorded) = asked.first().cloned() else {
             return Some(Pending::ready(Err(ActionCallError::UnknownInvocation)));
         };
-        let Some(recorded) = self.find(&id) else {
-            return Some(Pending::ready(Err(ActionCallError::UnknownInvocation)));
-        };
-        if !Self::may_manage(caller, &recorded, may_write_origin, action == UNDO) {
+        if let Some(recorded) = asked
+            .iter()
+            .find(|recorded| !Self::may_manage(caller, recorded, may_write_origin, action == UNDO))
+        {
             let verb = match action {
                 RETRY => "run it again",
                 UNDO => "take it back",
@@ -649,13 +649,13 @@ impl Invocations {
             return Some(Self::retry(self, &recorded, request.invocation));
         }
         if action == UNDO {
-            let asked = request.invocation;
-            let taken = Self::take_back_recorded(self, &recorded);
+            let invocation = request.invocation;
+            let taken = Self::take_back(self, &asked);
             let (complete, answer) = pending();
             taken.then(move |done| {
                 complete.complete(match done {
                     Some(Ok(value)) => Ok(InvocationReceipt {
-                        invocation: asked,
+                        invocation,
                         status: ReceiptStatus::Completed {
                             output: tilo_actions::ActionOutput {
                                 value,
@@ -671,6 +671,7 @@ impl Invocations {
             });
             return Some(answer);
         }
+        let id = recorded.request.invocation;
         let (provider, runs_as) = recorded.route;
         let invocation = request.invocation;
         Some(provider.cancel(&runs_as, &id).map(move |stopped| {
@@ -683,34 +684,63 @@ impl Invocations {
         }))
     }
 
-    /// Take back what one record's invocation changed, and say so of the record: its own
-    /// changes and those of every call made on its behalf ([`Self::steps_of`]), each through the
-    /// history of the record that call changed. It is taken back only when every one of them
-    /// was; otherwise the answer says which were and which were not, and why, and asking again
-    /// takes back what is left. The answer names what someone else changed since and stays.
-    fn take_back_recorded(
+    /// Take back what the calls `asked` changed, and say so of their records: their own changes
+    /// and those of every call made on their behalf ([`Self::steps_of`]), each through the
+    /// history of the record that call changed. One call, or every call of a work group. They are
+    /// taken back only when every one of them was; otherwise the answer says which were and which
+    /// were not, and why, and asking again takes back what is left. The answer names what someone
+    /// else changed since and stays.
+    fn take_back(
         records: &Arc<Self>,
-        recorded: &Recorded,
+        asked: &[Recorded],
     ) -> Pending<Result<Option<serde_json::Value>, ActionCallError>> {
-        if recorded.undone {
+        let left: Vec<InvocationId> = asked
+            .iter()
+            .filter(|recorded| !recorded.undone)
+            .map(|recorded| recorded.request.invocation)
+            .collect();
+        if left.is_empty() {
             return Pending::ready(Err(already_taken_back()));
         }
-        let id = recorded.request.invocation;
         let (complete, answer) = pending();
         let records = Arc::clone(records);
-        let shares = records.steps_of(id);
+        let shares = records.steps_of(&left);
         taken_in_turn(shares, Vec::new(), move |outcomes| {
-            complete.complete(settled(&outcomes).inspect(|_| records.mark_undone(&id)));
+            complete.complete(settled(&outcomes).inspect(|_| {
+                for id in &left {
+                    records.mark_undone(id);
+                }
+            }));
         });
         answer
     }
 
-    /// The calls whose changes taking `id` back takes back, newest first: `id` itself, and every
-    /// call made on its behalf ([`InvokeRequest::on_behalf_of`]), and on theirs, as the device
-    /// recorded them. Each is taken back where it ran, by its own invocation id.
-    fn steps_of(&self, id: InvocationId) -> Vec<Share> {
+    /// The calls recorded in `caller`'s workspace as work of the group `group`
+    /// ([`tilo_actions::WorkGroup::id`]), oldest first: an agent session's run.
+    fn of_group(&self, caller: &Caller, group: &str) -> Vec<Recorded> {
         let kept = self.kept();
-        let mut serving = std::collections::HashSet::from([id]);
+        kept.order
+            .iter()
+            .filter_map(|id| kept.by_id.get(id))
+            .filter(|recorded| {
+                recorded.workspace.as_deref() == caller.workspace()
+                    && recorded
+                        .request
+                        .context
+                        .as_ref()
+                        .and_then(|context| context.group.as_ref())
+                        .is_some_and(|work| work.id == group)
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// The calls whose changes taking `ids` back takes back, newest first: `ids` themselves, and
+    /// every call made on their behalf ([`InvokeRequest::on_behalf_of`]), and on theirs, as the
+    /// device recorded them. Each is taken back where it ran, by its own invocation id.
+    fn steps_of(&self, ids: &[InvocationId]) -> Vec<Share> {
+        let kept = self.kept();
+        let mut serving: std::collections::HashSet<InvocationId> = ids.iter().copied().collect();
         loop {
             let before = serving.len();
             for recorded in kept.by_id.values() {
@@ -1050,36 +1080,59 @@ pub fn take_back_run(
         if let Some(step) = step {
             arguments.insert("step".to_owned(), serde_json::Value::String(step));
         }
-        let request = InvokeRequest {
-            invocation: InvocationId::new(),
-            target: RemoteActionTarget {
-                provider: token,
-                address,
-            },
-            argument: InvokeArgument::Json(arguments),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
+        let target = RemoteActionTarget {
+            provider: token,
+            address,
         };
-        let following = Arc::clone(&provider);
-        let across = runs_as.clone();
-        provider.invoke(&runs_as, request).then(move |answered| {
-            match answered {
-                None => complete.complete(Err(ActionCallError::Unavailable {
-                    reason: "the record did not answer".into(),
-                })),
-                Some(Err(error)) => complete.complete(Err(error)),
-                // A record whose host keeps its history apart admits the verb before it runs it:
-                // the caller hears how taking it back went once the changes are gone.
-                Some(Ok(receipt)) => followed(following, across, receipt, complete),
-            }
-        });
+        asked_until_ended(
+            &(provider, runs_as),
+            InvokeRequest::plain(target, arguments),
+            complete,
+        );
     });
     answer
+}
+
+/// Take back what the invocation `record` changed through its record's `undo` on the workspace's
+/// invocations, or what every call of the work group `record` names changed: an agent session's
+/// run. The answer is the record's, once it ended.
+pub fn undo_recorded(
+    route: &Route,
+    record: &str,
+) -> Pending<Result<Option<serde_json::Value>, ActionCallError>> {
+    let target = RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: tilo_actions::ActionAddress::new(record.to_owned(), UNDO),
+    };
+    let (complete, answer) = pending();
+    asked_until_ended(
+        route,
+        InvokeRequest::plain(target, serde_json::Map::new()),
+        complete,
+    );
+    answer
+}
+
+/// Run `request` at `route`, and complete `complete` with how it went once it ended.
+fn asked_until_ended(
+    route: &Route,
+    request: InvokeRequest,
+    complete: Completer<Result<Option<serde_json::Value>, ActionCallError>>,
+) {
+    let (provider, runs_as) = route.clone();
+    let following = Arc::clone(&provider);
+    let across = runs_as.clone();
+    provider
+        .invoke(&runs_as, request)
+        .then(move |answered| match answered {
+            None => complete.complete(Err(ActionCallError::Unavailable {
+                reason: "the record did not answer".into(),
+            })),
+            Some(Err(error)) => complete.complete(Err(error)),
+            // A record whose host keeps its history apart admits the verb before it runs it:
+            // the caller hears how taking it back went once the changes are gone.
+            Some(Ok(receipt)) => followed(following, across, receipt, complete),
+        });
 }
 
 /// Complete `done` with how taking back `receipt` went, once what it admitted ended: a host that
@@ -1346,19 +1399,14 @@ mod tests {
 
     fn request() -> InvokeRequest {
         InvokeRequest {
-            invocation: InvocationId::new(),
-            target: RemoteActionTarget {
-                provider: "terminal".into(),
-                address: tilo_actions::ActionAddress::new("terminal", "run"),
-            },
             argument: InvokeArgument::Text("make".into()),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: None,
-            appearance: None,
-            signed: None,
+            ..InvokeRequest::plain(
+                RemoteActionTarget {
+                    provider: "terminal".into(),
+                    address: tilo_actions::ActionAddress::new("terminal", "run"),
+                },
+                serde_json::Map::new(),
+            )
         }
     }
 
