@@ -1,11 +1,13 @@
-//! A workspace's calendar entries as its members and their agents reach them. A change to an
-//! entry is written to the calendar server the entry is kept on, so it reaches outside: an
-//! agent's change asks its person, and goes ahead only once they allowed it, while the person's
-//! own change runs as they make it. What an agent may change at all is an entry it put in
+//! A workspace's calendar entries as its members and their agents reach them. An entry is kept by
+//! the calendar server, and what it keeps is changed there: putting an entry in, inviting people
+//! or deleting one is told to the server for good, so it reaches outside — a person's press asks
+//! them for it, and an agent's call asks its person. A field people change (the title, the
+//! categories) is set back by undo at the server too, so it is an undoable change: it runs as its
+//! caller makes it, by their grants. What an agent may change at all is an entry it put in
 //! itself: what its person entered (with another client of theirs, so the entry came from the
 //! server) and an invitation that reached the calendar another way are refused to it with why.
-//! It files its person's entry once they allowed it, except one its person invites others to,
-//! which filing would have the server write to.
+//! It files its person's entry, except one its person invites others to, which filing would have
+//! the server write to.
 //!
 //! The person's answer is the dispatch's: a call that asks reaches it ([`Asks`]) and waits there,
 //! and once the person allowed it the dispatch delivers it again as approved.
@@ -380,39 +382,40 @@ fn invitation(method: &str, uid: &str, organizer: &str, invited: &[&str]) -> Str
 tilo_test_env::scenario! {
     fn every_members_agent_asks_and_changes_only_what_it_put_in;
 
-    phase an_agents_change_asks_its_person_and_hers_runs_as_she_makes_it;
+    phase an_agents_filing_goes_by_its_grants_and_hers_runs_as_she_makes_it;
     {
         let ada = Ada::new();
         let board = ada.entry_from_her_server("board-7@example.org", "Board meeting", "", &[]);
         let assistant = assistant_of("ada").actor;
 
-        // Her assistant files what she entered herself only once she allowed it: with no
-        // answer, or her no, it stays as it was.
-        asked("filing her own entry", ada.call(&assistant, "set_categories", Ada::filing(&board, &["Cancelled"])));
-        assert_eq!(ada.asks.count(), 1, "the change asked her");
-        assert!(ada.categories(&board).is_empty(), "nothing she did not allow");
-        let done = ada.allowed(&assistant, "set_categories", Ada::filing(&board, &["Board", "Quarter"]));
-        assert!(matches!(done, Ok(InvokeOutcome::Done(_))), "{done:?}");
+        // Filing sets a field the server takes back, so it is undoable: her assistant files
+        // what she entered herself as its grants allow, and nobody is asked.
+        let filed = ada.call(&assistant, "set_categories", Ada::filing(&board, &["Board", "Quarter"]));
+        assert!(matches!(filed, Ok(InvokeOutcome::Done(_))), "{filed:?}");
         assert_eq!(ada.categories(&board), ["Board", "Quarter"]);
+        assert_eq!(ada.asks.count(), 0, "a field undo sets back asks nobody");
 
-        // Her own filing asks her nothing.
+        // Her own filing runs as she makes it.
         let hers = ada.call(&herself(), "set_categories", Ada::filing(&board, &["Board"]));
         assert!(matches!(hers, Ok(InvokeOutcome::Done(_))), "{hers:?}");
         assert_eq!(ada.categories(&board), ["Board"]);
-        assert_eq!(ada.asks.count(), 1, "her own change asks her nothing");
+        assert_eq!(ada.asks.count(), 0, "her own change asks her nothing");
 
-        // Bo's agent asks too: an agent's change reaches the server whoever's agent it is.
-        asked(
-            "another member's agent filing",
-            ada.call(&assistant_of("bo").actor, "set_categories", Ada::filing(&board, &["Bo's"])),
+        // Another member's agent acts by that member's grants, not her own: Bo edits this
+        // workspace, and what his agent files here lands as his change.
+        let bos = ada.call(
+            &assistant_of("bo").actor,
+            "set_categories",
+            Ada::filing(&board, &["Bo's"]),
         );
-        assert_eq!(ada.categories(&board), ["Board"]);
+        assert!(matches!(bos, Ok(InvokeOutcome::Done(_))), "{bos:?}");
+        assert_eq!(ada.categories(&board), ["Bo's"]);
 
         // Somebody who is no member of the workspace is nobody to its calendar.
         let stranger = Actor::from(MemberId::person("zed"));
         let theirs = ada.call(&stranger, "set_categories", Ada::filing(&board, &["Zed's"]));
         assert!(matches!(theirs, Ok(InvokeOutcome::Denied)), "{theirs:?}");
-        assert_eq!(ada.categories(&board), ["Board"]);
+        assert_eq!(ada.categories(&board), ["Bo's"]);
     }
 
     phase what_she_entered_herself_is_not_her_assistants_to_change_or_remove;
