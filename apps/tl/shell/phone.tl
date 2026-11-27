@@ -4,13 +4,15 @@
 /// workspaces, and opens an app from it; Back returns to the workspaces.
 ///
 /// It reads the phone's own device (`device.devices`, `device.apps`) and no layout: the workspace
-/// the person picked is this view's state, never a document, so nothing another device shows
-/// depends on it. Picking one switches the session's workspace as any other surface does
-/// (`session.switch_workspace`), so the apps the page lists are that workspace's; a press on one is
-/// the session's `session.open_app`, which the phone's host carries out, so an app entered here is
-/// entered the one way every surface enters one.
+/// the phone is in is the device's (`mine.workspace`, the person's last pick, else their own), never
+/// a document, so nothing another device shows depends on it, and the window, which joins that
+/// workspace, opens on it again. Picking one switches the session's workspace as any other surface
+/// does (`session.switch_workspace`), so the apps the page lists are that workspace's; a press on
+/// one is the session's `session.open_app`, which the phone's host carries out, so an app entered
+/// here is entered the one way every surface enters one. Whether the list shows is presentation:
+/// Back shows it, and leaves the phone in the workspace it was in.
 view phone() {
-    state picked: Text = ""
+    state listing: Bool = false
     state ticket: Text = ""
     let mine = device.devices
     page(full) {
@@ -36,7 +38,7 @@ view phone() {
                         on press: device.found(device.devices)
                     }
                 }
-            } else if picked == "" {
+            } else if listing or not mine.picked {
                 ui.Text("Workspaces", role: .title)
                 if mine.workspaces.is_empty() {
                     ui.EmptyState("No workspaces here yet", icon: .layers, inline: true)
@@ -45,15 +47,15 @@ view phone() {
                     ui.ListRow(w.name, icon: .layers) {
                         on activate: session
                             .switch_workspace(workspace: w.key)
-                            .then(set(picked, w.key))
+                            .then(set(listing, false))
                     }
                 }
             } else {
                 row(gap: .related, align: .center) {
                     ui.Button("Back", icon: .arrow_left, role: .plain, size: .small) {
-                        on press: set(picked, "")
+                        on press: set(listing, true)
                     }
-                    if let w = mine.workspaces.find(w -> w.key == picked) {
+                    if let w = mine.workspaces.find(w -> w.key == mine.workspace) {
                         ui.Text(w.name, role: .title)
                     }
                     spacer

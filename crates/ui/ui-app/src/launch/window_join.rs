@@ -69,6 +69,22 @@ pub(super) fn hand(connection: Result<tilo_ui_base::collaboration::HandedConnect
     WAS_HANDED.store(true, std::sync::atomic::Ordering::Release);
 }
 
+/// Set when the process handed its window a connection to another workspace
+/// ([`super::rejoin`]): the window gives its place, and the launch builds it again on that
+/// connection ([`take_rejoin`]).
+static REJOINS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(super) fn rejoin(connection: Result<tilo_ui_base::collaboration::HandedConnection, String>) {
+    hand(connection);
+    REJOINS.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Whether the window that just gave its place did so to join another workspace, once: the
+/// launch then builds it again, joined there ([`super::rejoin`]).
+pub(super) fn take_rejoin() -> bool {
+    REJOINS.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
 pub(super) fn was_handed() -> bool {
     WAS_HANDED.load(std::sync::atomic::Ordering::Acquire)
 }
@@ -189,9 +205,14 @@ fn arriving_window() -> App {
 static WINDOW_GIVES_PLACE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// Whether the window in front gives its place to the app (see [`WINDOW_GIVES_PLACE`]).
-pub(crate) fn window_gives_place() -> bool {
+/// Whether the window in front gives its place: to the app whose record arrived (see
+/// [`WINDOW_GIVES_PLACE`]), or to itself joined to another workspace (see [`REJOINS`]). A host
+/// that drives the window other than the launch's loop closes it then, and builds it again
+/// ([`super::LaunchSpec::rejoined_window`]).
+#[must_use]
+pub fn window_gives_place() -> bool {
     WINDOW_GIVES_PLACE.load(std::sync::atomic::Ordering::Acquire)
+        || REJOINS.load(std::sync::atomic::Ordering::Acquire)
 }
 
 /// Whether `args` open a live window of the native component `spec`.

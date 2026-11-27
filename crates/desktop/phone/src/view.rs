@@ -49,6 +49,11 @@ pub struct PhoneView {
     bundles: BTreeMap<String, Arc<Bundle>>,
     /// Where the apps' documents are kept on this device.
     storage: Option<PathBuf>,
+    /// The workspace the window joined, which the launch installed: `None` before anyone signed
+    /// in.
+    joined: Option<String>,
+    /// Whether the window asked to join another workspace, and gives its place.
+    rejoining: bool,
 }
 
 impl PhoneView {
@@ -111,6 +116,8 @@ impl PhoneView {
             to_open,
             bundles,
             storage,
+            joined: ui::process::environment().identity.workspace_id.clone(),
+            rejoining: false,
         };
         view.exchange();
         Ok(view)
@@ -130,6 +137,31 @@ impl PhoneView {
             }
         }
         any
+    }
+
+    /// Join the workspace the phone is in: once the person picked another, or signed in, the device
+    /// makes the window's connection to it and the window is built again, joined there
+    /// ([`ui::launch::rejoin`]), so what it keeps and the history it shows are that workspace's.
+    fn follow_workspace(&mut self) {
+        if self.rejoining {
+            return;
+        }
+        let Seen {
+            workspace, devices, ..
+        } = self.worker.seen();
+        let Some(workspace) = workspace.filter(|_| devices.signed_in) else {
+            return;
+        };
+        if self.joined.as_deref() == Some(workspace.as_str()) {
+            return;
+        }
+        self.rejoining = true;
+        let made = self
+            .worker
+            .files()
+            .ask(move |device| crate::window_connection(device, &workspace))
+            .and_then(|made| made);
+        ui::launch::rejoin(made.map_err(|why| crate::unkept(&why)));
     }
 
     /// Open what the shell asked to open, in the workspace the phone is in.
@@ -217,6 +249,7 @@ impl ui::widget::Decorator for PhoneView {
         if let Some(app) = self.worker.take_open() {
             *self.to_open.borrow_mut() = Some(app);
         }
+        self.follow_workspace();
         let opened = self.open_asked();
         let child = self.inner_mut().update(state, path);
         exchanged || opened || child || self.shell.owes()
@@ -361,6 +394,8 @@ impl Origin for PhoneOrigin {
         let devices = serde_json::json!({
             "signed_in": seen.devices.signed_in,
             "workspaces": seen.devices.workspaces,
+            "workspace": seen.workspace.clone().unwrap_or_default(),
+            "picked": seen.picked,
             "refused": seen.refused.unwrap_or_default(),
         });
         let apps = serde_json::json!({

@@ -268,6 +268,14 @@ pub struct DevicesReading {
     /// person reads them.
     #[serde(default)]
     pub workspaces: Vec<DeviceWorkspace>,
+    /// The workspace this device's shell is in, by its key: the one in
+    /// front. Empty before anyone signed in.
+    #[serde(default)]
+    pub workspace: String,
+    /// Whether the person picked that workspace: on a desktop the one in
+    /// front always is.
+    #[serde(default)]
+    pub picked: bool,
     /// Why the last login or revocation failed, in the words of whoever
     /// refused it; empty when it did not.
     #[serde(default)]

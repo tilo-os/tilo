@@ -121,6 +121,14 @@ pub struct DevicesView {
     /// The workspaces this device's shell lists, as the person reads them.
     #[serde(default)]
     pub workspaces: Vec<DeviceWorkspace>,
+    /// The workspace this device's shell is in, by its key: the one the person last picked here,
+    /// else their own. Empty before anyone signed in.
+    #[serde(default)]
+    pub workspace: String,
+    /// Whether the person picked that workspace on this device since it started, rather than it
+    /// being their own for want of a pick.
+    #[serde(default)]
+    pub picked: bool,
     /// Why the last login or revocation failed, in the words of whoever refused it; empty when it
     /// did not.
     #[serde(default)]

@@ -396,16 +396,24 @@ impl Served {
         // device, logged in.
         reading.signed_in = self.fabric.local_device_fabric_identity().is_some();
         reading.access = access(self.record.as_ref(), &reading.devices);
-        reading.workspaces = self.handle.read(|tree| {
-            tree.workspaces
+        (reading.workspaces, reading.workspace) = self.handle.read(|tree| {
+            let listed = tree
+                .workspaces
                 .iter()
                 .filter(|workspace| !workspace.id().is_nil())
                 .map(|workspace| DeviceWorkspace {
                     key: workspace.id().to_string(),
                     name: tilo_session_core::desktop::names::workspace(&workspace.name),
                 })
-                .collect()
+                .collect();
+            let front = tree
+                .active_workspace()
+                .filter(|front| !front.id().is_nil())
+                .map(|front| front.id().to_string())
+                .unwrap_or_default();
+            (listed, front)
         });
+        reading.picked = !reading.workspace.is_empty();
         reading.refused.clone_from(&self.refused.lock_recover());
         reading
     }
@@ -681,6 +689,8 @@ impl From<&DevicesReading> for DevicesView {
             asks: reading.asks.clone(),
             signed_in: reading.signed_in,
             workspaces: reading.workspaces.clone(),
+            workspace: reading.workspace.clone(),
+            picked: reading.picked,
             refused: reading.refused.clone(),
         }
     }
@@ -746,11 +756,13 @@ mod surface_tests {
                 "asks",
                 "chosen",
                 "devices",
+                "picked",
                 "playing",
                 "refused",
                 "routes",
                 "signed_in",
                 "sounds",
+                "workspace",
                 "workspaces",
             ]),
             "the view reads the devices, the keys that may act as the person, what plays, what \
@@ -821,6 +833,8 @@ mod surface_tests {
                 "asks",
                 "signed_in",
                 "workspaces",
+                "workspace",
+                "picked",
                 "refused"
             ]
         );

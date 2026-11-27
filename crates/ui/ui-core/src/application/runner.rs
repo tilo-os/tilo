@@ -34,6 +34,9 @@ pub struct NativeProcess {
     instance_id: InstanceId,
     default_resource: DocumentId,
     workspace_scoped: bool,
+    /// The workspace the launcher named when this host opened: a window joined to another
+    /// workspace since is built on a host of that one.
+    launched_workspace: Option<String>,
 }
 
 impl NativeProcess {
@@ -69,6 +72,7 @@ impl NativeProcess {
         author: MemberId,
     ) -> Result<Self, LaunchError> {
         let launcher_instance = environment.continuity_instance.is_some();
+        let launched_workspace = environment.workspace_id.clone();
         let resolved = environment.resolve(definition.app_id(), &author)?;
         let permissions = tilo_ui_base::permissions::SharedPermissions::new(resolved.permissions);
         if resolved.workspace_scoped {
@@ -100,6 +104,7 @@ impl NativeProcess {
                 DocumentId::workspace_default()
             },
             workspace_scoped: resolved.workspace_scoped,
+            launched_workspace,
         })
     }
 
@@ -200,9 +205,13 @@ impl NativeProcess {
             let mut slot = slot.borrow_mut();
             // A window that held a launch's place (its workspace's join)
             // wrote as no one; the window that replaces it writes as the
-            // person, on a host of theirs.
+            // person, on a host of theirs. A window its process joined to
+            // another workspace is built on a host of that workspace.
             let author = tilo_ui_base::collaboration::local_user_id();
-            if slot.as_ref().is_some_and(|host| host.host.author != author) {
+            let workspace = launched_workspace();
+            if slot.as_ref().is_some_and(|host| {
+                host.host.author != author || host.launched_workspace != workspace
+            }) {
                 *slot = None;
             }
             let host = match &mut *slot {
@@ -246,6 +255,18 @@ fn refuse_copy_while_joining(target: &LaunchTarget) -> Result<(), LaunchError> {
         return Err(LaunchError::ResourceNotHere);
     }
     Ok(())
+}
+
+/// `value` without surrounding space, when anything is left.
+fn trimmed(value: Option<&String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// The workspace the launcher names this process's windows in now.
+fn launched_workspace() -> Option<String> {
+    trimmed(crate::process::environment().identity.workspace_id.as_ref())
 }
 
 #[derive(Default)]
@@ -305,11 +326,6 @@ impl NativeProcessEnvironment {
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
         }
-        fn trimmed(value: Option<&String>) -> Option<String> {
-            value
-                .map(|value| value.trim().to_owned())
-                .filter(|value| !value.is_empty())
-        }
         // The workspace a window is in, and how it takes part there, are the launcher's: one in
         // another process writes them to the environment, and a process that is its own launcher
         // installs them with the connection it hands its window
@@ -320,7 +336,7 @@ impl NativeProcessEnvironment {
             surface: path(crate::app_surface::SURFACE_FILE_ENV),
             surface_hash: string(crate::app_surface::SURFACE_HASH_ENV),
             quick_app_id: string("QUICK_APP_ID"),
-            workspace_id: trimmed(launched.identity.workspace_id.as_ref()),
+            workspace_id: launched_workspace(),
             participation: trimmed(launched.identity.participation.as_ref()),
             continuity_instance: string("TILO_CONTINUITY_INSTANCE"),
             documents: None,

@@ -55,6 +55,8 @@ pub struct Seen {
     /// The workspace the phone is in, and its apps: the one the person picked, else their own.
     /// `None` before anyone signed in.
     pub workspace: Option<String>,
+    /// Whether the person picked that workspace on this phone since it started.
+    pub picked: bool,
     pub apps: Vec<App>,
     /// Why the last ask failed, in the words the person reads.
     pub refused: Option<String>,
@@ -331,6 +333,7 @@ fn serve(
         });
         // Before the person picks one, the phone is in their own workspace.
         let workspace = picked.clone().or_else(|| devices.own.clone());
+        let was_picked = picked.is_some() && devices.signed_in;
         if let Some(chosen) = workspace.as_deref().filter(|_| devices.signed_in) {
             register(&device, chosen, &mut watching);
             if let Err(error) = watching.catch_up(&device, chosen, notifier) {
@@ -356,6 +359,7 @@ fn serve(
         let mut now = seen.lock().unwrap_or_else(PoisonError::into_inner);
         let moved = now.devices != devices
             || now.workspace != workspace
+            || now.picked != was_picked
             || now.apps != apps
             || now.refused != refused;
         if moved {
@@ -363,6 +367,7 @@ fn serve(
                 generation: now.generation.wrapping_add(1),
                 devices,
                 workspace: workspace.clone(),
+                picked: was_picked,
                 apps,
                 refused,
                 apps_refused: now.apps_refused.take(),

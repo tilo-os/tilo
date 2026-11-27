@@ -101,28 +101,41 @@ fn hand_window_connection(worker: &worker::Worker) {
             let workspace = devices
                 .own
                 .ok_or("this phone holds no certificate of yours yet")?;
-            device
-                .window_connection(TILO_PHONE, &workspace)
-                .map(|connection| Some((connection, workspace)))
-                .map_err(|error| format!("{error:#}"))
+            window_connection(device, &workspace).map(Some)
         })
         .and_then(|made| made);
-    let handed = match made {
-        Ok(None) => return,
-        Ok(Some((connection, workspace))) => uuid::Uuid::parse_str(&workspace)
-            .map_err(|_| format!("{workspace} does not name a workspace"))
-            .map(|workspace| ui::collaboration::HandedConnection {
-                collaboration: connection.collaboration,
-                identity: connection.identity,
-                app: TILO_PHONE.to_owned(),
-                workspace,
-            }),
-        Err(why) => Err(why),
-    };
-    ui::launch::hand_connection(handed.map_err(|why| {
-        tracing::error!(why, "the phone's window has no connection to its workspace");
-        format!("Tilo couldn't connect to your workspace, so nothing here would be kept: {why}")
-    }));
+    match made {
+        Ok(None) => {}
+        Ok(Some(handed)) => ui::launch::hand_connection(Ok(handed)),
+        Err(why) => ui::launch::hand_connection(Err(unkept(&why))),
+    }
+}
+
+/// The connection the phone's window joins `workspace` over, made by the phone's `device`.
+///
+/// # Errors
+/// The device made none, or `workspace` names no workspace.
+pub(crate) fn window_connection(
+    device: &tilo_runtime::in_process::Device,
+    workspace: &str,
+) -> Result<ui::collaboration::HandedConnection, String> {
+    let connection = device
+        .window_connection(TILO_PHONE, workspace)
+        .map_err(|error| format!("{error:#}"))?;
+    let workspace = uuid::Uuid::parse_str(workspace)
+        .map_err(|_| format!("{workspace} does not name a workspace"))?;
+    Ok(ui::collaboration::HandedConnection {
+        collaboration: connection.collaboration,
+        identity: connection.identity,
+        app: TILO_PHONE.to_owned(),
+        workspace,
+    })
+}
+
+/// What the window says in place of itself when it has no connection to its workspace: `why`.
+pub(crate) fn unkept(why: &str) -> String {
+    tracing::error!(why, "the phone's window has no connection to its workspace");
+    format!("Tilo couldn't connect to your workspace, so nothing here would be kept: {why}")
 }
 
 /// The launch's [`start`]: a daemon that did not start is what the window shows, so the window

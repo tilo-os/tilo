@@ -99,26 +99,36 @@ fn a_signed_in_phone_opens_its_window_in_the_workspace() {
     );
     let kept = support::until(
         "the phone's window record is in the person's own workspace",
-        || {
-            let _ = window.poll_frame();
-            let reply = server
-                .runtime
-                .block_on(server.workspaces().own_resource_command(
-                    &own,
-                    PHONE,
-                    Command::Count {
-                        kind: tilolang_process::window::RESOURCE_TYPE.to_owned(),
-                        filters: Vec::new(),
-                    },
-                    Vec::new(),
-                ))?;
-            match reply {
-                Reply::Count(count) if count > 0 => Ok(count),
-                other => Err(format!("the server answers {other:?}")),
-            }
+        || match windows_in(&server, &own, &mut window)? {
+            0 => Err("the person's own workspace holds no window of the phone yet".to_owned()),
+            count => Ok(count),
         },
     );
     assert!(kept > 0);
+    assert_eq!(
+        windows_in(&server, &server.workspace, &mut window),
+        Ok(0),
+        "the window is in the person's own workspace, not in Studio, before they pick it"
+    );
+
+    let mut window = pick_studio(&server, window, &spec, &args);
+    let kept = support::until(
+        "the phone's window record is in Studio",
+        || match windows_in(&server, &server.workspace, &mut window)? {
+            0 => Err("Studio holds no window of the phone yet".to_owned()),
+            count => Ok(count),
+        },
+    );
+    assert!(kept > 0);
+    assert!(
+        named_rect(&window, "Back").is_some(),
+        "the window built again shows Studio's page, the pick kept: {}",
+        window.inspection_json().unwrap_or_default()
+    );
+    assert!(
+        !ui::launch::window_gives_place(),
+        "the window built again stays in Studio"
+    );
     // The phone shows its own page in place of the record its window was built on, and goes on
     // over the connection it was handed: there is no other for it to take.
     assert!(
@@ -130,4 +140,90 @@ fn a_signed_in_phone_opens_its_window_in_the_workspace() {
     drop(window);
     drop(laptop);
     drop(home);
+}
+
+/// Where the window shows the control or text a person reads as `name`, as `[x, y, width,
+/// height]`.
+fn named_rect(window: &ui::headless::Driver, name: &str) -> Option<[f64; 4]> {
+    window
+        .inspection()
+        .root
+        .nodes()
+        .into_iter()
+        .find(|node| {
+            node.rect[2] > 0.0
+                && node.rect[3] > 0.0
+                && node
+                    .semantics
+                    .as_ref()
+                    .is_some_and(|semantics| semantics.name.as_deref() == Some(name))
+        })
+        .map(|node| node.rect)
+}
+
+/// The person picks Studio on the phone's page: the window gives its place and is built again
+/// joined to Studio, as the launch builds it, so what it keeps from then on is Studio's. The pick
+/// is the device's, so the window built again shows Studio's page, not the list.
+fn pick_studio(
+    server: &Server,
+    mut window: ui::headless::Driver,
+    spec: &ui::launch::LaunchSpec,
+    args: &LaunchArgs,
+) -> ui::headless::Driver {
+    let studio = support::until("the phone lists Studio", || {
+        let _ = window.poll_frame();
+        named_rect(&window, server::WORKSPACE_NAME).ok_or_else(|| {
+            format!(
+                "no Studio row in {}",
+                window.inspection_json().unwrap_or_default()
+            )
+        })
+    });
+    window.tap_at(studio[0] + studio[2] / 2.0, studio[1] + studio[3] / 2.0);
+    support::until("the window gives its place to join Studio", || {
+        let _ = window.poll_frame();
+        if ui::launch::window_gives_place() {
+            Ok(())
+        } else {
+            Err("the window keeps its place".to_owned())
+        }
+    });
+    window.app_mut().close_components();
+    drop(window);
+    let app = spec
+        .rejoined_window(args)
+        .expect("the window gave its place to join another workspace")
+        .expect("the phone's window opens again, joined to Studio");
+    let window = ui::headless::Driver::showing(app, (412, 915));
+    assert_eq!(
+        ui::process::environment().identity.workspace_id.as_deref(),
+        Some(server.workspace.as_str()),
+        "the window built again takes part in Studio"
+    );
+    window
+}
+
+/// How many windows of the phone `workspace` keeps on the person's server, after the window's
+/// next frame.
+fn windows_in(
+    server: &Server,
+    workspace: &str,
+    window: &mut ui::headless::Driver,
+) -> Result<usize, String> {
+    let _ = window.poll_frame();
+    let reply = server
+        .runtime
+        .block_on(server.workspaces().own_resource_command(
+            workspace,
+            PHONE,
+            Command::Count {
+                kind: tilolang_process::window::RESOURCE_TYPE.to_owned(),
+                filters: Vec::new(),
+            },
+            Vec::new(),
+        ))?;
+    match reply {
+        Reply::Count(count) => Ok(count),
+        other => Err(format!("the server answers {other:?}")),
+    }
 }

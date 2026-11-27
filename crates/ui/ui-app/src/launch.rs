@@ -22,11 +22,11 @@ use capture::{capture_directory, capture_font_check, first_frame};
 #[cfg(all(feature = "native", feature = "model"))]
 mod window_join;
 #[cfg(all(feature = "native", feature = "model"))]
+pub use window_join::window_gives_place;
+#[cfg(all(feature = "native", feature = "model"))]
 use window_join::{Unbuilt, construct_native, dispatch_live, live_native, native_connection};
 #[cfg(all(feature = "native", feature = "model"))]
-pub(crate) use window_join::{
-    WindowBuild, dispatch_window, dispatch_window_arrived, window_gives_place,
-};
+pub(crate) use window_join::{WindowBuild, dispatch_window, dispatch_window_arrived};
 
 /// Hand the first window of this process, which is its own launcher, the connection it made for
 /// it, as a launcher in another process hands a process it starts its connections: a phone, which
@@ -40,13 +40,32 @@ pub(crate) use window_join::{
 /// records of this device alone.
 #[cfg(all(feature = "native", feature = "model"))]
 pub fn hand_connection(connection: Result<tilo_ui_base::collaboration::HandedConnection, String>) {
-    if let Ok(handed) = &connection {
+    install_handed(connection.as_ref().ok());
+    window_join::hand(connection);
+}
+
+/// Hand the window of this process, its own launcher, a connection to another workspace, made for
+/// it as [`hand_connection`] hands the first: the window gives its place, as one does whose record
+/// arrived with its join, and the launch builds it again on that connection, in the window, with
+/// the renderer and the loop it had. A phone does so when the person picks another workspace.
+///
+/// Called on the window's own thread, from its frame: the loop gives the place before it waits.
+#[cfg(all(feature = "native", feature = "model"))]
+pub fn rejoin(connection: Result<tilo_ui_base::collaboration::HandedConnection, String>) {
+    install_handed(connection.as_ref().ok());
+    window_join::rejoin(connection);
+}
+
+/// Install the workspace `handed` joins, and that the window takes part there as an author, as
+/// the launcher's.
+#[cfg(all(feature = "native", feature = "model"))]
+fn install_handed(handed: Option<&tilo_ui_base::collaboration::HandedConnection>) {
+    if let Some(handed) = handed {
         let mut launched = (*crate::process::environment()).clone();
         launched.identity.workspace_id = Some(handed.workspace.to_string());
         launched.identity.participation = Some("author".to_owned());
         crate::process::install_environment(launched);
     }
-    window_join::hand(connection);
 }
 
 /// Whether this process, its own launcher, handed its first window a connection
@@ -336,6 +355,19 @@ impl LaunchSpec {
     #[cfg(all(feature = "native", feature = "model"))]
     pub fn build_window(&self, args: &LaunchArgs) -> Result<crate::App, LaunchError> {
         window_join::build_window(self, args)
+    }
+
+    /// The live window `args` launch, built again after it gave its place to join the workspace
+    /// [`rejoin`] handed it a connection to, as the launch's own loop builds it then: `None`
+    /// when it gave no place to join another. What hosts the window other than that loop, a
+    /// headless one included, builds it here once the window it had is closed.
+    ///
+    /// # Errors
+    /// The window's join or its build failed.
+    #[cfg(all(feature = "native", feature = "model"))]
+    #[must_use]
+    pub fn rejoined_window(&self, args: &LaunchArgs) -> Option<Result<crate::App, LaunchError>> {
+        window_join::take_rejoin().then(|| window_join::build_window(self, args))
     }
 
     /// Scenario-specific default viewport. An explicit `--viewport` always wins over this callback.
@@ -705,64 +737,73 @@ fn run_parsed(
     if args.first_frame {
         return first_frame(spec, &args);
     }
-    // The app opens at once on what this device holds and joins its
-    // workspace in the background. A record not on this device yet arrives
-    // with the join: the window shows its loading state until it is told the
-    // join is over.
-    // A spare process bound to the app builds its first window as the session asked for it.
-    #[cfg(any(windows, target_os = "linux"))]
-    let dispatched = crate::window_link::build_first(|| {
-        dispatch_live(spec, &args, joining, |window| {
-            window.with_startup_renderer(renderer.take())
-        })
-    });
-    #[cfg(not(any(windows, target_os = "linux")))]
-    let dispatched =
-        crate::window_link::build_first(|| dispatch_live(spec, &args, joining, |window| window));
-    let Some(dispatched) = dispatched else {
-        return Ok(());
-    };
-    let app = match dispatched? {
-        DefinitionDispatch::Native(app) => app,
-        DefinitionDispatch::Headless(status) => {
-            tilo_startup_metrics::mark("headless-exit");
-            tilo_startup_metrics::dump();
-            std::process::exit(status);
-        }
-        DefinitionDispatch::Rendered(mut driver) => {
-            if let Some(out) = &args.shots {
-                driver.write_shot(out, args.window_bar);
-            } else if let Some(directory) = &args.responsive_matrix {
-                for (name, viewport) in RESPONSIVE_VIEWPORTS {
-                    if let Err(error) = driver.resize(viewport) {
-                        return Err(LaunchError::Operation(format!(
-                            "--responsive-matrix {name}: layout failed: {error}"
-                        )));
-                    }
-                    // The frame is the window a person sees a moment after the
-                    // resize, not the first one it could draw: a scroll thumb
-                    // still fading out, or a page still drawn from the bitmap
-                    // of the width it had before, is a difference about the
-                    // capture rather than about the layout. Equal frames are
-                    // only evidence when both were taken the same moment in.
-                    driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
-                    driver.render_png(&directory.join(format!("{}-{name}.png", spec.app_id)));
-                }
+    // A window that joins another workspace ([`rejoin`]) gives its place, and is built again here
+    // on the connection handed for it: the one way a window is built, in the window it had.
+    let mut joining = joining;
+    loop {
+        // The app opens at once on what this device holds and joins its
+        // workspace in the background. A record not on this device yet arrives
+        // with the join: the window shows its loading state until it is told the
+        // join is over.
+        // A spare process bound to the app builds its first window as the session asked for it.
+        #[cfg(any(windows, target_os = "linux"))]
+        let dispatched = crate::window_link::build_first(|| {
+            dispatch_live(spec, &args, joining.take(), |window| {
+                window.with_startup_renderer(renderer.take())
+            })
+        });
+        #[cfg(not(any(windows, target_os = "linux")))]
+        let dispatched = crate::window_link::build_first(|| {
+            dispatch_live(spec, &args, joining.take(), |window| window)
+        });
+        let Some(dispatched) = dispatched else {
+            return Ok(());
+        };
+        let app = match dispatched? {
+            DefinitionDispatch::Native(app) => app,
+            DefinitionDispatch::Headless(status) => {
+                tilo_startup_metrics::mark("headless-exit");
+                tilo_startup_metrics::dump();
+                std::process::exit(status);
             }
-            close_component_capture(&mut driver)?;
+            DefinitionDispatch::Rendered(mut driver) => {
+                if let Some(out) = &args.shots {
+                    driver.write_shot(out, args.window_bar);
+                } else if let Some(directory) = &args.responsive_matrix {
+                    for (name, viewport) in RESPONSIVE_VIEWPORTS {
+                        if let Err(error) = driver.resize(viewport) {
+                            return Err(LaunchError::Operation(format!(
+                                "--responsive-matrix {name}: layout failed: {error}"
+                            )));
+                        }
+                        // The frame is the window a person sees a moment after the
+                        // resize, not the first one it could draw: a scroll thumb
+                        // still fading out, or a page still drawn from the bitmap
+                        // of the width it had before, is a difference about the
+                        // capture rather than about the layout. Equal frames are
+                        // only evidence when both were taken the same moment in.
+                        driver.settle_for_capture(CAPTURE_SETTLE_BOUND);
+                        driver.render_png(&directory.join(format!("{}-{name}.png", spec.app_id)));
+                    }
+                }
+                close_component_capture(&mut driver)?;
+                return Ok(());
+            }
+            DefinitionDispatch::Audit(mut driver) => {
+                finish_component_audit(&mut driver, spec.app_id)?;
+                return Ok(());
+            }
+        };
+        #[cfg(any(windows, target_os = "linux"))]
+        let app = Box::new((*app).with_startup_renderer(renderer.take()));
+        let mut open = |pending| open_window(spec, &args, pending);
+        let open: &mut dyn FnMut(_) -> Option<App> = &mut open;
+        (*app).run_windows(|_| {}, Some(open));
+        if !window_join::take_rejoin() {
             return Ok(());
         }
-        DefinitionDispatch::Audit(mut driver) => {
-            finish_component_audit(&mut driver, spec.app_id)?;
-            return Ok(());
-        }
-    };
-    #[cfg(any(windows, target_os = "linux"))]
-    let app = Box::new((*app).with_startup_renderer(renderer.take()));
-    let mut open = |pending| open_window(spec, &args, pending);
-    let open: &mut dyn FnMut(_) -> Option<App> = &mut open;
-    (*app).run_windows(|_| {}, Some(open));
-    Ok(())
+        joining = window_join::start_join(spec, &args);
+    }
 }
 
 /// Start building the process's font database in the background (`text_render::prepare_font_database`):
