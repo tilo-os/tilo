@@ -78,6 +78,10 @@ fn two_displays_in_both_themes() {
             usize::from(whole_bar),
             "the display in use carries the whole bar, the other the compact one: {bar:?}"
         );
+        assert!(
+            said.iter().any(|text| text.contains("4:28 PM")),
+            "every display's bar keeps the time: {bar:?}"
+        );
         capture(&mut shell, name);
     }
 }

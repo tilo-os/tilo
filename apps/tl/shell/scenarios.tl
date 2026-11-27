@@ -2338,6 +2338,7 @@ scenario "two displays, the one in use" -> Layout {
     // bar and dock as it is made, so the captures show the whole bar this display carries.
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
+    stage(device.time, device.Time(clock: "4:28 PM"))
     let v = viewing
     v.style = "so.tilo.shell:strips"
     let a = root Layout
@@ -2370,6 +2371,7 @@ scenario "two displays, the other one" -> Layout {
     // bar and dock as it is made, so the captures show the compact bar this display carries.
     let s = shell
     s.dock_items.insert(DockItem(key: "notes", title: "Notes", icon: "file-text"))
+    stage(device.time, device.Time(clock: "4:28 PM"))
     let v = viewing
     v.style = "so.tilo.shell:strips"
     let a = root Layout
