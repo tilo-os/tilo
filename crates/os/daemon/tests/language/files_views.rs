@@ -250,3 +250,132 @@ fn a_zone_the_person_chooses_is_the_one_their_page_and_their_agent_read() {
         );
     });
 }
+
+/// The lines the window shows once it lists the place with `wanted` in it.
+async fn agent_shows(session: &Session<'_>, workspace: &str, wanted: &str) -> String {
+    let deadline = Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let lines = view(session, workspace).await;
+        if lines.contains(wanted) {
+            return lines;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the window never read {wanted:?}: {lines}",
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+/// The window goes to `place`, as a press of a place does.
+async fn goes_to(session: &Session<'_>, workspace: &str, place: &str) {
+    let (said, failed) = said(
+        &session
+            .tool(
+                workspace,
+                "tilo_do",
+                &json!({"path": "files#go", "args": {"place": place}}),
+            )
+            .await,
+    );
+    assert!(!failed, "the window goes to {place:?}: {said}");
+}
+
+/// A folder on this device is shown only once the person picks it: nothing of the machine's own
+/// folders is read before, and the folder the person picked reads with nothing beside it.
+#[test]
+fn a_folder_on_this_device_is_shown_only_once_the_person_picks_it() {
+    host::run_with(&["files"], |host| async move {
+        let workspace = host.workspace().to_owned();
+        let agent = host.agent();
+        let session = Session::Agent(&agent);
+        // The person's own files, and this machine's, are reached by no standing grant.
+        for place in ["~", "/etc"] {
+            goes_to(&session, &workspace, place).await;
+            let lines = view(&session, &workspace).await;
+            assert!(
+                lines.contains("Couldn’t open"),
+                "{place} is refused, and the window says so: {lines}",
+            );
+        }
+        // The workspace's own folder is no device path: it reads as it did.
+        goes_to(&session, &workspace, "").await;
+        let lines = view(&session, &workspace).await;
+        assert!(
+            !lines.contains("Couldn’t open"),
+            "the workspace's own folder reads: {lines}",
+        );
+
+        // The person picks a folder, and its files are shown; the folder beside it was never
+        // chosen and stays out of reach.
+        let picked = tempfile::tempdir().expect("a folder to pick");
+        std::fs::write(picked.path().join("in-the-pick.txt"), b"kept").expect("a file to pick");
+        let beside = tempfile::tempdir().expect("a folder beside it");
+        std::fs::write(beside.path().join("outside-the-pick.txt"), b"no")
+            .expect("a file beside it");
+        let reference = host
+            .daemon()
+            .keep_chosen_folder(&workspace, "so.tilo.file-explorer", picked.path(), false)
+            .expect("the person's pick is kept");
+        goes_to(&session, &workspace, &reference.to_string_lossy()).await;
+        let lines = agent_shows(&session, &workspace, "in-the-pick.txt").await;
+        assert!(!lines.contains("outside-the-pick"), "{lines}");
+
+        goes_to(&session, &workspace, &beside.path().to_string_lossy()).await;
+        let lines = view(&session, &workspace).await;
+        assert!(
+            lines.contains("Couldn’t open"),
+            "a folder the person never picked is refused: {lines}",
+        );
+        assert!(!lines.contains("outside-the-pick"), "{lines}");
+    });
+}
+
+/// A member the workspace does not let read its files sees nothing of them: the folder the person
+/// keeps is not on its window, and the window says why.
+#[test]
+fn a_member_the_workspace_lets_read_no_files_sees_nothing() {
+    host::run_with(&["files"], |host| async move {
+        let workspace = host.workspace().to_owned();
+        person_keeps_a_folder(&host).await;
+        // The person runs a turn as an agent of theirs, and the workspace refuses the agent
+        // Files' tree: what their own answer for an agent says.
+        let agent = host.turn_agent("viewer", "Files reader");
+        let owner = host.person().to_owned();
+        let tree = collab_types::document_node(
+            &workspace,
+            fs_protocol::tree::FILES_APP,
+            &fs_protocol::tree::document_id(),
+        );
+        let refused = tilo_action_policy::Grant::new(
+            "the-agent-reads-no-files",
+            tilo_action_policy::Grantee::agent("viewer", &owner),
+            tree,
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Deny,
+            tilo_action_policy::Grantee::person(&owner),
+        );
+        tilo_workspace_service::workspaces::fixtures::answer_grant(
+            host.daemon().workspaces(),
+            &workspace,
+            refused,
+        )
+        .await
+        .expect("the person refuses their agent Files");
+
+        let session = Session::Agent(&agent);
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let lines = view(&session, &workspace).await;
+            assert!(
+                !lines.contains(FOLDER),
+                "the agent reads none of the workspace's files: {lines}",
+            );
+            if lines.contains("Couldn’t open") || lines.contains("This folder is empty") {
+                break;
+            }
+            assert!(Instant::now() < deadline, "{lines}");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    });
+}

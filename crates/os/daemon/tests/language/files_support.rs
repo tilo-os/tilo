@@ -11,15 +11,16 @@ use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 
 use crate::language::host::{self, Host};
 
-/// An MCP session the tests act through: a key's, which names the workspace it acts in, and the
-/// device's own agent, which the daemon already scopes to its workspace.
+/// An MCP session the tests act through: a key's, which names the workspace it acts in, and an
+/// agent's — the device's own, or one the workspace's person runs a turn as — which the daemon
+/// already scopes to its workspace.
 #[derive(Clone, Copy)]
-pub enum Session<'a> {
+pub enum Session<'a, H = tilo_runtime::device::services::RuntimeActionProvider> {
     Key(&'a host::Key),
-    Agent(&'a host::Agent),
+    Agent(&'a host::Agent<H>),
 }
 
-impl Session<'_> {
+impl<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static> Session<'_, H> {
     /// The MCP tool `name` with `arguments`.
     pub async fn tool(&self, workspace: &str, name: &str, arguments: &Value) -> Value {
         let mut arguments = arguments.clone();
