@@ -544,26 +544,46 @@ fn a_window_open_on_a_computer_is_on_the_desktop_page_and_closes_from_there() {
     });
 }
 
-/// Whether `member`'s device places Tasks on the workspace's layout over its link: the layout's
-/// `place`, a host action of this computer's, run in the member's run as them.
-async fn places_tasks(member: &host::Member) -> Result<(), String> {
-    match member
+/// What `member`'s device is answered when it asks this computer's layout for `action` over its
+/// link: a host action of this computer's, run in the member's run as them.
+async fn asks_layout(
+    member: &host::Member,
+    action: &str,
+    args: &serde_json::Value,
+) -> Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionCallError> {
+    member
         .call(
             LAYOUT.0,
-            tilo_actions::ActionAddress::new(LAYOUT.1, "place"),
-            &json!({ "app": TASKS }),
+            tilo_actions::ActionAddress::new(LAYOUT.1, action),
+            args,
         )
         .await
-    {
-        Ok(tilo_actions::InvocationUpdate::Succeeded { .. }) => Ok(()),
-        other => Err(format!("{other:?}")),
-    }
+}
+
+/// Whether the layout read `member`'s device asks for is answered.
+async fn reads_layout(member: &host::Member) -> bool {
+    matches!(
+        asks_layout(member, "read", &json!({})).await,
+        Ok(tilo_actions::InvocationUpdate::Succeeded { .. })
+    )
+}
+
+/// Whether `answer` is this computer refusing the caller before the action ran: not permitted
+/// on their grants, or refused as a caller this computer runs nothing for.
+fn refused_here(
+    answer: &Result<tilo_actions::InvocationUpdate, tilo_actions::remote::ActionCallError>,
+) -> bool {
+    matches!(
+        answer,
+        Err(tilo_actions::remote::ActionCallError::NotPermitted
+            | tilo_actions::remote::ActionCallError::Refused { .. })
+    )
 }
 
 /// A person the workspace lets read and nothing more asks this computer to place a window on
-/// the layout: the host action runs in their run as them, decided on what the workspace grants
-/// them, so it is refused, though this computer could place it. A person the workspace lets
-/// change it is answered the same call.
+/// the layout: the host action runs in their run as them and is decided on what the workspace
+/// grants them, so it is refused before the layout is touched, though this computer could
+/// place it. What they may do, reading the layout, they are answered.
 #[test]
 fn a_members_run_changes_only_what_its_person_may() {
     host::run_with(&["tasks"], |host| async move {
@@ -575,18 +595,12 @@ fn a_members_run_changes_only_what_its_person_may() {
                 tilo_peer_state::join::Role::Viewer,
             )
             .await;
-        let refused = places_tasks(&viewer).await;
-        assert!(refused.is_err(), "a viewer places nothing: {refused:?}");
-        let (editor, _, _) = host
-            .other_member(
-                "Cy's laptop",
-                &workspace,
-                tilo_peer_state::join::Role::Editor,
-            )
-            .await;
-        places_tasks(&editor)
-            .await
-            .expect("an editor's run places the window");
+        let refused = asks_layout(&viewer, "place", &json!({ "app": TASKS })).await;
+        assert!(
+            refused_here(&refused),
+            "a viewer's place is refused on their grants: {refused:?}"
+        );
+        assert!(reads_layout(&viewer).await, "a viewer reads the layout");
     });
 }
 
@@ -695,8 +709,8 @@ fn a_revoked_browser_key_acts_on_no_desktop_page() {
     });
 }
 
-/// The workspace's owner removes a person: their device's run, which placed a window a moment
-/// before, places nothing from then on, and their browser opens no desktop page.
+/// The workspace's owner removes a person: their device's run, which read the layout a moment
+/// before, reads nothing from then on, and their browser opens no desktop page.
 #[test]
 fn a_removed_persons_keys_act_on_nothing_here() {
     host::run_with(&["shell", "tasks"], |host| async move {
@@ -708,9 +722,10 @@ fn a_removed_persons_keys_act_on_nothing_here() {
                 tilo_peer_state::join::Role::Editor,
             )
             .await;
-        places_tasks(&laptop)
-            .await
-            .expect("a member's run places the window");
+        assert!(
+            reads_layout(&laptop).await,
+            "a member's run reads the layout"
+        );
         let (_, browser) = host::certified(
             &root,
             root.verifying_key().to_bytes(),
@@ -718,10 +733,9 @@ fn a_removed_persons_keys_act_on_nothing_here() {
             tilo_user_identity::DeviceCapabilities::member(),
         );
         host.remove_person(&workspace, cert.user_public_key).await;
-        let refused = places_tasks(&laptop).await;
         assert!(
-            refused.is_err(),
-            "a removed person places nothing: {refused:?}"
+            !reads_layout(&laptop).await,
+            "a removed person reads nothing here"
         );
         let again = open(&daemon, &workspace, &host::linked(&browser, &workspace)).await;
         assert!(
@@ -755,7 +769,7 @@ fn a_certificate_the_persons_root_never_signed_opens_no_desktop_page() {
 
 /// An agent's key of another person of the workspace reaches no host action here: it acts for
 /// that person on their own devices, so neither its link nor a desktop page runs it here, though
-/// the person's own device places the window.
+/// the person's own device reads the layout.
 #[test]
 fn another_persons_agent_key_reaches_no_host_action() {
     host::run_with(&["shell", "tasks"], |host| async move {
@@ -776,10 +790,10 @@ fn another_persons_agent_key_reaches_no_host_action() {
             ),
         );
         let assistant = host.dial(key, &workspace).await;
-        let refused = places_tasks(&assistant).await;
+        let refused = asks_layout(&assistant, "read", &json!({})).await;
         assert!(
-            refused.is_err(),
-            "another person's agent places nothing: {refused:?}"
+            refused_here(&refused),
+            "another person's agent is refused here: {refused:?}"
         );
         let opened = open(&daemon, &workspace, &host::linked(&agent, &workspace)).await;
         assert!(
@@ -787,9 +801,10 @@ fn another_persons_agent_key_reaches_no_host_action() {
             "another person's agent opens no page: {:?}",
             opened.map(|page| page.page)
         );
-        places_tasks(&laptop)
-            .await
-            .expect("the person's own device places the window");
+        assert!(
+            reads_layout(&laptop).await,
+            "the person's own device reads the layout"
+        );
     });
 }
 
