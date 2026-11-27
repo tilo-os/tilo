@@ -7,6 +7,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 
 use crate::time::{Duration, Instant};
+// Who the person is, for whose words: the collab client's identity, which reads the identity
+// service its launcher bound, or, in a toolkit without Tilo's model, the process's own boundary,
+// which has no source and so no personal words.
+#[cfg(feature = "model")]
+use ::collaboration::local_identity as identity;
+#[cfg(not(feature = "model"))]
+use tilo_local_identity as identity;
 use tilo_ui_base::text_edit::word_at_caret;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
@@ -384,7 +391,7 @@ impl super::TextInput {
         // hold, the words already read — and the dictionary built from them —
         // stand, and reading them again would copy and decode the whole
         // dictionary for every frame of every field that has been used.
-        let generation = ::collaboration::local_identity::generation();
+        let generation = identity::generation();
         let view = crate::personal_dictionary::revision();
         if self.last_personal_spelling_read == Some((generation, view))
             && self.personal_spelling.as_ref().is_some_and(|personal| {
@@ -395,8 +402,7 @@ impl super::TextInput {
         }
         self.last_personal_spelling_read = Some((generation, view));
         let current = PersonalSpelling {
-            owner: ::collaboration::local_identity::load()
-                .map(|identity| identity.group_public_key),
+            owner: identity::load().map(|identity| identity.group_public_key),
             generation,
             configured: self.spell_language.clone(),
             language: self.spell_language.replace('_', "-").to_ascii_lowercase(),

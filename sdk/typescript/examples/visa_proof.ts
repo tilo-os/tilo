@@ -449,8 +449,8 @@ async function main(): Promise<number> {
   check(names.size === 1 && names.has("Jane Doe's agent"), `History names the agent by its key's name (${[...names]})`);
   const colours = new Set(byAgent.map((version) => actorOf(version).colour));
   check(colours.size === 1 && !colours.has(undefined), `in one colour (${[...colours]})`);
-  const people = new Set(byAgent.map((version) => actorOf(version).for));
-  check(people.size === 1 && !people.has(undefined), `each on behalf of the one person (${[...people]})`);
+  const onBehalfOf = new Set(byAgent.map((version) => actorOf(version).for));
+  check(onBehalfOf.size === 1 && !onBehalfOf.has(undefined), `each on behalf of the one person (${[...onBehalfOf]})`);
   const groups = new Map(byAgent.filter((version) => version.group).map((version) => [version.group, version.title]));
   say("   groups", JSON.stringify([...groups]));
   check(

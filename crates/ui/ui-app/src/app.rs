@@ -267,9 +267,13 @@ use crate::time::Duration;
 use crate::time::Instant;
 #[cfg(feature = "model")]
 use ::collaboration::ActionDirectoryRequest;
+#[cfg(feature = "model")]
 use ::collaboration::CollabEvent;
+#[cfg(feature = "model")]
 use ::collaboration::CollabRequest;
+#[cfg(feature = "model")]
 use ::collaboration::CollaborationManager;
+#[cfg(feature = "model")]
 use ::collaboration::PresencePayload;
 use taffy::{NodeId, TaffyTree};
 #[cfg(feature = "model")]

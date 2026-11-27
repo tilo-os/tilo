@@ -215,9 +215,9 @@ pub mod live_pictures;
 pub mod math;
 #[cfg(feature = "model")]
 pub mod operation_target;
-#[cfg(feature = "model")]
 #[cfg(all(feature = "local-daemons", feature = "model"))]
 pub mod own_photo;
+#[cfg(feature = "model")]
 pub mod owner_wake;
 pub mod passcode_keyboard;
 pub mod personal_dictionary;

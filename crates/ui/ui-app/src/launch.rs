@@ -818,7 +818,7 @@ fn run_parsed(
 /// Start building the process's font database in the background (`text_render::prepare_font_database`):
 /// only the database, so it neither shapes text nor touches the GPU the renderer preparation is
 /// opening.
-#[cfg(all(feature = "native", feature = "model"))]
+#[cfg(feature = "native")]
 fn prepare_font_database_beside() {
     let _ = crate::background::Background::current().spawn("font-database-prepare", || {
         tilo_startup_metrics::span(
