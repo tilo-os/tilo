@@ -234,6 +234,9 @@ pub(super) struct BrokerApi {
     /// The invocation changes the run had seen when it last observed, so
     /// a change between that observation and its next wait is not missed.
     seen: std::sync::Mutex<tokio::sync::watch::Receiver<u64>>,
+    /// Whether this is a shortcut's run: its steps are looked up among the
+    /// actions this device offers, whichever way the run was started.
+    running_shortcut: bool,
 }
 
 impl BrokerApi {
@@ -243,6 +246,7 @@ impl BrokerApi {
             state,
             origin: None,
             seen,
+            running_shortcut: false,
         }
     }
 
@@ -252,6 +256,7 @@ impl BrokerApi {
     ) -> Self {
         Self {
             origin,
+            running_shortcut: true,
             ..Self::new(state)
         }
     }
@@ -280,7 +285,7 @@ impl tilo_actions::remote::ActionProvider for BrokerApi {
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
         // A shortcut's run takes the steps this device offers: its saved steps were held to that
         // catalogue, and a step that reaches this device alone is still one this device runs.
-        if matches!(self.origin, Some(super::InvocationCaller::Shortcut(_))) {
+        if self.running_shortcut {
             return self.state.action_query_on_device(caller, &query);
         }
         self.state.action_query(caller, &query)
