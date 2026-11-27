@@ -387,15 +387,6 @@ fn snapshot_changed(device: &Device, name: &str, previous: &str) {
     }
 }
 
-/// The shell `device` runs is the installed one, as a person's device runs it. A session whose
-/// store holds no shell draws the build's own copy, which keeps its records in this session's
-/// memory and so reads none of the workspace's members: its bar names nobody by their face and
-/// marks no follower. The installed shell keeps its record in the workspace the person is in and
-/// reads who is in it through the device's daemon.
-fn run_the_installed_shell(device: &Device) {
-    crate::common::dev_apps::install_named(&device.store(), &["so.tilo.shell"]);
-}
-
 /// Drop the pictures kept under `name` and its band: a frame a run only looked apart from.
 fn discard(name: &str) {
     if let Some(path) = picture_at(name) {
@@ -440,7 +431,6 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
     let bob = Person::new("Bob Builder");
     let site = Site::start(&ada, "Studio");
     let mut ada_laptop = ada.device("Ada's laptop");
-    run_the_installed_shell(&ada_laptop);
     let hers = site.invite(ada.public, Role::Editor);
     ada_laptop.join(&hers);
     ada_laptop.wait_holding(&site.workspace);
@@ -458,7 +448,6 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
     // without waiting to listen, so Ada's bar is watched from before it could have said anything:
     // the arrival's four seconds are hers from the moment her session knows he is here.
     let mut bob_laptop = bob.device("Bob's laptop");
-    run_the_installed_shell(&bob_laptop);
     let theirs = site.invite(bob.public, Role::Editor);
     // What her bar draws with nobody come yet: the arrival's picture is taken apart from this one,
     // never from a frame still showing it.
@@ -599,7 +588,6 @@ fn an_unnamed_person_arriving_is_said_on_the_bar() {
     let someone = Person::new("");
     let site = Site::start(&ada, "Studio");
     let mut ada_laptop = ada.device("Ada's laptop");
-    run_the_installed_shell(&ada_laptop);
     let hers = site.invite(ada.public, Role::Editor);
     ada_laptop.join(&hers);
     ada_laptop.wait_holding(&site.workspace);
@@ -609,7 +597,6 @@ fn an_unnamed_person_arriving_is_said_on_the_bar() {
         choose_light(&ada_laptop);
     }
     let mut their_laptop = someone.device("A laptop");
-    run_the_installed_shell(&their_laptop);
     let invitation = site.invite(someone.public, Role::Editor);
     snapshot(&ada_laptop, "before-unnamed");
     their_laptop.begin(Some(&invitation));
