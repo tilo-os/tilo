@@ -505,24 +505,56 @@ fn tilo_do_without_a_desktop_is_answered_by_the_daemon() {
             ))
             .expect("the shell founds the person's first workspace");
 
+        // What the shell serves on the device's dispatch, as a desktop's seat serves it.
+        let board = echoing(offered(ASKS, "so.tilo.shell", "board/notes", "pin-note"));
+        let _served = runtime
+            .block_on(shell.provide(
+                ASKS,
+                &offered(ASKS, "so.tilo.shell", "board/notes", "pin-note"),
+                Arc::clone(&board) as _,
+            ))
+            .unwrap();
+
         // `tilo do`, as the person types it, with no desktop's socket anywhere.
         let daemon = [tilo_control::client::ControlSocket::Daemon(socket)];
-        let (mut out, mut err) = (Vec::new(), Vec::new());
-        let code = tilo_control::front::run(
-            &daemon,
-            "layout#read",
-            &[],
-            true,
-            &tilo_control::front::Spelling::tilo(),
-            &mut tilo_control::front::Io {
-                out: &mut out,
-                err: &mut err,
-            },
-        );
-        let (out, err) = (String::from_utf8_lossy(&out), String::from_utf8_lossy(&err));
+        let typed = |name: &str, words: &[&str]| {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
+            let code = tilo_control::front::run(
+                &daemon,
+                name,
+                &words,
+                true,
+                &tilo_control::front::Spelling::tilo(),
+                &mut tilo_control::front::Io {
+                    out: &mut out,
+                    err: &mut err,
+                },
+            );
+            (
+                code,
+                String::from_utf8_lossy(&out).into_owned(),
+                String::from_utf8_lossy(&err).into_owned(),
+            )
+        };
+        // The device's own action.
+        let (code, out, err) = typed("layout#read", &[]);
         assert_eq!(code, 0, "the daemon answers the person's call: {err}");
         let answered: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(answered["status"], "ok", "{out}");
+        // The shell's, listed and called at the same socket.
+        let (code, out, err) = typed("pin-note", &["echo=pinned by hand"]);
+        assert_eq!(code, 0, "tilo do reaches what the shell serves: {err}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&out).unwrap()["result"],
+            json!("pinned by hand"),
+            "{out}"
+        );
+        assert_eq!(
+            board.asked().len(),
+            1,
+            "the shell's provider answered the call"
+        );
         session.stop().unwrap();
     });
 }

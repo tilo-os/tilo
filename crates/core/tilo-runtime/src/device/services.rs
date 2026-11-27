@@ -6691,6 +6691,13 @@ fn certified_provider(provider: &str) -> bool {
 }
 
 fn on_this_device(caller: &Caller) -> Caller {
+    // The person on a connection the kernel says is their own account, on this device's own
+    // daemon, is this device's as their shell is: offered and answered what reaches this device
+    // alone, the providers their desktop serves on it among them. Any other run here is a caller
+    // this device does not vouch for.
+    if caller.is_own_connection() && !caller.is_system() && caller.device_public_key().is_none() {
+        return caller.clone();
+    }
     caller.clone().from_foreign_device(true)
 }
 
