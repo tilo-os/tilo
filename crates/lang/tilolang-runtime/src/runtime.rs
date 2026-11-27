@@ -1070,7 +1070,8 @@ impl Runtime {
     /// [`Runtime::invoke_admitted_through`] of a call the person made themselves with a press
     /// the dispatch attested on the system's own surfaces (a palette's row, a menu's item, a
     /// shortcut's key): their act, as a press in the app's window is. What its own code goes on
-    /// to call runs as theirs, though a rule that asks them first still waits for their yes.
+    /// to call runs as theirs, though what leaves the system, and what a rule asks them first
+    /// about, still waits for their yes.
     ///
     /// # Errors
     ///

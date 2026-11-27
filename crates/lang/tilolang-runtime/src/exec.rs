@@ -538,10 +538,13 @@ impl Core {
     }
 
     /// Whether `admission` answers the ask the authority made of `invoker`'s call `aref`: the
-    /// dispatch's always. A person's press answers what the code that led there asks, since they
-    /// pressed it, but a rule that asks them first waits for their yes on the system's confirm,
-    /// unless they held Shift and the action can be undone. Shift never skips the confirm of what
-    /// reaches outside, which nothing takes back.
+    /// dispatch's always. A person's press answers what the code that led there asks only when
+    /// undo takes the action back: what leaves the system, which nothing takes back, confirms
+    /// at the control first, the owner's own press included. A rule that asks them first waits
+    /// for their yes too, unless they held Shift; Shift is never the yes to what leaves.
+    ///
+    /// This is the one place a press's confirmation is decided, from the action's own contract
+    /// (its effect class), for every app alike.
     fn press_answers(
         &self,
         admission: Admission,
@@ -555,7 +558,7 @@ impl Core {
                 let undoable = self
                     .class_of(aref)
                     .is_some_and(|class| class != EffectClass::Outside);
-                (shift && undoable) || !self.rule_asks(invoker, aref)?
+                undoable && (shift || !self.rule_asks(invoker, aref)?)
             }
         })
     }
@@ -1378,10 +1381,10 @@ impl Core {
 
     /// [`Core::invoke_direct`] of the person `invoker`'s own press in their app's window, as one
     /// part of the act `gesture`: the person acting, so what the app's code goes on to call runs
-    /// as theirs, and the press answers what that code asks. It is not their answer to a rule
-    /// that asks them first ([`crate::Authority::asks_first`]): that waits for their yes on the
-    /// system's confirm, unless they held Shift (`shift`) and the action can be undone, where the
-    /// press itself is the yes.
+    /// as theirs, and the press answers what that code asks when undo takes the action back. An
+    /// action that leaves the system confirms first, Shift or not; a rule that asks them first
+    /// ([`crate::Authority::asks_first`]) waits for their yes too, unless they held Shift
+    /// (`shift`) and the action can be undone, where the press itself is the yes.
     ///
     /// # Errors
     ///
