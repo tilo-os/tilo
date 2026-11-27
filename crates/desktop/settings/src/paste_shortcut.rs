@@ -218,7 +218,7 @@ mod tests {
     fn host_window_app_ids_outside_tilo_grammar_are_kept() {
         for app_id in ["My Terminal", "/usr/bin/tool", "kitty"] {
             assert!(
-                !tilo_app_id::Grammar::CANONICAL.matches(app_id),
+                !tilo_member_types::Grammar::CANONICAL.matches(app_id),
                 "pinned fixture {app_id:?} must be refused by Grammar::CANONICAL"
             );
             assert!(

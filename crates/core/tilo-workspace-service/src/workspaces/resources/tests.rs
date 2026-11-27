@@ -181,14 +181,14 @@ fn a_document_with_a_long_id_is_kept_across_a_start() {
 }
 
 /// The person `person` as a stamp names its invoker.
-fn as_person(person: [u8; 32]) -> tilo_action_policy::Actor {
-    tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person(hex::encode(person)))
+fn as_person(person: [u8; 32]) -> tilo_member_types::Actor {
+    tilo_member_types::Actor::Member(tilo_member_types::MemberId::person(hex::encode(person)))
 }
 
 /// A platform write's stamp: `verb`, naming `actor` as its invoker, or who it acted for.
 fn platform_stamp(
     verb: &str,
-    actor: Option<tilo_action_policy::Actor>,
+    actor: Option<tilo_member_types::Actor>,
     acted_for: Option<[u8; 32]>,
 ) -> Stamp {
     Stamp {

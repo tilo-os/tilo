@@ -15,6 +15,7 @@ path = "src/lib.rs"
 # already happen (`app list`, the hourly `tilo-app-update` run, Flatpak's
 # own AppStream update); this crate only reads what they leave on disk.
 [dependencies]
+tilo-member-types.workspace = true
 # What each Tilo app's manifest says, for apps not on this device.
 fleet-catalogue = { package = "tilo-fleet-catalogue", version = "0.1.0", path = "../fleet-catalogue" }
 # The installed half: the registry of installed packages, each read through
@@ -26,7 +27,6 @@ collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 # The ids an app's records were kept under before it was renamed.
 tilo-action-policy = { path = "../action-policy" }
 # What an app is called: the one id type every surface naming it shares.
-tilo-app-id.workspace = true
 # File types, MIME types and URI schemes as the installed manifest claims
 # them, in the one vocabulary the desktop resolves opens with.
 desktop-policy = { package = "tilo-default-apps", path = "../../desktop/default-apps", default-features = false }

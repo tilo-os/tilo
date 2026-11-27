@@ -8,9 +8,10 @@
 
 use collab_types::history::verbs::HistoryView;
 use tilo_action_policy::{
-    Answer, Grant, Grantee, KindSet, MemberAccess, PersonId, Role, TreePath, WorkspacePolicy,
+    Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
 };
 use tilo_actions::ResourceSpec;
+use tilo_member_types::PersonId;
 use tilolang_runtime::rich::{Reference, RichValue};
 use tilolang_runtime::{Actor, InvokeOutcome, ResourceRef, Value};
 use tilolang_tilo::naming::resource_id;

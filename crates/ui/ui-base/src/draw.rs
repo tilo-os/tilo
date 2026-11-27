@@ -8,7 +8,7 @@ use crate::presence::PresenceKey;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use std::collections::HashMap;
-use tilo_action_policy::MemberId;
+use tilo_member_types::MemberId;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 

@@ -6,12 +6,11 @@
 //! for decide one invocation, and every host decides it the same way — the
 //! Linux broker over its app sockets and the page over the apps it runs.
 
-use tilo_action_policy::{
-    Acting, ActionKind, Actor, Answer, Authority, MemberAccess, MemberId, TreePath,
-};
+use tilo_action_policy::{ActionKind, Answer, Authority, MemberAccess, TreePath};
 use tilo_actions::remote::Caller;
-use tilo_app_id::AppId;
 use tilo_desktop_model::Workspace;
+use tilo_member_types::AppId;
+use tilo_member_types::{Acting, Actor, MemberId};
 
 use crate::published::{PublishedAction, PublishedSurface, canonical_document, published_node};
 
@@ -62,14 +61,14 @@ pub struct BrokerActor {
 impl BrokerActor {
     #[track_caller]
     #[must_use]
-    pub fn person(id: impl Into<tilo_action_policy::PersonId>) -> Self {
+    pub fn person(id: impl Into<tilo_member_types::PersonId>) -> Self {
         Self::of_actor(MemberId::person(id).into())
     }
 
     /// The agent `id` of `person`.
     #[track_caller]
     #[must_use]
-    pub fn agent(id: impl Into<String>, person: impl Into<tilo_action_policy::PersonId>) -> Self {
+    pub fn agent(id: impl Into<String>, person: impl Into<tilo_member_types::PersonId>) -> Self {
         Self::of_actor(MemberId::agent(id, person).into())
     }
 
@@ -294,7 +293,7 @@ impl BrokerActor {
 
     /// Who this actor is when it is not a person.
     #[must_use]
-    pub fn delegate(&self) -> Option<tilo_action_policy::Actor> {
+    pub fn delegate(&self) -> Option<tilo_member_types::Actor> {
         (!self.is_person()).then(|| self.actor.clone())
     }
 
@@ -312,7 +311,7 @@ impl BrokerActor {
         let acting = match (self.delegate(), &self.for_person) {
             (None, Some(person)) => Acting::person(person.clone()),
             (None, None) => Acting::from(self.actor.clone()),
-            (Some(tilo_action_policy::Actor::Member(member)), Some(person)) => {
+            (Some(tilo_member_types::Actor::Member(member)), Some(person)) => {
                 let delegate = Acting::member(member);
                 // The delegation a person's own device gives the agent it
                 // handed its session to is the acting's own.
@@ -323,12 +322,12 @@ impl BrokerActor {
                 };
                 delegate.acting_for(Acting::person(person.clone()))
             }
-            (Some(tilo_action_policy::Actor::Member(member)), None) => Acting::member(member),
+            (Some(tilo_member_types::Actor::Member(member)), None) => Acting::member(member),
             (
                 Some(
-                    actor @ (tilo_action_policy::Actor::Automation(_)
-                    | tilo_action_policy::Actor::App(_)
-                    | tilo_action_policy::Actor::Visitor(_)),
+                    actor @ (tilo_member_types::Actor::Automation(_)
+                    | tilo_member_types::Actor::App(_)
+                    | tilo_member_types::Actor::Visitor(_)),
                 ),
                 _,
             ) => Acting::from(actor),
@@ -570,7 +569,7 @@ mod tests {
     fn an_app_with_nobody_behind_it_acts_as_itself() {
         let caller = tilo_actions::remote::Caller::launched("so.tilo.discord").in_workspace("w");
         let actor = BrokerActor::for_caller(&caller);
-        let app = tilo_action_policy::Actor::App("so.tilo.discord".into());
+        let app = tilo_member_types::Actor::App("so.tilo.discord".into());
         assert_eq!(actor.actor(), &app);
         assert_eq!(actor.acting().by, app);
         assert_eq!(actor.shown().by, app);
@@ -581,7 +580,7 @@ mod tests {
         );
         assert_eq!(
             for_ada.actor(),
-            &tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person("ada")),
+            &tilo_member_types::Actor::Member(tilo_member_types::MemberId::person("ada")),
             "an app its person runs acts as them"
         );
     }
@@ -591,7 +590,7 @@ mod tests {
     #[test]
     fn only_the_app_itself_acts_as_the_app() {
         use tilo_actions::remote::Caller;
-        let discord = tilo_action_policy::Actor::App("so.tilo.discord".into());
+        let discord = tilo_member_types::Actor::App("so.tilo.discord".into());
         for (who, caller) in [
             ("a visitor", Caller::visitor([7; 32])),
             ("a bot", Caller::local_bot("b1")),
@@ -613,7 +612,7 @@ mod tests {
             );
             assert_eq!(
                 actor.actor(),
-                &tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person("")),
+                &tilo_member_types::Actor::Member(tilo_member_types::MemberId::person("")),
                 "{who} through an app acts for nobody"
             );
         }
@@ -633,7 +632,7 @@ mod tests {
             acting
                 .agent_session
                 .as_ref()
-                .map(tilo_action_policy::AgentSessionId::as_str),
+                .map(tilo_member_types::AgentSessionId::as_str),
             Some(session.as_str())
         );
     }

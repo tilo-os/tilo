@@ -1,5 +1,6 @@
 //! A person's Allow, Ask first and Deny for one of their agents.
 
+use tilo_action_policy::ActingPolicy as _;
 use tilo_action_policy::{
     ActionKind, Answer, Authority, Context, Grant, Grantee, KindSet, TreePath, WorkspacePolicy,
     agent_answers::{self, AnswerScope},
@@ -418,7 +419,8 @@ fn a_stop_denies_everything_and_no_grant_of_the_agent_lifts_it() {
     reason = "one person and another, writing for agents of one id, read as one scenario"
 )]
 fn a_person_answers_for_their_own_agent_without_governing() {
-    use tilo_action_policy::{Acting, Change};
+    use tilo_action_policy::Change;
+    use tilo_member_types::Acting;
     let mut members = std::collections::BTreeMap::new();
     members.insert(PERSON.to_owned(), tilo_action_policy::Role::Viewer);
     members.insert("b0b".to_owned(), tilo_action_policy::Role::Viewer);

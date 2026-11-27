@@ -4663,7 +4663,8 @@ fn hiding_a_tile_takes_it_off_the_panel() {
 #[test]
 fn the_overviews_shared_out_list_names_what_the_workspace_shares_and_taking_one_back_drops_it() {
     use collab_types::caps::{Access, CapOverride, Scope};
-    use tilo_action_policy::{Answer, Change, Grant, Grantee, KindSet, MemberId, TreePath};
+    use tilo_action_policy::{Answer, Change, Grant, Grantee, KindSet, TreePath};
+    use tilo_member_types::MemberId;
 
     let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();

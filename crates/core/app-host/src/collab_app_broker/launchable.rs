@@ -17,8 +17,8 @@ use std::time::Duration;
 use super::{PublishedAction, PublishedSurface};
 use crate::collab_broker::CrdtRoute;
 use crate::services::LaunchPlace;
-use tilo_action_policy::Actor;
 use tilo_lock::MutexRecover as _;
+use tilo_member_types::Actor;
 
 /// Prefix of the provider token naming a retained launchable surface.
 const LAUNCHABLE_PROVIDER: &str = "launch";
@@ -1016,7 +1016,7 @@ mod tests {
     /// change it makes records, and the invocation is the app's own to follow, nobody else's.
     #[test]
     fn an_app_acting_by_itself_is_the_author_of_its_own_call() {
-        let chat = tilo_app_id::AppId::new("so.tilo.chat");
+        let chat = tilo_member_types::AppId::new("so.tilo.chat");
         let ungranted = workspace();
         let (state, workspace_id) = broker(&ungranted);
         let mut stream = serve(&state, surface(7, &workspace_id));

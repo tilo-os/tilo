@@ -422,7 +422,7 @@ impl CodeEditor {
     }
 
     /// Stamps inserted runs with this author id (peer-attribution highlight).
-    pub fn set_local_author(&mut self, author: Option<tilo_action_policy::MemberId>) {
+    pub fn set_local_author(&mut self, author: Option<tilo_member_types::MemberId>) {
         self.inner.set_local_author(author);
     }
 
@@ -1355,7 +1355,7 @@ mod tests {
         // someone is writing now, so a run the document records as theirs is
         // drawn plain.
         {
-            use tilo_action_policy::MemberId;
+            use tilo_member_types::MemberId;
             use automerge::ObjType;
             use automerge::marks::{ExpandMark, Mark};
             use automerge::transaction::Transactable as _;

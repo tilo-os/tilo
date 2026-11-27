@@ -437,7 +437,7 @@ impl Person {
     #[must_use]
     pub fn named(name: impl Into<String>) -> Self {
         let name = name.into();
-        let identity = tilo_action_policy::PersonId::parse(&name).map_or_else(
+        let identity = tilo_member_types::PersonId::parse(&name).map_or_else(
             |_| tilo_actions::Actor::automation(name.clone()),
             |person| tilo_actions::MemberId::Person(person).into(),
         );

@@ -199,8 +199,8 @@ fn only_an_agent_of_the_workspace_starts_one_for_the_member_it_works_for() {
     // Grace's turn on Ada's agent names Ada too, who bounds it: the chain is no refusal, and
     // what it starts works for Grace.
     let mut through_ada = record.fork().as_acting(
-        tilo_action_policy::Acting::agent(MAIN, GRACE)
-            .acting_for(tilo_action_policy::Acting::person(GRACE))
+        tilo_member_types::Acting::agent(MAIN, GRACE)
+            .acting_for(tilo_member_types::Acting::person(GRACE))
             .agent_of(ADA),
     );
     through_ada

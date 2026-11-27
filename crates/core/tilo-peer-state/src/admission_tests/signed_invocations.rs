@@ -737,7 +737,7 @@ tilo_test_env::scenario! {
         // needs no carried call.
         let mut context = caller_context(
             tilo_actions::ActionInvoker::admitted(
-                &tilo_action_policy::Acting::handed_agent("scribe", owner),
+                &tilo_member_types::Acting::handed_agent("scribe", owner),
             ),
             &bc,
             &b,
@@ -753,8 +753,8 @@ tilo_test_env::scenario! {
     {
         let (mut receiver, _a, _ac, b, bc, now) = seeded_with(RevocationList::new());
         let owner = hex::encode(bc.user_public_key);
-        let scribe = tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::agent("scribe", owner.as_str()));
-        let stamp = |acting: Option<tilo_action_policy::Acting>| collab_types::Stamp {
+        let scribe = tilo_member_types::Actor::Member(tilo_member_types::MemberId::agent("scribe", owner.as_str()));
+        let stamp = |acting: Option<tilo_member_types::Acting>| collab_types::Stamp {
             verb: "set".into(),
             invoker: collab_types::Stamp::by(&scribe),
             acted_for: Some(owner.clone()),
@@ -773,15 +773,15 @@ tilo_test_env::scenario! {
         let refused = take(&mut receiver, unsaid, now).unwrap_err();
         assert!(refused.reason.contains("own certified key"), "{}", refused.reason);
         // One recording an agent with a key of its own, keeping no call it signed: refused.
-        let own_key = tilo_action_policy::Acting::agent("scribe", owner.as_str())
-            .acting_for(tilo_action_policy::Acting::person(owner.as_str()));
+        let own_key = tilo_member_types::Acting::agent("scribe", owner.as_str())
+            .acting_for(tilo_member_types::Acting::person(owner.as_str()));
         let unsigned = committed(&receiver, &b, &stamp(Some(own_key)).message(), "unsigned", now);
         let refused = take(&mut receiver, unsigned, now).unwrap_err();
         assert!(refused.reason.contains("own certified key"), "{}", refused.reason);
         assert!(value(&receiver).contains("seed"), "never applied: {}", value(&receiver));
         // One recording the agent its person's device handed its session to: the device answers
         // for it, and it is admitted.
-        let handed = tilo_action_policy::Acting::handed_agent("scribe", owner.clone());
+        let handed = tilo_member_types::Acting::handed_agent("scribe", owner.clone());
         let message = committed(&receiver, &b, &stamp(Some(handed)).message(), "handed", now);
         take(&mut receiver, message, now).expect("the device writes for the agent it runs");
         assert!(value(&receiver).contains("handed"), "{}", value(&receiver));
@@ -839,8 +839,8 @@ tilo_test_env::scenario! {
         // change names who made it and admission keeps it.
         let platform = collab_types::Stamp {
             verb: "$create".into(),
-            invoker: collab_types::Stamp::by(&tilo_action_policy::Actor::Member(
-                tilo_action_policy::MemberId::person(hex::encode(bc.user_public_key)),
+            invoker: collab_types::Stamp::by(&tilo_member_types::Actor::Member(
+                tilo_member_types::MemberId::person(hex::encode(bc.user_public_key)),
             )),
             invocation: "i1".into(),
             ..collab_types::Stamp::default()
@@ -1663,8 +1663,8 @@ tilo_test_env::scenario! {
             .unwrap();
         let agent = |id: &str| {
             tilo_actions::ActionInvoker::admitted(
-                &tilo_action_policy::Acting::agent(id, owner.as_str())
-                    .acting_for(tilo_action_policy::Acting::person(owner.as_str())),
+                &tilo_member_types::Acting::agent(id, owner.as_str())
+                    .acting_for(tilo_member_types::Acting::person(owner.as_str())),
             )
         };
         let put = |cert: &DeviceCert, key: &SigningKey| {

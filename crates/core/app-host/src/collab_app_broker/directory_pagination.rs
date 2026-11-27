@@ -26,7 +26,7 @@ pub(super) enum CursorRefusal {
 pub(super) struct DirectoryPagination(Rc<RefCell<HashMap<Vec<u8>, Continuation>>>);
 
 struct Continuation {
-    actor: tilo_action_policy::Actor,
+    actor: tilo_member_types::Actor,
     revision: String,
     needle: String,
     parent: String,

@@ -452,7 +452,7 @@ tilo_test_env::scenario! {
                 let commit = records.with_action_state(id, |doc, _, state| {
                     state.commit_for_save(
                         doc,
-                        &tilo_app_id::AppId::from(crate::application_test_support::APP),
+                        &tilo_member_types::AppId::from(crate::application_test_support::APP),
                     )
                 });
                 commit.unwrap();
@@ -746,7 +746,7 @@ tilo_test_env::scenario! {
         let commit = records.with_action_state(id, |doc, _, state| {
             state.commit_for_save(
                 doc,
-                &tilo_app_id::AppId::from(crate::application_test_support::APP),
+                &tilo_member_types::AppId::from(crate::application_test_support::APP),
             )
         });
         commit.unwrap();

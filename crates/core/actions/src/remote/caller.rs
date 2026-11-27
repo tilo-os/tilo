@@ -1,7 +1,7 @@
 //! Who sends a request: the acting tree a transport authenticated, and what
 //! it admitted them to.
 
-use tilo_action_policy::Acting;
+use tilo_member_types::Acting;
 
 use super::{ExecutionLease, within};
 
@@ -112,7 +112,7 @@ pub struct Caller {
     // The app this device's daemon launched and attests this connection's process to be
     // (`Self::launched`): the one caller that acts as that app itself. No payload, kept caller or
     // shell link carries it.
-    launched_app: Option<tilo_app_id::AppId>,
+    launched_app: Option<tilo_member_types::AppId>,
     // The person and records a placed device's certificate names (`Self::placed`): set only by
     // the transport that read them from the verified certificate.
     placed: Option<PlacedCaller>,
@@ -123,7 +123,7 @@ pub struct Caller {
 
 /// The key one of a person's calls came in on, beside the person it acts as
 /// ([`Caller::own_key`]): the member the key is known by everywhere a key is named
-/// ([`tilo_action_policy::key_agent_id`]) and the name the person gave it when they certified it.
+/// ([`tilo_member_types::key_agent_id`]) and the name the person gave it when they certified it.
 /// Display only: the call is the person's, decided by their grants and narrowed by the key's
 /// certificate, and it is never more.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -237,7 +237,7 @@ impl Caller {
     pub fn own_key(user_public_key: [u8; 32], device_public_key: [u8; 32], label: &str) -> Self {
         let mut caller = Self::authenticated(user_public_key, device_public_key);
         caller.key = Some(KeyCall {
-            id: tilo_action_policy::key_agent_id(&device_public_key),
+            id: tilo_member_types::key_agent_id(&device_public_key),
             label: label.trim().to_owned(),
         });
         caller
@@ -307,7 +307,7 @@ impl Caller {
     /// A person on a connection the provider admitted itself, by the id that
     /// admission established.
     #[must_use]
-    pub fn local_person(person: impl Into<tilo_action_policy::PersonId>) -> Self {
+    pub fn local_person(person: impl Into<tilo_member_types::PersonId>) -> Self {
         Self::admitted(Acting::person(person.into()), None)
     }
 
@@ -316,7 +316,7 @@ impl Caller {
     /// answer their CLI's own prompt gives on it to what the workspace asks them is their
     /// confirmation ([`crate::remote::asked`]). Making the call is never that answer.
     #[must_use]
-    pub fn own_person(person: impl Into<tilo_action_policy::PersonId>) -> Self {
+    pub fn own_person(person: impl Into<tilo_member_types::PersonId>) -> Self {
         Self {
             came: Came::OwnConnection,
             ..Self::admitted(Acting::person(person.into()), None)
@@ -391,7 +391,7 @@ impl Caller {
     #[track_caller]
     pub fn local_agent(
         agent_id: impl Into<String>,
-        person: impl Into<tilo_action_policy::PersonId>,
+        person: impl Into<tilo_member_types::PersonId>,
     ) -> Self {
         let person = person.into();
         Self::admitted(
@@ -424,14 +424,14 @@ impl Caller {
     pub fn launched(app_id: impl Into<String>) -> Self {
         let app: String = app_id.into();
         Self {
-            launched_app: Some(tilo_app_id::AppId::new(app.clone())),
+            launched_app: Some(tilo_member_types::AppId::new(app.clone())),
             ..Self::local_app(app)
         }
     }
 
     /// The app this device's daemon launched this caller's process as ([`Self::launched`]).
     #[must_use]
-    pub const fn launched_app(&self) -> Option<&tilo_app_id::AppId> {
+    pub const fn launched_app(&self) -> Option<&tilo_member_types::AppId> {
         self.launched_app.as_ref()
     }
 
@@ -476,8 +476,8 @@ impl Caller {
     /// so a conversation's own rules apply to them. Set only by the host that admitted the turn.
     #[must_use]
     pub fn agent_turn(
-        (agent_id, own): (impl Into<String>, impl Into<tilo_action_policy::PersonId>),
-        person: impl Into<tilo_action_policy::PersonId>,
+        (agent_id, own): (impl Into<String>, impl Into<tilo_member_types::PersonId>),
+        person: impl Into<tilo_member_types::PersonId>,
         turn: tilo_action_policy::turn::Turn,
     ) -> Self {
         let acting = Acting::agent(agent_id, own).acting_for(Acting::person(person));
@@ -608,7 +608,7 @@ impl Caller {
     /// payload. It names who the actor works for in presence and history; it
     /// widens nothing.
     #[must_use]
-    pub fn acting_for(mut self, person: impl Into<tilo_action_policy::PersonId>) -> Self {
+    pub fn acting_for(mut self, person: impl Into<tilo_member_types::PersonId>) -> Self {
         let person = person.into();
         self.acting = if let Some(app) = self.acting.app.clone() {
             Acting::person(person).in_app(app)
@@ -731,7 +731,7 @@ impl Caller {
     /// it answers, as its provider read it. The agent's own key still signs:
     /// every call is decided for `person`, bounded by the agent and by the
     /// person it belongs to ([`Acting::agent_of`],
-    /// [`tilo_action_policy::Acting::signed_by`]), so the turn does only what
+    /// [`tilo_member_types::Acting::signed_by`]), so the turn does only what
     /// both the agent and `person` may, whoever the agent belongs to. The
     /// workspace service must verify this binding.
     #[must_use]
@@ -752,7 +752,7 @@ impl Caller {
     /// Set only by the provider that runs the agent, from the agent's own record. Changes
     /// nothing for a caller that is not an agent.
     #[must_use]
-    pub fn agent_of(mut self, owner: impl Into<tilo_action_policy::PersonId>) -> Self {
+    pub fn agent_of(mut self, owner: impl Into<tilo_member_types::PersonId>) -> Self {
         if self.acting.is_agent() {
             self.acting = self.acting.agent_of(owner);
         }
@@ -882,7 +882,7 @@ impl Caller {
     /// very action; a caller that runs no Shortcut is left as it was.
     #[must_use]
     pub fn consented_in_advance(mut self) -> Self {
-        self.consented = matches!(self.acting.by, tilo_action_policy::Actor::Automation(_));
+        self.consented = matches!(self.acting.by, tilo_member_types::Actor::Automation(_));
         self
     }
 
@@ -894,7 +894,7 @@ impl Caller {
     }
 
     /// Who an action this caller invokes is decided for, as the transport
-    /// admitted it ([`tilo_action_policy::Acting`]).
+    /// admitted it ([`tilo_member_types::Acting`]).
     #[must_use]
     pub const fn acting(&self) -> &Acting {
         &self.acting
@@ -914,7 +914,7 @@ impl Caller {
         let (Some((agent, own)), Some(person)) = (
             self.acting
                 .member_id()
-                .and_then(tilo_action_policy::MemberId::as_agent),
+                .and_then(tilo_member_types::MemberId::as_agent),
             self.acting.acted_for_person(),
         ) else {
             return Vec::new();
@@ -1149,6 +1149,7 @@ mod tests {
     use super::{Caller, device_agent_id};
     use crate::context::{AGENT_SESSION_GROUP, ActionContext, WorkGroup};
     use crate::remote::{ActionAddress, InvokeArgument, InvokeRequest, RemoteActionTarget};
+    use tilo_action_policy::ActingPolicy as _;
 
     /// A call made in the session `session` names, in a work group of `kind`.
     fn call_in(kind: &str, session: Option<&str>) -> InvokeRequest {

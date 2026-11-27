@@ -14,6 +14,7 @@ name = "settings_store"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-member-types.workspace = true
 # The one canonical encoding of the settings surface the app publishes.
 tilo-canonical-json = { version = "0.1.0", path = "../../platform/tilo-canonical-json" }
 # A setting's verb is the setter its field's surface names (`set-<field>`).

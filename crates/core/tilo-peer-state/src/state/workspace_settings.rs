@@ -81,7 +81,7 @@ impl StatePeer {
                 self.governance_mut().put_member_grants(&grants, key, now)
             }
             SettingsChange::GrantSandbox { capability } => {
-                let by = tilo_action_policy::MemberId::person(person_of(&member)?.to_owned());
+                let by = tilo_member_types::MemberId::person(person_of(&member)?.to_owned());
                 grant_sandbox(&mut workspace, capability, by)?;
                 self.governance_mut()
                     .put_member_sandbox(&workspace.sandbox, key, now)
@@ -128,7 +128,7 @@ impl StatePeer {
 fn grant_sandbox(
     workspace: &mut tilo_desktop_model::Workspace,
     capability: &collab_types::caps::CapOverride,
-    by: tilo_action_policy::MemberId,
+    by: tilo_member_types::MemberId,
 ) -> Result<(), String> {
     if !capability.is_durable() {
         return Err(

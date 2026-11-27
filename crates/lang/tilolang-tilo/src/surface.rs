@@ -209,7 +209,7 @@ pub(crate) fn file_schema() -> Json {
 }
 
 /// The schema of a workspace's actor as a member names one: a person by their key, an agent by
-/// its id and the person it acts for ([`tilo_action_policy::MemberId`]).
+/// its id and the person it acts for ([`tilo_member_types::MemberId`]).
 fn actor_schema() -> Json {
     let text = || json!({"type": "string", "minLength": 1});
     json!({

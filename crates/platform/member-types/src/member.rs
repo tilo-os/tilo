@@ -1,9 +1,8 @@
 //! Who a workspace's people, agents and bots are, and who made a change.
 
-use serde::{Deserialize, Serialize};
-use tilo_app_id::AppId;
-
+use crate::app_id::AppId;
 use crate::person::PersonId;
+use serde::{Deserialize, Serialize};
 
 /// A person, agent or bot in a workspace.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -272,7 +271,7 @@ pub enum Actor {
     App(AppId),
     /// Someone with no identity in the workspace, by the key (hex) their page made and signs
     /// each call with: a visitor at a public entry. It is no member and holds only what the
-    /// workspace opens to any key ([`crate::Grantee::AnyKey`]).
+    /// workspace opens to any key (the policy's `Grantee::AnyKey`).
     Visitor(String),
 }
 
@@ -285,13 +284,6 @@ impl Actor {
     #[must_use]
     pub fn automation(id: impl Into<String>) -> Self {
         Self::Automation(AutomationId::new(id))
-    }
-
-    /// The grantee a grant names this actor by, when it is a member: an
-    /// automation is its owner's.
-    #[must_use]
-    pub fn grantee(&self) -> Option<crate::Grantee> {
-        Some(crate::granted_to(self.member_id()?))
     }
 
     /// The member, when the actor is one.
@@ -426,7 +418,7 @@ pub struct Acting {
     /// person: it carries the delegation a device gives its agents
     /// ([`Self::handed_preset`]). A claim the signer of a change makes,
     /// honoured only from the device of the person it acts for
-    /// ([`crate::MemberAccess::may_write_for`]).
+    /// (the policy's `MemberAccess::may_write_for`).
     #[serde(default)]
     pub handed: bool,
     /// Who this actor acted for. Empty for a person acting themselves.
@@ -587,7 +579,7 @@ impl Acting {
     /// Who made a change that names this acting as its invoker, signed by the
     /// device acting as `signer`: this tree, for the signer, so the signer's
     /// grants bound it. Only a member the signer may write for reaches here
-    /// ([`crate::MemberAccess::may_write_for`]): the signer's own person, or an
+    /// (the policy's `MemberAccess::may_write_for`): the signer's own person, or an
     /// agent it runs. A handed agent keeps its delegation from a device of the
     /// person it acts for; a device that is not that person's own hands nothing on.
     #[must_use]

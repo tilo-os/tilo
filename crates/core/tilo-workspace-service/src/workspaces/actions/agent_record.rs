@@ -10,13 +10,14 @@
 //! this device's write, as any record of a kind its app declares is.
 
 use serde_json::{Map, Value, json};
-use tilo_action_policy::{Acting, Answer, MemberAccess, TreePath};
+use tilo_action_policy::{Answer, MemberAccess, TreePath};
 use tilo_actions::remote::{
     ActionCallError, Caller, CatalogueRow, InvokeArgument, InvokeRequest, WORKSPACE_AGENT_CHANGES,
     WORKSPACE_AGENT_CREATE, WORKSPACE_AGENT_DELETE, WORKSPACE_AGENT_UPDATE,
     workspace_agent_effects, workspace_governance_operation,
 };
 use tilo_actions::{ActionKind, ActionParam, ParamType};
+use tilo_member_types::Acting;
 use tilo_resource::{ActionDecl, Invoke, Replica, Resource as _};
 use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents};
@@ -394,7 +395,7 @@ impl Workspaces {
             return false;
         };
         let own = self.signing_device().cert.user_public_key;
-        match tilo_action_policy::PersonId::parse(person) {
+        match tilo_member_types::PersonId::parse(person) {
             Ok(person) => person.root() == Some(own),
             Err(error) => {
                 tracing::warn!(%error, "an agent's person is not a bare root key");

@@ -64,8 +64,8 @@ async fn a_record_write_fires_the_shortcut_watching_it_once() {
                     },
                     stamp: Stamp {
                         verb: "$create".into(),
-                        invoker: Stamp::by(&tilo_action_policy::Actor::Member(
-                            tilo_action_policy::MemberId::person(hex::encode(cert.user_public_key)),
+                        invoker: Stamp::by(&tilo_member_types::Actor::Member(
+                            tilo_member_types::MemberId::person(hex::encode(cert.user_public_key)),
                         )),
                         invocation: id.into(),
                         ..Stamp::default()
@@ -129,8 +129,8 @@ async fn a_record_written_right_after_its_shortcut_is_saved_fires_it() {
                 },
                 stamp: Stamp {
                     verb: "$create".into(),
-                    invoker: Stamp::by(&tilo_action_policy::Actor::Member(
-                        tilo_action_policy::MemberId::person(hex::encode(cert.user_public_key)),
+                    invoker: Stamp::by(&tilo_member_types::Actor::Member(
+                        tilo_member_types::MemberId::person(hex::encode(cert.user_public_key)),
                     )),
                     invocation: "i-1".into(),
                     ..Stamp::default()
@@ -342,8 +342,8 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
     reason = "one scenario, end to end, reads as one test"
 )]
 async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answer() {
-    use tilo_action_policy::{Actor as Who, MemberId};
     use tilo_app_host::agents::triggered;
+    use tilo_member_types::{Actor as Who, MemberId};
     use tilo_workspace_service::work::Where;
 
     const CHAT: &str = "so.tilo.chat";
@@ -459,7 +459,7 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     // names its member as every mark does (`MemberId::mark_value`).
     let rich = |words: &str, mention: bool| {
         let marks = if mention {
-            let value = tilo_action_policy::MemberId::agent("scout", owner.as_str()).mark_value();
+            let value = tilo_member_types::MemberId::agent("scout", owner.as_str()).mark_value();
             json!([{"start": 0, "end": 5, "name": "mention", "value": {"Str": value}}])
         } else {
             json!([])
@@ -691,9 +691,9 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
     reason = "one scenario, end to end, reads as one test"
 )]
 async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
-    use tilo_action_policy::Actor as Who;
     use tilo_app_host::agents::triggered;
-    use tilo_app_id::AppId;
+    use tilo_member_types::Actor as Who;
+    use tilo_member_types::AppId;
     use tilo_resource_store::Stamp;
     use tilo_workspace_service::work::Where;
 
@@ -932,8 +932,8 @@ async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
     reason = "one scenario, end to end, reads as one test"
 )]
 async fn an_agents_new_mail_trigger_ignores_its_own_sent_mail_and_a_copy() {
-    use tilo_action_policy::Actor as Who;
-    use tilo_app_id::AppId;
+    use tilo_member_types::Actor as Who;
+    use tilo_member_types::AppId;
     use tilo_resource_store::Stamp;
 
     const MAIL: &str = "so.tilo.mail";
@@ -1140,8 +1140,8 @@ async fn an_agents_new_mail_trigger_ignores_its_own_sent_mail_and_a_copy() {
 async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_agents_own_write() {
     use collab_types::store::Resource;
     use collab_types::store::wire::{Command, Edit};
-    use tilo_action_policy::{Actor as Who, MemberId};
     use tilo_app_host::agents::triggered;
+    use tilo_member_types::{Actor as Who, MemberId};
     use tilo_resource_store::Stamp;
     use tilo_workspace_service::agent_shortcuts::{CHAT, MESSAGE, MODERATION};
     use tilo_workspace_service::work::Where;
@@ -1404,7 +1404,7 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
 async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
     use collab_types::store::wire::{Command, Edit};
     use collab_types::store::{Cell, Resource, Value};
-    use tilo_action_policy::{Actor as Who, MemberId};
+    use tilo_member_types::{Actor as Who, MemberId};
     use tilo_resource_store::Stamp;
     use tilo_workspace_agent::{WorkspaceAgents, workspace_agents};
     use tilo_workspace_service::work::Where;

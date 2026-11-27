@@ -2446,7 +2446,7 @@ mod shipped_access_tests {
         let caps = CapabilityFile::load(
             &path,
             ME,
-            vec![tilo_action_policy::MemberId::Person(
+            vec![tilo_member_types::MemberId::Person(
                 collab_types::PersonId::parse("local").unwrap(),
             )],
         )

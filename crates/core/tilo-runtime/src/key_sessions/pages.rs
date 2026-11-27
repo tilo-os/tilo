@@ -408,8 +408,8 @@ impl Inner {
             tilo_clock::unix_now_ns(),
         )
         .map_err(|error| unavailable(format!("the act's signed call does not check: {error}")))?;
-        let person = tilo_action_policy::MemberId::person(hex::encode(cert.user_public_key));
-        Ok(collab_types::Stamp::by(&tilo_action_policy::Actor::member(
+        let person = tilo_member_types::MemberId::person(hex::encode(cert.user_public_key));
+        Ok(collab_types::Stamp::by(&tilo_member_types::Actor::member(
             person,
         )))
     }

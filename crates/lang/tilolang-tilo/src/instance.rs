@@ -60,7 +60,7 @@ use crate::runtime::{
 use crate::upgrade::Upgrade;
 use facts::Facts;
 use rows::ListRows;
-use tilo_action_policy::PersonId;
+use tilo_member_types::PersonId;
 use wire::Convert;
 
 /// How long a migration that waits for its turn waits before it is asked for again, in seconds.

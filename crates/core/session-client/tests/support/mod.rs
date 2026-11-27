@@ -746,7 +746,7 @@ pub fn commit_edit(
         ..tilo_actions::ActionContext::for_resource(kind, kind, kind)
     }
     .with_invoker(tilo_actions::ActionInvoker::person(
-        tilo_action_policy::PersonId::from_root(person),
+        tilo_member_types::PersonId::from_root(person),
     ));
     let message = context.change_message().expect("a field edit names itself");
     doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));

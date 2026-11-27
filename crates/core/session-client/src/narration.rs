@@ -309,7 +309,7 @@ mod tests {
             assert_eq!(admitted.actor, for_its_person(hex::encode(stand_in)));
             // The run of a workspace's agent is that agent: named and coloured as its face is.
             let mut named = present.clone();
-            named[0].member = Some(tilo_action_policy::MemberId::agent(
+            named[0].member = Some(tilo_member_types::MemberId::agent(
                 "claude-code-0a1b2c3d4e",
                 hex::encode(other),
             ));

@@ -37,10 +37,8 @@ pub mod edits;
 pub mod entry;
 mod grant;
 mod kind;
-mod member;
 mod member_access;
 mod path;
-mod person;
 mod policy_edit;
 mod readers;
 pub mod reading;
@@ -49,7 +47,9 @@ pub mod share;
 pub mod turn;
 mod workspace;
 
-pub use acting::{Invocation, admit_invocation, answer_at, asker_of, granted_to};
+pub use acting::{
+    ActingPolicy, Invocation, admit_invocation, answer_at, asker_of, granted_to, grantee_of,
+};
 pub use admission::{Admission, Asker, Invoked, Reach, Refused, admit};
 pub use content::{ContentLimit, ContentPolicy, KeptLimits, Raises};
 pub use decide::{Authority, Basis, Cap, Decision, Effective, Party, Refuser, Verdict, decide};
@@ -81,13 +81,8 @@ pub fn session_answers<'g>(
 
 pub use grant::{Answer, Context, Grant, GrantId, Grantee, Lifetime, OFFERED_SPAN_MS, Role};
 pub use kind::{ActionKind, KindSet};
-pub use member::{
-    Acting, Actor, AgentSessionId, AutomationId, DIRECT_CONVERSATION_PREFIX, MemberId, ResourceId,
-    identity_color, key_agent_id, key_of_agent,
-};
 pub use member_access::MemberAccess;
 pub use path::{Level, PathError, Segment, Specificity, TreePath};
-pub use person::{PersonId, PersonIdError};
 pub use policy_edit::{PolicyEdit, PresetMutationError, sort_presets, until_secs};
 pub use readers::ReaderRule;
 pub use roles::{Preset, PresetError, Rule};

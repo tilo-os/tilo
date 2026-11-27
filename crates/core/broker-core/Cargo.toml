@@ -7,11 +7,11 @@ publish.workspace = true
 description = "The action broker's session-facing half on every host: what a step is taken by, the steps a host serves, the receipts a caller reads, and the route an app's traffic is addressed on."
 
 [dependencies]
+tilo-member-types.workspace = true
 tilo-action-services = { version = "0.1.0", path = "../action-services" }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 tilo-actions = { version = "0.1.0", path = "../actions" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
-tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 tilo-desktop-model = { version = "0.1.0", path = "../../desktop/desktop-model" }
 # The single home of a channel id's encoding, and the channel types it names.
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }

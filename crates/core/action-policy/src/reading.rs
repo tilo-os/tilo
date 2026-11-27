@@ -35,12 +35,14 @@ pub fn published_node(workspace: &str, resource: &str) -> Option<TreePath> {
 #[must_use]
 pub fn reading_grant_id(grantee: &Grantee, node: &TreePath) -> GrantId {
     let who = match grantee {
-        Grantee::Member(crate::MemberId::Person(person)) => format!("person:{}", person.as_str()),
-        Grantee::Member(crate::MemberId::Agent { id, person }) => format!(
+        Grantee::Member(tilo_member_types::MemberId::Person(person)) => {
+            format!("person:{}", person.as_str())
+        }
+        Grantee::Member(tilo_member_types::MemberId::Agent { id, person }) => format!(
             "agent:{}",
             crate::agent_answers::agent_key(id, person.as_str())
         ),
-        Grantee::Member(crate::MemberId::Bot(bot)) => format!("bot:{bot}"),
+        Grantee::Member(tilo_member_types::MemberId::Bot(bot)) => format!("bot:{bot}"),
         Grantee::Role(role) => format!("role:{}", role.key()),
         Grantee::CustomRole(role) => format!("custom-role:{role}"),
         Grantee::App(app) => format!("app:{app}"),

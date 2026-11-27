@@ -9,7 +9,7 @@
 //! changes a history or a feed of them reads.
 
 use tilo_action_policy::roles::governance;
-use tilo_action_policy::{Actor, MemberId, PersonId};
+use tilo_member_types::{Actor, MemberId, PersonId};
 use tilo_peer_state::join::Role;
 
 use super::tests::{guest_device, hosting_device, test_host};

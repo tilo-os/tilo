@@ -335,7 +335,7 @@ impl Workspaces {
     pub async fn granted(
         &self,
         workspace: &str,
-        agent: &tilo_action_policy::MemberId,
+        agent: &tilo_member_types::MemberId,
         node: &TreePath,
     ) -> bool {
         self.granted_answer(workspace, agent, node).await == Some(Answer::Allow)
@@ -347,7 +347,7 @@ impl Workspaces {
     pub async fn granted_answer(
         &self,
         workspace: &str,
-        agent: &tilo_action_policy::MemberId,
+        agent: &tilo_member_types::MemberId,
         node: &TreePath,
     ) -> Option<Answer> {
         let policy = self.policy_of(workspace).await?;

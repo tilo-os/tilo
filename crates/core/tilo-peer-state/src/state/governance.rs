@@ -2018,7 +2018,7 @@ impl PeerGovernanceMut<'_> {
 /// thing that proposed them. Its own request names it.
 fn joined_entry(cert: &DeviceCert, request_id: [u8; 32]) -> super::ActionStamp {
     let person = |root: [u8; 32]| {
-        tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person(hex::encode(root)))
+        tilo_member_types::Actor::Member(tilo_member_types::MemberId::person(hex::encode(root)))
     };
     // The entry proposed them, and it names no person: the stamp suggests
     // nobody.
@@ -2036,7 +2036,7 @@ fn joined_entry(cert: &DeviceCert, request_id: [u8; 32]) -> super::ActionStamp {
 /// signatures names the same one.
 fn joined(redemption: &crate::join::VerifiedRedemption) -> super::ActionStamp {
     let person = |root: [u8; 32]| {
-        tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person(hex::encode(root)))
+        tilo_member_types::Actor::Member(tilo_member_types::MemberId::person(hex::encode(root)))
     };
     let join = redemption.join();
     let inviter = join.inviter().map_or_else(

@@ -1334,7 +1334,7 @@ mod named_caller_tests {
         let mut wire = serde_json::to_value(Caller::local_app("so.tilo.chat").kept())
             .expect("a kept caller is written");
         wire["acting"]["for"] =
-            serde_json::to_value(vec![tilo_action_policy::Acting::person(person.clone())])
+            serde_json::to_value(vec![tilo_member_types::Acting::person(person.clone())])
                 .expect("an acting is written");
         let crafted: KeptCaller = serde_json::from_value(wire).expect("the link reads it");
         let refused = super::named_caller(crafted, &device)

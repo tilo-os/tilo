@@ -7,7 +7,7 @@ use tilo_sort::CompactSort as _;
 use tilo_ui_base::i18n::widget_text;
 
 use crate::widget::autocomplete::Suggestion;
-use tilo_action_policy::MemberId;
+use tilo_member_types::MemberId;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::text_match::FieldWeight;
 use tilo_ui_base::tokens::PresenceHue;
@@ -240,7 +240,7 @@ mod tests {
             let mut presence = PresenceCtx::empty();
             presence.set_display_name(MemberId::person("u_ada"), "Ada");
             presence.set_presence_hue(MemberId::person("u_ada"), PresenceHue::Violet);
-            let announced = presence.hue_for(&tilo_action_policy::MemberId::person("u_ada"));
+            let announced = presence.hue_for(&tilo_member_types::MemberId::person("u_ada"));
             assert_ne!(
                 announced,
                 PresenceHue::of_identity("u_ada"),
@@ -286,7 +286,7 @@ mod tests {
 #[cfg(test)]
 mod roster_tests {
     use super::*;
-    use tilo_action_policy::MemberId;
+    use tilo_member_types::MemberId;
 
     #[test]
     fn the_workspace_and_an_owners_candidates_merge_once_by_id_sorted_by_name() {

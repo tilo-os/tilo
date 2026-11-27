@@ -371,10 +371,10 @@ tilo_test_env::scenario! {
             Answer::Allow,
             "the layout itself is every Editor's"
         );
-        let granted = tilo_action_policy::Acting::handed_agent("assistant", person.as_str())
+        let granted = tilo_member_types::Acting::handed_agent("assistant", person.as_str())
             .handed_preset(&workspace_id);
         let agent = peer.permissions(source, now).unwrap().acting_as(
-            tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::agent("assistant", person.as_str())),
+            tilo_member_types::Actor::Member(tilo_member_types::MemberId::agent("assistant", person.as_str())),
             granted,
         );
         assert_ne!(

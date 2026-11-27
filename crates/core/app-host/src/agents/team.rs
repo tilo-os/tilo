@@ -32,6 +32,7 @@
 //! for them.
 
 use std::sync::Arc;
+use tilo_action_policy::ActingPolicy as _;
 use tilo_person_services::PersonServices;
 
 use serde::Deserialize;
@@ -187,7 +188,7 @@ impl TurnTeam {
             caller
                 .acting()
                 .member_id()
-                .and_then(tilo_action_policy::MemberId::as_agent),
+                .and_then(tilo_member_types::MemberId::as_agent),
             caller.acting().acted_for_person(),
         ) else {
             return false;
@@ -205,10 +206,10 @@ impl TurnTeam {
         };
         // Only a turn this server carries out reaches here ([`Self::asker`]): its agent works
         // for the turn's person as one handed to them, held to what the list keeps for it.
-        let grants = tilo_action_policy::Acting::agent(agent, own.clone())
+        let grants = tilo_member_types::Acting::agent(agent, own.clone())
             .handed()
-            .acting_for(tilo_action_policy::Acting::member(
-                tilo_action_policy::MemberId::person(person),
+            .acting_for(tilo_member_types::Acting::member(
+                tilo_member_types::MemberId::person(person),
             ))
             .handed_preset(&self.workspace);
         // Its grants hold until they are taken back: no time decides them.

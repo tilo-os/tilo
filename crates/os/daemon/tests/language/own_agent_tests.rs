@@ -12,18 +12,19 @@
 )]
 
 use std::sync::Arc;
+use tilo_action_policy::ActingPolicy as _;
 
 use collab_types::store::wire::{Command, Edit};
 use collab_types::store::{Cell, Query, Resource, Value};
 use ed25519_dalek::SigningKey;
 use serde_json::{Value as Json, json};
-use tilo_action_policy::Actor as Who;
 use tilo_actions::remote::TestProvider;
 use tilo_actions::remote::{
     ActionProvider as _, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
     RemoteActionTarget, WORKSPACE_AGENT_CREATE,
 };
 use tilo_agent_session::model::PlanTurns;
+use tilo_member_types::Actor as Who;
 use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, Usage,
 };
@@ -204,7 +205,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
         .find(|agent| agent.id.0 == SCOUT)
         .expect("Scout is listed");
     assert_eq!(
-        tilo_action_policy::PersonId::parse(&scout.acts_for)
+        tilo_member_types::PersonId::parse(&scout.acts_for)
             .ok()
             .and_then(|person| person.root()),
         Some(bea_cert.user_public_key),
@@ -520,8 +521,8 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
 }
 
 /// The agent a rich text's first mention names, as its mark keeps the member's JSON.
-fn mentioned(body: &Json) -> Option<tilo_action_policy::MemberId> {
-    if let Ok(member) = serde_json::from_value::<tilo_action_policy::MemberId>(body.clone())
+fn mentioned(body: &Json) -> Option<tilo_member_types::MemberId> {
+    if let Ok(member) = serde_json::from_value::<tilo_member_types::MemberId>(body.clone())
         && member.is_agent()
     {
         return Some(member);
@@ -542,9 +543,8 @@ fn mentioned(body: &Json) -> Option<tilo_action_policy::MemberId> {
 /// and Ada's own agent of the same id is another member, which nothing Bea says reaches.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_added_to_someone_elses_conversation_stays_its_persons() {
-    use tilo_action_policy::{
-        Acting, ActionKind, Answer, Authority, Context, MemberId, TreePath, WorkspacePolicy,
-    };
+    use tilo_action_policy::{ActionKind, Answer, Authority, Context, TreePath, WorkspacePolicy};
+    use tilo_member_types::{Acting, MemberId};
     let states = [(); 2].map(|()| tempfile::tempdir().unwrap());
     let keys = Arc::new(TestGroupKeys::default());
     let bea_root = SigningKey::from_bytes(&[0xbe; 32]);
@@ -724,9 +724,8 @@ async fn an_agent_added_to_someone_elses_conversation_stays_its_persons() {
 /// well: nothing of it reads the workspace's record of its agents.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn only_its_person_answers_for_or_stops_an_agent() {
-    use tilo_action_policy::{
-        Acting, ActionKind, Answer, Authority, Context, TreePath, WorkspacePolicy,
-    };
+    use tilo_action_policy::{ActionKind, Answer, Authority, Context, TreePath, WorkspacePolicy};
+    use tilo_member_types::Acting;
     let states = [(); 3].map(|()| tempfile::tempdir().unwrap());
     let keys = Arc::new(TestGroupKeys::default());
     let bea_root = SigningKey::from_bytes(&[0xbe; 32]);

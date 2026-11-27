@@ -4,10 +4,12 @@
 
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ROOT};
+use tilo_action_policy::ActingPolicy as _;
 use tilo_action_policy::{
-    Acting, Answer, Context, Grant, Grantee, KindSet, MemberAccess, Role, WorkspacePolicy,
+    Answer, Context, Grant, Grantee, KindSet, MemberAccess, Role, WorkspacePolicy,
 };
 use tilo_actions::{ActionContext, ActionInvoker, ActionKey, Did, VerbCall};
+use tilo_member_types::Acting;
 
 use super::*;
 
@@ -262,7 +264,7 @@ tilo_test_env::scenario! {
 
     phase a_keys_agent_is_written_by_its_persons_device_or_refused;
     {
-        let key = tilo_action_policy::key_agent_id(&[9; 32]);
+        let key = tilo_member_types::key_agent_id(&[9; 32]);
         let claimed = Acting::handed_agent(key.clone(), "ada");
         let op = write_by(Some(&claimed));
         // Another member's device writes nothing for it, whatever grant it
@@ -500,7 +502,8 @@ fn a_sealed_write_by_an_app_is_decided_by_the_apps_grant_not_its_signer() {
 /// refused, though the owner's device signed every one of them.
 #[test]
 fn a_visitors_store_write_is_decided_as_the_verb_it_was_written_under() {
-    use tilo_action_policy::{Actor, EntryPolicy, VISITOR_ENTRY_APP};
+    use tilo_action_policy::{EntryPolicy, VISITOR_ENTRY_APP};
+    use tilo_member_types::Actor;
     let visitor = Actor::Visitor(hex::encode([9; 32]));
     let mut policy = policy(None);
     policy.grants.extend(

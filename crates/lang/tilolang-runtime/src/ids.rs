@@ -8,7 +8,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-pub use tilo_app_id::AppId;
+pub use tilo_member_types::AppId;
 pub type TypeId = String;
 pub type FieldId = String;
 pub type ActionId = String;

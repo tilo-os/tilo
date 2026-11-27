@@ -8,9 +8,9 @@ use super::{
     AppBrokerState, BrokerActor, InvocationCaller, InvocationKey, InvocationOwner,
     person_id_for_root,
 };
-use tilo_action_policy::MemberId;
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_actions::{ActionDescriptor, InvocationId, InvocationUpdate};
+use tilo_member_types::MemberId;
 
 #[cfg(test)]
 #[path = "host_action_admission_tests.rs"]
@@ -200,7 +200,7 @@ impl AppBrokerState {
                         actor: actor.actor().clone(),
                     });
                 };
-                let expected: tilo_action_policy::Actor = current
+                let expected: tilo_member_types::Actor = current
                     .agent_id
                     .as_ref()
                     .map_or_else(

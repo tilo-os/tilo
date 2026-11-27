@@ -49,6 +49,7 @@ allowed = [
     "tilo-local-identity",
     "tilo-lock",
     "tilo-media",
+    "tilo-member-types",
     "tilo-mime",
     "tilo-net",
     "tilo-notify",

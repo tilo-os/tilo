@@ -414,7 +414,7 @@ impl crate::PersonServices {
         let place =
             Place::parse(&described.issuer.token_endpoint).map_err(|_| NOT_KEPT.to_owned())?;
         let grant = serde_json::to_string(tokens).map_err(|_| NOT_KEPT.to_owned())?;
-        let acting = tilo_action_policy::Acting::person(person.to_owned());
+        let acting = tilo_member_types::Acting::person(person.to_owned());
         let name = account.name.clone();
         let item = self
             .vault_for(&workspace, &acting)
@@ -480,7 +480,7 @@ impl crate::PersonServices {
             .and_then(|record| record.accounts.get(&entry_id(app, issuer)).cloned())
             .ok_or_else(|| NOT_CONNECTED.to_owned())?;
         let described = described_of(&kept);
-        let acting = tilo_action_policy::Acting::person(person.to_owned());
+        let acting = tilo_member_types::Acting::person(person.to_owned());
         let place = described.as_ref().and_then(|described| {
             match Place::parse(&described.issuer.token_endpoint) {
                 Ok(place) => Some(place),

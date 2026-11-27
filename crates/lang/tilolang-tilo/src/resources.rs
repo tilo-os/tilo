@@ -3843,7 +3843,7 @@ impl ResourceStore {
     /// nothing else.
     fn change_context(
         acting: Option<Box<tilo_actions::ActionContext>>,
-        readers: Option<&[tilo_actions::policy::MemberId]>,
+        readers: Option<&[tilo_member_types::MemberId]>,
     ) -> Option<Box<tilo_actions::ActionContext>> {
         let Some(readers) = readers else {
             return acting;

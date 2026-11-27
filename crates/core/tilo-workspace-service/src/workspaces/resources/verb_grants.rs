@@ -112,9 +112,9 @@ mod tests {
     use std::sync::Arc;
 
     use tilo_action_policy::{
-        Actor, Answer, Grant, Grantee, KindSet, MemberAccess, MemberId, Role, TreePath,
-        WorkspacePolicy,
+        Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
     };
+    use tilo_member_types::{Actor, MemberId};
 
     use super::VerbGrants;
 

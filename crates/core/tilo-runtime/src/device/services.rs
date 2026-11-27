@@ -5692,7 +5692,7 @@ struct AgentStop {
     session: String,
     workspace: String,
     agent: String,
-    member: tilo_action_policy::MemberId,
+    member: tilo_member_types::MemberId,
     targets: Vec<String>,
     person: Caller,
     receipt: InvocationReceipt,
@@ -6145,7 +6145,7 @@ impl RuntimeActionProvider {
     /// another person's key.
     fn is_own_client(&self, caller: &Caller) -> bool {
         let operator = self.workspaces.operator();
-        let own = tilo_action_policy::MemberId::agent(
+        let own = tilo_member_types::MemberId::agent(
             device_agent_id(&operator, MCP_CLIENT),
             hex::encode(operator),
         );
@@ -6277,7 +6277,7 @@ impl RuntimeActionProvider {
         // workspace this device holds; going on takes it back where it stands. The answer syncs
         // with the workspace, so a host running the agent elsewhere refuses its next call.
         let operator_person = hex::encode(operator);
-        let member = tilo_action_policy::MemberId::agent(agent.clone(), operator_person.clone());
+        let member = tilo_member_types::MemberId::agent(agent.clone(), operator_person.clone());
         let now = tilo_action_policy::Context::at_time(tilo_clock::wall());
         let targets = stop_targets(&self.workspaces, stopping, &agent, &operator_person, &now);
         let receipt = InvocationReceipt {

@@ -421,7 +421,7 @@ impl Opened {
         if let Some(policy) = members
             && let Some(owner) = policy.owner.clone()
         {
-            let me = tilo_action_policy::PersonId::parse(&owner).map_err(|error| {
+            let me = tilo_member_types::PersonId::parse(&owner).map_err(|error| {
                 format!("the workspace's owner {owner:?} is no person: {error}")
             })?;
             // The owner stands at no window here: whoever the policy names, the host names the

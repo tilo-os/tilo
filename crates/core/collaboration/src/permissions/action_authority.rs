@@ -71,7 +71,7 @@ impl PermissionContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::permissions::{ActionKind, Answer, Role, policy};
+    use crate::permissions::{ActionKind, Answer, Role};
 
     #[test]
     fn host_action_authority_cannot_be_borrowed_by_agents_or_other_people() {
@@ -89,7 +89,9 @@ mod tests {
             Role::Editor,
         );
         let bounded = agent.clone().with_access(agent.access().clone().acting_as(
-            policy::Actor::Member(policy::MemberId::agent("agent-a", "person-a")),
+            tilo_member_types::Actor::Member(tilo_member_types::MemberId::agent(
+                "agent-a", "person-a",
+            )),
             Vec::new(),
         ));
         for permissions in [

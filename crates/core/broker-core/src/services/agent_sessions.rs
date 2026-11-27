@@ -66,7 +66,7 @@ pub struct ListedAgent {
 pub trait AgentRoster: Send + Sync {
     /// Whether the workspace's record names `agent` active in `workspace`: its id, acting for
     /// its person. Another person's agent of the same id is another agent.
-    fn lists(&self, workspace: &str, agent: &tilo_action_policy::MemberId) -> bool {
+    fn lists(&self, workspace: &str, agent: &tilo_member_types::MemberId) -> bool {
         agent.as_agent().is_some_and(|(id, person)| {
             self.listed(workspace)
                 .iter()

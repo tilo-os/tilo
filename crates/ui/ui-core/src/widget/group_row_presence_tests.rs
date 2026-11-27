@@ -127,7 +127,7 @@ fn close(a: Rect, b: Rect) -> bool {
 fn a_window_replayed_through_a_pan_tells_a_reader_where_its_caret_moved_to() {
     let drawn = Rc::new(Cell::new(Rect::ZERO));
     let mut row = strip(2, "second", Rc::clone(&drawn));
-    let peer = tilo_action_policy::MemberId::person("claude");
+    let peer = tilo_member_types::MemberId::person("claude");
     let mut presence = tilo_ui_base::presence::PresenceCtx::empty();
     presence.set_display_name(peer.clone(), "Claude Code");
     presence.set_caret(&Field::key("second"), peer, 0);

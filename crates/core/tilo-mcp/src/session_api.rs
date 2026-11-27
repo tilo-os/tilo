@@ -1306,7 +1306,7 @@ mod tests {
             for caller in callers.iter() {
                 assert_eq!(
                     caller.acting().member_id(),
-                    Some(&tilo_action_policy::MemberId::agent("claude-code", "ada"))
+                    Some(&tilo_member_types::MemberId::agent("claude-code", "ada"))
                 );
                 assert_eq!(caller.workspace(), Some("workspace"));
                 assert!(caller.execution_id().is_some());

@@ -1049,7 +1049,7 @@ async fn the_agents_call_runs_on_the_laptops_bridge(
     let (ran_as, request) = ran;
     assert_eq!(
         ran_as.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::agent(
+        Some(&tilo_member_types::MemberId::agent(
             "scribe",
             hex::encode(persons_root().verifying_key().to_bytes())
         )),
@@ -1416,7 +1416,7 @@ async fn the_bridges_own_call_runs_for_the_agent_and_ends(
     };
     assert_eq!(
         ran_as.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::agent(
+        Some(&tilo_member_types::MemberId::agent(
             "scribe",
             hex::encode(persons_root().verifying_key().to_bytes())
         )),

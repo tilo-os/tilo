@@ -61,7 +61,7 @@ impl ResourceActions {
     /// Commit what is open on the resource for a save. A toolkit's open action keeps its own
     /// provenance; edits made outside any action are the app `app`'s own write of its record, and
     /// are committed as such: a change names who made it.
-    pub fn commit_for_save(&self, doc: &mut AutoCommit, app: &tilo_app_id::AppId) {
+    pub fn commit_for_save(&self, doc: &mut AutoCommit, app: &tilo_member_types::AppId) {
         if self
             .toolkit
             .as_ref()

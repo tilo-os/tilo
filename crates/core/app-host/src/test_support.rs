@@ -290,7 +290,7 @@ impl crate::services::AgentRoster for TreeAgents {
         Vec::new()
     }
 
-    fn lists(&self, workspace: &str, agent: &tilo_action_policy::MemberId) -> bool {
+    fn lists(&self, workspace: &str, agent: &tilo_member_types::MemberId) -> bool {
         let tree = self.0.read();
         crate::services::workspace_in(&tree.desktop, workspace).is_some_and(|held| {
             let node = held.policy.node();

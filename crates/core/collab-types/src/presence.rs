@@ -19,7 +19,7 @@ pub use call::CallPresence;
 pub use line::{Heard, Said};
 pub use payload::PresencePayload;
 pub use said::{DESKTOP_APP, Presence, stand_in};
-pub use tilo_action_policy::{PersonId, identity_color};
+pub use tilo_member_types::{PersonId, identity_color};
 pub use tilo_presence::{
     AppKind, Availability, DIGEST_KEY_FIELD, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus,
     MAX_STATUS_CHARS, PEER_PALETTE, PRESENCE_HUES, PRESENCE_LEN, PathSegment, PointerSpace,

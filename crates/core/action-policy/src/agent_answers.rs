@@ -7,7 +7,7 @@
 //! These are ordinary grants on the workspace, named so that setting an answer
 //! again replaces it instead of adding a second one. Without one, a run a
 //! person started takes the agent delegation's answer
-//! ([`crate::Acting::handed_preset`]), which is [`default_answer`], the
+//! ([`tilo_member_types::Acting::handed_preset`]), which is [`default_answer`], the
 //! default a person sees before choosing; an agent acting inside a turn is
 //! decided the same way, bounded by the cap its resource narrows.
 //!
@@ -259,7 +259,7 @@ pub fn is_answer(grant: &Grant) -> bool {
     (id.starts_with(PREFIX)
         && matches!(
             grant.grantee,
-            Grantee::Member(crate::MemberId::Agent { .. }) | Grantee::App(_)
+            Grantee::Member(tilo_member_types::MemberId::Agent { .. }) | Grantee::App(_)
         ))
         || crate::is_session_answer(grant)
 }
@@ -295,7 +295,9 @@ pub fn answer_grant(
     granted_by: Grantee,
 ) -> Grant {
     let key = match &delegate {
-        Grantee::Member(crate::MemberId::Agent { id, person }) => agent_key(id, person.as_str()),
+        Grantee::Member(tilo_member_types::MemberId::Agent { id, person }) => {
+            agent_key(id, person.as_str())
+        }
         Grantee::App(app) => format!("app:{app}"),
         other => other.to_string(),
     };

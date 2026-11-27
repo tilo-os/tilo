@@ -94,7 +94,7 @@ impl Holding {
 }
 
 fn caller() -> Caller {
-    Caller::local_person(tilo_actions::policy::PersonId::from_root([7; 32]))
+    Caller::local_person(tilo_member_types::PersonId::from_root([7; 32]))
 }
 
 fn watch(id: InvocationId) -> InvokeRequest {

@@ -81,7 +81,7 @@ fn arguments_of(
 /// `caller`'s member, as the API knows it: an app reaches the activity as the person using it,
 /// confined to the workspace it runs in.
 fn caller_of(caller: &Caller, workspace: &str) -> Caller {
-    use tilo_actions::policy::{Actor, MemberId};
+    use tilo_member_types::{Actor, MemberId};
 
     let member = BrokerActor::for_caller(caller);
     // A bot's installation id may carry a `:` of its own: it is software, so

@@ -18,8 +18,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use tilo_actions::stamp::Label;
 
-use tilo_action_policy::{Acting, ActionKind, Answer, Context, Level, MemberAccess, TreePath};
+use tilo_action_policy::{ActionKind, Answer, Context, Level, MemberAccess, TreePath};
 use tilo_actions::{HistoryOp, PathStep};
+use tilo_member_types::Acting;
 
 use crate::claim::{ChangeClaim, ClaimedAction, FrameworkChange, UnitPath};
 
@@ -138,7 +139,7 @@ pub enum ReceiptRefusal {
     #[error("{actor} may not show the appearance it carries: {reason}")]
     Appearance {
         /// The invoker the change names.
-        actor: tilo_action_policy::Actor,
+        actor: tilo_member_types::Actor,
         /// Why the appearance is refused.
         reason: String,
     },
@@ -691,7 +692,7 @@ pub fn moderated_nodes(record: &TreePath, action: &ClaimedAction) -> Vec<TreePat
 /// [`ReceiptRefusal::Appearance`] for the first change that breaks the rule.
 pub fn check_appearances(
     changes: &[automerge::Change],
-    persona_author: Option<&tilo_action_policy::MemberId>,
+    persona_author: Option<&tilo_member_types::MemberId>,
 ) -> Result<(), ReceiptRefusal> {
     for change in changes {
         let Some(invoker) = change

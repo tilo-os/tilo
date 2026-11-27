@@ -124,7 +124,7 @@ tilo_test_env::scenario! {
         // An app acting by itself is no member, so no member's evidence names it.
         let mut by_itself = intent;
         by_itself["actor"] = serde_json::to_value(tilo_actions::Actor::App(
-            tilo_app_id::AppId::from("so.tilo.chat"),
+            tilo_member_types::AppId::from("so.tilo.chat"),
         ))
         .unwrap();
         assert!(

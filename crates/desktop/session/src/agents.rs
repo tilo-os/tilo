@@ -32,7 +32,7 @@ pub(crate) struct Kept {
     /// The workspace whose record names it.
     pub workspace: String,
     /// The member it is: its id, of the person here.
-    pub member: tilo_action_policy::MemberId,
+    pub member: tilo_member_types::MemberId,
     /// Its name, as people read it.
     pub name: String,
 }
@@ -269,7 +269,7 @@ impl Agents {
         workspace: &str,
         policy: &WorkspacePolicy,
         person: &str,
-    ) -> Option<(tilo_action_policy::MemberId, String)> {
+    ) -> Option<(tilo_member_types::MemberId, String)> {
         let Held::Open(record) = self.record(workspace, policy, person) else {
             return None;
         };
@@ -395,7 +395,7 @@ impl crate::Shared {
 /// named as the workspace names its agent — where they keep none. Text typed on the canvas that
 /// asks and search's row that hands an agent a request both send to it (shell.md §8.1).
 pub(crate) fn agent_recipient(
-    kept: Option<(tilo_action_policy::MemberId, String)>,
+    kept: Option<(tilo_member_types::MemberId, String)>,
 ) -> ui::floating_surface::Recipient {
     use ui::floating_surface::{Recipient, RecipientKind};
     match kept {

@@ -542,7 +542,7 @@ mod tests {
         fn deliver(&self, record: &str, envelope: SignedOp) -> crate::collab_inbound::Delivery {
             use crate::collab_inbound::{RemoteDocument, deliver};
             use tilo_action_policy::{MemberAccess, Role, WorkspacePolicy};
-            let editor = tilo_action_policy::PersonId::from_root(EDITOR);
+            let editor = tilo_member_types::PersonId::from_root(EDITOR);
             let mut policy = WorkspacePolicy::new(&self.workspace, "owner");
             policy
                 .members

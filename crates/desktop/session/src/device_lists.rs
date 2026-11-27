@@ -1300,7 +1300,7 @@ impl Service for DeviceLists {
                     AgentsEffect::StopAgent { agent } => {
                         if !self
                             .agent_sessions
-                            .stop(&tilo_action_policy::AgentSessionId::new(agent.clone()))
+                            .stop(&tilo_member_types::AgentSessionId::new(agent.clone()))
                         {
                             return Err(ApiError::InvalidArguments(format!(
                                 "no agent session {agent} works here"

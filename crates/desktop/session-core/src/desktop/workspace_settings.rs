@@ -1422,8 +1422,8 @@ mod permissions_tests {
     /// Whoever is looking at the tab; never a grantor in these fixtures.
     const VIEWER: &str = "viewer-user";
 
-    fn app_acting(app: &str) -> tilo_action_policy::Acting {
-        tilo_action_policy::Acting::person(OWNER).in_app(app)
+    fn app_acting(app: &str) -> tilo_member_types::Acting {
+        tilo_member_types::Acting::person(OWNER).in_app(app)
     }
 
     fn ws_with_grants() -> Workspace {

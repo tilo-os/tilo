@@ -13,7 +13,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_actions::policy::{MemberId, Role};
+use tilo_actions::policy::Role;
+use tilo_member_types::MemberId;
 
 use crate::core::{Args, Core, HResult, trap};
 use crate::engine::Wasm;
@@ -32,7 +33,7 @@ pub struct Member {
 impl Member {
     #[track_caller]
     #[must_use]
-    pub fn person(id: impl Into<tilo_actions::policy::PersonId>, role: Role) -> Self {
+    pub fn person(id: impl Into<tilo_member_types::PersonId>, role: Role) -> Self {
         Self {
             id: MemberId::person(id),
             role: Some(role),
@@ -41,7 +42,7 @@ impl Member {
 
     /// The agent `id` of `person`.
     #[must_use]
-    pub fn agent(id: impl Into<String>, person: impl Into<tilo_actions::policy::PersonId>) -> Self {
+    pub fn agent(id: impl Into<String>, person: impl Into<tilo_member_types::PersonId>) -> Self {
         Self {
             id: MemberId::agent(id, person),
             role: None,
@@ -146,7 +147,7 @@ impl Core {
     /// view that offers the members offers them too. Their id is the name the scenario gave:
     /// a person who is not a root key is a sample one, and reads as that name.
     pub(crate) fn named_person(&self, name: &str) -> HResult<Actor> {
-        match tilo_actions::policy::PersonId::parse(name) {
+        match tilo_member_types::PersonId::parse(name) {
             Ok(id) if !name.is_empty() => self.named_member(MemberId::Person(id)),
             _ => trap(format!("person: a name without `:`, got {name:?}")),
         }

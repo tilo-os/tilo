@@ -10,7 +10,7 @@
 //! what the store reads.
 
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::Actor;
+use tilo_member_types::Actor;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

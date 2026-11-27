@@ -33,6 +33,7 @@ path = "src/jail_main.rs"
 ignored = ["serde_bytes"]
 
 [dependencies]
+tilo-member-types.workspace = true
 tilo-action-services = { version = "0.1.0", path = "../../core/action-services" }
 collab-types = { package = "tilo-collab-types", path = "../../core/collab-types" }
 tilo-action-policy = { path = "../../core/action-policy" }
@@ -53,7 +54,6 @@ serde_bytes.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
-tilo-app-id.workspace = true
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 # The billing periods of a server's offers to an account (`hosted::account`).

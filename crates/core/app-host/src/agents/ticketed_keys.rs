@@ -419,7 +419,7 @@ fn granted(
     agent: &Agent,
     key: [u8; 32],
 ) -> Result<(), String> {
-    let root = tilo_action_policy::PersonId::parse(&agent.acts_for)
+    let root = tilo_member_types::PersonId::parse(&agent.acts_for)
         .map_err(|error| format!("the agent belongs to no person ({error})"))?
         .root()
         .ok_or("the agent belongs to no person with a root")?;

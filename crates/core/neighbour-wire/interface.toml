@@ -47,7 +47,7 @@ roots = ["Hello", "HelloAck", "HelloAck2", "HelloRefused", "NeighbourMsg", "Devi
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
-Acting = "tilo_action_policy::Acting: who made a change, carried as the JSON text its history entry writes (ChangeClaim.invoker)"
+Acting = "tilo_member_types::Acting: who made a change, carried as the JSON text its history entry writes (ChangeClaim.invoker)"
 Value = "serde_json::Value: any JSON value, carried as its text"
 RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-host vocabulary, carried as opaque postcard bytes and versioned by the server transport's remote-action envelope"
 SignedInvocation = "tilo_actions::remote::SignedInvocation: the caller's own signed statement — the address, the hash of the arguments, the signature and the certificate — carried as its own wire form, never the arguments"

@@ -19,7 +19,7 @@ const ITEM: &str = "vault.item:0123456789abcdef0123456789abcdef";
 
 /// The bridge as the workspace sees it: the app's own program, which alone answers the setup.
 fn bridge() -> Actor {
-    Actor::App(tilo_app_id::AppId::new(APP))
+    Actor::App(tilo_member_types::AppId::new(APP))
 }
 
 fn person(name: &str) -> Actor {

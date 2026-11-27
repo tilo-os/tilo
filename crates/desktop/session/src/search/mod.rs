@@ -634,7 +634,7 @@ impl SessionSearch {
     pub(crate) fn kept_agent(
         &self,
         workspace: &str,
-    ) -> Option<(tilo_action_policy::MemberId, String)> {
+    ) -> Option<(tilo_member_types::MemberId, String)> {
         self.agents
             .borrow()
             .as_ref()?
@@ -664,7 +664,7 @@ impl SessionSearch {
 
     /// What the workspaces' lists of agents call the agent `agent`, whether it works or was
     /// retired: a conversation or a mention names it by the name its workspace knows.
-    pub(crate) fn agent_name(&self, agent: &tilo_action_policy::MemberId) -> Option<String> {
+    pub(crate) fn agent_name(&self, agent: &tilo_member_types::MemberId) -> Option<String> {
         self.listed_agents
             .borrow()
             .iter()
@@ -2641,7 +2641,7 @@ mod tests {
             collab_types::Member::of_person(&collab_types::Person::new(root, ""), None)
         };
         search.set_members(vec![(ws.clone(), vec![member(&ada), member(&ben)])]);
-        let helper = tilo_action_policy::MemberId::agent("helper", ben.clone());
+        let helper = tilo_member_types::MemberId::agent("helper", ben.clone());
         let (id, name) = (crate::search::recipient_id(&helper), "Helper".to_owned());
         let workspace = ws.clone();
         search.set_listed_agents(&[ListedAgent {
@@ -2715,8 +2715,8 @@ mod tests {
         );
         let person = "ad".repeat(32);
         let (working, old) = (
-            tilo_action_policy::MemberId::agent("video-agent", person.clone()),
-            tilo_action_policy::MemberId::agent("old-video", person),
+            tilo_member_types::MemberId::agent("video-agent", person.clone()),
+            tilo_member_types::MemberId::agent("old-video", person),
         );
         search.set_listed_agents(&[
             ListedAgent {
@@ -2755,7 +2755,7 @@ mod tests {
 
 /// How a recipient names the agent `member`: its actor's bytes, `agent:<person>/<id>`, which say
 /// whose agent it is as well as which.
-pub(crate) fn recipient_id(member: &tilo_action_policy::MemberId) -> String {
+pub(crate) fn recipient_id(member: &tilo_member_types::MemberId) -> String {
     String::from_utf8_lossy(&member.actor_bytes()).into_owned()
 }
 
@@ -2765,7 +2765,7 @@ pub(crate) fn recipient_id(member: &tilo_action_policy::MemberId) -> String {
 pub(crate) struct ListedAgent {
     pub workspace: String,
     /// The member it is: its id, of the person it acts for.
-    pub member: tilo_action_policy::MemberId,
+    pub member: tilo_member_types::MemberId,
     pub name: String,
     /// The picture it wears wherever an author is shown, as a `data:` URL; none shows its
     /// initials.

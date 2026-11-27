@@ -9,14 +9,15 @@ use std::rc::Rc;
 use tilo_action_policy::reading::published_node;
 use tilo_action_policy::roles::{self, governance};
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Change, Context, Grant, Grantee, KindSet, MemberAccess,
-    PersonId, Role, WorkspacePolicy,
+    ActionKind, Answer, Authority, Change, Context, Grant, Grantee, KindSet, MemberAccess, Role,
+    WorkspacePolicy,
 };
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::{
     WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, workspace_governance_child,
     workspace_governance_operation,
 };
+use tilo_member_types::PersonId;
 use tilolang_runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_runtime::{Actor, InvokeOutcome, UiNode, Value, ViewInstance};
 use tilolang_tilo::call::Callees;
@@ -69,7 +70,7 @@ impl Invoker for WorkspaceActions {
             arguments["resource"].as_str().expect("the resource"),
         )
         .expect("a resource of an app of the workspace");
-        let member: tilo_action_policy::MemberId =
+        let member: tilo_member_types::MemberId =
             serde_json::from_value(arguments["member"].clone()).expect("the member");
         let cx = Context::at_time(tilo_clock::wall());
         let change = {

@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use tilo_action_policy::{MemberId, PersonId};
+use tilo_member_types::{MemberId, PersonId};
 
 use crate::identity::AvatarBytes;
 use crate::presence::PresenceHue;
@@ -120,7 +120,7 @@ impl Member {
     /// actor alone where the store kept no row.
     #[must_use]
     pub fn from_roster_row(row: &serde_json::Value, me: &MemberId) -> Option<Self> {
-        let who: tilo_action_policy::Actor =
+        let who: tilo_member_types::Actor =
             serde_json::from_value(row.get("actor").cloned().unwrap_or_else(|| row.clone()))
                 .ok()?;
         let id = who.member_id()?;
@@ -281,7 +281,7 @@ mod tests {
             let content = serde_json::json!({
                 "people": [
                     {
-                        "actor": serde_json::to_value(tilo_action_policy::Actor::Member(
+                        "actor": serde_json::to_value(tilo_member_types::Actor::Member(
                             MemberId::person("ada")
                         ))
                         .unwrap(),
@@ -291,7 +291,7 @@ mod tests {
                         "photo": photo,
                     },
                     {
-                        "actor": serde_json::to_value(tilo_action_policy::Actor::Member(
+                        "actor": serde_json::to_value(tilo_member_types::Actor::Member(
                             MemberId::agent("scout", "ada")
                         ))
                         .unwrap(),
@@ -315,7 +315,7 @@ mod tests {
             assert!(!rows[1].is_self);
             // A record held in a process for a device of its own names bare actors.
             let bare = serde_json::json!({
-                "people": [serde_json::to_value(tilo_action_policy::Actor::Member(
+                "people": [serde_json::to_value(tilo_member_types::Actor::Member(
                     MemberId::person("bo")
                 ))
                 .unwrap()],

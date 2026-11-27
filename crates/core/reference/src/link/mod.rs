@@ -21,7 +21,7 @@ use uuid::Uuid;
 pub use entry::{WebEntries, WebEntry};
 pub use error::LinkError;
 pub use json::{ModeJson, ResourceJson, RouteJson, ScopeJson, SpanJson, SpanUnitJson, TargetJson};
-pub use tilo_app_id::{AppId, InvalidAppId};
+pub use tilo_member_types::{AppId, InvalidAppId};
 
 use crate::{ResourceRef, Span, SpanUnit};
 

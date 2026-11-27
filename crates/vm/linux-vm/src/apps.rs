@@ -83,14 +83,14 @@ impl Registry {
 
 /// Reverse-DNS-ish ids only: they become file names and command words.
 ///
-/// Differs from [`tilo_app_id::AppId::parse`] by allowing a single segment
+/// Differs from [`tilo_member_types::AppId::parse`] by allowing a single segment
 /// without a dot (Linux desktop-file names such as `firefox`, `ush` command
 /// words such as `code`, and Flatpak ref parts such as `x86_64` may have no
 /// dot) and forbidding a leading `-` so an id cannot be parsed as a flag when
 /// placed in `Exec=tilo-linux-vm launch {id}` or exposed as a command word.
 #[must_use]
 pub fn valid_app_id(id: &str) -> bool {
-    const GRAMMAR: tilo_app_id::Grammar = tilo_app_id::Grammar::CANONICAL
+    const GRAMMAR: tilo_member_types::Grammar = tilo_member_types::Grammar::CANONICAL
         .allow_single_segment()
         .forbid_leading_hyphen();
     GRAMMAR.matches(id)

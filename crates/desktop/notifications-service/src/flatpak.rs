@@ -52,12 +52,13 @@ fn read_text(path: &Path, max_bytes: u64) -> Option<String> {
 
 /// Whether `id` is a valid Flatpak application id for notification attribution.
 ///
-/// Differs from [`tilo_app_id::AppId::parse`] by capping length at 160 bytes to
+/// Differs from [`tilo_member_types::AppId::parse`] by capping length at 160 bytes to
 /// match notification policy keys. Like `AppId::parse`, this requires a dot:
 /// the id must match an installed Flatpak's `X-Flatpak` id, which always has a
 /// dot, and on refusal the sender falls back to the session's own lookup.
 pub(crate) fn valid_app_id(id: &str) -> bool {
-    const GRAMMAR: tilo_app_id::Grammar = tilo_app_id::Grammar::CANONICAL.max_bytes(160);
+    const GRAMMAR: tilo_member_types::Grammar =
+        tilo_member_types::Grammar::CANONICAL.max_bytes(160);
     GRAMMAR.matches(id)
 }
 

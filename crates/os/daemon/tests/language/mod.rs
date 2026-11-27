@@ -97,7 +97,6 @@ use std::sync::Arc;
 
 use collab_types::store::wire::{Command, Edit};
 use collab_types::store::{Cell, Resource, Value as StoreValue};
-use tilo_action_policy::Actor as Who;
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
     RemoteActionTarget,
@@ -105,6 +104,7 @@ use tilo_actions::remote::{
 use tilo_app_host::services::ResourceRequestContext;
 use tilo_app_host::test_support::Started;
 use tilo_app_host::triggers::{Firing, Runner};
+use tilo_member_types::Actor as Who;
 use tilo_resource_store::Stamp;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::service::local_caller;

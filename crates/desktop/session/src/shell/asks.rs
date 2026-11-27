@@ -495,7 +495,7 @@ impl Shared {
     #[cfg(target_os = "linux")]
     fn agent_session_ask(
         &self,
-        session: &tilo_action_policy::AgentSessionId,
+        session: &tilo_member_types::AgentSessionId,
         ask: tilo_session_core::desktop::launchpad::AgentAsk,
     ) {
         use tilo_session_core::desktop::launchpad::AgentAsk;
@@ -535,7 +535,7 @@ impl Shared {
     /// The agent session this device serves that the presence member `who` speaks for, by its
     /// key.
     #[cfg(target_os = "linux")]
-    fn agent_session_of(&self, who: &str) -> Option<tilo_action_policy::AgentSessionId> {
+    fn agent_session_of(&self, who: &str) -> Option<tilo_member_types::AgentSessionId> {
         let sync = self.sync.as_ref()?;
         self.agent_sessions
             .spoken_as(*sync.publisher().as_bytes(), who)

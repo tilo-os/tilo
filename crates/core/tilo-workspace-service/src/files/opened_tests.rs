@@ -526,8 +526,8 @@ async fn a_put_the_person_signed_is_taken_in_keeping_their_request() {
             ..tilo_actions::ActionContext::default()
         }
         .with_invoker(tilo_actions::ActionInvoker::admitted(
-            &tilo_action_policy::Acting::agent("porter", owner.as_str())
-                .acting_for(tilo_action_policy::Acting::person(owner.as_str())),
+            &tilo_member_types::Acting::agent("porter", owner.as_str())
+                .acting_for(tilo_member_types::Acting::person(owner.as_str())),
         ))
     };
     let request = put.open_signed_by(&arguments, (&key, &cert));

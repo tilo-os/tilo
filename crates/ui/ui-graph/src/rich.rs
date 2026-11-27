@@ -96,7 +96,7 @@ pub struct Run {
 pub enum InlineView {
     /// A person: their avatar and what the room calls them.
     Person {
-        identity: tilo_action_policy::MemberId,
+        identity: tilo_member_types::MemberId,
         name: String,
     },
     /// A resource the reader can read: its title as its app publishes it now, the icon of its

@@ -8,11 +8,12 @@ use std::sync::Arc;
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc};
 use tilo_action_policy::{
-    Acting, Answer, Context, Grant, Grantee, MemberAccess, Role, TreePath, WorkspacePolicy,
+    Answer, Context, Grant, Grantee, MemberAccess, Role, TreePath, WorkspacePolicy,
 };
 use tilo_actions::{
     ActionContext, ActionInvoker, ActionKey, Did, EditOp, FieldEdit, PathStep, VerbCall,
 };
+use tilo_member_types::Acting;
 
 use super::*;
 

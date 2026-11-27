@@ -2136,7 +2136,7 @@ impl Runtime {
     /// history lists a change of it to them alone. `None` when no record holding it names its
     /// readers, so whoever reads its document reads it.
     #[must_use]
-    pub fn readers(&self, at: &ResourceRef) -> Option<Vec<tilo_actions::policy::MemberId>> {
+    pub fn readers(&self, at: &ResourceRef) -> Option<Vec<tilo_member_types::MemberId>> {
         self.core.change_readers(&[at.id_string()], None)
     }
 

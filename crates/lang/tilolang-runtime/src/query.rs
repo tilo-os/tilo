@@ -562,7 +562,7 @@ fn person_lit(value: &str, viewer: Option<&Actor>) -> Result<Lit, String> {
         serde_json::from_str::<Actor>(value)
             .ok()
             .or_else(|| {
-                tilo_actions::policy::PersonId::parse(value)
+                tilo_member_types::PersonId::parse(value)
                     .ok()
                     .filter(|_| !value.is_empty())
                     .map(|person| Actor::Member(crate::ids::MemberId::Person(person)))

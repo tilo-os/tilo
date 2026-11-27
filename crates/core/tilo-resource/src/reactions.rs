@@ -33,7 +33,7 @@ use std::collections::BTreeSet;
 use automerge::transaction::Transactable as _;
 use automerge::{ObjId, ObjType, ReadDoc, Value};
 
-use tilo_action_policy::MemberId;
+use tilo_member_types::MemberId;
 
 use crate::action::{ActionCx, Refusal};
 use crate::delta::Delta;

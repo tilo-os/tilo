@@ -12,10 +12,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tilo_person_services::PersonServices;
 
-use tilo_action_policy::Actor;
 use tilo_actions::remote::{Admitted, Caller, InvokeRequest, Outcome, Pending, pending};
 use tilo_agent_session::transform::{self, Interaction, TransformModel};
 use tilo_lock::MutexRecover as _;
+use tilo_member_types::Actor;
 use tilo_server_protocol::WorkspaceId;
 use ui::time::Duration;
 

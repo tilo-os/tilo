@@ -36,7 +36,7 @@ pub(super) async fn invoke(
     workspaces: &Workspaces,
     signing: Signing<'_>,
     workspace: &str,
-    acting: &tilo_action_policy::Acting,
+    acting: &tilo_member_types::Acting,
     asked: AccountsAction,
 ) -> Result<Value, ActionCallError> {
     match asked {
@@ -193,7 +193,7 @@ async fn credential(
 /// write on this device.
 async fn report_sync(
     workspaces: &Workspaces,
-    (workspace, acting): (&str, &tilo_action_policy::Acting),
+    (workspace, acting): (&str, &tilo_member_types::Acting),
     (account, health, signed_in): (&str, &str, bool),
     message: &str,
 ) -> Result<(), String> {

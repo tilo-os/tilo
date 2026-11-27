@@ -2995,8 +2995,8 @@ mod tests {
     /// `key`'s version 6 frame, and the bytes its claim signature covers: built from version 6's
     /// layout, not from this build's types.
     fn before_call_frame(key: &SigningKey) -> (Vec<u8>, Vec<u8>) {
-        let acting = tilo_action_policy::Acting {
-            by: tilo_action_policy::Actor::member(tilo_action_policy::MemberId::person("ana")),
+        let acting = tilo_member_types::Acting {
+            by: tilo_member_types::Actor::member(tilo_member_types::MemberId::person("ana")),
             app: None,
             agent_session: None,
             cause: None,

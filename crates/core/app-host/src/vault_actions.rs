@@ -219,7 +219,7 @@ fn code_answer(code: &accounts::vault_items::Code) -> serde_json::Value {
 /// named changes, or a new one is kept.
 async fn vault_keep(
     workspaces: &Workspaces,
-    (workspace, by): (&str, &tilo_action_policy::Acting),
+    (workspace, by): (&str, &tilo_member_types::Acting),
     item: Option<&str>,
     arguments: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<serde_json::Value, ActionCallError> {
@@ -296,7 +296,7 @@ async fn vault_keep(
 /// Forget the code generator the item `item` names.
 async fn vault_forget(
     workspaces: &Workspaces,
-    (workspace, by): (&str, &tilo_action_policy::Acting),
+    (workspace, by): (&str, &tilo_member_types::Acting),
     item: &str,
 ) -> Result<(), ActionCallError> {
     let id = item_id(item)?;

@@ -923,7 +923,7 @@ mod tests {
         tilo_test_env::wait_for("the daemon to read the session's agents", || {
             (agents.lists(
                 WORKSPACE,
-                &tilo_action_policy::MemberId::agent("scribe", "ada"),
+                &tilo_member_types::MemberId::agent("scribe", "ada"),
             ) && agents
                 .going(WORKSPACE, "scribe", session.as_str())
                 .is_some())

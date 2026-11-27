@@ -57,8 +57,8 @@ pub fn code_party<'g>(author: &Grantee, own: &'g [Grant], workspace: &'g [Grant]
 
 fn grantee_key(grantee: &Grantee) -> String {
     match grantee {
-        Grantee::Member(crate::MemberId::Person(id)) => id.as_str().to_owned(),
-        Grantee::Member(crate::MemberId::Agent { id, person }) => {
+        Grantee::Member(tilo_member_types::MemberId::Person(id)) => id.as_str().to_owned(),
+        Grantee::Member(tilo_member_types::MemberId::Agent { id, person }) => {
             format!(
                 "agent:{}",
                 crate::agent_answers::agent_key(id, person.as_str())

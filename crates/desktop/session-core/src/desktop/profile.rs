@@ -108,7 +108,7 @@ pub struct OtherPerson {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentFacts {
     /// The member it is: its id and its person. Its mark wears this member's colour.
-    pub member: tilo_action_policy::MemberId,
+    pub member: tilo_member_types::MemberId,
     /// The client it is, by the name it goes by ("Claude Code"): what its card in Console is
     /// addressed by.
     pub client: String,

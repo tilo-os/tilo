@@ -67,14 +67,14 @@ impl ShortcutApproval {
     }
 
     /// Who the approval runs as: the saver, or the agent of theirs that saved it.
-    pub(super) fn actor(&self) -> tilo_action_policy::Actor {
+    pub(super) fn actor(&self) -> tilo_member_types::Actor {
         self.saver
             .agent
             .as_ref()
             .map_or_else(
-                || tilo_action_policy::MemberId::person(self.saver.person.clone()),
+                || tilo_member_types::MemberId::person(self.saver.person.clone()),
                 |agent| {
-                    tilo_action_policy::MemberId::agent(agent.as_str(), self.saver.person.clone())
+                    tilo_member_types::MemberId::agent(agent.as_str(), self.saver.person.clone())
                 },
             )
             .into()
@@ -98,11 +98,11 @@ impl ShortcutApproval {
 
     /// Whether `actor` is the one the approval runs as: the saver, or the agent of theirs that
     /// saved it.
-    fn runs_as(&self, actor: &tilo_action_policy::Actor) -> bool {
+    fn runs_as(&self, actor: &tilo_member_types::Actor) -> bool {
         actor.person_id() == Some(self.saver.person.as_str())
             || self.saver.agent.as_ref().is_some_and(|agent| {
                 actor.member_id()
-                    == Some(&tilo_action_policy::MemberId::agent(
+                    == Some(&tilo_member_types::MemberId::agent(
                         agent.as_str(),
                         self.saver.person.clone(),
                     ))
@@ -333,7 +333,7 @@ impl AppBrokerState {
         &self,
         approval: &ShortcutApproval,
         workspace: &str,
-        actor: &tilo_action_policy::Actor,
+        actor: &tilo_member_types::Actor,
     ) -> Result<InvocationOwner, String> {
         let (_, now) = self.checked_policy_time(approval.time.as_ref())?;
         let name = &approval.shortcut.name;
@@ -400,7 +400,7 @@ impl AppBrokerState {
         &self,
         approval: &ShortcutApproval,
         workspace: &str,
-        actor: &tilo_action_policy::Actor,
+        actor: &tilo_member_types::Actor,
         (reached, argument): (Reached<'_>, &InvokeArgument),
     ) -> Result<InvocationOwner, ActionCallError> {
         let owner = self

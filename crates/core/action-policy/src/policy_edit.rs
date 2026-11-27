@@ -338,10 +338,10 @@ impl WorkspacePolicy {
     /// The agents the workspace admits at `now`: those with a live grant on
     /// the workspace itself, with what it allows them.
     #[must_use]
-    pub fn agent_members_at(&self, now: u64) -> Vec<(crate::MemberId, KindSet)> {
+    pub fn agent_members_at(&self, now: u64) -> Vec<(tilo_member_types::MemberId, KindSet)> {
         let cx = Context::at_secs(now);
         let workspace_node = self.node();
-        let mut agents: Vec<(crate::MemberId, KindSet)> = Vec::new();
+        let mut agents: Vec<(tilo_member_types::MemberId, KindSet)> = Vec::new();
         for grant in &self.grants {
             let Some(agent) = grant.grantee.as_member().filter(|member| member.is_agent()) else {
                 continue;

@@ -220,7 +220,7 @@ fn verify_process(
 }
 
 fn valid_app_id(value: &str) -> bool {
-    tilo_app_id::AppId::is_valid(value)
+    tilo_member_types::AppId::is_valid(value)
 }
 
 #[cfg(unix)]

@@ -405,8 +405,8 @@ struct WriteAt13 {
 fn write_at_13(key: &ed25519_dalek::SigningKey) -> (Vec<u8>, OpAt13, Vec<u8>) {
     use ed25519_dalek::Signer as _;
 
-    let acting = tilo_action_policy::Acting {
-        by: tilo_action_policy::Actor::member(tilo_action_policy::MemberId::person("ana")),
+    let acting = tilo_member_types::Acting {
+        by: tilo_member_types::Actor::member(tilo_member_types::MemberId::person("ana")),
         app: None,
         agent_session: None,
         cause: None,

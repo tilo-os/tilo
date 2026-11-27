@@ -112,7 +112,7 @@ fn grant_for(cert: &DeviceCert, agent: &str, workspace: &str) -> bool {
     let Some(scope) = cert.capabilities.agent.as_ref() else {
         return false;
     };
-    let certified = tilo_action_policy::key_of_agent(agent).map_or_else(
+    let certified = tilo_member_types::key_of_agent(agent).map_or_else(
         || scope.is_agent(agent),
         |key| key == cert.device_public_key,
     );

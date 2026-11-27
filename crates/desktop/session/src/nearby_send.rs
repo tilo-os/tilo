@@ -750,7 +750,7 @@ mod tests {
         let id = tilo_desktop_model::WorkspaceId::new();
         let mut workspace = tilo_desktop_model::Workspace::new(id, "Probe".to_owned());
         workspace.sandbox = vec![CapOverride {
-            app: Some(tilo_app_id::AppId::new(wire::APP)),
+            app: Some(tilo_member_types::AppId::new(wire::APP)),
             ..CapOverride::new(
                 Grantee::App(wire::APP.to_owned()),
                 Scope::FsPath(granted.to_string_lossy().into_owned()),

@@ -2188,16 +2188,16 @@ macro_rules! json_scalar {
 
 // A capability names who it reaches, and who granted it: the two policy values
 // a stored record holds beside its scope.
-json_scalar!(tilo_action_policy::MemberId, Actor);
-json_scalar!(tilo_action_policy::Actor, Actor);
+json_scalar!(tilo_member_types::MemberId, Actor);
+json_scalar!(tilo_member_types::Actor, Actor);
 json_scalar!(tilo_action_policy::Grantee, Text);
 json_scalar!(tilo_action_policy::Lifetime, Text);
 
 /// An app's id is the string it is: written as one, read as one.
-impl Settable for tilo_app_id::AppId {}
-impl Model for tilo_app_id::AppId {
+impl Settable for tilo_member_types::AppId {}
+impl Model for tilo_member_types::AppId {
     const SCALAR: bool = true;
-    crate::__own_table!(tilo_app_id::AppId);
+    crate::__own_table!(tilo_member_types::AppId);
     fn value_schema() -> serde_json::Value {
         serde_json::json!({"type": "string"})
     }

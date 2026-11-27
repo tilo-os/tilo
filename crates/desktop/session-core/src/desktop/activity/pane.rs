@@ -36,7 +36,8 @@ use ui::time::{Duration, SystemTime};
 use automerge::transaction::Transactable;
 use automerge::{ChangeHash, Prop, ReadDoc, ScalarValue, Value};
 use collab_types::caps::{Access, CapOverride, Effect, Scope};
-use tilo_action_policy::{Grantee, MemberId};
+use tilo_action_policy::Grantee;
+use tilo_member_types::MemberId;
 use tilo_ui_base::presence::PresenceCtx;
 use tilo_ui_base::{widget::ArtifactKind, widget::HistoryEntryId};
 use ui::widget::EntryKind;
@@ -3280,7 +3281,7 @@ fn describe_scope(scope: &Scope) -> String {
 }
 
 /// Who a capability reaches, and through which app when it names one.
-fn describe_grantee(grantee: &Grantee, app: Option<&tilo_app_id::AppId>) -> String {
+fn describe_grantee(grantee: &Grantee, app: Option<&tilo_member_types::AppId>) -> String {
     let who = match grantee {
         Grantee::Member(MemberId::Person(id)) => short(id.as_str()),
         Grantee::Member(MemberId::Agent { id: agent, .. }) => {

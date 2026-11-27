@@ -9,7 +9,7 @@ use vello::peniko::{Color, Fill};
 
 use crate::color_compat::ColorCompat as _;
 use crate::widget::ChipStyle;
-use tilo_action_policy::MemberId;
+use tilo_member_types::MemberId;
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::num::f32_of_f64;
 use tilo_ui_base::paint::PaintCtx;

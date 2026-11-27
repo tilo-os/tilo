@@ -2821,7 +2821,7 @@ impl Workspaces {
                     "`{resource}` is no resource of an app of this workspace"
                 ))
             })?;
-        let member = call.args.object::<tilo_action_policy::MemberId>("member")?;
+        let member = call.args.object::<tilo_member_types::MemberId>("member")?;
         let grantee = match (member, call.args.text("role")?) {
             (Some(member), None) => tilo_action_policy::Grantee::member(member),
             (None, Some(role)) => tilo_action_policy::Grantee::role(

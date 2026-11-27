@@ -271,11 +271,11 @@ pub(crate) async fn make_scout(host: &Host) {
 }
 
 /// A value that mentions the workspace's assistant in Chat's rich text: what fires its trigger.
-/// A mention's mark names its member as [`tilo_action_policy::MemberId::mark_value`] writes it,
+/// A mention's mark names its member as [`tilo_member_types::MemberId::mark_value`] writes it,
 /// which is what the workspace's triggers look for in a message.
 fn mentioning(person: &str, text: &str) -> Value {
     let label = format!("@{SCOUT}");
-    let member = tilo_action_policy::MemberId::agent(SCOUT_ID, person).mark_value();
+    let member = tilo_member_types::MemberId::agent(SCOUT_ID, person).mark_value();
     json!({"rich": [{
         "id": "",
         "kind": "paragraph",
@@ -631,7 +631,7 @@ fn a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_person_closed
         );
         assert_eq!(
             reminder.by,
-            tilo_action_policy::MemberId::agent(SCOUT_ID, host.person()),
+            tilo_member_types::MemberId::agent(SCOUT_ID, host.person()),
             "the reminder is the assistant's own, not its person's: {reminder:?}"
         );
 

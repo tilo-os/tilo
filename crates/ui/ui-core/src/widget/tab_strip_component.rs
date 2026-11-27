@@ -313,7 +313,7 @@ fn face_spec(face: &PresenceFaceProps) -> Option<TabFaceSpec> {
         agent: who.is_some_and(|who| {
             !who.identity
                 .member_id()
-                .is_some_and(tilo_action_policy::MemberId::is_person)
+                .is_some_and(tilo_member_types::MemberId::is_person)
         }),
         rgb: face.colour.as_deref().and_then(hex_rgb),
     })

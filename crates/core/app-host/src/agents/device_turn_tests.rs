@@ -446,7 +446,7 @@ fn message_written(
         app: CHAT.to_owned(),
         kind: tilo_workspace_service::agent_shortcuts::MESSAGE.to_owned(),
         change: "change-1".to_owned(),
-        actor: tilo_action_policy::Acting::person(person.to_owned()),
+        actor: tilo_member_types::Acting::person(person.to_owned()),
         did: tilo_actions::Did::verb(
             tilo_actions::ActionKey::new(
                 CHAT,

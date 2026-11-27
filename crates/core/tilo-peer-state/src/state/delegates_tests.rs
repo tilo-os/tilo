@@ -125,11 +125,9 @@ fn edit(
     .with_invoker(
         ActionInvoker::agent(
             AGENT,
-            tilo_action_policy::PersonId::from_root(cert.user_public_key),
+            tilo_member_types::PersonId::from_root(cert.user_public_key),
         )
-        .acting_for(tilo_action_policy::PersonId::from_root(
-            cert.user_public_key,
-        )),
+        .acting_for(tilo_member_types::PersonId::from_root(cert.user_public_key)),
     );
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
@@ -630,7 +628,7 @@ fn one_agent_on_two_devices_is_one_agent_in_permissions_and_in_history() {
     );
 
     // Permissions: both keys are the one agent, for its person, and never the person.
-    let one = tilo_action_policy::MemberId::agent(
+    let one = tilo_member_types::MemberId::agent(
         AGENT.to_owned(),
         hex::encode(person.verifying_key().to_bytes()).as_str(),
     );

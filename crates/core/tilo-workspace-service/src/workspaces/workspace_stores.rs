@@ -21,10 +21,12 @@
 //! them) is kept apart, under `people/<person>/`, and no workspace reaches it.
 
 use std::path::{Path, PathBuf};
+use tilo_action_policy::ActingPolicy as _;
 
-use tilo_action_policy::{Acting, ActionKind, Answer, Context, TreePath};
+use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
 use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
+use tilo_member_types::Acting;
 use tilo_user_identity::DeviceCert;
 
 use super::{WorkspaceId, Workspaces};
@@ -156,9 +158,9 @@ impl Workspaces {
             return false;
         }
         // The agent works on its asker's word: it reaches what they may, as its own member.
-        let acting = tilo_action_policy::Acting::member(agent.clone())
+        let acting = tilo_member_types::Acting::member(agent.clone())
             .handed()
-            .acting_for(tilo_action_policy::Acting::person(person.as_str()));
+            .acting_for(tilo_member_types::Acting::person(person.as_str()));
         // What its delegation hands it: the preset of a handed agent and its caller's grants.
         let mut handed = acting.handed_preset(policy.workspace.as_str());
         handed.extend(caller.granted());

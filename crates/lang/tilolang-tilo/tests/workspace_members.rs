@@ -217,8 +217,7 @@ fn a_host_its_embedder_publishes_members_to_names_them_from_the_reading() {
     let rows: Vec<serde_json::Value> = ["ada", "bo"]
         .iter()
         .map(|name| {
-            let who =
-                tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person(*name));
+            let who = tilo_member_types::Actor::Member(tilo_member_types::MemberId::person(*name));
             serde_json::json!({
                 "actor": serde_json::to_value(&who).unwrap(),
                 "name": name,

@@ -49,13 +49,13 @@ impl Default for RowReactions {
 }
 
 /// The reactor a pill the person reacted to marks as theirs.
-fn shower() -> tilo_action_policy::MemberId {
-    tilo_action_policy::MemberId::person("\u{1}you")
+fn shower() -> tilo_member_types::MemberId {
+    tilo_member_types::MemberId::person("\u{1}you")
 }
 
 fn group(pill: &ToolbarReaction) -> tilo_actions::reaction::ReactionGroup {
     let named =
-        |by: tilo_action_policy::MemberId, name: Option<&str>| tilo_actions::reaction::Reactor {
+        |by: tilo_member_types::MemberId, name: Option<&str>| tilo_actions::reaction::Reactor {
             by,
             persona: None,
             name: name.map(str::to_owned),
@@ -67,13 +67,13 @@ fn group(pill: &ToolbarReaction) -> tilo_actions::reaction::ReactionGroup {
     reactors.extend(
         pill.names
             .iter()
-            .map(|name| named(tilo_action_policy::MemberId::person(""), Some(name))),
+            .map(|name| named(tilo_member_types::MemberId::person(""), Some(name))),
     );
     let count = usize::try_from(pill.count)
         .unwrap_or(usize::MAX)
         .min(10_000);
     while reactors.len() < count {
-        reactors.push(named(tilo_action_policy::MemberId::person(""), Some("")));
+        reactors.push(named(tilo_member_types::MemberId::person(""), Some("")));
     }
     tilo_actions::reaction::ReactionGroup {
         emoji: pill.emoji.clone(),

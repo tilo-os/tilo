@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{ActionApp, ActionResource, InvocationId, WorkGroup};
-use tilo_action_policy::Acting;
+use tilo_member_types::Acting;
 
 /// Wire version understood by this crate.
 pub const INTERACTION_VERSION: u16 = 2;

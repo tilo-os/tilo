@@ -17,8 +17,9 @@ use std::path::{Component, Path};
 use std::str::FromStr;
 
 use collab_types::caps::{Access, CapOverride, Effect, Scope};
-use tilo_action_policy::{Grantee, MemberId};
+use tilo_action_policy::Grantee;
 pub use tilo_app_package::PackageId;
+use tilo_member_types::MemberId;
 use tilo_resource::{
     ActionCx, Id, Invoke, JsonSchema, Model, ModelError, Outbox, Undoing, resource,
 };

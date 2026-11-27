@@ -256,7 +256,8 @@ mod tests {
     )]
     fn an_approved_key_acts_as_its_persons_agent_until_its_grant_is_revoked() -> TestResult {
         use ed25519_dalek::SigningKey;
-        use tilo_action_policy::{Acting, ActionKind, Answer, Context, TreePath};
+        use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
+        use tilo_member_types::Acting;
         use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
         let (mut peer, owner_copy, _, server, now) = crate::admission_tests::seeded();
         let root = SigningKey::from_bytes(&[1; 32]);
@@ -276,7 +277,7 @@ mod tests {
         peer.governance_mut()
             .admit_member_device(&cert, &SigningKey::from_bytes(&[9; 32]), now)?;
         let person = hex::encode(root.verifying_key().to_bytes());
-        let agent = tilo_action_policy::key_agent_id(&key);
+        let agent = tilo_member_types::key_agent_id(&key);
         // The key's call, carried out and signed by another device of the
         // workspace's: the change names the key's agent, for its person.
         let invoker = Acting::handed_agent(agent, person);

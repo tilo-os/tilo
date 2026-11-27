@@ -88,13 +88,13 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tilo_action_policy::{Actor, MemberId};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, ExecutionLease, InvocationReceipt, InvocationState,
     ReadingAnswer, ReadsAnswer, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
     ResourceAddress, ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake, UpdateMark,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_member_types::{Actor, MemberId};
 use tilo_server_protocol::invocation::InvocationReplay;
 use tilo_user_identity::RevocationList;
 use web_time::SystemTime;
@@ -1833,7 +1833,7 @@ fn visitor_may(
         .app(invoke.target.provider.as_str())
         .resource(invoke.target.address.resource.as_str())
         .action(invoke.target.address.action.as_str());
-    let visitor = tilo_action_policy::Acting::visitor(&key);
+    let visitor = tilo_member_types::Acting::visitor(&key);
     tilo_action_policy::Authority::of_acting(&visitor, &policy, &[])
         .decide(
             &node,
@@ -1908,7 +1908,7 @@ fn invocation_signer(
 /// Who an invocation `message` carries says it is for, when it says: the provenance its sender
 /// wrote, which grants nothing and is read only to refuse a call that names someone it does not
 /// carry the signature of.
-fn claimed_invoker(message: &RemoteActionMessage) -> Option<&tilo_action_policy::Acting> {
+fn claimed_invoker(message: &RemoteActionMessage) -> Option<&tilo_member_types::Acting> {
     let RemoteActionMessage::Invoke(request) = message else {
         return None;
     };

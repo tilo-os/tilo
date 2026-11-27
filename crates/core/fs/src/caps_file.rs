@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use collab_types::CapOverride;
-use tilo_action_policy::MemberId;
+use tilo_member_types::MemberId;
 
 use crate::acl::{AclHandle, IdentityKey, WorkspaceAcl};
 use crate::file_watch::FileChanges;

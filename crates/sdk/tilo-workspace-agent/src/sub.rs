@@ -18,7 +18,7 @@
 //!
 //! **A sub-agent is one more actor in its starter's chain.** It works for the person its
 //! starter's turn answered, and its work is decided for that person bounded by every agent and
-//! person before it ([`tilo_action_policy::Acting::handed_on`]): it does no more than its
+//! person before it ([`tilo_member_types::Acting::handed_on`]): it does no more than its
 //! starter's turn may, and reads what that chain's grants allow. A sub-agent changes nothing of
 //! this record but its own team ([`WorkspaceAgents::not_by_sub_agent`]), so it can neither
 //! unbind its starter nor make an agent that nothing binds.
@@ -399,7 +399,7 @@ impl WorkspaceAgents {
         let by_one = acting
             .nodes()
             .into_iter()
-            .filter_map(tilo_action_policy::Acting::agent_id)
+            .filter_map(tilo_member_types::Acting::agent_id)
             .any(|agent| {
                 self.agents
                     .find(&Id::from_raw(agent.to_owned()))

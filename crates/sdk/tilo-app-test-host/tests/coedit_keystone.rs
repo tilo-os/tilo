@@ -494,7 +494,7 @@ use tilo_action_policy::MemberAccess;
 /// `root`'s person as a member of a workspace holding `role`: the access the
 /// changes naming that person are decided under.
 fn member(root: [u8; 32], role: Role) -> MemberAccess {
-    let person = tilo_action_policy::PersonId::from_root(root);
+    let person = tilo_member_types::PersonId::from_root(root);
     let mut policy = tilo_action_policy::WorkspacePolicy::new(DEFAULT_WORKSPACE, "owner");
     policy.members.insert(person.as_str().to_owned(), role);
     MemberAccess::person(policy, person)

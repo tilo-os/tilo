@@ -5,9 +5,9 @@ use std::collections::BTreeMap;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
-use tilo_action_policy::AgentSessionId;
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::session_api::Consent;
+use tilo_member_types::AgentSessionId;
 
 /// The agent sessions served here, from the moment a client connects until its connection ends.
 pub(crate) struct AgentSessions {

@@ -514,7 +514,7 @@ fn fluent_text_interpolates_degrades_and_follows_locale() {
                 (700, 300),
                 Theme::dark(),
                 tilo_ui_base::font_catalog::fixture_renderer(),
-                tilo_action_policy::MemberId::person("text-widget-locale-fixture"),
+                tilo_member_types::MemberId::person("text-widget-locale-fixture"),
             );
 
             let before = driver.inspection();

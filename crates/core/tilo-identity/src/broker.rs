@@ -500,7 +500,7 @@ fn decide_written(
         document: document_id,
     };
     let access = std::cell::OnceCell::new();
-    let allows = |invoker: Option<&tilo_action_policy::Acting>,
+    let allows = |invoker: Option<&tilo_member_types::Acting>,
                   node: &tilo_action_policy::TreePath,
                   kind| match invoker {
         None => {
@@ -1532,7 +1532,7 @@ params = []
                 use automerge::transaction::Transactable as _;
                 let mut doc = automerge::AutoCommit::new();
                 doc.put(automerge::ROOT, "body", "hello").expect("write");
-                let owner = tilo_action_policy::Acting::person(profile.person_id());
+                let owner = tilo_member_types::Acting::person(profile.person_id());
                 let entry = tilo_actions::ActionContext::for_resource(document_id, "notes.page", "Page")
                     .with_invoker(tilo_actions::ActionInvoker::admitted(&owner));
                 doc.commit_with(

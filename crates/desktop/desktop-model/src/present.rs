@@ -8,7 +8,7 @@
 
 use collab_types::presence::{Availability, CallPresence};
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::MemberId;
+use tilo_member_types::MemberId;
 
 use crate::ids::TabId;
 

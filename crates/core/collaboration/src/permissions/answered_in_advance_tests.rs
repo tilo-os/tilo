@@ -52,7 +52,9 @@ fn sends(grants: Vec<policy::Grant>) -> Result<(), tilo_actions::ApiError> {
     let window =
         PermissionContext::member_of(LOCAL_WORKSPACE, &MemberId::person("editor"), Role::Editor)
             .acting_as(
-                policy::Actor::Member(policy::MemberId::agent("scribe", "editor")),
+                tilo_member_types::Actor::Member(tilo_member_types::MemberId::agent(
+                    "scribe", "editor",
+                )),
                 grants,
             )
             .reaching_person();

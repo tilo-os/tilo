@@ -42,7 +42,7 @@ pub async fn assistant_of(
                 && agent.mcp_client.is_none()
                 && tilo_failure::ignored!(
                     "a person that is no person's id is not this person",
-                    tilo_action_policy::PersonId::parse(&agent.acts_for).ok()
+                    tilo_member_types::PersonId::parse(&agent.acts_for).ok()
                 )
                 .and_then(|acts_for| acts_for.root())
                 .as_ref()

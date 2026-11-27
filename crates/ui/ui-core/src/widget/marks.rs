@@ -134,7 +134,7 @@ impl Mark {
     /// reference to whatever else it names. `None` for an empty value.
     #[must_use]
     pub fn of_reference(value: &str) -> Option<Self> {
-        match tilo_action_policy::MemberId::of_mark_value(value) {
+        match tilo_member_types::MemberId::of_mark_value(value) {
             Some(member) => Some(Self::Mention(member)),
             None => (!value.is_empty()).then(|| Self::Reference(value.to_owned())),
         }

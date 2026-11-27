@@ -10,6 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+tilo-member-types.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 fluent.workspace = true
@@ -18,7 +19,6 @@ hex.workspace = true
 libc.workspace = true
 rustix = { workspace = true, features = ["process"] }
 image = { workspace = true, features = ["png"] }
-tilo-app-id.workspace = true
 tilo-app-package = { version = "0.1.0", path = "../../core/tilo-app-package" }
 # Inside a Tilo session, `dev` hands the app the session's services (the
 # shell's file chooser, the model gateway) named for it as the launcher does,

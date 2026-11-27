@@ -15,6 +15,7 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
+tilo-member-types.workspace = true
 tilo-action-services = { version = "0.1.0", path = "../action-services" }
 # The records a search finds and the actions a search answers.
 tilo-workspace-records = { version = "0.1.0", path = "../workspace-records" }

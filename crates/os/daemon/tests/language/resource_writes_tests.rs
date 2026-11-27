@@ -120,7 +120,7 @@ struct Writer {
     keys: ContentKeys,
     store: Store,
     seq: u64,
-    of: Option<tilo_action_policy::PersonId>,
+    of: Option<tilo_member_types::PersonId>,
 }
 
 impl Writer {
@@ -136,7 +136,7 @@ impl Writer {
         key: SigningKey,
         member: &tilo_user_identity::DeviceCert,
     ) -> Self {
-        let of = Some(tilo_action_policy::PersonId::from_root(
+        let of = Some(tilo_member_types::PersonId::from_root(
             member.user_public_key,
         ));
         Self::naming(workspaces, workspace, key, of).await
@@ -146,7 +146,7 @@ impl Writer {
         workspaces: &Workspaces,
         workspace: &str,
         key: SigningKey,
-        of: Option<tilo_action_policy::PersonId>,
+        of: Option<tilo_member_types::PersonId>,
     ) -> Self {
         let route = super::record_route(workspace, APP);
         let keys = workspaces
@@ -236,14 +236,14 @@ impl Writer {
         id: &str,
         verb: &str,
         name: &str,
-        person: Option<&tilo_action_policy::PersonId>,
+        person: Option<&tilo_member_types::PersonId>,
     ) -> Result<(), String> {
         let mut stamp = create();
         stamp.verb = verb.to_owned();
         stamp.args = vec![name.into(), id.into()];
         if let Some(person) = person {
-            stamp.invoker = Stamp::by(&tilo_action_policy::Actor::Member(
-                tilo_action_policy::MemberId::person(person.clone()),
+            stamp.invoker = Stamp::by(&tilo_member_types::Actor::Member(
+                tilo_member_types::MemberId::person(person.clone()),
             ));
         }
         let written = self.store.mark(KIND, id, &stamp).unwrap();
@@ -269,8 +269,8 @@ impl Writer {
         };
         let mut stamp = create();
         if let Some(person) = &self.of {
-            stamp.invoker = Stamp::by(&tilo_action_policy::Actor::Member(
-                tilo_action_policy::MemberId::person(person.clone()),
+            stamp.invoker = Stamp::by(&tilo_member_types::Actor::Member(
+                tilo_member_types::MemberId::person(person.clone()),
             ));
         }
         let written = self.store.put(KIND, id, resource, &stamp).unwrap();
@@ -2159,8 +2159,8 @@ async fn a_history_mark_naming_another_person_is_refused() {
     let document = writer
         .put_fields(&workspaces, &workspace, "i-1", fields)
         .await;
-    let against = tilo_action_policy::PersonId::from_root([9; 32]);
-    let own = tilo_action_policy::PersonId::from_root(member.user_public_key);
+    let against = tilo_member_types::PersonId::from_root([9; 32]);
+    let own = tilo_member_types::PersonId::from_root(member.user_public_key);
     for verb in ["checkpoint", "describe", "link"] {
         // Each attempt starts from the document the workspace kept, never from the writer's own
         // copy: a mark built on the one the workspace refused could be refused for that alone.

@@ -44,7 +44,7 @@ type PlannedArgs = Option<(Vec<Value>, serde_json::Map<String, Json>)>;
 /// read the change it made (`None` when no record it touched names its readers).
 type PlannedRecord = (
     serde_json::Map<String, Json>,
-    Option<Vec<tilo_actions::policy::MemberId>>,
+    Option<Vec<tilo_member_types::MemberId>>,
 );
 
 #[derive(Debug, thiserror::Error)]
@@ -1259,8 +1259,8 @@ impl HostInner {
     fn change_readers(
         &self,
         targets: impl IntoIterator<Item = ResourceRef>,
-    ) -> Option<Vec<tilo_actions::policy::MemberId>> {
-        let mut readers: Option<Vec<tilo_actions::policy::MemberId>> = None;
+    ) -> Option<Vec<tilo_member_types::MemberId>> {
+        let mut readers: Option<Vec<tilo_member_types::MemberId>> = None;
         for at in targets {
             let Some(of) = self.runtime.readers(&at) else {
                 continue;

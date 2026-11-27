@@ -19,6 +19,7 @@ use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+use tilo_action_policy::ActingPolicy as _;
 
 use automerge::{Automerge, Change as AmChange, ChangeHash, ROOT, ReadDoc as _};
 use collab_types::is_store_document;
@@ -221,10 +222,9 @@ impl tilo_resource_store::RecordReader for PolicyReaders {
         actor: &tilo_actions::Actor,
         kind: &str,
         id: &str,
-    ) -> Option<tilo_action_policy::PersonId> {
-        use tilo_action_policy::{
-            Acting, ActionKind, Answer, Authority as Policy, Context, MemberId, TreePath,
-        };
+    ) -> Option<tilo_member_types::PersonId> {
+        use tilo_action_policy::{ActionKind, Answer, Authority as Policy, Context, TreePath};
+        use tilo_member_types::{Acting, MemberId};
         let policy = self
             .0
             .read()
@@ -2203,7 +2203,7 @@ fn workspace_members(
         .grants
         .iter()
         .filter_map(|grant| match &grant.grantee {
-            tilo_action_policy::Grantee::Member(tilo_action_policy::MemberId::Bot(bot)) => {
+            tilo_action_policy::Grantee::Member(tilo_member_types::MemberId::Bot(bot)) => {
                 Some(bot.clone())
             }
             _ => None,
@@ -2212,7 +2212,7 @@ fn workspace_members(
     bots.sort_unstable();
     bots.dedup();
     for bot in bots {
-        let who = tilo_actions::Actor::Member(tilo_action_policy::MemberId::Bot(bot.clone()));
+        let who = tilo_actions::Actor::Member(tilo_member_types::MemberId::Bot(bot.clone()));
         rows.push(serde_json::json!({
             "actor": serde_json::to_value(&who).map_err(|error| error.to_string())?,
             "name": bot,
@@ -3313,7 +3313,7 @@ fn platform_write_belongs(
     {
         return true;
     }
-    let acting = stamp.invoked_by().map(tilo_action_policy::Acting::from);
+    let acting = stamp.invoked_by().map(tilo_member_types::Acting::from);
     let author = author_person.map(hex::encode);
     let named = author.as_deref().is_some_and(|author| {
         acting
@@ -3443,7 +3443,7 @@ impl OriginLeave {
         // lets it read a shared account's password, could sign in to that account directly, so
         // writing its data as the origin gives it nothing more. Another member's device is
         // refused.
-        let named_person = tilo_action_policy::Acting::person(person.as_str());
+        let named_person = tilo_member_types::Acting::person(person.as_str());
         if access.invoked_by(&named_person).is_none()
             && !(self.carried && device == *proposal.author)
         {

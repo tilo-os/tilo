@@ -465,7 +465,7 @@ pub use tilo_action_policy as policy;
 /// is placed below it ([`ActionContract::field`]), where someone who may only
 /// comment is granted changes.
 pub use tilo_action_policy::roles::{COMMENTS_FIELD, MODERATION_FIELD};
-pub use tilo_action_policy::{Acting, Actor, MemberId, PersonId};
+pub use tilo_member_types::{Acting, Actor, MemberId, PersonId};
 
 /// The stable address (`kind:id`) of the item an item resource id names: `<kind>.<field>:<item>`
 /// for `<kind>/<field>/<item>` — the address an action's resource parameter takes. An app that

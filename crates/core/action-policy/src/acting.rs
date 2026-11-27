@@ -1,11 +1,12 @@
 //! Who made a change: one tree, and the one admission every action API takes.
 
 use crate::{
-    Actor, Admission, Answer, Asker, Authority, Context, Grant, GrantId, Grantee, Invoked,
-    MemberId, Party, Reach, Refused, TreePath, WorkspacePolicy, admit,
+    Admission, Answer, Asker, Authority, Context, Grant, GrantId, Grantee, Invoked, Party, Reach,
+    Refused, TreePath, WorkspacePolicy, admit,
 };
+use tilo_member_types::{Actor, MemberId};
 
-/// [`crate::Acting::asker`] for an acting with software or a device between
+/// [`ActingPolicy::asker`] for an acting with software or a device between
 /// the person and the change when `delegated`.
 #[must_use]
 pub const fn asker_of(delegated: bool, host_reaches_person: bool) -> Asker {
@@ -15,23 +16,30 @@ pub const fn asker_of(delegated: bool, host_reaches_person: bool) -> Asker {
     }
 }
 
-impl crate::Acting {
+/// What the workspace's policy reads from who acted ([`tilo_member_types::Acting`]): who an invocation asks,
+/// and the grants a handed agent of its tree carries.
+pub trait ActingPolicy {
+    /// Who an invocation of this acting asks.
+    fn asker(&self, host_reaches_person: bool) -> Asker;
+    /// The preset every handed agent of the tree carries in `workspace`.
+    fn handed_preset(&self, workspace: &str) -> Vec<Grant>;
+}
+
+impl ActingPolicy for tilo_member_types::Acting {
     /// Who an invocation of this acting asks: the person, who can answer when
     /// they act themselves or when the host running it reaches them
     /// (`host_reaches_person`); and whether someone acts for them, who is
     /// asked before an action the person attends.
-    #[must_use]
-    pub fn asker(&self, host_reaches_person: bool) -> Asker {
+    fn asker(&self, host_reaches_person: bool) -> Asker {
         asker_of(self.delegated(), host_reaches_person)
     }
 
     /// The preset every handed agent of the tree carries in `workspace`
-    /// ([`crate::Acting::handed`], [`crate::roles::agent_preset`]), for the
+    /// ([`tilo_member_types::Acting::handed`], [`crate::roles::agent_preset`]), for the
     /// person it acts for: the one place a device's delegation to its agent
     /// becomes grants, so the device that admitted the agent and every
     /// receiver of its changes decide it alike.
-    #[must_use]
-    pub fn handed_preset(&self, workspace: &str) -> Vec<Grant> {
+    fn handed_preset(&self, workspace: &str) -> Vec<Grant> {
         self.nodes()
             .into_iter()
             .filter(|node| node.handed)
@@ -54,7 +62,7 @@ impl<'a> Authority<'a> {
     /// automation by what the people it runs for gave it.
     #[must_use]
     pub fn of_acting(
-        acting: &'a crate::Acting,
+        acting: &'a tilo_member_types::Acting,
         policy: &'a WorkspacePolicy,
         granted: &'a [Grant],
     ) -> Self {
@@ -122,6 +130,12 @@ impl<'a> Authority<'a> {
 #[must_use]
 pub fn granted_to(member: &MemberId) -> Grantee {
     Grantee::Member(member.clone())
+}
+
+/// The grantee a grant names `actor` by, when it is a member: an automation is its owner's.
+#[must_use]
+pub fn grantee_of(actor: &tilo_member_types::Actor) -> Option<Grantee> {
+    Some(granted_to(actor.member_id()?))
 }
 
 /// An agent's or bot's own grants: the workspace's naming it, and those its
@@ -252,9 +266,10 @@ pub fn admit_invocation(
 mod tests {
     use super::*;
     use crate::{
-        Acting, ActionKind, Answer, Context, Grant, Grantee, KindSet, Role, SESSION_ANSWER_PREFIX,
-        Verdict, roles,
+        ActionKind, Answer, Context, Grant, Grantee, KindSet, Role, SESSION_ANSWER_PREFIX, Verdict,
+        roles,
     };
+    use tilo_member_types::Acting;
 
     const WORKSPACE: &str = "w";
 

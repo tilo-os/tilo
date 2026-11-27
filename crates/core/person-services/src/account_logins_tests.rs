@@ -445,7 +445,7 @@ async fn two_members_devices_sign_in_to_one_mail_account_with_the_one_vault_entr
 }
 
 /// Who made the last change of the document `bytes`, as its stamp names them.
-fn last_invoker(bytes: &[u8]) -> tilo_action_policy::Acting {
+fn last_invoker(bytes: &[u8]) -> tilo_member_types::Acting {
     let mut doc = automerge::AutoCommit::load(bytes).unwrap();
     let changes = doc.get_changes(&[]);
     let last = changes.last().expect("the document holds changes");

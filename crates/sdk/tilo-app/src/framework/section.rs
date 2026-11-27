@@ -222,7 +222,7 @@ impl SectionKind {
                     .filter_map(|alias| {
                         tilo_failure::ignored!(
                             "an earlier id that is not a person's names nobody whose step this is",
-                            tilo_actions::policy::PersonId::parse(alias).ok()
+                            tilo_member_types::PersonId::parse(alias).ok()
                         )
                     })
                     .map(|alias| {

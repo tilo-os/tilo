@@ -11,6 +11,7 @@ name = "settings_sections"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-member-types.workspace = true
 agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config", features = ["model"] }
 # The providers' keys, kept in this device's sealed vault: what a key is
 # written to and read from, never part of the settings document.
@@ -23,7 +24,6 @@ serde_json.workspace = true
 settings-store = { package = "tilo-settings-store", path = "../settings", features = ["model"] }
 settings-model = { package = "tilo-settings-model", path = "../../sdk/settings-model" }
 tilo-accessibility-settings = { path = "../../desktop/tilo-accessibility-settings", features = ["model"] }
-tilo-app-id.workspace = true
 # Every app's commands with the keys it gives them, which the shortcuts table lists to move.
 fleet-catalogue = { package = "tilo-fleet-catalogue", version = "0.1.0", path = "../../core/fleet-catalogue" }
 tilo-locale = { path = "../../platform/tilo-locale" }

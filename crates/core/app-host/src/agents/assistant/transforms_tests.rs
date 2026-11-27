@@ -12,11 +12,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::json;
-use tilo_action_policy::MemberId;
 use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
+use tilo_member_types::MemberId;
 
 use super::*;
 

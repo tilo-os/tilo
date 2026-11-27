@@ -19,7 +19,6 @@ use mount::{MountConfig, MountOutcome, MountServices, run_mount};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tilo_action_policy::MemberId;
 use tilo_fs::clock::unix_now_ms;
 use tilo_fs::namespace::{MountAuthor, ROOT_INO};
 use tilo_fs::{
@@ -27,6 +26,7 @@ use tilo_fs::{
     device_public_key, identity_paths, load_certified_mount_identity_once_valid,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_member_types::MemberId;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Tilo collaborative filesystem", long_about = None)]

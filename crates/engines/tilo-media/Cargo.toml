@@ -86,8 +86,8 @@ cast = ["dep:tilo-projector"]
 test-support = ["dep:tilo-test-env"]
 
 [dependencies]
+tilo-member-types.workspace = true
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
-tilo-app-id.workspace = true
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-platform-caps = { version = "0.1.0", path = "../../platform/tilo-platform-caps" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }

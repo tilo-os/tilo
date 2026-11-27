@@ -2259,8 +2259,8 @@ async fn an_agents_vault_write_is_the_allowed_calls_declared_step_alone() {
     .await
     .expect("Ada keeps a login");
     let hers = hex::encode(ada.user_public_key);
-    let agent = tilo_action_policy::Acting::agent("assistant", hers.clone())
-        .acting_for(tilo_action_policy::Acting::person(hers.clone()));
+    let agent = tilo_member_types::Acting::agent("assistant", hers.clone())
+        .acting_for(tilo_member_types::Acting::person(hers.clone()));
     let fill = request_of(
         workspace_vault::target(workspace_vault::FILL_PAGE),
         json!({"item": kept["reference"], "site": "https://example.com"}),

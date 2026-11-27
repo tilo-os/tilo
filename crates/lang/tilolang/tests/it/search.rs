@@ -855,7 +855,7 @@ type Shared {{
             "the filter asks which item's assignee is the person looking"
         );
         assert!(pred.reads_viewer(), "it is asked for someone");
-        let ben = tilo_action_policy::Actor::from(tilo_action_policy::MemberId::person("ben"));
+        let ben = tilo_member_types::Actor::from(tilo_member_types::MemberId::person("ben"));
         assert_eq!(
             pred.viewer(&ben),
             Pred::And(vec![

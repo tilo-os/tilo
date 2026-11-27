@@ -520,7 +520,7 @@ pub struct ChangeNote {
     /// (`Core::change_readers`): history lists it to them alone. `None` when it touched
     /// nothing that names its readers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub readers: Option<Vec<tilo_actions::policy::MemberId>>,
+    pub readers: Option<Vec<tilo_member_types::MemberId>>,
     /// The run it was made in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<Run>,

@@ -837,7 +837,7 @@ impl crate::PersonServices {
         workspace: &str,
         item: &ItemRef,
         (kind, places): (vault_items::ItemKind, &[Place]),
-        (by, asker, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
+        (by, asker, call): (&str, &tilo_member_types::Acting, Option<&InvokeRequest>),
         purpose: UsedFor<'_>,
     ) -> Result<vault_items::Released, String> {
         let id = vault_items::ItemId::parse(item.id())
@@ -856,7 +856,7 @@ impl crate::PersonServices {
         &self,
         (workspace, root): (&str, &Path),
         adding: AddMailWithItem,
-        (by, asker, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
+        (by, asker, call): (&str, &tilo_member_types::Acting, Option<&InvokeRequest>),
         purpose: UsedFor<'_>,
     ) -> Result<MailAccount, String> {
         let server = |scheme: &str, host: &str, port: u16| {
@@ -915,7 +915,7 @@ impl crate::PersonServices {
         &self,
         (workspace, root): (&str, &Path),
         setting: &SetKeyFromItem,
-        (by, asker, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
+        (by, asker, call): (&str, &tilo_member_types::Acting, Option<&InvokeRequest>),
         purpose: UsedFor<'_>,
     ) -> Result<ProviderView, String> {
         let endpoint = {

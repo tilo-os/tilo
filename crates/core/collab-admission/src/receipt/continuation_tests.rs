@@ -4,8 +4,9 @@
 
 use automerge::AutoCommit;
 use automerge::transaction::{CommitOptions, Transactable};
-use tilo_action_policy::{Acting, Answer, Context, MemberAccess};
+use tilo_action_policy::{Answer, Context, MemberAccess};
 use tilo_actions::{ActionContext, ActionInvoker, ActionKey, Did, EncodedAction, VerbCall};
+use tilo_member_types::Acting;
 
 use super::invoker_tests::{
     FILES, TREE, Tree, WORKSPACE, mount_agent, person, policy, received, tree, write_node,

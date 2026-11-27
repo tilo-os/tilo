@@ -115,13 +115,13 @@ fn started(state: &AppBrokerState, actor: &BrokerActor) -> u64 {
         .id
 }
 
-fn member(member: tilo_action_policy::MemberId) -> tilo_action_policy::Actor {
-    tilo_action_policy::Actor::from(member)
+fn member(member: tilo_member_types::MemberId) -> tilo_member_types::Actor {
+    tilo_member_types::Actor::from(member)
 }
 
 #[test]
 fn an_actor_cancels_only_what_it_started() {
-    use tilo_action_policy::MemberId;
+    use tilo_member_types::MemberId;
     let (state, _app) = broker();
     let scout = member(MemberId::agent("scout", "owner"));
     let person = member(MemberId::person("owner"));
@@ -138,7 +138,7 @@ fn an_actor_cancels_only_what_it_started() {
         ),
         (
             "an app",
-            tilo_action_policy::Actor::App("so.tilo.files".into()),
+            tilo_member_types::Actor::App("so.tilo.files".into()),
         ),
         ("another member", member(MemberId::person("editor"))),
     ];
@@ -178,7 +178,7 @@ fn an_actor_cancels_only_what_it_started() {
         ("a run acting as the person", &person),
         (
             "an automation",
-            &tilo_action_policy::Actor::automation("nightly"),
+            &tilo_member_types::Actor::automation("nightly"),
         ),
     ] {
         assert!(

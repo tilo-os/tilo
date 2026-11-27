@@ -3,6 +3,7 @@
 use super::{
     Target as Placed, found_place, found_resource, most_specific, placed, query_state_from_outcome,
 };
+use tilo_action_policy::ActingPolicy as _;
 use tilo_desktop_search::{Hit, InvokeTarget, ResourceKind, Target};
 
 /// The query's starting state is the app's own search invocation result: a run that was taken

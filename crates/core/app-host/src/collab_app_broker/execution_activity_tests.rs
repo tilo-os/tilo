@@ -1,6 +1,7 @@
 //! Synthetic execution fixtures: no model, transport grants, UI input or capture.
 use super::*;
 use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+use tilo_action_policy::ActingPolicy as _;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, PendingPoll, RemoteActionTarget,
@@ -1515,7 +1516,7 @@ fn agent_answered(
     let owner = "a1".repeat(32);
     let person = tilo_action_policy::Grantee::person(owner.clone());
     let (state, person_caller, mut app) = fixture_granting(Vec::new(), Vec::new(), |workspace| {
-        let mut grants = tilo_action_policy::Acting::handed_agent("scribe", owner.as_str())
+        let mut grants = tilo_member_types::Acting::handed_agent("scribe", owner.as_str())
             .handed_preset(workspace);
         grants.push(agent_answers::grant(
             workspace,

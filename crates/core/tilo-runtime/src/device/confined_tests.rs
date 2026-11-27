@@ -454,7 +454,7 @@ async fn a_workspaces_vm_keeps_nothing_and_its_host_decides_its_calls() {
     assert_eq!(
         context.invoker,
         Some(tilo_actions::ActionInvoker::person(
-            tilo_action_policy::PersonId::from_root(person)
+            tilo_member_types::PersonId::from_root(person)
         )),
         "history names the person whose VM it is"
     );

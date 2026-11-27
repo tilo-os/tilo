@@ -9520,10 +9520,10 @@ fn validate_app_id(id: &str) -> Result<()> {
     if !valid {
         bail!("invalid app id {id:?}; use at least three dot-separated DNS-style components");
     }
-    if !tilo_app_id::Grammar::CANONICAL.matches(id) {
+    if !tilo_member_types::Grammar::CANONICAL.matches(id) {
         bail!(
             "invalid app id {id:?}; app ids must be at most {} bytes",
-            tilo_app_id::MAX_APP_ID_BYTES
+            tilo_member_types::MAX_APP_ID_BYTES
         );
     }
     Ok(())

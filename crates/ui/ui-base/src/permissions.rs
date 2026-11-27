@@ -8,7 +8,8 @@
 
 /// Who a member is, and what kind of action a grant reaches: plain values of the action policy,
 /// which the toolkit names without the collaboration model.
-pub use tilo_action_policy::{Acting, ActionKind, Grantee, MemberId};
+pub use tilo_action_policy::{ActionKind, Grantee};
+pub use tilo_member_types::{Acting, MemberId};
 
 #[cfg(feature = "model")]
 pub use ::collaboration::permissions::*;

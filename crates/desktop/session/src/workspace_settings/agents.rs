@@ -15,11 +15,12 @@
 
 use std::cell::RefCell;
 
-use tilo_action_policy::{ActionKind, MemberId};
+use tilo_action_policy::ActionKind;
 use tilo_app::tilo_workspace_agent::{
     KIND, OWNER, WorkspaceAgents as Record, workspace_agents as actions,
 };
 use tilo_desktop_model::{Layout, Workspace};
+use tilo_member_types::MemberId;
 use tilo_resource::Id;
 use tilo_session_client::daemon_documents::DaemonShell;
 use tilo_session_core::desktop::authority::WorkspaceAuthority as _;

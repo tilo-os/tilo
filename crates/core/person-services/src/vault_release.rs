@@ -601,7 +601,7 @@ impl crate::PersonServices {
             generate: None,
             secret: Some(secret.to_string()),
         };
-        let acting = tilo_action_policy::Acting::person(person);
+        let acting = tilo_member_types::Acting::person(person);
         self.changing_vault(workspace, (Some(&acting), None), |items| {
             crate::person_vault::add(items, adding)
         })

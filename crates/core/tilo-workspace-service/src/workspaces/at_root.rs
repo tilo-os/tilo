@@ -393,7 +393,7 @@ fn agent_of(
     let agent = caller
         .acting()
         .agent_id()
-        .map_or_else(|| tilo_action_policy::key_agent_id(&key), str::to_owned);
+        .map_or_else(|| tilo_member_types::key_agent_id(&key), str::to_owned);
     Ok((key, agent, certificate.device_label))
 }
 

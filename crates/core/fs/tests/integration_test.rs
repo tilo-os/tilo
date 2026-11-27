@@ -20,9 +20,10 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use collab_types::{Access as CapAccess, CapOverride, Effect, Scope};
 use fuser::{Config, MountOption};
 use tempfile::tempdir;
-use tilo_action_policy::{Grantee, MemberId};
+use tilo_action_policy::Grantee;
 use tilo_fs::namespace::ROOT_INO;
 use tilo_fs::{Access, ContentStore, Heuristics, Hydrator, Namespace, QuickFS, WorkspaceAcl};
+use tilo_member_types::MemberId;
 
 fn fuse_available() -> bool {
     std::path::Path::new("/dev/fuse").exists()

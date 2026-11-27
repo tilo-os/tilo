@@ -10,7 +10,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::{ReactionStrip, StripHit, StripMetrics, layout};
-use tilo_action_policy::MemberId;
+use tilo_member_types::MemberId;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;

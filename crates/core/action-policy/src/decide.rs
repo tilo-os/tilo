@@ -2,7 +2,7 @@
 
 use std::cmp::Ordering;
 
-use tilo_app_id::AppId;
+use tilo_member_types::AppId;
 
 use crate::{
     ActionKind, Answer, Context, Grant, GrantId, Grantee, KindSet, Level, Lifetime, TreePath,

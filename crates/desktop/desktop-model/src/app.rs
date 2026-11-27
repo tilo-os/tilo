@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use tilo_app_id::apps::{self, app_id_for_builtin_label};
 
-pub use tilo_app_id::AppId;
+pub use tilo_member_types::AppId;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AppKind {

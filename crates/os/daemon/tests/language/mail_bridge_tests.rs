@@ -48,7 +48,7 @@ async fn a_connected_mail_account_is_kept_where_the_bridge_reads_it() {
         signer: Arc::new(key.clone()),
     }));
     let workspace = workspaces.create("Mail").await.unwrap().workspace;
-    let acting = tilo_action_policy::Acting::person(hex::encode(cert.user_public_key));
+    let acting = tilo_member_types::Acting::person(hex::encode(cert.user_public_key));
 
     let mut account =
         accounts::Account::new(accounts::AccountId::from(ADA), accounts::email::TYPE_ID);

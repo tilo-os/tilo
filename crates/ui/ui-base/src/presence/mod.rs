@@ -100,7 +100,7 @@ const TYPING_DERIVE_MAX_RUN: usize = 512;
 /// real edit would license markers for every caret that moves afterward.
 const EDIT_PULSE_WINDOW: crate::time::Duration = crate::time::Duration::from_millis(1500);
 
-pub use tilo_action_policy::identity_color;
+pub use tilo_member_types::identity_color;
 pub use tilo_presence::{
     PEER_PALETTE, agent_client, agent_identity, identity_rgb, member_color, user_color,
 };

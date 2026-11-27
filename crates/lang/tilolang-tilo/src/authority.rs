@@ -19,11 +19,12 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use tilo_action_policy::ActingPolicy as _;
 
 use tilo_action_policy::{
-    Answer, Authority as Policy, Context, Grant, Grantee, MemberAccess, MemberId, Party, TreePath,
-    authorship,
+    Answer, Authority as Policy, Context, Grant, Grantee, MemberAccess, Party, TreePath, authorship,
 };
+use tilo_member_types::MemberId;
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::{ActionInfo, Actor, Authority, Decision, ModuleHash};
 
@@ -202,7 +203,7 @@ impl TiloAuthority {
 /// itself, and a visitor as any key. `None` for an automation, which no grant names.
 fn grantee(actor: &Actor) -> Option<Grantee> {
     match actor {
-        Actor::Member(_) => actor.grantee(),
+        Actor::Member(_) => tilo_action_policy::grantee_of(actor),
         Actor::App(app) => Some(Grantee::App(app.as_str().to_owned())),
         Actor::Visitor(_) => Some(Grantee::AnyKey),
         Actor::Automation(_) => None,
@@ -384,9 +385,9 @@ impl Authority for TiloAuthority {
         };
         let delegation = match (agent, person, invoker.member_id()) {
             (Some(_), Some(person), Some(member)) if member.is_agent() => Some(
-                tilo_action_policy::Acting::member(member.clone())
+                tilo_member_types::Acting::member(member.clone())
                     .handed()
-                    .acting_for(tilo_action_policy::Acting::person(person))
+                    .acting_for(tilo_member_types::Acting::person(person))
                     .handed_preset(workspace),
             ),
             _ => None,

@@ -52,6 +52,7 @@ name = "system_records"
 path = "tests/system_records.rs"
 
 [dependencies]
+tilo-member-types.workspace = true
 # The host keychain its secrets and device proofs live in: a process with no app connection.
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets", features = ["host-keyring"] }
 tilo-runtime = { path = "../../core/tilo-runtime" }

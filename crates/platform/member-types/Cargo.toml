@@ -1,0 +1,24 @@
+[package]
+name = "tilo-member-types"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
+repository.workspace = true
+homepage.workspace = true
+description = "Who acts in a workspace, as plain data: a person, a member, an actor, who acted for whom, and the app one acts in."
+
+[dependencies]
+serde.workspace = true
+# A direct conversation's id names its members as JSON.
+serde_json.workspace = true
+hex.workspace = true
+# A member says who wears its presence colour.
+tilo-presence = { version = "0.1.0", path = "../tilo-presence" }
+
+[dev-dependencies]
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

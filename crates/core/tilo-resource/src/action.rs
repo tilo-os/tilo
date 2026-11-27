@@ -14,8 +14,8 @@ use tilo_sort::CompactSort as _;
 use automerge::ROOT;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::MemberId;
 use tilo_actions::{ActionError, ExecutionLocus, RiskLevel};
+use tilo_member_types::MemberId;
 
 pub use crate::apply_cache::forget_record;
 

@@ -14,7 +14,7 @@ use vello::kurbo::Affine;
 fn opened(title: &str) -> OpenedBy {
     OpenedBy {
         run: "agent-session:7".into(),
-        agent: tilo_action_policy::MemberId::agent("scribe", "ada"),
+        agent: tilo_member_types::MemberId::agent("scribe", "ada"),
         label: "Jane Doe\u{2019}s agent".into(),
         title: title.into(),
     }

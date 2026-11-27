@@ -289,7 +289,7 @@ impl InstanceViewStore {
     /// close says the view was not kept. Views of no person (an agent's or a bot's windows) are
     /// kept in memory alone, as written to the workspace they would be read by every member.
     #[must_use]
-    pub fn read_by(mut self, person: Option<&tilo_action_policy::PersonId>) -> Self {
+    pub fn read_by(mut self, person: Option<&tilo_member_types::PersonId>) -> Self {
         if let Some(person) = person {
             self.readers = Some(
                 person
@@ -457,16 +457,16 @@ impl InstanceViewStore {
 
     /// The person whose windows these views are: their root key when their reader set names one,
     /// else the one person the set names as they are (a person this device knows no root for).
-    fn view_person(&self) -> Option<tilo_action_policy::PersonId> {
+    fn view_person(&self) -> Option<tilo_member_types::PersonId> {
         if let Some(root) = self.person_root() {
-            return Some(tilo_action_policy::PersonId::from_root(root));
+            return Some(tilo_member_types::PersonId::from_root(root));
         }
         let readers = self.readers.as_deref()?;
         let one_person = !readers.is_empty()
             && readers != collab_types::EVERY_MEMBER
             && !readers.starts_with(collab_types::ROLE_READERS)
             && !readers.contains(',');
-        one_person.then(|| tilo_action_policy::PersonId::from(readers))
+        one_person.then(|| tilo_member_types::PersonId::from(readers))
     }
 
     /// Commit what `doc` holds as the view of the person whose window it is: a change the
@@ -479,7 +479,7 @@ impl InstanceViewStore {
             doc.commit();
             return;
         };
-        let acting = tilo_action_policy::Acting::person(person);
+        let acting = tilo_member_types::Acting::person(person);
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
                 .with_message(tilo_actions::ActionContext::whole_edit_by(&acting)),
@@ -612,7 +612,7 @@ mod tests {
         let workspace: Rc<dyn DocumentPort> = memory.clone();
         let ws = "44444444-4444-4444-8444-444444444444";
         let root = [0xa0; 32];
-        let person = tilo_action_policy::PersonId::from_root(root);
+        let person = tilo_member_types::PersonId::from_root(root);
         let views = InstanceViewStore::new(Some(workspace.clone()), "so.tilo.test", "D", ws)
             .unwrap()
             .read_by(Some(&person));
@@ -627,7 +627,7 @@ mod tests {
 
         // A person known by no root key is named as they are, which the workspace refuses: their
         // view is never written for every member.
-        let unrooted = tilo_action_policy::PersonId::from("ada");
+        let unrooted = tilo_member_types::PersonId::from("ada");
         let theirs = InstanceViewStore::new(Some(workspace.clone()), "so.tilo.test", "U", ws)
             .unwrap()
             .read_by(Some(&unrooted));

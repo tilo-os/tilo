@@ -82,7 +82,7 @@ tilo_test_env::scenario! {
         let access = peer.permissions(vm.device_public_key, now).unwrap();
         assert_eq!(access.confined_to.as_deref(), Some(VM_WORKSPACE));
         assert!(access.reaches_its_workspace());
-        assert!(access.may_write_for(&tilo_action_policy::Acting::person(hex::encode(
+        assert!(access.may_write_for(&tilo_member_types::Acting::person(hex::encode(
             vm.user_public_key
         ))));
         let holders = peer.governance().key_holders(now).unwrap();
@@ -97,7 +97,7 @@ tilo_test_env::scenario! {
             OTHER_WORKSPACE,
             hex::encode(vm.user_public_key),
         ));
-        let person = tilo_action_policy::Acting::person(hex::encode(vm.user_public_key));
+        let person = tilo_member_types::Acting::person(hex::encode(vm.user_public_key));
         assert!(!elsewhere.may_write_for(&person));
         assert!(elsewhere.invoked_by(&person).is_none());
     }

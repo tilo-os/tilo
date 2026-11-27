@@ -64,7 +64,7 @@ fn harness(root: Box<dyn Widget>) -> tilo_ui::app::driver::Driver {
         (900, 600),
         Theme::dark(),
         tilo_ui_base::font_catalog::fixture_renderer(),
-        tilo_action_policy::MemberId::person("reader"),
+        tilo_member_types::MemberId::person("reader"),
     )
 }
 

@@ -250,7 +250,7 @@ mod tests {
             .expect("the runtime runs")
             .expect("the daemon holds the person's own workspace");
         let workspace = tilo_server_protocol::servers::person_workspace_id(&person);
-        let member = tilo_action_policy::PersonId::from_root(person);
+        let member = tilo_member_types::PersonId::from_root(person);
         let wake = std::sync::Arc::new(|| {});
         let record = crate::followed_resource::FollowedResource::<Devices>::follow(
             &daemon.shell(),
@@ -348,7 +348,7 @@ mod tests {
             .expect("the runtime runs")
             .expect("the daemon holds the person's own workspace");
         let workspace = tilo_server_protocol::servers::person_workspace_id(&person);
-        let member = tilo_action_policy::PersonId::from_root(person);
+        let member = tilo_member_types::PersonId::from_root(person);
         let wake = std::sync::Arc::new(|| {});
         let record = crate::followed_resource::FollowedResource::<Devices>::follow(
             &daemon.shell(),

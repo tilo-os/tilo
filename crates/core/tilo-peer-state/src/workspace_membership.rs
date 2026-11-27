@@ -213,12 +213,12 @@ impl AppRelease {
 /// A canonical application identifier: lowercase ASCII, at most 128 bytes,
 /// with non-empty `.`-separated segments.
 ///
-/// Differs from [`tilo_app_id::AppId::parse`] by requiring lowercase ASCII,
+/// Differs from [`tilo_member_types::AppId::parse`] by requiring lowercase ASCII,
 /// capping length at 128 bytes, and allowing a single segment without a dot
 /// because `validate()` filters stored rows in `state/app_versions.rs`, where
 /// a dot was never required and requiring one could drop stored rows.
 fn validate_app_id(app: &str) -> Result<(), String> {
-    const GRAMMAR: tilo_app_id::Grammar = tilo_app_id::Grammar::CANONICAL
+    const GRAMMAR: tilo_member_types::Grammar = tilo_member_types::Grammar::CANONICAL
         .max_bytes(128)
         .lowercase_only()
         .allow_single_segment();

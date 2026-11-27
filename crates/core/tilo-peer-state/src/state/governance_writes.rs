@@ -23,20 +23,20 @@ pub struct ActionStamp {
     pub verb: &'static str,
     /// Who decided it: the person whose device asked, or the workspace's
     /// moderation bot.
-    pub by: tilo_action_policy::Actor,
+    pub by: tilo_member_types::Actor,
     /// The one administration it is part of: every governance change it
     /// makes names it, so a reader takes a ban's removal and its block as the
     /// one action they are.
     pub invocation: String,
     /// Who proposed it, when `by` took up someone's offer: the member whose
     /// invitation a person accepted to join.
-    pub suggested_by: Option<tilo_action_policy::Actor>,
+    pub suggested_by: Option<tilo_member_types::Actor>,
 }
 
 impl ActionStamp {
     /// The action `verb` decided by `by`, as one administration of its own.
     #[must_use]
-    pub fn new(verb: &'static str, by: tilo_action_policy::Actor) -> Self {
+    pub fn new(verb: &'static str, by: tilo_member_types::Actor) -> Self {
         Self::of_invocation(verb, by, uuid::Uuid::new_v4().to_string())
     }
 
@@ -46,7 +46,7 @@ impl ActionStamp {
     #[must_use]
     pub const fn of_invocation(
         verb: &'static str,
-        by: tilo_action_policy::Actor,
+        by: tilo_member_types::Actor,
         invocation: String,
     ) -> Self {
         Self {
@@ -108,7 +108,7 @@ impl StatePeer {
     /// names that action and who decided it, so an app watching the workspace
     /// tells a ban from a removal. Order, admission and what is written stay
     /// exactly as they are.
-    pub fn stamp_action(&mut self, verb: &'static str, by: tilo_action_policy::Actor) {
+    pub fn stamp_action(&mut self, verb: &'static str, by: tilo_member_types::Actor) {
         self.action_stamp = Some(ActionStamp::new(verb, by));
     }
 
@@ -180,9 +180,7 @@ impl StatePeer {
     ) -> T {
         self.stamp_action(
             verb,
-            tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person(hex::encode(
-                who,
-            ))),
+            tilo_member_types::Actor::Member(tilo_member_types::MemberId::person(hex::encode(who))),
         );
         let outcome = run(self);
         self.clear_action_stamp();

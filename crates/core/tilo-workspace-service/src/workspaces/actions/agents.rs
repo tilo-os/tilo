@@ -3,7 +3,7 @@
 //! the node an app's action of the same provider, kind and verb has
 //! ([`AnswerScope::action`]), as for any action of an app. Its person sets them
 //! for it as for any other action. Without one, the agent's delegation
-//! answers ([`tilo_action_policy::Acting::handed_preset`]), as it does where no
+//! answers ([`tilo_member_types::Acting::handed_preset`]), as it does where no
 //! workspace is asked about: reading is allowed,
 //! and whatever changes something waits for the person's yes, as the call's
 //! asked record. The person's own checks follow,
@@ -14,6 +14,7 @@
 //! for their own programs ([`tilo_user_identity::DeviceCapabilities::server_key`]).
 
 use std::sync::Arc;
+use tilo_action_policy::ActingPolicy as _;
 
 use serde_json::Value;
 use tilo_action_policy::agent_answers::AnswerScope;
@@ -103,7 +104,7 @@ pub(crate) fn acts_for_its_person(caller: &Caller) -> bool {
 pub(crate) struct AgentGrants {
     /// The agent: its id and the person its certificate chains to, whose grants alone reach
     /// it. `None` may do nothing here.
-    agent: Option<tilo_action_policy::MemberId>,
+    agent: Option<tilo_member_types::MemberId>,
     workspace: String,
     policy: Option<Arc<WorkspacePolicy>>,
     granted: Vec<Grant>,
@@ -122,7 +123,7 @@ impl AgentGrants {
         let Some((agent, person)) = self
             .agent
             .as_ref()
-            .and_then(tilo_action_policy::MemberId::as_agent)
+            .and_then(tilo_member_types::MemberId::as_agent)
         else {
             return Answer::Deny;
         };

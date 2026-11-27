@@ -10,7 +10,8 @@ use collab_types::caps::{
     Access, CapDecision, CapOverride, DeviceCap, Effect, ResourceRef, Scope, decide_app,
     decide_capability,
 };
-use tilo_action_policy::{Acting, Grantee, Lifetime, MemberId, Role};
+use tilo_action_policy::{Grantee, Lifetime, Role};
+use tilo_member_types::{Acting, MemberId};
 
 fn fs(path: &str) -> ResourceRef {
     ResourceRef::FsPath(path.into())

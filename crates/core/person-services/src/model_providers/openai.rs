@@ -368,7 +368,7 @@ impl crate::PersonServices {
         let root = &self.workspace_root(workspace);
         // The person signs in themselves: the use of what is kept is theirs, and the write keeps
         // the call that began the sign-in as they signed it.
-        let asker = tilo_action_policy::Acting::person(hex::encode(person));
+        let asker = tilo_member_types::Acting::person(hex::encode(person));
         let vault = self.vault_for(workspace, &asker);
         let vault = call.map_or(vault, |call| vault.serving(call));
         let keys = ProviderKeys::of(vault, "");

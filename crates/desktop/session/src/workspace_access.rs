@@ -788,7 +788,7 @@ fn entry_of(
 fn holder_kind(grantee: &tilo_action_policy::Grantee) -> &'static str {
     use tilo_action_policy::Grantee;
     match grantee {
-        Grantee::Member(tilo_action_policy::MemberId::Agent { .. }) => "agent",
+        Grantee::Member(tilo_member_types::MemberId::Agent { .. }) => "agent",
         Grantee::Member(_) => "person",
         Grantee::App(_) => "app",
         Grantee::Role(_) | Grantee::CustomRole(_) | Grantee::AnyKey => "role",
@@ -1234,7 +1234,7 @@ mod tests {
                 Access::Read,
             )
             .with_id("cap-brief")
-            .granted_by(tilo_action_policy::MemberId::person("ada")),
+            .granted_by(tilo_member_types::MemberId::person("ada")),
         );
         let plan = document(&tree, "so.tilo.notes", "notes.notebook", "plan");
         let grant = tilo_action_policy::Grant::new(

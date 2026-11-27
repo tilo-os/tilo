@@ -1183,9 +1183,9 @@ pub mod agent_policy {
 /// The preset of [`agent_policy::ROLE_CAP`] the agent `agent` (its id and
 /// its own person) acting for `person` in `workspace` carries, before any
 /// bound: the delegation a person hands their agent
-/// ([`crate::Acting::handed`]). Never more than the cap, never more than the
+/// ([`tilo_member_types::Acting::handed`]). Never more than the cap, never more than the
 /// person may change, and never the workspace's governance. Only
-/// [`crate::Acting::handed_preset`] makes it, so every API and every receiver
+/// [`tilo_member_types::Acting::handed_preset`] makes it, so every API and every receiver
 /// gives an agent the same.
 #[must_use]
 #[track_caller]

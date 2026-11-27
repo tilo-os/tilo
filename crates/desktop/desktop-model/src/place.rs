@@ -406,7 +406,7 @@ mod tests {
             person: PERSON,
             opened_by: Some(OpenedBy {
                 run: "agent-session:7".into(),
-                agent: tilo_action_policy::MemberId::agent("scribe", PERSON),
+                agent: tilo_member_types::MemberId::agent("scribe", PERSON),
                 label: "Scribe".into(),
                 title: "File the receipts".into(),
             }),

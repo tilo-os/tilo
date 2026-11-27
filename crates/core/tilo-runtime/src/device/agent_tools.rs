@@ -99,7 +99,7 @@ impl Admits for AgentToolSteps {
         let session = acting
             .agent_session
             .as_ref()
-            .map(tilo_action_policy::AgentSessionId::as_str)
+            .map(tilo_member_types::AgentSessionId::as_str)
             .ok_or("an agent calls its tools as a step of its session")?;
         let provider = admitted
             .through

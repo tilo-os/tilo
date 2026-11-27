@@ -2,7 +2,8 @@
 use super::{PeerCore, Role, SystemTime};
 use crate::state::DelegateInactive;
 use crate::state::MembershipError;
-use tilo_action_policy::MemberId;
+use tilo_action_policy::ActingPolicy as _;
+use tilo_member_types::MemberId;
 
 /// The role `person` acts with in `workspace` under `policy`: none for a
 /// stranger or a blocked member.
@@ -99,11 +100,11 @@ fn current(
                     return Err(MembershipError::Delegate(DelegateInactive::OtherWorkspace));
                 }
                 Some(crate::state::ActingAs {
-                    actor: tilo_action_policy::Actor::Member(MemberId::agent(
+                    actor: tilo_member_types::Actor::Member(MemberId::agent(
                         grant.agent.clone(),
                         person.as_str(),
                     )),
-                    grants: tilo_action_policy::Acting::handed_agent(&grant.agent, person.as_str())
+                    grants: tilo_member_types::Acting::handed_agent(&grant.agent, person.as_str())
                         .handed_preset(&peer.workspace),
                 })
             }
@@ -117,13 +118,13 @@ fn current(
                 .agent_id()
                 .ok_or(MembershipError::Delegate(DelegateInactive::Delegation))?;
             Some(crate::state::ActingAs {
-                actor: tilo_action_policy::Actor::Member(MemberId::agent(
+                actor: tilo_member_types::Actor::Member(MemberId::agent(
                     agent_id.to_owned(),
                     person.as_str(),
                 )),
                 // Its person handed it the delegation its root-signed
                 // certificate names.
-                grants: tilo_action_policy::Acting::handed_agent(agent_id, person.as_str())
+                grants: tilo_member_types::Acting::handed_agent(agent_id, person.as_str())
                     .handed_preset(&peer.workspace),
             })
         }

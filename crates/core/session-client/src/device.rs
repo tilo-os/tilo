@@ -906,7 +906,7 @@ impl Device {
     /// Who this session asks as: the person whose device it is.
     #[must_use]
     pub fn caller(&self) -> Caller {
-        Caller::local_person(tilo_actions::policy::PersonId::from_root(
+        Caller::local_person(tilo_member_types::PersonId::from_root(
             self.cert.user_public_key,
         ))
     }

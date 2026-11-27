@@ -25,8 +25,8 @@ fn a_certificate_gives_its_agent_the_default_delegation_and_the_workspace_is_not
         );
     }
     let policy = WorkspacePolicy::new(WORKSPACE, PERSON);
-    let acting = tilo_action_policy::Acting::agent(AGENT, PERSON)
-        .acting_for(tilo_action_policy::Acting::person(PERSON));
+    let acting = tilo_member_types::Acting::agent(AGENT, PERSON)
+        .acting_for(tilo_member_types::Acting::person(PERSON));
     let authority = Authority::of_acting(&acting, &policy, &grants);
     let cx = Context::at(1_000);
     let root = TreePath::workspace(WORKSPACE);

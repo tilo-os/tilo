@@ -186,7 +186,7 @@ impl Stamp {
 
     /// The text a stamp names `actor` by as its invoker.
     #[must_use]
-    pub fn by(actor: &tilo_action_policy::Actor) -> String {
+    pub fn by(actor: &tilo_member_types::Actor) -> String {
         serde_json::to_string(actor).unwrap_or_default()
     }
 
@@ -328,7 +328,7 @@ impl Stamp {
             acted_for: acting
                 .and_then(|acting| acting.acted_for.first())
                 .and_then(|person| match &person.by {
-                    tilo_action_policy::Actor::Member(member) => member.person_id(),
+                    tilo_member_types::Actor::Member(member) => member.person_id(),
                     _ => None,
                 })
                 .map(str::to_owned),
@@ -347,25 +347,23 @@ impl Stamp {
     /// stamped on a person's own write (their person id alone). Nobody for a stamp naming
     /// neither.
     #[must_use]
-    pub fn invoked_by(&self) -> Option<tilo_action_policy::Actor> {
+    pub fn invoked_by(&self) -> Option<tilo_member_types::Actor> {
         // An empty invoker names nobody: it must not read as a person with no id.
         if self.invoker.is_empty() {
             return None;
         }
         if let Ok(actor) = tilo_failure::ignored!(
             "a stamp the route wrote holds a person id, which is read next",
-            serde_json::from_str::<tilo_action_policy::Actor>(&self.invoker)
+            serde_json::from_str::<tilo_member_types::Actor>(&self.invoker)
         ) {
             return Some(actor);
         }
         tilo_failure::ignored!(
             "a stamp naming neither an actor nor a person names nobody",
-            tilo_action_policy::PersonId::parse(&self.invoker)
+            tilo_member_types::PersonId::parse(&self.invoker)
         )
         .ok()
-        .map(|person| {
-            tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::person(person))
-        })
+        .map(|person| tilo_member_types::Actor::Member(tilo_member_types::MemberId::person(person)))
     }
 
     /// What the change did, as history reads it: the context its writer gave, with who invoked
@@ -380,7 +378,7 @@ impl Stamp {
             // How an agent acted (handed its session by its person's device, or under a key of its
             // own) is what its writer recorded in the context: a stamp that records none names an
             // agent with a key of its own, which shows the call it signed.
-            let acting = tilo_action_policy::Acting {
+            let acting = tilo_member_types::Acting {
                 by,
                 app: None,
                 agent_session: None,
@@ -390,8 +388,8 @@ impl Stamp {
                 acted_for: self
                     .acted_for
                     .iter()
-                    .filter_map(|person| tilo_action_policy::PersonId::parse(person).ok())
-                    .map(tilo_action_policy::Acting::person)
+                    .filter_map(|person| tilo_member_types::PersonId::parse(person).ok())
+                    .map(tilo_member_types::Acting::person)
                     .collect(),
             };
             context.invoker = Some(crate::ActionInvoker::admitted(&acting));

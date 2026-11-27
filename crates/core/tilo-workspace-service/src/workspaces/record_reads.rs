@@ -436,7 +436,7 @@ impl RecordReads {
         let mine = caller.user_public_key() == Some(&device.user_public_key)
             && caller.device_public_key() == Some(&sitting)
             && *caller.acting()
-                == tilo_action_policy::Acting::person(hex::encode(device.user_public_key));
+                == tilo_member_types::Acting::person(hex::encode(device.user_public_key));
         if mine {
             return Some(Ok(reads));
         }

@@ -164,7 +164,7 @@ impl crate::PersonServices {
         &self,
         signing: Signing<'_>,
         workspace: &str,
-        acting: &tilo_action_policy::Acting,
+        acting: &tilo_member_types::Acting,
         account: &str,
     ) -> Result<(), String> {
         let call = signing.vault.call();
@@ -661,7 +661,7 @@ impl crate::PersonServices {
         &self,
         signing: Signing<'_>,
         workspace: &str,
-        acting: &tilo_action_policy::Acting,
+        acting: &tilo_member_types::Acting,
         asked: AccountsAction,
     ) -> Result<Value, ActionCallError> {
         match asked {

@@ -1441,7 +1441,7 @@ fn sandbox(
         if capability
             .granted_by
             .as_ref()
-            .and_then(tilo_action_policy::MemberId::person_id)
+            .and_then(tilo_member_types::MemberId::person_id)
             != Some(actor)
         {
             return Err(MembershipRefusal::Refused(format!(

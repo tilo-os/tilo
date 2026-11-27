@@ -114,7 +114,7 @@ pub trait AgentKeys: Send + Sync {
     /// # Errors
     /// As [`Self::grant`], and where the person has not approved this device's key for it.
     fn grant_for(&self, workspace: WorkspaceId, agent: &Agent) -> Result<[u8; 32], String> {
-        let root = tilo_action_policy::PersonId::parse(&agent.acts_for)
+        let root = tilo_member_types::PersonId::parse(&agent.acts_for)
             .ok()
             .and_then(|person| person.root())
             .ok_or("the agent belongs to no person")?;
@@ -176,7 +176,7 @@ pub async fn sign_shortcut_as_agent(
                 .cloned()
         })
         .ok_or("the workspace keeps no such agent")?;
-    let person = tilo_action_policy::PersonId::parse(&kept.acts_for)
+    let person = tilo_member_types::PersonId::parse(&kept.acts_for)
         .map_err(|error| format!("the agent acts for no person ({error})"))?
         .root();
     if !kept.is_active() || person != Some(*root) {
@@ -460,7 +460,7 @@ impl AgentSigner {
         person: &str,
     ) -> Result<(Self, Caller), String> {
         let id = WorkspaceId::parse(workspace).ok_or("the agent's workspace is no workspace id")?;
-        let root = tilo_action_policy::PersonId::parse(person)
+        let root = tilo_member_types::PersonId::parse(person)
             .ok()
             .and_then(|person| person.root())
             .ok_or("the agent belongs to no person")?;

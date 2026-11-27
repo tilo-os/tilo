@@ -71,7 +71,7 @@ impl Workspaces {
                 && caller
                     .acting()
                     .agent_id()
-                    .and_then(tilo_action_policy::key_of_agent)
+                    .and_then(tilo_member_types::key_of_agent)
                     == Some(certificate.device_public_key));
         if !asks {
             return Err(unknown());

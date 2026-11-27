@@ -98,7 +98,7 @@ fn a_posted_message(
         app: CHAT.to_owned(),
         kind: MESSAGE.to_owned(),
         change: format!("change-{message}"),
-        actor: tilo_action_policy::Acting::person(author),
+        actor: tilo_member_types::Acting::person(author),
         did: tilo_actions::Did::verb(tilo_actions::ActionKey::new(CHAT, MESSAGE, "send"), []),
         arguments: serde_json::Map::new(),
         item: Some(tilo_automation::dispatch::ItemRef {

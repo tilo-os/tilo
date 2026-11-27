@@ -164,7 +164,7 @@ tilo_test_env::scenario! {
         };
         assert_eq!(
             held.granted_by,
-            Some(tilo_action_policy::MemberId::person(hex::encode(user)))
+            Some(tilo_member_types::MemberId::person(hex::encode(user)))
         );
         assert!(change_settings(&mut peer, &editor, save, now).unwrap());
         assert!(

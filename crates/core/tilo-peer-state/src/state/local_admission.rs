@@ -232,7 +232,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<SignedOp, DraftRefusal> {
         // A record is written only under an application id, sealed or not.
-        tilo_app_id::AppId::parse(app)
+        tilo_member_types::AppId::parse(app)
             .map_err(|_| DraftRefusal::Refused(format!("{app:?} is not an application id")))?;
         let route = Route {
             app: app.into(),

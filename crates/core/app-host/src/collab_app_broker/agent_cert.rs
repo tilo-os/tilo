@@ -38,7 +38,7 @@ impl AppBrokerState {
     fn lists_agent(
         &self,
         workspace: &str,
-        agent: &tilo_action_policy::MemberId,
+        agent: &tilo_member_types::MemberId,
     ) -> Result<(), String> {
         self.services
             .agents
@@ -54,7 +54,7 @@ impl AppBrokerState {
     pub(super) fn turn_session_goes(
         &self,
         workspace: &str,
-        agent: &tilo_action_policy::MemberId,
+        agent: &tilo_member_types::MemberId,
         session: &str,
     ) -> Result<crate::services::GoingSession, String> {
         self.lists_agent(workspace, agent)?;
@@ -133,7 +133,7 @@ pub(super) fn admit_listed_agent(
     }
     // The agent the device's person runs: the record names it for them, not another person's
     // agent of the same id.
-    let agent = tilo_action_policy::MemberId::agent(agent_id, admitted.actor_key.clone());
+    let agent = tilo_member_types::MemberId::agent(agent_id, admitted.actor_key.clone());
     if !roster.lists(workspace, &agent) {
         return Err(format!("the workspace keeps no active agent {agent_id}"));
     }

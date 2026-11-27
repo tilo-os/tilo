@@ -246,7 +246,7 @@ pub(super) async fn sign(
     workspace: &str,
     sign: &Sign,
     item: &ItemId,
-    (by, acting, asked): (&str, &tilo_action_policy::Acting, &InvokeRequest),
+    (by, acting, asked): (&str, &tilo_member_types::Acting, &InvokeRequest),
     purpose: UsedFor<'_>,
 ) -> Result<Value, String> {
     let signed = read(sign)?;

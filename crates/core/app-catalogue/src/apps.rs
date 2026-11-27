@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use package_store::{Catalog, CatalogError, InstalledPackage};
-use tilo_app_id::AppId;
+use tilo_member_types::AppId;
 
 /// One installed application the launcher can start.
 #[derive(Debug, Clone, PartialEq, Eq)]

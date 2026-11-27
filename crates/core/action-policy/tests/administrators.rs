@@ -4,11 +4,13 @@
 //! restriction still bound them. Administrators are made by the owner and
 //! other administrators, and unmade by the owner alone.
 
+use tilo_action_policy::ActingPolicy as _;
 use tilo_action_policy::{
-    Acting, ActionKind, Answer, Authority, Change, Context, Grant, Grantee, KindSet, Refusal, Role,
+    ActionKind, Answer, Authority, Change, Context, Grant, Grantee, KindSet, Refusal, Role,
     TreePath, WorkspacePolicy,
     roles::{self, governance},
 };
+use tilo_member_types::Acting;
 
 const NOW: u64 = 1_000_000;
 const OWNER: &str = "a11ce";

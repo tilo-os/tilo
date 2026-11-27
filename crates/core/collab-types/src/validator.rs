@@ -171,7 +171,7 @@ pub struct InboundState {
     /// Whose a change of this write is when it names no one: the person an
     /// import step attributes a history kept before every change named its
     /// invoker to. `None` refuses such a change, as every other write.
-    pub imported: Option<tilo_action_policy::Acting>,
+    pub imported: Option<tilo_member_types::Acting>,
 }
 
 impl Default for InboundState {
@@ -582,7 +582,7 @@ fn access_rule_node(workspace: &str, app: &str, document: &str) -> Option<TreePa
     let workspace_path = TreePath::workspace(workspace);
     match (app, document) {
         ("", "") => Some(workspace_path.any(tilo_action_policy::Level::App)),
-        ("", app) => tilo_app_id::AppId::parse(app)
+        ("", app) => tilo_member_types::AppId::parse(app)
             .ok()
             .map(|_| workspace_path.app(app)),
         _ => document_access_target(app, document)
@@ -597,7 +597,8 @@ pub fn document_access_changes(
     (who, app, document): (&str, &str, &str),
     access: &str,
 ) -> Result<Vec<tilo_action_policy::Change>, tilo_action_policy::Refusal> {
-    use tilo_action_policy::{Answer, Change, Grant, Grantee, KindSet, MemberId, Refusal, Role};
+    use tilo_action_policy::{Answer, Change, Grant, Grantee, KindSet, Refusal, Role};
+    use tilo_member_types::MemberId;
     let path = access_rule_node(&policy.workspace, app, document)
         .ok_or_else(|| Refusal::NotPermitted("this target has no workspace access rules".into()))?;
     let grantee = if who == "everyone" {
@@ -729,7 +730,7 @@ pub fn document_access_scopes(
                 && grant.id.as_str().starts_with("document-access:"))
             .then(|| app.to_owned())
         }))
-        .filter(|app| tilo_app_id::AppId::parse(app).is_ok())
+        .filter(|app| tilo_member_types::AppId::parse(app).is_ok())
         .collect::<std::collections::BTreeSet<_>>();
     std::iter::once((String::new(), String::new()))
         .chain(apps.into_iter().map(|app| (String::new(), app)))

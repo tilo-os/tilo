@@ -10,6 +10,7 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+tilo-member-types.workspace = true
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 serde.workspace = true
 serde_json.workspace = true

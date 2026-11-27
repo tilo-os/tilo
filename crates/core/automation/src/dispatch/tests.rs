@@ -659,7 +659,7 @@ fn a_filter_narrows_a_change_by_what_it_holds_and_where_it_came_from() {
     // The agent's own changes are named by its member id, `agent:<person>/<id>`, as every
     // actor writes one and as the agent's own triggers narrow them out.
     let its_own =
-        String::from_utf8_lossy(&tilo_action_policy::MemberId::agent("scout", "ada").actor_bytes())
+        String::from_utf8_lossy(&tilo_member_types::MemberId::agent("scout", "ada").actor_bytes())
             .into_owned();
     let not_its_own = || {
         [

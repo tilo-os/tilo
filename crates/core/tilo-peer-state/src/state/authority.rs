@@ -3,6 +3,7 @@
 //! governance each of those is checked against.
 
 use std::collections::BTreeSet;
+use tilo_action_policy::ActingPolicy as _;
 
 use super::written_under::Under;
 use super::{
@@ -117,7 +118,7 @@ fn allowing<'a>(
     member: &'a MemberAccess,
     cx: &'a tilo_action_policy::Context,
     caller_refused: &'a std::cell::RefCell<Option<(String, String, ActionKind)>>,
-) -> impl Fn(Option<&tilo_action_policy::Acting>, &TreePath, ActionKind) -> bool + 'a {
+) -> impl Fn(Option<&tilo_member_types::Acting>, &TreePath, ActionKind) -> bool + 'a {
     move |invoker, node, kind| {
         // An agent a device that is not its person's runs hands its session to the agent: it
         // acts with its person's preset, as an agent on that person's own device does. A
@@ -1312,7 +1313,7 @@ impl StatePeer {
     /// devices they delegated, may do at
     /// `now`, as grants naming each key's agent
     /// ([`collab_types::workspace_grant::key_agent_id`]): what an agent of its
-    /// person may ([`tilo_action_policy::Acting::handed_preset`]). A key is
+    /// person may ([`tilo_member_types::Acting::handed_preset`]). A key is
     /// approved where the workspace holds its certificate, which its person's
     /// root signed, live and unrevoked, as an agent's grant reaching this
     /// workspace, and lists no revocation of its grant. That certificate is
@@ -1363,7 +1364,7 @@ impl StatePeer {
                     .as_ref()
                     .filter(|scope| scope.reaches(workspace))?;
                 Some(
-                    tilo_action_policy::Acting::handed_agent(
+                    tilo_member_types::Acting::handed_agent(
                         collab_types::workspace_grant::key_agent_id(device),
                         hex::encode(cert.user_public_key),
                     )
@@ -2028,7 +2029,7 @@ fn refused_change(
     let by_key = claimed.iter().any(|invoker| {
         invoker.nodes().into_iter().any(|node| {
             node.agent_id()
-                .and_then(tilo_action_policy::key_of_agent)
+                .and_then(tilo_member_types::key_of_agent)
                 .is_some()
         })
     });
@@ -2127,7 +2128,7 @@ impl DocumentKeysBasis<'_> {
 /// or, for a call the record's keeper carried out for an agent and signed as the device that
 /// did (`effect` declared, signed by `source`), the person the agent acts for.
 fn called_person(
-    acting: &tilo_action_policy::Acting,
+    acting: &tilo_member_types::Acting,
     certificate: &DeviceCert,
     source: &[u8; 32],
     effect: bool,

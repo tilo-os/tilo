@@ -442,7 +442,7 @@ mod tests {
 
     /// An editor of the workspace the ops are written in.
     fn editor() -> MemberAccess {
-        let person = tilo_action_policy::PersonId::from_root(EDITOR);
+        let person = tilo_member_types::PersonId::from_root(EDITOR);
         let mut policy = tilo_action_policy::WorkspacePolicy::new(WORKSPACE, "owner");
         policy
             .members

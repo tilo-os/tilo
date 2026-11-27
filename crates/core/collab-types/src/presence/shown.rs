@@ -87,7 +87,7 @@ pub struct Shown {
     /// The workspace member this presence is, where it names one: an agent a host speaks for.
     /// A device's member is the person behind it, which [`Self::user`] names.
     #[serde(default)]
-    pub member: Option<tilo_action_policy::MemberId>,
+    pub member: Option<tilo_member_types::MemberId>,
     /// The workspace's host, hex, when it speaks for this member: an
     /// agent's or a key's run it executes, which says nothing itself. A
     /// surface shows them as the agent, said by the host.
@@ -140,15 +140,15 @@ impl Shown {
     /// person its device's certificate names, a person by that root. `None` for a device whose
     /// person is not known yet.
     #[must_use]
-    pub fn member_id(&self) -> Option<tilo_action_policy::MemberId> {
+    pub fn member_id(&self) -> Option<tilo_member_types::MemberId> {
         let user = self.user.as_deref().filter(|user| !user.is_empty());
         if self.agent {
             return self
                 .member
                 .clone()
                 .filter(|member| !member.is_person())
-                .or_else(|| Some(tilo_action_policy::MemberId::agent(&self.publisher, user?)));
+                .or_else(|| Some(tilo_member_types::MemberId::agent(&self.publisher, user?)));
         }
-        user.map(tilo_action_policy::MemberId::person)
+        user.map(tilo_member_types::MemberId::person)
     }
 }

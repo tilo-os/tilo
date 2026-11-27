@@ -162,7 +162,7 @@ pub use redaction::{
 };
 pub use role::{ArtifactKind, OpKind, Role};
 pub use stamp::Stamp;
-pub use tilo_action_policy::{MemberId, PersonId, PersonIdError};
+pub use tilo_member_types::{MemberId, PersonId, PersonIdError};
 pub use workspace_id::{is_person_workspace, person_workspace, person_workspace_of};
 
 pub use validator::{

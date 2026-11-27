@@ -379,7 +379,7 @@ impl Workspaces {
                 // read.
                 if stamp.invoker.is_empty() {
                     stamp.invoker = Stamp::by(
-                        &tilo_action_policy::Acting::person(hex::encode(
+                        &tilo_member_types::Acting::person(hex::encode(
                             device.cert.user_public_key,
                         ))
                         .by,

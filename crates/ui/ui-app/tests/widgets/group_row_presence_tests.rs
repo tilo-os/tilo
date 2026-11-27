@@ -140,7 +140,7 @@ fn a_peers_caret_in_a_panned_window_is_a_node_where_the_window_drew_it() {
         window(200, "second", Rc::clone(&second)),
     ]);
     let mut frame = Driver::for_root(tilo_ui::State::new(), row, (390, 844), Theme::default());
-    let peer = tilo_action_policy::MemberId::person("claude");
+    let peer = tilo_member_types::MemberId::person("claude");
     frame
         .presence_mut()
         .set_display_name(peer.clone(), "Claude Code");

@@ -827,7 +827,7 @@ impl AppBrokerState {
     }
     pub fn invocation_statuses(
         &self,
-        actor: &tilo_action_policy::Actor,
+        actor: &tilo_member_types::Actor,
     ) -> Vec<(u64, tilo_actions::InvocationUpdate)> {
         self.invocation_statuses_for_owner(&InvocationOwner::Local {
             actor: actor.clone(),
@@ -865,7 +865,7 @@ impl AppBrokerState {
     pub(crate) fn request_cancellation(
         &self,
         id: u64,
-        actor: &tilo_action_policy::Actor,
+        actor: &tilo_member_types::Actor,
     ) -> Result<tilo_invocation_journal::Durable, String> {
         self.request_cancellation_for_owner(
             id,
@@ -930,7 +930,7 @@ impl AppBrokerState {
             .insert(id);
         Ok(durable)
     }
-    pub fn can_cancel(&self, id: u64, actor: &tilo_action_policy::Actor) -> bool {
+    pub fn can_cancel(&self, id: u64, actor: &tilo_member_types::Actor) -> bool {
         self.can_cancel_for_owner(
             id,
             &InvocationOwner::Local {

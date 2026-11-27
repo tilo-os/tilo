@@ -17,6 +17,7 @@ path = "src/lib.rs"
 # and an out-of-process member can all build on it.
 
 [dependencies]
+tilo-member-types.workspace = true
 tilo-actions = { version = "0.1.0", path = "../actions" }
 # A reference is a stored value of the records that keep one.
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }

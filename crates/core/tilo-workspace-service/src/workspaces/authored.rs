@@ -110,8 +110,8 @@ impl Workspaces {
 
 /// Who a device's own write names as its invoker: the person `cert` is for, as every receiver
 /// reads the device that signed it. A change names who made it, a device's own included.
-pub(in crate::workspaces) fn own_acting(cert: &DeviceCert) -> tilo_action_policy::Acting {
-    tilo_action_policy::Acting::person(hex::encode(cert.user_public_key))
+pub(in crate::workspaces) fn own_acting(cert: &DeviceCert) -> tilo_member_types::Acting {
+    tilo_member_types::Acting::person(hex::encode(cert.user_public_key))
 }
 
 /// The message of `cert`'s own direct edit of a record ([`own_acting`]).
@@ -195,7 +195,7 @@ impl HeldRecord {
         candidate: &mut StatePeer,
         genesis: Option<Box<automerge::AutoCommit>>,
         (by, change): (
-            &tilo_action_policy::Acting,
+            &tilo_member_types::Acting,
             impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
         ),
         (key, now): (&ed25519_dalek::SigningKey, std::time::SystemTime),

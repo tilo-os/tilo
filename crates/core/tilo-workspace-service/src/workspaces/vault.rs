@@ -27,9 +27,10 @@
 use super::vault_entries::{WorkspaceVaultEntries, uses_field};
 use accounts::vault_items::{UseRecord, VaultChange, VaultItems};
 use accounts::{SecretId, SecretItem};
-use tilo_action_policy::Acting;
+use tilo_action_policy::ActingPolicy as _;
 use tilo_actions::remote::VAULT_RECORD;
 use tilo_actions::remote::{CallAllowed, InvokeRequest, SignedCall};
+use tilo_member_types::Acting;
 use tilo_resource::{AppNamed, Id, Replica, Resource as _};
 use zeroize::Zeroizing;
 
@@ -351,7 +352,7 @@ impl Workspaces {
     async fn lasting_grant(
         &self,
         workspace: &str,
-        agent: &tilo_action_policy::MemberId,
+        agent: &tilo_member_types::MemberId,
         target: &tilo_actions::remote::RemoteActionTarget,
         used: &[&str],
     ) -> Option<String> {

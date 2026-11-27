@@ -33,7 +33,7 @@ async fn a_connected_calendar_account_is_kept_where_the_bridge_reads_it() {
         signer: Arc::new(key.clone()),
     }));
     let workspace = workspaces.create("Calendar").await.unwrap().workspace;
-    let acting = tilo_action_policy::Acting::person(hex::encode(cert.user_public_key));
+    let acting = tilo_member_types::Acting::person(hex::encode(cert.user_public_key));
 
     let server = "https://calendar.example.test/dav/";
     let mut account = accounts::Account::new(

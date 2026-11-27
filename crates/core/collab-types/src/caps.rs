@@ -18,7 +18,8 @@ pub mod net;
 pub mod sandbox;
 
 pub use net::{Allowed, EgressPolicy, HostPattern, NetHostError, NetHostPattern, host_covers};
-use tilo_action_policy::{Acting, Grantee, Lifetime, MemberId};
+use tilo_action_policy::{Grantee, Lifetime};
+use tilo_member_types::{Acting, MemberId};
 
 /// How far a sandbox capability reaches into its resource.
 #[derive(
@@ -341,7 +342,7 @@ pub struct CapOverride {
     pub grantee: Grantee,
     /// Only through this app, when the capability is that app's sandbox.
     #[serde(default)]
-    pub app: Option<tilo_app_id::AppId>,
+    pub app: Option<tilo_member_types::AppId>,
     pub scope: Scope,
     pub effect: Effect,
     pub access: Access,
@@ -374,7 +375,7 @@ impl CapOverride {
 
     /// The same capability, reaching only through `app`.
     #[must_use]
-    pub fn through(mut self, app: impl Into<tilo_app_id::AppId>) -> Self {
+    pub fn through(mut self, app: impl Into<tilo_member_types::AppId>) -> Self {
         self.app = Some(app.into());
         self
     }

@@ -273,7 +273,7 @@ impl Personal {
     ) {
         let person = self.identity.device_cert.user_public_key;
         let own = tilo_server_protocol::servers::person_workspace_id(&person);
-        let member = tilo_action_policy::PersonId::from_root(person);
+        let member = tilo_member_types::PersonId::from_root(person);
         self.list = Some(FollowedResource::follow(
             daemon,
             (

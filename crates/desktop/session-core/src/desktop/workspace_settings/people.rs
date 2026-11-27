@@ -107,7 +107,7 @@ pub fn members(ws: &Workspace, names: &PeopleNames, viewer: &str) -> Vec<Member>
                     names,
                     ws,
                     viewer,
-                    &tilo_action_policy::MemberId::person(user.clone()),
+                    &tilo_member_types::MemberId::person(user.clone()),
                 ),
                 owns: ws.policy.is_owner(&user),
                 administrator: ws.policy.is_administrator(&user),

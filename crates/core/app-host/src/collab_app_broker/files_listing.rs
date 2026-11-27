@@ -339,7 +339,7 @@ impl AppBrokerState {
         else {
             return false;
         };
-        let Ok(sender) = tilo_action_policy::PersonId::parse(&sent.by) else {
+        let Ok(sender) = tilo_member_types::PersonId::parse(&sent.by) else {
             return false;
         };
         // Decided as the sender stood when they sent it, as their send recorded the time, never

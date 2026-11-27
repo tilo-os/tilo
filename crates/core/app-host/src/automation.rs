@@ -866,7 +866,7 @@ pub struct SaveContext<'a> {
     /// What the saving person is offered now.
     pub catalog: &'a ActionCatalog,
     /// Who saves it; a person is recorded as the shortcut's saver.
-    pub saver: &'a tilo_action_policy::Actor,
+    pub saver: &'a tilo_member_types::Actor,
     /// The chords already taken on this device.
     pub keymap: &'a ShortcutConfig,
     /// What the desktop calls a fixed shortcut, in the person's language.
@@ -1471,7 +1471,7 @@ pub struct FinishedInvocation {
     pub workspace: String,
     pub shortcut: Shortcut,
     /// Who invoked it: a person, an agent, or an app acting by itself.
-    pub invoker: tilo_action_policy::Actor,
+    pub invoker: tilo_member_types::Actor,
     pub report: InvocationReport,
 }
 
@@ -1676,7 +1676,7 @@ fn source_refusal(kind: &str, at: &str, every_secs: Option<u64>) -> Result<(), S
 pub fn readable_folder(
     workspace: &Workspace,
     capability: &str,
-    saver: &tilo_action_policy::Actor,
+    saver: &tilo_member_types::Actor,
 ) -> Result<std::path::PathBuf, String> {
     let granted = workspace
         .sandbox
@@ -1691,7 +1691,7 @@ pub fn readable_folder(
     }) else {
         return Err("the saver is not a member of the workspace".into());
     };
-    let acting = tilo_action_policy::Acting::person(saver);
+    let acting = tilo_member_types::Acting::person(saver);
     if collab_types::caps::decide_capability(
         &acting,
         &collab_types::ResourceRef::FsPath(path.clone()),
@@ -1809,7 +1809,7 @@ mod tests {
             let catalog = notes_catalog();
             let keymap = ShortcutConfig::default();
             let workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Office");
-            let saver = tilo_action_policy::Actor::from(tilo_action_policy::MemberId::person("ada"));
+            let saver = tilo_member_types::Actor::from(tilo_member_types::MemberId::person("ada"));
             let plan = plan_library(
                 &workspace,
                 operation,
@@ -1860,7 +1860,7 @@ mod tests {
             let catalog = notes_catalog();
             let keymap = ShortcutConfig::default();
             let workspace = Workspace::new(tilo_desktop_model::WorkspaceId::from_u128(1), "Office");
-            let saver = tilo_action_policy::Actor::from(tilo_action_policy::MemberId::person("ada"));
+            let saver = tilo_member_types::Actor::from(tilo_member_types::MemberId::person("ada"));
             let plan = plan_library(
                 &workspace,
                 operation,

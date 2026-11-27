@@ -1018,9 +1018,10 @@ mod tests {
     #[test]
     fn an_editor_changes_the_accounts_and_a_viewer_is_refused() {
         use tilo_action_policy::{
-            Acting, ActionKind, Answer, Authority, Context, Grant, Grantee, KindSet, Role,
-            TreePath, WorkspacePolicy,
+            ActionKind, Answer, Authority, Context, Grant, Grantee, KindSet, Role, TreePath,
+            WorkspacePolicy,
         };
+        use tilo_member_types::Acting;
         use tilo_resource::Resource as _;
         const WORKSPACE: &str = "w";
         const MAIL: &str = "so.tilo.mail";

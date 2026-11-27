@@ -6,10 +6,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActionKind, Answer, Authority, Context, Grant, GrantId, Grantee, Lifetime, Party, PersonId,
-    Role, TreePath, Verdict,
+    ActionKind, Answer, Authority, Context, Grant, GrantId, Grantee, Lifetime, Party, Role,
+    TreePath, Verdict,
     roles::{self, governance},
 };
+use tilo_member_types::PersonId;
 
 /// Everything that decides authority in one workspace.
 ///
@@ -823,7 +824,7 @@ impl WorkspacePolicy {
     /// held off.
     fn check_not_held_off(&self, actor: &Authority<'_>, cx: &Context<'_>) -> Result<(), Refusal> {
         for grantee in &actor.person.grantees {
-            let Grantee::Member(crate::MemberId::Person(person)) = grantee else {
+            let Grantee::Member(tilo_member_types::MemberId::Person(person)) = grantee else {
                 continue;
             };
             if self.is_owner(person) {

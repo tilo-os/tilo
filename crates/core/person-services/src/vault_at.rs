@@ -2,8 +2,8 @@
 //! its entries, and, once, what a host kept of it before the vault was the workspace's document.
 
 use accounts::vault_items::{VaultChange, VaultItems};
-use tilo_action_policy::Acting;
 use tilo_actions::remote::InvokeRequest;
+use tilo_member_types::Acting;
 use tilo_workspace_service::workspaces::vault::OpenVault;
 
 use crate::PersonServices;

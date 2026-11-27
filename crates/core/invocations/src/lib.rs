@@ -877,7 +877,7 @@ impl Invocations {
         &self,
         caller: &Caller,
         workspace: &str,
-        agent: &tilo_action_policy::MemberId,
+        agent: &tilo_member_types::MemberId,
         may_write_origin: &OriginWrites<'_>,
     ) -> Vec<Pending<Result<(), ActionCallError>>> {
         let ids: Vec<InvocationId> = {

@@ -3,7 +3,8 @@
 //! portals), kept as the list of [`CapOverride`]s the workspace holds. Never
 //! what a person grants an agent; that is the workspace's policy.
 
-use tilo_action_policy::{MemberId, PolicyEdit, Refusal, WorkspacePolicy, roles};
+use tilo_action_policy::{PolicyEdit, Refusal, WorkspacePolicy, roles};
+use tilo_member_types::MemberId;
 
 use super::{CapOverride, Effect};
 

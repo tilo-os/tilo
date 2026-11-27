@@ -627,7 +627,7 @@ fn agent_caller(
     person: [u8; 32],
     owner: [u8; 32],
 ) -> Result<Caller, String> {
-    let root = tilo_action_policy::PersonId::parse(&agent.acts_for)
+    let root = tilo_member_types::PersonId::parse(&agent.acts_for)
         .ok()
         .and_then(|its| its.root())
         .ok_or("the agent belongs to no person")?;
@@ -1111,7 +1111,7 @@ impl ServerAgents {
                 // The typed create action saves a made agent's triggers itself; an agent made
                 // by an app's own change or a sub-agent is saved here, once, as this person's.
                 let mine = |agent: &Agent| {
-                    tilo_action_policy::PersonId::parse(&agent.acts_for)
+                    tilo_member_types::PersonId::parse(&agent.acts_for)
                         .is_ok_and(|person| person.root() == Some(me))
                 };
                 for agent in agents.agents.iter().filter(kept) {

@@ -221,8 +221,8 @@ impl Identified for Agent {
 impl Agent {
     /// The member it is: its id and the person it acts for.
     #[must_use]
-    pub fn member(&self) -> tilo_action_policy::MemberId {
-        tilo_action_policy::MemberId::agent(self.id.0.clone(), self.acts_for.as_str())
+    pub fn member(&self) -> tilo_member_types::MemberId {
+        tilo_member_types::MemberId::agent(self.id.0.clone(), self.acts_for.as_str())
     }
 
     /// The identity its actor is derived from: its actor's bytes, `agent:<person>/<id>`, whose
@@ -978,7 +978,7 @@ fn person(id: &str) -> Result<String, Refusal> {
     if id.len() > MAX_KEEPER {
         return Err(Refusal::new("an agent is kept by a member"));
     }
-    tilo_action_policy::PersonId::parse(id)
+    tilo_member_types::PersonId::parse(id)
         .map(|id| id.as_str().to_owned())
         .map_err(|_| Refusal::new("an agent is kept by a member"))
 }

@@ -2338,7 +2338,7 @@ mod tests {
             let caller = Caller::bot("6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6", installer, [9u8; 32]);
             assert_eq!(
                 caller.acting().member_id(),
-                Some(&tilo_action_policy::MemberId::bot(
+                Some(&tilo_member_types::MemberId::bot(
                     "6f1c2a8e-3b4d-4c5e-9f60-718293a4b5c6"
                 ))
             );

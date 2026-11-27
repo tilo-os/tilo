@@ -254,7 +254,7 @@ impl OwnerDevices {
     pub(crate) fn follow(daemon: &DaemonShell, cert: DeviceCert, wake: tilo_service::Wake) -> Self {
         let person = cert.user_public_key;
         let own = tilo_server_protocol::servers::person_workspace_id(&person);
-        let member = tilo_action_policy::PersonId::from_root(person);
+        let member = tilo_member_types::PersonId::from_root(person);
         let record = FollowedResource::follow(
             daemon,
             (&own, DEVICES.0, DEVICES.1),

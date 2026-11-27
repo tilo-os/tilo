@@ -15,6 +15,7 @@ name = "collab_admission"
 path = "src/lib.rs"
 
 [dependencies]
+tilo-member-types.workspace = true
 tilo-collab-types = { version = "0.1.0", path = "../collab-types" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 tilo-actions = { version = "0.1.0", path = "../actions" }

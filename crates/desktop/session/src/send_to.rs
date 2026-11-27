@@ -902,8 +902,8 @@ fn send_targets(
                     // An agent recipient names whose agent it is (`agent:<person>/<id>`), as
                     // Chat's member is the pair.
                     let agent =
-                        tilo_action_policy::MemberId::of_actor_bytes(recipient.id.as_bytes())
-                            .filter(tilo_action_policy::MemberId::is_agent)
+                        tilo_member_types::MemberId::of_actor_bytes(recipient.id.as_bytes())
+                            .filter(tilo_member_types::MemberId::is_agent)
                             .ok_or_else(|| format!("{} names no agent", recipient.name))?;
                     InvokeTarget::action(
                         CHAT,
@@ -1051,7 +1051,7 @@ mod tests {
         {
             let ada =
                 Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada").with_detail("online");
-            let helper_member = tilo_action_policy::MemberId::agent("a_helper", "ad".repeat(32));
+            let helper_member = tilo_member_types::MemberId::agent("a_helper", "ad".repeat(32));
             let helper = Recipient::found(
                 RecipientKind::Agent,
                 crate::search::recipient_id(&helper_member),

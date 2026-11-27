@@ -16,7 +16,8 @@
 
 use std::sync::Arc;
 
-pub use tilo_action_policy::{Acting, Grantee, MemberId};
+pub use tilo_action_policy::Grantee;
+pub use tilo_member_types::{Acting, MemberId};
 
 #[derive(Clone)]
 struct PolicyTimeSampler(Arc<dyn Fn() -> Result<u64, String> + Send + Sync>);
@@ -396,7 +397,7 @@ impl PermissionContext {
             .map(|node| local_grant(subject.clone(), node, kinds, None))
             .collect();
         Self::member(&MemberId::person(LOCAL_USER), Role::Owner).acting_as(
-            policy::Actor::Member(policy::MemberId::agent(agent, LOCAL_USER)),
+            tilo_member_types::Actor::Member(tilo_member_types::MemberId::agent(agent, LOCAL_USER)),
             grants,
         )
     }
@@ -412,7 +413,11 @@ impl PermissionContext {
     /// The same person acting through a delegation of `subject` carrying
     /// `grants`.
     #[must_use]
-    pub fn acting_as(mut self, subject: policy::Actor, grants: Vec<policy::Grant>) -> Self {
+    pub fn acting_as(
+        mut self,
+        subject: tilo_member_types::Actor,
+        grants: Vec<policy::Grant>,
+    ) -> Self {
         self.access = Arc::new(Arc::unwrap_or_clone(self.access).acting_as(subject, grants));
         self
     }
@@ -1749,7 +1754,10 @@ mod refused_listing_tests {
         assert!(shown.actions.iter().all(|action| action.id != "edit"));
         // Its agent, which the person lets read and change: their own role still denies changes.
         let agent = viewer.clone().acting_as(
-            policy::Actor::Member(crate::permissions::MemberId::agent("scribe", person.id())),
+            tilo_member_types::Actor::Member(crate::permissions::MemberId::agent(
+                "scribe",
+                person.id(),
+            )),
             vec![policy::Grant::new(
                 "scribe-notes",
                 policy::Grantee::agent("scribe", person.id()),
@@ -1783,7 +1791,10 @@ mod refused_listing_tests {
         // person's setting, and where they change it.
         let editor = PermissionContext::member(&person, Role::Editor);
         let denied = editor.acting_as(
-            policy::Actor::Member(crate::permissions::MemberId::agent("scribe", person.id())),
+            tilo_member_types::Actor::Member(crate::permissions::MemberId::agent(
+                "scribe",
+                person.id(),
+            )),
             [policy::Grant::new(
                 "scribe-all",
                 policy::Grantee::agent("scribe", person.id()),
@@ -1891,7 +1902,10 @@ mod refused_listing_tests {
         );
         assert_eq!(named(&shown), post_alone, "nor named it by the typed edit");
         let agent = editor.acting_as(
-            policy::Actor::Member(crate::permissions::MemberId::agent("scribe", person.id())),
+            tilo_member_types::Actor::Member(crate::permissions::MemberId::agent(
+                "scribe",
+                person.id(),
+            )),
             vec![policy::Grant::new(
                 "scribe-chat",
                 policy::Grantee::agent("scribe", person.id()),
@@ -1975,7 +1989,7 @@ mod tests {
                     owner
                         .clone()
                         .with_access(owner.access().clone().acting_as(
-                            policy::Actor::Member(policy::MemberId::agent("scribe", "owner")),
+                            tilo_member_types::Actor::Member(tilo_member_types::MemberId::agent("scribe", "owner")),
                             grants,
                         ))
                 };
@@ -2058,7 +2072,7 @@ mod tests {
                 owner
                     .clone()
                     .with_access(owner.access().clone().acting_as(
-                        policy::Actor::Member(policy::MemberId::agent("scribe", "owner")),
+                        tilo_member_types::Actor::Member(tilo_member_types::MemberId::agent("scribe", "owner")),
                         vec![grant(policy::Grantee::agent("scribe", "owner"), node.clone(), kinds)],
                     ))
             };
@@ -2120,7 +2134,7 @@ mod tests {
                 let app = owner
                     .clone()
                     .with_access(owner.access().clone().acting_as(
-                        policy::Actor::Member(policy::MemberId::agent("thing", "owner")),
+                        tilo_member_types::Actor::Member(tilo_member_types::MemberId::agent("thing", "owner")),
                         Vec::new(),
                     ));
                 assert!(!app.check(&PermissionScope::workspace(ActionKind::Read)));

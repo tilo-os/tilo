@@ -93,7 +93,7 @@ pub fn asked(doc: &AutoCommit) -> Vec<(String, AskedView)> {
             let opened_by = text(SESSION).and_then(|session| {
                 Some(OpenedBy {
                     run: session,
-                    agent: tilo_action_policy::MemberId::of_actor_bytes(
+                    agent: tilo_member_types::MemberId::of_actor_bytes(
                         text(SESSION_AGENT)?.as_bytes(),
                     )?,
                     label: text(SESSION_LABEL).unwrap_or_default(),
@@ -190,7 +190,7 @@ mod tests {
             person: person.into(),
             opened_by: Some(OpenedBy {
                 run: "agent-session:1".into(),
-                agent: tilo_action_policy::MemberId::agent("claude-code-0a1b2c3d4e", "ada"),
+                agent: tilo_member_types::MemberId::agent("claude-code-0a1b2c3d4e", "ada"),
                 label: "Claude Code".into(),
                 title: String::new(),
             }),

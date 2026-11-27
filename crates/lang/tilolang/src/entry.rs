@@ -18,7 +18,7 @@
 
 use crate::calendar::{DAY, day_text, time_text};
 use crate::natural::{Language, day_label, scan, words};
-use tilo_action_policy::Actor;
+use tilo_member_types::Actor;
 
 /// What a create action's parameter takes out of the text an entry is typed into.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -327,7 +327,7 @@ fn without(words: &[crate::natural::Word], taken: &[usize]) -> String {
 mod tests {
     use super::{Filled, Look, Param, Takes, read};
     use crate::natural::Language;
-    use tilo_action_policy::{Actor, MemberId};
+    use tilo_member_types::{Actor, MemberId};
 
     fn person(id: &str) -> Actor {
         MemberId::person(id).into()

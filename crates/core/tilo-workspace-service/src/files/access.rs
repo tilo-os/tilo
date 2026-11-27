@@ -78,7 +78,8 @@ pub fn list<'a>(
     device: Option<[u8; 32]>,
 ) -> Listed {
     use collab_types::caps::{CapOverride, Effect, Scope};
-    use tilo_action_policy::{Acting, Grantee, Lifetime};
+    use tilo_action_policy::{Grantee, Lifetime};
+    use tilo_member_types::Acting;
 
     let acting = person_key(person).map(|key| Acting::person(hex::encode(key)));
     let mut capabilities = Vec::new();
@@ -160,7 +161,7 @@ fn person_key(person: &str) -> Option<[u8; 32]> {
 fn push_with_device(
     capabilities: &mut Vec<collab_types::caps::CapOverride>,
     capability: &collab_types::caps::CapOverride,
-    acting: Option<&tilo_action_policy::Acting>,
+    acting: Option<&tilo_member_types::Acting>,
     device: Option<[u8; 32]>,
 ) {
     capabilities.push(capability.clone());
@@ -171,7 +172,7 @@ fn push_with_device(
         return;
     }
     let mut bound = capability.clone();
-    bound.grantee = tilo_action_policy::Grantee::Member(tilo_action_policy::MemberId::person(
+    bound.grantee = tilo_action_policy::Grantee::Member(tilo_member_types::MemberId::person(
         hex::encode(device),
     ));
     capabilities.push(bound);
@@ -210,8 +211,9 @@ mod tests {
     use super::*;
     use collab_types::caps::FsAuthority;
     use collab_types::caps::{Access, CapOverride, Effect, Scope};
-    use tilo_action_policy::{Acting, Answer, Grantee, Lifetime, Role};
+    use tilo_action_policy::{Answer, Grantee, Lifetime, Role};
     use tilo_desktop_model::{Layout, Workspace};
+    use tilo_member_types::Acting;
 
     /// The list the mounts of the device `device` are told for `tree`'s workspaces, as `person`.
     fn listed(tree: &Layout, person: &str, device: Option<[u8; 32]>) -> FsAuthority {

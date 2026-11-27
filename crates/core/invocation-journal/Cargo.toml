@@ -16,9 +16,9 @@ path = "src/lib.rs"
 test-support = []
 
 [dependencies]
+tilo-member-types.workspace = true
 tilo-actions = { path = "../actions" }
 tilo-action-policy = { path = "../action-policy" }
-tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 # Who a person is, by the root key their devices are certified under.
 tilo-broker-core = { path = "../broker-core" }
 collab-types = { package = "tilo-collab-types", path = "../collab-types" }

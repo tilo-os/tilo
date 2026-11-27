@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use collab_types::signer::DeviceSigner;
 use serde_json::{Value, json};
-use tilo_action_policy::Actor;
+use tilo_member_types::Actor;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,

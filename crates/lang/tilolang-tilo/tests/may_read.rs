@@ -3,8 +3,9 @@
 //! reads, one they keep out does not, and someone who is no member of the workspace never does.
 
 use tilo_action_policy::{
-    Answer, Grant, Grantee, KindSet, MemberAccess, PersonId, Role, TreePath, WorkspacePolicy,
+    Answer, Grant, Grantee, KindSet, MemberAccess, Role, TreePath, WorkspacePolicy,
 };
+use tilo_member_types::PersonId;
 use tilolang_runtime::{Actor, ResourceRef, Value};
 use tilolang_tilo::meta::MetaExt as _;
 use tilolang_tilo::runtime::ids::MemberId;

@@ -24,6 +24,7 @@ framework = true
 test-support = ["tilo-actions/test-support"]
 
 [dependencies]
+tilo-member-types.workspace = true
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
 # Sorts without a copy of std's sort per call site, which kept the web
 # desktop's start module large.
@@ -43,7 +44,6 @@ jiff.workspace = true
 tilo-actions = { version = "0.1.0", path = "../actions" }
 tilo-action-policy = { version = "0.1.0", path = "../action-policy" }
 # A capability names the app its sandbox belongs to.
-tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 tilo-content = { version = "0.1.0", path = "../content", default-features = false }
 tilo-resource-macros = { version = "0.1.0", path = "../tilo-resource-macros" }
 

@@ -110,6 +110,7 @@ client_side = [
     "tilo-formats",            # dates and clocks as the person set them
     "tilo-identity-client",
     "tilo-lock",
+    "tilo-member-types",       # who acts: a person, a member, an actor and the app one acts in
     "tilo-paths",
     "tilo-platform-caps",
     "tilo-presence",           # who is where, their hue and their status, as plain values
@@ -189,6 +190,7 @@ toolkit_reaches = [
     "tilo-lock",                        # crates/platform/tilo-lock
     "tilo-machine",                     # crates/platform/tilo-machine
     "tilo-media",                       # crates/engines/tilo-media
+    "tilo-member-types",                # crates/platform/member-types
     "tilo-mime",                        # crates/platform/tilo-mime
     "tilo-model-client",                # crates/sdk/model-client
     "tilo-net",                         # crates/platform/tilo-net

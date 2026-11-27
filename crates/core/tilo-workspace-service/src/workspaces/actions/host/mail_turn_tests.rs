@@ -11,10 +11,12 @@
 #[cfg(feature = "agents")]
 #[test]
 fn a_narrowed_agent_needs_a_rule_that_names_the_mail_action() {
+    use tilo_action_policy::ActingPolicy as _;
     use tilo_action_policy::agent_answers::{self, AnswerScope};
     use tilo_action_policy::{
-        Acting, ActionKind, Answer, Authority, Context, Grantee, TreePath, WorkspacePolicy,
+        ActionKind, Answer, Authority, Context, Grantee, TreePath, WorkspacePolicy,
     };
+    use tilo_member_types::Acting;
 
     const WORKSPACE: &str = "0b7c7a52-6f7e-4a55-9a51-1c2f4b3f7e10";
     const APP: &str = "so.tilo.mail";

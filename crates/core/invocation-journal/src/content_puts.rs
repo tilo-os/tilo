@@ -33,7 +33,7 @@ pub const CONTENT_PUTS_FILE: &str = "content-puts.jsonl";
 pub struct ContentPutRecord {
     /// Seconds since the Unix epoch, on the broker's policy clock.
     pub at: u64,
-    pub actor: tilo_action_policy::Actor,
+    pub actor: tilo_member_types::Actor,
     pub workspace: String,
     pub hash: String,
     pub len: u64,

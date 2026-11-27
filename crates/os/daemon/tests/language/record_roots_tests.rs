@@ -76,7 +76,7 @@ async fn a_built_in_apps_root_is_made_where_the_workspace_runs_the_app() {
                 },
                 stamp: Stamp {
                     verb: "$create".into(),
-                    invoker: Stamp::by(&tilo_action_policy::Actor::Member(MemberId::person(
+                    invoker: Stamp::by(&tilo_member_types::Actor::Member(MemberId::person(
                         person.clone(),
                     ))),
                     invocation: "t-0".into(),

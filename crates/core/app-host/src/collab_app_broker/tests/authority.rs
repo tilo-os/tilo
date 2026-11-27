@@ -391,7 +391,7 @@ tilo_test_env::scenario! {
             .expect("the record lists the agent the member runs");
         assert_eq!(
             admitted.broker_actor().actor(),
-            &tilo_actions::Actor::from(tilo_action_policy::MemberId::agent("scribe", actor.clone()))
+            &tilo_actions::Actor::from(tilo_member_types::MemberId::agent("scribe", actor.clone()))
         );
         assert!(admitted.broker_actor().is_agent());
         let answer = |kind| {

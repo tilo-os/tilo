@@ -14,10 +14,10 @@
 
 use collab_types::caps::{Access, Effect, Scope};
 use tilo_action_policy::{
-    ActionKind, Answer, Context, Grant, Grantee, Labels, Level, MemberId, TreePath,
-    WorkspacePolicy, roles,
+    ActionKind, Answer, Context, Grant, Grantee, Labels, Level, TreePath, WorkspacePolicy, roles,
 };
 use tilo_desktop_model::Workspace;
+use tilo_member_types::MemberId;
 
 /// One part of a workspace shared with someone, as the overview's list shows it.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]

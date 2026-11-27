@@ -1,8 +1,8 @@
 //! Durable local RPCs use the existing journal and invocation dispatcher.
 use super::{AppBrokerState, BrokerActor, DurableInvocation, InvocationCaller, InvocationOwner};
-use tilo_action_policy::MemberId;
 use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_invocation_journal::{InvocationJournal, InvocationKey};
+use tilo_member_types::MemberId;
 
 /// The action check of one admission, decided on the caller's borrowed
 /// sample of exactly that workspace's committed workspace.
@@ -107,7 +107,7 @@ impl AppBrokerState {
                 if route.cluster_id != workspace {
                     return Err("original local caller does not match invocation workspace".into());
                 }
-                let expected: tilo_action_policy::Actor = current
+                let expected: tilo_member_types::Actor = current
                     .agent_id
                     .as_ref()
                     .map_or_else(

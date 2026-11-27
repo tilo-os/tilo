@@ -733,14 +733,14 @@ fn a_remote_device_is_the_person_its_root_names() {
     let caller = Caller::authenticated([0xAB; 32], [1; 32]);
     assert_eq!(
         caller.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::person("ab".repeat(32))),
+        Some(&tilo_member_types::MemberId::person("ab".repeat(32))),
         "every device of one person is the same member"
     );
     assert_eq!(caller.workspace(), None);
     let agent = Caller::local_agent("helper", "ada").in_workspace("workspace-1");
     assert_eq!(
         agent.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::agent("helper", "ada"))
+        Some(&tilo_member_types::MemberId::agent("helper", "ada"))
     );
     assert_eq!(agent.workspace(), Some("workspace-1"));
     assert_eq!(agent.device_public_key(), None);

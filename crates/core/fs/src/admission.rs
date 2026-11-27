@@ -20,10 +20,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tilo_action_policy::{
-    Acting, ActionKind, Answer, Context, MemberAccess, MemberId, WorkspacePolicy,
-};
+use tilo_action_policy::{ActionKind, Answer, Context, MemberAccess, WorkspacePolicy};
 use tilo_lock::MutexRecover as _;
+use tilo_member_types::{Acting, MemberId};
 
 /// How long a policy read from its source answers before it is read again: a burst of file
 /// operations asks once, and a changed policy answers within a second.

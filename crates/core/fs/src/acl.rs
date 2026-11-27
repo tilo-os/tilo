@@ -18,7 +18,7 @@ use collab_types::{
     Access as CapAccess, CapDecision, CapOverride, Effect, ResourceRef, Scope, decide_capability,
     path_covers,
 };
-use tilo_action_policy::{Acting, MemberId};
+use tilo_member_types::{Acting, MemberId};
 
 /// A Tilo identity: the 32-byte Ed25519 public key that anchors a person or one of their devices.
 pub type IdentityKey = [u8; 32];
@@ -560,7 +560,8 @@ impl From<&AclHandle> for AclHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_action_policy::{Grantee, MemberId};
+    use tilo_action_policy::Grantee;
+    use tilo_member_types::MemberId;
 
     fn alice() -> Grantee {
         Grantee::person(hex::encode(ALICE))

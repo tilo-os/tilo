@@ -189,7 +189,7 @@ fn app_of(tile: &TileContent) -> String {
 /// Who opened the window `tab`, as the shared desktop's record says: the agent whose run opened
 /// it when one did, and the member who opened it otherwise.
 fn author_of(handle: &DesktopHandle, tab: u64) -> Option<Author> {
-    use tilo_action_policy::MemberId;
+    use tilo_member_types::MemberId;
     let person = handle.author_of(tab);
     let run = handle.opened_by(tab);
     match (person, run) {

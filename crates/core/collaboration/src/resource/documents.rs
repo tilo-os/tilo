@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash};
-use tilo_app_id::AppId;
 use tilo_lock::MutexRecover as _;
+use tilo_member_types::AppId;
 use tilo_sort::CompactSort as _;
 
 use super::{
@@ -611,7 +611,7 @@ impl ResourceSet {
                 .as_ref()
                 .map(|(containers, version)| (containers.as_slice(), *version)),
             (
-                &tilo_action_policy::Acting::by_app(self.app_id.clone()),
+                &tilo_member_types::Acting::by_app(self.app_id.clone()),
                 |_| Ok(()),
             ),
         )?;
@@ -1174,7 +1174,7 @@ impl ResourceReservation {
     pub fn initialize_by(
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
-        by: &tilo_action_policy::Acting,
+        by: &tilo_member_types::Acting,
     ) -> Result<(), ResourceOpenError> {
         self.initialize_seeded_by(initialize, |_| Ok(()), by)
     }
@@ -1202,7 +1202,7 @@ impl ResourceReservation {
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
         seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
-        by: &tilo_action_policy::Acting,
+        by: &tilo_member_types::Acting,
     ) -> Result<(), ResourceOpenError> {
         let (writer, workspace, founding) = {
             let set = self.store.0.borrow();
@@ -1332,7 +1332,7 @@ impl ResourceStore {
     ///
     /// # Errors
     /// The set is borrowed now.
-    fn kept_app(&self) -> Result<tilo_app_id::AppId, ResourceOpenError> {
+    fn kept_app(&self) -> Result<tilo_member_types::AppId, ResourceOpenError> {
         let app = self
             .0
             .try_borrow()
@@ -1347,8 +1347,8 @@ impl ResourceStore {
     ///
     /// # Errors
     /// The set is borrowed now.
-    fn app_acting(&self) -> Result<tilo_action_policy::Acting, ResourceOpenError> {
-        Ok(tilo_action_policy::Acting::by_app(self.kept_app()?))
+    fn app_acting(&self) -> Result<tilo_member_types::Acting, ResourceOpenError> {
+        Ok(tilo_member_types::Acting::by_app(self.kept_app()?))
     }
 
     /// A number that moves whenever anything may have changed a resource of this store (a commit,

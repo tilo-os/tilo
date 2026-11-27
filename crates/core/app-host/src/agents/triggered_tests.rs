@@ -10,11 +10,12 @@
 
 use super::{CHAT, turn_caller, typed};
 use serde_json::{Map, json};
-use tilo_action_policy::{Acting, ActionKind, Answer, PersonId};
+use tilo_action_policy::{ActionKind, Answer};
 use tilo_actions::ActionKey;
 use tilo_actions::entry::{Did, VerbCall};
 use tilo_actions::remote::Caller;
 use tilo_automation::dispatch::DocumentEvent;
+use tilo_member_types::{Acting, PersonId};
 use tilo_workspace_service::agent_shortcuts::MESSAGE;
 use tilo_workspace_service::work::Where;
 

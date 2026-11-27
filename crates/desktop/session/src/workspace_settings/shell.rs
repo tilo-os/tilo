@@ -599,12 +599,12 @@ impl Feeding<'_> {
         workspace_id: Option<&str>,
         name: &str,
         model: &str,
-    ) -> Result<tilo_action_policy::MemberId, String> {
+    ) -> Result<tilo_member_types::MemberId, String> {
         let workspace = self.workspace(workspace_id)?;
         self.tabs
             .agents
             .create(Some(&workspace), self.person, (name, None), model)
-            .map(|(id, _)| tilo_action_policy::MemberId::agent(id, self.person))
+            .map(|(id, _)| tilo_member_types::MemberId::agent(id, self.person))
     }
 
     /// The person's agent for the MCP client `client` in the workspace `workspace_id` names: the

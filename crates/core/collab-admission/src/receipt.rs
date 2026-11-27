@@ -10,7 +10,8 @@ use collab_types::receipt::{
     check_store_kinds, label, moderated_nodes, unread_claims, written_node,
 };
 use collab_types::{DocumentMutation, OpKind, SignedOp};
-use tilo_action_policy::{Acting, ActionKind, TreePath};
+use tilo_action_policy::{ActionKind, TreePath};
+use tilo_member_types::Acting;
 
 /// Decide a received op on `record`: a compaction as a write of the record
 /// (or the workspace's `compact` governance action), a redaction as the workspace's

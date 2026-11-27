@@ -507,7 +507,7 @@ impl Session {
         let caller = tilo_peer_state::key_caller::caller_of_certificate(cert);
         let account = Account::new(server, grant.clone(), reach.clone(), caller.clone());
         let grant = grant.id.clone();
-        let agent = tilo_actions::policy::key_agent_id(&cert.device_public_key);
+        let agent = tilo_member_types::key_agent_id(&cert.device_public_key);
         let own = McpServer::for_agent(
             Joined::provider(ROOT_TREE, None, account.clone()),
             ROOT_TREE.to_owned(),

@@ -11,11 +11,11 @@
 //! ([`tilo_actions::Did`]), and the units are listed from the record.
 
 use serde::{Deserialize, Serialize};
-use tilo_action_policy::PersonId;
 pub use tilo_actions::FrameworkChange;
 use tilo_actions::context::ContinuedAction;
 use tilo_actions::stamp::{KeptCalls, Label};
 use tilo_actions::{ActionContext, ActionKey, Did, HistoryOp, PathStep};
+use tilo_member_types::PersonId;
 
 /// A storage unit, as the path from the record's root to the unit's root
 /// (a `#[model(unit)]` field, or an item of one). The empty path is the
@@ -56,7 +56,7 @@ pub struct ChangeClaim {
 /// that were signed, never over this build's writing of the tree.
 #[derive(Clone, Debug)]
 pub struct Invoker {
-    acting: tilo_action_policy::Acting,
+    acting: tilo_member_types::Acting,
     /// The text as read; `None` for an invoker made here, written as its JSON when it is sent.
     text: Option<String>,
 }
@@ -64,7 +64,7 @@ pub struct Invoker {
 impl Invoker {
     /// `acting`, as this device names it in a claim it makes.
     #[must_use]
-    pub const fn new(acting: tilo_action_policy::Acting) -> Self {
+    pub const fn new(acting: tilo_member_types::Acting) -> Self {
         Self { acting, text: None }
     }
 
@@ -99,14 +99,14 @@ impl Invoker {
     }
 }
 
-impl From<tilo_action_policy::Acting> for Invoker {
-    fn from(acting: tilo_action_policy::Acting) -> Self {
+impl From<tilo_member_types::Acting> for Invoker {
+    fn from(acting: tilo_member_types::Acting) -> Self {
         Self::new(acting)
     }
 }
 
 impl std::ops::Deref for Invoker {
-    type Target = tilo_action_policy::Acting;
+    type Target = tilo_member_types::Acting;
 
     fn deref(&self) -> &Self::Target {
         &self.acting
@@ -539,7 +539,7 @@ impl ChangeClaim {
         hash: [u8; 32],
         message: Option<&str>,
         units: Vec<UnitPath>,
-        imported: Option<&tilo_action_policy::Acting>,
+        imported: Option<&tilo_member_types::Acting>,
         calls: &KeptCalls,
     ) -> Result<Self, ClaimError> {
         match (
@@ -564,7 +564,7 @@ impl ChangeClaim {
 ///
 /// # Errors
 /// [`ClaimError::NoInvoker`] for a stamp that names no invoker.
-pub fn stamp_invoker(stamp: &crate::Stamp) -> Result<tilo_action_policy::Acting, ClaimError> {
+pub fn stamp_invoker(stamp: &crate::Stamp) -> Result<tilo_member_types::Acting, ClaimError> {
     // How the invoker acted, as the writer recorded it: an agent its person's device handed its
     // session to, or one under a key of its own.
     if let Some(invoker) = stamp
@@ -576,19 +576,19 @@ pub fn stamp_invoker(stamp: &crate::Stamp) -> Result<tilo_action_policy::Acting,
     }
     let acting = stamp
         .invoked_by()
-        .map(tilo_action_policy::Acting::from)
+        .map(tilo_member_types::Acting::from)
         .ok_or(ClaimError::NoInvoker)?;
     Ok(match &stamp.acted_for {
         // The agent works for the person its stamp names, so every receiver
         // decides it as that person's agent, never as a bare name.
-        Some(person) => acting.acting_for(tilo_action_policy::Acting::person(person.clone())),
+        Some(person) => acting.acting_for(tilo_member_types::Acting::person(person.clone())),
         None => acting,
     })
 }
 
 /// Who made the change whose commit message is `message`, as its history
 /// entry names them, when not the person whose device signed it.
-fn invoker_of_message(message: &str) -> Option<tilo_action_policy::Acting> {
+fn invoker_of_message(message: &str) -> Option<tilo_member_types::Acting> {
     match crate::Stamp::read(message)? {
         // A continuation names its gesture's invoker in its claim token, as its first entry
         // names it ([`crate::receipt::check_continuations`]).
@@ -604,7 +604,7 @@ fn invoker_of_message(message: &str) -> Option<tilo_action_policy::Acting> {
 
 /// Who made `change` ([`invoker_of_message`]).
 #[must_use]
-pub fn invoker_of(change: &automerge::Change) -> Option<tilo_action_policy::Acting> {
+pub fn invoker_of(change: &automerge::Change) -> Option<tilo_member_types::Acting> {
     change.message().and_then(invoker_of_message)
 }
 
@@ -1015,9 +1015,9 @@ mod tests {
         let person = "ab".repeat(32);
         let stamp = crate::Stamp {
             verb: "$origin".into(),
-            invoker: crate::Stamp::by(&tilo_action_policy::Actor::Member(
-                tilo_action_policy::MemberId::Person(
-                    tilo_action_policy::PersonId::parse(&person).unwrap(),
+            invoker: crate::Stamp::by(&tilo_member_types::Actor::Member(
+                tilo_member_types::MemberId::Person(
+                    tilo_member_types::PersonId::parse(&person).unwrap(),
                 ),
             )),
             invocation: "i1".into(),

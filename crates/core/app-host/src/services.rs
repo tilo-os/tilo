@@ -18,7 +18,7 @@ pub use crate::collab_app_broker::{
 /// `invocation` and has checked the change against what `actor` is offered.
 pub struct ShortcutLibraryRequest {
     pub workspace: String,
-    pub actor: tilo_action_policy::Actor,
+    pub actor: tilo_member_types::Actor,
     /// The person an agent `actor` acts for, by their root, hex: what the agent saves is
     /// theirs, signed with the agent's own key. `None` for a person saving for themselves.
     pub acting_for: Option<String>,
@@ -219,7 +219,7 @@ pub struct FileClipboardContext {
     pub(crate) app_id: String,
     pub(crate) duplicate: SelectedDescriptorSource,
     pub(crate) workspace: String,
-    pub(crate) owner: tilo_action_policy::Actor,
+    pub(crate) owner: tilo_member_types::Actor,
     pub(crate) check: Arc<dyn Fn(tilo_actions::ActionKind) -> Result<(), String> + Send + Sync>,
 }
 impl FileClipboardContext {
@@ -231,7 +231,7 @@ impl FileClipboardContext {
     #[must_use]
     pub fn seat_forwarded(
         (peer, window, app_id): (u64, String, String),
-        (workspace, owner): (String, tilo_action_policy::Actor),
+        (workspace, owner): (String, tilo_member_types::Actor),
         selected: std::collections::HashMap<u32, std::fs::File>,
     ) -> Self {
         Self {
@@ -270,7 +270,7 @@ impl FileClipboardContext {
     pub fn workspace(&self) -> &str {
         &self.workspace
     }
-    pub fn owner(&self) -> &tilo_action_policy::Actor {
+    pub fn owner(&self) -> &tilo_member_types::Actor {
         &self.owner
     }
     /// Recheck the exact caller against live ownership and workspace policy.

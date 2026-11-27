@@ -223,7 +223,7 @@ struct PendingInvocation {
     update: tilo_actions::InvocationUpdate,
     prepared_effect: Arc<Mutex<Option<PreparedEffectCommit>>>,
     last_sequence: u64,
-    actor: tilo_action_policy::Actor,
+    actor: tilo_member_types::Actor,
     cancellable: bool,
     retryable_on_disconnect: bool,
     execution: tilo_actions::ExecutionMode,

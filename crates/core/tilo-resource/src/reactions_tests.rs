@@ -1,6 +1,6 @@
 use crate::AppNamed;
 use crate::{ActionCx, Collection, Id, Invoke, Model, Reactions, Replica, resource};
-use tilo_action_policy::MemberId;
+use tilo_member_types::MemberId;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Board {

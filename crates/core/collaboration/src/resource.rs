@@ -241,7 +241,7 @@ pub fn content_genesis(
     workspace: &str,
     founding: Option<(&[(String, ObjType)], u32)>,
     (by, initialize): (
-        &tilo_action_policy::Acting,
+        &tilo_member_types::Acting,
         impl FnOnce(&mut AutoCommit) -> Result<(), String>,
     ),
 ) -> Result<(), ResourceOpenError> {
@@ -329,7 +329,7 @@ pub fn content_genesis(
 /// since a change that names no one is refused, but what the record starts as rather than a step
 /// of theirs, so no undo takes it back and workspace activity leaves it out
 /// ([`tilo_actions::ChangeKind::External`]).
-pub(crate) fn initial_content_by(by: &tilo_action_policy::Acting) -> String {
+pub(crate) fn initial_content_by(by: &tilo_member_types::Acting) -> String {
     tilo_actions::ActionContext::default()
         .with_invoker(tilo_actions::ActionInvoker::admitted(by))
         .with_change(tilo_actions::ChangeKind::External)
@@ -450,7 +450,7 @@ mod tests {
                 .as_ref()
                 .map(|(containers, version)| (containers.as_slice(), *version)),
             (
-                &tilo_action_policy::Acting::by_app("test.founding"),
+                &tilo_member_types::Acting::by_app("test.founding"),
                 initialize,
             ),
         )?;

@@ -2068,7 +2068,7 @@ async fn found_party_emoji(
                     .map_err(|error| error.to_string())?;
                 doc.put(&party, "image", automerge::ScalarValue::Bytes(png.to_vec()))
                     .map_err(|error| error.to_string())?;
-                let added_by = serde_json::to_string(&tilo_action_policy::MemberId::person(
+                let added_by = serde_json::to_string(&tilo_member_types::MemberId::person(
                     hex::encode(cert.user_public_key),
                 ))
                 .map_err(|error| error.to_string())?;
@@ -2320,7 +2320,7 @@ async fn an_agents_daily_event_fires_at_its_persons_eight_across_a_clock_change(
     );
     let asker = crate::agents::events::Asker {
         person: person.clone(),
-        agent: Some(tilo_action_policy::MemberId::agent(scout, &person)),
+        agent: Some(tilo_member_types::MemberId::agent(scout, &person)),
     };
     let clock = Pinned::at(moment_ms("2027-03-27T05:00:00Z"));
     let set_up = events

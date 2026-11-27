@@ -104,7 +104,7 @@ impl AppBrokerState {
             let admitted_actor = match &admitted.agent_id {
                 Some(agent) => {
                     actor.actor().member_id()
-                        == Some(&tilo_action_policy::MemberId::agent(
+                        == Some(&tilo_member_types::MemberId::agent(
                             delegated_agent_name(agent),
                             admitted.actor_key.clone(),
                         ))

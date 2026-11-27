@@ -46,7 +46,7 @@ pub const MAX_COMMIT_BYTES: usize = 256 * 1024;
 pub struct CommitAuthor {
     /// Who invoked the action, when it came through an action API that admitted them. `None` for
     /// a change nothing but its device accounts for.
-    pub actor: Option<tilo_action_policy::Actor>,
+    pub actor: Option<tilo_member_types::Actor>,
     /// The device key that signed the part carrying this commit. Every part
     /// of one commit is signed by this key, and a receiver refuses a part
     /// any other device signed.
@@ -474,7 +474,7 @@ struct Read {
     /// The run the unit's changes were invoked in.
     run: Option<CommitGroup>,
     /// Who invoked the action.
-    actor: Option<tilo_action_policy::Actor>,
+    actor: Option<tilo_member_types::Actor>,
     /// When its latest change was made, in milliseconds since the Unix epoch.
     at_ms: u64,
 }
@@ -565,7 +565,7 @@ mod tests {
 
     fn author(device: [u8; 32]) -> CommitAuthor {
         CommitAuthor {
-            actor: Some(tilo_action_policy::MemberId::person("alice").into()),
+            actor: Some(tilo_member_types::MemberId::person("alice").into()),
             device,
         }
     }
@@ -686,7 +686,7 @@ mod tests {
             let word = WorkspaceCommit::new(
                 uuid::Uuid::from_u128(0xbe40_ad30_af8b_4bb6_8ce1_61ae_844c_6e6c),
                 CommitAuthor {
-                    actor: Some(tilo_action_policy::MemberId::person("d6".repeat(32)).into()),
+                    actor: Some(tilo_member_types::MemberId::person("d6".repeat(32)).into()),
                     device: [7; 32],
                 },
                 1_700_000_000_000,
@@ -797,7 +797,7 @@ mod tests {
             assert!(action.covers("tasks", "a") && action.covers("tasks", "b"));
             assert_eq!(action.parts[0].heads, vec![change_of(&title)]);
             assert_eq!(action.invocation, Some(invocation.0));
-            assert_eq!(action.author.actor, Some(tilo_action_policy::MemberId::person("alice").into()));
+            assert_eq!(action.author.actor, Some(tilo_member_types::MemberId::person("alice").into()));
             assert_eq!(
                 action.author.device, [0; 32],
                 "the transport stamps the device"
@@ -865,7 +865,7 @@ mod tests {
             .unwrap()
             .unwrap();
             assert_eq!(commit.invocation, Some(invocation.0));
-            assert_eq!(commit.author.actor, Some(tilo_action_policy::MemberId::person("alice").into()));
+            assert_eq!(commit.author.actor, Some(tilo_member_types::MemberId::person("alice").into()));
             assert_eq!(commit.parts[0].heads, vec![hash.0]);
             assert_eq!(
                 commit.at_ms, 1_700_000_000_000,
@@ -954,7 +954,7 @@ mod tests {
             .unwrap()[0]
                 .clone()
                 .expect("the next letter alone is still its action's");
-            assert_eq!(commit.author.actor, Some(tilo_action_policy::MemberId::person("alice").into()));
+            assert_eq!(commit.author.actor, Some(tilo_member_types::MemberId::person("alice").into()));
         }
 
         phase a_field_edit_is_a_commit_too;

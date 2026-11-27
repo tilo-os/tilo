@@ -2594,11 +2594,11 @@ pub fn mute_seconds(english: &str) -> Option<i64> {
 
 /// Whether `id` can name an app when writing a new notification policy rule.
 ///
-/// Differs from [`tilo_app_id::AppId::parse`] by allowing a single segment
+/// Differs from [`tilo_member_types::AppId::parse`] by allowing a single segment
 /// without a dot (for host desktop-file ids such as `firefox`) and capping
 /// length at 160 bytes for notification policy keys.
 pub fn valid_app_id(id: &str) -> bool {
-    const GRAMMAR: tilo_app_id::Grammar = tilo_app_id::Grammar::CANONICAL
+    const GRAMMAR: tilo_member_types::Grammar = tilo_member_types::Grammar::CANONICAL
         .max_bytes(160)
         .allow_single_segment();
     GRAMMAR.matches(id)

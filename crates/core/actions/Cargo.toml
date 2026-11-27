@@ -37,6 +37,7 @@ off-worker = ["dep:tokio"]
 asks = ["dep:tokio"]
 
 [dependencies]
+tilo-member-types.workspace = true
 # The plain names of an action, an invocation, a presence and a resource, which the toolkit
 # shares.
 tilo-action-types = { version = "0.1.0", path = "../../platform/action-types" }

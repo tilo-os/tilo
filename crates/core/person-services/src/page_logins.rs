@@ -174,7 +174,7 @@ impl crate::PersonServices {
         item: &ItemRef,
     ) -> Result<(), ActionCallError> {
         let acting = asked_by.acting();
-        if matches!(&acting.by, tilo_action_policy::Actor::App(by) if by.as_str() == app) {
+        if matches!(&acting.by, tilo_member_types::Actor::App(by) if by.as_str() == app) {
             return Ok(());
         }
         let who = acting

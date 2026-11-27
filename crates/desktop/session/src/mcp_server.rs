@@ -58,7 +58,7 @@ use crate::agent_sessions::{AgentSessions, Doing};
 use crate::app_names::app_name;
 use crate::launches::Launches;
 use crate::platform::steps::SessionSteps as _;
-use tilo_action_policy::AgentSessionId;
+use tilo_member_types::AgentSessionId;
 
 // The records a connection reads and changes, which the server answers for.
 mod records;

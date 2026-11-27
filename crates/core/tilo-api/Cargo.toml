@@ -12,6 +12,7 @@ license = "MIT OR Apache-2.0"
 test-support = []
 
 [dependencies]
+tilo-member-types.workspace = true
 tilo-action-services = { version = "0.1.0", path = "../action-services" }
 tilo-action-line = { version = "0.1.0", path = "../action-line" }
 tilo-action-line-serve = { version = "0.1.0", path = "../action-line-serve" }

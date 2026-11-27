@@ -2,12 +2,12 @@
 //! or an app: who acted, the workspace's policy, and the grants the host made
 //! for the acting's software.
 
+use crate::ActingPolicy as _;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    Acting, ActionKind, Answer, Authority, Context, Grant, TreePath, Verdict, WorkspacePolicy,
-};
+use crate::{ActionKind, Answer, Authority, Context, Grant, TreePath, Verdict, WorkspacePolicy};
 use tilo_clock::time::SystemTime;
+use tilo_member_types::Acting;
 
 /// Who made a change and what they may do.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,7 +53,7 @@ impl MemberAccess {
     #[track_caller]
     pub fn person(
         policy: impl Into<std::sync::Arc<WorkspacePolicy>>,
-        person: impl Into<crate::PersonId>,
+        person: impl Into<tilo_member_types::PersonId>,
     ) -> Self {
         Self::new(policy, Acting::person(person))
     }
@@ -62,16 +62,20 @@ impl MemberAccess {
     #[must_use]
     pub fn acting_as(
         mut self,
-        actor: crate::Actor,
+        actor: tilo_member_types::Actor,
         grants: impl IntoIterator<Item = Grant>,
     ) -> Self {
         let person = self.person_id().map(str::to_owned);
         let foreign_device = self.acting.foreign_device;
         self.acting = match (&actor, person) {
-            (crate::Actor::Member(crate::MemberId::Person(_)) | _, Some(person)) => {
-                Acting::from(actor).acting_for(Acting::person(person))
-            }
-            (crate::Actor::Member(crate::MemberId::Person(_)) | _, None) => actor.into(),
+            (
+                tilo_member_types::Actor::Member(tilo_member_types::MemberId::Person(_)) | _,
+                Some(person),
+            ) => Acting::from(actor).acting_for(Acting::person(person)),
+            (
+                tilo_member_types::Actor::Member(tilo_member_types::MemberId::Person(_)) | _,
+                None,
+            ) => actor.into(),
         };
         self.acting.foreign_device = foreign_device;
         self.granted.extend(grants);
@@ -134,13 +138,13 @@ impl MemberAccess {
             return true;
         };
         match invoker.by.member_id() {
-            Some(crate::MemberId::Person(named)) => {
+            Some(tilo_member_types::MemberId::Person(named)) => {
                 // An agent's own key never stands for the person it works for.
                 !self.acting.is_agent()
                     && named.as_str() == person
                     && invoker.people().iter().all(|named| *named == person)
             }
-            Some(crate::MemberId::Agent { id, person: own }) => {
+            Some(tilo_member_types::MemberId::Agent { id, person: own }) => {
                 invoker.people().iter().all(|named| *named == person)
                     && self.runs_agent(id, own.as_str())
             }
@@ -158,14 +162,14 @@ impl MemberAccess {
         if self
             .acting
             .member_id()
-            .and_then(crate::MemberId::as_agent)
+            .and_then(tilo_member_types::MemberId::as_agent)
             .is_some_and(|(id, of)| id == agent && of.as_str() == own)
         {
             return true;
         }
         // A key's agent is its own key, or the grant its person signed, which
         // this device holds: no device claims it handed.
-        if crate::key_of_agent(agent).is_some() {
+        if tilo_member_types::key_of_agent(agent).is_some() {
             return self.granted.iter().any(|grant| {
                 grant
                     .grantee
@@ -216,7 +220,7 @@ impl MemberAccess {
     }
 
     /// Who an invocation of this lasting asks
-    /// ([`crate::Acting::asker`]).
+    /// ([`tilo_member_types::Acting::asker`]).
     #[must_use]
     pub fn asker(&self, host_reaches_person: bool) -> crate::Asker {
         self.acting.asker(host_reaches_person)

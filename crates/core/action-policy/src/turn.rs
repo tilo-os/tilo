@@ -3,7 +3,7 @@
 //! An agent acts inside a turn, caused by a message in a conversation it takes part in. Every op
 //! of the turn carries it, so a receiver can check the cause it arrived with and presence can
 //! show what the agent works on. What the turn may do is decided as every action is
-//! ([`crate::Acting`], [`crate::Authority::of_acting`]): for the person whose message it
+//! ([`tilo_member_types::Acting`], [`crate::Authority::of_acting`]): for the person whose message it
 //! answers, bounded by the agent and by the person the agent belongs to, so a turn answering
 //! another member does what all of them may.
 

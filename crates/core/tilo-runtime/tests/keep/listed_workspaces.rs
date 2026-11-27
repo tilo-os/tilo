@@ -600,7 +600,7 @@ type = "String"
     // Every change names who made it: the smuggled one is Alice's, and it is refused for its
     // verb, not for naming nobody.
     .with_invoker(tilo_actions::ActionInvoker::person(
-        tilo_action_policy::PersonId::from_root(laptop.cert.user_public_key),
+        tilo_member_types::PersonId::from_root(laptop.cert.user_public_key),
     ));
     // Signed by a device that does not check its own changes.
     let smuggled = alice_link
@@ -752,7 +752,7 @@ params = []
         ..tilo_actions::ActionContext::for_resource("fixture", "fixture", "Fixture")
     }
     .with_invoker(tilo_actions::ActionInvoker::person(
-        tilo_action_policy::PersonId::from_root(phone.cert.user_public_key),
+        tilo_member_types::PersonId::from_root(phone.cert.user_public_key),
     ));
     doc.commit_with(
         automerge::transaction::CommitOptions::default()

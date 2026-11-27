@@ -274,7 +274,7 @@ fn what_one_member_lets_an_app_reach_reaches_every_members_session() {
         Access::Read,
     )
     .through("so.tilo.mail")
-    .granted_by(tilo_action_policy::MemberId::person(member));
+    .granted_by(tilo_member_types::MemberId::person(member));
     assert!(
         Membership::of(&sessions.session, sessions.workspace_id)
             .write(&[WorkspaceMembershipCommand::Settings(

@@ -246,7 +246,7 @@ impl AppBrokerState {
         let runs_as_saver = match &saver.agent {
             Some(agent) => {
                 caller.acting().member_id()
-                    == Some(&tilo_action_policy::MemberId::agent(
+                    == Some(&tilo_member_types::MemberId::agent(
                         agent.as_str(),
                         saver.person.clone(),
                     ))

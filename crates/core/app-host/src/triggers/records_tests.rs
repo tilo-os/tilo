@@ -993,14 +993,14 @@ async fn a_mention_written_through_an_apps_route_fires_the_agents_trigger() {
     let stamp = Stamp {
         // Chat's own `send`, the verb its surface declares for a message it writes.
         verb: "send".into(),
-        invoker: Stamp::by(&tilo_action_policy::Actor::Member(
-            tilo_action_policy::MemberId::person(person.clone()),
+        invoker: Stamp::by(&tilo_member_types::Actor::Member(
+            tilo_member_types::MemberId::person(person.clone()),
         )),
         invocation: "i-1".into(),
         at: jiff::Timestamp::now().to_string(),
         ..Stamp::default()
     };
-    let member = tilo_action_policy::MemberId::agent("scout", person.clone()).mark_value();
+    let member = tilo_member_types::MemberId::agent("scout", person.clone()).mark_value();
     let body = json!({"blocks": [{
         "text": "@Scout Remind me in a moment",
         "marks": [{"start": 0, "end": 6, "name": "mention", "value": {"Str": member}}],
@@ -1129,14 +1129,14 @@ async fn a_message_that_carries_a_file_still_fires_its_mention() {
     // nested in it. All of it is the one write, stamped as the person's own `send`.
     let stamp = Stamp {
         verb: "send".into(),
-        invoker: Stamp::by(&tilo_action_policy::Actor::Member(
-            tilo_action_policy::MemberId::person(person.clone()),
+        invoker: Stamp::by(&tilo_member_types::Actor::Member(
+            tilo_member_types::MemberId::person(person.clone()),
         )),
         invocation: "i-1".into(),
         at: jiff::Timestamp::now().to_string(),
         ..Stamp::default()
     };
-    let member = tilo_action_policy::MemberId::agent("scout", person.clone()).mark_value();
+    let member = tilo_member_types::MemberId::agent("scout", person.clone()).mark_value();
     let body = json!({"blocks": [{
         "text": "@Scout look at this",
         "marks": [{"start": 0, "end": 6, "name": "mention", "value": {"Str": member}}],

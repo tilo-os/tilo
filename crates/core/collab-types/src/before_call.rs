@@ -106,7 +106,7 @@ impl SignedOpBeforeCall {
 /// names. `None` for text that is no tree, or names an agent whose chain names no person.
 pub(crate) fn acting_before_agents_named_their_person(
     text: &str,
-) -> Option<tilo_action_policy::Acting> {
+) -> Option<tilo_member_types::Acting> {
     let mut tree: serde_json::Value = serde_json::from_str(text).ok()?;
     name_agents_with_their_person(&mut tree, None).ok()?;
     serde_json::from_value(tree).ok()
@@ -212,9 +212,9 @@ mod tests {
     use super::*;
     use ed25519_dalek::Signer as _;
 
-    fn acting() -> tilo_action_policy::Acting {
-        tilo_action_policy::Acting {
-            by: tilo_action_policy::Actor::member(tilo_action_policy::MemberId::person("ana")),
+    fn acting() -> tilo_member_types::Acting {
+        tilo_member_types::Acting {
+            by: tilo_member_types::Actor::member(tilo_member_types::MemberId::person("ana")),
             app: None,
             agent_session: None,
             cause: None,
@@ -335,9 +335,9 @@ mod tests {
             assert_eq!(invoker.text().unwrap(), text, "the text is kept as it was signed");
             assert_eq!(
                 invoker.by,
-                tilo_action_policy::Actor::member(tilo_action_policy::MemberId::Agent {
+                tilo_member_types::Actor::member(tilo_member_types::MemberId::Agent {
                     id: "claude".into(),
-                    person: tilo_action_policy::PersonId::from(person.to_owned()),
+                    person: tilo_member_types::PersonId::from(person.to_owned()),
                 })
             );
             assert!(crate::crypto::verify_op(&op).is_ok());

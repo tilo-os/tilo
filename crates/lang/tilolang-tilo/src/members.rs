@@ -10,11 +10,13 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_action_policy::ActingPolicy as _;
 
 use tilo_action_policy::{
-    Acting, ActionKind, Answer, Authority as Policy, Context, Grantee, MemberAccess, TreePath,
+    ActionKind, Answer, Authority as Policy, Context, Grantee, MemberAccess, TreePath,
 };
-use tilo_action_policy::{MemberId, PersonId};
+use tilo_member_types::Acting;
+use tilo_member_types::{MemberId, PersonId};
 use tilolang_runtime::members::{Member, Reads};
 use tilolang_runtime::{Actor, ResourceRef};
 
@@ -581,7 +583,7 @@ fn reads_node(access: &MemberAccess, me: &PersonId, who: &Actor, node: &TreePath
         Some(MemberId::Person(person)) => policy.party(person_of(access, me, person)),
         // Software reads what the workspace grants it, and what the access it acts by carries
         // (a bot's own, made for its program).
-        Some(_) => match who.grantee() {
+        Some(_) => match tilo_action_policy::grantee_of(who) {
             Some(grantee) => policy.party_of(grantee).with_grants(&access.granted),
             None => return false,
         },

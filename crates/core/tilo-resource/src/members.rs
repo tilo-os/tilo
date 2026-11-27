@@ -10,7 +10,7 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use tilo_action_policy::MemberId;
+use tilo_member_types::MemberId;
 
 thread_local! {
     static MEMBERS: RefCell<BTreeMap<MemberId, String>> = const { RefCell::new(BTreeMap::new()) };

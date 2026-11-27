@@ -79,13 +79,13 @@ pub const DISCUSSION: &str = "so.tilo.lang.discussion";
 /// rich text (the mark's value is the member's id as JSON), and inside an actor a field holds (a
 /// task's assignee, the person of a direct conversation), each kept as JSON text.
 fn named(agent: &str, person: &str) -> String {
-    names(&tilo_action_policy::MemberId::agent(agent, person))
+    names(&tilo_member_types::MemberId::agent(agent, person))
 }
 
 /// What names `member` inside an actor a field holds, kept as JSON text: its id without the
 /// braces of whatever wraps it.
 #[must_use]
-pub fn names(member: &tilo_action_policy::MemberId) -> String {
+pub fn names(member: &tilo_member_types::MemberId) -> String {
     let member = serde_json::to_string(member).unwrap_or_default();
     // `{"agent":{"id":"<id>","person":"<person>"}}` without its braces: the same within any
     // actor that wraps it.
@@ -295,7 +295,7 @@ fn watching(
     narrowing: Vec<(&str, Test)>,
 ) -> TriggerSpec {
     let member =
-        String::from_utf8_lossy(&tilo_action_policy::MemberId::agent(agent, person).actor_bytes())
+        String::from_utf8_lossy(&tilo_member_types::MemberId::agent(agent, person).actor_bytes())
             .into_owned();
     TriggerSpec::ResourceChanged {
         kind: kind.to_owned(),
@@ -376,7 +376,7 @@ mod tests {
                 shortcut.triggers[1]
             );
         };
-        let change = |actor: tilo_action_policy::Acting, origin: Option<String>| DocumentEvent {
+        let change = |actor: tilo_member_types::Acting, origin: Option<String>| DocumentEvent {
             workspace: "workspace".into(),
             record: "root/direct".into(),
             app: CHAT.into(),
@@ -390,7 +390,7 @@ mod tests {
             before: None,
             // A conversation's people as its set keeps them: each the actor's JSON text.
             after: Some(json!({"$in": {"people": [serde_json::to_string(
-                &tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::agent(
+                &tilo_member_types::Actor::Member(tilo_member_types::MemberId::agent(
                     "scout", "person",
                 )),
             )
@@ -403,29 +403,29 @@ mod tests {
             invocation: None,
         };
         let fires = |event: &DocumentEvent| filter.holds(&ChangeFilter::subject(event));
-        let host = tilo_action_policy::Acting::automation("call-home");
+        let host = tilo_member_types::Acting::automation("call-home");
         assert!(
             fires(&change(host, None)),
             "the run an event's instruction is written by starts its turn"
         );
         assert!(
-            fires(&change(tilo_action_policy::Acting::person("person"), None)),
+            fires(&change(tilo_member_types::Acting::person("person"), None)),
             "a person writing to it starts its turn as it did"
         );
         assert!(
             !fires(&change(
-                tilo_action_policy::Acting::agent("scout", "person"),
+                tilo_member_types::Acting::agent("scout", "person"),
                 None
             )),
             "its own answer is no message to answer"
         );
         let carried_back = String::from_utf8_lossy(
-            &tilo_action_policy::MemberId::agent("scout", "person").actor_bytes(),
+            &tilo_member_types::MemberId::agent("scout", "person").actor_bytes(),
         )
         .into_owned();
         assert!(
             !fires(&change(
-                tilo_action_policy::Acting::person("person"),
+                tilo_member_types::Acting::person("person"),
                 Some(carried_back)
             )),
             "a copy of its own change carried back from elsewhere starts nothing"

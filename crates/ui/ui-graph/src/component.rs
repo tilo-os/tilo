@@ -494,7 +494,7 @@ pub enum Value {
     /// Who acted, what the workspace calls them, and the presence palette slot it paints them
     /// in (`None`: derived from `identity`).
     Actor {
-        identity: tilo_action_policy::Actor,
+        identity: tilo_member_types::Actor,
         name: String,
         #[serde(default)]
         hue: Option<u8>,

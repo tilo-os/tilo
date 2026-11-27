@@ -59,7 +59,7 @@ pub fn authored(encoding: automerge::TextEncoding, text: &str) -> automerge::hyd
 /// The value a text's author mark holds for `author`: the actor bytes their
 /// changes carry, as the text they are (a person's key, `agent:<id>`).
 #[must_use]
-pub fn author_mark(author: &tilo_action_policy::MemberId) -> String {
+pub fn author_mark(author: &tilo_member_types::MemberId) -> String {
     String::from_utf8_lossy(&author.actor_bytes()).into_owned()
 }
 
@@ -395,7 +395,7 @@ mod tests {
         {
             use crate::model::{Fresh, Model};
             let _writer = crate::action::ResourceActorScope::enter(
-                tilo_action_policy::MemberId::agent("helper", "ada"),
+                tilo_member_types::MemberId::agent("helper", "ada"),
             );
             let actor = automerge::ActorId::from(b"writer".as_slice());
             for text in ["", "héllo wörld"] {

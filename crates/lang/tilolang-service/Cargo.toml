@@ -27,6 +27,7 @@ workspace-hack = { version = "0.1" }
 tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 
 [dev-dependencies]
+tilo-member-types.workspace = true
 tilolang-tilo = { path = "../tilolang-tilo", features = ["test-support"] }
 tilo-action-policy = { version = "0.1.0", path = "../../core/action-policy" }
 # The one link grammar a resource's `share-link` renders, which the page reads back.

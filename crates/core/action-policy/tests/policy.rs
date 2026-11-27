@@ -1,10 +1,12 @@
+use tilo_action_policy::ActingPolicy as _;
 use tilo_action_policy::{
-    Acting, ActionKind, Answer, Authority, Basis, Change, Context, Grant, GrantId, Grantee, Ids,
-    KindSet, Labels, Level, Lifetime, Party, Preset, PresetError, Refusal, Role, Rule, TreePath,
+    ActionKind, Answer, Authority, Basis, Change, Context, Grant, GrantId, Grantee, Ids, KindSet,
+    Labels, Level, Lifetime, Party, Preset, PresetError, Refusal, Role, Rule, TreePath,
     WorkspacePolicy, decide, describe, describe_node,
     roles::{self, governance},
     sentences,
 };
+use tilo_member_types::Acting;
 
 const NOW: u64 = 1_000_000;
 const ALICE: &str = "a11ce";
@@ -126,7 +128,7 @@ fn an_owner_closes_the_workspace_vault_and_shares_it_with_one_member() {
 #[test]
 fn an_agent_reaches_workspace_mail_through_a_grant_scoped_to_mail() {
     let mail = TreePath::workspace("r").app("so.tilo.mail");
-    let key = Grantee::member(tilo_action_policy::MemberId::agent("key", ALICE));
+    let key = Grantee::member(tilo_member_types::MemberId::agent("key", ALICE));
     let mut grants = roles::workspace_role_grants("r", &alice());
     let mailbox = mail.clone().resource("");
     assert_eq!(
@@ -2043,7 +2045,7 @@ tilo_test_env::scenario! {
             workspace.clone(),
             Acting::agent("scribe", ALICE).acting_for(Acting::person(ALICE)),
         )
-        .granted(tilo_action_policy::Acting::handed_agent("scribe", ALICE).handed_preset("r"));
+        .granted(tilo_member_types::Acting::handed_agent("scribe", ALICE).handed_preset("r"));
         assert_eq!(
             owner_agent.answer(&resources, ActionKind::Undoable, &cx()),
             Answer::Allow
@@ -2061,7 +2063,7 @@ tilo_test_env::scenario! {
             workspace,
             Acting::agent("scribe", BOB).acting_for(Acting::person(BOB)),
         )
-        .granted(tilo_action_policy::Acting::handed_agent("scribe", BOB).handed_preset("r"));
+        .granted(tilo_member_types::Acting::handed_agent("scribe", BOB).handed_preset("r"));
         assert_eq!(
             viewer_agent.answer(&resources, ActionKind::Undoable, &cx()),
             Answer::Deny

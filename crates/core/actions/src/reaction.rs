@@ -2,7 +2,7 @@
 //! The record a thing keeps its reactions in is the resource model's; what a
 //! reaction strip shows is plain data any view can draw.
 
-use tilo_action_policy::MemberId;
+use tilo_member_types::MemberId;
 
 /// One person (or outside account) among those who reacted with an emoji.
 #[derive(Clone, Debug, PartialEq, Eq)]

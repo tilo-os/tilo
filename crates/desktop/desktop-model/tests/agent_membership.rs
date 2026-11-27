@@ -4,10 +4,10 @@
 //! wrong people.
 
 use tilo_action_policy::{
-    ActionKind, Answer, Change, Grant, GrantId, Grantee, KindSet, Lifetime, MemberId, Role,
-    TreePath,
+    ActionKind, Answer, Change, Grant, GrantId, Grantee, KindSet, Lifetime, Role, TreePath,
 };
 use tilo_desktop_model::*;
+use tilo_member_types::MemberId;
 
 /// The clock these fixtures run at, Unix seconds.
 const NOW: u64 = 1_800_000_000;

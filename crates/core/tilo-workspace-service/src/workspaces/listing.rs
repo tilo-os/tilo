@@ -227,7 +227,7 @@ fn has_device_of(hosted: &HostedWorkspace, person: [u8; 32]) -> bool {
         .is_ok_and(|members| {
             members
                 .devices
-                .get(&tilo_action_policy::MemberId::person(hex::encode(person)))
+                .get(&tilo_member_types::MemberId::person(hex::encode(person)))
                 .is_some_and(|devices| {
                     devices.iter().any(|device| {
                         their_devices.contains(device) && (owner || !keeping.contains(device))
@@ -1617,7 +1617,7 @@ pub(crate) mod entry_tests {
         assert!(
             summary
                 .devices
-                .get(&tilo_action_policy::MemberId::person(hex::encode(
+                .get(&tilo_member_types::MemberId::person(hex::encode(
                     guest.user_public_key
                 )))
                 .is_some_and(|devices| devices.contains(&guest.device_public_key)),

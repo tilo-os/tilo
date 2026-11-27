@@ -149,6 +149,7 @@ workspace-members = [
     "tilo-action-policy",
     "tilo-action-types",
     "tilo-actions",
+    "tilo-member-types",
     "tilo-automation",
     "tilo-automerge",
     "tilo-clock",

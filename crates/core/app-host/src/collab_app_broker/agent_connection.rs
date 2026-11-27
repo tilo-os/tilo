@@ -22,7 +22,7 @@ struct Inner {
     provider: ConnectionActionProvider,
     caller: Caller,
     workspace: String,
-    agent: tilo_action_policy::MemberId,
+    agent: tilo_member_types::MemberId,
     session: String,
 }
 

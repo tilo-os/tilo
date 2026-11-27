@@ -167,7 +167,7 @@ impl fmt::Display for Role {
 #[serde(rename_all = "snake_case")]
 pub enum Grantee {
     /// One member.
-    Member(crate::MemberId),
+    Member(tilo_member_types::MemberId),
     /// Everyone holding `role`, or a role whose grants hold all of its
     /// ([`Role::includes`]): a grant to `Role::Viewer` is everyone in the
     /// workspace.
@@ -178,7 +178,7 @@ pub enum Grantee {
     /// Members explicitly assigned this workspace-defined role.
     CustomRole(String),
     /// Any key, certified or not: what a workspace opens to visitors with no identity in it,
-    /// who sign each call with a key of their own ([`crate::Actor::Visitor`]). Only the
+    /// who sign each call with a key of their own ([`tilo_member_types::Actor::Visitor`]). Only the
     /// workspace's entry sets these ([`crate::EntryPolicy::visitor_grants`]); nobody grants
     /// one by hand.
     AnyKey,
@@ -186,26 +186,26 @@ pub enum Grantee {
 
 impl Grantee {
     #[must_use]
-    pub fn member(member: crate::MemberId) -> Self {
+    pub fn member(member: tilo_member_types::MemberId) -> Self {
         Self::Member(member)
     }
 
     #[track_caller]
     #[must_use]
-    pub fn person(id: impl Into<crate::PersonId>) -> Self {
-        Self::Member(crate::MemberId::person(id))
+    pub fn person(id: impl Into<tilo_member_types::PersonId>) -> Self {
+        Self::Member(tilo_member_types::MemberId::person(id))
     }
 
-    /// The agent `id` acting for `person` ([`crate::MemberId::Agent`]).
+    /// The agent `id` acting for `person` ([`tilo_member_types::MemberId::Agent`]).
     #[track_caller]
     #[must_use]
-    pub fn agent(id: impl Into<String>, person: impl Into<crate::PersonId>) -> Self {
-        Self::Member(crate::MemberId::agent(id, person))
+    pub fn agent(id: impl Into<String>, person: impl Into<tilo_member_types::PersonId>) -> Self {
+        Self::Member(tilo_member_types::MemberId::agent(id, person))
     }
 
     #[must_use]
     pub fn bot(id: impl Into<String>) -> Self {
-        Self::Member(crate::MemberId::bot(id))
+        Self::Member(tilo_member_types::MemberId::bot(id))
     }
 
     #[must_use]
@@ -220,7 +220,7 @@ impl Grantee {
 
     /// The member, when a grant names one.
     #[must_use]
-    pub fn as_member(&self) -> Option<&crate::MemberId> {
+    pub fn as_member(&self) -> Option<&tilo_member_types::MemberId> {
         match self {
             Self::Member(member) => Some(member),
             Self::Role(_) | Self::App(_) | Self::CustomRole(_) | Self::AnyKey => None,
@@ -230,8 +230,8 @@ impl Grantee {
     #[must_use]
     pub fn person_id(&self) -> Option<&str> {
         match self.as_member()? {
-            crate::MemberId::Person(person) => Some(person.as_str()),
-            crate::MemberId::Agent { .. } | crate::MemberId::Bot(_) => None,
+            tilo_member_types::MemberId::Person(person) => Some(person.as_str()),
+            tilo_member_types::MemberId::Agent { .. } | tilo_member_types::MemberId::Bot(_) => None,
         }
     }
 
@@ -242,15 +242,17 @@ impl Grantee {
 
     /// The agent a grant names, by its id and its person, when it names one.
     #[must_use]
-    pub fn as_agent(&self) -> Option<(&str, &crate::PersonId)> {
+    pub fn as_agent(&self) -> Option<(&str, &tilo_member_types::PersonId)> {
         self.as_member()?.as_agent()
     }
 
     #[must_use]
     pub fn bot_id(&self) -> Option<&str> {
         match self.as_member()? {
-            crate::MemberId::Bot(bot) => Some(bot),
-            crate::MemberId::Person(_) | crate::MemberId::Agent { .. } => None,
+            tilo_member_types::MemberId::Bot(bot) => Some(bot),
+            tilo_member_types::MemberId::Person(_) | tilo_member_types::MemberId::Agent { .. } => {
+                None
+            }
         }
     }
 

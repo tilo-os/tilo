@@ -38,7 +38,7 @@ impl crate::services::AgentRoster for Native {
         self.listed.lock().unwrap().clone()
     }
 
-    fn lists(&self, workspace: &str, agent: &tilo_action_policy::MemberId) -> bool {
+    fn lists(&self, workspace: &str, agent: &tilo_member_types::MemberId) -> bool {
         let mut granted = false;
         let read = self.with_tree(&mut |tree| {
             granted = crate::services::workspace_in(tree, workspace).is_some_and(|held| {

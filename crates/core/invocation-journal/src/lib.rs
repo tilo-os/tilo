@@ -57,7 +57,7 @@ use tilo_actions::{InvocationId, InvocationUpdate};
 #[serde(deny_unknown_fields)]
 pub enum InvocationOwner {
     Local {
-        actor: tilo_action_policy::Actor,
+        actor: tilo_member_types::Actor,
     },
     Certified {
         root: [u8; 32],

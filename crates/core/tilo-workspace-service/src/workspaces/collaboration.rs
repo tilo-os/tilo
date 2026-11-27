@@ -19,8 +19,9 @@ use tilo_server_protocol::workspaces::{
 };
 use tilo_user_identity::DeviceCert;
 
+use tilo_action_policy::Role;
 use tilo_action_policy::roles::governance;
-use tilo_action_policy::{Actor, MemberId, Role};
+use tilo_member_types::{Actor, MemberId};
 use tilo_peer_state::ActionStamp;
 
 use super::authority::WorkspaceOp;
@@ -38,7 +39,7 @@ fn not_held() -> CollaborationError {
 pub(super) fn actor_of(person: &str) -> Option<Actor> {
     tilo_failure::ignored!(
         "a change decided by a key that is no person names no decider, and still applies",
-        tilo_action_policy::PersonId::parse(person).ok()
+        tilo_member_types::PersonId::parse(person).ok()
     )
     .map(|person| Actor::Member(MemberId::person(person)))
 }

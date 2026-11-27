@@ -189,10 +189,8 @@ fn a_cancelled_host_step_stops_and_answers_cancelled() {
         .remote_job(&person, &request.invocation)
         .expect("the person's step is their job");
     for stranger in [
-        tilo_action_policy::Actor::from(tilo_action_policy::MemberId::person(hex::encode(
-            [42; 32],
-        ))),
-        tilo_action_policy::Actor::App(APP.into()),
+        tilo_member_types::Actor::from(tilo_member_types::MemberId::person(hex::encode([42; 32]))),
+        tilo_member_types::Actor::App(APP.into()),
     ] {
         assert!(
             state.request_cancellation(job, &stranger).is_err(),

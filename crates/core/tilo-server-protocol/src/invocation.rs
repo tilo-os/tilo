@@ -862,7 +862,7 @@ pub fn verify_agent_invocation(
 /// certificate, and any other agent's grant names it ([`tilo_user_identity::AgentScope::is_agent`]).
 /// A grant naming only a workspace, or every one, is no single agent's.
 fn certified_for(cert: &DeviceCert, agent: &str) -> bool {
-    match tilo_action_policy::key_of_agent(agent) {
+    match tilo_member_types::key_of_agent(agent) {
         Some(key) => key == cert.device_public_key,
         None => cert.capabilities.agent.as_ref().map_or_else(
             || cert.capabilities == tilo_user_identity::DeviceCapabilities::nothing(),
@@ -883,18 +883,18 @@ fn agent_grant(cert: &DeviceCert) -> bool {
 
 /// Whether `cert` signs as the agent `agent`: a key its person certified for an agent
 /// ([`agent_grant`]), or a key the person made for their own programs acting as the agent the
-/// key itself is ([`tilo_action_policy::key_agent_id`]), which is how every host admits such a
+/// key itself is ([`tilo_member_types::key_agent_id`]), which is how every host admits such a
 /// key. That key signs for no other agent, and a device's own key signs for none.
 fn signs_as_agent(cert: &DeviceCert, agent: &str) -> bool {
     agent_grant(cert)
         || (cert.capabilities.agent.is_some()
-            && tilo_action_policy::key_of_agent(agent) == Some(cert.device_public_key))
+            && tilo_member_types::key_of_agent(agent) == Some(cert.device_public_key))
 }
 
 /// The agent `acting` names as the one who acted with its own key: an agent no device of its
 /// person handed its session to. `None` for a person, and for an agent a person's own device
-/// signs for ([`tilo_action_policy::Acting::handed`]).
-fn own_key_agent(acting: &tilo_action_policy::Acting) -> Option<&str> {
+/// signs for ([`tilo_member_types::Acting::handed`]).
+fn own_key_agent(acting: &tilo_member_types::Acting) -> Option<&str> {
     acting.agent_id().filter(|_| !acting.handed)
 }
 
@@ -904,7 +904,7 @@ fn own_key_agent(acting: &tilo_action_policy::Acting) -> Option<&str> {
 /// person: for itself, or for a sub-agent it started, which it hands its work as a person's
 /// device hands an agent its session.
 fn agent_signed(
-    invoker: Option<&tilo_action_policy::Acting>,
+    invoker: Option<&tilo_member_types::Acting>,
     cert: &DeviceCert,
 ) -> Result<(), InvocationError> {
     let agent = invoker.and_then(own_key_agent);
@@ -923,7 +923,7 @@ fn agent_signed(
 /// its own, by that key. A host keeps such a call as it is; any other it carries out for an agent
 /// it signs itself, as the device that carried it out.
 #[must_use]
-pub fn signs_for(acting: &tilo_action_policy::Acting, signed: &SignedInvocation) -> bool {
+pub fn signs_for(acting: &tilo_member_types::Acting, signed: &SignedInvocation) -> bool {
     let Ok(cert) = decode_cert(signed.signer_cert()) else {
         return false;
     };
@@ -1081,9 +1081,9 @@ fn request_digest(statement: &InvocationStatement) -> [u8; 32] {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use tilo_action_policy::Acting;
     use tilo_actions::ActionAddress;
     use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
+    use tilo_member_types::Acting;
     use tilo_user_identity::{
         AgentScope, DeviceCapabilities, RevocationEntry, RevocationReason, UserIdentity,
         prepare_minted_grant, sign_device_cert, sign_revocation_entry,
@@ -1355,10 +1355,10 @@ mod tests {
             let as_agent = |agent: &str| {
                 verify_agent_invocation(WORKSPACE, &asked, (&person, agent, &keyed), &none, NOW)
             };
-            assert_eq!(as_agent(&tilo_action_policy::key_agent_id(&keyed)), Ok(server_key.clone()));
+            assert_eq!(as_agent(&tilo_member_types::key_agent_id(&keyed)), Ok(server_key.clone()));
             assert_eq!(as_agent("scribe"), Err(InvocationError::NotAgentSigned));
             assert_eq!(
-                as_agent(&tilo_action_policy::key_agent_id(&[9; 32])),
+                as_agent(&tilo_member_types::key_agent_id(&[9; 32])),
                 Err(InvocationError::NotAgentSigned)
             );
         }
@@ -1392,7 +1392,7 @@ mod tests {
             let scout = for_person(Acting::agent("scout", person.clone()));
             assert_eq!(kept(&by_agent, &scout, true), Ok(Some(agent.clone())));
             // The agent's key never stands for its person, nor for a key's agent it is not.
-            let keyed = for_person(Acting::agent(tilo_action_policy::key_agent_id(&[9; 32]), person.clone()));
+            let keyed = for_person(Acting::agent(tilo_member_types::key_agent_id(&[9; 32]), person.clone()));
             let critic = for_person(Acting::agent("critic", person.clone()));
             for invoker in [Acting::person(person.clone()), keyed, critic] {
                 assert_eq!(kept(&by_agent, &invoker, true), Err(InvocationError::NotInvoker));
@@ -1413,7 +1413,7 @@ mod tests {
             server_key.capabilities = DeviceCapabilities::server_key_grant();
             sign_device_cert(&mut server_key, &root).unwrap();
             let by_key = signed(&request(), &server_key, &program, NOW);
-            let itself = for_person(Acting::agent(tilo_action_policy::key_agent_id(
+            let itself = for_person(Acting::agent(tilo_member_types::key_agent_id(
                 &program.verifying_key().to_bytes(),
             ), "ada"));
             assert_eq!(kept(&by_key, &itself, true), Ok(Some(server_key)));

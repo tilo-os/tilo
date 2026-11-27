@@ -121,11 +121,11 @@ impl Described for ReactionStripWidget {
 /// What choosing the face of a member among `people` reports to `chosen`: who they are, as the
 /// view gave them. A face the view named nobody for reports nothing.
 fn choosing(
-    people: &std::collections::HashMap<tilo_action_policy::MemberId, Person>,
+    people: &std::collections::HashMap<tilo_member_types::MemberId, Person>,
     chosen: Event,
-) -> impl FnMut(&tilo_action_policy::MemberId) + 'static {
+) -> impl FnMut(&tilo_member_types::MemberId) + 'static {
     let people = people.clone();
-    move |who: &tilo_action_policy::MemberId| {
+    move |who: &tilo_member_types::MemberId| {
         if let Some(person) = people.get(who) {
             chosen.fire(Some(Value::Actor {
                 identity: person.identity.clone(),
@@ -139,9 +139,9 @@ fn choosing(
 
 /// How a reactor is named in a pill's tooltip: their name among `people`, else their id.
 fn named_by(
-    people: &std::collections::HashMap<tilo_action_policy::MemberId, Person>,
+    people: &std::collections::HashMap<tilo_member_types::MemberId, Person>,
 ) -> impl Fn(&Reactor) -> String + 'static {
-    let names: std::collections::HashMap<tilo_action_policy::MemberId, String> = people
+    let names: std::collections::HashMap<tilo_member_types::MemberId, String> = people
         .iter()
         .map(|(id, person)| (id.clone(), person.name.clone()))
         .collect();
@@ -159,7 +159,7 @@ fn said(
     props: ReactionsProps,
 ) -> (
     Vec<ReactionGroup>,
-    std::collections::HashMap<tilo_action_policy::MemberId, Person>,
+    std::collections::HashMap<tilo_member_types::MemberId, Person>,
     Vec<(String, Vec<String>)>,
     bool,
     Event,

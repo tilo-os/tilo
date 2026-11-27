@@ -11,6 +11,7 @@ homepage.workspace = true
 description = "A workspace's agents: one record the workspace keeps, holding each agent's name, the person it acts for, and model"
 
 [dependencies]
+tilo-member-types.workspace = true
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../../core/collab-types" }
 serde.workspace = true
 serde_json.workspace = true

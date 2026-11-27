@@ -502,7 +502,7 @@ pub struct AskedTurn {
     /// The workspace, as the caller names it.
     pub workspace: String,
     /// The agent: its id and the person it is of.
-    pub agent: tilo_action_policy::MemberId,
+    pub agent: tilo_member_types::MemberId,
     /// The agent's name, as its person reads it.
     pub name: String,
 }
@@ -511,9 +511,9 @@ impl AskedTurn {
     /// The agent acting for its person: who asked for the writes made on this turn
     /// ([`Workspaces::acting_or_own`] says whom each names).
     #[must_use]
-    pub fn acting(&self) -> tilo_action_policy::Acting {
-        tilo_action_policy::Acting::member(self.agent.clone())
-            .acting_for(tilo_action_policy::Acting::person(hex::encode(self.person)))
+    pub fn acting(&self) -> tilo_member_types::Acting {
+        tilo_member_types::Acting::member(self.agent.clone())
+            .acting_for(tilo_member_types::Acting::person(hex::encode(self.person)))
     }
 
     /// The name a use of the vault on this turn is remembered under: the agent's id, as every
@@ -705,7 +705,7 @@ impl Use {
         self,
         workspaces: &Workspaces,
         (workspace, root): (&str, &Path),
-        (by, acting, item): (&str, &tilo_action_policy::Acting, ItemId),
+        (by, acting, item): (&str, &tilo_member_types::Acting, ItemId),
         caller_app: Option<&str>,
         (purpose, asked): (UsedFor<'_>, &InvokeRequest),
     ) -> Result<Value, String> {
@@ -812,7 +812,7 @@ async fn page_text(
     workspace: &str,
     (item, kind): (&ItemId, vault_items::ItemKind),
     site: &Place,
-    (by, asker, request): (&str, &tilo_action_policy::Acting, &InvokeRequest),
+    (by, asker, request): (&str, &tilo_member_types::Acting, &InvokeRequest),
 ) -> Result<PageText, String> {
     workspaces
         .changing_vault(

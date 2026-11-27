@@ -100,7 +100,7 @@ fn check_op_permission(
     };
     let cx = Context::at(0);
     let allows =
-        |invoker: Option<&tilo_action_policy::Acting>,
+        |invoker: Option<&tilo_member_types::Acting>,
          node: &tilo_action_policy::TreePath,
          kind: ActionKind| { author.answer(invoker, node, kind, &cx) == Answer::Allow };
     match crate::receipt::decide_opened(

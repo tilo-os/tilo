@@ -327,6 +327,6 @@ mod tests;
 /// with it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActingAs {
-    pub actor: tilo_action_policy::Actor,
+    pub actor: tilo_member_types::Actor,
     pub grants: Vec<tilo_action_policy::Grant>,
 }

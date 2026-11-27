@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::InvocationId;
 use crate::entry::{ActionItem, Described, Did, PathStep};
 use crate::key::ActionKind;
-use tilo_action_policy::{Acting, Actor};
+use tilo_member_types::{Acting, Actor};
 
 /// Prefix used when an entry is embedded in an Automerge change message,
 /// followed by the entry in its compact form ([`crate::compact`]).
@@ -1423,21 +1423,21 @@ impl ActionInvoker {
 
     /// A member acting for themselves.
     #[must_use]
-    pub fn member(member: tilo_action_policy::MemberId) -> Self {
+    pub fn member(member: tilo_member_types::MemberId) -> Self {
         Self::admitted(&Acting::member(member))
     }
 
     /// A person the host authenticated, acting for themselves.
     #[track_caller]
     #[must_use]
-    pub fn person(id: impl Into<tilo_action_policy::PersonId>) -> Self {
+    pub fn person(id: impl Into<tilo_member_types::PersonId>) -> Self {
         Self::admitted(&Acting::person(id))
     }
 
     /// The agent `id` of `person`, acting by itself.
     #[track_caller]
     #[must_use]
-    pub fn agent(id: impl Into<String>, person: impl Into<tilo_action_policy::PersonId>) -> Self {
+    pub fn agent(id: impl Into<String>, person: impl Into<tilo_member_types::PersonId>) -> Self {
         Self::admitted(&Acting::agent(id, person))
     }
 
@@ -1488,7 +1488,7 @@ impl ActionInvoker {
     /// The same invoker, for `person`. A person acting for themselves
     /// records nobody.
     #[must_use]
-    pub fn acting_for(mut self, person: impl Into<tilo_action_policy::PersonId>) -> Self {
+    pub fn acting_for(mut self, person: impl Into<tilo_member_types::PersonId>) -> Self {
         let person = person.into();
         if person.trim().is_empty() || self.acting.person_id() == Some(person.as_str()) {
             self.acting.acted_for.clear();
@@ -1663,7 +1663,7 @@ mod tests {
     use super::*;
     use crate::entry::{EditOp, FieldEdit, PathStep, Scalar};
     use crate::key::ActionKey;
-    use tilo_action_policy::MemberId;
+    use tilo_member_types::MemberId;
 
     fn laptop() -> InvokerDevice {
         InvokerDevice::certified([0x5c; 32], "  Studio\u{7} laptop ")

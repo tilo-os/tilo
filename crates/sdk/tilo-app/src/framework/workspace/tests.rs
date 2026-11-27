@@ -1,5 +1,6 @@
 use super::*;
-use tilo_actions::policy::{Acting, Actor, MemberAccess, MemberId, Role, WorkspacePolicy};
+use tilo_actions::policy::{MemberAccess, Role, WorkspacePolicy};
+use tilo_member_types::{Acting, Actor, MemberId};
 use tilo_resource::Model;
 use tilo_ui_base::permissions::PermissionContext;
 use ui_core::resource::ResourceOwners;

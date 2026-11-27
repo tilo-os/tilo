@@ -165,13 +165,13 @@ impl PeerGovernance<'_> {
         app: &str,
         record: &str,
         seq: u64,
-    ) -> Option<tilo_action_policy::Acting> {
+    ) -> Option<tilo_member_types::Acting> {
         self.imported_as(
             author,
             &neighbour_wire::app_document_group(app, record),
             seq,
         )
-        .map(|person| tilo_action_policy::Acting::person(hex::encode(person)))
+        .map(|person| tilo_member_types::Acting::person(hex::encode(person)))
     }
 
     /// The person whose device `device` is, as its certificate in the workspace says.

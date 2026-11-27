@@ -1,7 +1,8 @@
 use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{AutoCommit, ROOT};
-use tilo_action_policy::{Answer, Context, Grant, Grantee, KindSet, MemberId, Party, roles};
+use tilo_action_policy::{Answer, Context, Grant, Grantee, KindSet, Party, roles};
 use tilo_actions::{ActionContext, ActionKey, Did, EditOp, FieldEdit, VerbCall};
+use tilo_member_types::MemberId;
 
 use super::*;
 use crate::claim::parse_changes;
@@ -113,7 +114,7 @@ fn grants() -> Vec<Grant> {
 fn decide(person: &str, claims: &[ChangeClaim]) -> Result<Receipt, ReceiptRefusal> {
     let grants = grants();
     let party = Party::new(vec![Grantee::person(person)], grants.iter());
-    let allows = |_: Option<&tilo_action_policy::Acting>, node: &TreePath, kind: ActionKind| {
+    let allows = |_: Option<&tilo_member_types::Acting>, node: &TreePath, kind: ActionKind| {
         party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
     };
     check_claims(claims, &document(), None, None, Some(&Page), &allows)
@@ -197,7 +198,7 @@ tilo_test_env::scenario! {
     {
         let grants = grants();
         let party = Party::new(vec![Grantee::person("ada")], grants.iter());
-        let allows = |_: Option<&tilo_action_policy::Acting>, node: &TreePath, kind: ActionKind| {
+        let allows = |_: Option<&tilo_member_types::Acting>, node: &TreePath, kind: ActionKind| {
             party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
         };
         let claims = [claim(1, edit("body"), vec![Vec::new()])];
@@ -295,7 +296,7 @@ tilo_test_env::scenario! {
         let grants = grants();
         for (person, expected) in [("ada", true), ("cleo", false)] {
             let party = Party::new(vec![Grantee::person(person)], grants.iter());
-            let allows = |_: Option<&tilo_action_policy::Acting>, node: &TreePath, kind: ActionKind| {
+            let allows = |_: Option<&tilo_member_types::Acting>, node: &TreePath, kind: ActionKind| {
                 party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
             };
             let receipt = check_claims(
@@ -401,8 +402,8 @@ tilo_test_env::scenario! {
         // A key that spells a bot's actor id is no person at all: the id is
         // refused where it is made, so no receipt can claim to be one.
         assert_eq!(
-            tilo_action_policy::PersonId::parse("bot:7f1c"),
-            Err(tilo_action_policy::PersonIdError::Prefixed)
+            tilo_member_types::PersonId::parse("bot:7f1c"),
+            Err(tilo_member_types::PersonIdError::Prefixed)
         );
         let by_person = change_by(
             tilo_actions::ActionInvoker::person("mallory").with_appearance(Some(alice)),
@@ -483,7 +484,7 @@ fn calendar_read(
 ) -> Result<Receipt, ReceiptRefusal> {
     let grants = grants();
     let party = Party::new(vec![Grantee::person("ada")], grants.iter());
-    let allows = |_: Option<&tilo_action_policy::Acting>, node: &TreePath, kind: ActionKind| {
+    let allows = |_: Option<&tilo_member_types::Acting>, node: &TreePath, kind: ActionKind| {
         party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
     };
     let units = |hash: &[u8; 32]| {
@@ -687,7 +688,7 @@ fn posts(
         Grantee::person("workspace-owner"),
     );
     let party = Party::new(vec![Grantee::person(person)], std::iter::once(&grant));
-    let allows = |_: Option<&tilo_action_policy::Acting>, node: &TreePath, kind: ActionKind| {
+    let allows = |_: Option<&tilo_member_types::Acting>, node: &TreePath, kind: ActionKind| {
         party.decide(node, kind, &Context::at(0)).answer == Answer::Allow
     };
     check_claims(

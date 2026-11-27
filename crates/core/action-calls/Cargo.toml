@@ -28,6 +28,7 @@ serde_json = { version = "1.0", features = ["raw_value"] }
 blake3.workspace = true
 
 [dev-dependencies]
+tilo-member-types.workspace = true
 tilo-actions = { path = "../actions", features = ["document-read", "answer-reads"] }
 tilo-action-policy = { path = "../action-policy" }
 tilo-test-env = { path = "../../../tools/test-env" }

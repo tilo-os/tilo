@@ -27,6 +27,7 @@ broker-transport = ["local-daemons", "runtime-collab/client", "tokio/full"]
 test-support = ["dep:tilo-test-env", "dep:tracing-subscriber", "runtime-collab/settings-host"]
 
 [dependencies]
+tilo-member-types.workspace = true
 collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../collab-types" }
 key-group = { package = "tilo-key-group", version = "0.1.0", path = "../key-group" }
 # The members' content secret a record's content is sealed under.
@@ -81,7 +82,6 @@ hex.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 uuid.workspace = true
-tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
 
 [dev-dependencies]
 tempfile.workspace = true

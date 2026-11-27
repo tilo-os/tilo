@@ -391,7 +391,7 @@ impl crate::PersonServices {
     /// The record does not take the write on this device.
     pub async fn keep_workspace_account(
         &self,
-        (workspace, by, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
+        (workspace, by, call): (&str, &tilo_member_types::Acting, Option<&InvokeRequest>),
         account: &accounts::Account,
     ) -> Result<(), String> {
         Box::pin(
@@ -412,7 +412,7 @@ impl crate::PersonServices {
     /// The record does not take the write on this device.
     pub async fn keep_workspace_accounts(
         &self,
-        (workspace, by, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
+        (workspace, by, call): (&str, &tilo_member_types::Acting, Option<&InvokeRequest>),
         keep: &[accounts::Account],
         remove: &[&str],
     ) -> Result<(), String> {
@@ -446,7 +446,7 @@ impl crate::PersonServices {
     /// The workspace has no such account, or the record does not take the write on this device.
     pub async fn report_account_sync(
         &self,
-        (workspace, by, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
+        (workspace, by, call): (&str, &tilo_member_types::Acting, Option<&InvokeRequest>),
         id: &str,
         health: accounts::SyncHealth,
         signed_in: bool,
@@ -476,7 +476,7 @@ impl crate::PersonServices {
     /// The record does not take the write on this device.
     pub async fn remove_workspace_account(
         &self,
-        (workspace, by, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
+        (workspace, by, call): (&str, &tilo_member_types::Acting, Option<&InvokeRequest>),
         id: &str,
     ) -> Result<bool, String> {
         self.change_workspace_accounts((workspace, by, call), |held| {
@@ -537,7 +537,7 @@ impl crate::PersonServices {
     /// device.
     pub(crate) async fn change_workspace_accounts<T>(
         &self,
-        (workspace, by, call): (&str, &tilo_action_policy::Acting, Option<&InvokeRequest>),
+        (workspace, by, call): (&str, &tilo_member_types::Acting, Option<&InvokeRequest>),
         change: impl FnOnce(
             &AccountList,
         ) -> Result<(Vec<tilo_resource::Invoke<AccountList>>, T), String>,

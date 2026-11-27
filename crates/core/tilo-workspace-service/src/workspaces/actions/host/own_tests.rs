@@ -1022,7 +1022,7 @@ async fn an_agent_allowed_to_delete_still_waits_for_its_persons_confirmation() {
     let (agent_id, its_person) = as_agent
         .acting()
         .member_id()
-        .and_then(tilo_action_policy::MemberId::as_agent)
+        .and_then(tilo_member_types::MemberId::as_agent)
         .map(|(id, person)| (id.to_owned(), person.as_str().to_owned()))
         .expect("an agent's key acts as its agent");
     // Its person allowed it to delete their workspaces without asking.

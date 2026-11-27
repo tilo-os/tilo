@@ -678,7 +678,7 @@ async fn the_agent_acts_inside_its_window_and_not_after(process: tilo_clock::tes
         .clone();
     assert_eq!(
         answered_as.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::agent(
+        Some(&tilo_member_types::MemberId::agent(
             "scribe",
             hex::encode(root.verifying_key().to_bytes())
         )),
@@ -770,7 +770,7 @@ async fn an_agents_key_the_workspace_lists_is_bound_to_it() {
         .expect("the agent's request reached the dispatcher");
     assert_eq!(
         answered_as.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::agent(
+        Some(&tilo_member_types::MemberId::agent(
             "scribe",
             hex::encode(root.verifying_key().to_bytes())
         )),
@@ -874,7 +874,7 @@ async fn a_key_the_workspace_lists_acts_as_its_agent() {
     let agent = host.agent;
     let (agent_endpoint, agent_service) = asking(&agent.0).await;
     let remote = agent_service.remote(&agent_endpoint, &host.engine.addr(), WORKSPACE);
-    let agent_id = tilo_action_policy::key_agent_id(&agent.1.device_public_key);
+    let agent_id = tilo_member_types::key_agent_id(&agent.1.device_public_key);
     let caller = Caller::delegated_agent(
         agent_id.clone(),
         agent.1.user_public_key,
@@ -888,7 +888,7 @@ async fn a_key_the_workspace_lists_acts_as_its_agent() {
         .expect("the agent's request reached the dispatcher");
     assert_eq!(
         answered_as.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::agent(
+        Some(&tilo_member_types::MemberId::agent(
             agent_id.clone(),
             host.person.clone()
         )),
@@ -977,7 +977,7 @@ async fn a_server_key_acts_as_its_person() {
     );
     assert_eq!(
         answered_as.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::person(host.person.clone()))
+        Some(&tilo_member_types::MemberId::person(host.person.clone()))
     );
     let server_access = host
         .engine
@@ -2072,7 +2072,7 @@ async fn a_device_with_no_certificate_reaches_only_the_entry() {
 }
 
 /// The call `request` names `acting` as its caller, in what its sender says of it.
-fn naming(mut request: InvokeRequest, acting: &tilo_action_policy::Acting) -> InvokeRequest {
+fn naming(mut request: InvokeRequest, acting: &tilo_member_types::Acting) -> InvokeRequest {
     request.context = Some(tilo_actions::ActionContext {
         invoker: Some(tilo_actions::ActionInvoker::admitted(acting)),
         ..tilo_actions::ActionContext::default()
@@ -2179,7 +2179,7 @@ async fn agent_call_runs_as_the_agent(
     let ran_as = dispatcher.callers().pop().unwrap();
     assert_eq!(
         ran_as.acting().member_id(),
-        Some(&tilo_action_policy::MemberId::agent(
+        Some(&tilo_member_types::MemberId::agent(
             "scribe",
             hex::encode(helper.1.user_public_key)
         )),

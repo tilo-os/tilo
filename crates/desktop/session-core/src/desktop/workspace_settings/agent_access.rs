@@ -103,7 +103,7 @@ pub struct AgentException {
 }
 
 /// The answer `agent` holds for `kind` at `scope`: the turn's own grants (`admission`,
-/// [`tilo_action_policy::Acting::handed_preset`]) and the workspace's grants naming it alone,
+/// [`tilo_member_types::Acting::handed_preset`]) and the workspace's grants naming it alone,
 /// so a narrower answer the workspace keeps for it wins over what the cap says.
 #[must_use]
 pub fn answer_at(
@@ -385,6 +385,7 @@ pub fn agent_models(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_action_policy::ActingPolicy as _;
     use tilo_desktop_model::WorkspaceId;
 
     const OWNER: &str = "owner-user";
@@ -400,7 +401,7 @@ mod tests {
 
     /// The grants the agent's certificate gives it in the workspace.
     fn admission(ws: &Workspace) -> Vec<tilo_action_policy::Grant> {
-        tilo_action_policy::Acting::handed_agent(AGENT, OWNER).handed_preset(&ws.policy.workspace)
+        tilo_member_types::Acting::handed_agent(AGENT, OWNER).handed_preset(&ws.policy.workspace)
     }
 
     /// The answers the workspace keeps for the agent.

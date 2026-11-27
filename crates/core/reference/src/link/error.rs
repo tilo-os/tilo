@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use tilo_app_id::InvalidAppId;
+use tilo_member_types::InvalidAppId;
 
 /// A refused link. [`LinkError::code`] is stable and shared with the page
 /// and `tests/links.json`; the `Display` text is what a person reads.

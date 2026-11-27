@@ -87,7 +87,7 @@ primitive! {
 
 /// A member as serde writes it: `{"person": "<id>"}`, `{"bot": "<id>"}`, or an agent by its
 /// id and the person its certificate chains to (`{"agent": {"id": …, "person": …}}`).
-impl JsonSchema for tilo_action_policy::MemberId {
+impl JsonSchema for tilo_member_types::MemberId {
     fn json_schema() -> Value {
         let text = || json!({"type": "string"});
         let kind = |name: &str| {
@@ -129,7 +129,7 @@ impl JsonSchema for tilo_actions::Actor {
             })
         };
         json!({"oneOf": [
-            kind("member", <tilo_action_policy::MemberId as JsonSchema>::json_schema()),
+            kind("member", <tilo_member_types::MemberId as JsonSchema>::json_schema()),
             kind("automation", json!({"type": "string"})),
             kind("app", json!({"type": "string"})),
             kind("visitor", json!({"type": "string"})),

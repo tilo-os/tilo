@@ -13,7 +13,7 @@ pub struct OpenedBy {
     /// The agent whose session it is: its id and its person. What it is drawn in, so one
     /// agent is one colour beside every window it opened, on its face and in its avatar,
     /// whichever of its sessions opened it.
-    pub agent: tilo_action_policy::MemberId,
+    pub agent: tilo_member_types::MemberId,
     /// What the run is called: the agent's name.
     pub label: String,
     /// What the agent called the step that opened the window ("Fill Jane Doe's

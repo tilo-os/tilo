@@ -19,12 +19,12 @@
 //! not compile.
 
 use automerge::ChangeHash;
-use tilo_action_policy::MemberId;
 use tilo_actions::api::{self, InvocationProvenance};
 use tilo_actions::{
     ActionAddress, ActionEnvelope, ActionError, ActionRegistry, ApiError, LocalTransport,
 };
 use tilo_automerge::ApplyIncoming;
+use tilo_member_types::MemberId;
 
 use crate::action::Invoke;
 use crate::history::{self, Version};

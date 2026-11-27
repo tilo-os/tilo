@@ -1387,7 +1387,7 @@ fn plain(json: &Json, ty: &Ty) -> Result<Value, String> {
         Ty::Actor if json.is_string() => json
             .as_str()
             .filter(|key| !key.is_empty())
-            .and_then(|key| tilo_actions::policy::PersonId::parse(key).ok())
+            .and_then(|key| tilo_member_types::PersonId::parse(key).ok())
             .map(|person| {
                 Value::Actor(crate::ids::Actor::Member(crate::ids::MemberId::Person(
                     person,

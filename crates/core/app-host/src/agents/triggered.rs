@@ -160,7 +160,7 @@ pub fn typed(event: &DocumentEvent) -> bool {
 #[must_use]
 pub fn alone_with(
     event: &DocumentEvent,
-    agent: &tilo_action_policy::MemberId,
+    agent: &tilo_member_types::MemberId,
     person: &str,
 ) -> bool {
     let Some(people) = event
@@ -173,7 +173,7 @@ pub fn alone_with(
     };
     let (agent, person) = (
         names(agent),
-        names(&tilo_action_policy::MemberId::person(person)),
+        names(&tilo_member_types::MemberId::person(person)),
     );
     !people.is_empty()
         && people.iter().all(|one| {
@@ -577,7 +577,7 @@ fn turn_caller(
     workspace: &str,
     agent: &str,
     saver: &str,
-    person: tilo_action_policy::PersonId,
+    person: tilo_member_types::PersonId,
     place: &Where,
 ) -> Caller {
     let delegation =
@@ -615,7 +615,7 @@ pub async fn unreadable(
         return Some("this device's apps do not decide what its agents may read".to_owned());
     };
     let person = asker(event).unwrap_or_else(|| saver.to_owned());
-    let Ok(person) = tilo_action_policy::PersonId::parse(&person) else {
+    let Ok(person) = tilo_member_types::PersonId::parse(&person) else {
         return Some("the turn is for nobody who is a person".to_owned());
     };
     // A caller that only says it is an agent holds no grant and reads nothing anywhere, so the
