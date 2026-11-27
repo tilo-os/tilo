@@ -626,7 +626,6 @@ async fn the_agent_acts_inside_its_window_and_not_after(process: tilo_clock::tes
     let root = SigningKey::from_bytes(&[1; 32]);
     let a = device(&root, 2);
     let helper = agent_device(&root, 4);
-    let owner_device = a.1.device_public_key;
     let roster = vec![a.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
@@ -838,6 +837,7 @@ async fn host_with_keys() -> HostWithKeys {
         8,
         DeviceCapabilities::own_key_grant(AgentScope::AllWorkspaces),
     );
+    let owner_device = a.1.device_public_key;
     let roster = vec![a.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
