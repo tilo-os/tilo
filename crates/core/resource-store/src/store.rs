@@ -86,6 +86,17 @@ pub const UPDATED: &str = "$updated";
 /// was made ([`CREATED`]) stands for it.
 pub const CHANGED: &str = "$changed.";
 
+/// Whether `field` is one the index holds a version of the resource under, not one the resource
+/// holds: [`CREATED`], [`UPDATED`], or a `$changed.<field>`.
+#[must_use]
+pub fn reflected(field: &str) -> bool {
+    field == CREATED
+        || field == UPDATED
+        || field
+            .strip_prefix(CHANGED)
+            .is_some_and(|field| !field.is_empty())
+}
+
 /// The document that holds the content of the resource `id` of `kind`, read by `readers`.
 #[must_use]
 pub fn content_id(readers: &str, kind: &str, id: &str) -> String {
@@ -1088,6 +1099,12 @@ impl Store {
                 }
                 if of_fields {
                     for field in &version.fields {
+                        // The times a version reflects are the index's, never a resource's: a
+                        // window that echoes them back in a write must not make a change of
+                        // them, whose own time would then be reflected in turn.
+                        if reflected(field) {
+                            continue;
+                        }
                         if newer(changed.get(field.as_str()).copied()) {
                             changed.insert(field, version);
                         }

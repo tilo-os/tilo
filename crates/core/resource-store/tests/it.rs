@@ -6020,3 +6020,72 @@ fn an_app_stamped_change_for_a_kind_with_no_declared_owner_is_refused() {
         "an app-stamped change of a kind with no declared owner is refused, not {refused:?}"
     );
 }
+
+/// A window writes a resource again with what the index told it of the resource's times
+/// (`$changed.<field>`, `$created`, `$updated`). Those times are the index's, not the
+/// resource's: reflecting them again would give every write a time of a time, and a resource
+/// written a few times would hold a field per write.
+#[test]
+fn a_time_the_index_reflects_is_not_reflected_again() {
+    use collab_types::store::Resource;
+    use tilo_resource_store::Store;
+
+    let mut store = Store::new(WORKSPACE);
+    let stamp = |at: &str| tilo_resource_store::Stamp {
+        verb: "edit".to_owned(),
+        invoker: "ada".to_owned(),
+        invocation: "i1".to_owned(),
+        membership: vec!["m1".to_owned()],
+        at: at.to_owned(),
+        ..tilo_resource_store::Stamp::default()
+    };
+    let mut write = |fields: &[(&str, &str)], at: &str| {
+        let fields = fields
+            .iter()
+            .map(|(field, value)| ((*field).to_owned(), Cell::One((*value).into())))
+            .collect();
+        store
+            .put(
+                ISSUE,
+                "a",
+                Resource {
+                    readers: "*".to_owned(),
+                    parent: None,
+                    order: None,
+                    fields,
+                },
+                &stamp(at),
+            )
+            .expect("the store takes the write");
+    };
+    write(&[("title", "One")], "2026-10-28T09:00:00Z");
+    // The resource is written again, carrying the time the index gave its title.
+    write(
+        &[
+            ("title", "Two"),
+            ("$changed.title", "2026-10-28T09:00:00Z"),
+            ("$created", "2026-10-28T09:00:00Z"),
+        ],
+        "2026-10-28T10:00:00Z",
+    );
+    let row = store.index().get(ISSUE, "a").expect("the index holds it");
+    assert_eq!(
+        row.scalar("$changed.title"),
+        Value::from("2026-10-28T10:00:00Z"),
+        "the title's last change is the write that changed it"
+    );
+    assert_eq!(
+        row.scalar("$created"),
+        Value::from("2026-10-28T09:00:00Z"),
+        "when it was made stands"
+    );
+    let times: Vec<&String> = row
+        .fields
+        .keys()
+        .filter(|field| field.starts_with("$changed.$changed."))
+        .collect();
+    assert!(
+        times.is_empty(),
+        "a time of a time is no field of the resource: {times:?}"
+    );
+}
