@@ -308,8 +308,11 @@ impl Source for Settings {
             .zip(&ranks)
             .filter_map(|(row, rank)| {
                 let rank = (*rank)?;
+                // A setting its page names better is the page's to show; one the query names as
+                // well as its page is listed under it ("microphone" is the Sound page and its
+                // Input device both), never hidden behind it.
                 let page_rank = row.page.and_then(|page| ranks.get(page).copied().flatten());
-                if page_rank.is_some_and(|page| page >= rank) {
+                if page_rank.is_some_and(|page| page > rank) {
                     return None;
                 }
                 let score = provider_score(rank);
