@@ -200,6 +200,12 @@ pub(crate) struct Shared {
     /// The person's device fabric, while this session runs on one.
     #[cfg(target_os = "linux")]
     pub(crate) fabric: Option<crate::platform::fabric::SharedLink>,
+    /// Where this device's member workspaces stand with their hosts, as its daemon publishes it:
+    /// what each app window in one is told.
+    #[cfg(target_os = "linux")]
+    pub(crate) workspace_sync: Option<
+        crate::person_store::DaemonReading<tilo_workspace_service::workspaces::sync::Workspaces>,
+    >,
     /// The device VPN, while this session runs on a machine with the helper:
     /// its profiles' kill switches, and the route through another of the
     /// person's devices, which follows the pass.

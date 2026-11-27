@@ -18,13 +18,14 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use tilo_desktop_model::Layout;
 use tilo_desktop_model::ids::WorkspaceId;
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::desktop::warmth::WindowWarmth;
 use tilo_ui_base::Theme;
 use tilo_ui_base::tokens::PresenceHue;
-use tilo_ui_base::workspace_sync::WorkspaceSync;
+use tilo_ui_base::workspace_sync::{WorkspaceSync, WorkspaceSyncState};
 use ui::floating_surface::HostNetworkStatus;
 
 use crate::app_tabs::AppTabs;
@@ -126,6 +127,7 @@ impl Windows {
         wallpapers: &Wallpapers,
         person: &str,
         network: HostNetworkStatus,
+        sync: Option<&BTreeMap<String, tilo_workspace_service::workspaces::sync::Workspace>>,
         now: Instant,
     ) {
         let theme_bundle = self.bundle.clone();
@@ -149,7 +151,7 @@ impl Windows {
             let persons = RefCell::new(HashMap::new());
             tabs.publish_window_warmth(
                 |app| self.warmth.appearance_of(tree, app, &self.theme),
-                |app, instance| workspace_sync(tree, app, instance, person, &persons),
+                |app, instance| workspace_sync(tree, app, instance, person, &persons, sync),
                 &self.theme,
                 theme_bundle.as_deref(),
                 network,
@@ -171,6 +173,7 @@ fn workspace_sync(
     instance: Option<u64>,
     person: &str,
     persons: &RefCell<HashMap<WorkspaceId, String>>,
+    sync: Option<&BTreeMap<String, tilo_workspace_service::workspaces::sync::Workspace>>,
 ) -> Option<WorkspaceSync> {
     let workspace = window_workspace(tree, app, instance)?;
     let workspace_id = workspace.id();
@@ -179,18 +182,39 @@ fn workspace_sync(
         .entry(workspace_id)
         .or_insert_with(|| crate::identity::person_in(&workspace_id.to_string(), person))
         .clone();
-    tilo_network_actor::workspace_sync::told(
-        workspace_id,
-        &workspace.name,
-        workspace.policy.role_of(&person).map(|_| {
-            workspace.policy.answer_at(
-                &person,
-                &workspace.policy.node().app(app),
-                tilo_action_policy::ActionKind::Undoable,
-                tilo_clock::unix_now(),
-            ) == tilo_action_policy::Answer::Allow
-        }),
-    )
+    let writable = workspace.policy.role_of(&person).map(|_| {
+        workspace.policy.answer_at(
+            &person,
+            &workspace.policy.node().app(app),
+            tilo_action_policy::ActionKind::Undoable,
+            tilo_clock::unix_now(),
+        ) == tilo_action_policy::Answer::Allow
+    });
+    let entry = sync.and_then(|sync| sync.get(&workspace_id.to_string()));
+    let state = match entry.map(|entry| entry.status) {
+        Some(tilo_workspace_service::workspaces::sync::Status::Connecting) => {
+            WorkspaceSyncState::Connecting
+        }
+        Some(tilo_workspace_service::workspaces::sync::Status::Synced) => {
+            WorkspaceSyncState::Synced
+        }
+        Some(tilo_workspace_service::workspaces::sync::Status::Unreachable) => {
+            WorkspaceSyncState::Unreachable
+        }
+        // A workspace this device hosts, or one it keeps but not as a member, has no state of its
+        // own: an app in it is told it is synced as far as it goes, as it always was.
+        None => match writable {
+            Some(_) => WorkspaceSyncState::Synced,
+            None => return None,
+        },
+    };
+    Some(WorkspaceSync {
+        state,
+        workspace: workspace.name.clone(),
+        writable,
+        unsynced_writes: entry.map_or(0, |entry| entry.unsynced_writes),
+        cannot_keep_writes: false,
+    })
 }
 
 /// The workspace the window `instance` of `app` is in: the window's own, never another window's of
@@ -270,12 +294,18 @@ impl crate::Session {
             return;
         };
         let network = network_status(&self.shared.readings);
+        let sync = self
+            .shared
+            .workspace_sync
+            .as_ref()
+            .map(|reading| reading.get().workspaces);
         self.warmth.follow(
             tabs,
             &self.shared.handle,
             &self.shared.wallpapers,
             &self.shared.person,
             network,
+            sync.as_ref(),
             ui::time::now(),
         );
     }
@@ -323,6 +353,51 @@ mod tests {
         workspace
     }
 
+    /// An app window in a workspace whose host has not been reached yet is told so, and told it is
+    /// synced once the workspace's first sync completed: what the daemon publishes of the member
+    /// copy is what the window shows.
+    #[test]
+    fn a_window_in_a_workspace_its_host_has_not_reached_is_told_connecting_then_synced() {
+        use tilo_workspace_service::workspaces::sync::{Status, Workspace};
+
+        let lounge = workspace(3, "Lounge", 300, Role::Owner);
+        let tree = Layout {
+            workspaces: vec![lounge],
+            ..Layout::default()
+        };
+        let persons = RefCell::new(HashMap::from([(
+            WorkspaceId::from_u128(3),
+            PERSON.to_owned(),
+        )]));
+        let id = WorkspaceId::from_u128(3).to_string();
+        let mut sync = BTreeMap::from([(
+            id.clone(),
+            Workspace {
+                status: Status::Connecting,
+                unsynced_writes: 0,
+            },
+        )]);
+        let told = workspace_sync(&tree, APP, Some(300), PERSON, &persons, Some(&sync))
+            .expect("the window is told where its workspace stands");
+        assert_eq!(told.state, WorkspaceSyncState::Connecting);
+        assert!(
+            told.before_first_sync(),
+            "an app shows it is connecting rather than an empty workspace"
+        );
+
+        sync.insert(
+            id,
+            Workspace {
+                status: Status::Synced,
+                unsynced_writes: 0,
+            },
+        );
+        let told = workspace_sync(&tree, APP, Some(300), PERSON, &persons, Some(&sync))
+            .expect("the window is told where its workspace stands");
+        assert_eq!(told.state, WorkspaceSyncState::Synced);
+        assert!(!told.before_first_sync(), "the workspace synced");
+    }
+
     /// Two windows of one app: the person writes in their own workspace and only reads in a
     /// shared one. Each window hears what its own workspace says — an agent that opened the app
     /// in the shared workspace is no reason for the person's own window to read "View only".
@@ -342,7 +417,8 @@ mod tests {
             (WorkspaceId::from_u128(2), PERSON.to_owned()),
         ]));
         let writes = |instance| {
-            workspace_sync(&tree, APP, Some(instance), PERSON, &persons).map(|told| told.writable)
+            workspace_sync(&tree, APP, Some(instance), PERSON, &persons, None)
+                .map(|told| told.writable)
         };
         assert_eq!(
             writes(100),

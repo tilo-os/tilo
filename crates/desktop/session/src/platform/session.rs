@@ -790,6 +790,14 @@ impl Session {
         if let (Some(personal), Some(seed)) = (&personal, seed) {
             personal.borrow_mut().hold_seed(seed);
         }
+        // Where this device's member workspaces stand with their hosts, read at the daemon: what
+        // each app window in one is told as it opens.
+        let workspace_sync = crate::person_store::DaemonReading::follow(
+            &daemon,
+            &own_workspace,
+            tilo_workspace_service::workspaces::sync::RESOURCE,
+            options.wake.handle(),
+        );
         // The person's devices as their daemon knows them — the record of them it follows, and
         // which of them hold a session with it now — or the stand-in a test hands its options.
         let fabric: Option<crate::platform::fabric::SharedLink> =
@@ -1878,6 +1886,7 @@ impl Session {
             agent_sessions,
             hosted: !options.machine.is_owned(),
             fabric: fabric.clone(),
+            workspace_sync: Some(workspace_sync),
             vpn,
             devices: crate::devices::press::Devices::default(),
             bluetooth: crate::bluetooth_handoff::Handoffs::default(),

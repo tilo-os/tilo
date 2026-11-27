@@ -156,6 +156,7 @@ pub(crate) mod vm_environment;
 pub mod wake;
 pub mod wifi;
 mod window_follow;
+pub mod workspace_sync;
 pub use window_follow::provide_window_steps;
 mod window_notes;
 pub mod workspaces;

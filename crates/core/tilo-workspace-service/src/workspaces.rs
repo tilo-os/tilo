@@ -80,6 +80,7 @@ mod founding;
 pub mod providers;
 mod removals;
 mod replacing;
+pub mod sync;
 pub mod task_programs;
 #[cfg(test)]
 mod work_tests;
