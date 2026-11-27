@@ -245,15 +245,16 @@ fn todays_cards_follow_the_roots_of_the_apps_it_uses() {
     // Today holds — six, the five the week dates that day, the thirtieth, and the haircut it
     // dates the day before; the five it dates later and the five it leaves undated and nobody
     // holds wait elsewhere — the pinned notes, two, and Chat's Unread, the conversations
-    // holding a message the reader has not seen: design, general and the direct conversation
-    // with Leo, three. Not the channels nothing was said in, not the categories, which say
-    // nothing themselves, and not the notes to yourself, whose one message is the reader's own.
+    // holding a message the reader has not seen: design and general, two, the only ones the
+    // staged week says anything in. Not the channels nothing was said in, not the categories,
+    // which say nothing themselves, and not the notes to yourself, whose one message is the
+    // reader's own.
     let counts: Vec<String> = format!("{:?}", view.tree())
         .split("\"count\": Int(")
         .skip(1)
         .filter_map(|rest| rest.split(')').next().map(str::to_owned))
         .collect();
-    assert_eq!(counts, ["6", "2", "3"]);
+    assert_eq!(counts, ["6", "2", "2"]);
 }
 
 /// A scenario is a fixture: a seed runs it straight on the runtime, and nothing else may. Through
