@@ -19,7 +19,7 @@ test-support = ["tilo-peer-state/test-support", "dep:tilo-test-env", "dep:tilo-s
 # records' channel keys to pages, and the agents themselves run here
 # ([`agents`]). Their turns write tilolang records through the store an app's window
 # writes through, so they serve apps too.
-agents = ["apps", "device-keys", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:collaboration", "dep:ui", "dep:tilo-identity", "tilo-clock/local"]
+agents = ["apps", "device-keys", "dep:tilo-broker-core", "dep:tilo-agent-session", "dep:collaboration", "dep:ui", "dep:tilo-identity"]
 # A device's own workspace service and the key service beside it: what every device and
 # the server open, whether or not they serve apps. A key holder keeps the records its members
 # write sealed and opens them with the channels' keys it holds.
@@ -37,6 +37,7 @@ session-pages = ["device-keys", "dep:tilo-session-client"]
 apps = ["dep:launcher", "dep:browser-continuity-core", "tilo-actions/asks", "dep:rustix", "dep:tilo-app-package", "content", "dep:tilo-identity", "device-keys", "dep:collaboration", "postcard/alloc", "tilo-files/json"]
 
 [dependencies]
+tilo-local-time = { version = "0.1.0", path = "../../platform/local-time" }
 tilo-permissions.workspace = true
 tilo-action-types.workspace = true
 tilo-member-types.workspace = true

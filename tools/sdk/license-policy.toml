@@ -109,6 +109,7 @@ client_side = [
     "tilo-files",
     "tilo-formats",            # dates and clocks as the person set them
     "tilo-identity-client",
+    "tilo-local-time",          # the person's zone and local time
     "tilo-lock",
     "tilo-member-types",       # who acts: a person, a member, an actor and the app one acts in
     "tilo-paths",
@@ -187,6 +188,7 @@ toolkit_reaches = [
     "tilo-image-info",                  # crates/platform/image-info
     "tilo-key-group",                   # crates/core/key-group
     "tilo-local-identity",              # crates/platform/local-identity
+    "tilo-local-time",                  # crates/platform/local-time
     "tilo-lock",                        # crates/platform/tilo-lock
     "tilo-machine",                     # crates/platform/tilo-machine
     "tilo-media",                       # crates/engines/tilo-media

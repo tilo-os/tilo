@@ -325,7 +325,7 @@ tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc", default-features = 
 tilo-text-layout = { version = "0.1.0", path = "../../platform/text-layout" }
 # Version history, stamped commits and replay of any document.
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
-tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["local"] }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 # Every catalogue and text index is a tantivy index through the shared
 # search layer.
 tilo-search = { version = "0.1.0", path = "../../platform/search" }

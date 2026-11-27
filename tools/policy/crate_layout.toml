@@ -207,5 +207,4 @@ ui = [
 # The I/O the pure evaluation tools/policy/io_free.py names still ships with
 # (`crate -> what it links`), each to cut. The list only shrinks.
 io-free = [
-    "tilo-permissions -> tilo-clock",  # the clock reads the device's time zone
 ]

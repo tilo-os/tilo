@@ -68,6 +68,7 @@ test-support = ["tilo-runtime/test-support", "dep:tilo-test-env"]
 no-workspace-copy = ["test-support"]
 
 [dependencies]
+tilo-local-time = { version = "0.1.0", path = "../../platform/local-time" }
 tilo-permissions.workspace = true
 tilo-action-types.workspace = true
 tilo-member-types.workspace = true

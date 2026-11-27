@@ -140,8 +140,8 @@ pub fn pinned_wall() -> tilo_clock::time::SystemTime {
 /// UTC zone for deterministic per-thread pinning: ensures `2026-10-29T12:00:00Z` is unambiguously
 /// Thursday in local time rather than already Friday at UTC+12 or later.
 #[must_use]
-pub fn utc_zone() -> tilo_clock::local::Zone {
-    tilo_clock::local::Zone::of(jiff::tz::TimeZone::UTC)
+pub fn utc_zone() -> tilo_local_time::Zone {
+    tilo_local_time::Zone::of(jiff::tz::TimeZone::UTC)
 }
 
 /// One row of the shared date agreement table (evaluated at `2026-06-30T10:42:00Z` UTC).
@@ -442,7 +442,7 @@ struct ZoneGuard;
 
 impl Drop for ZoneGuard {
     fn drop(&mut self) {
-        tilo_clock::local::install(None);
+        tilo_local_time::install(None);
     }
 }
 
@@ -453,7 +453,7 @@ pub fn assert_platform_agrees(host: &mut impl AgreementHost, actions: &ProbeActi
     let grace = Actor::Member(MemberId::person("grace"));
 
     tilo_clock::testing::with_wall(pinned_wall(), || {
-        tilo_clock::local::install(Some(utc_zone()));
+        tilo_local_time::install(Some(utc_zone()));
         let _zone_guard = ZoneGuard;
 
         check_dates(host, actions, &grace);

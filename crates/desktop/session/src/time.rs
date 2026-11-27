@@ -35,7 +35,7 @@ pub(crate) use tilo_device_surfaces::time::Time;
 /// Whether this device's clock is synchronised now, as the platform answers it.
 fn clock() -> Clock {
     Clock {
-        synchronised: tilo_clock::is_synchronised(),
+        synchronised: tilo_local_time::is_synchronised(),
     }
 }
 

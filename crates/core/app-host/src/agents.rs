@@ -2860,7 +2860,7 @@ where
 
 /// Today, `YYYY-MM-DD`, as an agent's keeper counts the days its spending is charged to.
 pub fn today() -> String {
-    tilo_clock::local::today().to_string()
+    tilo_local_time::today().to_string()
 }
 
 /// `micros` millionths of the currency, as a person reads an amount.

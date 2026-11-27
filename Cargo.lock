@@ -6332,6 +6332,7 @@ dependencies = [
  "tilo-identity-client",
  "tilo-install-helpers",
  "tilo-keyboard-map",
+ "tilo-local-time",
  "tilo-lock",
  "tilo-net",
  "tilo-os-release",
@@ -15169,6 +15170,7 @@ dependencies = [
  "tilo-invocation-journal",
  "tilo-invocations",
  "tilo-key-group",
+ "tilo-local-time",
  "tilo-lock",
  "tilo-mcp",
  "tilo-member-types",
@@ -16139,10 +16141,7 @@ dependencies = [
 name = "tilo-clock"
 version = "0.1.0"
 dependencies = [
- "jiff",
- "js-sys",
  "tilo-test-env",
- "wasm-bindgen",
  "web-time",
 ]
 
@@ -18106,6 +18105,18 @@ version = "0.1.0"
 dependencies = [
  "tilo-lock",
  "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-local-time"
+version = "0.1.0"
+dependencies = [
+ "jiff",
+ "js-sys",
+ "tilo-clock",
+ "tilo-test-env",
+ "wasm-bindgen",
  "workspace-hack",
 ]
 
@@ -20550,6 +20561,7 @@ dependencies = [
  "tilo-keyboard-map",
  "tilo-live",
  "tilo-liveness",
+ "tilo-local-time",
  "tilo-location",
  "tilo-lock",
  "tilo-machine",
@@ -21699,6 +21711,7 @@ dependencies = [
  "tilo-history",
  "tilo-image-codec",
  "tilo-local-identity",
+ "tilo-local-time",
  "tilo-lock",
  "tilo-member-types",
  "tilo-mime",
@@ -22535,6 +22548,7 @@ dependencies = [
  "tilo-identity",
  "tilo-invocation-journal",
  "tilo-key-group",
+ "tilo-local-time",
  "tilo-lock",
  "tilo-member-types",
  "tilo-neighbour-wire",
@@ -22851,6 +22865,7 @@ dependencies = [
  "tilo-history",
  "tilo-image-codec",
  "tilo-keyboard-engine",
+ "tilo-local-time",
  "tilo-maps-engine",
  "tilo-media",
  "tilo-member-types",
@@ -23008,6 +23023,7 @@ dependencies = [
  "tilo-environment",
  "tilo-failure",
  "tilo-formats",
+ "tilo-local-time",
  "tilo-locale",
  "tilo-member-types",
  "tilo-reference",

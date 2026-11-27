@@ -3359,14 +3359,14 @@ fn a_german_person_in_an_english_only_hosted_app_sees_english_and_parses_german_
     struct ZoneGuard;
     impl Drop for ZoneGuard {
         fn drop(&mut self) {
-            tilo_clock::local::install(None);
+            tilo_local_time::install(None);
         }
     }
 
     let (compiled, actions) = compile_probe();
     let probe_bundle = Bundle::new(&compiled, []);
     tilo_clock::testing::with_wall(pinned_wall(), || {
-        tilo_clock::local::install(Some(utc_zone()));
+        tilo_local_time::install(Some(utc_zone()));
         let _zone = ZoneGuard;
 
         let route = RouteSpec::app(PROBE_APP, uuid::Uuid::new_v4());

@@ -334,7 +334,7 @@ install-plan = { path = "../../os/install-plan" }
 tilo-web-search = { path = "../../integrations/tilo-web-search", features = ["fixture-servers"] }
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
-tilo-clock = { path = "../../platform/tilo-clock", features = ["local", "test-support"] }
+tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support", "model"] }
 tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 # The action provider the workspace tests answer with.

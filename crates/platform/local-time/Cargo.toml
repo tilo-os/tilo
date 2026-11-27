@@ -1,0 +1,36 @@
+[package]
+name = "tilo-local-time"
+version = "0.1.0"
+edition = "2024"
+# Published: the SDK's platform layer (tools/sdk/publish_check.py).
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
+repository.workspace = true
+homepage.workspace = true
+description = "The clock as a person reads it on a device or page: their zone, local date and time, and whether the device's clock is synchronised."
+
+[lib]
+name = "tilo_local_time"
+path = "src/lib.rs"
+
+[dependencies]
+jiff.workspace = true
+tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
+
+# The page's time zone: its offset at each instant and its name for the zone, so a page needs
+# no time-zone database.
+[target.'cfg(all(target_family = "wasm", not(tilo_no_js)))'.dependencies]
+wasm-bindgen = "0.2.108"
+js-sys = "0.3.85"
+
+# The workspace-hack's native feature set does not build for wasm32.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tilo-clock = { version = "0.1.0", path = "../tilo-clock", features = ["test-support"] }
+tilo-test-env = { path = "../../../tools/test-env" }
+
+[lints]
+workspace = true

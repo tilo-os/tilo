@@ -206,6 +206,7 @@ tilolang-music = { path = "../../integrations/tilolang-music", default-features 
 runtime-dylib = { path = "../../sdk/runtime-dylib", optional = true }
 
 [dev-dependencies]
+tilo-local-time = { version = "0.1.0", path = "../../platform/local-time" }
 tilo-action-types.workspace = true
 tilo-action-line-serve = { path = "../../core/action-line-serve" }
 test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }

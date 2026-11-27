@@ -47,7 +47,8 @@ tilo-environment = { version = "0.1.0", path = "../../core/environment" }
 tilo-reference = { version = "0.1.0", path = "../../core/reference" }
 tilolang = { version = "0.1.0", path = "../tilolang" }
 # The wall clock, which also reads in a browser page, where std has none.
-tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["local"] }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tilo-local-time = { version = "0.1.0", path = "../../platform/local-time" }
 tilolang-engine = { version = "0.1.0", path = "../tilolang-engine" }
 # Dates, times and clocks as the person set them: formatted once on `Platform` so every host
 # writes a day, a moment and a clock the same way.

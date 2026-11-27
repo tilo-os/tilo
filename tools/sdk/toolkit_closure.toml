@@ -47,6 +47,7 @@ allowed = [
     "tilo-image-codec",
     "tilo-image-info",
     "tilo-local-identity",
+    "tilo-local-time",
     "tilo-lock",
     "tilo-media",
     "tilo-member-types",

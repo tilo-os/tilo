@@ -499,7 +499,7 @@ fn a_task_typed_into_todays_entry_is_due_the_persons_today() {
             // Today and stands in Today's list.
             // The zone the platform names, resolved against the database built into Tilo: the
             // window reads its day by it, not by whatever zoneinfo the machine installed.
-            let zone = tilo_clock::local_zone_name()
+            let zone = tilo_local_time::local_zone_name()
                 .and_then(|name| tilo_recurrence::zone::named(&name))
                 .unwrap_or(jiff::tz::TimeZone::UTC);
             let headed_by = jiff::Timestamp::try_from(tilo_clock::to_std(tilo_clock::wall()))

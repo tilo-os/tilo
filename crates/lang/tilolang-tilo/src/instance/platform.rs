@@ -23,14 +23,14 @@ pub use jiff::Zoned;
 /// reading for every live host (one clock read, no zone lookup).
 #[must_use]
 pub fn wall_now() -> String {
-    format!("{:.0}", tilo_clock::local::now_instant())
+    format!("{:.0}", tilo_local_time::now_instant())
 }
 
 /// The device or page's current local moment: the shared [`Platform::moment`] reading for every
 /// live host (one clock read, one zone lookup, no text built or parsed).
 #[must_use]
 pub fn wall_moment() -> Zoned {
-    tilo_clock::local::now()
+    tilo_local_time::now()
 }
 
 /// Parse `now` (ISO-8601 UTC text from [`Platform::now`]), falling back to the wall clock when a
@@ -44,7 +44,7 @@ fn parse_now(now: &str) -> jiff::Timestamp {
                 %error,
                 "Platform::now returned an unparseable timestamp; falling back to local wall clock"
             );
-            tilo_clock::local::now_instant()
+            tilo_local_time::now_instant()
         }
     }
 }
@@ -212,7 +212,7 @@ pub trait Platform {
     /// thread's or device's local zone, so test and benchmark platforms that pin `now()` stay
     /// consistent and warn at most once per call if `now()` is not ISO-8601.
     fn moment(&self) -> Zoned {
-        tilo_clock::local::at(parse_now(&self.now()))
+        tilo_local_time::at(parse_now(&self.now()))
     }
 
     /// The language the person reads and types in (`de`, `en`): what a date or a time typed in
@@ -236,9 +236,9 @@ pub trait Platform {
     /// unless the platform knows it, which leaves the offset above as the whole answer.
     fn zone_name(&self) -> Option<String> {
         self.locale().and_then(|_| {
-            tilo_clock::local::Zone::here()
+            tilo_local_time::Zone::here()
                 .name()
-                .or_else(tilo_clock::local_zone_name)
+                .or_else(tilo_local_time::local_zone_name)
         })
     }
 

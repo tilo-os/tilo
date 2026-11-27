@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 pub(crate) fn offered() -> &'static [String] {
     static ZONES: OnceLock<Vec<String>> = OnceLock::new();
     ZONES.get_or_init(|| {
-        let mut zones = tilo_clock::local::zone_names();
+        let mut zones = tilo_local_time::zone_names();
         if zones.is_empty() {
             zones = FALLBACK.iter().map(|zone| (*zone).to_owned()).collect();
         }

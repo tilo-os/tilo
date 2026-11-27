@@ -64,12 +64,12 @@ std::thread_local! {
 /// Read dates on this thread in `formats` and local times in `zone` from now on, in place of
 /// the person's own and the device's: a worker that renders views for several people at once
 /// renders each one's on a thread of its own, in their formats and on their clock
-/// ([`tilo_clock::local::install`]). `None` goes back to the person's and the device's. Changes
+/// ([`tilo_local_time::install`]). `None` goes back to the person's and the device's. Changes
 /// the [`revision`], as new formats do, and answers `true`, when either differs from the
 /// thread's.
 pub fn install_here(formats: Option<RegionFormats>, zone: Option<crate::clock::Zone>) -> bool {
     let next = (formats, zone.as_ref().and_then(crate::clock::Zone::name));
-    tilo_clock::local::install(zone);
+    tilo_local_time::install(zone);
     let changed = HERE.with(|here| {
         let mut here = here.borrow_mut();
         let changed = *here != next;
@@ -95,7 +95,7 @@ pub fn install_zone_here(zone: Option<crate::clock::Zone>) -> bool {
 #[must_use]
 pub fn chosen_zone(chosen: Option<&str>) -> Option<crate::clock::Zone> {
     let chosen = chosen?;
-    if tilo_clock::local_zone_name().as_deref() == Some(chosen) {
+    if tilo_local_time::local_zone_name().as_deref() == Some(chosen) {
         return None;
     }
     crate::clock::Zone::named(chosen)

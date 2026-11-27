@@ -82,7 +82,8 @@ install-profile-model = { path = "../../crates/os/install-profile-model", featur
 # reads no layouts installed there, so it links no libxkbcommon.
 tilo-keyboard-map = { path = "../../crates/desktop/tilo-keyboard-map", default-features = false }
 # The time zones the profile offers, as this machine reads them.
-tilo-clock = { path = "../../crates/platform/tilo-clock", features = ["local"] }
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
+tilo-local-time = { version = "0.1.0", path = "../../crates/platform/local-time" }
 # The one maker of a machine's plan and its single-use token, shared with
 # `tilo machine add` so the window and the command write the same document.
 install-plan = { path = "../../crates/os/install-plan" }

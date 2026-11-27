@@ -101,7 +101,7 @@ fn the_session_publishes_whether_its_clock_is_synchronised() {
         .expect("the session publishes its clock");
     assert_eq!(
         said["synchronised"],
-        serde_json::json!(tilo_clock::is_synchronised()),
+        serde_json::json!(tilo_local_time::is_synchronised()),
         "the fact is the platform's own answer, and none where it cannot say: {said}"
     );
 }

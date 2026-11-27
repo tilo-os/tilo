@@ -228,11 +228,11 @@ fn platform_defaults_derive_shown_and_sentence_from_now_and_zone() {
     struct ZoneGuard;
     impl Drop for ZoneGuard {
         fn drop(&mut self) {
-            tilo_clock::local::install(None);
+            tilo_local_time::install(None);
         }
     }
 
-    // 1. Overriding `moment()` (like live hosts do from `tilo_clock::local::now`) derives `zone`,
+    // 1. Overriding `moment()` (like live hosts do from `tilo_local_time::now`) derives `zone`,
     // `shown` and `sentence` without ever calling `now()` to build or parse text.
     // 2026-10-27T23:30:00Z is Oct 27 in UTC, and already Oct 28 at UTC+2.
     let utc = PinnedPlatform::with_zone("2026-10-27T23:30:00Z", 0);
@@ -261,7 +261,7 @@ fn platform_defaults_derive_shown_and_sentence_from_now_and_zone() {
 
     // 2. A platform pinning only `now()` as text parses it exactly once per call to `shown`,
     // `sentence` and `zone`, and respects the thread-local zone.
-    tilo_clock::local::install(Some(tilo_clock::local::Zone::of(jiff::tz::TimeZone::UTC)));
+    tilo_local_time::install(Some(tilo_local_time::Zone::of(jiff::tz::TimeZone::UTC)));
     let _zone = ZoneGuard;
     let text_only = TextOnlyPlatform::new("2026-10-27T23:30:00Z");
     assert_eq!(text_only.shown("date", "2026-10-27"), "Today");

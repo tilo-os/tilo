@@ -159,7 +159,7 @@ impl Region {
 
 /// Refused unless `zone` names a zone as the time-zone database does.
 fn zone_named(zone: &str) -> Result<(), Refusal> {
-    if tilo_clock::is_zone_name(zone) {
+    if tilo_local_time::is_zone_name(zone) {
         Ok(())
     } else {
         Err(Refusal::new(
@@ -218,7 +218,7 @@ impl Workspaces {
             return Some(zone);
         }
         self.region_workspace(person)
-            .and_then(|_| tilo_clock::local_zone_name())
+            .and_then(|_| tilo_local_time::local_zone_name())
     }
 
     /// Apply `action` to `person`'s region, on a device of theirs that has received
