@@ -303,14 +303,35 @@ fn renaming_an_accessory_runs_its_own_rename() {
 }
 
 /// The tree the window is sent carries the accessory's page, not only the words a screen reader
-/// reads: what a shot draws is the panel it stood on.
+/// reads: what a shot draws is the panel it stood on. The desktop keeps a panel of the people it
+/// is with in its tree, shown or not, so the press is held to the panel that showed it rather
+/// than to how many panels the shell keeps.
 #[test]
 fn the_accessory_page_is_a_page_of_the_panel() {
     let mut shell = staged();
+    let before: Vec<String> = {
+        let tree: UiNode = shell.instance.root_tree().expect("the window's tree");
+        tree.of_kind("ui.FloatingPanel")
+            .into_iter()
+            .map(|panel| panel.key.clone())
+            .collect()
+    };
     shell.press("Sony WH-1000XM5");
     let tree: UiNode = shell.instance.root_tree().expect("the window's tree");
-    assert!(
-        tree.of_kind("ui.FloatingPanel").len() == 1,
-        "one panel stands on the desktop: {tree:#?}"
+    let panels: Vec<&UiNode> = tree.of_kind("ui.FloatingPanel");
+    let keys: Vec<String> = panels.iter().map(|panel| panel.key.clone()).collect();
+    assert_eq!(
+        keys, before,
+        "the page stands in the panel that showed the quick settings, and opens no panel of its \
+         own: {tree:#?}"
+    );
+    // The page is that panel's: its tree carries what only the accessory's page shows.
+    let pages = panels
+        .iter()
+        .filter(|panel| format!("{panel:?}").contains("\"AC:80:0A:11:22:33\""))
+        .count();
+    assert_eq!(
+        pages, 1,
+        "one panel carries the accessory's page: {tree:#?}"
     );
 }
