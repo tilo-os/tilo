@@ -365,6 +365,8 @@ impl AgentKeys for DeviceMadeKeys {
         )
         .map_err(|error| error.to_string())?;
         request.signed = Some(Box::new(invocation));
+        tilo_server_protocol::invocation::sign_parts_now(request, &agent_key)
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -867,6 +869,10 @@ mod tests {
         assert_eq!(
             signer.device_public_key, key,
             "signed by the agent's key, not the device's"
+        );
+        assert!(
+            tilo_actions::remote::SignedCall::of(&asked).is_some_and(|call| call.in_flight()),
+            "its argument's parts signed too, so each change keeps only its own"
         );
         assert_eq!(
             signer.user_public_key, person,

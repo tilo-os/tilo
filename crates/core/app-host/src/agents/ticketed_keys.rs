@@ -482,5 +482,7 @@ fn sign_with(
     )
     .map_err(|error| error.to_string())?;
     request.signed = Some(Box::new(invocation));
+    tilo_server_protocol::invocation::sign_parts_now(request, &agent_key)
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
