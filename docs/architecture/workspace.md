@@ -111,7 +111,11 @@ network address translation — so a machine in a data centre is added as one at
 home is. The new machine dials the issuing device, which asks the person to
 approve; the approving device's root certifies the new machine's key over
 exactly that key, and the answer carries the certificate the machine keeps.
-Every image adds a device the same way.
+Every image adds a device the same way. The new machine then enters the
+person's own workspace at the server its ticket names, admitted there by the
+certificate their root signed for its key: the list of their workspaces, and
+where each of the others is kept, is read from the copy that brings. A device
+the person's root never certified is refused by that workspace's own entry.
 
 **Each device has a role in each workspace it holds:**
 

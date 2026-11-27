@@ -2131,9 +2131,13 @@ impl Daemon {
             &home.workspace,
         ));
         // The person's own workspace, whose roster lists every device of theirs, is the first
-        // this device keeps: entered where the person's list says it is. The device that keeps
-        // that list may not answer yet (it starts beside this one, or is away), so it is asked
-        // again, less often each time, for as long as this account is the one this part asks.
+        // this device keeps: their home takes it in at the server that login names, by the
+        // certificate their root signed, so it is here already on a device that just joined.
+        // Where it is kept on another of their devices, their list says where; a device that
+        // keeps none of it reads none of the list, so the entry above is what this asks for
+        // first. The device that keeps that list may not answer yet (it starts beside this one,
+        // or is away), so it is asked again, less often each time, for as long as this account
+        // is the one this part asks.
         let (own, asked) = (Arc::downgrade(&self.workspaces), Arc::downgrade(&account));
         tilo_rt::app().handle().spawn(async move {
             let Some(own_workspace) = WorkspaceId::parse(&person) else {

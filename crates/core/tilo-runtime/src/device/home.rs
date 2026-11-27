@@ -20,6 +20,10 @@ use super::workspaces::{ServiceWorkspaces, block_on_owned};
 /// The site a device names whose server names none of its own.
 const SITE: &str = "https://tilo.sh/";
 
+/// How long a device that could not be taken into its person's own workspace waits before it is
+/// asked for again: a server that is away is not asked on every call the daemon answers.
+const ENTER_AGAIN: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The server this device enters its person's workspaces through, once it knows one.
 pub(crate) struct Home {
     workspaces: Arc<ServiceWorkspaces>,
@@ -29,6 +33,16 @@ pub(crate) struct Home {
     found: Mutex<Option<Device>>,
     /// Set once this device wrote the person's list from what it knows of their workspaces.
     listed: tokio::sync::OnceCell<()>,
+    /// Whether the person's own workspace is kept here, and when it was last asked for: an
+    /// entrance is asked for once at a time, and again only after [`ENTER_AGAIN`].
+    taken: tokio::sync::Mutex<Taken>,
+}
+
+/// Whether the person's own workspace is held here, and when it was last asked for.
+#[derive(Default)]
+struct Taken {
+    held: bool,
+    asked: Option<std::time::Instant>,
 }
 
 impl Home {
@@ -49,6 +63,7 @@ impl Home {
             entered,
             found: Mutex::new(None),
             listed: tokio::sync::OnceCell::new(),
+            taken: tokio::sync::Mutex::default(),
         }
     }
 
@@ -57,17 +72,58 @@ impl Home {
     /// workspace names. `None` while neither names one: asked again, it is there once the copy
     /// arrives. Awaited: the copy is read on the runtime this device's programs run on, so a
     /// program of the person's asking through the daemon waits here without waiting on itself.
+    ///
+    /// A device that holds no copy of the person's own workspace is taken into it here, at the
+    /// server it enters through: where their list of workspaces is read, and what their other
+    /// devices read it from. It cannot come from the list, which names where each workspace is
+    /// kept: a device that holds none of their own workspace reads none of the list.
     pub(crate) async fn get(&self) -> Option<Device> {
-        if let Some(found) = self.known() {
-            return Some(found);
-        }
-        let found = match &self.entered {
-            Some(entered) => entered.clone(),
-            None => self.named().await?,
+        let found = if let Some(found) = self.known() {
+            found
+        } else {
+            let found = match &self.entered {
+                Some(entered) => entered.clone(),
+                None => self.named().await?,
+            };
+            self.found.lock_recover().get_or_insert(found).clone()
         };
-        let known = self.found.lock_recover().get_or_insert(found).clone();
-        self.list_here(&known);
-        Some(known)
+        let _ = self.enter_person_workspace(&found).await;
+        self.list_here(&found);
+        Some(found)
+    }
+
+    /// Take this device into its person's own workspace at the server its login names, once it
+    /// is not held here: the server admits a device of theirs by the certificate their root
+    /// signed for its key, and answers where the workspace is kept. Whether it is held here now.
+    /// A device confined to one workspace keeps none of it, and asks for none.
+    async fn enter_person_workspace(&self, device: &Device) -> bool {
+        let mut taken = self.taken.lock().await;
+        if taken.held {
+            return true;
+        }
+        if self
+            .workspaces
+            .copies()
+            .state(&self.person())
+            .await
+            .is_some()
+        {
+            taken.held = true;
+            return true;
+        }
+        if self.workspaces.confined().is_some()
+            || taken
+                .asked
+                .is_some_and(|asked| asked.elapsed() < ENTER_AGAIN)
+        {
+            return false;
+        }
+        taken.asked = Some(std::time::Instant::now());
+        let held = taken_in(&self.workspaces, device, &self.person()).await;
+        if held {
+            taken.held = true;
+        }
+        held
     }
 
     /// Write the person's list of their workspaces here, once, when this device keeps their root
@@ -75,10 +131,9 @@ impl Home {
     /// and every workspace its copy records them in. A server that keeps their own workspace
     /// cannot write the list, so their other devices would read none.
     ///
-    /// The list is kept in the person's own workspace, and only a device holding a copy of it
-    /// writes it: one is taken in from the server the login names first, where the server keeps
-    /// it. That is a workspace's copy, so it runs beside the answer this home gives, as the copy
-    /// of any workspace a login enters is taken in: a caller waiting on this device is never held
+    /// The list is kept in the person's own workspace, which [`Self::get`] takes in from the
+    /// server the login names before this runs: writing it is one change to a copy, so it runs
+    /// beside the answer this home gives and a caller waiting on this device is never held
     /// behind it.
     fn list_here(&self, device: &Device) {
         if !self.cert.capabilities.can_admit_devices || self.listed.set(()).is_err() {

@@ -670,6 +670,221 @@ async fn a_ticket_logged_in_device_lists_the_persons_workspaces_before_it_holds_
     server.shutdown().await;
 }
 
+/// A computer a ticket joined enters its person's own workspace at the server its login names
+/// before it reads their list, rather than asking for the list to learn where that workspace is:
+/// the server admits a device of the person's by the certificate their root signed for it, and
+/// refuses one it holds no certificate of, whichever certificate that is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one computer joined and entered, from the ticket to the list it reads, read top to bottom"
+)]
+async fn a_joined_computer_enters_the_persons_workspace_before_it_reads_the_list() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let person = root.verifying_key().to_bytes();
+    let state = tempfile::tempdir().unwrap();
+    let Studio {
+        server,
+        hosted,
+        workspace,
+        laptop_key,
+        laptop_cert,
+        login: laptop_login,
+        ..
+    } = studio(&root, state.path()).await;
+    // The person's own workspace, holding their list of workspaces, is kept at their server.
+    let own = tilo_workspace_service::workspaces::person_workspace::found(&hosted)
+        .await
+        .expect("the person's own workspace is founded on their server");
+
+    // The laptop keeps a copy of it there, and serves a ticket with the person's root.
+    let laptop_service = super::workspaces::ServiceWorkspaces::open_for_test(
+        &state.path().join("laptop-service"),
+        &laptop_key,
+        &laptop_cert,
+        &tilo_api::daemon::enter::server_of(&laptop_login)
+            .await
+            .unwrap(),
+    )
+    .await
+    .expect("the laptop's service opens");
+    let laptop_home = Arc::new(crate::device::home::Home::new(
+        Arc::clone(&laptop_service),
+        laptop_cert.clone(),
+        Some(laptop_login.clone()),
+    ));
+    assert!(
+        laptop_home.get().await.is_some(),
+        "the laptop's home names the server of its login"
+    );
+    assert!(
+        laptop_service.copies().state(&own).await.is_some(),
+        "the laptop takes the person's own workspace in"
+    );
+    let identity = tempfile::tempdir().unwrap();
+    tilo_identity::provisioning::import_single_device_root(
+        identity.path(),
+        &root,
+        "",
+        tilo_identity::provisioning::IdentityStorage::Files,
+    )
+    .unwrap();
+    let actions = laptop_service.copies().action_service();
+    let laptop = Tickets::new(
+        (laptop_key.clone(), laptop_cert.clone()),
+        laptop_service.endpoint(),
+        Some(Arc::clone(&laptop_home)),
+        root_in(identity.path().to_path_buf()),
+        None,
+        Some(Arc::clone(&laptop_service)),
+        tilo_device_identity::login::Place::at(
+            state.path().join("laptop"),
+            tilo_device_identity::IdentityPaths::under(state.path().join("laptop-keys")),
+        ),
+        actions.clone(),
+    );
+    let router = serve(&laptop_service, actions);
+    let printed = ask_device(&laptop, ISSUE, json!({}))
+        .await
+        .expect("the laptop holding the person's root issues a ticket");
+    let text = printed["ticket"].as_str().unwrap().to_owned();
+
+    // The phone logs in with it: one of the person's devices, by the certificate their root
+    // signs for its key.
+    let (phone_key, phone_cert) = enrol(&root, "the phone", DeviceCapabilities::member());
+    let phone_endpoint = endpoint(&phone_key).await;
+    let keys = tilo_device_identity::IdentityPaths::under(state.path().join("phone-keys"));
+    let _phone_daemon = the_daemons_key(&keys, &phone_key);
+    let phone = Tickets::new(
+        (phone_key.clone(), phone_cert),
+        phone_endpoint.clone(),
+        None,
+        no_root(),
+        None,
+        None,
+        tilo_device_identity::login::Place::at(state.path().join("phone"), keys),
+        ActionService::new(phone_key.clone(), Arc::new(NoActions)),
+    );
+    ask_device(
+        &phone,
+        LOG_IN,
+        json!({"ticket": text, "agent": "tilo", "label": "phone"}),
+    )
+    .await
+    .expect("the laptop certifies the phone");
+    let phone_login = *phone
+        .logged_in()
+        .borrow()
+        .clone()
+        .expect("the phone starts again as the device it became");
+    phone_endpoint.close().await;
+    let address = tilo_api::daemon::enter::server_of(&phone_login)
+        .await
+        .unwrap();
+    let served_at = phone_login
+        .server_address
+        .as_ref()
+        .expect("the login names its server")
+        .endpoint_addr
+        .clone();
+
+    // The phone's daemon, opened from the entry its login wrote down.
+    let service = super::workspaces::ServiceWorkspaces::open_for_test(
+        &state.path().join("phone-service"),
+        &phone_key,
+        &phone_login.cert,
+        &address,
+    )
+    .await
+    .expect("the phone's service opens");
+    let account = Account::at(&service, &served_at, &phone_login.workspace);
+    let labels = tilo_server_protocol::workspaces::WorkspaceLabels::new();
+    // Before anything entered it there, the server holds no certificate for the phone's key: it
+    // asks as a stranger, and reads none of the person's list.
+    let refused = account
+        .listed(&person, &labels, None)
+        .await
+        .expect_err("a device the workspace holds no certificate of reads none of its records");
+    assert_eq!(
+        refused, "the caller may not invoke this action",
+        "the person's own workspace refuses the phone until it is entered there"
+    );
+    // Neither is a computer the person's root never certified let into it: the workspace's own
+    // entry refuses it, whatever key it shows.
+    let other = SigningKey::from_bytes(&[0x7a; 32]);
+    let (stranger_key, stranger_cert) = enrol(&other, "a stranger", DeviceCapabilities::member());
+    assert!(
+        hosted
+            .enter(&own, (&stranger_cert, &stranger_key))
+            .await
+            .is_err(),
+        "the person's own workspace admits no device their root did not sign for"
+    );
+
+    // The phone's home enters it into the person's own workspace at the server its login names,
+    // by the certificate their root signed: their list is read from the copy that brings.
+    let home = crate::device::home::Home::new(
+        Arc::clone(&service),
+        phone_login.cert.clone(),
+        Some(phone_login.clone()),
+    );
+    assert_eq!(
+        home.get().await.map(|device| device.workspace),
+        Some(phone_login.workspace.clone()),
+        "the phone's home is the server its login named"
+    );
+    assert!(
+        service.copies().state(&own).await.is_some(),
+        "the phone keeps the person's own workspace, entered from the login entry alone"
+    );
+    let listed = account
+        .listed(&person, &labels, None)
+        .await
+        .expect("the person's list reads at their server once the phone is entered there");
+    assert!(
+        listed
+            .workspaces
+            .iter()
+            .any(|known| known.workspace == workspace),
+        "the phone lists the person's workspace: {:?}",
+        listed.workspaces
+    );
+    // The copy the phone holds names it too: what its follower of the list keeps its workspaces
+    // by, and no app of the daemon's own store is asked for it. It arrives with the copy, as
+    // every record of a workspace the phone entered does.
+    let held = tilo_test_env::within("the list reaches the phone's copy", async {
+        loop {
+            let read = tilo_workspace_service::workspaces::person_workspace::read_on::<
+                tilo_user_identity::workspace_list::WorkspaceList,
+            >(
+                service.copies(),
+                &own,
+                tilo_server_protocol::workspaces::IDENTITY_LIST,
+            )
+            .await;
+            if let Ok(held) = read
+                && held
+                    .listed()
+                    .any(|(known, _)| known.to_string() == workspace)
+            {
+                return held;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await;
+    assert!(
+        held.listed()
+            .any(|(known, _)| known.to_string() == workspace),
+        "the person's list names their workspace in the phone's copy"
+    );
+
+    service.shutdown().await;
+    laptop_service.shutdown().await;
+    let _ = router.shutdown().await;
+    server.shutdown().await;
+}
+
 /// The person's workspaces as the account's own tree lists them for `device` over `service`:
 /// the tree a plain connection walks before any workspace is admitted (never into one).
 async fn listed_by(
