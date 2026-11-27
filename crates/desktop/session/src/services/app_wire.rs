@@ -766,10 +766,16 @@ impl tilo_actions::remote::ActionProvider for ServicesOnDispatch {
 /// Serve the session's services on the device's dispatch over the shell link `daemon`, so the
 /// shell's press of one of their actions reaches it and a call that waits for the person is kept
 /// as their asked record. Without a link nothing here can be asked, and the press runs as before.
+///
+/// What `settings_published` says the session's own provider offers is left out: the settings'
+/// sections are published by the settings provider, served beside this one on the same link
+/// ([`crate::settings_steps::SettingsSteps`]), and this device's dispatch lists each address
+/// once. A press of theirs still reaches the settings service through here, as every press does.
 pub(crate) fn serve_services(
     served: std::sync::Arc<ServedServices>,
     services: &Services,
     daemon: &Result<runtime_collab::ShellClient, String>,
+    settings_published: bool,
 ) {
     let Ok(link) = daemon else {
         // The press path is not taken without a link either, so nothing waits for one.
@@ -780,7 +786,11 @@ pub(crate) fn serve_services(
         served.registration_failed("this session has no runtime to reach the device's dispatch");
         return;
     };
-    let placed = tilo_actions::api::survey_placed(&services.resources());
+    let mut resources = services.resources();
+    if settings_published {
+        crate::settings_steps::SettingsSteps::leave_out(&mut resources);
+    }
+    let placed = tilo_actions::api::survey_placed(&resources);
     let page = tilo_actions::remote::CataloguePage {
         revision: services.revision().to_string(),
         rows: placed

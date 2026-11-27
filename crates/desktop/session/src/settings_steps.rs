@@ -75,9 +75,9 @@ impl SettingsSteps {
         changed
     }
 
-    /// Take what this provider offers out of `resources`: the session's own provider lists
-    /// what its services publish, and Settings' sections are offered here instead, under
-    /// this provider. One address has one entry.
+    /// Take what this provider offers out of `resources`: a provider listing what the session's
+    /// services publish publishes no section of the settings, which are offered here instead.
+    /// One address has one entry.
     pub(crate) fn leave_out(resources: &mut Vec<ResourceSpec>) {
         resources.retain(|resource| !settings_sections::service::keeps(resource.id.as_str()));
     }

@@ -809,31 +809,34 @@ impl Session {
         // The person's devices as their daemon knows them: the record of them it follows, which of
         // them hold a session with it now, and which it hears on this machine's network.
         let fabric: Option<crate::platform::fabric::SharedLink> = (|| {
-                let identity = crate::sync::device_identity()?;
-                let local = crate::platform::fabric::DeviceId::new(hex::encode(
+            let identity = crate::sync::device_identity()?;
+            let local = tilo_failure::ignored!(
+                "a key that names no device id leaves this session with no device of its own",
+                crate::platform::fabric::DeviceId::new(hex::encode(
                     identity.device_cert.device_public_key,
                 ))
-                .ok();
-                let (record, _) = owner_devices.as_ref()?.record();
-                Some(std::sync::Arc::new(crate::person_store::DaemonFabric::new(
-                    record.shared(),
-                    crate::person_store::DaemonReading::follow(
-                        &daemon,
-                        &own_workspace,
-                        tilo_workspace_service::workspaces::person_workspace::devices::ONLINE,
-                        options.wake.handle(),
-                    ),
-                    crate::person_store::DaemonReading::follow(
-                        &daemon,
-                        &own_workspace,
-                        tilo_workspace_service::workspaces::person_workspace::devices::NEARBY,
-                        options.wake.handle(),
-                    ),
-                    crate::person_store::SpeakersLink::attach(&daemon, local),
-                    identity.device_cert,
-                    continuity.clone(),
-                )) as crate::platform::fabric::SharedLink)
-            })();
+                .ok()
+            );
+            let (record, _) = owner_devices.as_ref()?.record();
+            Some(std::sync::Arc::new(crate::person_store::DaemonFabric::new(
+                record.shared(),
+                crate::person_store::DaemonReading::follow(
+                    &daemon,
+                    &own_workspace,
+                    tilo_workspace_service::workspaces::person_workspace::devices::ONLINE,
+                    options.wake.handle(),
+                ),
+                crate::person_store::DaemonReading::follow(
+                    &daemon,
+                    &own_workspace,
+                    tilo_workspace_service::workspaces::person_workspace::devices::NEARBY,
+                    options.wake.handle(),
+                ),
+                crate::person_store::SpeakersLink::attach(&daemon, local),
+                identity.device_cert,
+                continuity.clone(),
+            )) as crate::platform::fabric::SharedLink)
+        })();
         if let Some(devices) = &owner_devices {
             // Notifications continue on the person's other devices, through the record of them.
             let (record, _) = devices.record();
@@ -1538,6 +1541,9 @@ impl Session {
             std::sync::Arc::clone(&served_services),
             &services.borrow(),
             &daemon_link,
+            // The seat's settings provider is served beside these wherever the app wire stands,
+            // and it publishes the settings' sections: the services must not list them again.
+            app_wire.is_some(),
         );
         // The workspace's activity as an app of this session reads it: the model's own reads and
         // writes, published as `so.tilo.activity`, so a tilolang app shows the history through the
