@@ -600,7 +600,7 @@ fn capture_every_scenario(
         capture.shots = Some(out);
         capture.scenario = scenario.map(str::to_owned);
         // A capture never attaches to the runtime: the daemon starts a capture's app itself
-        // (`tilo-runtime --run-app <app> -- <capture>`).
+        // (`tilo-runtime --run-app <app> --shots-dir <directory>`).
         run_parsed(spec, &capture, |_| Ok(()))?;
     }
     Ok(())

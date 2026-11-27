@@ -184,10 +184,10 @@ fn workspace_named(argument: Option<OsString>) -> io::Result<String> {
         .ok_or_else(|| invalid("--workspace requires a workspace id"))
 }
 
-/// `--run-app APP_ID [--workspace WORKSPACE] [-- <the app's capture arguments>]`, after
-/// `--run-app`: the app this computer has installed, and no program of the caller's. The capture
-/// flags the app parses (`--headless-drive`, `--shots`, `--shots-dir`, `--scenario`, the rest)
-/// are the app's own and are handed to it as given, before or after a `--`.
+/// `--run-app APP_ID [--workspace WORKSPACE] [CAPTURE]`, after `--run-app`: the app this
+/// computer has installed, and no program of the caller's. The capture flags the app parses
+/// (`--headless-drive`, `--shots`, `--shots-dir`, `--scenario`, `--responsive-matrix`) are the
+/// app's own and are handed to it as given.
 fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<Mode> {
     let app_id = arguments
         .next()
@@ -209,20 +209,6 @@ fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<M
                         .ok_or_else(|| invalid("--workspace requires a workspace id"))?,
                 );
             }
-            // The rest is the app's own arguments: the app's parser decides what they mean.
-            Some("--") => {
-                capture.extend(
-                    arguments
-                        .by_ref()
-                        .map(|argument| {
-                            argument
-                                .into_string()
-                                .map_err(|_| invalid("an app argument is not text"))
-                        })
-                        .collect::<io::Result<Vec<_>>>()?,
-                );
-                break;
-            }
             Some(
                 flag @ ("--headless-drive"
                 | "--shots"
@@ -238,8 +224,8 @@ fn parse_run_app(arguments: &mut impl Iterator<Item = OsString>) -> io::Result<M
             }
             _ => {
                 return Err(invalid(
-                    "--run-app APP_ID [--workspace WORKSPACE] [-- APP ARGUMENTS] starts an \
-                     app this computer has installed; it takes no program",
+                    "--run-app APP_ID [--workspace WORKSPACE] [CAPTURE] starts an app this \
+                     computer has installed; it takes no program",
                 ));
             }
         }
