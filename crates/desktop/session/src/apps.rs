@@ -1046,9 +1046,7 @@ impl Apps {
                     launches.started(kept.pid, &kept.launch.app, &kept.launch.workspace, false);
                     // A kept app the run before started is a launch the daemon decides again for
                     // this run: its connections are vouched for by the ticket it answers.
-                    if let Some(ticket) = launches.adopt(adopted_launch(&kept.launch), kept.pid) {
-                        state.tickets.insert(kept.id, ticket);
-                    }
+                    launches.adopt(adopted_launch(&kept.launch), kept.pid);
                 }
                 state.launched.insert(
                     kept.id,

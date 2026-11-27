@@ -1265,7 +1265,7 @@ mod tests {
                 .start_with(
                     &planned,
                     None,
-                    &|_| Ok(()),
+                    &|_| {},
                     "workspace-1",
                     Some("org.example.Kept"),
                 )

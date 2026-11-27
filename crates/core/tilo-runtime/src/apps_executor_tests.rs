@@ -249,26 +249,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    // Where the person's shell follows the orders, a window the daemon decides for another caller
-    // is the shell's to start even on a daemon of the person's own account: the shell holds the
-    // display and the person's grants, so the window starts with the same grants either way.
-    phase a_window_goes_to_the_shell_that_follows_the_orders;
-    {
-        let (_temp, root) = canonical_temp();
-        let mut store = Store::new(&root);
-        store.install(VIEWER, &manifest(VIEWER, "gui", ""), &[("probe", b"binary")]);
-        let apps = Arc::new(apps(&store, &root, vec![root.join("missing/tilo-launcher")]));
-        let launcher = DeviceLauncher(Arc::clone(&apps));
-        assert!(orders_now(&launcher).is_empty(), "the shell asks, and nothing waits yet");
-        let ticket = apps.launch_asked(&LaunchAsk::package(VIEWER, WORKSPACE)).unwrap();
-        assert!(apps.launched.0.lock().unwrap().is_empty(), "the daemon started nothing");
-        let orders = orders_now(&launcher);
-        assert_eq!(
-            orders.iter().map(|order| order.ticket).collect::<Vec<_>>(),
-            vec![ticket]
-        );
-    }
-
     // What the shell sees become of a launch it started is kept on the daemon's record of it, and
     // its end forgets the launch; a process the shell holds already (a kept app it took back, a
     // window it draws itself) is decided as a launch and bound to it once.

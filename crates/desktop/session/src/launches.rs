@@ -193,23 +193,32 @@ impl Launches {
         on_link(async move { shell.launch(ask).await })?.map_err(|error| error.to_string())
     }
 
-    /// Tell the device's daemon the launch `ticket` it ordered runs as `pid`, held: answered once
-    /// the daemon bound the process to the launch, which may then go on.
-    ///
-    /// # Errors
-    /// The daemon refused the process, did not answer, or the process cannot be pinned.
-    pub(crate) fn report_started(&self, ticket: u64, pid: u32) -> Result<(), String> {
-        let shell = self
-            .shell
-            .get()
-            .cloned()
-            .ok_or("this session has no link to the device's daemon")?;
-        let pinned = tilo_app_launch::kept::pidfd(pid)
-            .ok_or("the started process cannot be pinned, so the daemon cannot know it")?;
-        on_link(async move { shell.started(ticket, pid, pinned).await })?
-            .map_err(|error| error.to_string())?;
+    /// The launch `ticket` the device's daemon ordered runs as `pid`, started now: a connection
+    /// from the process is vouched for with the ticket from now on, and the daemon is told,
+    /// without this session waiting for its answer. It binds the process to the launch it
+    /// recorded, which only its bookkeeping waits on, never the start.
+    pub(crate) fn started_as(&self, ticket: u64, pid: u32) {
         self.tickets.lock_recover().insert(pid, ticket);
-        Ok(())
+        let Some(shell) = self.shell.get().cloned() else {
+            return;
+        };
+        let runtime = match tilo_rt::try_app() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                tracing::error!(ticket, pid, %error, "the daemon is not told of a launch's process");
+                return;
+            }
+        };
+        let Some(pinned) = tilo_app_launch::kept::pidfd(pid) else {
+            // The process ended already: its end is what the daemon hears of it.
+            tracing::warn!(ticket, pid, "a started launch's process cannot be pinned");
+            return;
+        };
+        runtime.spawn(async move {
+            if let Err(error) = shell.started(ticket, pid, pinned).await {
+                tracing::error!(ticket, pid, %error, "the daemon did not record a launch's process");
+            }
+        });
     }
 
     /// Start what the device's daemon orders of this session from now on: each order is a launch
@@ -401,36 +410,43 @@ impl Launches {
     }
 
     /// Have the device's daemon decide the launch `adopt` describes, which the process `pid` this
-    /// session holds already runs (a kept app it took back, a window it draws itself), and bind
-    /// the process to it: its ticket, which a connection from the process is vouched for with.
+    /// session holds already runs (a kept app it took back after a restart in place), and bind
+    /// the process to it: once the daemon answers, a connection from the process is vouched for
+    /// with the launch's ticket. The session's loop never waits for that answer.
     pub(crate) fn adopt(
-        &self,
+        self: &std::sync::Arc<Self>,
         mut adopt: runtime_collab::wire::shell::Adopt,
         pid: u32,
-    ) -> Option<u64> {
-        let shell = self.shell.get().cloned()?;
+    ) {
+        let Some(shell) = self.shell.get().cloned() else {
+            return;
+        };
+        let runtime = match tilo_rt::try_app() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                tracing::warn!(pid, app = %adopt.app, %error, "a kept app is not adopted");
+                return;
+            }
+        };
         let Some(pinned) = tilo_app_launch::kept::pidfd(pid) else {
             tracing::warn!(pid, app = %adopt.app, "a process to adopt cannot be pinned");
-            return None;
+            return;
         };
         adopt.pid = pid;
-        let app = adopt.app.clone();
-        let adopted = on_link(async move { shell.adopt(adopt, pinned).await })
-            .and_then(|adopted| adopted.map_err(|error| error.to_string()));
-        match adopted {
-            Ok(ticket) => {
-                // The session's own process is no launch's: every process it started descends
-                // from it.
-                if pid != std::process::id() {
-                    self.tickets.lock_recover().insert(pid, ticket);
+        let launches = std::sync::Arc::downgrade(self);
+        runtime.spawn(async move {
+            let app = adopt.app.clone();
+            match shell.adopt(adopt, pinned).await {
+                Ok(ticket) => {
+                    if let Some(launches) = launches.upgrade() {
+                        launches.tickets.lock_recover().insert(pid, ticket);
+                    }
                 }
-                Some(ticket)
+                Err(error) => {
+                    tracing::warn!(pid, %app, %error, "the daemon did not adopt a launch");
+                }
             }
-            Err(error) => {
-                tracing::warn!(pid, %app, %error, "the daemon did not adopt a launch");
-                None
-            }
-        }
+        });
     }
 
     /// The daemon's ticket of the launch `pid` is, or descends from: the nearest process at or
@@ -803,26 +819,9 @@ impl Launches {
             // The window's launch is over: its windows went with it.
             return None;
         }
-        // A window this session draws itself, with no launch of its own (a tilolang app's), is a
-        // launch the daemon decides now, run by this session's own process.
-        let ticket = match record.launch {
-            Some(launch) => self.ticket_of(launch),
-            None => self.adopt(
-                runtime_collab::wire::shell::Adopt {
-                    app: app.to_owned(),
-                    workspace: workspace.to_owned(),
-                    kind: runtime_collab::wire::shell::LaunchKind::Package,
-                    window: Some(instance),
-                    windowless: record.no_view,
-                    pid,
-                    process: 0,
-                },
-                pid,
-            ),
-        };
         Some(AuthenticatedApplicationLaunch {
             continuation_instance: Some(instance),
-            launch_ticket: ticket,
+            launch_ticket: record.launch.and_then(|launch| self.ticket_of(launch)),
             windowless: record.no_view,
             opened_for: None,
             opened_with: None,

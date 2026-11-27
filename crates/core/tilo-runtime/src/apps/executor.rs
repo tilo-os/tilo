@@ -60,23 +60,6 @@ impl Executor {
 pub(crate) struct SeatOrders {
     waiting: Mutex<VecDeque<LaunchOrder>>,
     ordered: tokio::sync::Notify,
-    /// How many shells wait for an order now, and when one last stopped waiting: a shell
-    /// follows the orders while it waits, and in the moment between taking some and asking again.
-    following: Mutex<(usize, Option<std::time::Instant>)>,
-}
-
-/// How long after a shell took its orders it is still taken to follow them, while it asks again.
-const FOLLOWING_BETWEEN_ASKS: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// A shell waiting for the seat's orders, for as long as it waits.
-struct Following<'a>(&'a SeatOrders);
-
-impl Drop for Following<'_> {
-    fn drop(&mut self) {
-        let mut following = self.0.following.lock_recover();
-        following.0 = following.0.saturating_sub(1);
-        following.1 = Some(std::time::Instant::now());
-    }
 }
 
 impl SeatOrders {
@@ -86,22 +69,8 @@ impl SeatOrders {
         self.ordered.notify_one();
     }
 
-    /// Whether a seat's shell follows the orders.
-    fn followed(&self) -> bool {
-        let following = self.following.lock_recover();
-        following.0 > 0
-            || following
-                .1
-                .is_some_and(|stopped| stopped.elapsed() < FOLLOWING_BETWEEN_ASKS)
-    }
-
     /// The orders waiting, once there is one.
     pub(crate) async fn take(self: Arc<Self>) -> Vec<LaunchOrder> {
-        {
-            let mut following = self.following.lock_recover();
-            following.0 = following.0.saturating_add(1);
-        }
-        let _following = Following(&self);
         loop {
             let ordered = self.ordered.notified();
             let waiting: Vec<LaunchOrder> = self.waiting.lock_recover().drain(..).collect();
@@ -379,11 +348,10 @@ impl super::Apps {
     /// The launch is refused, or its process could not be started here.
     pub(crate) fn launch_asked(&self, ask: &LaunchAsk) -> Result<u64, String> {
         let ticket = self.decide(ask)?;
-        // A window is the seat's to start wherever a shell follows the orders: it holds the
-        // display and the grants that are the person's alone. Only a daemon of the person's own
-        // account, with no shell following, starts one itself.
+        // A daemon of the device's own account starts no window: the seat's shell holds the
+        // person's display and their grants.
         let ordered = matches!(ask.kind, LaunchKind::Host { .. })
-            || (!ask.windowless && (self.executor == Executor::Seat || self.orders.followed()));
+            || (!ask.windowless && self.executor == Executor::Seat);
         let executed = if ordered {
             self.order(ticket, ask)
                 .map(|order| self.orders.order(order))

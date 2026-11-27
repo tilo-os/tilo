@@ -41,7 +41,7 @@ impl Apps {
         timed: Option<u64>,
         start: impl FnOnce(
             &mut tilo_app_launch::Spawner,
-            &dyn Fn(u32) -> Result<(), String>,
+            &dyn Fn(u32),
         ) -> Result<
             (tilo_app_launch::Started, Option<HeldLink>),
             tilo_app_launch::spawner::SpawnError,
@@ -61,10 +61,10 @@ impl Apps {
             .then(|| timed.unwrap_or_else(|| tilo_startup_metrics::launch_requested(&planned.app)));
         let started = start(&mut state.spawner, &|pid| {
             if let Some(launches) = &launches {
-                // The daemon decided this launch: it binds the process to it before the process
-                // may go on, and refuses one it did not order.
+                // The daemon decided this launch: it is told the process runs, and records it
+                // as the launch's, without this start waiting for that.
                 if let Some(ticket) = planned.ticket {
-                    launches.report_started(ticket, pid)?;
+                    launches.started_as(ticket, pid);
                 }
                 // The launcher starts a package in its sandbox and nothing else there, so a
                 // package is the launch whose files are answered with references.
@@ -77,7 +77,6 @@ impl Apps {
                     }
                 }
             }
-            Ok(())
         });
         let started = match started {
             Ok(started) => started,
