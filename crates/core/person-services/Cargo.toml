@@ -15,7 +15,7 @@ path = "src/lib.rs"
 test-support = ["tilo-workspace-service/test-support", "dep:tilo-test-env", "dep:tilo-surface-compile", "tilo-account-probe/test-support"]
 # A turn of an agent the device runs asks what its workspace keeps for its person: their
 # calendars and the secrets it uses.
-agents = ["tilo-workspace-service/agents", "apps", "device-keys", "dep:tilo-model-gateway", "dep:tilo-environment", "dep:collaboration"]
+agents = ["tilo-workspace-service/agents", "apps", "device-keys", "dep:tilo-model-gateway", "dep:collaboration"]
 # A device serves its apps: Browser's asks for the website sessions a person keeps.
 apps = ["tilo-workspace-service/apps", "dep:browser-continuity-core"]
 # A host carries the sign-ins it kept before the vault over into it.
@@ -66,7 +66,6 @@ workspace-hack = { version = "0.1" }
 russh = { version = "0.65.1", default-features = false, features = ["ring"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
-tilo-environment = { path = "../../vm/environment", optional = true }
 agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }
 settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 tilo-account-probe = { path = "../../integrations/account-probe" }

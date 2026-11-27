@@ -86,7 +86,6 @@ core = [
     "tilo-person-services -> tilo-accounts",
     "tilo-person-services -> tilo-agent-provider-config",
     "tilo-person-services -> tilo-dav",
-    "tilo-person-services -> tilo-environment",
     "tilo-person-services -> tilo-formats",
     "tilo-person-services -> tilo-history",
     "tilo-person-services -> tilo-model-gateway",
