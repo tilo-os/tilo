@@ -1684,7 +1684,7 @@ heavy = true
 
 [[check]]
 name = "real-fuse-mounts"
-run = "# The mount serves callers that switch to other uids, and the kernel only lets a namespace map\n# a uid range it holds a capability for; a nested check has no capability and maps its own uid\n# alone, so switching to another uid fails. The micro-VM runs the check as real root.\nset -eu\ncd crates/core/fs\n/target/vm/tilo-fs-it integration_test:: --nocapture --test-threads=1\n/target/vm/tilo-fs-it cloud_mount:: --nocapture --test-threads=1\n"
+run = "# The mount serves callers that switch to other uids, and the kernel only lets a namespace map\n# a uid range it holds a capability for; a nested check has no capability and maps its own uid\n# alone, so switching to another uid fails. The micro-VM runs the check as real root.\nset -eu\ncd crates/core/fs\n/target/vm/tilo-fs-it integration_test:: --nocapture --test-threads=1\n/target/vm/tilo-fs-it cloud_mount:: --nocapture --test-threads=1\n/target/vm/tilo-fs-it files_mount:: --nocapture --test-threads=1\n"
 env = { TILO_FS_FUSE_REQUIRED = "1", TILO_REQUIRE_FUSE = "1" }
 needs = ["real-fuse-mounts-build"]
 requires = ["arch=x86_64"]
