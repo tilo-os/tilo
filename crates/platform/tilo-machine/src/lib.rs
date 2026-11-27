@@ -117,6 +117,7 @@ pub fn daemon_sockets(uid: u32) -> Result<std::path::PathBuf, String> {
 /// macOS names no temporary directory for this account.
 #[cfg(unix)]
 pub fn account_sockets(uid: u32) -> Result<std::path::PathBuf, String> {
+    #[cfg(not(target_os = "macos"))]
     use std::path::PathBuf;
     #[cfg(target_os = "macos")]
     {

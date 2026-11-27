@@ -481,6 +481,7 @@ impl ScrollRegion {
     }
 
     /// The vertical bar's thumb and track, when it shows.
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn vertical_thumb(&self, theme: &Theme) -> Option<(Rect, Rect)> {
         let track = self.v_track(theme)?;
         self.vbar

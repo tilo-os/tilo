@@ -16,9 +16,8 @@ use objc2_foundation::{NSArray, NSString, NSURL};
 
 use crate::PortalFailure;
 use crate::portal::{
-    FileFilter, LaunchChannel, LaunchKind, LaunchOutcome, LaunchRequest, MultiChannel,
-    OpenFileChannel, OpenFileOutcome, PickKind, PickRequest, PortalChannel, map_uri, map_uris,
-    open_selected_uri,
+    FileFilter, LaunchChannel, LaunchKind, LaunchOutcome, LaunchRequest, MultiChannel, PickKind,
+    PickRequest, PortalChannel, map_uri, map_uris,
 };
 
 pub(crate) struct PanelFilePicker;
@@ -284,6 +283,7 @@ pub(crate) fn open_uri(uri: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::portal::OpenFileOutcome;
 
     #[test]
     fn panels_restrict_to_plain_extensions_or_admit_everything() {

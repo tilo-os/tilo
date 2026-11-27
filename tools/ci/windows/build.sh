@@ -176,6 +176,9 @@ print(paths[0])' "${TMPDIR:-/tmp}/imager-tests.json")"
         PKG_CONFIG_LIBDIR_x86_64_pc_windows_msvc="$gstreamer/lib/pkgconfig" \
         PKG_CONFIG_PATH_x86_64_pc_windows_msvc=
     fi
+    # The SDK an app is written against, with the native runner every app gets by default: an app
+    # host that runs its windows on Windows needs it to compile there.
+    cargo xwin check --locked --keep-going -p tilo-app --target "$target"
     # The unit tests of the platform layer the daemon stands on, for Wine to run:
     # one executable per crate, named by it. First, so a layer that stops compiling
     # is named even while something above it does too.

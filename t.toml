@@ -4195,6 +4195,17 @@ default = false
 arch = ["aarch64", "x86_64"]
 
 [[check]]
+name = "build/macos-sdk-aarch64"
+# The SDK an app is written against, with the native runner every app gets, type-checked for an
+# arm64 Mac on a Linux node: an app host that runs its windows on a Mac needs it to compile there,
+# and no Mac is a build node to keep it so. Zig and the Rust target come from the same pinned
+# setup as cli-macos-cross-aarch64's.
+egress = { to = ["code.tilo.so:443"], pinned = true }
+run = "bash tools/ci/macos-check.sh aarch64-apple-darwin -p tilo-app"
+setup = { run = "bash tools/ci/install-cli-toolchain.sh aarch64-apple-darwin", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
+requires = ["arch=x86_64"]
+
+[[check]]
 name = "cli-release"
 run = "bash tools/ci/publish/cli-release.sh sums /target/publish/cli/release /target/publish/cli/linux-x86_64 /target/publish/cli/linux-aarch64 /target/publish/cli/macos-aarch64 /target/publish/cli/macos-x86_64"
 needs = ["cli-x86_64", "cli-aarch64"]

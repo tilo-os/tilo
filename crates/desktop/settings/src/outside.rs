@@ -291,8 +291,7 @@ impl SettingsSource for Outside {
 /// session is not running yet — the change is kept on the device instead, for the session that
 /// runs next, which reads it as it starts.
 fn run_through_control_socket(resource: &str, action: &str, value: &Value) -> Result<(), String> {
-    let sockets = tilo_control::client::sockets_from_env();
-    if !sockets.iter().any(|socket| socket.path().exists()) {
+    if !control_socket_serves() {
         return set_on_this_device(resource, action, value);
     }
     call(
@@ -300,6 +299,21 @@ fn run_through_control_socket(resource: &str, action: &str, value: &Value) -> Re
         action,
         Map::from_iter([("value".to_owned(), value.clone())]),
     )
+}
+
+/// Whether a socket serves this login's `tilo do`: a session or the device's daemon. A computer
+/// whose daemon serves no control socket keeps the change for its session.
+fn control_socket_serves() -> bool {
+    #[cfg(unix)]
+    {
+        tilo_control::client::sockets_from_env()
+            .iter()
+            .any(|socket| socket.path().exists())
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
 }
 
 /// Run the verb `action` of this device's section `section` with `change` (its one parameter)
