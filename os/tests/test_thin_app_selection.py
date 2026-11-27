@@ -135,7 +135,7 @@ required-features = ["thin"]
 thin = ["dep:runtime-dylib", "dep:tilo-fixture-deep-engine", "tilo-fixture-deep-engine/thin"]
 [dependencies]
 runtime-dylib = { path = "../../../../runtime", optional = true }
-tilo-fixture-deep-engine = { path = "../../engine-parts/fixture-deep", optional = true }
+tilo-fixture-deep-engine = { path = "../../../runtime/engine-parts/fixture-deep", optional = true }
 """)
         self.write("crates/engines/loadable/fixture/src/lib.rs", """#[cfg(feature = "thin")]
 pub fn engine_value() -> usize { runtime_dylib::value() + tilo_fixture_deep_engine::deep_value() + 40 }

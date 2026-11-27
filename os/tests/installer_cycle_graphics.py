@@ -60,20 +60,35 @@ if wait_screen result ready 1 0; then exit 91; fi
     def test_graphics_selection_and_encoder_pin(self):
         with self.subTest(phase="selected_graphics_reaches_every_boot_with_either_tpm_mode"):
             parser = SCRIPT[SCRIPT.index('medium="${1:?'):SCRIPT.index('[ -f "$medium" ]')]
+            # The medium's trust decides whether the installer's preflight needs
+            # the proof argument on its own: a development-unsigned medium does,
+            # while a release medium needs it only for the separately signed
+            # target the caller pins. The fixture medium does not exist, so this
+            # read is the release case.
+            medium_trust = SCRIPT[SCRIPT.index('medium_trust="$(python3'):SCRIPT.index('proof_arg=()')]
             proof_selection = SCRIPT[SCRIPT.index('proof_arg=()'):SCRIPT.index('if [ "$software_tpm" -eq 1 ]; then', SCRIPT.index('proof_arg=()'))]
+            # Every boot passes the selected graphics flag. A boot may name
+            # more after its TPM mode (the one that serves its serial line as a
+            # socket, for instance), so the tail is captured rather than
+            # assumed to end at the proof argument.
             pattern = re.compile(
                 r'if \[ "\$software_tpm" -eq 1 \]; then\n'
-                r'  "\$vm" (boot-(?:installer|target)) "\$display_arg" --tpm( "\$\{proof_arg\[@\]\}")?\n'
+                r'  "\$vm" (boot-(?:installer|target)) "\$display_arg" --tpm( [^\n]*)?\n'
                 r'else\n'
-                r'  "\$vm" \1 "\$display_arg" --no-tpm( "\$\{proof_arg\[@\]\}")?\n'
+                r'  "\$vm" \1 "\$display_arg" --no-tpm( [^\n]*)?\n'
                 r'fi')
             matches = list(pattern.finditer(SCRIPT))
             self.assertEqual([match.group(1) for match in matches],
                              ['boot-installer', 'boot-target', 'boot-target', 'boot-target'])
-            self.assertEqual([(bool(match.group(2)), bool(match.group(3))) for match in matches],
-                             [(True, True), (False, False), (False, False), (False, False)])
+            # Only the installer's boot carries the install proof; only the
+            # first installed boot serves its serial line; the rest name no
+            # further argument.
+            self.assertEqual(
+                [((match.group(2) or '').strip(), (match.group(3) or '').strip()) for match in matches],
+                [('"${proof_arg[@]}"', '"${proof_arg[@]}"'),
+                 ('--serial-socket', '--serial-socket'), ('', ''), ('', '')])
             blocks = [match.group(0) for match in matches]
-            script = ('set -euo pipefail\n' + parser + '\n' + proof_selection
+            script = ('set -euo pipefail\n' + parser + '\n' + medium_trust + '\n' + proof_selection
                       + '\nvm=fixture\nfixture() { printf "%s|%s|%s|%s\\n" "$1" "$2" "$3" "${4:-}"; }\n'
                       + '\n'.join(blocks))
             for graphics, flag in (('gl', '--gl'), ('software', '--2d')):
@@ -92,8 +107,10 @@ if wait_screen result ready 1 0; then exit 91; fi
                         tpm_flag = '--tpm' if tpm else '--no-tpm'
                         proof_flag = '--install-proof' if signed else ''
                         self.assertEqual(result.stdout.splitlines(),
-                            [f'boot-installer|{flag}|{tpm_flag}|{proof_flag}']
-                            + [f'boot-target|{flag}|{tpm_flag}|'] * 3)
+                            [f'boot-installer|{flag}|{tpm_flag}|{proof_flag}',
+                             f'boot-target|{flag}|{tpm_flag}|--serial-socket',
+                             f'boot-target|{flag}|{tpm_flag}|',
+                             f'boot-target|{flag}|{tpm_flag}|'])
             result = subprocess.run(['bash', '-c', script, 'cycle', '/fixture/medium', '--graphics', 'bad'],
                                     text=True, capture_output=True)
             self.assertEqual(result.returncode, 2)
