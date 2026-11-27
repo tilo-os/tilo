@@ -13,9 +13,8 @@ use std::time::Duration;
 use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionCallError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
-    RemoteActionMessage, RemoteActionTarget, WORKSPACE_GOVERNANCE_PROVIDER,
-    workspace_governance_child, workspace_governance_resource,
+    ActionCallError, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage,
+    RemoteActionTarget,
 };
 use tilo_peer_state::actions::RemoteDevice;
 use tilo_peer_state::members::MembershipOpCommand;
@@ -448,35 +447,6 @@ async fn ask(actions: &RemoteDevice, message: RemoteActionMessage) -> RemoteActi
         .expect("the holder answers the request")
 }
 
-/// The ids of the actions the holder offers on `workspace`'s resource
-/// `child` of its governance tree: what a path such as `workspace/servers`
-/// is found among.
-async fn offered(actions: &RemoteDevice, workspace: &WorkspaceSummary, child: &str) -> Vec<String> {
-    let RemoteActionMessage::CatalogueResponse { result, .. } = ask(
-        actions,
-        RemoteActionMessage::CatalogueRequest {
-            correlation: 1,
-            query: CatalogueQuery {
-                provider: Some(WORKSPACE_GOVERNANCE_PROVIDER.into()),
-                parent_resource: Some(workspace_governance_resource(&workspace.workspace)),
-                ..CatalogueQuery::default()
-            },
-        },
-    )
-    .await
-    else {
-        panic!("a catalogue request is answered with a page");
-    };
-    let resource = workspace_governance_child(&workspace.workspace, Some(child));
-    result
-        .unwrap()
-        .rows
-        .into_iter()
-        .filter(|row| row.resource.id == resource)
-        .filter_map(|row| row.action.map(|action| action.address.action))
-        .collect()
-}
-
 /// What the holder answers `action` of `workspace`'s governance with `argument`.
 async fn govern(
     actions: &RemoteDevice,
@@ -510,21 +480,18 @@ async fn govern(
 }
 
 /// A workspace never stays stuck on a server that is gone. Two servers of an
-/// operator keep a workspace for Alice: the first made it as an earlier build
-/// did, owning it itself under a grant that names her the person it keeps it
-/// for, and handed it to the second. The first then stops for good. Alice,
-/// through a key of hers that reached the workspace on the second server,
-/// lists its servers there, which makes the workspace hers, and from her
-/// computer, which keeps her root, takes the stopped one out; the second then
-/// is the only server left and makes its base, and her computer still keeps
-/// its own copy.
+/// operator keep a workspace for Alice: the first made it for her and handed
+/// it to the second. The first then stops for good. A key of hers that reached
+/// the workspace on the second server administers nothing: it neither lists
+/// its servers nor takes one out. Her computer, which keeps her root, lists
+/// them and takes the stopped one out; the second then is the only server left
+/// and makes its base, and her computer still keeps its own copy.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(
     clippy::too_many_lines,
-    reason = "one story: the old build's grant, the hand-over, the stop and the owner's take-out"
+    reason = "one story: the hand-over, the stop, the key's refusals and the owner's take-out"
 )]
 async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
-    use tilo_action_policy::{Answer, Grant, GrantId, Grantee, KindSet, Lifetime, roles};
     use tilo_test_env::within;
     let operator = TestUser::fresh("Operator");
     let old = operator.enrol("old", DeviceCapabilities::member());
@@ -534,25 +501,12 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     let laptop = alice.enrol("laptop", DeviceCapabilities::primary());
     let made_on = serve_on(&operator, &old, WorkSetting::own_person()).await;
     let remains = serve_on(&operator, &main, WorkSetting::own_person()).await;
-    let workspace = made_on.host.workspaces().create("Notes").await.unwrap();
-    // The grant an earlier build wrote to name the person it kept a
-    // workspace for while its host owned it, as it wrote it.
-    let kept_for = Grant {
-        id: GrantId(format!(
-            "workspace-keeper-v1:{}",
-            hex::encode(alice.user_pk)
-        )),
-        grantee: Grantee::person(hex::encode(alice.user_pk)),
-        node: roles::administrators_node(&workspace.workspace),
-        kinds: KindSet::UNDOABLE.union(KindSet::OUTSIDE),
-        answer: Answer::Allow,
-        lifetime: Lifetime::UntilRevoked,
-        granted_by: Grantee::person(hex::encode(operator.user_pk)),
-    };
-    made_on
+    // The operator's server makes the workspace for Alice: it is hers from the step that makes
+    // it, and the server stays in it as one of its administrators.
+    let workspace = made_on
         .host
         .workspaces()
-        .put_workspace_grants(&workspace.workspace, &old.cert, [5; 32], vec![kept_for])
+        .create_for("Notes", None, alice.user_pk)
         .await
         .unwrap();
     within(
@@ -607,31 +561,27 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
         hex::encode(main.device_pubkey()),
         hex::encode(laptop.device_pubkey()),
     );
-    // The workspace is still the server's, kept for Alice: its servers are
-    // offered to her all the same, at the path she finds them by, or she
-    // never reaches the choice that makes it hers.
-    let servers = offered(&key_link.actions, &workspace, "servers").await;
-    for action in ["list", "remove"] {
-        assert!(
-            servers.iter().any(|offered| offered == action),
-            "the person it is kept for is offered workspace/servers#{action}: {servers:?}"
-        );
-    }
+    // Her key administers nothing: it
+    // neither lists the workspace's servers nor takes one out.
     let listed = govern(
         &key_link.actions,
         &workspace,
         "server.list",
         serde_json::json!({}),
     )
-    .await
-    .expect("the owner's key lists the workspace's servers");
-    assert!(listed.to_string().contains(&old_key), "{listed}");
+    .await;
     assert!(
-        workspaces
-            .is_owner(&workspace.workspace, alice.user_pk)
-            .await,
-        "choosing its servers, the person it is kept for owns it"
+        listed.is_err(),
+        "the key lists the workspace's servers: {listed:?}"
     );
+    let removed = govern(
+        &key_link.actions,
+        &workspace,
+        "server.remove",
+        serde_json::json!({ "server": old_key }),
+    )
+    .await;
+    assert!(removed.is_err(), "the key takes a server out: {removed:?}");
     // She takes the stopped server out from her computer, which keeps her root: which servers
     // keep a workspace is changed under its key alone, never a server's. It comes into the
     // workspace on the remaining server as a further device of hers, by the certificate her root
@@ -663,6 +613,31 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
     )
     .await
     .expect("the remaining server admits her computer");
+    // Her computer lists the servers and takes the stopped one out.
+    let laptop_link = within("the remaining server links her computer", async {
+        loop {
+            match Linked::open_hosted(&remains, &laptop, workspace.workspace_id).await {
+                Ok(linked) => break linked,
+                Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+            }
+        }
+    })
+    .await;
+    let listed = govern(
+        &laptop_link.actions,
+        &workspace,
+        "server.list",
+        serde_json::json!({}),
+    )
+    .await
+    .expect("her computer lists the workspace's servers");
+    assert!(listed.to_string().contains(&old_key), "{listed}");
+    assert!(
+        workspaces
+            .is_owner(&workspace.workspace, alice.user_pk)
+            .await,
+        "the workspace made for her is hers"
+    );
     let removed = crate::common::servers_action(
         &own,
         &laptop,
@@ -709,6 +684,7 @@ async fn the_owner_takes_a_stopped_server_out_through_the_one_that_remains() {
         )),
         "and nothing falls short about it: {status:?}"
     );
+    drop(laptop_link);
     drop(own);
     laptop_service.shutdown().await;
     drop(key_link);

@@ -1415,19 +1415,12 @@ impl Workspaces {
     }
 
     /// Whether `caller` chooses which hosts serve `hosted`: a device of the
-    /// workspace's owner, who decides where it lives; or that person's server key, which
-    /// acts for them from a script or a command. Never an agent's grant, and
-    /// never a device for being of the person whose host this is: every
-    /// holder answers it alike.
+    /// workspace's owner, who decides where it lives. Never a key, a person's
+    /// server key included: a key acts within the workspace and administers
+    /// nothing, as an agent's grant does. Never a device for being of the
+    /// person whose host this is either: every holder answers it alike.
     pub(super) fn chooses_servers(hosted: &HostedWorkspace, caller: &DeviceCert) -> bool {
-        Self::speaks_for_person(hosted, caller) && caller.user_public_key == hosted.peer().owner()
-    }
-
-    /// Whether `caller` speaks for its person in `hosted`: a device of theirs, or their
-    /// server key there, never an agent's grant.
-    pub(super) fn speaks_for_person(hosted: &HostedWorkspace, caller: &DeviceCert) -> bool {
-        caller.capabilities.agent.is_none()
-            || caller.capabilities.own_key_in(hosted.peer().workspace_id())
+        caller.capabilities.agent.is_none() && caller.user_public_key == hosted.peer().owner()
     }
 
     /// The servers keeping `workspace`, as its governance names them: this
