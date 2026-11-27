@@ -2015,44 +2015,13 @@ pub trait Store {
         Ok(NextChange::Unknown)
     }
 
-    /// The resources linked to `at`: those an action made from it, those whose rich text
-    /// mentions it, and those holding a reference to it in a field, each once per way, ordered
-    /// by the way and then by the resource's id. A store with an index answers it from a
-    /// reverse list it keeps per resource, so its cost is what is linked to the resource, not
-    /// what the workspace holds; a view reading it is told when it changes
-    /// ([`LINKS`]).
-    ///
-    /// # Errors
-    ///
-    /// A store that cannot answer it.
-    fn linked(&self, at: &ResourceRef) -> Result<Vec<Link>, StoreError> {
-        let _ = at;
-        Err(StoreError::Invalid(
-            "this store answers no query of what links to a resource".into(),
-        ))
-    }
-
-    /// What of the type `ty` links to the resource `at`: [`Self::linked`]'s links whose resource
-    /// is of `ty`, in its order. A store with an index asks it of `ty`'s resources alone, so
-    /// what a row draws of the suggestions waiting on its resource costs the suggestions, not
-    /// every type that could link to it.
-    ///
-    /// # Errors
-    ///
-    /// A store that cannot answer it.
-    fn linked_by(&self, at: &ResourceRef, ty: &str) -> Result<Vec<Link>, StoreError> {
-        Ok(self
-            .linked(at)?
-            .into_iter()
-            .filter(|link| link.of.ty == ty)
-            .collect())
-    }
-
-    /// What links to each of `ats`, in their order, each as [`Self::linked`] answers it, or of
-    /// the type `only` names when it names one: what a list of rows reads to draw what waits on
-    /// each, asked once for the page. A store that reads a page of the index and what was made
-    /// from the page answers it in one read however many resources it holds; this reads each
-    /// resource alone.
+    /// What links to each of `ats`, in their order, of the type `only` names when it names one:
+    /// what a list of rows reads to draw what waits on each, asked once for the page. Those are
+    /// what an action made from a resource, what its rich text mentions, and what holds a
+    /// reference to it in a field, each once per way, ordered by the way and then by the
+    /// resource's id. A store with an index answers it from a reverse list it keeps per
+    /// resource, so its cost is what is linked to the resources, not what the workspace holds; a
+    /// view reading it is told when it changes ([`LINKS`]).
     ///
     /// # Errors
     ///
@@ -2062,12 +2031,36 @@ pub trait Store {
         ats: &[ResourceRef],
         only: Option<&str>,
     ) -> Result<Vec<Vec<Link>>, StoreError> {
-        ats.iter()
-            .map(|at| match only {
-                Some(ty) => self.linked_by(at, ty),
-                None => self.linked(at),
-            })
-            .collect()
+        let _ = (ats, only);
+        Err(StoreError::Invalid(
+            "this store answers no query of what links to a resource".into(),
+        ))
+    }
+
+    /// What links to the resource `at`, each once per way: [`Self::linked_many`] of the one
+    /// resource.
+    ///
+    /// # Errors
+    ///
+    /// A store that cannot answer it.
+    fn linked(&self, at: &ResourceRef) -> Result<Vec<Link>, StoreError> {
+        Ok(self
+            .linked_many(std::slice::from_ref(at), None)?
+            .pop()
+            .unwrap_or_default())
+    }
+
+    /// What of the type `ty` links to the resource `at`: [`Self::linked_many`] of the one
+    /// resource, of that type alone.
+    ///
+    /// # Errors
+    ///
+    /// A store that cannot answer it.
+    fn linked_by(&self, at: &ResourceRef, ty: &str) -> Result<Vec<Link>, StoreError> {
+        Ok(self
+            .linked_many(std::slice::from_ref(at), Some(ty))?
+            .pop()
+            .unwrap_or_default())
     }
 
     /// The notes of a document's changes, oldest first.

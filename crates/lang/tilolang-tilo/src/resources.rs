@@ -826,6 +826,26 @@ impl ResourceStore {
         })
     }
 
+    /// The value the field `field` of `at` held as `look` read it: what [`Store::read_before`]
+    /// and its `read_at` answer, of the state each read.
+    fn read_look(
+        &self,
+        at: &ResourceRef,
+        field: &FieldSpec,
+        look: &Look,
+    ) -> Result<FieldValue, StoreError> {
+        let entry = self.field(&at.ty, &field.id);
+        let name = entry
+            .as_ref()
+            .map_or_else(|| field.id.clone(), |entry| entry.name.clone());
+        let cell = look
+            .indexed
+            .as_ref()
+            .and_then(|held| held.fields.get(&name));
+        let json = look.content.as_ref().and_then(|content| content.get(&name));
+        self.value_from(field, entry.as_ref(), cell, json)
+    }
+
     /// Whether `other` is this store: one handle of the same resources.
     #[must_use]
     pub fn same(&self, other: &Self) -> bool {
@@ -1505,60 +1525,6 @@ impl ResourceStore {
         let mut seen = BTreeSet::new();
         ids.retain(|id| seen.insert(id.clone()));
         Ok(ids)
-    }
-
-    /// What links to `at`, of the type `only` names when it names one: what
-    /// [`tilolang_runtime::store::Store::linked`] and its `linked_by` answer, asking only the
-    /// types it may find.
-    fn links_to(&self, at: &ResourceRef, only: Option<&str>) -> Result<Vec<Link>, StoreError> {
-        Ok(self
-            .links_to_many(std::slice::from_ref(at), only)?
-            .pop()
-            .unwrap_or_default())
-    }
-
-    /// What links to each of `ats`, in their order, of the type `only` names when it names one:
-    /// one read of the index and one read of what was made from them, answered for the page,
-    /// where [`Self::links_to`] asks each resource alone. What a list of rows reads to draw what
-    /// waits on each of them costs the page, not a pair of commands a row.
-    fn links_to_many(
-        &self,
-        ats: &[ResourceRef],
-        only: Option<&str>,
-    ) -> Result<Vec<Vec<Link>>, StoreError> {
-        let ats: Vec<ResourceRef> = ats.iter().map(|at| (*self.typed(at)).clone()).collect();
-        let mut links: Vec<Vec<Link>> = vec![Vec::new(); ats.len()];
-        // The resources asked for, by type: the types that may link to them are found once for
-        // each type rather than once for each resource. Each is named with its place in `links`.
-        let mut groups: BTreeMap<TypeId, Vec<(usize, ResourceRef)>> = BTreeMap::new();
-        for (index, at) in ats.iter().enumerate() {
-            groups
-                .entry(at.ty.clone())
-                .or_default()
-                .push((index, at.clone()));
-        }
-        for (ty, asked) in groups {
-            let Some(target) = self.inner.kinds.borrow().get(&ty).cloned() else {
-                continue;
-            };
-            self.links_by_field(&asked, &target, only, &mut links)?;
-            self.links_made_from(&asked, only, &mut links)?;
-            self.links_by_mention(&asked, only, &mut links)?;
-        }
-        // What was made from a resource stays in the order it was made, oldest first, as the
-        // store answers it; the other links order by the resource's id.
-        for links in &mut links {
-            links.sort_by(|a, b| {
-                a.how.rank().cmp(&b.how.rank()).then_with(|| {
-                    if a.how == LinkHow::CreatedFrom {
-                        std::cmp::Ordering::Equal
-                    } else {
-                        a.of.id_string().cmp(&b.of.id_string())
-                    }
-                })
-            });
-        }
-        Ok(links)
     }
 
     /// What the fields naming one of the asked resources link to them: one page of the index for
@@ -6088,20 +6054,44 @@ impl Store for ResourceStore {
         Ok(next.map_or(NextChange::Never, NextChange::At))
     }
 
-    fn linked(&self, at: &ResourceRef) -> Result<Vec<Link>, StoreError> {
-        self.links_to(at, None)
-    }
-
-    fn linked_by(&self, at: &ResourceRef, ty: &str) -> Result<Vec<Link>, StoreError> {
-        self.links_to(at, Some(ty))
-    }
-
     fn linked_many(
         &self,
         ats: &[ResourceRef],
         only: Option<&str>,
     ) -> Result<Vec<Vec<Link>>, StoreError> {
-        self.links_to_many(ats, only)
+        let ats: Vec<ResourceRef> = ats.iter().map(|at| (*self.typed(at)).clone()).collect();
+        let mut links: Vec<Vec<Link>> = vec![Vec::new(); ats.len()];
+        // The resources asked for, by type: the types that may link to them are found once for
+        // each type rather than once for each resource. Each is named with its place in `links`.
+        let mut groups: BTreeMap<TypeId, Vec<(usize, ResourceRef)>> = BTreeMap::new();
+        for (index, at) in ats.iter().enumerate() {
+            groups
+                .entry(at.ty.clone())
+                .or_default()
+                .push((index, at.clone()));
+        }
+        for (ty, asked) in groups {
+            let Some(target) = self.inner.kinds.borrow().get(&ty).cloned() else {
+                continue;
+            };
+            self.links_by_field(&asked, &target, only, &mut links)?;
+            self.links_made_from(&asked, only, &mut links)?;
+            self.links_by_mention(&asked, only, &mut links)?;
+        }
+        // What was made from a resource stays in the order it was made, oldest first, as the
+        // store answers it; the other links order by the resource's id.
+        for links in &mut links {
+            links.sort_by(|a, b| {
+                a.how.rank().cmp(&b.how.rank()).then_with(|| {
+                    if a.how == LinkHow::CreatedFrom {
+                        std::cmp::Ordering::Equal
+                    } else {
+                        a.of.id_string().cmp(&b.of.id_string())
+                    }
+                })
+            });
+        }
+        Ok(links)
     }
 
     fn history(&self, doc: &DocId) -> Result<Vec<ChangeNote>, StoreError> {
@@ -6323,19 +6313,7 @@ impl Store for ResourceStore {
     ) -> Result<FieldValue, StoreError> {
         let at = &*self.typed(at);
         let before = self.at_change(at, change, false)?;
-        let entry = self.field(&at.ty, &field.id);
-        let name = entry
-            .as_ref()
-            .map_or_else(|| field.id.clone(), |entry| entry.name.clone());
-        let cell = before
-            .indexed
-            .as_ref()
-            .and_then(|held| held.fields.get(&name));
-        let json = before
-            .content
-            .as_ref()
-            .and_then(|content| content.get(&name));
-        self.value_from(field, entry.as_ref(), cell, json)
+        self.read_look(at, field, &before)
     }
 
     fn read_at(
@@ -6349,19 +6327,7 @@ impl Store for ResourceStore {
             return Ok(FieldValue::Items(self.children_at(at, &field.id, change)?));
         }
         let at_version = self.at_change(at, change, true)?;
-        let entry = self.field(&at.ty, &field.id);
-        let name = entry
-            .as_ref()
-            .map_or_else(|| field.id.clone(), |entry| entry.name.clone());
-        let cell = at_version
-            .indexed
-            .as_ref()
-            .and_then(|held| held.fields.get(&name));
-        let json = at_version
-            .content
-            .as_ref()
-            .and_then(|content| content.get(&name));
-        self.value_from(field, entry.as_ref(), cell, json)
+        self.read_look(at, field, &at_version)
     }
 
     fn written(

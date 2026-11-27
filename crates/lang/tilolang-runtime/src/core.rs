@@ -524,10 +524,12 @@ impl Core {
             }
         }
         let Some(ats) = page_ats else {
-            return match only {
-                Some(ty) => self.store.borrow().linked_by(at, ty),
-                None => self.store.borrow().linked(at),
-            };
+            return Ok(self
+                .store
+                .borrow()
+                .linked_many(std::slice::from_ref(at), only)?
+                .pop()
+                .unwrap_or_default());
         };
         let read = self.store.borrow().linked_many(&ats, only)?;
         let answered: std::collections::HashMap<String, Vec<crate::store::Link>> = ats

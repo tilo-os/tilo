@@ -1943,12 +1943,6 @@ impl Store {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (held, readers) = self.placed(kind, id)?;
-        let order = |version: &collab_types::history::Version| {
-            (
-                version.stamp.as_ref().map_or(0, |stamp| stamp.moment),
-                version.op,
-            )
-        };
         let mut ends: Vec<collab_types::history::Version> = Vec::new();
         let content = content_id(&readers, kind, id);
         for doc_id in [&held, &content] {
@@ -1960,7 +1954,7 @@ impl Store {
                 let own = read.versions_of(id).map(Vec::as_slice).unwrap_or_default();
                 ends.extend(
                     if last {
-                        own.iter().max_by_key(|version| order(version))
+                        own.iter().max_by_key(|version| version.order())
                     } else {
                         own.first()
                     }
@@ -1986,12 +1980,13 @@ impl Store {
         // in its order, so the same one ends it.
         // The first is its making, whatever its content's document numbers that change.
         let mut end = if last {
-            ends.into_iter().max_by_key(order)
+            ends.into_iter()
+                .max_by_key(collab_types::history::Version::order)
         } else {
             ends.into_iter().min_by_key(|version| {
                 (
                     version.kind != collab_types::history::VersionKind::Made,
-                    order(version),
+                    version.order(),
                 )
             })
         }?;
@@ -2043,12 +2038,7 @@ impl Store {
         }
         // Each document's changes in its own order, and the documents' interleaved by when their
         // writer wrote them.
-        versions.sort_by_key(|version| {
-            (
-                version.stamp.as_ref().map_or(0, |stamp| stamp.moment),
-                version.op,
-            )
-        });
+        versions.sort_by_key(collab_types::history::Version::order);
         // Where a removed resource stood, which its removal says.
         if let Some(removed) = self.removed.get(&(kind.to_owned(), id.to_owned()))
             && let Some(last) = versions
@@ -2062,8 +2052,8 @@ impl Store {
     }
 
     /// The resource's versions, including documents evicted or indexed from snapshots: each is
-    /// read back from the source first. The caller checks the resource's readers before asking
-    /// for its history.
+    /// read back from the source first. With `end`, only the first version, or the last with
+    /// `true`. The caller checks the resource's readers before asking for its history.
     ///
     /// # Errors
     /// A saved document does not decode.
@@ -2071,9 +2061,13 @@ impl Store {
         &mut self,
         kind: &str,
         id: &str,
+        end: Option<bool>,
     ) -> Result<Vec<collab_types::history::Version>, StoreError> {
         self.read_back_history(kind, id)?;
-        Ok(self.versions(kind, id))
+        Ok(match end {
+            Some(last) => self.version_end(kind, id, last).into_iter().collect(),
+            None => self.versions(kind, id),
+        })
     }
 
     /// Reads back from the source each document the history of the resource `id` of `kind` is
@@ -2089,21 +2083,6 @@ impl Store {
             self.existing(&doc)?;
         }
         Ok(())
-    }
-
-    /// [`Self::version_end`], with documents evicted or indexed from snapshots read back first,
-    /// as [`Self::read_versions`] does.
-    ///
-    /// # Errors
-    /// A saved document does not decode.
-    pub fn read_version_end(
-        &mut self,
-        kind: &str,
-        id: &str,
-        last: bool,
-    ) -> Result<Option<collab_types::history::Version>, StoreError> {
-        self.read_back_history(kind, id)?;
-        Ok(self.version_end(kind, id, last))
     }
 
     /// The newest version of each resource `within` names (it, and every resource whose id is
@@ -2124,12 +2103,6 @@ impl Store {
     ) -> (Vec<(String, String, collab_types::history::Version)>, bool) {
         let prefix = format!("{within}/");
         let under = |id: &str| id == within || id.starts_with(&prefix);
-        let order = |version: &collab_types::history::Version| {
-            (
-                version.stamp.as_ref().map_or(0, |stamp| stamp.moment),
-                version.op,
-            )
-        };
         let mut newest: Vec<(String, String, collab_types::history::Version)> = Vec::new();
         let mut touches = self
             .touches
@@ -2156,7 +2129,9 @@ impl Store {
                     let read = touches.entry(doc.to_owned()).or_default();
                     read.read(held, doc);
                     if let Some(version) = read.versions_of(within).and_then(|all| all.last())
-                        && last.as_ref().is_none_or(|was| order(was) <= order(version))
+                        && last
+                            .as_ref()
+                            .is_none_or(|was| was.order() <= version.order())
                     {
                         last = Some(version.clone());
                     }
@@ -2305,7 +2280,7 @@ impl Store {
                     .readers_of(kind, id)
                     .is_some_and(|readers| may_read(&readers))
         });
-        newest.sort_by_key(|(_, _, version)| std::cmp::Reverse(order(version)));
+        newest.sort_by_key(|(_, _, version)| std::cmp::Reverse(version.order()));
         let more = newest.len() > limit;
         newest.truncate(limit);
         (newest, more)
@@ -2380,35 +2355,56 @@ impl Store {
         out
     }
 
+    /// Every resource made by a change stamped as made from each of `ids` ([`Stamp::from`]),
+    /// by kind and id, in their order: what was made from each, wherever it was placed. A
+    /// single resource is a list of one.
+    #[must_use]
+    pub fn made_from_many(&self, ids: &[String]) -> Vec<Vec<(String, String)>> {
+        let mut docs: BTreeSet<String> = BTreeSet::new();
+        for id in ids {
+            docs.extend(self.made_from.get(id).into_iter().flatten().cloned());
+        }
+        // One walk over the documents, each read once however many of `ids` it answers.
+        let stamped = self.stamped(Some(&docs), &|stamp| {
+            stamp
+                .from
+                .as_ref()
+                .is_some_and(|from| ids.contains(&from.id))
+        });
+        ids.iter()
+            .map(|id| {
+                let mut made: Vec<&(String, String, collab_types::history::Version)> = stamped
+                    .iter()
+                    .filter(|(_, _, version)| {
+                        version.kind == collab_types::history::VersionKind::Made
+                            && version
+                                .stamp
+                                .as_ref()
+                                .and_then(|stamp| stamp.from.as_ref())
+                                .is_some_and(|from| from.id == *id)
+                    })
+                    .collect();
+                // In the order they were made, each once: by the time their writer recorded,
+                // then their change's order in its document. Each carries a stamp.
+                made.sort_by_key(|(_, _, v)| (v.stamp.as_ref().map(|s| s.at.clone()), v.op));
+                let mut out: Vec<(String, String)> = Vec::with_capacity(made.len());
+                for (kind, id, _) in made {
+                    if !out.iter().any(|(_, held)| held == id) {
+                        out.push((kind.clone(), id.clone()));
+                    }
+                }
+                out
+            })
+            .collect()
+    }
+
     /// Every resource made by a change stamped as made from the resource `id`
     /// ([`Stamp::from`]), by kind and id: what was made from it, wherever it was placed.
     #[must_use]
     pub fn made_from(&self, id: &str) -> Vec<(String, String)> {
-        let mut made: Vec<(String, String, collab_types::history::Version)> = self
-            .stamped(self.made_from.get(id), &|stamp| {
-                stamp.from.as_ref().is_some_and(|from| from.id == id)
-            })
-            .into_iter()
-            .filter(|(_, _, version)| version.kind == collab_types::history::VersionKind::Made)
-            .collect();
-        // In the order they were made.
-        made.sort_by(|(_, _, a), (_, _, b)| {
-            let at = |version: &collab_types::history::Version| {
-                version
-                    .stamp
-                    .as_ref()
-                    .map(|stamp| stamp.at.clone())
-                    .unwrap_or_default()
-            };
-            at(a).cmp(&at(b)).then(a.op.cmp(&b.op))
-        });
-        let mut out: Vec<(String, String)> = Vec::with_capacity(made.len());
-        for (kind, id, _) in made {
-            if !out.iter().any(|(_, held)| *held == id) {
-                out.push((kind, id));
-            }
-        }
-        out
+        self.made_from_many(&[id.to_owned()])
+            .pop()
+            .unwrap_or_default()
     }
 
     /// The versions the changes stamped as `stamped` admits made, of every resource they

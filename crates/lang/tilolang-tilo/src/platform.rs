@@ -226,34 +226,31 @@ const WORKSPACE_ROOTS: &[(&str, &str, &str)] = &[
     ("access", "Access", WORKSPACE_ACCESS),
 ];
 
+/// The resource a workspace root is read as, of the type its package reads it as.
+fn workspace_resource(doc: &str, ty: &str) -> crate::runtime::ResourceRef {
+    crate::runtime::ResourceRef {
+        doc: doc.to_owned(),
+        item: None,
+        ty: format!("{WORKSPACE_APP}#{ty}"),
+    }
+}
+
 /// The resource the workspace's members are read as, of the type its package reads it as.
 #[must_use]
 pub fn workspace_members() -> crate::runtime::ResourceRef {
-    crate::runtime::ResourceRef {
-        doc: WORKSPACE_MEMBERS.to_owned(),
-        item: None,
-        ty: format!("{WORKSPACE_APP}#Members"),
-    }
+    workspace_resource(WORKSPACE_MEMBERS, "Members")
 }
 
 /// The resource the workspace's grants are read as, of the type its package reads it as.
 #[must_use]
 pub fn workspace_access() -> crate::runtime::ResourceRef {
-    crate::runtime::ResourceRef {
-        doc: WORKSPACE_ACCESS.to_owned(),
-        item: None,
-        ty: format!("{WORKSPACE_APP}#Access"),
-    }
+    workspace_resource(WORKSPACE_ACCESS, "Access")
 }
 
 /// The resource the workspace's content is read as, of the type its package reads it as.
 #[must_use]
 pub fn workspace_content() -> crate::runtime::ResourceRef {
-    crate::runtime::ResourceRef {
-        doc: WORKSPACE_CONTENT.to_owned(),
-        item: None,
-        ty: format!("{WORKSPACE_APP}#Content"),
-    }
+    workspace_resource(WORKSPACE_CONTENT, "Content")
 }
 
 /// The MCP server's root, the one resource every grant and every verb of it is on.

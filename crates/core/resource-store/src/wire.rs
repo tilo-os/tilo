@@ -216,30 +216,9 @@ fn write_into(
                 write_into(store, command, written)?;
             }
         }
-        Command::Get { .. }
-        | Command::Query(_)
-        | Command::Count { .. }
-        | Command::Content { .. }
-        | Command::Newest { .. }
-        | Command::Positions { .. }
-        | Command::PageAt { .. }
-        | Command::Versions { .. }
-        | Command::VersionEnd { .. }
-        | Command::At { .. }
-        | Command::Grouped { .. }
-        | Command::Removed { .. }
-        | Command::MadeFrom { .. }
-        | Command::Contents { .. }
-        | Command::Fields { .. }
-        | Command::Values { .. }
-        | Command::ChildrenAt { .. }
-        | Command::Turn { .. }
-        | Command::Reach { .. }
-        | Command::RecordChanges { .. }
-        | Command::RecordChange { .. }
-        | Command::ReviewRestore { .. }
-        | Command::Steps { .. }
-        | Command::Records => return Err(StoreError::NotAWrite),
+        // Every other command makes no store write: the store's `read` answers the reads among
+        // them, and its host answers the rest.
+        _ => return Err(StoreError::NotAWrite),
     }
     Ok(())
 }
@@ -277,19 +256,11 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
             field,
         } => Reply::Values(store.values(kind, filters, field, may_read)),
         Command::Content { kind, id } => Reply::Content(
-            store
-                .get(kind, id, may_read)
-                .and_then(|_| store.content_json(kind, id)),
+            contents(store, kind, std::slice::from_ref(id), may_read)
+                .pop()
+                .flatten(),
         ),
-        Command::Contents { kind, ids } => Reply::Contents(
-            ids.iter()
-                .map(|id| {
-                    store
-                        .get(kind, id, may_read)
-                        .and_then(|_| store.content_json(kind, id))
-                })
-                .collect(),
-        ),
+        Command::Contents { kind, ids } => Reply::Contents(contents(store, kind, ids, may_read)),
         // A resource's history stays readable after its removal, by whoever could read it.
         Command::Versions { kind, id } => Reply::Versions(
             store
@@ -330,7 +301,11 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
             // a window reads the page whenever it draws. The call's signature stays; a reader
             // after the argument reads the resource's own versions.
             for (_, _, version) in &mut versions {
-                if let Some(call) = version.stamp.as_mut().and_then(|stamp| stamp.signed.as_mut()) {
+                if let Some(call) = version
+                    .stamp
+                    .as_mut()
+                    .and_then(|stamp| stamp.signed.as_mut())
+                {
                     call.argument = None;
                 }
             }
@@ -357,21 +332,9 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
                 .review_restore_held(&readable(store, resources, may_read), change)
                 .map_err(|error| error.to_string()),
         ),
-        Command::Put { .. }
-        | Command::Remove { .. }
-        | Command::Undo { .. }
-        | Command::Edit { .. }
-        | Command::Batch(_)
-        | Command::Turn { .. }
-        | Command::RecordChanges { .. }
-        | Command::RecordChange { .. }
-        | Command::Checkpoint { .. }
-        | Command::Restore { .. }
-        | Command::UndoMany { .. }
-        // A read of the caller's last steps that reads the documents' change graph, which only
-        // [`steps`] can do: a store that reads without it cannot answer.
-        | Command::Steps { .. }
-        | Command::Records => return None,
+        // Every other command makes no store write, or reads a change graph that only its host
+        // can: a store answers no read of it.
+        _ => return None,
     })
 }
 
@@ -379,16 +342,33 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
 /// answer [`Command::MadeFrom`] reads.
 fn made_from_reply(store: &Store, ids: &[String], may_read: &dyn Fn(&str) -> bool) -> Reply {
     Reply::MadeFrom(
-        ids.iter()
-            .map(|id| {
-                store
-                    .made_from(id)
-                    .into_iter()
+        store
+            .made_from_many(ids)
+            .into_iter()
+            .map(|made| {
+                made.into_iter()
                     .filter(|(kind, id)| store.get(kind, id, may_read).is_some())
                     .collect()
             })
             .collect(),
     )
+}
+
+/// The content of each of `ids` of `kind`, in their order, of only the resources `may_read`
+/// admits: each as [`Reply::Content`] answers one.
+fn contents(
+    store: &Store,
+    kind: &str,
+    ids: &[String],
+    may_read: &dyn Fn(&str) -> bool,
+) -> Vec<Option<Json>> {
+    ids.iter()
+        .map(|id| {
+            store
+                .get(kind, id, may_read)
+                .and_then(|_| store.content_json(kind, id))
+        })
+        .collect()
 }
 
 /// The page `query` finds, each resource cut down to `fields`.

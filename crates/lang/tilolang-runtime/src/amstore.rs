@@ -126,6 +126,28 @@ impl AmStore {
         }
     }
 
+    /// The document as it stood just before the change `change`, or just after it with `after`:
+    /// what [`Store::read_before`] and [`Store::read_at`] read a field from.
+    fn side(&self, at: &ResourceRef, change: &str, after: bool) -> Result<AutoCommit, StoreError> {
+        let inner = self.inner.borrow();
+        let doc = inner.doc(&at.doc)?;
+        let committed = doc.committed_document();
+        let changes = committed.get_changes(&[]);
+        let n: usize = change
+            .parse()
+            .map_err(|_| not_found(format!("change {change}")))?;
+        let made = changes
+            .get(n)
+            .ok_or_else(|| not_found(format!("change {change}")))?;
+        let fork = if after {
+            committed.fork_at(&[made.hash()])
+        } else {
+            committed.fork_at(made.deps())
+        }
+        .map_err(backend)?;
+        AutoCommit::load(&fork.save()).map_err(backend)
+    }
+
     /// Run Automerge's sync protocol between the two stores over every document either has,
     /// until both hold the same changes. A document only one side has is created empty on the
     /// other first. Subscribers of documents that changed are told.
@@ -1182,18 +1204,7 @@ impl Store for AmStore {
         field: &FieldSpec,
         change: &str,
     ) -> Result<FieldValue, StoreError> {
-        let inner = self.inner.borrow();
-        let doc = inner.doc(&at.doc)?;
-        let n: usize = change
-            .parse()
-            .map_err(|_| not_found(format!("change {change}")))?;
-        let committed = doc.committed_document();
-        let changes = committed.get_changes(&[]);
-        let made = changes
-            .get(n)
-            .ok_or_else(|| not_found(format!("change {change}")))?;
-        let before = committed.fork_at(made.deps()).map_err(backend)?;
-        let before = AutoCommit::load(&before.save()).map_err(backend)?;
+        let before = self.side(at, change, false)?;
         let obj = match &at.item {
             None => ROOT,
             Some(item) => {
@@ -1209,18 +1220,7 @@ impl Store for AmStore {
         field: &FieldSpec,
         change: &str,
     ) -> Result<FieldValue, StoreError> {
-        let inner = self.inner.borrow();
-        let doc = inner.doc(&at.doc)?;
-        let committed = doc.committed_document();
-        let changes = committed.get_changes(&[]);
-        let n: usize = change
-            .parse()
-            .map_err(|_| not_found(format!("change {change}")))?;
-        let made = changes
-            .get(n)
-            .ok_or_else(|| not_found(format!("change {change}")))?;
-        let fork = committed.fork_at(&[made.hash()]).map_err(backend)?;
-        let at_version = AutoCommit::load(&fork.save()).map_err(backend)?;
+        let at_version = self.side(at, change, true)?;
         if field.kind == FieldKind::Collection {
             // A collection is its items' placements, resolved as they stood at the version.
             return Ok(FieldValue::Items(
@@ -1284,41 +1284,50 @@ impl Store for AmStore {
     }
 
     /// Only the last `window` changes are read: their notes, newest first.
-    /// What links to `at`, read from the documents: this store keeps no index of it, so it
-    /// reads every resource's fields ([`Store::linked`]). Tests only.
-    fn linked(&self, at: &ResourceRef) -> Result<Vec<Link>, StoreError> {
-        let target = at.id_string();
+    /// What links to each of `ats`, read from the documents: this store keeps no index of it, so
+    /// it reads every resource's fields ([`Store::linked`]). Tests only.
+    fn linked_many(
+        &self,
+        ats: &[ResourceRef],
+        only: Option<&str>,
+    ) -> Result<Vec<Vec<Link>>, StoreError> {
         let inner = self.inner.borrow();
-        let mut out: Vec<Link> = Vec::new();
-        for doc in inner.docs.keys() {
-            let am = inner.doc(doc)?;
-            let changes = am.committed_document().get_changes(&[]);
-            for of in inner.resources(doc)? {
-                let id = of.id_string();
-                if id == target {
-                    continue;
+        ats.iter()
+            .map(|at| {
+                let target = at.id_string();
+                let mut out: Vec<Link> = Vec::new();
+                for doc in inner.docs.keys() {
+                    let am = inner.doc(doc)?;
+                    let changes = am.committed_document().get_changes(&[]);
+                    for of in inner.resources(doc)? {
+                        let id = of.id_string();
+                        if id == target {
+                            continue;
+                        }
+                        let made = crate::store::versions_in(changes.iter(), &of)
+                            .first()
+                            .and_then(|version| version.from.as_ref())
+                            .is_some_and(|from| from.id_string() == target);
+                        if made {
+                            out.push(Link {
+                                of: of.clone(),
+                                how: LinkHow::CreatedFrom,
+                            });
+                        }
+                        for how in inner.names(&of, &target)? {
+                            out.push(Link {
+                                of: of.clone(),
+                                how,
+                            });
+                        }
+                    }
                 }
-                let made = crate::store::versions_in(changes.iter(), &of)
-                    .first()
-                    .and_then(|version| version.from.as_ref())
-                    .is_some_and(|from| from.id_string() == target);
-                if made {
-                    out.push(Link {
-                        of: of.clone(),
-                        how: LinkHow::CreatedFrom,
-                    });
-                }
-                for how in inner.names(&of, &target)? {
-                    out.push(Link {
-                        of: of.clone(),
-                        how,
-                    });
-                }
-            }
-        }
-        out.sort_by_key(Link::order);
-        out.dedup_by(|a, b| a.of.id_string() == b.of.id_string() && a.how == b.how);
-        Ok(out)
+                out.sort_by_key(Link::order);
+                out.dedup_by(|a, b| a.of.id_string() == b.of.id_string() && a.how == b.how);
+                out.retain(|link| only.is_none_or(|ty| link.of.ty == ty));
+                Ok(out)
+            })
+            .collect()
     }
 
     fn subscribe(&mut self, doc: &DocId, f: Box<dyn FnMut(&ChangeSummary)>) -> SubId {

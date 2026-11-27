@@ -401,8 +401,7 @@ impl Resources {
     /// The store, for the tests of a device's own writes to it.
     #[cfg(all(test, feature = "apps", feature = "agents"))]
     pub(super) fn store(&self) -> std::sync::MutexGuard<'_, Store> {
-        use tilo_lock::MutexRecover as _;
-        self.store.lock_recover()
+        self.store_mut()
     }
 
     /// The store, while its workspace is held alone.
@@ -1935,17 +1934,15 @@ fn read_from(
         Command::Versions { kind, id } if store.get(kind, id, &may_read).is_some() => {
             Reply::Versions(
                 store
-                    .read_versions(kind, id)
+                    .read_versions(kind, id, None)
                     .map_err(|error| error.to_string())?,
             )
         }
         Command::VersionEnd { kind, id, last } if store.get(kind, id, &may_read).is_some() => {
             Reply::Versions(
                 store
-                    .read_version_end(kind, id, *last)
-                    .map_err(|error| error.to_string())?
-                    .into_iter()
-                    .collect(),
+                    .read_versions(kind, id, Some(*last))
+                    .map_err(|error| error.to_string())?,
             )
         }
         // A record the caller may not read has no versions for them.
@@ -3090,30 +3087,8 @@ fn stamp_resource_invoker(
             }
             return;
         }
-        Command::Get { .. }
-        | Command::Query(_)
-        | Command::Count { .. }
-        | Command::Content { .. }
-        | Command::Versions { .. }
-        | Command::VersionEnd { .. }
-        | Command::At { .. }
-        | Command::Grouped { .. }
-        | Command::Removed { .. }
-        | Command::MadeFrom { .. }
-        | Command::Newest { .. }
-        | Command::Positions { .. }
-        | Command::PageAt { .. }
-        | Command::Contents { .. }
-        | Command::Fields { .. }
-        | Command::Values { .. }
-        | Command::ChildrenAt { .. }
-        | Command::Turn { .. }
-        | Command::Reach { .. }
-        | Command::RecordChanges { .. }
-        | Command::RecordChange { .. }
-        | Command::ReviewRestore { .. }
-        | Command::Steps { .. }
-        | Command::Records => return,
+        // Every other command writes nothing, and so names no one who made one.
+        _ => return,
     };
     let mut acting = served(&stamp.invocation).unwrap_or_else(|| {
         unserved.push((kind.to_owned(), stamp.verb.clone()));
