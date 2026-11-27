@@ -109,24 +109,7 @@ impl SessionLink {
         &self,
         resources: &[ui::tilo_actions::ResourceSpec],
     ) -> bool {
-        self.publish_unavailable(unavailable_of(
-            resources,
-            self.session_actions(),
-            self.session_verbs(),
-        ))
-    }
-
-    /// The resource each of the session's loose actions is published on, by the action's id, as
-    /// the session's description declares them.
-    fn session_actions(&self) -> &BTreeMap<String, String> {
-        self.session_actions
-            .get_or_init(|| tilolang_tilo::platform::session_addresses().unwrap_or_default())
-    }
-
-    /// The session's loose actions as its description declares them, by id.
-    fn session_verbs(&self) -> &BTreeMap<String, ui::tilo_actions::surface::VerbSurface> {
-        self.session_verbs
-            .get_or_init(|| tilolang_tilo::platform::session_verbs().unwrap_or_default())
+        self.publish_unavailable(unavailable_actions(resources.iter()))
     }
 
     /// The packages of the apps whose resources the places show, by app id, each its compiled
@@ -594,60 +577,79 @@ impl SessionOrigin {
     }
 }
 
-/// The actions `resources` publish as unavailable now, each with its reason, by the key the
-/// shell's runtime binds a view's control by ([`tilolang_tilo::runtime::unavailable`]): the
-/// address of a resource's verb, and — for a verb the session's own package publishes as a loose
-/// action — the id its code calls (`Desktop/delete-workspace`), which `session` maps to the
-/// resource it is published on and `verbs` to the verb it names there.
-fn unavailable_of(
-    resources: &[ui::tilo_actions::ResourceSpec],
-    session: &BTreeMap<String, String>,
-    verbs: &BTreeMap<String, ui::tilo_actions::surface::VerbSurface>,
+/// The actions `published` say cannot run now, each with its reason, by the key the shell's
+/// runtime binds a view's control by ([`tilolang_tilo::runtime::unavailable`]): the address of a
+/// resource's verb, and — for a verb the session's own package publishes as a loose action — the
+/// id its code calls (`Desktop/delete-workspace`), which [`session_actions`] maps to the resource
+/// it is published on and [`session_verbs`] to the verb it names there.
+pub(crate) fn unavailable_actions<'a>(
+    published: impl IntoIterator<Item = &'a ui::tilo_actions::ResourceSpec>,
 ) -> tilolang_tilo::runtime::unavailable::Unavailable {
-    let mut out = tilolang_tilo::runtime::unavailable::from_resources(resources.iter());
-    for (id, address) in session {
-        let Some(verb) = verbs.get(id) else {
-            continue;
-        };
-        if let Some(reason) = unavailable_reason(resources, address, &verb.id) {
+    /// The reason each verb of `resource` and its children gives, by its address and the verb.
+    fn collect(
+        resource: &ui::tilo_actions::ResourceSpec,
+        said: &mut BTreeMap<(String, String), String>,
+    ) {
+        for action in &resource.actions {
+            if let ui::tilo_actions::Availability::Unavailable { reason, .. } =
+                &action.contract.availability
+            {
+                said.insert(
+                    (resource.id.as_str().to_owned(), action.id.clone()),
+                    reason.clone(),
+                );
+            }
+        }
+        for child in &resource.children {
+            collect(child, said);
+        }
+    }
+    let mut said: BTreeMap<(String, String), String> = BTreeMap::new();
+    for resource in published {
+        collect(resource, &mut said);
+    }
+    let mut out = tilolang_tilo::runtime::unavailable::Unavailable::default();
+    for ((address, verb), reason) in &said {
+        out.insert(
+            tilolang_tilo::runtime::unavailable::address_key(address, verb),
+            reason,
+        );
+    }
+    // The session's own package names its loose actions by the type they are published on
+    // (`Desktop/delete-workspace`), while the resource they are published on names them by the
+    // verb alone: a view's code binds the former.
+    for (id, address) in session_actions() {
+        if let Some(verb) = session_verbs().get(id)
+            && let Some(reason) = said.get(&(address.clone(), verb.id.clone()))
+        {
             out.insert(id, reason);
         }
     }
     out
 }
 
-/// Why the resource `address` of `resources` publishes its verb `verb` as unable to run now.
-fn unavailable_reason(
-    resources: &[ui::tilo_actions::ResourceSpec],
-    address: &str,
-    verb: &str,
-) -> Option<String> {
-    fn find(
-        resource: &ui::tilo_actions::ResourceSpec,
-        address: &str,
-        verb: &str,
-    ) -> Option<String> {
-        if resource.id.as_str() == address {
-            let said = resource
-                .actions
-                .iter()
-                .find(|action| action.id == verb)
-                .and_then(|action| match &action.contract.availability {
-                    ui::tilo_actions::Availability::Unavailable { reason, .. } => {
-                        Some(reason.clone())
-                    }
-                    ui::tilo_actions::Availability::Available => None,
-                });
-            if said.is_some() {
-                return said;
-            }
-        }
-        resource
-            .children
-            .iter()
-            .find_map(|child| find(child, address, verb))
-    }
-    resources.iter().find_map(|r| find(r, address, verb))
+/// The resource each of the session's loose actions is published on, by the action's id, as the
+/// session's description declares them: read once, as the description is the build's own.
+pub(crate) fn session_actions() -> &'static BTreeMap<String, String> {
+    static ACTIONS: std::sync::OnceLock<BTreeMap<String, String>> = std::sync::OnceLock::new();
+    ACTIONS.get_or_init(|| {
+        tilolang_tilo::platform::session_addresses().unwrap_or_else(|error| {
+            tracing::error!(%error, "the session's description gives no addresses");
+            BTreeMap::new()
+        })
+    })
+}
+
+/// The session's loose actions as its description declares them, by id.
+pub(crate) fn session_verbs() -> &'static BTreeMap<String, ui::tilo_actions::surface::VerbSurface> {
+    static VERBS: std::sync::OnceLock<BTreeMap<String, ui::tilo_actions::surface::VerbSurface>> =
+        std::sync::OnceLock::new();
+    VERBS.get_or_init(|| {
+        tilolang_tilo::platform::session_verbs().unwrap_or_else(|error| {
+            tracing::error!(%error, "the session's description does not read");
+            BTreeMap::new()
+        })
+    })
 }
 
 /// What a view composed in a place changes of the resource it shows, sent to that resource's
@@ -913,11 +915,9 @@ mod with_uses_tests {
 
 #[cfg(test)]
 mod unavailable_tests {
-    use std::collections::BTreeMap;
-
     use ui::tilo_actions::{ActionSpec, Availability, EncodedAction, OperationKind, ResourceSpec};
 
-    use super::{SessionLink, unavailable_of};
+    use super::unavailable_actions;
 
     /// The chrome resource as the session publishes it, its `delete-workspace` unable to run on
     /// the person's own workspace.
@@ -944,10 +944,7 @@ mod unavailable_tests {
     #[test]
     fn a_session_action_published_unavailable_is_held_by_its_address_and_by_the_id_the_shell_calls()
     {
-        let link = SessionLink::default();
-        let actions: BTreeMap<String, String> = link.session_actions().clone();
-        let verbs = link.session_verbs().clone();
-        let map = unavailable_of(&[chrome()], &actions, &verbs);
+        let map = unavailable_actions([chrome()].iter());
         assert_eq!(
             map.get("desktop:chrome#delete-workspace"),
             Some("own workspace"),
@@ -962,12 +959,8 @@ mod unavailable_tests {
 
     #[test]
     fn a_resource_no_action_of_is_unavailable_says_nothing() {
-        let link = SessionLink::default();
-        let map = unavailable_of(
-            &[ResourceSpec::new("desktop:shell", "desktop", "Desktop")],
-            &link.session_actions().clone(),
-            &link.session_verbs().clone(),
-        );
+        let map =
+            unavailable_actions([ResourceSpec::new("desktop:shell", "desktop", "Desktop")].iter());
         assert!(
             map.is_empty(),
             "nothing is drawn disabled for a resource whose actions can all run"

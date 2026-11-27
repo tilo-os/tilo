@@ -531,6 +531,46 @@ fn the_workspaces_menu_stands_while_the_layout_changes_under_it() {
     );
 }
 
+/// A command the catalogue publishes as unable to run now is drawn disabled, with its reason
+/// beside it, before anyone presses it: deleting the workspace in front is refused as the
+/// person's own, and the row says so instead of asking and being refused. The link carries the
+/// statement the session reads from its services' resources ([`SessionLink::publish_unavailable`]
+/// is what `Shell::follow_places` publishes their actions through).
+#[test]
+fn a_command_the_catalogue_says_cannot_run_is_drawn_disabled_with_its_reason() {
+    let (mut part, link) = part();
+    let mut unavailable = tilolang_tilo::runtime::Unavailable::default();
+    unavailable.insert("Desktop/delete-workspace", "own workspace");
+    assert!(
+        link.publish_unavailable(unavailable),
+        "the catalogue said deleting that workspace cannot run"
+    );
+    click(&mut part, "Home");
+    for _ in 0..6 {
+        part.prepare_frame();
+        part.draw();
+    }
+    let nodes = part.widgets_mut().host_mut().a11y_nodes();
+    let (_, node) = nodes
+        .into_iter()
+        .find(|(_, node)| {
+            node.label()
+                .is_some_and(|label| label.starts_with("Delete Home"))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the menu offers deleting the workspace in front: {:?}",
+                part.accessible_labels()
+            )
+        });
+    assert_eq!(
+        node.description(),
+        Some("own workspace"),
+        "the row says why it cannot run"
+    );
+    assert!(node.is_disabled(), "and it cannot be pressed");
+}
+
 #[test]
 fn choosing_a_workspace_in_the_menu_asks_the_session_to_switch() {
     let (mut part, link) = part();

@@ -8,7 +8,7 @@
 //! A package that does not start is no view for the part: the part keeps the view the session ships
 //! with, as a missing program does.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -31,6 +31,13 @@ pub(crate) struct PartViews {
     /// so a part's host stands there for the session's life, drawing nothing while the part runs
     /// something else.
     hosts: BTreeMap<&'static str, Rc<RefCell<PartView>>>,
+    /// The catalogue's actions the session publishes as unavailable now, each with its reason, and
+    /// the services revision it was read at ([`PartViews::follow_availability`]): what a part's
+    /// view draws disabled.
+    unavailable: RefCell<Option<(u64, tilolang_tilo::runtime::Unavailable)>>,
+    /// The services revision the running views were last told the catalogue's availability at: a
+    /// pass that published nothing new hands nothing on.
+    told: Cell<Option<u64>>,
 }
 
 impl PartViews {
@@ -42,6 +49,37 @@ impl PartViews {
             overlays,
             scale,
             hosts: BTreeMap::new(),
+            unavailable: RefCell::new(None),
+            told: Cell::new(None),
+        }
+    }
+
+    /// Hand every view it runs what the catalogue says cannot run now, each action with its
+    /// reason: a control bound to one draws disabled, with the reason, and is enabled when the
+    /// session publishes it can run. The catalogue is read again only when the session published
+    /// it anew.
+    pub(crate) fn follow_availability(&self, services: &tilo_service::Services) {
+        let revision = services.revision();
+        if self.told.get() == Some(revision) {
+            return;
+        }
+        self.told.set(Some(revision));
+        let published = {
+            let held = self.unavailable.borrow();
+            held.as_ref()
+                .filter(|(was, _)| *was == revision)
+                .map(|(_, map)| map.clone())
+        };
+        let map = if let Some(map) = published {
+            map
+        } else {
+            let map =
+                crate::shell::part::readings::unavailable_actions(services.resources().iter());
+            *self.unavailable.borrow_mut() = Some((revision, map.clone()));
+            map
+        };
+        for host in self.hosts.values() {
+            host.borrow_mut().set_unavailable_actions(map.clone());
         }
     }
 
@@ -80,7 +118,13 @@ impl PartViews {
         compositor: &mut Compositor,
     ) -> Result<(), String> {
         let host = self.host(part, compositor);
-        host.borrow_mut().open(spec, person, waker, reading)
+        host.borrow_mut().open(spec, person, waker, reading)?;
+        // What the catalogue said before the view opened, as a part opened while a menu is up
+        // draws its controls the moment it runs.
+        if let Some((_, published)) = self.unavailable.borrow().as_ref() {
+            host.borrow_mut().set_unavailable_actions(published.clone());
+        }
+        Ok(())
     }
 
     /// Stop what runs for `part` : the part is not up any more, or another view took it.

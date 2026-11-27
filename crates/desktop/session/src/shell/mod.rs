@@ -70,6 +70,11 @@ pub(crate) struct Shell {
     link: Rc<SessionLink>,
     /// The services' revision and the layout the places' readings were last followed at.
     followed: Option<(u64, LayoutReading)>,
+    /// The services' revision the catalogue's unavailable actions were last published at
+    /// ([`SessionLink::publish_actions_unavailable`]): a control a view binds to an action the
+    /// session says cannot run is enabled again when the session publishes it can, without a
+    /// place having to move.
+    unavailable_at: Option<u64>,
     /// The resources whose readings the shell holds for its places, by id, each with its type as
     /// the shell's runtime names another app's (`<app>#<Type>`): what a place names, and what the
     /// views composed there read.
@@ -277,6 +282,7 @@ impl Shell {
             lists,
             link,
             followed: None,
+            unavailable_at: None,
             reading: std::collections::BTreeMap::new(),
             live: Vec::new(),
             reads: std::collections::BTreeMap::new(),
@@ -817,6 +823,13 @@ impl Shell {
         if !moved_on && wanted.is_empty() {
             return;
         }
+        // What the catalogue says cannot run now, each of its actions with the reason, by the id
+        // a view's control binds it by: it is drawn disabled with that reason, and enabled again
+        // when the session publishes it can run — a press is refused either way.
+        if self.unavailable_at != Some(key.0) {
+            self.unavailable_at = Some(key.0);
+            self.link.publish_actions_unavailable(&services.resources());
+        }
         // The apps whose views this process links as Rust apps, which draw their resources
         // without a package of their own.
         let rust_views = tilolang_tilo::views::declared_apps();
@@ -925,10 +938,6 @@ impl Shell {
                 &resources,
                 &self.link.packages_loaded(),
             ));
-        // What the resources offer still holds, as a view's control bound to one of their
-        // actions draws it: an action the session publishes as unable to run now stands
-        // disabled, with the reason, and its control is enabled again when it can run.
-        self.link.publish_actions_unavailable(&resources);
         for (id, ty) in placed {
             if !self.reading.contains_key(&id) {
                 fresh.push((id.clone(), ty.clone()));

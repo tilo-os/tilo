@@ -32,6 +32,10 @@ impl Session {
         /// The app whose view the session shows the menu through until the person binds another:
         /// the shell's own `window_menu`, over the reading `desktop:window-menu` publishes.
         const SHIPPED: (&str, &str) = ("so.tilo.shell", "window_menu");
+        // What the catalogue says cannot run now, to every view the session runs here: a part's
+        // Delete stands disabled with its reason, as the same control does in the shell.
+        self.part_views
+            .follow_availability(&self.shared.services.borrow());
         // Nothing to draw or to watch until the session publishes the menu.
         let Some(reading) = self.read(crate::shell::state::WINDOW_MENU) else {
             return;

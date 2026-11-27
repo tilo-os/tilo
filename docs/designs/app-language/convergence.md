@@ -85,6 +85,11 @@ type Workshop {
   be decided before that is given, so it never hides the action; it is checked when the action
   runs, and a form shows its reason as the refusal. Either way an invocation that fails one is
   rejected with the reason, the same way everywhere, before it writes anything.
+- An app written in Rust answers the same question in its resource's contract: an action it
+  publishes as `Availability::Unavailable { reason }` is refused with that reason, and every
+  view's control bound to it — the app's own, the shell's, or a part's the session draws — is
+  drawn disabled with the reason, and enabled again the moment the app publishes it can run.
+  One statement, drawn wherever the action is offered; a view never says it a second time.
 - An outside service's own rules ("attachment too large") come back as the same kind of
   rejection.
 

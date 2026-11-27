@@ -548,6 +548,16 @@ impl PartView {
         self.open.is_some()
     }
 
+    /// What the catalogue says cannot run now, each action with its reason: a control the view
+    /// binds to one draws disabled, with the reason, and is enabled when the catalogue says it can
+    /// run. The action layer refuses such a press either way.
+    pub fn set_unavailable_actions(&mut self, unavailable: tilolang_tilo::runtime::Unavailable) {
+        let Some(host) = self.open.as_ref().and_then(|open| open.instance.host()) else {
+            return;
+        };
+        host.runtime().set_unavailable_actions(unavailable);
+    }
+
     /// Hand the view the part's state as the session publishes it now: `reading`, the same JSON
     /// the session's watch of the part's resource carries. Whether the view has a new reading
     /// to run on.
