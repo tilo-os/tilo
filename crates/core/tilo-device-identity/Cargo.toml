@@ -7,6 +7,11 @@ publish.workspace = true
 license = "MIT"
 description = "Where a device keeps its identity: its key in one keystore, its certificates, the revocations it trusts, and a copied machine's re-key journal."
 
+[features]
+# A device's daemon as a test's machine runs it, for the crates whose tests start programs that
+# ask theirs for the device.
+test-support = []
+
 [lib]
 name = "tilo_device_identity"
 path = "src/lib.rs"

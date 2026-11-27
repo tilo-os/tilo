@@ -20,6 +20,9 @@
 pub mod branch;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod clock;
+/// A device's daemon as a test's machine runs it, for crates that start programs asking theirs.
+#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]
+pub mod fixture;
 pub mod login;
 #[cfg(target_os = "linux")]
 pub mod nofollow;

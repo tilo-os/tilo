@@ -51,6 +51,8 @@ tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-ident
 [dev-dependencies]
 tilo-api = { path = "../../core/tilo-api", features = ["test-support"] }
 tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
+# The device's daemon a test's machine runs: what its programs read the device through.
+tilo-device-identity = { version = "0.1.0", path = "../../core/tilo-device-identity", features = ["test-support"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }

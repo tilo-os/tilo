@@ -4,7 +4,7 @@
 //! device's setup as that same person, with a device of its own.
 
 use tilo_device_identity::IdentityPaths;
-use tilo_device_identity::persist::{load_device_key, read_device_cert};
+use tilo_device_identity::persist::read_device_cert;
 use tilo_identity::provisioning::{IdentityStorage, collaboration_identity_paths, create_person};
 use tilo_identity::store;
 
@@ -69,10 +69,13 @@ fn a_person_made_from_the_command_line_is_the_sessions_and_restores_from_its_bac
     let backup = holder.path().join("ada.tilo-backup");
     tilo_identity::store::export_portable_backup(&active, &backup, PASSPHRASE).unwrap();
 
-    // A fresh device's daemon restores it (`devices#restore`), as "Restore from a backup" asks.
+    // A fresh machine's daemon makes and takes its own device key, as `tilo-device-key-init` and
+    // the daemon do at boot, and answers what the device is over its endpoint; the daemon restores
+    // the backup with that key, as "Restore from a backup" (`devices#restore`) does.
     let fresh = tempfile::tempdir().unwrap();
     let fresh_dir = fresh.path().join("config/tilo/identity");
     let fresh_paths = IdentityPaths::under(fresh.path().join("device"));
+    let daemon = tilo_device_identity::fixture::DeviceDaemon::start(&fresh_paths).unwrap();
     let restored = tilo_identity::provisioning::restore_from_backup(
         &fresh_dir,
         &fresh_paths,
@@ -81,9 +84,6 @@ fn a_person_made_from_the_command_line_is_the_sessions_and_restores_from_its_bac
         IdentityStorage::for_session(),
     )
     .unwrap();
-    // The restore made this device its own key, and the daemon that ran it takes that key as it
-    // starts: this test runs no daemon, so it takes it in its place.
-    let _fresh_taken = tilo_device_identity::persist::take_device_key(&fresh_paths).unwrap();
     assert_eq!(restored.id, hex::encode(user), "the same person");
     // The restored device keeps the person as its own active record, with the root the backup
     // carried, which signs as them. A session's startup check of that device is left out here: a
@@ -100,9 +100,14 @@ fn a_person_made_from_the_command_line_is_the_sessions_and_restores_from_its_bac
     );
     assert_eq!(
         fresh_cert.device_public_key,
-        load_device_key(&fresh_paths)
-            .unwrap()
-            .verifying_key()
-            .to_bytes()
+        daemon.device_key(),
+        "the certificate names the key the machine's daemon signs with"
+    );
+    // The machine's programs read that device over the daemon's endpoint, as an installed
+    // machine's do.
+    assert_eq!(
+        daemon.actions().device_key().unwrap(),
+        daemon.device_key(),
+        "the daemon answers what the device is"
     );
 }
