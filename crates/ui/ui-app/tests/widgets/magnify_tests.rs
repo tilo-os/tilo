@@ -251,7 +251,7 @@ fn a_dock_body_keeps_its_band_while_an_item_grows_over_it() {
         },
     );
     let mut driver = Driver::new_with_theme(
-        crate::State::new(),
+        tilo_ui::State::new(),
         Box::new(chrome),
         (300, 200),
         Theme::dark(),
@@ -283,7 +283,7 @@ fn a_dock_body_keeps_its_band_while_an_item_grows_over_it() {
 /// clears the non-text contrast floor against a chrome body's ground in both palettes.
 #[test]
 fn a_plain_hover_plate_clears_the_non_text_floor_on_chrome() {
-    use crate::widget::{ButtonRole, Interaction, face_colors};
+    use tilo_ui::widget::{ButtonRole, Interaction, face_colors};
     use tilo_ui_base::a11y::contrast_ratio;
     use tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST;
     for theme in [Theme::dark(), Theme::light()] {
