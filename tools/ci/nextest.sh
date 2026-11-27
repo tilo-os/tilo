@@ -220,9 +220,10 @@ fi
 # The tests a run names (`t test <check> --test`): a check whose t.toml declares `tests = "env"`
 # is handed them in T_TESTS, one per line, and runs those alone. A command the check runs is
 # narrowed by intersecting its own -E with the selection, so a command none of whose tests were
-# named runs none and passes (--no-tests=pass, which the flows' checks ask for). The -E this adds
-# is what keeps a narrowed run from recording test timings below: it names no whole package's
-# tests.
+# named runs none: it passes where the check asks for --no-tests=pass (a flow run as several
+# commands, one of which holds the named test) and fails where it asks for --no-tests=fail. The -E
+# this adds is what keeps a narrowed run from recording test timings below: it names no whole
+# package's tests.
 if (( nextest )) && [[ ${3:-} == run ]] && [[ -n ${T_TESTS:-} ]]; then
     selection=$(python3 "$root/tools/ci/test_selection.py")
     merged=0

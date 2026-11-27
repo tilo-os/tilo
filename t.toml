@@ -287,13 +287,20 @@ on = ["dispatch"]
 # tests, in the package whose tests they are and the way that package's family runs them: a default
 # check, so every change it reaches runs it.
 #
-# A flow whose tests another package holds adds a matrix entry with its own `-p` and filter, and a
-# run names what it starts the way that package's family does. The flows in
-# crates/core/session-client/tests start the server's workspace service as a deployment does: the ci
-# profile's `lounge-siblings` setup builds it for the tests its filter matches, so a flow module it
-# should build goes in that filter (.config/nextest.toml) and the entry is `-p tilo-session-client
-# --test it -E 'test(flow_<name>::)'`. The VM-only steps of flow 1 (a hosted Browser and a command
-# in a VM) are KVM and stay in os/containers/tilo-sh/check.sh.
+# Every flow names its own command in a matrix set, and none is the template's default: the tests a
+# flow serves move with their package, and a command whose filter then matches nothing fails
+# (`--no-tests=fail`) instead of passing with no test run. A flow whose tests another package holds
+# adds a matrix entry with its own `-p` and filter, and a run names what it starts the way that
+# package's family does. The flows in crates/core/session-client/tests start the server's workspace
+# service as a deployment does: the ci profile's `lounge-siblings` setup builds it for the tests its
+# filter matches, so a flow module it should build goes in that filter (.config/nextest.toml) and
+# the entry is `-p tilo-session-client --test it -E 'test(flow_<name>::)'`. The customer-workspaces
+# flow's tests are the device daemon's: they run the daemon in the test's process and start no
+# program of another package, so the ci profile's `install-siblings` setup, which serves the
+# daemon's tests, is what they get (.config/nextest.toml). A flow run as more than one command keeps
+# `--no-tests=pass`, because `t test flows/<flow> --test <name>` leaves the command that does not
+# hold the test matching nothing. The VM-only steps of flow 1 (a hosted Browser and a command in a
+# VM) are KVM and stay in os/containers/tilo-sh/check.sh.
 [[check]]
 name = "flows/{flow}"
 on = ["idle", "stable"]
@@ -301,12 +308,15 @@ on = ["idle", "stable"]
 # command reads the names in T_TESTS and runs only those (tools/ci/test_selection.py).
 tests = "env"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=pass -p tilo-agent-session --test it -E 'test(workspace_actions::flow_customer_workspaces::)'\n"
 timeout_secs = 1800
 # The session-client flows' server runs the workspace's apps under the launcher's sandbox.
 isolation = "nested"
 [check.matrix]
 flow = ["customer-workspaces", "four-devices", "laptop-phone-server"]
+
+[[check.matrix.set]]
+when = { flow = "customer-workspaces" }
+run = "bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=fail -p tilo-daemon --test it -E 'test(language::customer_workspaces::)'\n"
 
 [[check.matrix.set]]
 when = { flow = "four-devices" }
