@@ -3057,18 +3057,25 @@ impl QuickFS {
     /// The check every "make a new name in this directory" operation runs (`create`, `mkdir`,
     /// rename's destination). A parent outside the view is `ENOENT`. The new path must be
     /// writable, and that is asked before the name is looked up, so a name the app may not
-    /// create gets the same answer whether or not something sits on it. A collision with
-    /// something hidden is refused with `EROFS` rather than written over.
+    /// create gets the same answer whether or not something sits on it: the folder is in the
+    /// view but not writable, `EROFS`, as `touch` in a folder one may only read reports a
+    /// read-only file system, not a missing one. A collision with something hidden is refused
+    /// with `EROFS` rather than written over.
     fn check_new_name(&self, parent: u64, name: &[u8]) -> Result<(), i32> {
         let Some((acl, identity)) = &self.enforcement else {
             return Ok(());
         };
+        if !self.may_read_workspace() {
+            return Err(ENOENT);
+        }
         let parent_path = self.ns().path_for(parent).ok_or(ENOENT)?;
         if !acl.visible(identity, &parent_path) {
             return Err(ENOENT);
         }
         let child = child_path(&parent_path, name);
-        self.check_path(&child, Access::Write)?;
+        if !acl.permits(identity, &child, Access::Write) {
+            return Err(EROFS);
+        }
         let taken = self.ns().lookup(parent, name).is_some();
         if taken && !acl.visible(identity, &child) {
             return Err(EROFS);

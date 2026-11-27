@@ -2393,3 +2393,108 @@ mod settled_read_tests {
         );
     }
 }
+
+mod shipped_access_tests {
+    use super::*;
+
+    use crate::acl::IdentityKey;
+    use crate::caps_file::CapabilityFile;
+    use crate::namespace::ROOT_INO;
+    use crate::store::ContentStore;
+
+    /// The person the mount acts as.
+    const ME: IdentityKey = [0x5A; 32];
+
+    /// The list a session sends a mount whose person has write access to workspace `id` by
+    /// their role: the workspace's folder bounded, and the person granted inside it.
+    fn sessions_list(id: &str) -> String {
+        use collab_types::caps::{Access, CapOverride, Effect, FsAuthority, Scope};
+        use tilo_action_policy::{Grantee, Role};
+
+        let scope = Scope::FsPath(format!("/var/workspace/.workspaces/{id}"));
+        let capabilities = vec![
+            CapOverride::new(
+                Grantee::role(Role::Viewer),
+                scope.clone(),
+                Effect::WorkspaceFileBoundary,
+                Access::Read,
+            ),
+            CapOverride::new(
+                Grantee::person(hex::encode(ME)),
+                scope,
+                Effect::WorkspaceFileAccess,
+                Access::Write,
+            ),
+        ];
+        serde_json::to_string(&FsAuthority { capabilities }).unwrap()
+    }
+
+    /// The mount holds no one's files at its root and opens a workspace's folder only by the
+    /// role the session reports: until the session's list arrives, the list the image seeds
+    /// refuses every write, at the root as a read-only file system and under a workspace's
+    /// folder as a folder not there yet.
+    #[tokio::test]
+    async fn the_shipped_list_refuses_writes_until_the_sessions_list_arrives() {
+        let machine = tempfile::tempdir().unwrap();
+        let path = machine.path().join("fs-capabilities.json");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../os/usr/share/tilo/fs-capabilities.json"),
+            &path,
+        )
+        .unwrap();
+        let caps = CapabilityFile::load(
+            &path,
+            ME,
+            vec![tilo_action_policy::MemberId::Person(
+                collab_types::PersonId::parse("local").unwrap(),
+            )],
+        )
+        .expect("the shipped list loads");
+
+        let namespace = host();
+        let (workspaces, team, other) = {
+            let mut ns = namespace.lock_recover();
+            let workspaces = ns.create_dir(ROOT_INO, ".workspaces", 1).unwrap();
+            let team = ns.create_dir(workspaces, "team", 1).unwrap();
+            let other = ns.create_dir(workspaces, "other", 1).unwrap();
+            drop(ns);
+            (workspaces, team, other)
+        };
+        let fs = QuickFS::over(
+            namespace,
+            Arc::new(Hydrator::new(Arc::new(ContentStore::memory()))),
+        )
+        .with_acl(caps.handle(), ME);
+
+        assert_eq!(fs.check_new_name(ROOT_INO, b"notes.md"), Err(EROFS));
+        assert_eq!(fs.check_new_name(ROOT_INO, b".workspaces2"), Err(EROFS));
+        assert_eq!(fs.check_new_name(team, b"notes.md"), Err(ENOENT));
+        assert_eq!(fs.check_access(team, Access::Write), Err(ENOENT));
+        assert_eq!(fs.check_access(workspaces, Access::Write), Err(ENOENT));
+
+        caps.keep(&sessions_list("team"))
+            .expect("the session's list is in force");
+
+        assert_eq!(fs.check_new_name(team, b"notes.md"), Ok(()));
+        assert_eq!(fs.check_access(team, Access::Write), Ok(()));
+        assert_eq!(
+            fs.check_new_name(ROOT_INO, b"notes.md"),
+            Err(EROFS),
+            "a person's role never opens the mount's root"
+        );
+        assert!(fs.check_new_name(workspaces, b"elsewhere").is_err());
+        assert!(fs.check_access(workspaces, Access::Write).is_err());
+        assert!(
+            fs.check_new_name(other, b"notes.md").is_err(),
+            "a workspace the person has no role in stays closed"
+        );
+
+        // The next start, before the session speaks again, mounts with what it said last.
+        let restarted = CapabilityFile::load(&path, ME, Vec::new())
+            .unwrap()
+            .handle();
+        assert!(restarted.permits(&ME, "/.workspaces/team/notes.md", Access::Write));
+        assert!(!restarted.permits(&ME, "/notes.md", Access::Write));
+    }
+}

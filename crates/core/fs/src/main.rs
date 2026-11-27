@@ -1399,31 +1399,24 @@ mod tests {
                     CapabilityFile::load(&path, identity, vec![parse_member("person:local").unwrap()])
                         .expect("the shipped default capability list must load");
 
+                // Until the session says who may write where, the mount grants nothing: the
+                // workspaces' folders are its to open by role, and the root holds no one's files.
                 let handle = file.handle();
-                assert!(
-                    handle.permits(&identity, "/", Access::Read),
-                    "the shipped default must let the local session read its own workspace"
-                );
-                assert!(
-                    handle.permits(&identity, "/notes/today.md", Access::Write),
-                    "the shipped default must let the local session write its own workspace"
-                );
-
-                // The grant is the actor's, not the mount's — a mount not presenting `person:local` gets nothing, which narrows a peer-joined mount.
-                let outsider = CapabilityFile::load(&path, identity, Vec::new())
-                    .expect("loads")
-                    .handle();
-                assert!(
-                    !outsider.permits(&identity, "/notes/today.md", Access::Read),
-                    "the shipped list must grant its named actor, not whoever mounts"
-                );
+                for path in ["/", "/notes.md", "/.workspaces", "/.workspaces/team/notes.md"] {
+                    for access in [Access::Read, Access::Write] {
+                        assert!(
+                            !handle.permits(&identity, path, access),
+                            "the shipped default must grant no {access:?} on {path}"
+                        );
+                    }
+                }
             }
         }
 
-        phase a_capability_list_an_older_image_seeded_gives_way_to_the_one_the_image_ships;
+        phase a_capability_list_an_older_image_seeded_gives_way_to_the_sessions;
         // tmpfiles' `C` never overwrites, so a machine keeps the capability list of the image it was
-        // installed with across every update. Every version in the history must mount with its grant
-        // through the same loader fs.service uses.
+        // installed with across every update. Every version in the history must mount through the
+        // same loader fs.service uses, and give way to the role-based list the session sends.
         {
             use tilo_fs::Access;
 
@@ -1444,7 +1437,6 @@ mod tests {
             let identity: IdentityKey = [0x5A; 32];
             let local = vec![parse_member("person:local").unwrap()];
             for seeded in &versions {
-                // Every shipped list keeps its grants through an update.
                 let machine = tempfile::tempdir().unwrap();
                 let path = &machine.path().join("fs-capabilities.json");
                 std::fs::copy(seeded, path).unwrap();
@@ -1452,22 +1444,47 @@ mod tests {
                     .unwrap_or_else(|error| {
                         panic!("{} must load on an upgraded machine: {error}", seeded.display())
                     });
+                file.keep(&sessions_list(&identity, "team"))
+                    .expect("the session's list is kept");
                 let handle = file.handle();
                 assert!(
-                    handle.permits(&identity, "/notes/today.md", Access::Write),
-                    "{} must let the local session write its workspace",
-                    path.display()
+                    handle.permits(&identity, "/.workspaces/team/notes.md", Access::Write),
+                    "{}: the person's role must let them write their workspace's files",
+                    seeded.display()
                 );
-                let outsider = CapabilityFile::load(path, identity, Vec::new())
-                    .expect("loads")
-                    .handle();
-                assert!(
-                    !outsider.permits(&identity, "/notes/today.md", Access::Read),
-                    "{} must grant only its named actor",
-                    path.display()
-                );
+                for refused in ["/notes.md", "/.workspaces/other/notes.md"] {
+                    assert!(
+                        !handle.permits(&identity, refused, Access::Write),
+                        "{}: the session's list must not let anyone write {refused}",
+                        seeded.display()
+                    );
+                }
             }
         }
+    }
+
+    /// The list a session sends a mount whose person, `person`, has write access to workspace
+    /// `id` by their role: the workspace's folder bounded, and the person granted inside it.
+    fn sessions_list(person: &IdentityKey, id: &str) -> String {
+        use collab_types::caps::{Access, CapOverride, Effect, FsAuthority, Scope};
+        use tilo_action_policy::{Grantee, Role};
+
+        let scope = Scope::FsPath(format!("/var/workspace/.workspaces/{id}"));
+        let capabilities = vec![
+            CapOverride::new(
+                Grantee::role(Role::Viewer),
+                scope.clone(),
+                Effect::WorkspaceFileBoundary,
+                Access::Read,
+            ),
+            CapOverride::new(
+                Grantee::person(hex::encode(person)),
+                scope,
+                Effect::WorkspaceFileAccess,
+                Access::Write,
+            ),
+        ];
+        serde_json::to_string(&FsAuthority { capabilities }).unwrap()
     }
 
     tilo_test_env::scenario! {

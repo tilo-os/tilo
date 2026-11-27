@@ -1,18 +1,3 @@
 {
-  "capabilities": [
-    {
-      "grantee": {
-        "member": {
-          "person": "local"
-        }
-      },
-      "scope": {
-        "FsPath": "/"
-      },
-      "effect": "Grant",
-      "access": "Write",
-      "id": "local-session-workspace",
-      "lifetime": "until_revoked"
-    }
-  ]
+  "capabilities": []
 }
