@@ -1582,6 +1582,46 @@ mod tests {
 
     /// A root nothing published is unknown, in words, rather than a read that fails: a device
     /// without the service, or a platform that has no such reading, draws the row that says so.
+    /// A listing whose reading says it could not be read is told apart from a listing of none:
+    /// it answers with the reason, and a reading that holds neither the reason nor items is a
+    /// fault rather than a listing that lists nothing.
+    #[test]
+    fn a_listing_that_could_not_be_read_is_not_a_listing_of_none() {
+        let mut foreign = Foreign::default();
+        let registry = Registry::default();
+        let key = TypeKey {
+            app: "tilo.invocations".to_owned(),
+            name: "Invocation".to_owned(),
+        };
+        let target = listing_of("tilo.invocations#Invocation");
+        let says = serde_json::json!({ crate::store::UNREADABLE: "No service publishes it." });
+        assert!(foreign.set_reading(&target, says));
+        match foreign
+            .listed(&key, None, &registry, None)
+            .expect("answered")
+        {
+            Listed::Unreadable(why) => assert_eq!(why, "No service publishes it."),
+            Listed::Items(_) => {
+                panic!("a listing that says why it could not be read is no listing")
+            }
+        }
+
+        assert!(foreign.set_reading(&target, serde_json::json!({"other": 1})));
+        assert!(
+            foreign.listed(&key, None, &registry, None).is_err(),
+            "a reading that holds no items and no reason is a fault"
+        );
+
+        assert!(foreign.set_reading(&target, serde_json::json!({ LISTED: [] })));
+        match foreign
+            .listed(&key, None, &registry, None)
+            .expect("answered")
+        {
+            Listed::Items(items) => assert!(items.is_empty(), "the listing holds no items"),
+            Listed::Unreadable(why) => panic!("a listing that answers is no unreadable one: {why}"),
+        }
+    }
+
     /// A resource of an app no host here publishes at all reads as its type starts and is not
     /// unknown — there is nothing there to be unknown about.
     #[test]
