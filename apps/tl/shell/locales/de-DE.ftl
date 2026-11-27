@@ -67,7 +67,7 @@ d-5n4s55tz = Dock-Zoom
     .doc = Ein Klick auf die Symbole des Docks vergrößert den Eintrag unter dem Zeiger, wie es das Dock von macOS tut.
 
 d-xf2a4hwd = Dock-Vergrößerung
-    .doc = Wie viel größer ein Dock-Eintrag unter dem Zeiger ist, wenn vergrößert wird: in seiner Mitte anderthalbmal so groß, ein paar Einträge weiter wieder seine eigene Größe.
+    .doc = Wie viel größer ein Dock-Eintrag unter dem Zeiger ist, wenn vergrößert wird: in seiner Mitte gut anderthalbmal so groß, ein paar Einträge weiter wieder seine eigene Größe.
 
 d-cejnvssb-filter-preset = Vorgabe
 

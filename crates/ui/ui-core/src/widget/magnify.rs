@@ -16,13 +16,13 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::EffectiveMotion;
 use tilo_ui_base::widget::{DrawChild, Element, Spacer, Widget};
 
-/// How far from an item's middle the pointer still makes it grow, in its own heights: about
-/// one neighbour each way and a half, as a dock's icons reach.
-const REACH_HEIGHTS: f64 = 2.0;
+/// How far from an item's middle the pointer still makes it grow, in its own heights: three
+/// items each way, as a dock's icons reach.
+const REACH_HEIGHTS: f64 = 3.5;
 
 /// The smallest reach, in logical pixels: an item smaller than a control should not magnify
 /// only at the pixel under the pointer.
-const REACH_MIN: f64 = 48.0;
+const REACH_MIN: f64 = 64.0;
 
 /// How long the growth takes to settle after the pointer stops: short enough that the item
 /// answers the pointer, long enough to read as motion rather than as a jump.
@@ -32,8 +32,9 @@ const SETTLE_MS: u64 = 150;
 #[derive(Component, Default)]
 #[component(name = "Magnify", role = "Group")]
 pub struct MagnifyProps {
-    /// How much larger the item under the pointer stands: `0.5` makes it half again as large
-    /// at its middle, falling away to its own size a few items off, and `0` leaves it its size.
+    /// How much larger the item under the pointer stands: `0.6` makes it a little over half
+    /// again as large at its middle, falling away to its own size a few items off, and `0` leaves
+    /// it its size.
     pub zoom: f64,
     /// What it holds: one item's face.
     #[component(part(default))]

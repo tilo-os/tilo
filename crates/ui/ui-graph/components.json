@@ -4580,7 +4580,7 @@
       "props": [
         {
           "name": "zoom",
-          "doc": "How much larger the item under the pointer stands: `0.5` makes it half again as large at its middle, falling away to its own size a few items off, and `0` leaves it its size.",
+          "doc": "How much larger the item under the pointer stands: `0.6` makes it a little over half again as large at its middle, falling away to its own size a few items off, and `0` leaves it its size.",
           "type": "float"
         }
       ],
