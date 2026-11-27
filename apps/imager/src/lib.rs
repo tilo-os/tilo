@@ -85,6 +85,7 @@ mod page;
 pub mod release;
 pub mod resource;
 pub mod setup;
+mod timezones;
 mod verified_cache;
 pub mod write;
 pub mod write_setup;

@@ -544,7 +544,7 @@ impl InstallerApp {
         let mut s = Self::with_disks(SystemBackend.read_disks());
         s.power_probe = current_insufficient_battery_percent;
         s.hardware = crate::setup::destination::hardware_report::HardwareReport::probe();
-        s.timezones = imager_backend::destination::timezones::list_timezones();
+        s.timezones = crate::timezones::offered().to_vec();
         match imager_backend::destination::media_profile::load() {
             Ok(Some(profile)) => s.apply_media_profile(profile),
             Ok(None) => {
@@ -684,7 +684,7 @@ impl InstallerApp {
             keymap: tilo_ui_base::LocalState::new(DEFAULT_KEYMAP_NAME.to_string()),
             erase_confirmation: tilo_ui_base::LocalState::new(String::new()),
             erase_confirmation_seen: String::new(),
-            timezones: default_timezones(),
+            timezones: crate::timezones::offered().to_vec(),
             tz_open_for_shot: false,
             status: String::new(),
             presses: Presses::default(),
@@ -789,7 +789,7 @@ impl InstallerApp {
         let mut app = Self::with_disks(SystemBackend.read_disks());
         app.power_probe = current_insufficient_battery_percent;
         app.hardware = crate::setup::destination::hardware_report::HardwareReport::probe();
-        app.timezones = imager_backend::destination::timezones::list_timezones();
+        app.timezones = crate::timezones::offered().to_vec();
         app.set_filesystem_support(probes::filesystem_support());
         app
     }
@@ -3294,31 +3294,6 @@ fn centered_media_control(widget: Box<dyn Widget>) -> Box<dyn Widget> {
             .push(widget)
             .push(Box::new(Spacer::new())),
     )
-}
-
-fn default_timezones() -> Vec<String> {
-    [
-        "UTC",
-        "Europe/Amsterdam",
-        "Europe/Berlin",
-        "Europe/London",
-        "Europe/Madrid",
-        "Europe/Paris",
-        "America/Chicago",
-        "America/Denver",
-        "America/Los_Angeles",
-        "America/New_York",
-        "America/Sao_Paulo",
-        "Asia/Dubai",
-        "Asia/Kolkata",
-        "Asia/Shanghai",
-        "Asia/Tokyo",
-        "Australia/Sydney",
-        "Pacific/Auckland",
-    ]
-    .iter()
-    .map(std::string::ToString::to_string)
-    .collect()
 }
 
 fn sample_install_log() -> Vec<String> {

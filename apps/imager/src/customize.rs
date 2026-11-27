@@ -8,8 +8,6 @@ use crate::model::{Filesystem, InstallProfile};
 use crate::resource::CATALOG;
 use crate::resource::Imager;
 
-const IANA_TIMEZONES: &str = include_str!("iana_timezones.txt");
-
 fn keyboard_label(id: &str) -> &str {
     tilo_keyboard_map::label_of(id).unwrap_or(id)
 }
@@ -20,16 +18,8 @@ fn keyboard_id(shown: &str) -> Option<String> {
         .or_else(|| tilo_keyboard_map::offered(shown).then(|| shown.to_owned()))
 }
 
-fn timezones() -> Vec<String> {
-    let mut zones = IANA_TIMEZONES
-        .lines()
-        .map(str::trim)
-        .filter(|zone| !zone.is_empty())
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    zones.sort();
-    zones.dedup();
-    zones
+fn timezones() -> &'static [String] {
+    crate::timezones::offered()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,7 +107,7 @@ pub(crate) fn profile_value(field: CzField, value: &str) -> Option<String> {
         CzField::Locale => install_profile_model::locales()
             .any(|locale| locale == value)
             .then(|| value.to_string()),
-        CzField::Timezone => timezones().into_iter().find(|zone| zone == value),
+        CzField::Timezone => timezones().iter().find(|zone| *zone == value).cloned(),
         CzField::Keyboard => keyboard_id(value),
         CzField::Filesystem => Filesystem::from_key(&value.to_ascii_lowercase())
             .or_else(|| {
@@ -232,7 +222,7 @@ pub(crate) fn form(profile: &InstallProfile, store: Option<&Store>, timezone_ope
                 .field(choice_field(
                     profile,
                     CzField::Timezone,
-                    timezones(),
+                    timezones().to_vec(),
                     store,
                     timezone_open,
                 ))
@@ -264,7 +254,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn customization_catalogs_match_the_embedded_profile_contract() {
+    fn customization_catalogs_match_the_profile_contract() {
         {
             let zones = timezones();
             assert!(zones.len() >= 400, "catalog unexpectedly incomplete");

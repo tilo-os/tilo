@@ -14,7 +14,6 @@
 //! * [`power_readiness`]: the battery rule before installing.
 //! * [`probes`]: what this computer proves about its boot chain.
 //! * [`private_io`]: the unattended recipe and recovery key's private files.
-//! * [`timezones`]: time zones on offer.
 
 pub mod backend;
 pub mod disks;
@@ -25,7 +24,6 @@ pub mod network_step;
 pub mod power_readiness;
 pub mod private_io;
 pub mod probes;
-pub mod timezones;
 
 /// The installer's console: action frames on the live medium's private socket
 /// and virtio port.

@@ -58,6 +58,8 @@ tilo-lock = { version = "0.1.0", path = "../../crates/platform/tilo-lock" }
 tilo-os-release = { version = "0.1.0", path = "../../crates/platform/os-release" }
 install-profile-model = { path = "../../crates/os/install-profile-model" }
 tilo-keyboard-map = { path = "../../crates/desktop/tilo-keyboard-map" }
+# The time zones the profile offers, as this machine reads them.
+tilo-clock = { path = "../../crates/platform/tilo-clock", features = ["local"] }
 # The one maker of a machine's plan and its single-use token, shared with
 # `tilo machine add` so the window and the command write the same document.
 install-plan = { path = "../../crates/os/install-plan" }
@@ -128,6 +130,8 @@ ui = { package = "tilo-ui", path = "../../crates/ui/ui-core", features = ["model
 tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
 ui = { package = "tilo-ui", path = "../../crates/ui/ui-core", features = ["dx12-shader-cache", "model"] }
 windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_System_Memory", "Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Power", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming"] }
+# Windows installs no zoneinfo: the time-zone database comes bundled instead.
+jiff = { workspace = true, features = ["tzdb-bundle-platform"] }
 
 # The cargo-xwin Clang sysroot's NEON header cannot compile blake3's C
 # intrinsics for Windows ARM64. The portable implementation is sufficient for
@@ -136,8 +140,8 @@ windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_F
 blake3 = { workspace = true, features = ["no_neon"] }
 
 [package.metadata.cargo-machete]
-# This target dependency only enables a feature on the transitive blake3 crate.
-ignored = ["blake3"]
+# These target dependencies only enable a feature on a transitive crate.
+ignored = ["blake3", "jiff"]
 
 [dev-dependencies]
 url.workspace = true
