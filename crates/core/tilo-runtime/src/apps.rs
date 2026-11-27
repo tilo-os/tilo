@@ -647,7 +647,10 @@ impl Apps {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     fn hosted_window(&self, app: &str, workspace: &str) -> Result<instances::HostedWindow, String> {
         let origin = self.origin_connection(app, workspace)?;
-        self.instances.open_window(app, workspace, origin)
+        let window = self.instances.open_window(app, workspace, origin)?;
+        // A person opening the app is a change: what stopped coming up here is tried again.
+        self.failures.forget(workspace, app);
+        Ok(window)
     }
 
     /// [`Self::hosted_window`], with the window's patch connection already put on the link the
@@ -686,8 +689,6 @@ impl Apps {
         let (instance, theirs) = runtime_portal::origin_connector::connection()
             .map_err(|error| format!("no connection to {app}'s {origin} connector: {error}"))?;
         self.attach_origin(app, &origin, workspace, &theirs)?;
-        // Its connector came up: what stopped coming up here is tried again from a clean slate.
-        self.failures.forget(workspace, app);
         Ok(Some(instance))
     }
 
@@ -1332,8 +1333,14 @@ impl Apps {
     /// would hold none of the app's data.
     #[cfg(target_os = "linux")]
     fn start_tilolang_window(&self, app: &str, workspace: &str) -> Result<(), String> {
-        self.instances
-            .start_window(app, workspace, self.origin_connection(app, workspace)?)
+        let started =
+            self.instances
+                .start_window(app, workspace, self.origin_connection(app, workspace)?);
+        if started.is_ok() {
+            // A person opening the app is a change: what stopped coming up here is tried again.
+            self.failures.forget(workspace, app);
+        }
+        started
     }
 }
 

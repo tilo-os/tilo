@@ -2056,6 +2056,7 @@ fn a_connection_that_exits_as_it_starts_is_retried_then_stops_with_its_reason() 
     apps.retry = Retry {
         first: std::time::Duration::ZERO,
         cap: std::time::Duration::ZERO,
+        settled: std::time::Duration::from_secs(60),
         identical: 3,
     };
     let failures = apps.failures();
@@ -2187,6 +2188,160 @@ fn a_connection_needing_a_runtime_that_is_missing_is_refused_once_without_starts
         .find(|row| row.app == NEEDS_BUN)
         .expect("the app has a row");
     assert_eq!(row.failed(), Some(refusal.reason.as_str()));
+}
+
+/// A connector that says it is up and then ends at once: the test binary itself, started as the
+/// connector ([`readying_launcher`]), so a crash right after a healthy start is exercised
+/// through the real socket and the real reader.
+#[cfg(target_os = "linux")]
+const CONNECTOR_HELPER_ENV: &str = "TILO_TEST_CONNECTOR_HELPER";
+#[cfg(target_os = "linux")]
+const CONNECTOR_HELPER_TEST: &str = "apps::tests::a_connector_helper_says_ready_and_ends";
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_connector_helper_says_ready_and_ends() {
+    if std::env::var_os(CONNECTOR_HELPER_ENV).is_none() {
+        return;
+    }
+    let (released, mut fds) = runtime_portal::fd_transport::recv_with_fds(std::io::stdin())
+        .expect("the launch hold carries the connector's socket");
+    assert_eq!(released, vec![1], "the launch is released before it runs");
+    let socket = fds
+        .pop()
+        .expect("the connector's socket came with the hold");
+    runtime_portal::origin_connector::say_ready(&socket).expect("the connector says it is up");
+    // Stay on the socket a moment, so the connections the device hands a connector are sent
+    // before this ends and nothing it writes meets a closed socket.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    eprintln!("the connector ended as it started");
+}
+
+/// A launcher standing in for `tilo-launcher` for an app whose connection is its origin's
+/// connector: it records each start in `started`, and on a connector launch runs the test
+/// binary as the connector ([`a_connector_helper_says_ready_and_ends`]), which says it is up
+/// and ends at once.
+#[cfg(target_os = "linux")]
+fn readying_launcher(root: &Path, started: &Path) -> tilo_test_env::StandIn {
+    tilo_test_env::stand_in(
+        root.join("tilo-launcher"),
+        &format!(
+            "printf '%s\\n' \"$$\" >> '{started}'\n\
+             case \"$1\" in\n\
+               run) export {env}=1; exec '{exe}' {test} --exact --test-threads 1 --nocapture ;;\n\
+               *) hold ;;\n\
+             esac\n",
+            started = started.display(),
+            env = CONNECTOR_HELPER_ENV,
+            exe = std::env::current_exe()
+                .expect("the test binary is known")
+                .display(),
+            test = CONNECTOR_HELPER_TEST,
+        ),
+    )
+    .expect("the launcher stands in")
+}
+
+/// Wait for the connector of `app` that ran to end, as the turn that keeps it does.
+#[cfg(target_os = "linux")]
+fn wait_for_connector_end(apps: &Apps, app: &str) {
+    use tilo_workspace_service::work::HostConnections;
+    let until = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(10))
+        .unwrap_or_else(std::time::Instant::now);
+    while HostConnections::runs(apps, WORKSPACE, app) {
+        assert!(std::time::Instant::now() < until, "the connector ends");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// A connector that comes up and then ends at once is backed off exactly as a start that never
+/// came up is: its wait doubles, and after three such ends it stops with its own last words as
+/// the reason, and its row says so.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_connector_that_ends_soon_after_it_comes_up_backs_off_then_stops_with_its_reason() {
+    use tilo_workspace_service::work::HostConnections;
+    const APP: &str = "so.tilo.ending";
+    let (_temp, root) = canonical_temp();
+    let mut store = Store::new(&root);
+    store.install(
+        APP,
+        &connecting_manifest(APP, "tilolang/0.0.1-test"),
+        &[("probe", b"binary")],
+    );
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment
+        .remove("TILO_APPS_SYSTEM_DIR")
+        .set("TILO_APPS_DATA_DIR", &store.root);
+    installing_runtime(&mut environment, &root, "tilolang/0.0.1-test");
+    let started = root.join("started");
+    let launcher = readying_launcher(&root, &started);
+    let mut apps = apps(&store, &root, vec![launcher.path().to_owned()]);
+    apps.hand_actions(Box::new(|_, _, _, _| Ok(())));
+    let first = std::time::Duration::from_millis(50);
+    let cap = std::time::Duration::from_secs(300);
+    apps.retry = Retry {
+        first,
+        cap,
+        settled: std::time::Duration::from_secs(60),
+        identical: 3,
+    };
+    let failures = apps.failures();
+    let cache = crate::device::packages::PackageCache::new(
+        &SigningKey::from_bytes(&[7; 32]),
+        false,
+        &store.root,
+        Arc::new(crate::device::control::DeviceContent::at(
+            &root.join("content"),
+        )),
+    );
+    cache.watch_app_failures(Arc::clone(&failures));
+
+    let mut waits = Vec::new();
+    for _ in 0..3 {
+        let origin = apps
+            .origin_connection(APP, WORKSPACE)
+            .expect("the connector comes up");
+        assert!(origin.is_some(), "the app reaches its origin");
+        wait_for_connector_end(&apps, APP);
+        let ended = HostConnections::ended(&apps, WORKSPACE, APP).expect("it ended on its own");
+        assert!(
+            ended.reason.contains("the connector ended as it started"),
+            "its last words are the reason: {}",
+            ended.reason
+        );
+        waits.push(ended.again);
+        if ended.again < cap {
+            std::thread::sleep(
+                ended
+                    .again
+                    .saturating_add(std::time::Duration::from_millis(10)),
+            );
+        }
+    }
+    assert_eq!(
+        waits,
+        [first, first.saturating_mul(2), cap],
+        "the wait doubles, then it stops"
+    );
+
+    // It stopped: the supervisor's start is refused, with its reason, and starts nothing more.
+    let refused = connection_started(&apps, WORKSPACE, APP).expect_err("it stopped here");
+    assert!(
+        refused.reason.contains("the connector ended as it started"),
+        "{}",
+        refused.reason
+    );
+    let spawns = std::fs::read_to_string(&started).map_or(0, |written| written.lines().count());
+    assert_eq!(spawns, 3, "three starts, then this device stops it");
+
+    let rows = cache.rows_for_test().expect("the cache's rows");
+    let row = rows
+        .iter()
+        .find(|row| row.app == APP)
+        .expect("the app has a row");
+    assert_eq!(row.failed(), Some(refused.reason.as_str()));
 }
 
 /// The action catalogue's revision stands still across a failing app's attempts: nothing of the

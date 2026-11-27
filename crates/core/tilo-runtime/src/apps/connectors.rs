@@ -25,8 +25,8 @@
 //! dispatch connection, and a launcher that ends before that is answered with the first of what
 //! it wrote, never counted as started.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 
@@ -39,6 +39,10 @@ use tilo_lock::MutexRecover as _;
 /// held longer for it.
 #[cfg(target_os = "linux")]
 const UP_BY: Duration = Duration::from_secs(2);
+
+/// How long after a connector ended its word of being up may still be read off its socket.
+#[cfg(target_os = "linux")]
+const UP_WORD: Duration = Duration::from_millis(100);
 
 /// How long a connector that ended has to have written its last error line.
 #[cfg(target_os = "linux")]
@@ -59,10 +63,59 @@ pub(crate) type Process = std::process::Child;
 #[cfg(target_os = "macos")]
 pub(crate) type Process = launcher_macos::LaunchedApp;
 
-/// A running held connection: the device's end of its process's socket, and the process.
+/// What a connector wrote last, which says why one that ran ended, and whether the reader is
+/// still reading: a connector that ended may still be writing its last words.
+#[derive(Default)]
+struct Tail {
+    last: VecDeque<String>,
+    reading: bool,
+}
+
+/// A running held connection: the device's end of its process's socket, the process, what it has
+/// written, and when it started.
 struct Running {
     socket: Descriptor,
     child: Process,
+    tail: Arc<Mutex<Tail>>,
+    started: std::time::Instant,
+}
+
+/// A connector that ended on its own: why, and how long it ran before it did.
+struct Death {
+    reason: String,
+    up: std::time::Duration,
+}
+
+impl Running {
+    /// What this connector says of its end, waiting a moment for the last of its error output to
+    /// be read, as `key`'s app and origin name it.
+    fn death(&self, (app, origin, _): &Key) -> Death {
+        #[cfg(target_os = "linux")]
+        {
+            let by = std::time::Instant::now()
+                .checked_add(SAID_BY)
+                .unwrap_or_else(std::time::Instant::now);
+            loop {
+                if !self.tail.lock_recover().reading || std::time::Instant::now() >= by {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        }
+        let said = {
+            let tail = self.tail.lock_recover();
+            tail.last.iter().cloned().collect::<Vec<_>>().join(" | ")
+        };
+        let reason = if said.is_empty() {
+            format!("{app}'s {origin} connector ended soon after it came up")
+        } else {
+            format!("{app}'s {origin} connector ended soon after it came up: {said}")
+        };
+        Death {
+            reason,
+            up: self.started.elapsed(),
+        }
+    }
 }
 
 /// What hands a started connector its connection to the device's dispatch, before any reader:
@@ -85,6 +138,9 @@ pub(crate) fn pid(process: &Process) -> Option<u32> {
 #[derive(Default)]
 pub(crate) struct Connectors {
     running: Mutex<HashMap<Key, Running>>,
+    /// The connectors that ended on their own, by workspace and app, until the turn that keeps
+    /// them reads why and backs off.
+    deaths: Mutex<HashMap<(String, String), Death>>,
     actions: std::sync::OnceLock<Box<Actions>>,
 }
 
@@ -116,6 +172,7 @@ impl Connectors {
                 Err(error) => {
                     tracing::info!(%error, app, origin, "an origin connector's socket is closed");
                     if let Some(mut closed) = running.remove(&key) {
+                        self.note_death(&key, &closed);
                         let _ = closed.child.kill();
                         reap(closed.child);
                     }
@@ -126,24 +183,30 @@ impl Connectors {
             .map_err(|error| format!("no socket for {app}'s {origin} connector: {error}"))?;
         let mut child = start(&socket)?;
         drop(socket);
-        // What it writes as it starts is kept for why it did not come up; what it writes while
-        // it runs is the log's.
+        // What it writes as it starts is kept for why it did not come up, and the last of it for
+        // why one that ran ended; all of it is the log's.
+        let tail = Arc::new(Mutex::new(Tail::default()));
         #[cfg(target_os = "linux")]
         let said = child.stderr.take().map(|stderr| {
             let (sender, receiver) = std::sync::mpsc::channel();
             let tag = format!("{app} {origin}");
+            let kept = Arc::clone(&tail);
+            kept.lock_recover().reading = true;
             match std::thread::Builder::new()
                 .name("connector-err".into())
                 .spawn(move || {
-                    let _ = sender.send(first_lines(stderr, &tag));
+                    let _ = sender.send(first_lines(stderr, &tag, &kept));
                 }) {
                 Ok(_) => receiver,
                 Err(error) => {
                     tracing::debug!(%error, app, origin, "a connector's error output is not read");
+                    tail.lock_recover().reading = false;
                     receiver
                 }
             }
         });
+        #[cfg(not(target_os = "linux"))]
+        let said: Option<std::sync::mpsc::Receiver<Vec<String>>> = None;
         #[cfg(target_os = "macos")]
         let child_pid = pid(&child).unwrap_or(0);
         #[cfg(not(target_os = "macos"))]
@@ -171,34 +234,7 @@ impl Connectors {
         // A launcher that fails to start the app ends here, before it ever reads a reader: the
         // start did not come up, and what it said is why. One that runs on past the wait is up.
         if came_up(&mut child, &ours).is_err() {
-            #[cfg(target_os = "linux")]
-            {
-                // It may still be ending, its last words not written yet: wait a moment for its
-                // own end, whose status and words are the answer, before killing it short.
-                let by = std::time::Instant::now()
-                    .checked_add(SAID_BY)
-                    .unwrap_or_else(std::time::Instant::now);
-                let status = loop {
-                    match child.try_wait() {
-                        Ok(Some(status)) => break Some(status),
-                        Ok(None) if std::time::Instant::now() < by => {
-                            std::thread::sleep(Duration::from_millis(5));
-                        }
-                        _ => {
-                            let _ = child.kill();
-                            break child.wait().ok();
-                        }
-                    }
-                };
-                let lines = said
-                    .and_then(|receiver| receiver.recv_timeout(SAID_BY).ok())
-                    .unwrap_or_default();
-                return Err(connector_ended(app, origin, status, &lines));
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                return Err(format!("{app}'s {origin} connector ended as it started"));
-            }
+            return Err(ended_before_up(app, origin, &mut child, said));
         }
         tracing::info!(app, origin, workspace, "an origin connector started");
         running.insert(
@@ -206,27 +242,78 @@ impl Connectors {
             Running {
                 socket: ours,
                 child,
+                tail,
+                started: std::time::Instant::now(),
             },
         );
         drop(running);
         Ok(())
     }
+
+    /// Keep what `connector` says of its end against `key`, for the turn that keeps it to read.
+    fn note_death(&self, key: &Key, connector: &Running) {
+        let death = connector.death(key);
+        self.deaths
+            .lock_recover()
+            .insert((key.2.clone(), key.0.clone()), death);
+    }
 }
 
 impl Connectors {
-    /// Whether a connector of `app` runs in `workspace` now.
+    /// Whether a connector of `app` runs in `workspace` now, keeping what a connector of it that
+    /// ended on its own says of why.
     pub(crate) fn runs(&self, app: &str, workspace: &str) -> bool {
-        let mut running = self.running.lock_recover();
-        running.retain(|(of, _, inside), connector| {
-            !(of == app && inside == workspace) || alive(&mut connector.child)
-        });
-        running
+        let dead: Vec<(Key, Running)> = {
+            let mut running = self.running.lock_recover();
+            let keys: Vec<Key> = running
+                .keys()
+                .filter(|(of, _, inside)| of == app && inside == workspace)
+                .cloned()
+                .collect();
+            let mut dead = Vec::new();
+            for key in keys {
+                let Some(mut connector) = running.remove(&key) else {
+                    continue;
+                };
+                if alive(&mut connector.child) {
+                    running.insert(key, connector);
+                } else {
+                    dead.push((key, connector));
+                }
+            }
+            drop(running);
+            dead
+        };
+        // What it said of its end may still be being read: wait for it outside the connectors'
+        // lock, so no start waits on a dead one's last words.
+        for (key, connector) in dead {
+            self.note_death(&key, &connector);
+        }
+        self.running
+            .lock_recover()
             .keys()
             .any(|(of, _, inside)| of == app && inside == workspace)
     }
 
+    /// What a connector of `app` in `workspace` that ended on its own said of why, and how long
+    /// it ran: `None` when it did not end on its own since the last start.
+    pub(crate) fn ended(
+        &self,
+        app: &str,
+        workspace: &str,
+    ) -> Option<(String, std::time::Duration)> {
+        self.deaths
+            .lock_recover()
+            .remove(&(workspace.to_owned(), app.to_owned()))
+            .map(|death| (death.reason, death.up))
+    }
+
     /// Stop every connector of `app` in `workspace`.
     pub(crate) fn stop(&self, app: &str, workspace: &str) {
+        // A person's stop is no failure to report.
+        self.deaths
+            .lock_recover()
+            .remove(&(workspace.to_owned(), app.to_owned()));
         let stopped: Vec<Running> = {
             let mut running = self.running.lock_recover();
             let keys: Vec<Key> = running
@@ -291,7 +378,12 @@ fn came_up(child: &mut Process, socket: &Descriptor) -> Result<(), ()> {
             Err(RecvTimeoutError::Timeout) => {}
         }
         if !alive(child) {
-            return Err(());
+            // It ended, and may have said it was up just before: its word is still on the
+            // socket, and the reader answers with it before the end. Give it that moment.
+            return match receiver.recv_timeout(UP_WORD) {
+                Ok(Ok(Some(_))) => Ok(()),
+                _ => Err(()),
+            };
         }
         let_go |= runtime_portal::process_link::hung_up(socket);
         if std::time::Instant::now() >= by {
@@ -328,10 +420,54 @@ fn connector_ended(
     }
 }
 
-/// The first of what `stderr` says, up to [`SAID_LINES`] lines, logged as it comes and read to the
-/// end so the process is never held up by an unread pipe.
+/// Why a connector that ended before it came up is reported: how it ended, and the first of its
+/// error lines. Its child is reaped here.
 #[cfg(target_os = "linux")]
-fn first_lines(mut stderr: impl std::io::Read, tag: &str) -> Vec<String> {
+fn ended_before_up(
+    app: &str,
+    origin: &str,
+    child: &mut Process,
+    said: Option<std::sync::mpsc::Receiver<Vec<String>>>,
+) -> String {
+    // It may still be ending, its last words not written yet: wait a moment for its own end,
+    // whose status and words are the answer, before killing it short.
+    let by = std::time::Instant::now()
+        .checked_add(SAID_BY)
+        .unwrap_or_else(std::time::Instant::now);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if std::time::Instant::now() < by => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            _ => {
+                let _ = child.kill();
+                break child.wait().ok();
+            }
+        }
+    };
+    let lines = said
+        .and_then(|receiver| receiver.recv_timeout(SAID_BY).ok())
+        .unwrap_or_default();
+    connector_ended(app, origin, status, &lines)
+}
+
+/// [`ended_before_up`] where a connector's own launch is not the Linux launcher's.
+#[cfg(not(target_os = "linux"))]
+fn ended_before_up(
+    app: &str,
+    origin: &str,
+    _child: &mut Process,
+    _said: Option<std::sync::mpsc::Receiver<Vec<String>>>,
+) -> String {
+    format!("{app}'s {origin} connector ended as it started")
+}
+
+/// The first of what `stderr` says, up to [`SAID_LINES`] lines, logged as it comes and read to the
+/// end so the process is never held up by an unread pipe. The same lines, and the last ones, are
+/// kept in `tail` for a start that did not come up and for one that ended soon after it did.
+#[cfg(target_os = "linux")]
+fn first_lines(mut stderr: impl std::io::Read, tag: &str, tail: &Mutex<Tail>) -> Vec<String> {
     let mut kept: Vec<String> = Vec::new();
     let mut chunk = [0_u8; 4096];
     let mut lines = wire_frame::BoundedLines::new(wire_frame::LINE_BYTES);
@@ -345,8 +481,13 @@ fn first_lines(mut stderr: impl std::io::Read, tag: &str) -> Vec<String> {
             "[connector {tag}] {line}"
         );
         if kept.len() < SAID_LINES {
-            kept.push(line);
+            kept.push(line.clone());
         }
+        let mut tail = tail.lock_recover();
+        if tail.last.len() == SAID_LINES {
+            tail.last.pop_front();
+        }
+        tail.last.push_back(line);
     };
     loop {
         let read = match stderr.read(&mut chunk) {
@@ -358,6 +499,7 @@ fn first_lines(mut stderr: impl std::io::Read, tag: &str) -> Vec<String> {
         lines.push(chunk.get(..read).unwrap_or_default(), &mut keep);
     }
     lines.finish(keep);
+    tail.lock_recover().reading = false;
     kept
 }
 

@@ -107,6 +107,14 @@ impl Connections {
             holding.renewed_ms = now_ms;
         }
         if !host.runs(&key.0, &key.1) {
+            // A connection that ended soon after it came up is a failure like a start that never
+            // did: it backs off the same way, and its own words are the reason.
+            if let Some(refusal) = host.ended(&key.0, &key.1) {
+                tracing::warn!(workspace = %key.0, app = %key.1, reason = %refusal.reason, "an app's connection ended soon after it came up");
+                self.refused(key, &refusal, now_ms);
+                self.give_up(host, key, true).await;
+                return;
+            }
             tracing::warn!(workspace = %key.0, app = %key.1, "an app's connection ended, so this device starts it again");
             match host.start(&key.0, &key.1).await {
                 Ok(()) => {

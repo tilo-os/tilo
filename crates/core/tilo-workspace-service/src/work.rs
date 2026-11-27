@@ -971,6 +971,14 @@ pub trait HostConnections: Send + Sync {
     /// Whether the process this device started for `app` in `workspace` runs.
     fn runs(&self, workspace: &str, app: &str) -> bool;
 
+    /// The process this device started for `app`'s connection in `workspace` has ended: why,
+    /// when that is a failure to wait out like a start that never came up, and how long before
+    /// it may start again. `None` when it ran long enough that its next start comes at once.
+    /// Called once for each end, before the next start is asked for.
+    fn ended(&self, _workspace: &str, _app: &str) -> Option<StartRefusal> {
+        None
+    }
+
     /// Stop the process this device started for `app` in `workspace`.
     fn stop(&self, workspace: &str, app: &str);
 }

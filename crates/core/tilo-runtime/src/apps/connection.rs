@@ -63,13 +63,7 @@ impl HostConnections for Apps {
         Box::pin(async move {
             // The installed package this start runs: a reinstall of it is another one, and mends
             // a failure the app stopped here.
-            let package = self
-                .installed()
-                .into_iter()
-                .find(|installed| installed.app_id == app)
-                .map_or_else(String::new, |installed| {
-                    installed.payload_root.display().to_string()
-                });
+            let package = self.package_of(app);
             if let Some(refusal) = self.failures.waiting(
                 workspace,
                 app,
@@ -94,10 +88,7 @@ impl HostConnections for Apps {
                 ));
             }
             match self.start_connection(app, workspace).await {
-                Ok(()) => {
-                    self.failures.started(workspace, app);
-                    Ok(())
-                }
+                Ok(()) => Ok(()),
                 Err(reason) => Err(self
                     .failures
                     .failed(workspace, app, &package, reason, None, self.retry)),
@@ -121,9 +112,36 @@ impl HostConnections for Apps {
         }
         self.launched.stop_no_window(app, workspace);
     }
+
+    fn ended(&self, workspace: &str, app: &str) -> Option<StartRefusal> {
+        let (reason, up) = self.connectors.ended(app, workspace)?;
+        if up >= self.retry.settled {
+            // It ran a connection's span: whatever failed before is over.
+            self.failures.forget(workspace, app);
+            return None;
+        }
+        // It ended soon after it came up, as a crash loop does: back it off like a failed start,
+        // with its own last words as the reason.
+        let package = self.package_of(app);
+        Some(
+            self.failures
+                .failed(workspace, app, &package, reason, None, self.retry),
+        )
+    }
 }
 
 impl Apps {
+    /// The installed package a start of `app`'s connection runs, as its payload lives: a
+    /// reinstall of it is another one, and mends a failure the app stopped here.
+    fn package_of(&self, app: &str) -> String {
+        self.installed()
+            .into_iter()
+            .find(|installed| installed.app_id == app)
+            .map_or_else(String::new, |installed| {
+                installed.payload_root.display().to_string()
+            })
+    }
+
     /// Start `app`'s connection in `workspace`: [`HostConnections::start`] once a failure the app
     /// stopped here is not in the way.
     async fn start_connection(&self, app: &str, workspace: &str) -> Result<(), String> {

@@ -2,12 +2,14 @@
 //! it again.
 //!
 //! A start that fails the same way is retried with a wait that doubles, up to a cap, so a failing
-//! app is not started in a loop. After [`Retry::identical`] failures in a row it stops, and the
-//! app's row says why, in its own words or its launcher's first error lines; so does a start
-//! refused for a reason no time mends, such as a runtime the app needs that is not installed.
-//! A stopped app is still looked at after the cap, by a start that refuses without starting
-//! anything: that is how a reinstall, or a runtime that arrived, is found. Opening the app or
-//! stopping its connection forgets the failure at once.
+//! app is not started in a loop. A connection that came up and then ended soon after counts as
+//! the same failure, with its own last words as the reason: a crash loop backs off too. After
+//! [`Retry::identical`] failures in a row it stops, and the app's row says why, in its own words
+//! or its launcher's first error lines; so does a start refused for a reason no time mends, such
+//! as a runtime the app needs that is not installed. A stopped app is still looked at after the
+//! cap, by a start that refuses without starting anything: that is how a reinstall, or a runtime
+//! that arrived, is found. A connection that ran for [`Retry::settled`] forgets its failures, and
+//! opening the app or stopping its connection forgets them at once.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -19,14 +21,19 @@ use tilo_workspace_service::work::StartRefusal;
 /// Which connection: the workspace, and the app.
 type Key = (String, String);
 
-/// How this device retries a start that failed: the first wait, doubled per failure up to `cap`,
-/// and how many identical failures in a row stop it until something changes.
+/// How this device retries a connection that failed, whether it never came up or ended soon
+/// after it did: the first wait, doubled per failure up to `cap`, how long a run must last
+/// before its failures are forgotten, and how many identical failures in a row stop it until
+/// something changes.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Retry {
     /// How long after the first failure the next start comes.
     pub first: Duration,
     /// The longest a wait grows to, and how often a stopped app is looked at again.
     pub cap: Duration,
+    /// How long a connection that came up must run for its failures to be forgotten: one that
+    /// ends before this is a failure like any other, so a crash loop backs off too.
+    pub settled: Duration,
     /// How many times the same failure in a row stops the app here.
     pub identical: u32,
 }
@@ -36,6 +43,7 @@ impl Default for Retry {
         Self {
             first: Duration::from_secs(5),
             cap: Duration::from_secs(300),
+            settled: Duration::from_secs(60),
             identical: 3,
         }
     }
@@ -167,11 +175,6 @@ impl Failures {
             reason,
             again: wait,
         }
-    }
-
-    /// Record that `app`'s connection in `workspace` came up: nothing is wrong with it here.
-    pub(crate) fn started(&self, workspace: &str, app: &str) {
-        self.forget(workspace, app);
     }
 
     /// Forget what this device saw of `app`'s connection in `workspace`: a person opened or
