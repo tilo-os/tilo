@@ -471,7 +471,6 @@ async fn a_workspace_joined_after_the_login_reaches_this_devices_copy() {
     reason = "one grant, from the server to this device's copy to a provided call, read top to bottom"
 )]
 async fn a_grant_written_on_the_server_reaches_this_devices_copy_and_admits_a_provided_call() {
-    use tilo_action_services::TestProvider;
     use tilo_actions::remote::{
         ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget,
     };
@@ -552,7 +551,12 @@ async fn a_grant_written_on_the_server_reaches_this_devices_copy_and_admits_a_pr
     )
     .await;
 
-    let provided = Arc::new(TestProvider::new());
+    // An action an editor runs and a viewer does not: an undoable change to the device's record.
+    let provided = Arc::new(declaring(
+        PROVIDER,
+        "rename",
+        tilo_actions::ActionKind::Undoable,
+    ));
     own.copies().provide(PROVIDER, Arc::clone(&provided) as _);
     let router = iroh::protocol::Router::builder(own.endpoint())
         .accept(
@@ -581,7 +585,7 @@ async fn a_grant_written_on_the_server_reaches_this_devices_copy_and_admits_a_pr
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
                     provider: PROVIDER.to_owned(),
-                    address: tilo_actions::ActionAddress::new("devices", "restart"),
+                    address: tilo_actions::ActionAddress::new("devices", "rename"),
                 },
                 argument: InvokeArgument::None,
                 context: None,
@@ -614,7 +618,7 @@ async fn a_grant_written_on_the_server_reaches_this_devices_copy_and_admits_a_pr
         }
     })
     .await;
-    assert!(refused.is_err(), "a viewer may not restart the device");
+    assert!(refused.is_err(), "a viewer may not rename the device");
     assert!(
         provided.asked().is_empty(),
         "a refused call never reaches the provider"
@@ -1030,16 +1034,53 @@ async fn desktop_founds_its_persons_workspace(
     person
 }
 
+/// A provider of `provider` that declares the one action it answers, `devices#action`, of
+/// `kind`, as every provider declares what it answers: what it declares the action's kind as is
+/// what the workspace's grants are read for, and an action declared nowhere is refused.
+fn declaring(
+    provider: &'static str,
+    action: &'static str,
+    kind: tilo_actions::ActionKind,
+) -> tilo_action_services::TestProvider {
+    use tilo_actions::remote::{CataloguePage, CatalogueRow};
+    tilo_action_services::TestProvider::new().with_catalogue(move |_, query| {
+        let row = CatalogueRow::for_action(
+            provider,
+            provider,
+            tilo_actions::ActionDescriptor {
+                did: None,
+                state: tilo_actions::ActionState::default(),
+                semantic_identity: None,
+                address: tilo_actions::ActionAddress::new("devices", action),
+                resource_kind: "device".into(),
+                resource_label: "Devices".into(),
+                action_label: action.into(),
+                keywords: Vec::new(),
+                icon: None,
+                description: None,
+                locus: tilo_actions::ExecutionLocus::ClientLocal,
+                kind: tilo_actions::OperationKind::Effect,
+                contract: tilo_actions::ActionContract {
+                    kind,
+                    ..tilo_actions::ActionContract::default()
+                },
+                input: tilo_actions::InputSpec::None,
+                params: Vec::new(),
+                view: None,
+            },
+        );
+        Ok(CataloguePage::from_rows("1".into(), vec![row], &query))
+    })
+}
+
 /// The daemon keeping the workspaces answers an action through the device's dispatch: the
 /// same `Answers` its endpoint serves `tilo-actions/1` with, never a dispatch of the server's
 /// own.
 #[tokio::test]
 async fn a_server_answers_an_action_through_its_devices_dispatch() {
     use std::sync::Arc;
-    use tilo_action_services::TestProvider;
     use tilo_actions::remote::{
-        ActionProvider as _, CataloguePage, CatalogueRow, InvokeArgument, InvokeRequest,
-        ReceiptStatus, RemoteActionTarget,
+        ActionProvider as _, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
     };
 
     const PROVIDER: &str = "so.tilo.devices";
@@ -1064,36 +1105,11 @@ async fn a_server_answers_an_action_through_its_devices_dispatch() {
         .clone();
     let workspace = hosted.create("Home").await.unwrap().workspace;
 
-    // The provider declares the action it answers, as every provider does: what it declares
-    // its kind as is what the workspace's grants are read for.
-    let provided = Arc::new(TestProvider::new().with_catalogue(|_, query| {
-        let row = CatalogueRow::for_action(
-            PROVIDER,
-            PROVIDER,
-            tilo_actions::ActionDescriptor {
-                did: None,
-                state: tilo_actions::ActionState::default(),
-                semantic_identity: None,
-                address: tilo_actions::ActionAddress::new("devices", "restart"),
-                resource_kind: "device".into(),
-                resource_label: "Devices".into(),
-                action_label: "Restart".into(),
-                keywords: Vec::new(),
-                icon: None,
-                description: None,
-                locus: tilo_actions::ExecutionLocus::ClientLocal,
-                kind: tilo_actions::OperationKind::Effect,
-                contract: tilo_actions::ActionContract {
-                    kind: tilo_actions::ActionKind::Outside,
-                    ..tilo_actions::ActionContract::default()
-                },
-                input: tilo_actions::InputSpec::None,
-                params: Vec::new(),
-                view: None,
-            },
-        );
-        Ok(CataloguePage::from_rows("1".into(), vec![row], &query))
-    }));
+    let provided = Arc::new(declaring(
+        PROVIDER,
+        "restart",
+        tilo_actions::ActionKind::Outside,
+    ));
     hosted.provide(PROVIDER, Arc::clone(&provided) as _);
     let caller = tilo_workspace_service::service::local_caller(&server_cert)
         .in_workspace(workspace.as_str());
