@@ -656,18 +656,20 @@ fn target(row: &Offer) -> RemoteActionTarget {
 /// Do the desktop's own action `target` with `args`, called `title` where
 /// the answer names it: a verb `tilo` spells itself, which needs no listing
 /// to find. Says what it answers, as `tilo
-/// do` says an answer.
+/// do` says an answer: the lines a person reads, or with `json` the typed
+/// answer itself.
 pub fn run_target(
     sockets: &[ControlSocket],
     target: RemoteActionTarget,
     title: &str,
     args: &Value,
     spelling: &Spelling,
+    json: bool,
     io: &mut Io<'_>,
 ) -> u8 {
     say(
         call_target(sockets, target, title, args, spelling),
-        false,
+        json,
         io,
     )
 }

@@ -1399,7 +1399,7 @@ fn run(mut cli: Cli) -> Result<ExitCode> {
         Cmd::Open { app, items } => Ok(desktop::run_open(&app, &items, &spelling)),
         Cmd::Action { cmd } => Ok(desktop::run_action(cmd, cli.json, &spelling)),
         Cmd::Server { cmd } => server::serve(cmd),
-        Cmd::Machine { cmd } => machine::serve(cmd),
+        Cmd::Machine { cmd } => machine::serve(cmd, cli.json),
         Cmd::Complete { what, prefix } => Ok(desktop::complete(
             what,
             prefix.as_deref().unwrap_or_default(),

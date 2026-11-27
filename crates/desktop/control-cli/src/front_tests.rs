@@ -290,6 +290,55 @@ fn do_picks_by_id_title_or_place_and_invokes_the_one_frame() {
     );
 }
 
+/// A verb that names its own action (`tilo machine show`) says its answer as
+/// the lines a person reads, or with `--json` as Tilo's typed answer alone.
+#[test]
+fn a_named_verb_says_its_answer_as_lines_or_typed_json() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let desktop = FakeDesktop::serve(dir.path(), "control.sock");
+    let sockets = [ControlSocket::Named(desktop.path.clone())];
+    let spelling = Spelling::tilo();
+    let target = RemoteActionTarget {
+        provider: "tilo.machines".into(),
+        address: ActionAddress::new("machines", "machine.show"),
+    };
+    let asking = serde_json::json!({"plan": "0123456789abcdef0123456789abcdef"});
+
+    let typed = ran(|io| {
+        run_target(
+            &sockets,
+            target.clone(),
+            "Show a machine you planned",
+            &asking,
+            &spelling,
+            true,
+            io,
+        )
+    });
+    assert_eq!(typed.code, 0, "{}", typed.err);
+    let answer: Value = serde_json::from_str(&typed.out).expect("the answer is JSON");
+    assert_eq!(answer["status"], "ok");
+    assert_eq!(answer["result"], "done", "the action's own answer, typed");
+    assert!(answer["invocation"].is_string(), "{}", typed.out);
+
+    let spoken = ran(|io| {
+        run_target(
+            &sockets,
+            target,
+            "Show a machine you planned",
+            &asking,
+            &spelling,
+            false,
+            io,
+        )
+    });
+    assert_eq!(spoken.code, 0, "{}", spoken.err);
+    assert_eq!(spoken.out, "ok\ndone\n");
+    assert_eq!(desktop.invoked().len(), 2);
+    let asked = args(&desktop.invoked()[0]);
+    assert_eq!(asked["plan"], "0123456789abcdef0123456789abcdef");
+}
+
 /// One action has one entry: a provider that offers the same address twice,
 /// with another row between the copies, is still one action to pick.
 #[test]

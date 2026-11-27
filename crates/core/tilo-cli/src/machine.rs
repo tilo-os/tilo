@@ -104,25 +104,33 @@ pub struct AddArgs {
     installer_url: String,
 }
 
-pub fn serve(cmd: MachineCmd) -> Result<std::process::ExitCode> {
+pub fn serve(cmd: MachineCmd, json: bool) -> Result<std::process::ExitCode> {
     match cmd {
-        MachineCmd::Add(add) => plan_and_ticket(&add),
+        MachineCmd::Add(add) => plan_and_ticket(&add, json),
         MachineCmd::List => ask(
             machines::LIST,
             "List the machines you planned",
             &serde_json::json!({}),
+            json,
         ),
         MachineCmd::Show { plan } => ask(
             machines::SHOW,
             "Show a machine you planned",
             &serde_json::json!({ "plan": plan.trim() }),
+            json,
         ),
     }
 }
 
 /// Ask the local session the machine step `step` with `args`, printing what
-/// it answers: the same action the installer's window presses.
-fn ask(step: &str, title: &str, args: &serde_json::Value) -> Result<std::process::ExitCode> {
+/// it answers: the same action the installer's window presses, in the lines a
+/// person reads or, as `--json` asks, as Tilo's typed answer.
+fn ask(
+    step: &str,
+    title: &str,
+    args: &serde_json::Value,
+    json: bool,
+) -> Result<std::process::ExitCode> {
     let sockets = crate::desktop::sockets();
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
@@ -139,6 +147,7 @@ fn ask(step: &str, title: &str, args: &serde_json::Value) -> Result<std::process
         title,
         args,
         &Spelling::tilo(),
+        json,
         &mut io,
     );
     std::io::Write::flush(&mut stdout)?;
@@ -206,7 +215,7 @@ fn choices(add: &AddArgs) -> Result<install_plan::Choices> {
     })
 }
 
-fn plan_and_ticket(add: &AddArgs) -> Result<std::process::ExitCode> {
+fn plan_and_ticket(add: &AddArgs, json: bool) -> Result<std::process::ExitCode> {
     let choices = choices(add)?;
     let dir = identity::dir()?;
     let named = install_plan::token().map_err(anyhow::Error::msg)?;
@@ -222,7 +231,7 @@ fn plan_and_ticket(add: &AddArgs) -> Result<std::process::ExitCode> {
         "token_file": token_file.display().to_string(),
         "installer_url": add.installer_url,
     });
-    let code = ask(machines::PLAN, "Plan a machine", &args)?;
+    let code = ask(machines::PLAN, "Plan a machine", &args, json)?;
     if code != std::process::ExitCode::SUCCESS {
         return Ok(code);
     }
