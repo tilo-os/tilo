@@ -516,19 +516,17 @@ fn room() -> Room {
         service: ResourceService::new(host, "ada"),
         channel: target(&design).id_string(),
         message,
-        task: published(&target(&made)),
+        task: target(&made),
         following: BTreeMap::new(),
         needed: std::collections::BTreeSet::new(),
     }
 }
 
-/// `record` as the session publishes it to another app: `tl:<app>:<id>`, of the type
-/// `<app>#<Type>`.
-fn published(record: &ResourceRef) -> ResourceRef {
+/// The address the session publishes `record` under (`tl:<app>:<id>`): what an action of its
+/// app is invoked on, and what a view of another app reads a reading of it by.
+fn address(record: &ResourceRef) -> String {
     let schema = tilolang_tilo::schema::lookup(&record.ty).expect("a tilolang record");
-    let id = format!("tl:{}:{}", schema.app, record.id_string());
-    ResourceRef::parse_id(&id, format!("{}#{}", schema.app, schema.name))
-        .expect("a published resource id")
+    format!("tl:{}:{}", schema.app, record.id_string())
 }
 
 /// Every node of `kind` under `node`.
@@ -643,6 +641,9 @@ fn session_turn(link: &SessionLink, layout: &LayoutReading, room: &mut Room) -> 
         room.service.read(id)
     });
     for (id, ty) in link.take_wanted() {
+        // As the session follows them: by the address the service answers the reading by.
+        let id =
+            tilolang_service::reading_address(&ty, &id, |app| room.service.module(app).is_some());
         room.following.insert(id, ty);
     }
     // The session reads again the readings a change touched; the test reads them all, as every
@@ -763,7 +764,7 @@ fn a_chat_place_waits_for_the_tasks_package_then_ticks_the_task_made_from_its_me
 
     // Ben finishes the task in Tasks, with no Tasks window open: the message's row ticks.
     room.service
-        .invoke(&room.task.id_string(), "check", &Map::new())
+        .invoke(&address(&room.task), "check", &Map::new())
         .unwrap();
     room.service.settle();
     for _ in 0..8 {

@@ -651,6 +651,12 @@ impl Shell {
             let shown = app.is_some_and(|app| {
                 self.link.package_apps().iter().any(|held| held == app) || rust_views.contains(&app)
             });
+            // A service answers another app's resource by the address the session publishes it
+            // under (`tl:<app>:<id>`), where the shell's views name it as the app's store does
+            // (`chat.workspace/<item>`): both parse as the one resource, so it is followed — and
+            // published, and read again when it moves — by the address.
+            let id =
+                tilolang_service::reading_address(&ty, &id, |app| services.module(app).is_some());
             if shown && !self.reading.contains_key(&id) {
                 self.reading.insert(id.clone(), ty.clone());
                 fresh.push((id, ty));
