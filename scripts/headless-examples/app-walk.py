@@ -1514,6 +1514,10 @@ class Walk:
         self.darks: dict[str, bool | None] = {}
         # What an op kept of an answer (`op_use`'s `keep`), for the ops after it.
         self.kept: dict = {}
+        # The controls the step's last op looked at, where it looked at all of them: the
+        # step's end reads that look rather than asking for the same controls again. Any op
+        # after it changes the surface, and puts this back.
+        self.listed: list[dict] | None = None
         # When the walk's first step began, by the session log's clock: its opens are the
         # launches of its app the log records after it.
         self.began_epoch = time.time()
@@ -1735,6 +1739,9 @@ class Walk:
         device, op = split_on(op, self.step_on)
         (name, value), = op.items()
         value = self.with_files(value)
+        # An op after one that listed every control changes the surface: what it saw is not
+        # what the step ends on.
+        self.listed = None
         handler = getattr(self, f"op_{name}", None)
         if handler is None:
             raise Failed(f"the step names an op this walk has no way to do: {name!r}")
@@ -2245,8 +2252,12 @@ class Walk:
 
     def op_targets(self, _value) -> dict:
         """What the desktop offers now, kept as evidence: the controls this
-        version draws, by name and by what each does."""
+        version draws, by name and by what each does. A step that ends on this op
+        hands that look to its own end, which does not ask for the same controls
+        again."""
         listed = self.targets()
+        if self.device is None:
+            self.listed = listed
         return {"targets": len(listed),
                 "app_controls": [t for t in listed
                                  if (t.get("identity") and ID_SEP in t["identity"])]}
@@ -3366,6 +3377,7 @@ class Walk:
             # there. The step says what the person is doing; the version says how.
             ops = ops[self.variant]
         self.catalogued = None
+        self.listed = None
         self.frames_seen = {}
         self.step_on = step.get("on")
         try:
@@ -3378,8 +3390,9 @@ class Walk:
             # Whatever this step waited for, the window it leaves open says the app: a window
             # that drew nothing of the app is a blank window, and no wait on a word catches one
             # whose words the shell draws itself. The step looks at the surface once: the blank
-            # check and the controls it records read that same look.
-            targets = self.session.targets()
+            # check and the controls it records read that same look, and an op that listed
+            # every control as the step's last has already taken it.
+            targets = self.listed if self.listed is not None else self.session.targets()
             self.require_shown(targets)
             if self.catalogued is not None:
                 record["catalogue"] = self.catalogued

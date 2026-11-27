@@ -570,6 +570,37 @@ class AskingOnlyForTheControlsAStepNames(unittest.TestCase):
         self.assertEqual(session.asks[0]["identities"], ["root\x1fedit"])
 
 
+class AStepThatListedItsControls(unittest.TestCase):
+    """A step whose last op lists every control hands that look to the step's own end: the
+    blank-window check and the controls it records read it instead of asking again."""
+
+    class Session:
+        def __init__(self, found):
+            self.found = found
+            self.asks = 0
+
+        def targets(self, names=(), identities=(), prefixes=(), doing=None):
+            self.asks += 1
+            return self.found
+
+    def walked(self, session):
+        return walk.Walk({"tl": {"id": "so.tilo.notes"}, "steps": []}, "tl",
+                         Path("/nonexistent"), Path("/nonexistent"), session=session)
+
+    def test_a_targets_op_hands_its_look_to_the_step(self):
+        session = self.Session([{"name": "Save", "rect": [0, 0, 10, 10]}])
+        walked = self.walked(session)
+        walked.op({"targets": True})
+        self.assertEqual([t["name"] for t in walked.listed], ["Save"])
+
+    def test_an_op_after_it_puts_the_look_back(self):
+        session = self.Session([{"name": "Save", "rect": [0, 0, 10, 10]}])
+        walked = self.walked(session)
+        walked.op({"targets": True})
+        walked.op({"must": ["Save"]})
+        self.assertIsNone(walked.listed)
+
+
 class AThemeThatIsAlreadySet(unittest.TestCase):
     """A theme op is the person looking at what they had: asking for the theme already shown
     changes nothing, and only the other one switches the desktop."""
