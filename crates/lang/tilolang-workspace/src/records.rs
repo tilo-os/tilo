@@ -660,6 +660,30 @@ impl Opened {
             .collect()
     }
 
+    /// The row of the action `address`, as the host's viewer is offered it: its resource
+    /// published down from its document, and nothing else of the record, or the app's own
+    /// resources for an action that takes none. `None` when the record offers no such action.
+    #[must_use]
+    pub fn offered(&self, address: &ActionAddress) -> Option<CatalogueRow> {
+        let resources = self.shown(|planner, publications| {
+            let mut out: Vec<ResourceSpec> = publications
+                .addressed(&self.host, planner, &address.resource)
+                .map(std::rc::Rc::unwrap_or_clone)
+                .into_iter()
+                .collect();
+            out.extend(self.own(planner));
+            out
+        });
+        tilo_actions::api::survey_placed(&resources)
+            .into_iter()
+            .map(|placed| CatalogueRow::for_placed_action("", &self.app, placed))
+            .find(|row| {
+                row.action
+                    .as_ref()
+                    .is_some_and(|action| action.address == *address)
+            })
+    }
+
     /// The page of [`Self::rows`] `query` asks for: the rows it admits from its cursor on, at
     /// most its page size, and a cursor past them while more follow. What a caller listing the
     /// record a level at a time is answered.
@@ -669,12 +693,23 @@ impl Opened {
     /// 40 rows under ten thousand tasks costs about 40 rows. A query that narrows by nothing a
     /// row says counts the rows before its cursor by resource without publishing them; one that
     /// narrows by its words, a resource's name or a view publishes each resource of the level
-    /// to ask, still never the rest of the record. Only a query for one exact action (`target`,
-    /// `action`) publishes the whole record: it finds the action under whichever parent holds it.
+    /// to ask, still never the rest of the record. A query for one exact action (`target`) reads
+    /// the resource its address names ([`Self::offered`]); only one for an action by its id alone
+    /// (`action`) publishes the whole record, to find it under whichever parent holds it.
     #[must_use]
     pub fn page(&self, query: &CatalogueQuery) -> CataloguePage {
         let (offset, size) = (query.offset(), query.page_size());
-        if query.target.is_some() || query.action.is_some() {
+        // One exact action is found where its address says, never by publishing the record.
+        if let (Some(target), None) = (&query.target, &query.action) {
+            let rows: Vec<CatalogueRow> = self
+                .offered(target)
+                .filter(|row| query.admits(row))
+                .into_iter()
+                .skip(offset)
+                .collect();
+            return CataloguePage::window(String::new(), rows, query, false);
+        }
+        if query.action.is_some() {
             let mut admitted = self
                 .rows()
                 .into_iter()

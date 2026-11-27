@@ -161,15 +161,30 @@ impl BuiltInRecords {
         (invoker, context): (&ActionInvoker, &ActionContext),
     ) -> Result<tilo_actions::ActionOutput, String> {
         self.rooted(workspace, person).await?;
-        // The rows are read by running the app's program, as a page of them is ([`Self::query`]).
-        let rows = {
-            let (records, caller) = (self.clone(), caller.clone());
-            tokio::task::spawn_blocking(move || records.rows(&caller))
-                .await
-                .map_err(|error| error.to_string())?
+        // The action is read where its address says, by running the app's program as a page is
+        // read ([`Self::query`]): never every row of the record.
+        let offered = {
+            let (records, workspace, person) =
+                (self.clone(), workspace.to_owned(), person.to_owned());
+            let query = tilo_actions::remote::CatalogueQuery {
+                target: Some(address.clone()),
+                max_results: 1,
+                ..tilo_actions::remote::CatalogueQuery::default()
+            };
+            tokio::task::spawn_blocking(move || {
+                records.workspaces.record_page(
+                    &workspace,
+                    &records.route(&workspace),
+                    &person,
+                    &query,
+                )
+            })
+            .await
+            .map_err(|error| error.to_string())?
         };
-        let descriptor = rows
+        let descriptor = offered
             .into_iter()
+            .flat_map(|page| page.rows)
             .filter_map(|row| row.action)
             .find(|action| &action.address == address)
             .ok_or_else(|| format!("{} publishes no {}", self.app, address.encode()))?;
