@@ -409,10 +409,25 @@ impl Identity {
         // reads the store that account keeps, not the one of the account the unit runs as (the
         // system daemon runs as root, whose store names nobody).
         let served = tilo_identity::store::serve_identity_dir(identity_dir.clone());
-        let (key, cert) =
+        let serving = || {
             tilo_identity::trusted_device::serving_in(&identity_dir, &keys).map_err(|error| {
                 io::Error::new(io::ErrorKind::NotFound, format!("{SET_UP_FIRST} ({error})"))
-            })?;
+            })
+        };
+        let (mut key, mut cert) = serving()?;
+        // A computer that slept past its certificate's renewal renews it before its person's
+        // services open with it: the session asks for a renewal only once they run. A device that
+        // holds no root of its person's waits for one of theirs that does.
+        if tilo_identity::provisioning::renewal_due_at(&cert)
+            .is_some_and(|due| due <= tilo_clock::unix_now_ns())
+        {
+            match renew_certificates(this_account_uid(), cert.device_public_key) {
+                Ok(_) => (key, cert) = serving()?,
+                Err(error) => {
+                    tracing::warn!(%error, "this device's certificate is due and was not renewed");
+                }
+            }
+        }
         Ok(Self {
             key,
             cert,
