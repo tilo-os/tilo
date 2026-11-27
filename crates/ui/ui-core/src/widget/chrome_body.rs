@@ -8,6 +8,7 @@ use vello::peniko::Color;
 use tilo_ui_base::{component::Component, component::Described, component::PartViews};
 
 use crate::widget::Container;
+use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::DrawChild;
 use tilo_ui_base::{tokens::ChromeMaterial, tokens::Rhythm, tokens::SurfaceRole};
@@ -54,6 +55,10 @@ pub struct ChromeProps {
     /// What the body is made of: the theme's bar body (the default), the theme's glass, or that glass made
     /// calm.
     pub material: Option<ChromeMaterial>,
+    /// Keep the band the body rests in, and let what it holds grow over it: a dock's item under
+    /// the pointer stands above the band's edge rather than pushing the band, and the windows
+    /// under it, up.
+    pub reserve: bool,
     /// What the body holds.
     #[component(part(default))]
     pub body: Option<Element>,
@@ -64,6 +69,13 @@ pub struct ChromeBody {
     shape: ChromeShape,
     edge: ChromeEdge,
     material: ChromeMaterial,
+    /// The band the body keeps while what it holds magnifies: its across size at rest (height on
+    /// a top or foot edge, width up a side).
+    reserve: bool,
+    rest_across: Option<f64>,
+    /// The style the container was built with, kept while the band is held so it comes back when
+    /// the growth settles.
+    resting_style: Option<taffy::Style>,
     container: Container,
     rect: Rect,
 }
@@ -77,6 +89,7 @@ impl Described for ChromeBody {
             shape,
             edge,
             material,
+            reserve,
             body,
         } = props;
         let shape = shape.unwrap_or_default();
@@ -96,6 +109,9 @@ impl Described for ChromeBody {
             shape,
             edge: edge.unwrap_or_default(),
             material: material.unwrap_or_default(),
+            reserve,
+            rest_across: None,
+            resting_style: None,
             container,
             rect: Rect::ZERO,
         };
@@ -114,6 +130,10 @@ impl Described for ChromeBody {
         self.shape = props.shape.unwrap_or_default();
         self.edge = props.edge.unwrap_or_default();
         self.material = props.material.unwrap_or_default();
+        if self.reserve != props.reserve {
+            self.reserve = props.reserve;
+            self.resting_style = None;
+        }
         // The body in the part is reconciled in place; what the body is made of changed, so
         // the container is built again around it by the host when the shape changed.
         true
@@ -190,6 +210,15 @@ pub fn paint_bar_body(
 }
 
 impl ChromeBody {
+    /// The body's size across the edge it rides: its height on a top or foot edge, its width up
+    /// a side.
+    fn across(&self, rect: Rect) -> f64 {
+        match self.edge {
+            ChromeEdge::Top | ChromeEdge::Bottom => rect.height(),
+            ChromeEdge::Leading | ChromeEdge::Trailing => rect.width(),
+        }
+    }
+
     fn flush_sides(&self) -> tilo_ui_base::part_paint::Sides {
         use tilo_ui_base::part_paint::Sides;
         if self.shape != ChromeShape::Square {
@@ -313,12 +342,85 @@ impl Decorator for ChromeBody {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.inner_mut().build_layout(taffy, theme, node_map)
+        let node = self.inner_mut().build_layout(taffy, theme, node_map);
+        // The node is this body's: the hooks it overrides (the band it reserves) are reached
+        // through the node map, where the inner body would otherwise stand.
+        tilo_ui_base::widget::register_node(node_map, node, self);
+        node
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.container.apply_layout(taffy, node, origin);
         self.rect = self.container.get_rect();
+        // Laid with nothing magnified, this is the band the body rests in.
+        if self.container.magnification() <= 1.0 + 1e-4 {
+            self.rest_across = Some(self.across(self.rect));
+        }
+    }
+
+    /// Hold the rested band while what the body holds magnifies, so the items grow over the band
+    /// (and the windows under it) rather than pushing it. Released as soon as the growth settles,
+    /// so a size setting that changes the band still moves it.
+    ///
+    /// Asked at every solve, because a layout pass builds the body's style again: the band is set
+    /// on each solve it is held, and put back on each solve it is not.
+    fn adjust_layout_style(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        node: NodeId,
+        _text: &mut TextRenderer,
+    ) -> bool {
+        if !self.reserve {
+            return false;
+        }
+        let Ok(current) = taffy.style(node).cloned() else {
+            return false;
+        };
+        if self.container.magnification() > 1.0 + 1e-4 {
+            let Some(across) = self.rest_across else {
+                return false;
+            };
+            let mut held = current.clone();
+            let band = taffy::Dimension::length(tilo_ui_base::num::f32_of_f64(across));
+            match self.edge {
+                ChromeEdge::Top | ChromeEdge::Bottom => {
+                    held.size.height = band;
+                    held.min_size.height = band;
+                    held.max_size.height = band;
+                    held.align_items = Some(if self.edge == ChromeEdge::Bottom {
+                        taffy::AlignItems::FlexEnd
+                    } else {
+                        taffy::AlignItems::FlexStart
+                    });
+                }
+                ChromeEdge::Leading | ChromeEdge::Trailing => {
+                    held.size.width = band;
+                    held.min_size.width = band;
+                    held.max_size.width = band;
+                    held.align_items = Some(if self.edge == ChromeEdge::Leading {
+                        taffy::AlignItems::FlexStart
+                    } else {
+                        taffy::AlignItems::FlexEnd
+                    });
+                }
+            }
+            self.resting_style.get_or_insert(current.clone());
+            if held == current {
+                return false;
+            }
+            taffy.set_style(node, held).is_ok()
+        } else {
+            let Some(resting) = self.resting_style.as_ref() else {
+                return false;
+            };
+            if *resting == current {
+                self.resting_style = None;
+                return false;
+            }
+            let resting = resting.clone();
+            self.resting_style = None;
+            taffy.set_style(node, resting).is_ok()
+        }
     }
 
     /// The body paints only where its content changed: a bar at rest draws nothing.
@@ -338,8 +440,11 @@ impl Decorator for ChromeBody {
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.paint_body(scene, transform, theme);
+        // What the body holds stands on the body's own ground: a control's hover plate and its
+        // ink are measured against what is under it, not the window ground behind the chrome.
+        let inside = theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
         self.container
-            .draw_child(scene, transform, text, theme, &env);
+            .draw_child(scene, transform, text, &inside, &env);
     }
 
     fn take_structure_dirty(&mut self) -> bool {

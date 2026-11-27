@@ -254,6 +254,10 @@ impl Widget for Magnify {
         self.child.handle_event(event, ctx);
     }
 
+    fn magnification(&self) -> f64 {
+        1.0 + self.extra.get(frame_now())
+    }
+
     fn needs_animation_frame(&self) -> bool {
         self.extra.is_moving(frame_now()) || self.child.needs_animation_frame()
     }

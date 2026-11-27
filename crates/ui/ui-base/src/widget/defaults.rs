@@ -310,6 +310,15 @@ pub(super) fn set_motion_reduced(children: ChildrenMut<'_>, reduced: bool) {
     }
 }
 
+/// The most any child magnifies what it holds (see [`super::Widget::magnification`]).
+pub fn magnification(each: EachChild<'_>) -> f64 {
+    let mut most: f64 = 1.0;
+    each(&mut |child| {
+        most = most.max(child.magnification());
+    });
+    most
+}
+
 pub fn needs_animation_frame(each: EachChild<'_>) -> bool {
     let mut needed = false;
     each(&mut |child| {

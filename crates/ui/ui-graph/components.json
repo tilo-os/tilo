@@ -1833,6 +1833,11 @@
               }
             }
           }
+        },
+        {
+          "name": "reserve",
+          "doc": "Keep the band the body rests in, and let what it holds grow over it: a dock's item under the pointer stands above the band's edge rather than pushing the band, and the windows under it, up.",
+          "type": "bool"
         }
       ],
       "parts": [

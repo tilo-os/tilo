@@ -493,6 +493,13 @@ pub trait Widget {
         defaults::set_visual_scale(self.children_mut(), scale);
     }
 
+    /// How much this widget, or what it holds, is magnified now: 1 at rest, more while it grows
+    /// under the pointer ([`Widget::set_visual_scale`]). A body that keeps its own room for the
+    /// layout reads it to tell its rested size from a magnified one.
+    fn magnification(&self) -> f64 {
+        defaults::magnification(&|visit| self.for_each_child(visit))
+    }
+
     /// Pull model state into this widget before layout.
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         defaults::sync(self.children_mut(), state, path);

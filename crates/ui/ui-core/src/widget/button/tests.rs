@@ -226,9 +226,15 @@ tilo_test_env::scenario! {
             assert!(fill.components[3] <= 0.0);
             assert_eq!(edge, None);
             assert!(contrast_ratio(ink, colors.surfaces.content) >= ON_FILL_MIN_CONTRAST);
-            assert_eq!(
-                face_colors(&theme, ButtonRole::Plain, hover).0,
-                colors.intent.selection_hover
+            // The hovered plate is the state a person sees the control by, so it is a step of
+            // the ground that clears the non-text contrast floor.
+            let plate = face_colors(&theme, ButtonRole::Plain, hover).0;
+            assert!(
+                contrast_ratio(plate, colors.surfaces.content)
+                    >= 3.0 - 0.05,
+                "{}: a plain control's hover plate is a {:.2}:1 step",
+                theme.name,
+                contrast_ratio(plate, colors.surfaces.content)
             );
             // Press is the neutral lift; only a selection is tinted.
             assert_eq!(

@@ -200,3 +200,83 @@ fn a_size_setting_change_reaches_its_new_height_through_the_frames_between() {
         "the face passes through the sizes between rather than jumping: {along:?}"
     );
 }
+
+/// A dock body that keeps its band: a Chrome that reserves its rested height, holding one
+/// magnifying item, keeps its own height and its foot edge while the item grows over the band.
+#[test]
+fn a_dock_body_keeps_its_band_while_an_item_grows_over_it() {
+    use super::chrome_body::{ChromeBody, ChromeEdge, ChromeProps, ChromeShape};
+    use tilo_ui_base::widget::Widget;
+    let tile = Button::icon_only("tile", tilo_ui_base::icons::Icon::X, "Tile");
+    let magnify = Magnify::from_props(
+        "m",
+        MagnifyProps {
+            zoom: 0.6,
+            body: Some(Box::new(tile)),
+        },
+    );
+    let chrome = ChromeBody::from_props(
+        "dock",
+        ChromeProps {
+            name: Some("Dock".to_owned()),
+            shape: Some(ChromeShape::Rounded),
+            edge: Some(ChromeEdge::Bottom),
+            material: None,
+            reserve: true,
+            body: Some(Box::new(magnify)),
+        },
+    );
+    let mut driver = Driver::new_with_theme(
+        crate::State::new(),
+        Box::new(chrome),
+        (300, 200),
+        Theme::dark(),
+    );
+    driver.relayout();
+    let band = |driver: &mut Driver| {
+        driver
+            .with_widget_mut(|dock: &mut ChromeBody| dock.get_rect())
+            .expect("the dock is the root")
+    };
+    let before = band(&mut driver);
+    let tile_rest = driver.targets()["tile"];
+    let centre = tile_rest.center();
+    driver.hover_at(centre.x, centre.y);
+    assert!(settle(&mut driver, &mut Vec::new()));
+    let grown = driver.targets()["tile"];
+    assert!(
+        grown.height() > tile_rest.height() + 4.0,
+        "the item grew: {grown:?} against {tile_rest:?}"
+    );
+    let after = band(&mut driver);
+    assert!(
+        (after.height() - before.height()).abs() < 0.5 && (after.y1 - before.y1).abs() < 0.5,
+        "the dock keeps the band it rests in, foot edge and height: {after:?} against {before:?}"
+    );
+}
+
+/// An icon button's hover plate is seen on the ground it stands on: the theme's plain role
+/// clears the non-text contrast floor against a chrome body's ground in both palettes.
+#[test]
+fn a_plain_hover_plate_clears_the_non_text_floor_on_chrome() {
+    use crate::widget::{ButtonRole, Interaction, face_colors};
+    use tilo_ui_base::a11y::contrast_ratio;
+    use tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST;
+    for theme in [Theme::dark(), Theme::light()] {
+        let inside = theme.on_ground(tilo_ui_base::chrome::panel_ground(&theme));
+        let ground = inside.tokens.colors.surfaces.content;
+        let (fill, _, _) = face_colors(
+            &inside,
+            ButtonRole::Plain,
+            Interaction {
+                hovered: true,
+                ..Interaction::default()
+            },
+        );
+        let ratio = contrast_ratio(fill, ground);
+        assert!(
+            ratio >= NON_TEXT_MIN_CONTRAST - 0.05,
+            "the hover plate is a {ratio:.2}:1 step on the chrome ground"
+        );
+    }
+}

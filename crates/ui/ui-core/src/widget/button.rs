@@ -9,7 +9,7 @@ use tilo_ui_base::paint::PaintCtx;
 #[cfg(feature = "model")]
 use tilo_ui_base::permissions::PermissionScope;
 use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST;
+use tilo_ui_base::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
 use tilo_ui_base::widget::ActionEmitter;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::widget::Widget;
@@ -1128,12 +1128,17 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> Fa
         }
         ButtonRole::Plain => {
             // Hover and press are neutral lifts of the ground: never the
-            // accent, which is for what is selected.
-            let pressed = colors.lift_on(colors.surfaces.content, 1.0);
+            // accent, which is for what is selected. The hovered plate is the step a person
+            // sees the control by, so it clears the non-text contrast floor on the ground it
+            // stands on (a chrome body hands its contents that ground); the press is one step
+            // past it.
+            let ground = colors.surfaces.content;
+            let hover = colors.ink_on(colors.lift_on(ground, 0.5), ground, NON_TEXT_MIN_CONTRAST);
+            let pressed = colors.lift_on(ground, 1.0);
             let fill = if interact.pressed {
                 pressed
             } else if interact.hovered {
-                intent.selection_hover
+                hover
             } else {
                 Color::TRANSPARENT
             };
@@ -1142,7 +1147,7 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> Fa
             // `Theme::on_ground` inside a region), and hover and press are
             // that ground's lift.
             let ink = colors.ink_on_any(
-                &[colors.surfaces.content, intent.selection_hover, pressed],
+                &[ground, hover, pressed],
                 colors.text_primary,
                 ON_FILL_MIN_CONTRAST,
             );
