@@ -448,13 +448,13 @@ fn beside_session(key: &str) -> io::Result<crate::device::keep::web::install::Se
 }
 
 /// The browser listener a server serves its own web UI at `listen` with: the certificate
-/// its configuration names, or a development one kept below its state.
+/// its configuration names, or one its person's local CA issues, kept below its state.
 fn web_config(cfg: &ServerConfig, listen: SocketAddr) -> crate::device::keep::web::WebConfig {
     use crate::device::keep::web::{TlsSource, WebConfig};
     let tls = match &cfg.web_tls {
-        WebTls::Dev => TlsSource::Development {
-            hosts: dev_hosts(listen),
-            store: Some(cfg.state_root.join("web-dev-identity")),
+        WebTls::Local | WebTls::Dev => TlsSource::Local {
+            hosts: local_hosts(listen),
+            store: Some(cfg.state_root.join("web-certificate")),
         },
         WebTls::Files { chain, key, host } => TlsSource::Files {
             certificate_chain: chain.clone(),
@@ -502,9 +502,9 @@ fn allowed_origins(web_entry: Option<&str>, named: Option<&str>) -> Vec<String> 
     origins
 }
 
-/// The names a development certificate answers to: this machine's own name and loopback,
+/// The names a server's local certificate answers to: this machine's own name and loopback,
 /// and the address it listens on unless that is every interface.
-fn dev_hosts(listen: SocketAddr) -> Vec<String> {
+fn local_hosts(listen: SocketAddr) -> Vec<String> {
     let mut hosts = vec!["localhost".to_owned()];
     if let Ok(name) = std::env::var("HOSTNAME")
         && !name.is_empty()

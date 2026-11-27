@@ -201,7 +201,7 @@ tilo_test_env::scenario! {
             services: ServiceCapabilities::relay_only(),
             web_entry: None,
             web_listen: Some(SocketAddr::from(([0, 0, 0, 0], 8443))),
-            web_tls: WebTls::Dev,
+            web_tls: WebTls::Local,
             max_workspace_grants: None,
             relay: None,
             apple_push: Some(ApplePushKey {
@@ -215,7 +215,7 @@ tilo_test_env::scenario! {
 state_root = "/var/lib/tilo-server"
 iroh_listen = "0.0.0.0:4919"
 web_listen = "0.0.0.0:8443"
-web_tls = "dev"
+web_tls = "local"
 
 [trust_policy]
 kind = "allow_list"

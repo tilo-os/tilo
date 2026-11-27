@@ -23,6 +23,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::json;
 use tilo_peer_state::CopyRole;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_server_client::https::HttpClient as _;
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
 use tilo_server_protocol::workspaces::{
@@ -757,8 +758,6 @@ async fn flow_every_device_manages_every_other() {
 /// The entry page is the static web entry's, on a host of its own: it hands its page the line
 /// the server keeps in its state (`web-host.json`, `TILO_WEB_HOME_HOST_INFO`), and the page
 /// dials the server as that names it.
-///
-/// The listener still serves a development self-signature (the hosting lane takes this step).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_newcomer_browser_joins_through_the_static_entry_with_no_domain_name() {
     let (root, _) = UserIdentity::generate("Ada", 1);
@@ -804,13 +803,24 @@ async fn flow_newcomer_browser_joins_through_the_static_entry_with_no_domain_nam
         "the entry page names no tilo.sh site: the browser reaches the server itself"
     );
 
-    // With no domain name, the certificate comes from a local CA under the person's root,
-    // not from a development self-signature.
+    // With no domain name, the certificate comes from a local CA under the person's root: Ada's
+    // devices trust it, and another person's do not.
+    let adas = crate::support::https::DevHttps::new(host.web.addr, root.verifying_key().to_bytes());
+    let answer = adas.post_answer("/", Vec::new()).await;
     assert!(
-        host.web.certificate_sha256.is_none(),
-        "the listener's certificate is issued by a local CA under the person's root, not a \
-         development self-signature: {:?}",
-        host.web.certificate_sha256
+        answer.is_ok(),
+        "Ada's device trusts the certificate her server's local CA issued: {:?}",
+        answer.err()
+    );
+    let (bob, _) = UserIdentity::generate("Bob", 1);
+    let bobs = crate::support::https::DevHttps::new(host.web.addr, bob.verifying_key().to_bytes());
+    let refused = bobs
+        .post_answer("/", Vec::new())
+        .await
+        .expect_err("another person's device does not trust Ada's local CA");
+    assert!(
+        refused.contains("UnknownIssuer"),
+        "the certificate is refused for its issuer: {refused}"
     );
 }
 

@@ -131,7 +131,7 @@ impl InstallListener {
                 "the plain HTTP listener must be a loopback address".into(),
             ));
         }
-        let identity = tls::Identity::load(&config.tls).map_err(failed)?;
+        let identity = tls::Identity::load(&config.tls, &key, None).map_err(failed)?;
         let acceptor =
             tokio_rustls::TlsAcceptor::from(Arc::new(identity.https_config().map_err(failed)?));
         let tcp = bind(config.listen).map_err(failed)?;
@@ -558,7 +558,7 @@ mod tests {
     fn config(dir: &std::path::Path) -> WebConfig {
         WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
-            tls: TlsSource::Development {
+            tls: TlsSource::Local {
                 hosts: vec!["localhost".into()],
                 store: Some(dir.join("tls")),
             },

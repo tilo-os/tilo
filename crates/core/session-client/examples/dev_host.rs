@@ -1,5 +1,5 @@
 //! A local host for browser runs of the runtime bundle: `tilo-server` serving
-//! HTTPS with a development certificate, a throwaway user root, and an
+//! HTTPS with a certificate its local CA issues, a throwaway user root, and an
 //! approver that signs in every browser that asks to be one of the root's devices.
 //! Never use it outside development: anyone who reaches it is admitted.
 //!
@@ -9,8 +9,8 @@
 //!
 //! Prints one JSON line (`origin`, `userPublicKey`, `certificateSha256`,
 //! `workspace`) for the page's `connectPeer`, then serves until interrupted. The
-//! page's browser must accept the self-signed HTTPS certificate: trust it once
-//! in the browser that opens it, or pin it — a browser given
+//! page's browser must accept the HTTPS certificate, which its throwaway root's
+//! CA issued: trust it once in the browser that opens it, or pin it — a browser given
 //! `--ignore-certificate-errors-spki-list=<base64 SHA-256 of its SPKI>` loads
 //! that certificate and no other. Clients pin it by its hash.
 #![allow(
@@ -86,7 +86,7 @@ async fn main() {
     let web = server
         .serve_web(WebConfig {
             listen,
-            tls: TlsSource::Development {
+            tls: TlsSource::Local {
                 hosts: vec!["localhost".into(), listen.ip().to_string()],
                 store: None,
             },
@@ -103,7 +103,7 @@ async fn main() {
         serde_json::json!({
             "origin": web.origin,
             "userPublicKey": hex::encode(user),
-            "certificateSha256": web.certificate_sha256,
+            "certificateSha256": web.link.certificate_sha256.map(hex::encode),
             "workspace": WORKSPACE,
         })
     );

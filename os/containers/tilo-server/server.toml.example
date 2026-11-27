@@ -16,10 +16,10 @@ trust_policy = { kind = "allow_matching_user" }
 # It is on unless its person turns it off from one of their devices, so nothing here
 # switches it; this names where it answers, and the certificate it answers with.
 web_listen = "0.0.0.0:8443"
-# The certificate is a development one, kept on the server's volume, until the deployment
-# names a PEM chain and key:
+# The certificate is one its person's local CA issues, kept on the server's volume, which
+# their own devices trust, until the deployment names a PEM chain and key:
 # web_tls = { files = { chain = "/run/secrets/tls-chain.pem", key = "/run/secrets/tls-key.pem", host = "server.example" } }
-web_tls = "dev"
+web_tls = "local"
 
 # `allow_matching_user` hosts open an owner workspace when it first subscribes.
 # Any other workspace is held here because its governor made this server one of

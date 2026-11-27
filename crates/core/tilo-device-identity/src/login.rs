@@ -37,9 +37,10 @@ pub struct ServerAddress {
 pub struct WebLink {
     /// `https://host:port`, the origin the sessions open at.
     pub origin: String,
-    /// SHA-256 of the certificate a development host generated for itself,
-    /// which a device pins (a browser's `serverCertificateHashes`); `None`
-    /// for a certificate the system trust bundle verifies.
+    /// SHA-256 of the certificate the person's local CA on the host issued,
+    /// which a browser that does not trust that CA pins
+    /// (`serverCertificateHashes`); `None` for a certificate the system trust
+    /// bundle verifies.
     pub certificate_sha256: Option<[u8; 32]>,
 }
 

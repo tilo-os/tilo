@@ -229,12 +229,12 @@ tilo_test_env::scenario! {
         ] {
             assert!(browser_locator_origin(&files(Some(host.into())), wildcard).is_err());
         }
-        let development = TlsSource::Development {
+        let local = TlsSource::Local {
             hosts: vec!["0.0.0.0".into(), "workspace.example".into()],
             store: None,
         };
         assert_eq!(
-            browser_locator_origin(&development, wildcard).unwrap(),
+            browser_locator_origin(&local, wildcard).unwrap(),
             Some("https://workspace.example".into())
         );
     }
@@ -1407,7 +1407,7 @@ fn the_host_address_follows_the_endpoint_relay() {
 fn another_origin_a_server_is_reached_under_is_an_origin_beside_its_public_one() {
     let config = |public_origin: Option<&str>| WebConfig {
         listen: "127.0.0.1:0".parse().unwrap(),
-        tls: TlsSource::Development {
+        tls: TlsSource::Local {
             hosts: vec!["localhost".into()],
             store: None,
         },

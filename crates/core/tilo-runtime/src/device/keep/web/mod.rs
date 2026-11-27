@@ -29,7 +29,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
-pub use tls::TlsSource;
+pub use tls::{TlsSource, trusting_person};
 
 use bytes::Bytes;
 use http_body_util::BodyExt as _;
@@ -134,8 +134,6 @@ pub struct WebHandle {
     pub addr: SocketAddr,
     /// `https://host:port` of the listener.
     pub origin: String,
-    /// SHA-256 of a development certificate.
-    pub certificate_sha256: Option<String>,
     /// Where pages reach the host over WebTransport, as `/host` publishes it.
     pub link: WebLink,
     /// `http://localhost:port` of the plain loopback listener, if any.
@@ -449,7 +447,7 @@ fn browser_locator_origin(
         TlsSource::Files { host, .. } => host
             .clone()
             .or_else(|| (!addr.ip().is_unspecified()).then(|| addr.ip().to_string())),
-        TlsSource::Development { hosts, .. } => {
+        TlsSource::Local { hosts, .. } => {
             let bound = addr.ip().to_string();
             if !addr.ip().is_unspecified() && hosts.contains(&bound) {
                 Some(bound)
@@ -625,7 +623,9 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
     if !also.is_empty() {
         tracing::info!(origins = ?also, "this server is also reached under these origins");
     }
-    let identity = tls::Identity::load(&config.tls).map_err(failed)?;
+    let device = &context.server.identity;
+    let identity = tls::Identity::load(&config.tls, &device.signing_key, Some(&device.cert))
+        .map_err(failed)?;
     let (tcp, udp) = bind_listeners(&config).map_err(|error| failed(error.to_string()))?;
     let addr = tcp
         .local_addr()
@@ -753,7 +753,6 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
     Ok(WebHandle {
         addr,
         origin: public_origin.unwrap_or_else(|| format!("https://{addr}")),
-        certificate_sha256: identity.fingerprint,
         link: web_link,
         plain_origin,
         tasks: Arc::new(WebTasks {

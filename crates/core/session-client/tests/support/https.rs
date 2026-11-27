@@ -1,28 +1,33 @@
 //! A native [`HttpClient`] for tests: HTTP/1.1 over rustls to one host,
-//! trusting exactly the certificate whose SHA-256 the host published.
+//! trusting only what its person's local CA issued, as their devices do.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use http_body_util::BodyExt as _;
 use rustls::pki_types::ServerName;
-use sha2::Digest as _;
 use tilo_server_client::https::{HttpClient, HttpFuture};
 use tilo_server_client::{Answer, AnswerFuture};
 
-/// HTTPS to `addr`, pinned to one certificate.
+/// HTTPS to `addr`, trusting `person`'s local CA.
 pub struct DevHttps {
     addr: SocketAddr,
     connector: tokio_rustls::TlsConnector,
 }
 
 impl DevHttps {
-    pub fn new(addr: SocketAddr, sha256_hex: &str) -> Arc<Self> {
-        let sha256 = hex::decode(sha256_hex).unwrap();
-        let mut config = tilo_net::pinned_client_config(move |certificate| {
-            sha2::Sha256::digest(certificate).as_slice() == sha256.as_slice()
-        })
-        .unwrap();
+    pub fn new(addr: SocketAddr, person: [u8; 32]) -> Arc<Self> {
+        let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(tilo_runtime::device::keep::web::trusting_person(
+            person,
+            tilo_user_identity::RevocationList::new(),
+        ))
+        .with_no_client_auth();
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
         Arc::new(Self {
             addr,

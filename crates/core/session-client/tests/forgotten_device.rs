@@ -52,8 +52,8 @@ async fn a_reset_host_refuses_its_forgotten_guest() {
     host.server.shutdown().await;
     let reset = tempfile::tempdir().unwrap();
     std::fs::copy(
-        state.path().join("web-dev-identity"),
-        reset.path().join("web-dev-identity"),
+        state.path().join("web-certificate"),
+        reset.path().join("web-certificate"),
     )
     .unwrap();
     let host = restart_host_relayed(&root, &host_device, reset.path()).await;

@@ -97,10 +97,10 @@ impl DeviceSigner for PageRoot {
     }
 }
 
-fn dev_tls(state: &Path) -> TlsSource {
-    TlsSource::Development {
+fn local_tls(state: &Path) -> TlsSource {
+    TlsSource::Local {
         hosts: vec!["localhost".into(), "127.0.0.1".into()],
-        store: Some(state.join("web-dev-identity")),
+        store: Some(state.join("web-certificate")),
     }
 }
 
@@ -183,7 +183,7 @@ async fn a_company_node_hosts_and_seals_the_workspace_people_join() {
     let install = InstallListener::bind_with_session(
         &WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
-            tls: dev_tls(&state),
+            tls: local_tls(&state),
             allowed_origins: vec![page_origin],
             plain_listen: Some("127.0.0.1:0".parse().unwrap()),
             public_origin: None,
@@ -268,7 +268,7 @@ async fn a_company_node_hosts_and_seals_the_workspace_people_join() {
     let web = server
         .serve_web(WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
-            tls: dev_tls(&state),
+            tls: local_tls(&state),
             allowed_origins: Vec::new(),
             plain_listen: None,
             public_origin: None,
@@ -277,7 +277,7 @@ async fn a_company_node_hosts_and_seals_the_workspace_people_join() {
         })
         .await
         .unwrap();
-    let https = DevHttps::new(web.addr, web.certificate_sha256.as_ref().unwrap());
+    let https = DevHttps::new(web.addr, root.public_key);
     let host = ServerAddress::at(server.node_addr());
 
     // The page's own device, certified by the root against the node.

@@ -1,5 +1,5 @@
 //! Fixtures shared by the end-to-end tests: a host serving browsers over
-//! HTTPS with a development certificate, and certified devices.
+//! HTTPS with a certificate their person's local CA issued, and certified devices.
 
 #![allow(
     dead_code,
@@ -164,6 +164,8 @@ pub fn enrol(root: &SigningKey, label: &str, capabilities: DeviceCapabilities) -
 pub struct TestHost {
     pub server: Server,
     pub web: WebHandle,
+    /// The root of the person whose server it is, whose devices trust its certificate.
+    pub person: [u8; 32],
 }
 
 pub async fn start_host(
@@ -299,9 +301,9 @@ pub async fn start_host_serving(
     let web = server
         .serve_web(WebConfig {
             listen: web_listen,
-            tls: TlsSource::Development {
+            tls: TlsSource::Local {
                 hosts: vec!["localhost".into(), "127.0.0.1".into()],
-                store: Some(state.join("web-dev-identity")),
+                store: Some(state.join("web-certificate")),
             },
             allowed_origins: Vec::new(),
             plain_listen,
@@ -315,7 +317,11 @@ pub async fn start_host_serving(
         names_its_server(&server);
     }
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);
-    TestHost { server, web }
+    TestHost {
+        server,
+        web,
+        person: root.verifying_key().to_bytes(),
+    }
 }
 
 /// A host reached through a packet relay names it in its address from the start: what
@@ -375,9 +381,9 @@ pub async fn start_workspace_host_relaying(
     let web = server
         .serve_web(WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
-            tls: TlsSource::Development {
+            tls: TlsSource::Local {
                 hosts: vec!["localhost".into(), "127.0.0.1".into()],
-                store: keep_web_identity.then(|| state.join("web-dev-identity")),
+                store: keep_web_identity.then(|| state.join("web-certificate")),
             },
             allowed_origins: Vec::new(),
             plain_listen: None,
@@ -391,12 +397,16 @@ pub async fn start_workspace_host_relaying(
         names_its_server(&server);
     }
     HOSTS.lock().unwrap().insert(host.cert.device_public_key);
-    TestHost { server, web }
+    TestHost {
+        server,
+        web,
+        person: root.verifying_key().to_bytes(),
+    }
 }
 
 impl TestHost {
     pub fn https(&self) -> Arc<https::DevHttps> {
-        https::DevHttps::new(self.web.addr, self.web.certificate_sha256.as_ref().unwrap())
+        https::DevHttps::new(self.web.addr, self.person)
     }
 
     /// The host as a session reaches it: its iroh endpoint, and the

@@ -44,7 +44,7 @@ cfg = tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
 assert cfg["iroh_listen"] == "0.0.0.0:4433"
 assert cfg["trust_policy"] == {"kind": "allow_matching_user"}
 assert cfg["web_listen"] == "0.0.0.0:8443"
-assert cfg["web_tls"] == "dev"
+assert cfg["web_tls"] == "local"
 PY
 
 need "$readme" "tilo device add --server"

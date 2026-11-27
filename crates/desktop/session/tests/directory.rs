@@ -967,9 +967,9 @@ impl LoungeHost {
             self.server
                 .serve_web(tilo_runtime::device::keep::web::WebConfig {
                     listen: "127.0.0.1:0".parse().expect("an address"),
-                    tls: tilo_runtime::device::keep::web::TlsSource::Development {
+                    tls: tilo_runtime::device::keep::web::TlsSource::Local {
                         hosts: vec!["localhost".into(), "127.0.0.1".into()],
-                        store: Some(state.join("web-dev-identity")),
+                        store: Some(state.join("web-certificate")),
                     },
                     allowed_origins: Vec::new(),
                     plain_listen: Some("127.0.0.1:0".parse().expect("an address")),

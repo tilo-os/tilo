@@ -54,8 +54,9 @@ own environment; it starts nothing and never waits on a socket file alone.
 
 The server serves its own web UI: its members open its address in a browser and work
 there, without the Tilo app. It is on by default and answers HTTPS on the port
-`web_listen` names (8443 in the template), with a development certificate kept on the
-identity volume until the configuration names a PEM chain and key (`web_tls`).
+`web_listen` names (8443 in the template), with a certificate its person's local CA
+issues, kept on the identity volume, until the configuration names a PEM chain and key
+(`web_tls`). The person's own devices trust that certificate; a browser elsewhere does not.
 
 Its person turns the web UI off from any of their devices, through the `web.serve` action
 on the server's entry in their Servers workspace; it stops serving at once, and turns back

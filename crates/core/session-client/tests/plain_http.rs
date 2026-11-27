@@ -45,7 +45,7 @@ async fn host_routes_answer_over_loopback_plain_http_only() {
         .server
         .serve_web(WebConfig {
             listen: "127.0.0.1:0".parse().unwrap(),
-            tls: TlsSource::Development {
+            tls: TlsSource::Local {
                 hosts: vec!["localhost".into()],
                 store: None,
             },

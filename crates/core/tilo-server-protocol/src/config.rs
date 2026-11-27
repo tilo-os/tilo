@@ -113,8 +113,8 @@ pub struct ServerConfig {
         skip_serializing_if = "Option::is_none"
     )]
     pub web_listen: Option<SocketAddr>,
-    /// The certificate its web UI is served with: a development one kept below its state
-    /// ([`WebTls::Dev`], the default), or a PEM chain and key ([`WebTls::Files`]).
+    /// The certificate its web UI is served with: one its person's local CA issues
+    /// ([`WebTls::Local`], the default), or a PEM chain and key ([`WebTls::Files`]).
     #[serde(default)]
     pub web_tls: WebTls,
     /// Pre-admissions a workspace keeps, spent ones included. A
@@ -255,9 +255,7 @@ impl Default for ServerConfig {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WebTls {
-    /// A self-signed certificate kept below the server's state, which browsers accept
-    /// with an exception: what a server on a home network serves until it is given one.
-    #[default]
+    /// What configurations written before [`WebTls::Local`] name it: read as that.
     Dev,
     /// The PEM certificate chain and private key a deployment serves, and the name
     /// browsers reach it by.
@@ -267,6 +265,11 @@ pub enum WebTls {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         host: Option<String>,
     },
+    /// A certificate the person's local CA on this server issues, kept below its state:
+    /// what a server with no domain name serves. The person's own devices trust it;
+    /// a browser elsewhere does not.
+    #[default]
+    Local,
 }
 
 /// Failure modes for config load/store.
