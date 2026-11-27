@@ -570,3 +570,23 @@ fn a_read_asked_on_the_sessions_loop_stops_there_and_one_off_it_is_answered() {
         "a read off the loop is answered: {answered:?}"
     );
 }
+
+/// A route a provider publishes a reading at holds no document: a reader of documents is told it
+/// holds nothing there, an answer it settles on, rather than a read that failed.
+#[test]
+fn a_published_reading_reads_as_no_document() {
+    let reading = serde_json::json!({
+        "revision": "",
+        "records": [{"record": "root-a/i01", "value": {"title": "a window"}}],
+    });
+    assert_eq!(super::document_read(&reading), Ok(DocumentRead::Absent));
+    let bytes = layout("person").save();
+    let held = serde_json::json!({
+        "revision": "",
+        "records": [{"record": "root-a", "document": hex::encode(&bytes)}],
+    });
+    assert!(matches!(
+        super::document_read(&held),
+        Ok(DocumentRead::Whole { bytes: read, .. }) if read == bytes
+    ));
+}

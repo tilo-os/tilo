@@ -665,7 +665,8 @@ pub fn whole(workspace: &str, app: &str, resource: &str) -> ResourceReadRequest 
 }
 
 /// What one resource of `readings` is: its document whole, `Absent`, or `Pending` while it is on
-/// its way.
+/// its way. A reading a provider publishes at the route (`{"value"}`) is no document: a reader of
+/// documents holds nothing of it, and it reads as `Absent` until a document is written there.
 ///
 /// # Errors
 /// The readings name no resource, or its document does not read.
@@ -673,7 +674,7 @@ pub fn document_read(readings: &serde_json::Value) -> Result<DocumentRead, Strin
     let resource = readings["records"]
         .get(0)
         .ok_or("the read answered no resource")?;
-    if resource["absent"].as_bool() == Some(true) {
+    if resource["absent"].as_bool() == Some(true) || resource.get("value").is_some() {
         return Ok(DocumentRead::Absent);
     }
     if resource["arriving"].as_bool() == Some(true) {
