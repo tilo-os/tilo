@@ -3279,6 +3279,11 @@ impl Workspaces {
                     true,
                 )
                 .await;
+            // Written through before it is answered: a part that ends now leaves the workspace
+            // opening as it stands.
+            if workspace.unkept {
+                workspace.keep_followed();
+            }
             // This host's own write is answered to whoever made it: a change the workspace
             // refuses here is an error of the write, not a verdict to file for another device.
             // A member's reaches it as their driver's answer, filed where they read it.
@@ -3460,10 +3465,10 @@ impl Workspaces {
         let _ = (&app, &record);
         if followed.changed {
             self.landed(workspace, &message);
-            // Written through before this write is done with: what a member wrote is kept in the
-            // workspace's file as the host's copy has it, not a second later. A part that ends
-            // now leaves the workspace opening as it stands.
-            workspace.keep_followed();
+            // Written through by the caller before the write is answered: what a member wrote is
+            // kept in the workspace's file as the host's copy has it, not a second later, once
+            // for an action however many records it wrote.
+            workspace.unkept = true;
         }
         if followed.replay_wanted {
             self.replay_soon(workspace.workspace().to_owned());

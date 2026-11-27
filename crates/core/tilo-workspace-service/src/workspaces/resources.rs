@@ -1798,6 +1798,11 @@ impl Workspaces {
         compact: bool,
         notice: bool,
     ) -> Result<(), String> {
+        if whole {
+            self.store_of(&mut *hosted)
+                .check_batch(writes, device.device())
+                .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
+        }
         self.take_resource_write(
             hosted,
             device,
@@ -1808,6 +1813,9 @@ impl Workspaces {
             notice,
         )
         .await?;
+        if hosted.unkept {
+            hosted.keep_followed();
+        }
         // Kept by the store and the workspace's copy, the write goes out: what a device is
         // served is never a write its own store refused.
         self.inner
@@ -1816,7 +1824,8 @@ impl Workspaces {
     }
 
     /// [`Self::keep_resource_write`] up to carrying `messages`, which the caller does once the
-    /// store holds them.
+    /// store keeps them, with `writes` checked against the store before, and up to writing the
+    /// workspace's copy through to its file, which the caller does once for the action.
     async fn take_resource_write(
         &self,
         hosted: &mut HostedWorkspace,
@@ -1832,12 +1841,6 @@ impl Workspaces {
             .first()
             .ok_or("a resource write writes no change")?
             .doc;
-        // A write the store takes later, with the rest of its action, was checked with them.
-        if whole {
-            self.store_of(&mut *hosted)
-                .check_batch(writes, author)
-                .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
-        }
         let count = messages.len();
         for (index, message) in messages.iter().enumerate() {
             // The store takes the change with its last segment.
@@ -2718,6 +2721,19 @@ impl Workspaces {
             let result = workspaces
                 .keep_batches(&mut hosted, &device, &app, (&writes, &requests), whole)
                 .await;
+            hosted.resources.batch_kept();
+            // The workspace's copy is written through once for the whole action, before it is
+            // answered, with the workspace let go: every document it wrote at once, and nobody's
+            // read or write waits on the disk.
+            let kept = if hosted.unkept {
+                hosted.keep_later()
+            } else {
+                None
+            };
+            let workspace = hosted.workspace().to_owned();
+            let shared = std::sync::Arc::clone(tokio::sync::OwnedMutexGuard::mutex(&hosted));
+            drop(hosted);
+            Self::write_kept(&shared, kept).await;
             // Every document the action wrote is kept now, so whoever it wakes reads the whole
             // action: a message's files are read with the message they were sent with.
             let documents: Vec<String> = writes
@@ -2727,13 +2743,12 @@ impl Workspaces {
             let together = std::sync::Arc::new(documents.clone());
             for document in &documents {
                 workspaces.wrote_together(
-                    hosted.workspace(),
+                    &workspace,
                     &app,
                     document,
                     std::sync::Arc::clone(&together),
                 );
             }
-            hosted.resources.batch_kept();
             let _ = complete.send(result);
         });
         match self.record_writes_runtime() {
