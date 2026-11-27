@@ -263,9 +263,9 @@ impl ResizeFeedback {
             return f32::from(u8::from(now.saturating_duration_since(since) >= DWELL));
         }
         // The light is whole once its fade is behind it; while it comes up, it is as far through
-        // that fade as the follow's own.
+        // that fade as the follow's own would have gone.
         let left = (since + DWELL + fade).saturating_duration_since(now);
-        Follow::fading(left, fade)
+        1.0 - Follow::fading(left, fade)
     }
 
     /// The chip's words and ink now: the size being taken while dragging, and for the theme's
