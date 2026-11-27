@@ -928,20 +928,28 @@ impl Widget for DragRun {
             .items
             .as_mut()
             .is_some_and(|items| Widget::update(&mut **items, state, path));
-        if let Some(landed) = crate::widget::drag_bus::take(&self.id, self.extent()) {
-            if let Some(landing) = self.target_at(landed.pointer, None)
-                && let tilo_ui_base::dnd::DragPayload::Custom { kind, blob } = landed.payload
-                && kind == ITEM_PAYLOAD
-                && let Ok(moved) = String::from_utf8(blob)
-            {
-                self.drops.push(DragDrop {
-                    run: self.id.clone(),
-                    moved,
-                    at: landing.at,
-                    before: landing.before,
-                });
-                changed = true;
-            }
+        // A run takes only what a run carries. A resource let go over it — a tab or a window
+        // bar dropped on the shell's own bar or its dock — is left on the bus for the view that
+        // dropped it, which gives it a window of its own.
+        let carries_an_item = crate::widget::drag_bus::landed().is_some_and(|landed| {
+            matches!(
+                &landed.payload,
+                tilo_ui_base::dnd::DragPayload::Custom { kind, .. } if kind == ITEM_PAYLOAD
+            )
+        });
+        if carries_an_item
+            && let Some(landed) = crate::widget::drag_bus::take(&self.id, self.extent())
+            && let Some(landing) = self.target_at(landed.pointer, None)
+            && let tilo_ui_base::dnd::DragPayload::Custom { blob, .. } = landed.payload
+            && let Ok(moved) = String::from_utf8(blob)
+        {
+            self.drops.push(DragDrop {
+                run: self.id.clone(),
+                moved,
+                at: landing.at,
+                before: landing.before,
+            });
+            changed = true;
         }
         changed
     }

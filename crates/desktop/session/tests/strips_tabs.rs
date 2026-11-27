@@ -107,7 +107,7 @@ fn front_of(session: &Session, strip: u64) -> Option<u64> {
 }
 
 /// The name the shell shows the place under `title` by, as the session resolved it: what the
-/// window's bar and its tab read.
+/// window's bar and its menus call it.
 fn shown_as(session: &Session, title: &str) -> String {
     crate::common::layout(session)
         .places
@@ -116,6 +116,25 @@ fn shown_as(session: &Session, title: &str) -> String {
         .map_or_else(
             || panic!("the shell holds a place for {title}"),
             |place| place.name,
+        )
+}
+
+/// What the tab of the place under `title` says on its pill: the place's own title, without the
+/// app's name joined after it.
+fn tab_of(session: &Session, title: &str) -> String {
+    crate::common::layout(session)
+        .places
+        .into_iter()
+        .find(|place| place.title == title)
+        .map_or_else(
+            || panic!("the shell holds a place for {title}"),
+            |place| {
+                if place.title.is_empty() {
+                    place.name
+                } else {
+                    place.title
+                }
+            },
         )
 }
 
@@ -151,8 +170,8 @@ fn two_tabs(session: &mut Session, notes: &[String]) -> (u64, u64, u64) {
     let strip = strip_of(session, first).expect("the first place stands in a strip");
     tab_into(session, second, strip);
     until(session, "both tabs", |session| {
-        on_screen(session, &shown_as(session, TITLES[0])).is_some()
-            && on_screen(session, &shown_as(session, TITLES[1])).is_some()
+        on_screen(session, &tab_of(session, TITLES[0])).is_some()
+            && on_screen(session, &tab_of(session, TITLES[1])).is_some()
     });
     (first, second, strip)
 }
@@ -178,14 +197,20 @@ fn a_note_tabbed_into_a_window_stands_as_its_tab() {
     assert!(
         labels
             .iter()
-            .any(|label| label == &shown_as(&session, TITLES[0])),
-        "the first tab shows its place's title: {labels:?}"
+            .any(|label| label == &tab_of(&session, TITLES[0])),
+        "the first tab says its own title: {labels:?}"
+    );
+    assert!(
+        labels
+            .iter()
+            .any(|label| label == &tab_of(&session, TITLES[1])),
+        "the second tab says its own title: {labels:?}"
     );
     assert!(
         labels
             .iter()
             .any(|label| label == &shown_as(&session, TITLES[1])),
-        "the second tab shows its place's title: {labels:?}"
+        "the window's bar names the window it shows: {labels:?}"
     );
     crate::common::shot(&mut session, "strips-two-tabs");
 }
@@ -197,14 +222,14 @@ fn choosing_a_tab_shows_its_place() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let (first, second, strip) = two_tabs(&mut session, &notes);
-    let first_name = shown_as(&session, TITLES[0]);
-    let second_name = shown_as(&session, TITLES[1]);
+    let first_tab = tab_of(&session, TITLES[0]);
+    let second_tab = tab_of(&session, TITLES[1]);
 
-    crate::common::press(&mut session, &first_name);
+    crate::common::press(&mut session, &first_tab);
     until(&mut session, "the first tab in front", |session| {
         front_of(session, strip) == Some(first)
     });
-    crate::common::press(&mut session, &second_name);
+    crate::common::press(&mut session, &second_tab);
     until(&mut session, "the second tab in front", |session| {
         front_of(session, strip) == Some(second)
     });
@@ -218,9 +243,9 @@ fn the_arrow_keys_walk_a_windows_tabs() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let (first, second, strip) = two_tabs(&mut session, &notes);
-    let second_name = shown_as(&session, TITLES[1]);
+    let second_tab = tab_of(&session, TITLES[1]);
     // The second tab is in front; a press on its pill puts the keyboard in the tab list.
-    crate::common::press(&mut session, &second_name);
+    crate::common::press(&mut session, &second_tab);
     session.step(Duration::from_millis(16)).expect("step");
     // Right walks the tabs on: the list wraps to the first, and the strip follows it.
     press_key(&mut session, KEY_RIGHT, true);
@@ -245,7 +270,7 @@ fn closing_a_tab_takes_its_place_out() {
     let (first, second, strip) = two_tabs(&mut session, &notes);
     // The tab in front's close chip closes it. The window's own Close closes the place in front,
     // which is the tab that came in.
-    let chip = format!("Close {}", shown_as(&session, TITLES[1]));
+    let chip = format!("Close {}", tab_of(&session, TITLES[1]));
     crate::common::press(&mut session, &chip);
     until(&mut session, "the tab closed", |session| {
         places_of(session, strip) == [first]
@@ -301,17 +326,12 @@ fn dragging_a_tab_out_gives_it_its_own_window() {
     let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let (first, second, strip) = two_tabs(&mut session, &notes);
-    let second_name = shown_as(&session, TITLES[1]);
+    let second_tab = tab_of(&session, TITLES[1]);
     let at = |rect: (f64, f64, f64, f64)| (rect.0 + rect.2 / 2.0, rect.1 + rect.3 / 2.0);
     let pill = at(crate::common::wait_for(
         &mut session,
         "the tab's pill",
-        |session| on_screen(session, &second_name),
-    ));
-    let _window = at(crate::common::wait_for(
-        &mut session,
-        "the window's body",
-        |session| on_screen(session, &shown_as(session, TITLES[0])),
+        |session| on_screen(session, &second_tab),
     ));
     // The pill is dragged out of its bar and let go over the shell's own bar, where no window
     // stands to take it: the strip reports it as the tab let go of, which the shell splits into a
@@ -388,10 +408,29 @@ fn dragging_a_windows_bar_onto_another_tabs_it_in() {
         Some(first),
         "the tab moved in is the window's shown one"
     );
-    // The window's bar shows both places as its tabs, in the record's order.
+    // The window's bar shows both places as its tabs, in the record's order: the window's own tab
+    // first, the one that moved in after it. The window the place left plays its departure beside
+    // it for a moment, so the tabs are read in the bar that holds them both.
+    let moved_tab = tab_of(&session, TITLES[0]);
+    let kept_tab = tab_of(&session, TITLES[1]);
     let (moved, kept) = crate::common::wait_for(&mut session, "the window's tabs", |session| {
-        let moved = on_screen(session, &first_name)?;
-        let kept = on_screen(session, &second_name)?;
+        // The window's bar, not its whole frame, which its name also names: the bar is the
+        // window's own strip across its top, one bar high.
+        let bar = session
+            .shell_controls(&first_name)
+            .into_iter()
+            .filter(|rect| rect.3 < 100.0)
+            .max_by(|a, b| a.0.total_cmp(&b.0))?;
+        let in_bar = |name: &str| {
+            session.shell_controls(name).into_iter().find(|rect| {
+                rect.0 >= bar.0 - 1.0
+                    && rect.0 + rect.2 <= bar.0 + bar.2 + 1.0
+                    && rect.1 >= bar.1 - 1.0
+                    && rect.1 + rect.3 <= bar.1 + bar.3 + 1.0
+            })
+        };
+        let moved = in_bar(&moved_tab)?;
+        let kept = in_bar(&kept_tab)?;
         (moved.3 < 100.0 && kept.3 < 100.0).then_some((moved, kept))
     });
     assert!(

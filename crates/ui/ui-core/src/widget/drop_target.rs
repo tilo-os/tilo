@@ -77,8 +77,12 @@ impl DropTarget {
     /// `child`, taking drops, known on the bus by `key` and reporting them through `drop`.
     pub fn new(key: impl Into<String>, child: Element, drop: Event) -> Self {
         Self {
+            // The room the part gives it is the target's: a gap between windows takes the row's
+            // whole height, so a tab carried into it at any height lands, where the bare content
+            // it holds would give it only as much as that content measures.
             column: Stack::stack()
                 .fill_width()
+                .fill_height()
                 .gap(Rhythm::None)
                 .push_part(Part::new(child)),
             hovered: None,
@@ -207,7 +211,9 @@ impl Decorator for DropTarget {
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.column.draw_child(scene, transform, text, theme, &env);
-        if self.hovered.is_some() && self.rect.width() > 0.0 {
+        if let Some(label) = self.hovered.as_deref().filter(|label| !label.is_empty())
+            && self.rect.width() > 0.0
+        {
             // The same line every drop indicator draws: your colour on the edge.
             let line = f64::from(theme.tokens.metrics.drag_line_px).max(1.0);
             let radius = f64::from(theme.tokens.radii.control);
@@ -218,6 +224,45 @@ impl Decorator for DropTarget {
                 theme.tokens.colors.intent.accent,
                 None,
                 &shape,
+            );
+            // What the drag carries follows the pointer, over the target: the person sees the tab
+            // or the window they hold where it would land, under their hand.
+            let pointer = crate::widget::drag_bus::current()
+                .map_or(self.cursor, |in_flight| in_flight.pointer);
+            let size = 12.0 * theme.text_scale;
+            let (said, said_height) = text.measure(label, size, None);
+            let pad = 8.0;
+            let width = f64::from(said) + 2.0 * pad;
+            let height = f64::from(said_height) + 2.0 * pad;
+            // Before the pointer: a target drawn after this one (the window after a gap) covers
+            // what this draws, so the card stands over the ground already drawn.
+            let x1 = (pointer.x - 14.0).max(width + 8.0);
+            let y0 = pointer.y + 18.0;
+            let chip = Rect::new(x1 - width, y0, x1, y0 + height);
+            let ground = RoundedRect::from_rect(chip, radius);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.overlay,
+                None,
+                &ground,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.intent.accent,
+                None,
+                &ground,
+            );
+            let budget = tilo_ui_base::num::f32_of_f64((width - 2.0 * pad).max(0.0));
+            let said = text.elide_to_width(label, size, budget);
+            text.draw_text(
+                scene,
+                &said,
+                size,
+                theme.tokens.colors.text_primary,
+                transform.pre_translate(vello::kurbo::Vec2::new(chip.x0 + pad, chip.y0 + pad)),
+                None,
             );
         }
         self.dirty = false;

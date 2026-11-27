@@ -1,8 +1,9 @@
-//! The strips style's pointer gestures on a window's edge (`docs/design-language.md`, "Window edge
-//! resize"; `docs/designs/app-language/shell.md` §2, §3): a window in a row is resized by carrying
-//! its trailing edge or, where a window stands before it, its leading edge, and Shift trades width
-//! with the window across the border; a row of windows settles on a window's edge when it is
-//! scrolled; and the size a window is taking reads while its edge is carried, in either theme.
+//! The strips style's pointer gestures on a window's edge and its tabs (`docs/design-language.md`,
+//! "Window edge resize"; `docs/designs/app-language/shell.md` §2, §3): a window in a row is
+//! resized by carrying its trailing edge or, where a window stands before it, its leading edge,
+//! and Shift trades width with the window across the border; a tab carried out of its bar lands in
+//! the window it is let go over; a row of windows settles on a window's edge when it is scrolled;
+//! and the size a window is taking reads while its edge is carried, in either theme.
 //!
 //! Every check reads what the session keeps — the layout's widths, the strip a place stands in,
 //! and where the shell draws a window for assistive technology — never a pixel.
@@ -217,16 +218,36 @@ fn let_go(session: &mut Session) {
     session.step(Duration::from_millis(16)).expect("step");
 }
 
+/// [`bar_at`] once the bar has stood still across two frames: a row that shares its room again
+/// as a window arrives moves its windows once.
+fn settled_bar(session: &mut Session, name: &str) -> (f64, f64, f64, f64) {
+    crate::common::wait_for(session, "the window's bar to stand still", |session| {
+        let mut place = bar_at(session, name)?;
+        for _ in 0..2 {
+            session.step(Duration::from_millis(16)).expect("step");
+            let next = bar_at(session, name)?;
+            if next != place {
+                return None;
+            }
+            place = next;
+        }
+        Some(place)
+    })
+}
+
 /// The window's own bar, by the name it says: the widest node the shell lays out with that name,
 /// since the window's bar and the pill showing its place both say it.
+fn bar_at(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> {
+    session
+        .shell_controls(name)
+        .into_iter()
+        .max_by(|a, b| a.2.total_cmp(&b.2))
+        .filter(|rect| rect.2 > 0.0)
+}
+
+/// [`bar_at`], once the bar stands.
 fn bar_of(session: &mut Session, name: &str) -> (f64, f64, f64, f64) {
-    crate::common::wait_for(session, "the window's bar", |session| {
-        session
-            .shell_controls(name)
-            .into_iter()
-            .max_by(|a, b| a.2.total_cmp(&b.2))
-            .filter(|rect| rect.2 > 0.0)
-    })
+    crate::common::wait_for(session, "the window's bar", |session| bar_at(session, name))
 }
 
 /// Where a window's trailing edge is, on its bar: the window's name names its bar, which runs
@@ -278,6 +299,161 @@ fn carrying_a_windows_edge_resizes_it_and_the_neighbour_keeps_its_share() {
         "the window beside it never changed: only the grabbed edge's window did"
     );
     crate::common::shot(&mut session, "strips-edge-resized");
+}
+
+/// The places of the strip `strip`, in the record's order.
+fn places_of(session: &Session, strip: u64) -> Vec<u64> {
+    let key = strip.to_string();
+    crate::common::places(session)
+        .into_iter()
+        .filter(|place| place.strip == key)
+        .map(|place| crate::common::number(&place.key))
+        .collect()
+}
+
+/// What the tab of the place under `title` says on its pill: the place's own title, without the
+/// app's name joined after it.
+fn tab_of(session: &Session, title: &str) -> String {
+    crate::common::layout(session)
+        .places
+        .into_iter()
+        .find(|place| place.title == title)
+        .map_or_else(
+            || panic!("the shell holds a place for {title}"),
+            |place| {
+                if place.title.is_empty() {
+                    place.name
+                } else {
+                    place.title
+                }
+            },
+        )
+}
+
+/// Tab the place `place` into the strip `strip`, as letting its window's bar go over that
+/// window's bar does: the layout's published `move` with the strip it becomes a tab of.
+fn tab_into(session: &mut Session, place: u64, strip: u64) {
+    let row = crate::common::strip(session, strip)
+        .expect("the strip reads")
+        .row;
+    let arguments: Map<String, Value> = json!({
+        "row": format!("shell:row:{row}"),
+        "strip": format!("shell:strip:{strip}"),
+        "before": Value::Null,
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    session
+        .invoke(&format!("shell:place:{place}"), "move", &arguments)
+        .unwrap_or_else(|error| panic!("tab {place} into {strip}: {error:?}"));
+    until(session, "the place is a tab of the strip", |session| {
+        strip_of(session, place) == Some(strip)
+    });
+}
+
+/// The middle of the rect `(x, y, w, h)`.
+fn middle((x, y, w, h): (f64, f64, f64, f64)) -> (f64, f64) {
+    (x + w / 2.0, y + h / 2.0)
+}
+
+/// Where the pill of the tab named `name` stands: the tab's own title, which its pill says.
+fn pill_of(session: &mut Session, name: &str) -> (f64, f64, f64, f64) {
+    crate::common::wait_for(session, "the tab's pill", |session| {
+        on_screen(session, name)
+    })
+}
+
+/// A tab carried out of its window's bar and let go over another window lands in that window:
+/// the drop target under the pointer takes the tab, rather than the shell making a window of it.
+#[test]
+fn a_tab_let_go_over_another_window_lands_in_it() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (mut session, notes) = session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let (first, source) = place(&mut session, &notes[0]);
+    let (_second, target) = place(&mut session, &notes[1]);
+    let (third, _own) = place(&mut session, &notes[2]);
+    assert_ne!(source, target, "the two windows stand apart");
+    // The third place is a tab of the first window, so its bar shows two pills to carry.
+    tab_into(&mut session, third, source);
+    until(&mut session, "the window's tabs", |session| {
+        places_of(session, source) == [first, third]
+    });
+    let carried = tab_of(&session, TITLES[2]);
+    let pill = middle(pill_of(&mut session, &carried));
+    let onto = shown_as(&session, TITLES[1]);
+    let landing = middle(bar_of(&mut session, &onto));
+    // The pill is carried out of its bar and let go over the other window's bar, which the shell
+    // owns and which takes what is dropped on it.
+    drag(&mut session, pill, landing);
+    until(
+        &mut session,
+        "the tab landed in the window it was let go over",
+        |session| strip_of(session, third) == Some(target),
+    );
+    assert_eq!(
+        places_of(&session, source),
+        [first],
+        "the window it left keeps its own place"
+    );
+}
+
+/// A tab in flight shows where it would land: carried over a window, the floating tab follows
+/// the pointer and that window says it takes it; carried into the gap between two windows, the
+/// gap says the place it would stand in. The captures stand beside the checks that prove the
+/// drops, in both themes.
+#[test]
+fn a_tab_in_flight_says_where_it_would_land_in_both_themes() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    for (light, theme, name) in [(false, "tilo-dark", "dark"), (true, "paper-light", "light")] {
+        let (mut session, notes) = themed_session();
+        choose_theme(&mut session, light, theme);
+        until(&mut session, "the strips", |session| {
+            on_screen(session, "Showing Strips").is_some()
+        });
+        let (first, source) = place(&mut session, &notes[0]);
+        let (_second, onto) = place(&mut session, &notes[1]);
+        let (third, _own) = place(&mut session, &notes[2]);
+        assert_ne!(source, onto, "the windows stand apart");
+        // A tab of the first window, carried over the second: the tab follows the pointer and the
+        // window says it takes it.
+        tab_into(&mut session, third, source);
+        until(&mut session, "the window's tabs", |session| {
+            places_of(session, source) == [first, third]
+        });
+        let carried = tab_of(&session, TITLES[2]);
+        let pill = middle(pill_of(&mut session, &carried));
+        let onto_name = shown_as(&session, TITLES[1]);
+        let onto_bar = settled_bar(&mut session, &onto_name);
+        let landing = (onto_bar.0 + onto_bar.2 / 2.0, onto_bar.1 + 14.0);
+        carry(&mut session, pill, landing);
+        session.step(Duration::from_millis(16)).expect("step");
+        let shot = crate::common::shot(&mut session, &format!("strips-tab-over-window-{name}"));
+        assert!(shot.width > 0, "the {name} capture is drawn");
+        let_go(&mut session);
+        until(
+            &mut session,
+            "the tab landed in the window it was let go over",
+            |session| strip_of(session, third) == Some(onto),
+        );
+        // A tab of the first window, carried into the gap between the two windows, says the place
+        // in the row the window it belongs to would stand in.
+        let tab = tab_of(&session, TITLES[0]);
+        let pill = middle(pill_of(&mut session, &tab));
+        let left_name = shown_as(&session, TITLES[0]);
+        let left = settled_bar(&mut session, &left_name);
+        let right_name = shown_as(&session, TITLES[2]);
+        let right = settled_bar(&mut session, &right_name);
+        let gap = ((left.0 + left.2 + right.0) / 2.0, left.1 + 14.0);
+        carry(&mut session, pill, gap);
+        session.step(Duration::from_millis(16)).expect("step");
+        let shot = crate::common::shot(&mut session, &format!("strips-tab-over-gap-{name}"));
+        assert!(shot.width > 0, "the {name} capture is drawn");
+        let_go(&mut session);
+    }
 }
 
 /// Three windows on a 1280 display each keep the least its row shares out — the `44rem` a bar,

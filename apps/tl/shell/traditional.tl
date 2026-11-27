@@ -135,8 +135,8 @@ fn place_title(p: LayoutPlace) -> Text {
 
 /// What a place says of itself, without the app's name joined after it: what it shows, by its own
 /// title (an answer by its question, an inbox as Inbox), or the window's name where it has none.
-/// A tab is called by these words, though its pill names the whole window, and a canvas handle
-/// carries them under the place itself.
+/// A tab's pill says these words while the window's bar names the whole window, and a canvas
+/// handle carries them under the place itself.
 fn place_own_title(p: LayoutPlace) -> Text {
     if p.title != "" { p.title } else { place_title(p) }
 }

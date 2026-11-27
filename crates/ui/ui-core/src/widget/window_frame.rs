@@ -486,7 +486,11 @@ impl Described for WindowFrame {
     }
 
     fn set_props(&mut self, props: WindowFrameProps) -> bool {
-        if props.tabs.as_deref().is_some_and(holds_tabs) != self.tabbed {
+        // The props an update in place reads carry no part views: whether the bar is the window's
+        // tabs is told by the part the view gave, which is reconciled where it stands. The shape
+        // follows it there (`take_structure_dirty`), so a frame that holds a carried tab or a
+        // window being dragged is never built again under the person's hand.
+        if props.tabs.is_some() && props.tabs.as_deref().is_some_and(holds_tabs) != self.tabbed {
             return false;
         }
         let glyph = props.glyph.as_deref().and_then(Icon::from_name);
@@ -1002,6 +1006,22 @@ impl WindowFrame {
             _ => false,
         }
     }
+
+    /// Whether the bar's parts say the window shows tabs, compared with the shape it was built
+    /// with: the view may take its tabs away or give it some (the style's `strips_tabs`), and a
+    /// bar built the other way is built again around the part it now holds. True when the shape
+    /// changed, so the host rebuilds the frame.
+    fn notice_bar_shape(&mut self) -> bool {
+        let tabbed = self
+            .own_bar_row()
+            .and_then(|row| row.child_mut(TABS))
+            .is_some_and(|tabs| holds_tabs(tabs.as_ref()));
+        let changed = tabbed != self.tabbed;
+        if changed {
+            self.tabbed = tabbed;
+        }
+        changed
+    }
 }
 
 impl Decorator for WindowFrame {
@@ -1331,10 +1351,18 @@ impl Decorator for WindowFrame {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        self.layers.take_structure_dirty()
+        // The bar's shape follows the part its view gives it: a window whose tabs came or went is
+        // built again, one frame after the part changed.
+        let reshaped = self.notice_bar_shape();
+        reshaped | self.layers.take_structure_dirty()
     }
 
     fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
+        if self.notice_bar_shape() {
+            // The bar's shape is the frame's own layout, so a host that hears of it builds the
+            // frame again rather than remounting its children.
+            return tilo_ui_base::widget::StructureChange::Rebuild;
+        }
         // The bar built again (its name, its app's glyph) is a change of the frame's own, which
         // a host learns here as it learns its children's; the room the bar keeps is layout's,
         // never a structure change.
@@ -2212,6 +2240,132 @@ mod tests {
             "notes.workspace/notes/n_groceries",
             "the drop carries the resource the window shows"
         );
+    }
+
+    /// The props an update in place reads carry no part views, so a frame that shows tabs is not
+    /// built again by them: a bar built again under the person's hand would let go of the tab or
+    /// the window being carried. The shape follows the part the view gives it, never the props.
+    #[test]
+    fn an_update_in_place_keeps_a_tabbed_frame() {
+        let mut frame = WindowFrame::from_props(
+            "w",
+            WindowFrameProps {
+                key: "w".to_owned(),
+                name: Some("Groceries — Notes".to_owned()),
+                carries: Some("shell:place:1".to_owned()),
+                tabs: Some(two_places()),
+                body: Some(Box::new(Spacer::new())),
+                ..WindowFrameProps::default()
+            },
+        );
+        assert!(frame.tabbed, "fixture: the window shows its tabs");
+        let kept = frame.set_props(WindowFrameProps {
+            key: "w".to_owned(),
+            name: Some("Groceries — Notes".to_owned()),
+            carries: Some("shell:place:1".to_owned()),
+            focused: true,
+            ..WindowFrameProps::default()
+        });
+        assert!(
+            kept,
+            "an update in place keeps the frame the person is holding"
+        );
+        assert!(frame.tabbed, "the bar keeps its tabs");
+    }
+
+    /// A window of several tabs keeps its pills for its tabs even while its frame carries what the
+    /// window holds: a press on a pill lifts that tab, and the window is carried from the bar's own
+    /// room, where no pill stands.
+    #[test]
+    fn a_press_on_a_pill_of_several_lifts_the_tab() {
+        use crate::widget::drag_bus;
+        let queue = tilo_ui_base::Intents::default();
+        let mut frame = Box::new(WindowFrame::from_props(
+            "w",
+            WindowFrameProps {
+                key: "w".to_owned(),
+                name: Some("Groceries — Notes".to_owned()),
+                carries: Some("notes.workspace/notes/n_groceries".to_owned()),
+                press: Event::View(tilo_ui_base::component::Intent::new(&queue, "w", "press")),
+                tabs: Some(two_places()),
+                body: Some(Box::new(Spacer::new())),
+                ..WindowFrameProps::default()
+            },
+        ));
+        let theme = Theme::dark();
+        let rect = Rect::new(0.0, 0.0, 480.0, 360.0);
+        let mut taffy = TaffyTree::<()>::new();
+        let mut nodes = std::collections::HashMap::new();
+        let node = Widget::build_layout(frame.as_mut(), &mut taffy, &theme, &mut nodes);
+        if let Ok(mut style) = taffy.style(node).cloned() {
+            style.size = taffy::Size::from_lengths(480.0_f32, 360.0_f32);
+            let _ = taffy.set_style(node, style);
+        }
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(480.0),
+                    height: taffy::AvailableSpace::Definite(360.0),
+                },
+            )
+            .expect("the window solves its layout");
+        Widget::apply_layout(frame.as_mut(), &taffy, node, rect.origin());
+        fn send(frame: &mut dyn Widget, taffy: &TaffyTree<()>, node: NodeId, event: &WindowEvent) {
+            let mut doc = automerge::AutoCommit::new();
+            crate::testing::Dispatch::new()
+                .doc(&mut doc)
+                .layout(taffy, node)
+                .send(frame, event);
+        }
+        let pill = with_tabs_bar(&mut frame.layers, &mut |bar: &mut TabBar| {
+            bar.tab_rects().get(1).copied()
+        })
+        .flatten()
+        .expect("the window's second pill is laid out");
+        let at = pill.center();
+        send(
+            frame.as_mut(),
+            &taffy,
+            node,
+            &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y),
+        );
+        send(
+            frame.as_mut(),
+            &taffy,
+            node,
+            &tilo_ui_base::synthetic_input::mouse_press(),
+        );
+        assert!(
+            queue.take().is_empty(),
+            "a press on a pill reaches for the tab, never the window"
+        );
+        for step in 1..=4 {
+            let by = 12.0 * f64::from(step);
+            send(
+                frame.as_mut(),
+                &taffy,
+                node,
+                &tilo_ui_base::synthetic_input::cursor_moved(at.x + by, at.y + by / 2.0),
+            );
+        }
+        assert!(
+            drag_bus::current().is_some(),
+            "the tab is carried on the drag bus"
+        );
+        assert_eq!(
+            with_tabs_bar(&mut frame.layers, &mut |bar: &mut TabBar| bar
+                .drag_in_flight()),
+            Some(true),
+            "the pill's own drag is the one in flight"
+        );
+        send(
+            frame.as_mut(),
+            &taffy,
+            node,
+            &tilo_ui_base::synthetic_input::mouse_release(),
+        );
+        drag_bus::end(None);
     }
 
     /// A window in a row is resized by carrying its trailing edge: the press takes the edge, the

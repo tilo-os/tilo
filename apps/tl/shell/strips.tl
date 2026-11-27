@@ -457,7 +457,7 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
             focused: in_front,
             keep: if in_front { "front" } else { "" },
             lists_actions: lists_the_shown(shown),
-            carries: if s.floating { floating_bar(shown) } else { window_resource(shown) },
+            carries: place_bar(shown),
             resizable: resizable,
             narrowest: if resizable { .some(44.0 * space.rem) } else { .none },
             leads: leads,
@@ -488,8 +488,7 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
                             if let w = shown_window(p) {
                                 ui.TabItem(
                                     the_place(p.key),
-                                    title: place_title(p),
-                                    name: place_own_title(p),
+                                    title: place_own_title(p),
                                     icon: w.icon,
                                     attention: w.attention,
                                     modified: w.modified,
@@ -502,11 +501,7 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
                                     }
                                 }
                             } else {
-                                ui.TabItem(
-                                    the_place(p.key),
-                                    title: place_title(p),
-                                    name: place_own_title(p),
-                                )
+                                ui.TabItem(the_place(p.key), title: place_own_title(p))
                             }
                         }
                     }
@@ -552,16 +547,12 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
     }
 }
 
-/// The resource a window's bar carries when the person picks it up: the document its place in front
-/// shows, or empty when the place shows none (a window's well). A bar that carries nothing is not
-/// lifted, so a foreign window's bar is no drag at all.
-fn window_resource(shown: Option<LayoutPlace>) -> Text {
-    if let p = shown { p.resource } else { "" }
-}
-
-/// What a floating window's bar carries when the person picks it up: the place it shows, so the
-/// session carries the window itself, into a gap of its strip or to where it is let go.
-fn floating_bar(shown: Option<LayoutPlace>) -> Text {
+/// The place a window's bar carries when the person picks it up: the place itself, by its own
+/// address (`shell:place:<key>`), which is what a tab carries too. Every drop of a place is the
+/// one lookup, whether it is let go on another window (which tabs it in) or in a gap of the row
+/// (which stands it there), for a window standing in a row as for one floating over it. A window
+/// with no place carries nothing, and its bar is no drag at all.
+fn place_bar(shown: Option<LayoutPlace>) -> Text {
     if let p = shown { the_place(p.key).id() } else { "" }
 }
 
@@ -579,10 +570,10 @@ fn window_glyph(shown: Option<LayoutPlace>) -> Text {
 
 /// Tab the place whose window's bar was dragged onto the strip `s` into that strip: a person drags
 /// one window's bar onto another's to make its tabs, and the window's menu's "Move into … as a
-/// tab" runs the same arranging action. The place lands after the strip's other tabs and
-/// comes to the front of them, so the window shows what was dropped on it. A place already in
-/// this strip is only brought to the front, so dropping a window on itself raises it rather than
-/// opening a second place. The strip comes forward with it.
+/// tab" runs the same arranging action. The place lands after the strip's other tabs and comes to
+/// the front of them, so the window shows what was dropped on it — one arranging action, which
+/// Undo takes back in one step. A place already in this strip is only brought to the front, so
+/// dropping a window on itself raises it rather than opening a second place, as one action too.
 action tab_place_here(a: Layout, s: LayoutStrip, target: host.Resource) (
     icon: .columns_2,
     label: "Tab it here",
@@ -595,8 +586,9 @@ action tab_place_here(a: Layout, s: LayoutStrip, target: host.Resource) (
                 strip: the_strip(s.key),
                 before: .none,
             )
+        } else {
+            session.activate(place: the_place(p.key))
         }
-        session.activate(place: the_place(p.key))
     } else { bring_forward(a, s) }
 }
 

@@ -268,29 +268,22 @@ impl Tabs {
         self.props = Some(props.again());
     }
 
-    /// Whether `props` changes something the strip draws or reports.
+    /// Whether `props` changes something the strip's pills are made of, so the strip is built
+    /// again. The tab in front and whether the frame has the keyboard are set on the bar the strip
+    /// holds ([`TabStrip::draw`]), never a reason to build it again: a press that chose a pill
+    /// still holds the pointer, and the tab or window it began to carry is carried on.
     fn differs(&self, props: &TabStripProps) -> bool {
         let Some(held) = &self.props else {
             return true;
         };
         held.key != props.key
-            || held.focused != props.focused
-            || held.active.as_ref().map(|r| &r.0) != props.active.as_ref().map(|r| &r.0)
             || held.tabs.len() != props.tabs.len()
             || held.tabs.iter().zip(&props.tabs).any(|(a, b)| {
                 a.key != b.key
                     || a.title != b.title
                     || a.name != b.name
                     || a.icon != b.icon
-                    || a.attention != b.attention
-                    || a.modified != b.modified
-                    || a.busy != b.busy
                     || a.item.as_ref().map(|r| &r.0) != b.item.as_ref().map(|r| &r.0)
-                    || a.presence.len() != b.presence.len()
-                    || a.presence
-                        .iter()
-                        .zip(&b.presence)
-                        .any(|(x, y)| x.who != y.who || x.name != y.name || x.colour != y.colour)
             })
     }
 }
@@ -328,6 +321,11 @@ fn hex_rgb(hex: &str) -> Option<(u8, u8, u8)> {
     let byte = |at: usize| u8::from_str_radix(digits.get(at..at + 2)?, 16).ok();
     Some((byte(0)?, byte(2)?, byte(4)?))
 }
+
+/// How long a tab let go outside its strip waits for the frame under the pointer to take the
+/// drop before the strip makes a window of it: long enough for the frame's own update to read the
+/// drop the release left on the bus, short enough that a person sees their window arrive.
+const DETACH_GRACE: crate::time::Duration = crate::time::Duration::from_millis(50);
 
 /// A frame's tab strip.
 ///
@@ -432,6 +430,31 @@ impl tilo_ui_base::widget::identity::concrete::Decorator for TabStrip {
     /// that tell are the ones this asks for.
     fn needs_animation_frame(&self) -> bool {
         self.fallback.is_some() || tilo_ui_base::widget::Widget::needs_animation_frame(&self.bar)
+    }
+
+    /// When the wait a let-go tab makes comes due, so the host's next pass hears what the strip
+    /// reports: a drop some frame took, or none, which gives the tab a window of its own.
+    fn next_wake_deadline(&self) -> Option<crate::time::Instant> {
+        let waiting = self
+            .fallback
+            .as_ref()
+            .map(|(_, _, let_go)| *let_go + DETACH_GRACE);
+        [
+            tilo_ui_base::widget::Widget::next_wake_deadline(&self.bar),
+            waiting,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+    }
+
+    /// The wait is due: the sync this serves reports the drop, and none taken makes the window.
+    fn serve_deadline(&mut self, now: crate::time::Instant) -> bool {
+        let waiting = self
+            .fallback
+            .as_ref()
+            .is_some_and(|(_, _, let_go)| *let_go + DETACH_GRACE <= now);
+        tilo_ui_base::widget::Widget::serve_deadline(&mut self.bar, now) | waiting
     }
 }
 
@@ -548,7 +571,7 @@ impl TabStrip {
             self.carried = None;
             crate::widget::drag_bus::end(None);
         }
-        let waited = crate::time::Duration::from_millis(50);
+        let waited = DETACH_GRACE;
         if let Some((resource, at, let_go)) = self.fallback.take() {
             let now = crate::time::now();
             if now.saturating_duration_since(let_go) < waited {
@@ -640,5 +663,73 @@ impl TabStrip {
             out.push(("detach", resource.clone(), pack_point(point.x, point.y)));
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tab(key: &str, title: &str) -> TabItemProps {
+        TabItemProps {
+            key: key.to_owned(),
+            item: Some(ResourceId(format!("@notes.Note:{key}"))),
+            title: Some(title.to_owned()),
+            name: None,
+            icon: None,
+            attention: false,
+            modified: false,
+            busy: false,
+            presence: Vec::new(),
+        }
+    }
+
+    fn props(tabs: Vec<TabItemProps>, active: &str) -> TabStripProps {
+        let active = tabs
+            .iter()
+            .find(|tab| {
+                tab.item
+                    .as_ref()
+                    .is_some_and(|item| item.0.ends_with(active))
+            })
+            .and_then(|tab| tab.item.clone());
+        TabStripProps {
+            key: "frame".to_owned(),
+            active,
+            focused: true,
+            activate: Event::None,
+            close: Event::None,
+            reorder: Event::None,
+            detach: Event::None,
+            tabs,
+        }
+    }
+
+    /// A view choosing another of its tabs keeps the strip it gave: the bar's chosen tab moves,
+    /// and the bar itself stands, so a press that activated a pill keeps the pointer it holds and
+    /// the tab or window it began to carry is carried on.
+    #[test]
+    fn choosing_another_tab_keeps_the_bar() {
+        let tabs = vec![tab("a", "A"), tab("b", "B")];
+        let mut strip = TabStrip::from_props("frame", props(tabs.clone(), "a"));
+        let before = strip.bar().active_id();
+        let kept = strip.set_props(props(tabs, "b"));
+        assert!(kept, "only the chosen tab changed: the strip stands");
+        assert_ne!(
+            strip.bar().active_id(),
+            before,
+            "the chosen tab is the bar's"
+        );
+        assert_eq!(strip.bar().tabs().len(), 2, "both pills stand");
+    }
+
+    /// The keyboard reaching the frame is the bar's state, never a reason to build it again.
+    #[test]
+    fn the_frames_focus_keeps_the_bar() {
+        let tabs = vec![tab("a", "A"), tab("b", "B")];
+        let mut strip = TabStrip::from_props("frame", props(tabs.clone(), "a"));
+        let mut unfocused = props(tabs, "a");
+        unfocused.focused = false;
+        assert!(strip.set_props(unfocused), "the bar stands");
     }
 }
