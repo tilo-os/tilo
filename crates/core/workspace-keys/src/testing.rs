@@ -81,6 +81,9 @@ pub struct Policy {
     /// The workspace's governance is not known here: the directory names no
     /// one.
     pub unknown: Arc<std::sync::atomic::AtomicBool>,
+    /// The readers of the records whose groups the tests hear before the
+    /// policy names them: the directory names none while this is set.
+    pub unknown_documents: Arc<std::sync::atomic::AtomicBool>,
     /// The person each device is one of, by their root key: who reads a reader set's group.
     pub people: Arc<Mutex<BTreeMap<Ed25519PublicKey, [u8; 32]>>>,
     /// Each person's role in the workspace, by their root key, as its governance has it now:
@@ -123,6 +126,9 @@ impl KeyDirectory for Directory {
         _: &str,
         _: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
+        if self.policy.unknown_documents.load(Ordering::SeqCst) {
+            return None;
+        }
         Some(self.policy.document_readers.lock().unwrap().clone())
     }
 

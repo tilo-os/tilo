@@ -157,7 +157,12 @@ impl KeySink for Link {
     }
 
     /// The pass after a workspace settles reads its replica as it now stands.
-    fn settled(&self, _workspace: &str, _state: StatePeer) {
+    fn settled(&self, workspace: &str, _state: StatePeer) {
+        // The workspace's governance names the readers of its records: what waits for them is
+        // judged in the pass this wakes.
+        if let Some(id) = WorkspaceId::parse(workspace) {
+            self.access.workspace_settled(id);
+        }
         self.park.poke();
     }
 

@@ -58,6 +58,11 @@ const WELCOME_WAIT: Duration = Duration::from_secs(10);
 /// yet. Bounded, newest kept: a frame this device's policy still does not
 /// back after that many later ones is not going to be applied.
 const MAX_HELD_FRAMES: usize = 8;
+/// Messages of records' groups kept until the policy here can name the records'
+/// readers. Bounded, newest kept: a record whose readers this device's policy
+/// still cannot name after that many later ones is asked again by the route
+/// that wants it.
+const MAX_WAITING_SCOPES: usize = 64;
 
 /// The spread past [`REQUEST_FIRST`] that a device's wait for a group's genesis
 /// allows for a key holder answering its request, in milliseconds: one ask goes
@@ -654,6 +659,34 @@ impl Unopened {
     }
 }
 
+/// A message of a record's group kept until the policy here can name the record's readers: which
+/// readers a record's group has is what decides whether its frames and requests are this device's
+/// to take, and the workspace's governance reaches a device as the workspace does
+/// ([`WorkspaceKeys::recall_waiting`]).
+enum WaitingScope {
+    Frame(KeyScope, Box<MlsGovernanceFrame>),
+    Request(KeyScope, Box<MlsAccessRequestV1>),
+}
+
+impl WaitingScope {
+    /// The workspace whose group the message is of.
+    fn workspace(&self) -> WorkspaceId {
+        match self {
+            Self::Frame(scope, _) | Self::Request(scope, _) => scope.workspace(),
+        }
+    }
+}
+
+/// What a record's group may do here now, as the policy names its readers.
+enum ScopeAnswer {
+    /// Its readers are named here: the group to take the message in as.
+    Group(WorkspaceId),
+    /// Its readers cannot be named here yet: the message waits for the policy that moves.
+    Waits,
+    /// Its readers are named, and they are not this device and its sender.
+    Refused,
+}
+
 /// This device's side of every encrypted group it takes part in.
 ///
 /// Taking part in a workspace's group needs this device's own group state,
@@ -681,6 +714,13 @@ pub struct WorkspaceKeys {
     queued: bool,
     /// Groups asked about that could not be opened; see [`Unopened`].
     unopened: HashMap<WorkspaceId, Unopened>,
+    /// A message of a record's group that arrived before the policy here could
+    /// name the record's readers; see [`WaitingScope`].
+    waiting_scopes: Vec<WaitingScope>,
+    /// The workspaces whose governance settled since the last pass: the readers of their records
+    /// are what a message waiting in [`Self::waiting_scopes`] waits for, so those are judged again
+    /// in the pass this keeps.
+    settled: BTreeSet<WorkspaceId>,
     /// The check this service last registered with the broker for each
     /// group. Every access re-asserts its group's check, and a group's
     /// keys are read for every live frame sealed or opened; taking the
@@ -729,6 +769,9 @@ impl WorkspaceKeys {
         self.unopened.remove(&workspace);
         self.registered.remove(&workspace);
         self.groups_seen.remove(&workspace);
+        self.waiting_scopes
+            .retain(|waiting| waiting.workspace() != workspace);
+        self.settled.remove(&workspace);
         self.copied.remove(&workspace);
         self.store
             .as_ref()
@@ -775,6 +818,8 @@ impl WorkspaceKeys {
             changes: tokio::sync::watch::Sender::new(0),
             queued: false,
             unopened: HashMap::new(),
+            waiting_scopes: Vec::new(),
+            settled: BTreeSet::new(),
             registered: HashMap::new(),
             groups_seen: std::collections::HashSet::new(),
             policy_epoch: None,
@@ -1262,18 +1307,24 @@ impl WorkspaceKeys {
         // reconcile has a later epoch and makes the next re-check due.
         let epoch = self.directory.policy_epoch();
         // The policy moved since the last pass: a request that went unanswered
-        // under the one before it may be answered under this one.
+        // under the one before it may be answered under this one, and a record's
+        // group whose message waited for the readers this policy names has them.
         let policy_moved = epoch.is_some() && epoch != self.policy_epoch;
         self.policy_epoch = epoch;
+        let settled: Vec<WorkspaceId> = std::mem::take(&mut self.settled).into_iter().collect();
+        if policy_moved {
+            self.recall_waiting(None, now, wall);
+            self.ask_waiting_now(now);
+        }
+        for workspace in settled {
+            self.recall_waiting(Some(workspace), now, wall);
+        }
         let reconcile_due = self
             .reconcile
             .due(now, epoch.unwrap_or(0))
             .is_some_and(|due| due <= now);
         let workspaces: Vec<WorkspaceId> = self.peers.keys().copied().collect();
         let mut reconciled = false;
-        if policy_moved {
-            self.ask_waiting_now(now);
-        }
         for workspace in workspaces {
             let due = reconcile_due
                 || self
@@ -1357,6 +1408,8 @@ impl WorkspaceKeys {
             .values()
             .filter_map(|entry| entry.welcome.as_ref().map(|held| held.until))
             .min();
+        // What waits for a workspace's governance settling is judged in the pass that settle
+        // wakes ([`Self::workspace_settled`]), never on a timer of its own.
         policy
             .into_iter()
             .chain(welcome)
@@ -1412,35 +1465,115 @@ impl WorkspaceKeys {
                 }
             }
             InboundGovernance::DocumentFrame { scope, frame } => {
-                if frame.workspace == scope.group()
-                    && frame.check().is_ok()
-                    && let Some(group) = self.accept_document_scope(scope, frame.signed_by, wall)
-                {
-                    self.receive_frame(group, *frame, now, wall);
+                if frame.workspace != scope.group() || frame.check().is_err() {
+                    return;
+                }
+                match self.document_scope_answer(&scope, frame.signed_by, wall) {
+                    ScopeAnswer::Group(group) => self.receive_frame(group, *frame, now, wall),
+                    ScopeAnswer::Waits => self.wait_for_readers(WaitingScope::Frame(scope, frame)),
+                    ScopeAnswer::Refused => (),
                 }
             }
             InboundGovernance::DocumentAccessRequest { scope, request } => {
-                if request.workspace == scope.group()
-                    && request.verify().is_ok()
-                    && let Some(group) = self.accept_document_scope(scope, request.device, wall)
-                {
-                    self.receive_request(group, *request, now, wall);
+                if request.workspace != scope.group() || request.verify().is_err() {
+                    return;
+                }
+                match self.document_scope_answer(&scope, request.device, wall) {
+                    ScopeAnswer::Group(group) => self.receive_request(group, *request, now, wall),
+                    ScopeAnswer::Waits => {
+                        self.wait_for_readers(WaitingScope::Request(scope, request));
+                    }
+                    ScopeAnswer::Refused => (),
                 }
             }
         }
     }
 
-    fn accept_document_scope(
+    /// What a record's group's message may do here, as the policy names the record's readers: the
+    /// group to take it in as, waiting for a policy that names them, or refused. Readers the
+    /// policy cannot name yet are not a refusal: the workspace's governance reaches a device as
+    /// the workspace does, and the group's scope is remembered from these messages alone, so a
+    /// frame dropped here is a record this device can never open.
+    fn document_scope_answer(
         &mut self,
-        scope: neighbour_wire::KeyScope,
+        scope: &KeyScope,
         sender: Ed25519PublicKey,
         wall: u64,
-    ) -> Option<WorkspaceId> {
-        let readers = self.directory.scope_devices(&scope, wall)?;
-        if !readers.contains(&self.device()?) || !readers.contains(&sender) {
-            return None;
+    ) -> ScopeAnswer {
+        let Some(readers) = self.directory.scope_devices(scope, wall) else {
+            return ScopeAnswer::Waits;
+        };
+        if !readers.contains(&sender)
+            || !self
+                .device()
+                .is_some_and(|device| readers.contains(&device))
+        {
+            return ScopeAnswer::Refused;
         }
-        self.remember_scope(scope)
+        match self.remember_scope(scope.clone()) {
+            Some(group) => ScopeAnswer::Group(group),
+            None => ScopeAnswer::Refused,
+        }
+    }
+
+    /// Keep `waiting` for the policy that names the record's readers, bounded, and wake the pass
+    /// that looks again: the frame or request it carries is the only news this device has of the
+    /// record's group.
+    fn wait_for_readers(&mut self, waiting: WaitingScope) {
+        if self.waiting_scopes.len() == MAX_WAITING_SCOPES {
+            self.waiting_scopes.remove(0);
+        }
+        self.waiting_scopes.push(waiting);
+        self.queued = true;
+    }
+
+    /// Note that `workspace`'s governance settled here, naming the readers of its records: the
+    /// messages kept for it are judged again in the next pass, which this wakes a parked pump to
+    /// take. A workspace that settled before a message waited owes it nothing that pass.
+    pub fn workspace_settled(&mut self, workspace: WorkspaceId) {
+        if self.settled.insert(workspace) {
+            self.queued = true;
+        }
+    }
+
+    /// Take in every message of a record's group that waited for the policy here to name the
+    /// record's readers, as [`Self::receive`] would have, and keep what still waits: one whose
+    /// readers this policy names now is taken in, one whose readers it still cannot name waits
+    /// for the next change that may name them. `workspace` limits this to that workspace's
+    /// records; `None` is every record's.
+    fn recall_waiting(&mut self, workspace: Option<WorkspaceId>, now: Instant, wall: u64) {
+        let waiting = std::mem::take(&mut self.waiting_scopes);
+        for entry in waiting {
+            if workspace.is_some_and(|workspace| entry.workspace() != workspace) {
+                self.waiting_scopes.push(entry);
+                continue;
+            }
+            let kept = match entry {
+                WaitingScope::Frame(scope, frame) => {
+                    match self.document_scope_answer(&scope, frame.signed_by, wall) {
+                        ScopeAnswer::Group(group) => {
+                            self.receive_frame(group, *frame, now, wall);
+                            None
+                        }
+                        ScopeAnswer::Waits => Some(WaitingScope::Frame(scope, frame)),
+                        ScopeAnswer::Refused => None,
+                    }
+                }
+                WaitingScope::Request(scope, request) => {
+                    match self.document_scope_answer(&scope, request.device, wall) {
+                        ScopeAnswer::Group(group) => {
+                            self.receive_request(group, *request, now, wall);
+                            None
+                        }
+                        ScopeAnswer::Waits => Some(WaitingScope::Request(scope, request)),
+                        ScopeAnswer::Refused => None,
+                    }
+                }
+            };
+            if let Some(kept) = kept {
+                self.waiting_scopes.push(kept);
+            }
+        }
     }
 
     /// Judge the frames each group held for the policy ([`Self::receive_frame`])
@@ -2231,6 +2364,21 @@ impl SharedKeys {
         Self {
             inner: Arc::new(Mutex::new(service)),
             wake: None,
+        }
+    }
+
+    /// Note that `workspace`'s governance settled here, naming the readers of its records: what
+    /// waits for them is judged in the pass this wakes a parked pump to take
+    /// ([`WorkspaceKeys::workspace_settled`]).
+    pub fn workspace_settled(&self, workspace: WorkspaceId) {
+        let queued = self.with_service(|service| {
+            service.workspace_settled(workspace);
+            std::mem::take(&mut service.queued)
+        });
+        if queued == Some(true)
+            && let Some(wake) = &self.wake
+        {
+            wake();
         }
     }
 
