@@ -62,8 +62,8 @@ fn report_cell(index: Int) -> List<Int> {
     let column = if across > 0 { index - index / columns * columns } else { 0 }
     let row = index / columns
     return [
-        column * (report_card_width() + report_gap()),
-        row * (report_card_height() + report_gap()),
+        report_gap() + column * (report_card_width() + report_gap()),
+        report_gap() + row * (report_card_height() + report_gap()),
         report_card_width(),
         report_card_height(),
     ]
@@ -147,15 +147,7 @@ view report_picker() {
     // The picker's room, read here: each pin of the loop stands in a box its own size.
     let compact = space.compact
     layers(fill) {
-        ui.Map(
-            name: "What the report is about",
-            ground: true,
-            outline: shell.report_area,
-            hint: if windows.is_empty() {
-                "Nothing is open to report about"
-            } else { "Click the window that isn't working" },
-            fill,
-        ) {
+        ui.Map(name: "What the report is about", ground: true, outline: shell.report_area, fill) {
             on frame(at: List<Int>): pick_report_region(shell, at)
             for w in windows {
                 let cell = report_cell(keys.index_of(w.key) ?? 0)

@@ -381,6 +381,8 @@ fn a_programs_question_stands_as_a_panel_with_its_words_and_its_yes() {
             &Map::from_iter([("enabled".to_owned(), json!(false))]),
         )
         .expect("the control hints are turned off");
+    // Nothing under the pointer tints a capture: it rests on the bar's clock.
+    crate::common::point_to(&mut session, (f64::from(width) / 2.0, 20.0));
 
     // In the light look, the app asks before it reaches the internet: the session keeps the call
     // as the person's asked record, and the shell draws it where a person is looking.
@@ -402,6 +404,11 @@ fn a_programs_question_stands_as_a_panel_with_its_words_and_its_yes() {
         answered.is_some(),
         "the person's yes answers the program's question"
     );
+
+    // The pointer stands where the yes was pressed; take it to the bar, so the next look's card is
+    // captured at rest rather than with its Allow under the pointer (whose tint is the light
+    // accent's, whatever the look).
+    crate::common::point_to(&mut session, (f64::from(width) / 2.0, 20.0));
 
     // The same in the dark look: the card is as legible there, and its way out declines.
     choose(&mut session, "tilo-dark", "dark");

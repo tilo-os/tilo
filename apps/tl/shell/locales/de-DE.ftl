@@ -1735,8 +1735,6 @@ d-d63pkwee = Zuletzt geöffnet an einem Nachmittag
 
 d-7ugeomrq = Meldungsauswahl
     .w-what-the-report-is-about = Worum es in der Meldung geht
-    .w-nothing-is-open-to-report-about = Nichts offen, worüber sich melden ließe
-    .w-click-the-window-that-isn-t = Klicke das Fenster an, das nicht funktioniert
     .w-nothing-is-open-to-report-about-2 = Nichts offen, worüber sich melden ließe.
     .w-click-the-window-that-isn-t-2 = Klicke das Fenster an, das nicht funktioniert, oder ziehe darüber.
     .w-cancel = Abbrechen
@@ -2439,6 +2437,8 @@ d-fbr67wmc = Musik-Widget
 
 d-wfzaobux = Personen-Widget
     .w-show-who-is-here = Zeigen, wer hier ist
+
+d-ehkl2kj3 = Mitgliedsgesicht
 
 d-7deyrm3z = Kalender-Widget
 
