@@ -384,7 +384,7 @@ fn known() -> std::sync::MutexGuard<'static, Known> {
         }
     }
     let mut known = lock();
-    if let Some(Ok(reading)) = known
+    if let Some(::collaboration::PublishedReading::Reading(reading)) = known
         .followed
         .as_ref()
         .and_then(|followed| followed.latest())

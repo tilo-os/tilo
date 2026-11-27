@@ -19,7 +19,7 @@ use runtime_portal::process_link::{Descriptor, FromProcess, Packet as _, ToProce
 use tilolang_process::TilolangProcess;
 use tilolang_process::stop::Stop;
 use tilolang_process::wait::{Wake, wait};
-use tilolang_tilo::platform_apps::{PublishedSource, Reading};
+use tilolang_tilo::platform_apps::{PublishedSource, Reading, Seen};
 
 /// The API, for the panic hook to say why the host ends.
 static API: OnceLock<Arc<Descriptor>> = OnceLock::new();
@@ -331,7 +331,11 @@ impl PublishedSource for Session {
 struct Followed(collaboration::SessionResource);
 
 impl Reading for Followed {
-    fn latest(&self) -> Option<Result<String, String>> {
-        self.0.latest()
+    fn latest(&self) -> Option<Seen> {
+        Some(match self.0.latest()? {
+            collaboration::PublishedReading::Reading(reading) => Seen::Reading(reading),
+            collaboration::PublishedReading::Pending => Seen::Pending,
+            collaboration::PublishedReading::Failed(why) => Seen::Unreadable(why),
+        })
     }
 }

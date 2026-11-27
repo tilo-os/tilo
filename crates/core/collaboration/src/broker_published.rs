@@ -6,6 +6,7 @@
 use super::{
     BridgeState, PUBLISHED_COMMAND_BRIDGE, PublishedCommand, SdkCommand, enqueue_sdk_command, mpsc,
 };
+use crate::PublishedReading;
 use crate::time::Duration;
 use std::sync::Arc;
 
@@ -33,7 +34,7 @@ static PUBLISHED_COMMAND_BUDGET: std::sync::OnceLock<BridgeState> = std::sync::O
 #[derive(Clone)]
 pub struct SessionResource {
     resource: Arc<str>,
-    newest: Arc<std::sync::Mutex<Option<Result<String, String>>>>,
+    newest: Arc<std::sync::Mutex<Option<PublishedReading>>>,
     /// Woken at each reading that arrives, once a view attached one.
     wake: Arc<std::sync::Mutex<Option<tilo_rt::wake::WakeHandle>>>,
     /// Ends the worker's watch when the last handle is dropped.
@@ -52,14 +53,18 @@ impl SessionResource {
         tilo_rt::off_ui_thread();
         let (watched, first) = Self::watch(resource, None)?;
         match first.recv_timeout(PUBLISHED_OPEN_TIMEOUT) {
-            Ok(Ok(reading)) => {
+            Ok(PublishedReading::Reading(reading)) => {
                 *watched
                     .newest
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Ok(reading));
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some(PublishedReading::Reading(reading));
                 Ok(watched)
             }
-            Ok(Err(error)) => Err(error),
+            // Nothing publishes it yet: a caller that opened it asked for a reading it can show,
+            // and this has none to give now.
+            Ok(PublishedReading::Pending) => Err(format!("No service publishes {resource}.")),
+            Ok(PublishedReading::Failed(error)) => Err(error),
             Err(_) => Err("The session did not answer.".to_string()),
         }
     }
@@ -83,7 +88,7 @@ impl SessionResource {
     fn watch(
         resource: &str,
         first_wake: Option<tilo_rt::wake::WakeHandle>,
-    ) -> Result<(Self, mpsc::Receiver<Result<String, String>>), String> {
+    ) -> Result<(Self, mpsc::Receiver<PublishedReading>), String> {
         let newest = Arc::new(std::sync::Mutex::new(None));
         let wake = Arc::new(std::sync::Mutex::new(first_wake));
         let (first_tx, first_rx) = mpsc::sync_channel(1);
@@ -115,9 +120,12 @@ impl SessionResource {
         ))
     }
 
-    /// The newest reading since the last call; `None` when nothing changed.
+    /// What the watch last answered, since the last call; `None` when nothing changed. A
+    /// resource no service publishes yet answers [`PublishedReading::Pending`], which a reader
+    /// keeps apart from one the session could not read: the watch stays on for the first, and a
+    /// service that starts is followed when it appears.
     #[must_use]
-    pub fn latest(&self) -> Option<Result<String, String>> {
+    pub fn latest(&self) -> Option<PublishedReading> {
         self.newest
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

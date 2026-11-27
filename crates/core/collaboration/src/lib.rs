@@ -251,6 +251,19 @@ pub use collab_types::presence::{Member, Person, PersonId, PresencePayload};
 
 use std::sync::mpsc;
 
+/// What a watch of one of the session's published resources last answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PublishedReading {
+    /// The resource's newest reading.
+    Reading(String),
+    /// No service is up for it at the revision the watch read; one may be at a later one, so
+    /// the watch stays on. Nothing is known of the resource, which is not the same as its
+    /// having failed to read.
+    Pending,
+    /// The session could not read it, in its own words.
+    Failed(String),
+}
+
 /// The native display control service is unavailable without an admitted broker.
 #[cfg(not(feature = "broker-transport"))]
 pub fn display_control(_command: Vec<u8>, _origin: DisplayOrigin) -> Result<Vec<u8>, String> {
@@ -275,7 +288,7 @@ impl SessionResource {
 
     /// Nothing is watched on this transport.
     #[must_use]
-    pub fn latest(&self) -> Option<Result<String, String>> {
+    pub fn latest(&self) -> Option<PublishedReading> {
         None
     }
 

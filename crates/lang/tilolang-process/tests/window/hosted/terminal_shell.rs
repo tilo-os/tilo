@@ -83,8 +83,12 @@ struct Preferences {
 struct Followed(Arc<Mutex<Option<String>>>);
 
 impl tilolang_tilo::platform_apps::Reading for Followed {
-    fn latest(&self) -> Option<Result<String, String>> {
-        self.0.lock().unwrap().take().map(Ok)
+    fn latest(&self) -> Option<tilolang_tilo::platform_apps::Seen> {
+        self.0
+            .lock()
+            .unwrap()
+            .take()
+            .map(tilolang_tilo::platform_apps::Seen::Reading)
     }
 }
 

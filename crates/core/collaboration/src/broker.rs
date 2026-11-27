@@ -205,9 +205,9 @@ pub(super) enum PublishedCommand {
     /// whatever view `wake` holds.
     Watch {
         resource: Arc<str>,
-        readings: Arc<std::sync::Mutex<Option<Result<String, String>>>>,
+        readings: Arc<std::sync::Mutex<Option<crate::PublishedReading>>>,
         wake: Arc<std::sync::Mutex<Option<tilo_rt::wake::WakeHandle>>>,
-        first: mpsc::SyncSender<Result<String, String>>,
+        first: mpsc::SyncSender<crate::PublishedReading>,
         cancel: tokio::sync::watch::Receiver<()>,
     },
     /// Take an action of one, answering the action API's verdict.
@@ -234,7 +234,8 @@ async fn published_command(client: &runtime_collab::CollabClient, command: Publi
             let stream = match services.watch(&resource).await {
                 Ok(stream) => stream,
                 Err(error) => {
-                    let _ = first.try_send(Err(published_error(&error)));
+                    let _ =
+                        first.try_send(crate::PublishedReading::Failed(published_error(&error)));
                     return;
                 }
             };
@@ -248,12 +249,17 @@ async fn published_command(client: &runtime_collab::CollabClient, command: Publi
                     };
                     let (delivery, ended) = match reading {
                         Ok(reading) => match reading.reading {
-                            Some(reading) => (Ok(reading), false),
+                            Some(reading) => (crate::PublishedReading::Reading(reading), false),
                             // No service is up for it yet; one may be at a
-                            // later revision, so the watch stays on.
-                            None => (Err(format!("No service publishes {resource}.")), false),
+                            // later revision, so the watch stays on. Nothing
+                            // is known of the resource, which is not the same
+                            // as its having failed to read.
+                            None => (crate::PublishedReading::Pending, false),
                         },
-                        Err(error) => (Err(published_error(&error)), true),
+                        Err(error) => (
+                            crate::PublishedReading::Failed(published_error(&error)),
+                            true,
+                        ),
                     };
                     if let Some(answer) = first.take() {
                         let _ = answer.try_send(delivery.clone());

@@ -27,6 +27,7 @@ use tilolang_process::phrases::Phrases;
 use tilolang_process::testing::{Broker, Bus, Directory, Inbox, Sent};
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::host::Host;
+use tilolang_tilo::platform_apps::Seen;
 use tilolang_tilo::resources::ResourceStore;
 use tilolang_tilo::runtime::Value;
 
@@ -3510,7 +3511,7 @@ view panel(p: Panel) {
 /// changes it was asked for.
 #[derive(Default)]
 struct Published {
-    queued: std::sync::Mutex<BTreeMap<String, std::collections::VecDeque<Result<String, String>>>>,
+    queued: std::sync::Mutex<BTreeMap<String, std::collections::VecDeque<Seen>>>,
     wakes: std::sync::Mutex<BTreeMap<String, tilo_wake::WakeHandle>>,
     invoked: std::sync::Mutex<Vec<(String, String)>>,
 }
@@ -3532,16 +3533,22 @@ impl Published {
 
     /// The session publishes `reading` of `resource`, waking the views that read it.
     fn publish(&self, resource: &str, reading: &str) {
-        self.deliver(resource, Ok(reading.to_owned()));
+        self.deliver(resource, Seen::Reading(reading.to_owned()));
+    }
+
+    /// No service is up for `resource` yet: what the watch answers before anything publishes it,
+    /// and it stays on for the reading that comes.
+    fn pending(&self, resource: &str) {
+        self.deliver(resource, Seen::Pending);
     }
 
     /// The session cannot read `resource`, and says why: what the watch of a service that does
     /// not publish it answers.
     fn fail(&self, resource: &str, why: &str) {
-        self.deliver(resource, Err(why.to_owned()));
+        self.deliver(resource, Seen::Unreadable(why.to_owned()));
     }
 
-    fn deliver(&self, resource: &str, reading: Result<String, String>) {
+    fn deliver(&self, resource: &str, reading: Seen) {
         self.queued
             .lock()
             .unwrap()
@@ -3607,7 +3614,7 @@ struct Followed {
 }
 
 impl tilolang_tilo::platform_apps::Reading for Followed {
-    fn latest(&self) -> Option<Result<String, String>> {
+    fn latest(&self) -> Option<Seen> {
         self.published
             .queued
             .lock()
@@ -3916,5 +3923,46 @@ fn a_listing_no_service_publishes_reads_unreadable_in_the_view_and_opens() {
             .open_failed()
             .is_none(),
         "an unreadable listing is no app that failed to open"
+    );
+}
+
+/// A listing whose first reading is still on its way is no failure: the watch answers that no
+/// service is up for it yet, the view draws nothing where the records would be rather than
+/// saying it could not be read, and the reading that comes fills the list.
+#[test]
+fn a_listings_first_reading_held_back_shows_no_unreadable_row() {
+    let published = Published::install();
+    // The watch's first answer, before its app published anything: pending, not failed.
+    published.pending("tilo.invocations");
+    let platform = tilolang_tilo::platform::platform_packages().unwrap();
+    let compiled = compile(INVOKED_SOURCE, &tilolang::IdsLock::new(), &platform)
+        .unwrap_or_else(|diagnostics| panic!("the invocations reader compiles: {diagnostics:#?}"));
+    let (mut host, mut window, _sent, _inbox, _route) =
+        running_app("ada", INVOKED, Bundle::new(&compiled, []));
+    settle(&mut host, &mut window);
+    let held = shown(&window);
+    assert!(
+        !held.contains("The invocations could not be read"),
+        "nothing is known of the listing yet, so the view says nothing of it: {held}"
+    );
+    assert!(
+        !held.contains("No service publishes"),
+        "a reading still on its way is no failure: {held}"
+    );
+    assert!(
+        host.instances()
+            .next()
+            .expect("the app runs")
+            .instance()
+            .open_failed()
+            .is_none(),
+        "the window opened while its listing was pending"
+    );
+    published.publish("tilo.invocations", &invocation("Tidy the inbox"));
+    settle(&mut host, &mut window);
+    assert!(
+        shown(&window).contains("Tidy the inbox"),
+        "the reading that came fills the list: {}",
+        shown(&window)
     );
 }

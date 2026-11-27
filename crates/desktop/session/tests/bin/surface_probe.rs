@@ -89,7 +89,7 @@ fn read_and_change() -> String {
         Ok(opened) => opened,
         Err(error) => return format!("error: {error}\n"),
     };
-    let Some(Ok(first)) = opened.latest() else {
+    let Some(::collaboration::PublishedReading::Reading(first)) = opened.latest() else {
         return String::from("error: the session answered no reading\n");
     };
     let mut report = format!("read: {first}\n");
@@ -113,14 +113,16 @@ fn read_and_change() -> String {
     let mut still_since = Instant::now();
     loop {
         match opened.latest() {
-            Some(Ok(reading)) if reading != drawn => {
+            Some(::collaboration::PublishedReading::Reading(reading)) if reading != drawn => {
                 let _ = writeln!(report, "seen: {reading}");
                 drawn = reading;
                 still_since = Instant::now();
             }
-            Some(Ok(_unchanged)) => {}
-            Some(Err(error)) => return format!("{report}error: {error}\n"),
-            None => {}
+            Some(::collaboration::PublishedReading::Reading(_unchanged)) => {}
+            Some(::collaboration::PublishedReading::Failed(error)) => {
+                return format!("{report}error: {error}\n");
+            }
+            Some(::collaboration::PublishedReading::Pending) | None => {}
         }
         if drawn != first && still_since.elapsed() >= SETTLING {
             let _ = writeln!(report, "changed: {drawn}");

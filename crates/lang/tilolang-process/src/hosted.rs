@@ -966,7 +966,7 @@ impl Platform for HostPlatform {
             );
         }
         let watch = vaults.get_mut(reference)?;
-        if let Some(Ok(text)) = watch.item.latest()
+        if let Some(collaboration::PublishedReading::Reading(text)) = watch.item.latest()
             && let Some(code) = vault_reading(&text)
         {
             watch.reading = Some(code);

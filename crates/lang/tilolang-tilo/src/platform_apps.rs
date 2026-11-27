@@ -7,10 +7,24 @@
 
 use crate::platform::{load, platform_packages, platform_root_defaults, prefs_address};
 
+/// What a followed resource's watch last answered.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Seen {
+    /// The resource's newest reading.
+    Reading(String),
+    /// No service was up for it at the revision the watch read: one may be at a later one, and
+    /// the watch stays on. Nothing is known of the resource, which is not the same as its having
+    /// failed to read: it keeps reading what it held (its declared defaults, or the last reading
+    /// it answered) until one comes.
+    Pending,
+    /// The session could not read it, in its own words: what a view shows as unreadable.
+    Unreadable(String),
+}
+
 /// One published resource, followed: its reading each time the session publishes one.
 pub trait Reading: Send {
-    /// The newest reading since the last call, `None` while nothing new came.
-    fn latest(&self) -> Option<Result<String, String>>;
+    /// What the watch last answered, since the last call; `None` while nothing new came.
+    fn latest(&self) -> Option<Seen>;
 }
 
 /// Where the platform's published resources are reached: the session's services, which a
@@ -304,16 +318,21 @@ impl Roots {
             }
         }
         for (target, reading) in &self.followed {
-            while let Some(result) = reading.latest() {
-                match result {
-                    Ok(_) if host.reads_in_workspace(target) => {}
-                    Ok(reading) => {
+            while let Some(seen) = reading.latest() {
+                match seen {
+                    // Nothing is known of it yet, and that is no failure: it keeps reading what it
+                    // held — its declared defaults, or the reading it last answered — and the
+                    // watch wakes the views when a reading comes. A listing stays empty rather
+                    // than saying it could not be read before its app has published anything.
+                    Seen::Pending => {}
+                    Seen::Reading(_) if host.reads_in_workspace(target) => {}
+                    Seen::Reading(reading) => {
                         moved |= runtime.set_reading(target, &reading).unwrap_or_else(|error| {
                             tracing::warn!(%error, resource = %target.id_string(), "a platform reading was refused");
                             false
                         });
                     }
-                    Err(why) => {
+                    Seen::Unreadable(why) => {
                         // The device or the service did not answer: the resource could not be
                         // read. A view reads that as it is (`unreadable(r)`) and says so, rather
                         // than reading every field as the empty value its type starts with, which

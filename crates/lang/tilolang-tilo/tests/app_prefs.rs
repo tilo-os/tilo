@@ -101,8 +101,12 @@ struct Watcher {
 }
 
 impl Reading for Watcher {
-    fn latest(&self) -> Option<Result<String, String>> {
-        self.slot.lock().unwrap().take().map(Ok)
+    fn latest(&self) -> Option<platform_apps::Seen> {
+        self.slot
+            .lock()
+            .unwrap()
+            .take()
+            .map(platform_apps::Seen::Reading)
     }
 }
 

@@ -99,13 +99,21 @@ fn draw_each(opened: &SessionResource, showing: &LocalStateWriter<Shown>) {
 /// keyboard — kept as the screen has it.
 fn draw_newest(opened: &SessionResource, showing: &LocalStateWriter<Shown>) {
     let mut newest = None;
-    while let Some(reading) = opened.latest() {
+    while let Some(seen) = opened.latest() {
         // A reading that cannot be read is not one to draw: the next one is
-        // drawn instead, rather than the screen showing nothing.
-        match reading.map(|reading| Shown::from_reading(&reading)) {
-            Ok(Ok(shown)) => newest = Some(shown),
-            Ok(Err(error)) => tracing::warn!(%error, "the lock screen's reading"),
-            Err(error) => tracing::warn!(%error, "the lock screen's reading"),
+        // drawn instead, rather than the screen showing nothing. Nothing
+        // published yet is nothing to draw either.
+        match seen {
+            ui::collaboration::PublishedReading::Reading(reading) => {
+                match Shown::from_reading(&reading) {
+                    Ok(shown) => newest = Some(shown),
+                    Err(error) => tracing::warn!(%error, "the lock screen's reading"),
+                }
+            }
+            ui::collaboration::PublishedReading::Pending => {}
+            ui::collaboration::PublishedReading::Failed(error) => {
+                tracing::warn!(%error, "the lock screen's reading");
+            }
         }
     }
     let Some(newest) = newest else {

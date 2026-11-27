@@ -415,8 +415,10 @@ impl Foreign {
     /// arrived as the type starts before its app published anything. A resource nothing of
     /// which ever arrived is unknown too: its app is not on this device, or the workspace's
     /// service is not connected, and a view says that rather than reading every field as the
-    /// empty value its type starts with. A host asked for the reading and unable to give one
-    /// says that in its own words: its refusal is the reason it is not read.
+    /// empty value its type starts with. A listing is the one exception: one nothing arrived of
+    /// lists nothing, as it does before its app publishes anything ([`crate::Runtime::set_absent`]
+    /// says the same of a device without the resource). A host asked for the reading and unable
+    /// to give one says that in its own words: its refusal is the reason it is not read.
     pub(crate) fn unreadable(&mut self, target: &ResourceRef) -> Option<String> {
         let at = Self::key(target);
         let arrived = match self.arrive(target) {
@@ -426,8 +428,10 @@ impl Foreign {
         };
         if !arrived {
             // A resource no host here publishes has no value to be unknown: a view over it
-            // reads as its type starts, as its fields do, and draws its empty state.
-            if self.publishes_nothing(target) {
+            // reads as its type starts, as its fields do, and draws its empty state. A listing
+            // reads as a list of none whatever published it so far, so a view drawing one asks
+            // nothing of it and says nothing until its app says it could not be read.
+            if self.publishes_nothing(target) || is_listing(target) {
                 return None;
             }
             // Nothing of it came: the host is asked for it once, and the view told it is
@@ -1620,6 +1624,19 @@ mod tests {
             Listed::Items(items) => assert!(items.is_empty(), "the listing holds no items"),
             Listed::Unreadable(why) => panic!("a listing that answers is no unreadable one: {why}"),
         }
+    }
+
+    /// A listing nothing arrived of is no reading that could not be read: it lists nothing, as it
+    /// does before its app publishes anything, so a view that draws it says nothing of a failure
+    /// while its first reading is still on its way.
+    #[test]
+    fn a_listing_nothing_arrived_of_is_not_unreadable() {
+        let mut foreign = Foreign::default();
+        assert_eq!(
+            foreign.unreadable(&listing_of("tilo.invocations#Invocation")),
+            None,
+            "a listing with no reading yet draws as a list of none"
+        );
     }
 
     /// A resource of an app no host here publishes at all reads as its type starts and is not
