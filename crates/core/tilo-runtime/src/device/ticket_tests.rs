@@ -878,11 +878,171 @@ async fn a_joined_computer_enters_the_persons_workspace_before_it_reads_the_list
             .any(|(known, _)| known.to_string() == workspace),
         "the person's list names their workspace in the phone's copy"
     );
-
     service.shutdown().await;
     laptop_service.shutdown().await;
     let _ = router.shutdown().await;
     server.shutdown().await;
+}
+
+/// A computer a ticket joined takes its person's own workspace in from the device that added it,
+/// which keeps that workspace: the device's entry admits it there and its keys reach it, so it
+/// reads what the workspace holds and takes part in its calls and shared windows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one computer joined to the device that added it, from the ticket to the keys it holds"
+)]
+async fn a_ticket_joined_computer_holds_the_keys_of_the_workspace_it_entered() {
+    // A device hosting the person's own workspace, and their root, which adds the computer.
+    let (issuer, state, issuer_key, issuer_cert, _daemon) =
+        super::workspaces::ServiceWorkspaces::test_of_person().await;
+    let person = issuer_cert.user_public_key;
+    let own = tilo_server_protocol::servers::person_workspace_id(&person);
+    let home = tilo_desktop_model::WorkspaceId::parse(&own).expect("the person's workspace id");
+    issuer
+        .found(home, "Home")
+        .await
+        .expect("Home is founded here");
+    let place = tilo_device_identity::login::Place::at(
+        state.path().join("issuer"),
+        tilo_device_identity::IdentityPaths::under(state.path().join("issuer-keys")),
+    );
+    let actions = issuer.copies().action_service();
+    let tickets = Tickets::new(
+        (issuer_key.clone(), issuer_cert.clone()),
+        issuer.endpoint(),
+        None,
+        root_in(state.path().to_path_buf()),
+        Some(FirstWorkspace::founded(Arc::clone(&issuer), home)),
+        Some(Arc::clone(&issuer)),
+        place,
+        actions.clone(),
+    );
+    let router = serve(&issuer, actions);
+    let printed = ask_device(&tickets, ISSUE, json!({}))
+        .await
+        .expect("the device keeping the person's own workspace issues a ticket");
+    let text = printed["ticket"].as_str().unwrap().to_owned();
+
+    // A computer with no certificate of the person's logs in with it: one of their devices, in
+    // their own workspace.
+    let phone_key = SigningKey::from_bytes(&[0x76; 32]);
+    let (_, placeholder) = enrol(
+        &SigningKey::from_bytes(&[0x77; 32]),
+        "the phone",
+        DeviceCapabilities::member(),
+    );
+    let phone_endpoint = endpoint(&phone_key).await;
+    let place = tilo_device_identity::login::Place::at(
+        state.path().join("phone"),
+        tilo_device_identity::IdentityPaths::under(state.path().join("phone-keys")),
+    );
+    let _phone_daemon = the_daemons_key(place.keys(), &phone_key);
+    let phone = Tickets::new(
+        (phone_key.clone(), placeholder),
+        phone_endpoint.clone(),
+        None,
+        no_root(),
+        None,
+        None,
+        place,
+        ActionService::new(phone_key.clone(), Arc::new(NoActions)),
+    );
+    ask_device(
+        &phone,
+        LOG_IN,
+        json!({"ticket": text, "agent": "tilo", "label": "phone"}),
+    )
+    .await
+    .expect("the device keeping the person's own workspace certifies the phone");
+    let phone_login = *phone
+        .logged_in()
+        .borrow()
+        .clone()
+        .expect("the phone starts again as the device it became");
+    phone_endpoint.close().await;
+
+    let service = super::workspaces::ServiceWorkspaces::open_for_test(
+        &state.path().join("phone-service"),
+        &phone_key,
+        &phone_login.cert,
+        &tilo_api::daemon::enter::server_of(&phone_login)
+            .await
+            .expect("the login names its server"),
+    )
+    .await
+    .expect("the phone's service opens");
+    // The phone's daemon takes the workspace its login named in before it answers anyone, as
+    // every daemon that starts as a login's device does.
+    tilo_test_env::within(
+        "the phone takes the workspace its login named in",
+        crate::device::home::entered_while_running(&service, &phone_login.cert, &phone_login),
+    )
+    .await
+    .expect("the phone takes the workspace its login named in");
+    let home_of_phone = crate::device::home::Home::new(
+        Arc::clone(&service),
+        phone_login.cert.clone(),
+        Some(phone_login.clone()),
+    );
+    assert!(
+        home_of_phone.get().await.is_some(),
+        "the phone's home is the device its login names"
+    );
+    assert!(
+        service.copies().state(&own).await.is_some(),
+        "the phone holds the person's own workspace, entered from the login entry alone"
+    );
+
+    // The workspace's keys reached the phone: it reads what the workspace holds with them, its
+    // device record among it, and its calls and shared windows carry on them. They are the same
+    // keys the device keeping the workspace holds, at its newest epoch: a device behind them is
+    // refused the workspace's calls and shared windows.
+    let epoch = |service: &super::workspaces::ServiceWorkspaces| {
+        service
+            .keys()
+            .get()
+            .and_then(|keys| match keys.access(home).0 {
+                tilo_workspace_keys::KeyAccess::Ready(keys) => Some(keys.epoch()),
+                _ => None,
+            })
+    };
+    let phone_keys = tilo_test_env::within(
+        "the phone holds the person's own workspace's keys at the epoch keeping it does",
+        async {
+            loop {
+                if let (Some(held), Some(newest)) = (epoch(&service), epoch(&issuer))
+                    && held == newest
+                {
+                    return held;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        },
+    )
+    .await;
+    assert_eq!(
+        phone_keys,
+        epoch(&issuer).expect("the device keeping the workspace holds its keys"),
+        "the phone holds the workspace's keys at the epoch the device keeping it does"
+    );
+    // And the space's member list names it, as the workspace admits a device of its person's: the
+    // devices that list names are the ones its calls and shared windows carry.
+    let admitted = issuer
+        .copies()
+        .read_now(&own, tilo_session_client::workspace_keys::admitted_devices)
+        .expect("the device keeping the workspace reads it")
+        .1;
+    let admitted = admitted.expect("the workspace's member list reads");
+    assert!(
+        admitted
+            .iter()
+            .any(|device| device.device == phone_login.cert.device_public_key),
+        "the workspace lists the phone among its devices: {admitted:?}"
+    );
+    service.shutdown().await;
+    issuer.shutdown().await;
+    let _ = router.shutdown().await;
 }
 
 /// The person's workspaces as the account's own tree lists them for `device` over `service`:

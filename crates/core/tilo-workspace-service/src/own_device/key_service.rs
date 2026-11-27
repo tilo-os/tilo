@@ -177,18 +177,44 @@ impl KeySink for Link {
         let (publish, mut outgoing) = tokio::sync::mpsc::unbounded_channel();
         *self.publish.lock_recover() = Some(publish);
         let writing = workspaces.downgrade();
+        // What a workspace let go of between being seen held and being retained is waited for:
+        // the pass that runs once it is here again retains it then, rather than losing what the
+        // group settled for it.
+        let mut again = tokio::time::interval(std::time::Duration::from_secs(1));
         let publisher = tokio::spawn(async move {
-            while let Some(message) = outgoing.recv().await {
-                let Some(workspace) = message.governance_workspace() else {
+            let mut kept: Vec<(String, NeighbourMsg)> = Vec::new();
+            loop {
+                tokio::select! {
+                    received = outgoing.recv() => {
+                        let Some(message) = received else {
+                            return;
+                        };
+                        let Some(workspace) = message.governance_workspace() else {
+                            continue;
+                        };
+                        kept.push((workspace.to_owned(), message));
+                    }
+                    _ = again.tick() => {}
+                }
+                if kept.is_empty() {
                     continue;
-                };
-                let workspace = workspace.to_owned();
+                }
                 let Some(writing) = writing.upgrade() else {
                     return;
                 };
-                if let Err(error) = writing.publish_governance(&workspace, vec![message]).await {
-                    tracing::warn!(%workspace, %error, "the device's group governance was not retained");
+                let mut retry = Vec::new();
+                for (workspace, message) in std::mem::take(&mut kept) {
+                    if let Err(error) = writing
+                        .publish_governance(&workspace, vec![message.clone()])
+                        .await
+                    {
+                        tracing::debug!(%workspace, %error, "the device's group governance is retained once its workspace is here");
+                        if writing.read_now(&workspace, |_| ()).is_some() {
+                            retry.push((workspace, message));
+                        }
+                    }
                 }
+                kept = retry;
             }
         });
         self.following.lock_recover().push(publisher);
@@ -220,7 +246,11 @@ impl KeySink for Link {
 
 impl GovernanceTransport for Link {
     /// A member copy's governance goes to the device serving it while the copy's link is up, and
-    /// is kept for a later pass while it is not; a hosted workspace retains it.
+    /// is kept for a later pass while it is not; a hosted workspace retains it. A workspace this
+    /// service holds neither keeps the message in its group's outbox, and the pass that runs once
+    /// the workspace is here publishes it then: a login that ends as soon as it answers, or a
+    /// group opened from the state a last start kept, asks before the copy is in, and what it
+    /// settled is taken, not lost, when it is.
     fn publish(&self, message: NeighbourMsg) -> bool {
         let Some(workspace) = message.governance_workspace().map(str::to_owned) else {
             return false;
@@ -228,16 +258,19 @@ impl GovernanceTransport for Link {
         let Some(workspaces) = self.directory.workspaces() else {
             return false;
         };
-        if workspaces
+        match workspaces
             .read_now(&workspace, |_| ())
             .map(|(held, ())| held)
-            == Some(Held::MemberCopy)
         {
-            return WorkspaceId::parse(&workspace)
-                .is_some_and(|id| workspaces.send_member(id, message));
+            Some(Held::MemberCopy) => {
+                WorkspaceId::parse(&workspace).is_some_and(|id| workspaces.send_member(id, message))
+            }
+            Some(Held::Hosts) => {
+                let publish = self.publish.lock_recover().clone();
+                publish.is_some_and(|publish| publish.send(message).is_ok())
+            }
+            None => false,
         }
-        let publish = self.publish.lock_recover().clone();
-        publish.is_some_and(|publish| publish.send(message).is_ok())
     }
 
     fn take_inbound(&self) -> Vec<InboundGovernance> {
