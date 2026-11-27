@@ -35,7 +35,7 @@ pub enum DestinationEffect {
     /// Choose keyboard layout.
     #[effect(kind = "outside", on = Session)]
     SetLayout {
-        #[param("Keyboard layout", choices = imager_backend::destination::layouts::display_names())]
+        #[param("Keyboard layout", choices = tilo_keyboard_map::display_names())]
         layout: String,
     },
     #[effect(kind = "outside")]

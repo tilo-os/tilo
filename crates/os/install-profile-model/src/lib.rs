@@ -34,11 +34,12 @@ pub fn valid_device_label(label: &str) -> bool {
 /// Locale choices supported end to end by the Imager, live installer and OS.
 const LOCALE_CATALOG: &str = include_str!("../locales.txt");
 
-/// Keyboard layouts the installer offers, by XKB id.
-pub const KEYBOARDS: &[&str] = &[
-    "us", "gb", "de", "fr", "es", "it", "pt", "br", "ru", "se", "no", "dk", "ch", "pl", "dvorak",
-    "colemak",
-];
+/// Whether the installer offers this keyboard layout: one of the table's XKB ids, such as `de`
+/// or `us:dvorak`.
+#[must_use]
+pub fn valid_keyboard(keyboard: &str) -> bool {
+    tilo_keyboard_catalog::by_id(keyboard).is_some()
+}
 
 /// Filesystems the installer formats the target with.
 pub const FILESYSTEMS: [&str; 3] = ["btrfs", "ext4", "xfs"];

@@ -706,7 +706,7 @@ mod tests {
         {
             let mut requested = choices(Unlock::Passphrase);
             requested.hostname = "tilo-desktop".into();
-            requested.keyboard_layout = Some("German (QWERTZ)".into());
+            requested.keyboard_layout = Some("German".into());
             requested.timezone = Some("Europe/Berlin".into());
             requested.locale = Some("de_DE.UTF-8".into());
             let mut fake = FakeInstaller::new();
@@ -720,7 +720,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 fake.preferences,
-                json!({"hostname":"tilo-desktop", "layout":"German (QWERTZ)", "timezone":"Europe/Berlin", "locale":"de_DE.UTF-8"})
+                json!({"hostname":"tilo-desktop", "layout":"German", "timezone":"Europe/Berlin", "locale":"de_DE.UTF-8"})
             );
             assert!(fake.calls.contains(&"begin@installer.review".into()));
             let mut skipped = FakeInstaller::new();
@@ -737,7 +737,7 @@ mod tests {
             assert!(!skipped.calls.contains(&"begin@installer.review".into()));
             let mut compatible = FakeInstaller::new();
             compatible.step = "network";
-            compatible.preferences["layout"] = json!("German (QWERTZ)");
+            compatible.preferences["layout"] = json!("German");
             install(
                 &mut compatible,
                 &requested,

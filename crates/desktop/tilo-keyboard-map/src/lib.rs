@@ -1,16 +1,87 @@
 //! Read-only native keyboard metadata: it neither captures input nor changes the
 //! active layout, and never accepts an include path or environment.
+//!
+//! One copy of the keyboard layouts, read by the session's input settings, the installer's picker
+//! and the image writer: what this device installs, the short built-in list a host without
+//! xkeyboard-config offers, and the drawing of a layout's keys.
 
 mod catalog;
+mod drawing;
+#[cfg(feature = "touch")]
 pub mod touch;
 
 pub use catalog::Layout;
+pub use drawing::{Drawing, DrawnKey, Point, draw};
+
+/// The layout a picker shows unless the person chooses another.
+pub const DEFAULT_DISPLAY_NAME: &str = "English (US)";
 
 /// The keyboard layouts this device installs and, when its list cannot be read, why: the layouts
-/// are then a short built-in list. Each is named by the id it is typed by (`de`, `us:intl`).
+/// are then [`fallback`]. Each is named by the id it is typed by (`de`, `us:dvorak`).
+///
+/// Read once: xkeyboard-config does not change under a running program.
 #[must_use]
-pub fn installed_layouts() -> (Vec<Layout>, Option<String>) {
-    catalog::installed()
+pub fn installed_layouts() -> (&'static [Layout], Option<String>) {
+    static INSTALLED: std::sync::OnceLock<(Vec<Layout>, Option<String>)> =
+        std::sync::OnceLock::new();
+    let (layouts, error) = INSTALLED.get_or_init(catalog::installed);
+    (layouts, error.clone())
+}
+
+/// The layouts a host offers without reading an installed set: the ones nearly every machine has,
+/// which the installer can write onto a target. What a picker on a host with no xkeyboard-config
+/// lists.
+#[must_use]
+pub fn fallback() -> Vec<Layout> {
+    catalog::fallback()
+}
+
+/// The names [`fallback`] offers, in picker order.
+#[must_use]
+pub fn display_names() -> Vec<String> {
+    tilo_keyboard_catalog::LAYOUTS
+        .iter()
+        .map(|layout| layout.label.to_owned())
+        .collect()
+}
+
+/// The offered layout a picker calls `name`.
+#[must_use]
+pub fn by_display_name(name: &str) -> Option<Layout> {
+    let name = name.trim();
+    tilo_keyboard_catalog::LAYOUTS
+        .iter()
+        .find(|layout| layout.label == name)
+        .map(|layout| Layout {
+            id: layout.id.to_owned(),
+            label: layout.label.to_owned(),
+        })
+}
+
+/// The offered layout shown by default.
+#[must_use]
+pub fn default_layout() -> Layout {
+    by_display_name(DEFAULT_DISPLAY_NAME).unwrap_or_else(|| {
+        catalog::fallback()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| Layout {
+                id: "us".to_owned(),
+                label: DEFAULT_DISPLAY_NAME.to_owned(),
+            })
+    })
+}
+
+/// What the offered layout `id` is called; `None` when it is not one the installer offers.
+#[must_use]
+pub fn label_of(id: &str) -> Option<&'static str> {
+    tilo_keyboard_catalog::by_id(id).map(|layout| layout.label)
+}
+
+/// Whether `id` is a layout the installer offers.
+#[must_use]
+pub fn offered(id: &str) -> bool {
+    tilo_keyboard_catalog::by_id(id).is_some()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,26 +115,6 @@ impl Error {
     pub fn is_unsupported(&self) -> bool {
         matches!(self, Self::Unsupported)
     }
-}
-
-/// The keys one pass over `positions` reads for a host with no native provider:
-/// each position is present, so a drawing made from geometry alone can still be
-/// read, and none carries a legend.
-#[must_use]
-pub fn unlabelled_levels(positions: &[String]) -> Vec<Key> {
-    positions
-        .iter()
-        .map(|position| Key {
-            name: position.clone(),
-            physical: winit::keyboard::PhysicalKey::Unidentified(
-                winit::keyboard::NativeKeyCode::Unidentified,
-            ),
-            levels: vec![vec![Symbol {
-                name: position.clone(),
-                text: String::new(),
-            }]],
-        })
-        .collect()
 }
 
 impl std::fmt::Display for Error {
@@ -174,5 +225,39 @@ mod tests {
             compile("us", "", "pc105", "", &["NO_SUCH_KEY".to_owned()]),
             Err(Error::InvalidMetadata)
         );
+    }
+
+    /// A drawing lays every position of the model out with its outline, and prints the legend the
+    /// layout gives it in the layout's own language.
+    #[test]
+    fn a_drawing_has_a_placed_key_for_every_position_and_its_legend() {
+        let drawing = draw("de", "pc105", "", false).unwrap();
+        assert_eq!(drawing.layout, "de");
+        assert_eq!(drawing.model, "pc105");
+        assert!(drawing.width > 0.0 && drawing.height > 0.0);
+        assert!(drawing.level_count >= 1);
+        let z = drawing
+            .keys
+            .iter()
+            .find(|key| key.name == "AD06")
+            .expect("the Y/Z position is drawn");
+        assert_eq!(z.levels[0], "z", "German prints z where US prints y");
+        assert_eq!(z.outline.len(), 4, "a key body is a quad");
+        let widest = usize::try_from(drawing.level_count).unwrap_or_default();
+        assert!(
+            drawing.keys.iter().any(|key| key.levels.len() == widest),
+            "some key supplies every level the drawing reports"
+        );
+    }
+
+    /// Dvorak and Colemak are `us` variants, so an id names a layout and its variant.
+    #[test]
+    fn a_source_id_names_a_layout_and_its_variant() {
+        let dvorak = by_display_name("Dvorak").expect("offered");
+        assert_eq!(dvorak.id, "us:dvorak");
+        assert_eq!(dvorak.xkb_layout(), "us");
+        assert_eq!(dvorak.xkb_variant(), "dvorak");
+        let us = by_display_name(DEFAULT_DISPLAY_NAME).expect("offered");
+        assert_eq!(us.xkb_variant(), "");
     }
 }

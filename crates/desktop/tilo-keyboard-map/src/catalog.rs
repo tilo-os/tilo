@@ -14,8 +14,24 @@ use quick_xml::events::Event;
 pub struct Layout {
     /// Its source id: `de`, `us:dvorak`.
     pub id: String,
-    /// What it calls itself: `German`, `English (US) — Dvorak`.
+    /// What it calls itself: `German`, `Dvorak`.
     pub label: String,
+}
+
+impl Layout {
+    /// The XKB layout the id sets: `us` for `us:dvorak`.
+    #[must_use]
+    pub fn xkb_layout(&self) -> &str {
+        self.id
+            .split_once(':')
+            .map_or(self.id.as_str(), |(layout, _)| layout)
+    }
+
+    /// The XKB variant it sets; empty when it sets none.
+    #[must_use]
+    pub fn xkb_variant(&self) -> &str {
+        self.id.split_once(':').map_or("", |(_, variant)| variant)
+    }
 }
 
 /// The layouts installed on this device and, when its list could not be read, why: `layouts`
@@ -210,33 +226,16 @@ fn push(layouts: &mut Vec<Layout>, layout: &str, variant: Option<&str>, label: &
 }
 
 /// The layouts offered where the device's own list cannot be read: the ones nearly every
-/// machine has.
+/// machine has, and the set the installer can write onto a target, in picker order.
 #[must_use]
 pub fn fallback() -> Vec<Layout> {
-    [
-        ("us", "English (US)"),
-        ("gb", "English (UK)"),
-        ("us:colemak", "English (US) — Colemak"),
-        ("us:dvorak", "English (US) — Dvorak"),
-        ("de", "German"),
-        ("fr", "French"),
-        ("nl", "Dutch"),
-        ("es", "Spanish"),
-        ("it", "Italian"),
-        ("pt", "Portuguese"),
-        ("br", "Portuguese (Brazil)"),
-        ("pl", "Polish"),
-        ("ru", "Russian"),
-        ("se", "Swedish"),
-        ("no", "Norwegian"),
-        ("dk", "Danish"),
-    ]
-    .into_iter()
-    .map(|(id, label)| Layout {
-        id: id.to_owned(),
-        label: label.to_owned(),
-    })
-    .collect()
+    tilo_keyboard_catalog::LAYOUTS
+        .iter()
+        .map(|layout| Layout {
+            id: layout.id.to_owned(),
+            label: layout.label.to_owned(),
+        })
+        .collect()
 }
 
 #[cfg(test)]

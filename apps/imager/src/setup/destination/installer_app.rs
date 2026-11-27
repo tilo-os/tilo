@@ -45,7 +45,6 @@ use crate::setup::destination::status_log::status_log;
 use imager_backend::destination::backend::{InstallBackend, SystemBackend};
 use imager_backend::destination::disks::{Disk, GuidedAlongsidePlan};
 use imager_backend::destination::install::{InstallOptions, PowerAction, SERVER_PURPOSE};
-use imager_backend::destination::layouts;
 use imager_backend::destination::network_step::{Connectivity, NetworkPhase, NetworkStep, Wake};
 use imager_backend::destination::power_readiness::current_insufficient_battery_percent;
 use imager_backend::destination::probes;
@@ -66,7 +65,7 @@ const FIDO2_KEYS: [&str; 2] = [
 
 const DEFAULT_HOSTNAME: &str = "tilo";
 const DEFAULT_TIMEZONE: &str = "UTC";
-const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
+const DEFAULT_KEYMAP_NAME: &str = tilo_keyboard_map::DEFAULT_DISPLAY_NAME;
 
 const RECOMMENDED_FS: usize = 0;
 
@@ -955,7 +954,7 @@ impl InstallerApp {
             "review-alongside" => staged(Step::Review, Self::shot_alongside_review),
             "options-open" => staged(Step::Options, Self::shot_open_timezone),
             "profile-locale-repair" => staged(Step::Options, Self::shot_locale_repair),
-            "keyboard" => staged(Step::Keyboard, |app| app.shot_keymap("German (QWERTZ)")),
+            "keyboard" => staged(Step::Keyboard, |app| app.shot_keymap("German")),
             "media-chosen" => staged(Step::Media, Self::shot_codecs_chosen),
             "finish" => staged(Step::Install, Self::shot_finished),
             "finish-recovery" => staged(Step::Install, Self::shot_finished_with_recovery),
@@ -1159,8 +1158,9 @@ impl InstallerApp {
             .unwrap_or("btrfs")
     }
 
-    fn layout(&self) -> &'static layouts::Layout {
-        layouts::by_display_name(self.keymap().trim()).unwrap_or_else(layouts::default_layout)
+    fn layout(&self) -> tilo_keyboard_map::Layout {
+        tilo_keyboard_map::by_display_name(self.keymap().trim())
+            .unwrap_or_else(tilo_keyboard_map::default_layout)
     }
 
     fn keymap(&self) -> String {
@@ -1318,8 +1318,8 @@ impl InstallerApp {
             full_name: local_text(&self.full_name).trim().to_string(),
             locale: self.locale().trim().to_string(),
             timezone: self.timezone().trim().to_string(),
-            keymap: layout.xkb_layout.to_string(),
-            keyvariant: layout.variant_or_empty().to_string(),
+            keymap: layout.xkb_layout().to_string(),
+            keyvariant: layout.xkb_variant().to_string(),
             pin: self.startup_secret(),
             password_is_hash: self.password_is_hash,
             force_startup_passphrase: self.force_startup_passphrase,
@@ -2559,7 +2559,7 @@ impl InstallerApp {
                 .with_color(dim),
         ));
         children.push(Box::new(
-            Dropdown::from_state(layouts::display_names(), &self.keymap)
+            Dropdown::from_state(tilo_keyboard_map::display_names(), &self.keymap)
                 .with_id("installer.keymap")
                 .with_placeholder(&crate::setup::strings::t("installer-keyboard-layout")),
         ));

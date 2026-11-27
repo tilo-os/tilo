@@ -133,7 +133,7 @@ pub mod tests {
             assert_eq!(handoff.host_os.display_name(), "Windows");
             let profile = media_profile(&handoff).unwrap();
             assert_eq!(profile.username.as_deref(), Some("ada"));
-            assert_eq!(profile.keyboard_display_name(), Some("German (QWERTZ)"));
+            assert_eq!(profile.keyboard_display_name(), Some("German"));
         }
         {
             assert!(rejects(|v| v["target_disk"] = "/dev/sda".into()).contains("unknown field"));

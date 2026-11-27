@@ -474,7 +474,7 @@ pub struct InstallScenarioArgs {
     /// Installed hostname (retained and checked when resuming).
     #[arg(long, default_value = "scenario-tilo")]
     pub hostname: String,
-    /// Installer keyboard display name, e.g. "German (QWERTZ)". Omitted preserves the medium's choice.
+    /// Installer keyboard display name, e.g. "German". Omitted preserves the medium's choice.
     #[arg(long)]
     pub keyboard_layout: Option<String>,
     /// Installed IANA timezone, e.g. Europe/Berlin. Omitted preserves the medium's choice.

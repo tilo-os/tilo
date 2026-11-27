@@ -344,7 +344,7 @@ mod tests {
             for (target, chosen, expected) in [
                 ("imager:profile:locale", "de_DE.UTF-8", "de_DE.UTF-8"),
                 ("imager:profile:timezone", "Europe/Berlin", "Europe/Berlin"),
-                ("imager:profile:keyboard", "German (QWERTZ)", "de"),
+                ("imager:profile:keyboard", "German", "de"),
             ] {
                 assert!(perform(&mut app, target, chosen));
                 let profile = app.state().profile;

@@ -164,7 +164,7 @@ impl InstallProfile {
         if !rules::valid_locale(self.locale.trim()) {
             return Err("Choose a language and locale supported by Tilo.".into());
         }
-        if !rules::KEYBOARDS.contains(&self.keyboard.trim()) {
+        if !rules::valid_keyboard(self.keyboard.trim()) {
             return Err("Keyboard layout is not supported by the Tilo installer.".into());
         }
         if !rules::valid_timezone_name(self.timezone.trim()) {

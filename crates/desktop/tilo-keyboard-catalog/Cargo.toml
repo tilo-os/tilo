@@ -1,0 +1,10 @@
+[package]
+name = "tilo-keyboard-catalog"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The keyboard layouts Tilo offers, by the XKB id they are typed with and the name a picker shows."
+
+[lints]
+workspace = true

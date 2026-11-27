@@ -358,7 +358,7 @@ fn an_offline_erase_install_ends_on_its_recovery_key_and_power() {
         "begin is never offered unbound, where its target could be typed"
     );
     app.effect(&DestinationEffect::SetLayout {
-        layout: "German (QWERTZ)".into(),
+        layout: "German".into(),
     })
     .unwrap();
     assert_eq!(status(&mut app)["keyboard"]["xkb_layout"], "de");

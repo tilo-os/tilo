@@ -23,7 +23,6 @@ use crate::setup::destination::effects::{
 };
 use crate::setup::strings::{t, t_args};
 use imager_backend::destination::install::PowerAction;
-use imager_backend::destination::layouts;
 
 /// How long a copied recovery key stays on the clipboard: time to paste it
 /// into a password manager. Rebooting or powering off clears it sooner.
@@ -830,7 +829,7 @@ impl InstallerApp {
             }
             DestinationEffect::SetLayout { layout } => {
                 self.require_step(Step::Keyboard)?;
-                if layouts::by_display_name(layout.trim()).is_none() {
+                if tilo_keyboard_map::by_display_name(layout.trim()).is_none() {
                     return Err(format!("Unknown keyboard layout {layout:?}"));
                 }
                 self.keymap.set(layout.trim().to_owned());

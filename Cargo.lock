@@ -6313,6 +6313,7 @@ dependencies = [
  "tilo-identity",
  "tilo-identity-client",
  "tilo-install-helpers",
+ "tilo-keyboard-map",
  "tilo-lock",
  "tilo-net",
  "tilo-os-release",
@@ -6359,6 +6360,7 @@ dependencies = [
  "tilo-connectivity-service",
  "tilo-files",
  "tilo-install-helpers",
+ "tilo-keyboard-map",
  "tilo-lock",
  "tilo-power-mgmt",
  "tilo-process",
@@ -6541,6 +6543,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tilo-keyboard-catalog",
  "tilo-resource",
 ]
 
@@ -17946,6 +17949,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-keyboard-catalog"
+version = "0.1.0"
+
+[[package]]
 name = "tilo-keyboard-engine"
 version = "0.1.0"
 dependencies = [
@@ -17966,9 +17973,10 @@ name = "tilo-keyboard-map"
 version = "0.1.0"
 dependencies = [
  "quick-xml 0.41.0",
- "tilo-app",
+ "tilo-keyboard-catalog",
  "tilo-keyboard-engine",
- "tilo-vello",
+ "tilo-pc-keyboard-geometry",
+ "tilo-ui-base",
  "tilo-winit",
  "workspace-hack",
  "xkbcommon",
@@ -20471,7 +20479,6 @@ dependencies = [
  "tilo-onboarding-session",
  "tilo-package-store",
  "tilo-paths",
- "tilo-pc-keyboard-geometry",
  "tilo-peer-facts",
  "tilo-peer-state",
  "tilo-person-services",
@@ -27945,6 +27952,7 @@ dependencies = [
  "tilo-invocation-journal",
  "tilo-invocations",
  "tilo-key-group",
+ "tilo-keyboard-catalog",
  "tilo-keyboard-engine",
  "tilo-keyboard-map",
  "tilo-libvirt-domain",

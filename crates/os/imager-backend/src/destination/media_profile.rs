@@ -54,10 +54,7 @@ pub struct MediaProfile {
 impl MediaProfile {
     pub fn keyboard_display_name(&self) -> Option<&'static str> {
         let keyboard = self.keyboard.as_deref()?;
-        super::layouts::LAYOUTS
-            .iter()
-            .find(|layout| layout.id == keyboard)
-            .map(|layout| layout.display_name)
+        tilo_keyboard_map::label_of(keyboard)
     }
 
     pub fn repair_summary(&self) -> String {
@@ -161,11 +158,7 @@ impl RawMediaProfile {
             self.keyboard,
             MediaProfileField::Keyboard,
             &mut repairs,
-            |keyboard| {
-                super::layouts::LAYOUTS
-                    .iter()
-                    .any(|layout| layout.id == keyboard)
-            },
+            tilo_keyboard_map::offered,
         );
         let timezone = retain_valid(
             self.timezone,
@@ -298,7 +291,7 @@ mod tests {
                 let file = tempfile::NamedTempFile::new().unwrap();
                 std::fs::write(file.path(), serde_json::to_vec(&good()).unwrap()).unwrap();
                 let profile = load_from(file.path()).unwrap().unwrap();
-                assert_eq!(profile.keyboard_display_name(), Some("German (QWERTZ)"));
+                assert_eq!(profile.keyboard_display_name(), Some("German"));
                 assert!(profile.repairs.is_empty());
 
                 let mut bad = good();

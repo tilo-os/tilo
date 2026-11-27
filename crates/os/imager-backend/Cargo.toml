@@ -17,6 +17,8 @@ destination = [
     "dep:console-control",
     "dep:tilo-install-helpers",
     "dep:tilo-lock",
+    # The layouts the picker offers and the profile is checked against.
+    "dep:tilo-keyboard-map",
 ]
 
 [dependencies]
@@ -41,6 +43,7 @@ hex.workspace = true
 uuid.workspace = true
 staging-handoff-model = { path = "../../../apps/staging-handoff-model" }
 install-profile-model = { path = "../install-profile-model", features = ["model"] }
+tilo-keyboard-map = { path = "../../desktop/tilo-keyboard-map", optional = true }
 # The destination side (`destination`).
 # The device's connectivity, as the network step reads and changes it: the
 # system's service, before there is a person whose settings it could keep.

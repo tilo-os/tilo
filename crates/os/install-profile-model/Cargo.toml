@@ -16,6 +16,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 sha2.workspace = true
 hex.workspace = true
+# The layouts an install profile may name: plain data, so the media tools that take this crate
+# build without the desktop.
+tilo-keyboard-catalog = { version = "0.1.0", path = "../../desktop/tilo-keyboard-catalog" }
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
 
 [lints]

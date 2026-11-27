@@ -14,13 +14,12 @@
 //! * [`power_readiness`]: the battery rule before installing.
 //! * [`probes`]: what this computer proves about its boot chain.
 //! * [`private_io`]: the unattended recipe and recovery key's private files.
-//! * [`layouts`], [`timezones`]: keyboard layouts and time zones on offer.
+//! * [`timezones`]: time zones on offer.
 
 pub mod backend;
 pub mod disks;
 pub mod install;
 pub mod internal_handoff;
-pub mod layouts;
 pub mod media_profile;
 pub mod network_step;
 pub mod power_readiness;

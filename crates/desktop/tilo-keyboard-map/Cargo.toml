@@ -7,20 +7,27 @@ license.workspace = true
 readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
-description = "Bounded physical key and symbol observations from installed native keyboard metadata."
+description = "Bounded physical key and symbol observations from installed native keyboard metadata, and the layouts a keyboard can be drawn with."
 
 [features]
 # Read the layouts installed on this device, through libxkbcommon. A build without it answers
 # `Unsupported`, as one on a system with no provider does.
 default = ["native"]
 native = ["dep:xkbcommon"]
+# The on-screen keyboard's own layouts, re-exported as `touch`. A host that only draws the
+# physical keyboard leaves it off.
+touch = ["dep:tilo-keyboard-engine"]
 
 [dependencies]
-tilo-keyboard-engine = { version = "0.1.0", path = "../../engines/keyboard" }
-ui = { package = "tilo-app", version = "0.1.0", path = "../../sdk/tilo-app" }
+tilo-keyboard-engine = { version = "0.1.0", path = "../../engines/keyboard", optional = true }
+# The one table of layouts a host offers without reading an installed set.
+tilo-keyboard-catalog = { version = "0.1.0", path = "../tilo-keyboard-catalog" }
+# The physical outlines a drawing lays its keys out with.
+tilo-pc-keyboard-geometry = { path = "../pc-keyboard-geometry" }
+# What is printed on a key: the legends, named in the layout's language.
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # xkeyboard-config's rules, read for the layouts this device installs.
 quick-xml.workspace = true
-vello.workspace = true
 winit.workspace = true
 
 [lints]

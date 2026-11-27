@@ -334,6 +334,7 @@ members = [
     "crates/platform/tilo-network-client",
     "crates/engines/tilo-backups-engine",
     "crates/engines/tilo-chip-design-engine",
+    "crates/desktop/tilo-keyboard-catalog",
     "crates/desktop/tilo-keyboard-map",
     "crates/platform/tilo-locale",
     "crates/desktop/tilo-accessibility-settings",

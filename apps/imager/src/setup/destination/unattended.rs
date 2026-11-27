@@ -850,7 +850,7 @@ impl Preferences {
         if !install_profile_model::valid_timezone_name(&self.timezone) {
             return Err("The unattended time zone is not a relative IANA name".into());
         }
-        if !install_profile_model::KEYBOARDS.contains(&self.keyboard.as_str()) {
+        if !tilo_keyboard_map::offered(&self.keyboard) {
             return Err("The unattended keyboard layout is not offered by the installer".into());
         }
         if !install_profile_model::FILESYSTEMS.contains(&self.filesystem.as_str()) {
@@ -860,10 +860,7 @@ impl Preferences {
     }
 
     fn keyboard_display_name(&self) -> Result<&'static str, String> {
-        imager_backend::destination::layouts::LAYOUTS
-            .iter()
-            .find(|layout| layout.id == self.keyboard)
-            .map(|layout| layout.display_name)
+        tilo_keyboard_map::label_of(&self.keyboard)
             .ok_or_else(|| "The unattended keyboard layout is not offered by the installer".into())
     }
 }

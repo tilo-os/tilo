@@ -400,7 +400,6 @@ tilo-keyboard-map = { path = "../tilo-keyboard-map" }
 # The on-screen keyboard's own work: the layouts it draws, the words a swipe could be and the
 # taps a finger meant, which its view asks by name.
 tilo-keyboard-engine = { path = "../../engines/keyboard" }
-tilo-pc-keyboard-geometry = { path = "../pc-keyboard-geometry" }
 # The calls an app joins: which channel, who is in it, and this device's
 # own call as presence carries it.
 tilo-native-media = { path = "../native-media" }

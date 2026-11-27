@@ -1800,7 +1800,7 @@ mod tests {
         {
             let mut configured = plan(Layout::Erase);
             configured.hostname = "tilo-desktop".into();
-            configured.keyboard_layout = Some("German (QWERTZ)".into());
+            configured.keyboard_layout = Some("German".into());
             configured.timezone = Some("Europe/Berlin".into());
             let requested = configured.describe();
             super::check_retained_preferences(&requested, &requested).unwrap();

@@ -8,39 +8,16 @@ use crate::model::{Filesystem, InstallProfile};
 use crate::resource::CATALOG;
 use crate::resource::Imager;
 
-const KEYBOARDS: &[(&str, &str)] = &[
-    ("English (US)", "us"),
-    ("English (UK)", "gb"),
-    ("German (QWERTZ)", "de"),
-    ("French (AZERTY)", "fr"),
-    ("Spanish", "es"),
-    ("Italian", "it"),
-    ("Portuguese", "pt"),
-    ("Portuguese (Brazil)", "br"),
-    ("Russian (ЙЦУКЕН)", "ru"),
-    ("Swedish", "se"),
-    ("Norwegian", "no"),
-    ("Danish", "dk"),
-    ("Swiss", "ch"),
-    ("Polish", "pl"),
-    ("Dvorak", "dvorak"),
-    ("Colemak", "colemak"),
-];
-
 const IANA_TIMEZONES: &str = include_str!("iana_timezones.txt");
 
 fn keyboard_label(id: &str) -> &str {
-    KEYBOARDS
-        .iter()
-        .find(|(_, candidate)| *candidate == id)
-        .map_or(id, |(label, _)| *label)
+    tilo_keyboard_map::label_of(id).unwrap_or(id)
 }
 
-fn keyboard_id(label: &str) -> Option<&'static str> {
-    KEYBOARDS
-        .iter()
-        .find(|(candidate, _)| *candidate == label)
-        .map(|(_, id)| *id)
+fn keyboard_id(shown: &str) -> Option<String> {
+    tilo_keyboard_map::by_display_name(shown)
+        .map(|layout| layout.id)
+        .or_else(|| tilo_keyboard_map::offered(shown).then(|| shown.to_owned()))
 }
 
 fn timezones() -> Vec<String> {
@@ -141,14 +118,7 @@ pub(crate) fn profile_value(field: CzField, value: &str) -> Option<String> {
             .any(|locale| locale == value)
             .then(|| value.to_string()),
         CzField::Timezone => timezones().into_iter().find(|zone| zone == value),
-        CzField::Keyboard => keyboard_id(value)
-            .or_else(|| {
-                KEYBOARDS
-                    .iter()
-                    .find(|(_, id)| *id == value)
-                    .map(|(_, id)| *id)
-            })
-            .map(str::to_string),
+        CzField::Keyboard => keyboard_id(value),
         CzField::Filesystem => Filesystem::from_key(&value.to_ascii_lowercase())
             .or_else(|| {
                 Filesystem::all()
@@ -242,10 +212,7 @@ fn choice_field(
 }
 
 pub(crate) fn form(profile: &InstallProfile, store: Option<&Store>, timezone_open: bool) -> Form {
-    let keyboards = KEYBOARDS
-        .iter()
-        .map(|(label, _)| (*label).to_string())
-        .collect();
+    let keyboards = tilo_keyboard_map::display_names();
     let filesystems = Filesystem::all()
         .into_iter()
         .map(|filesystem| CATALOG.t(filesystem_message(filesystem)))
@@ -326,7 +293,7 @@ mod tests {
 
         {
             assert_eq!(
-                profile_value(CzField::Keyboard, "German (QWERTZ)"),
+                profile_value(CzField::Keyboard, "German"),
                 Some("de".into())
             );
             assert_eq!(profile_value(CzField::Keyboard, "de"), Some("de".into()));

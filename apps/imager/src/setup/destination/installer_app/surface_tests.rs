@@ -543,7 +543,7 @@ fn the_whole_wizard_runs_through_the_console_with_its_confirmations() {
             &mut app,
             doc,
             "set-layout@installer",
-            &json!({"layout": "German (QWERTZ)"})
+            &json!({"layout": "German"})
         )
         .get("answer")
         .is_some()

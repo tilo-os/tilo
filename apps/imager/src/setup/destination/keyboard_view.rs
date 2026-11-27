@@ -3,117 +3,87 @@
 use std::collections::HashMap;
 
 use taffy::Size;
+use tilo_keyboard_map::{Drawing, Layout, draw};
 use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::Widget};
-use ui::kurbo::{Point, Rect};
+use ui::kurbo::Point;
 use ui::{KeyboardMap, KeyboardMapKey};
 use winit::keyboard::{NativeKeyCode, PhysicalKey};
 
-use imager_backend::destination::layouts::{self, Layout};
-
-const STAGGER: [f64; 4] = [0.0, 0.5, 0.75, 1.25];
-const SPACE_UNDER: std::ops::Range<usize> = 2..8;
-const KEY_GAP: f64 = 0.12;
-
 pub struct KeyboardView {
     selection: tilo_ui_base::LocalState<String>,
-    layout: &'static Layout,
+    layout: Layout,
     changed: bool,
     map: KeyboardMap,
 }
 
 impl KeyboardView {
     pub fn new(selection: &tilo_ui_base::LocalState<String>) -> Self {
-        let layout = Self::chosen(selection).unwrap_or_else(layouts::default_layout);
+        let layout = Self::chosen(selection).unwrap_or_else(tilo_keyboard_map::default_layout);
         Self {
             selection: selection.clone(),
+            map: map(&layout),
             layout,
             changed: false,
-            map: map(layout),
         }
     }
 
-    fn chosen(selection: &tilo_ui_base::LocalState<String>) -> Option<&'static Layout> {
-        selection.with(|name| layouts::by_display_name(name))
+    fn chosen(selection: &tilo_ui_base::LocalState<String>) -> Option<Layout> {
+        selection.with(|name| tilo_keyboard_map::by_display_name(name))
     }
 
     fn resolve(&mut self) {
         if let Some(layout) = Self::chosen(&self.selection)
-            && !std::ptr::eq(layout, self.layout)
+            && layout.id != self.layout.id
         {
+            self.map = map(&layout);
             self.layout = layout;
-            self.map = map(layout);
             self.changed = true;
         }
     }
 
     pub fn layout_id(&self) -> &str {
-        self.layout.id
+        &self.layout.id
     }
 }
 
-fn key(name: String, x: f64, row: usize, width: f64, levels: Vec<String>) -> KeyboardMapKey {
-    let top = tilo_ui_base::num::f64_of_usize(row);
-    let cap = Rect::new(
-        x + KEY_GAP / 2.0,
-        top + KEY_GAP / 2.0,
-        x + width - KEY_GAP / 2.0,
-        top + 1.0 - KEY_GAP / 2.0,
-    );
-    KeyboardMapKey {
-        name,
-        physical: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
-        outline: vec![
-            Point::new(cap.x0, cap.y0),
-            Point::new(cap.x1, cap.y0),
-            Point::new(cap.x1, cap.y1),
-            Point::new(cap.x0, cap.y1),
-        ],
-        levels,
-    }
-}
-
-fn map(layout: &'static Layout) -> KeyboardMap {
-    let mut keys = Vec::new();
-    let mut width = 0.0_f64;
-    for (row, (glyphs, &start)) in layout.rows.iter().zip(STAGGER.iter()).enumerate() {
-        for (index, glyph) in glyphs.iter().enumerate() {
-            let x = start + tilo_ui_base::num::f64_of_usize(index);
-            let mut levels = vec![(*glyph).to_string()];
-            if row == 0
-                && let Some(shift) = layout.number_shift.get(index)
-                && !shift.is_empty()
-                && shift != glyph
-            {
-                levels.push((*shift).to_string());
-            }
-            keys.push(key(format!("{row}:{index}"), x, row, 1.0, levels));
-            width = width.max(x + 1.0);
-        }
-    }
-    let space_row = layout.rows.len();
-    let bottom = STAGGER.last().copied().unwrap_or_default();
-    keys.push(key(
-        "space".to_string(),
-        bottom + tilo_ui_base::num::f64_of_usize(SPACE_UNDER.start),
-        space_row,
-        tilo_ui_base::num::f64_of_usize(SPACE_UNDER.len()),
-        vec![String::new()],
-    ));
+fn map(layout: &Layout) -> KeyboardMap {
+    let drawn = draw(&layout.id, "pc105", "", false).unwrap_or_else(|_| Drawing {
+        layout: layout.id.clone(),
+        model: "pc105".to_owned(),
+        width: 0.0,
+        height: 0.0,
+        level_count: 1,
+        keys: Vec::new(),
+    });
+    let keys = drawn
+        .keys
+        .into_iter()
+        .map(|key| KeyboardMapKey {
+            name: key.name,
+            physical: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
+            outline: key
+                .outline
+                .into_iter()
+                .map(|point| Point::new(point.x, point.y))
+                .collect(),
+            levels: key.levels,
+        })
+        .collect();
     KeyboardMap::new(
         keys,
         Size {
-            width,
-            height: tilo_ui_base::num::f64_of_usize(space_row + 1),
+            width: drawn.width,
+            height: drawn.height,
         },
         crate::setup::strings::t_args(
             "installer-keyboard-map-name",
             &[(
                 "layout",
-                tilo_ui_base::i18n::ArgValue::Text(layout.display_name.to_string()),
+                tilo_ui_base::i18n::ArgValue::Text(layout.label.clone()),
             )],
         ),
     )
-    .with_configuration(layout.xkb_layout.to_string(), "pc105".to_string())
+    .with_configuration(layout.xkb_layout().to_string(), "pc105".to_string())
 }
 
 impl tilo_ui_base::widget::Decorator for KeyboardView {
@@ -171,6 +141,14 @@ mod tests {
         assert_eq!(automerge::ReadDoc::length(&doc, automerge::ROOT), 0);
     }
 
+    fn label(id: &str) -> String {
+        tilo_keyboard_map::fallback()
+            .into_iter()
+            .find(|layout| layout.id == id)
+            .map(|layout| layout.label)
+            .expect("the installer offers this layout")
+    }
+
     #[test]
     fn keyboard_view_follows_the_selected_layout_as_a_non_focusable_picture() {
         {
@@ -178,19 +156,19 @@ mod tests {
             assert_eq!(kv.layout_id(), "us");
         }
         {
-            let kv = KeyboardView::new(&tilo_ui_base::LocalState::new("German (QWERTZ)".into()));
+            let kv = KeyboardView::new(&tilo_ui_base::LocalState::new(label("de")));
             assert_eq!(kv.layout_id(), "de");
         }
         {
-            let selection = tilo_ui_base::LocalState::new("French (AZERTY)".to_string());
+            let selection = tilo_ui_base::LocalState::new(label("fr"));
             let mut kv = KeyboardView::new(&selection);
             sync(&mut kv);
             assert_eq!(kv.layout_id(), "fr");
             assert!(!kv.take_structure_dirty(), "nothing changed yet");
 
-            selection.set("Dvorak".to_string());
+            selection.set(label("us:dvorak"));
             sync(&mut kv);
-            assert_eq!(kv.layout_id(), "dvorak");
+            assert_eq!(kv.layout_id(), "us:dvorak");
             assert!(kv.take_structure_dirty(), "a new layout is laid out again");
         }
         {

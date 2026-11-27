@@ -167,6 +167,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tilo-keyboard-catalog",
 ]
 
 [[package]]
@@ -351,6 +352,10 @@ dependencies = [
  "serde_json",
  "tempfile",
 ]
+
+[[package]]
+name = "tilo-keyboard-catalog"
+version = "0.1.0"
 
 [[package]]
 name = "typenum"

@@ -2555,7 +2555,7 @@ tilo_test_env::scenario! {
             assert_eq!(app.step, Step::Disk);
             assert_eq!(local_text(&app.hostname), "studio");
             assert_eq!(local_text(&app.username), "ada");
-            assert_eq!(app.keymap(), "German (QWERTZ)");
+            assert_eq!(app.keymap(), "German");
             assert_eq!(app.filesystem(), "ext4");
 
             app.selected_disk = Some(0);

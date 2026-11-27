@@ -121,8 +121,8 @@ impl InstallerApp {
             "status": self.status,
             "keyboard": {
                 "layout": self.keymap().trim(),
-                "xkb_layout": layout.xkb_layout,
-                "xkb_variant": layout.variant_or_empty(),
+                "xkb_layout": layout.xkb_layout(),
+                "xkb_variant": layout.xkb_variant(),
             },
             "network": {
                 "summary": super::network_summary(&self.network),
