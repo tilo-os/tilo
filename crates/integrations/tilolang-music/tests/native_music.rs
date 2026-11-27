@@ -486,8 +486,34 @@ fn the_live_view_shows_the_song_and_each_control_is_an_action() {
     ] {
         assert!(shown.contains(control), "the live card offers `{control}`");
     }
-    assert!(
-        shown.contains("toggle"),
+    // The play control presses the playing resource's own `toggle`: a control
+    // bound to it, not a private handler the palette and agents cannot reach.
+    fn button<'a>(
+        tree: &'a tilolang_tilo::runtime::UiNode,
+        label: &str,
+    ) -> Option<&'a tilolang_tilo::runtime::UiNode> {
+        if tree.kind == "ui.Button" && tree.props.get("label") == Some(&Value::text(label)) {
+            return Some(tree);
+        }
+        tree.children.iter().find_map(|child| button(child, label))
+    }
+    let play = button(view.tree(), "Pause").expect("the live card's play control");
+    let press = view
+        .event_action(&play.key, "press")
+        .expect("the play control presses an action");
+    let toggle = host
+        .package(PLAYBACK)
+        .and_then(|package| {
+            package
+                .meta
+                .actions
+                .iter()
+                .find(|declared| declared.name == "toggle")
+                .map(|declared| declared.id.clone())
+        })
+        .expect("the playing package declares `toggle`");
+    assert_eq!(
+        press.action, toggle,
         "its play control is the playing resource's own action"
     );
 }

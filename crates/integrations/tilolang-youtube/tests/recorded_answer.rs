@@ -215,7 +215,7 @@ fn card_of(host: &tilolang_tilo::host::Host) -> (String, Vec<String>) {
     };
     // The grid takes the videos it draws and what it says while it holds none, as the place
     // that lists them gives it.
-    let rendered = host
+    let mut rendered = host
         .runtime()
         .open_view(
             &tilolang_tilo::runtime::Actor::Member(tilolang_tilo::runtime::ids::MemberId::person(
@@ -225,7 +225,10 @@ fn card_of(host: &tilolang_tilo::host::Host) -> (String, Vec<String>) {
             vec![Value::List(items), Value::text("")],
         )
         .expect("the view runs");
-    let card = media_card(rendered.tree())
+    let shown = shown_nodes(&mut rendered);
+    let card = shown
+        .iter()
+        .find_map(|node| media_card(node))
         .unwrap_or_else(|| panic!("the view draws cards: {}", rendered.tree().kind));
     let picture = match card.props.get("picture") {
         Some(Value::Picture(picture)) => picture.clone(),
@@ -248,6 +251,40 @@ fn card_of(host: &tilolang_tilo::host::Host) -> (String, Vec<String>) {
         other => panic!("the card's lines: {other:?}"),
     };
     (picture, meta)
+}
+
+/// Every node the view shows, the rows of its lists and grids included: a virtual list or grid
+/// builds the rows it shows only when the window asks for them, so a read of the tree alone
+/// would miss every card a person sees.
+fn shown_nodes(view: &mut tilolang_runtime::ViewInstance) -> Vec<tilolang_runtime::UiNode> {
+    fn nodes(tree: &tilolang_runtime::UiNode) -> Vec<&tilolang_runtime::UiNode> {
+        let mut out = vec![tree];
+        for child in &tree.children {
+            out.extend(nodes(child));
+        }
+        out
+    }
+    view.poll_patches().unwrap();
+    let mut out: Vec<tilolang_runtime::UiNode> = nodes(view.tree()).into_iter().cloned().collect();
+    let lists: Vec<String> = out
+        .iter()
+        .filter(|node| {
+            matches!(
+                node.kind.as_str(),
+                "list" | "ui.VirtualList" | "ui.TreeView" | "ui.MediaGrid"
+            )
+        })
+        .map(|node| node.key.clone())
+        .collect();
+    for key in lists {
+        let len = view.list_len(&key).unwrap_or(0);
+        for at in 0..len {
+            if let Ok(Some(row)) = view.row(&key, at) {
+                out.extend(nodes(row).into_iter().cloned());
+            }
+        }
+    }
+    out
 }
 
 /// The first `MediaCard` in `tree`, depth first.
