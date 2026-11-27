@@ -21,6 +21,8 @@ const PROBE: &str = "so.tilo.probe";
 const ASKS: &str = "session.asks";
 const WAITS: &str = "session.waits";
 const SESSION: &str = tilo_actions::remote::session_actions::PROVIDER;
+const MODELS: &str = tilo_actions::remote::MODELS_PROVIDER;
+const SERVER_ACCOUNT: &str = tilo_actions::remote::SERVER_ACCOUNT_PROVIDER;
 
 /// What `provider` offers: `resource#action`, taking an `echo`.
 fn offered(provider: &str, app: &str, resource: &str, action: &str) -> CataloguePage {
@@ -473,7 +475,9 @@ fn started_shell(
 }
 
 /// `tilo do` where no desktop's socket answers reaches the device's daemon, which answers the
-/// person's actions there: it no longer says a desktop session is needed.
+/// person's actions there: it no longer says a desktop session is needed. What the person's seat
+/// keeps for them (the account this computer is signed in to, their model keys) is their
+/// desktop's alone: a program of theirs at the same socket neither lists nor calls it.
 #[cfg(target_os = "linux")]
 #[test]
 fn tilo_do_without_a_desktop_is_answered_by_the_daemon() {
@@ -515,8 +519,28 @@ fn tilo_do_without_a_desktop_is_answered_by_the_daemon() {
             ))
             .unwrap();
 
+        // The account this computer is signed in to, as their desktop's seat serves it.
+        let account = echoing(offered(
+            SERVER_ACCOUNT,
+            "so.tilo.settings",
+            "account/server",
+            "reveal-token",
+        ));
+        let _account = runtime
+            .block_on(shell.provide(
+                SERVER_ACCOUNT,
+                &offered(
+                    SERVER_ACCOUNT,
+                    "so.tilo.settings",
+                    "account/server",
+                    "reveal-token",
+                ),
+                Arc::clone(&account) as _,
+            ))
+            .unwrap();
+
         // `tilo do`, as the person types it, with no desktop's socket anywhere.
-        let daemon = [tilo_control::client::ControlSocket::Daemon(socket)];
+        let daemon = [tilo_control::client::ControlSocket::Daemon(socket.clone())];
         let typed = |name: &str, words: &[&str]| {
             let (mut out, mut err) = (Vec::new(), Vec::new());
             let words: Vec<String> = words.iter().map(|word| (*word).to_owned()).collect();
@@ -554,6 +578,40 @@ fn tilo_do_without_a_desktop_is_answered_by_the_daemon() {
             board.asked().len(),
             1,
             "the shell's provider answered the call"
+        );
+
+        // The seat's: not listed to the command, and refused when called by name.
+        let (code, _, _) = typed("reveal-token", &["echo=the token"]);
+        assert_ne!(code, 0, "tilo do finds no account token to reveal");
+        let program = tilo_action_services::LineClient::of_stream(
+            std::os::unix::net::UnixStream::connect(&socket).unwrap(),
+        )
+        .unwrap();
+        for (provider, resource, action) in [
+            (SERVER_ACCOUNT, "account/server", "reveal-token"),
+            (MODELS, "models", "list"),
+        ] {
+            let answer = program
+                .invoke(
+                    &tilo_actions::remote::Caller::local_person(""),
+                    request(provider, resource, action, "the secret"),
+                )
+                .wait_timeout(Duration::from_secs(30))
+                .ok()
+                .flatten()
+                .expect("the daemon answers the program");
+            let refused = match answer {
+                Err(error) => error.to_string(),
+                Ok(receipt) => format!("{:?}", receipt.status),
+            };
+            assert!(
+                refused.contains("reached through your desktop"),
+                "a program of the person's is refused {provider}: {refused}"
+            );
+        }
+        assert!(
+            account.asked().is_empty(),
+            "the seat's provider was never asked"
         );
         session.stop().unwrap();
     });

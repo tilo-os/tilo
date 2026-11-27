@@ -6695,6 +6695,126 @@ fn certified_provider(provider: &str) -> bool {
         || provider.starts_with("launch:")
 }
 
+/// Whether `provider` is one of the person's seat: their settings and model keys, the account this
+/// computer is signed in to, and the rest their desktop serves under an app's window
+/// ([`runtime_collab::wire::shell::SEAT_PROVIDERS`]).
+fn is_seat_provider(provider: &str) -> bool {
+    runtime_collab::wire::shell::seat_app(provider).is_some()
+}
+
+/// The refusal of a seat provider's call to a connection that is not the person's shell.
+fn seat_refused() -> ActionCallError {
+    ActionCallError::Refused {
+        reason: "what your desktop keeps for you (your settings, model keys and the account this \
+                 computer is signed in to) is reached through your desktop, not from another \
+                 program"
+            .into(),
+    }
+}
+
+impl RuntimeActionProvider {
+    /// Whether `caller` is a connection of the person's own account that is not their shell: a
+    /// command or any program they run, which an app may have started. It reaches what their
+    /// desktop serves on this device, but never the seat's providers, which hold their secrets,
+    /// model keys and server account.
+    fn seat_kept_from(&self, caller: &Caller) -> bool {
+        caller.is_own_connection()
+            && !self
+                .session
+                .as_ref()
+                .is_some_and(|session| session.own_shell)
+    }
+
+    /// What [`ActionProvider::query`] lists to `caller`, the seat's providers among it.
+    fn listing(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        if query.provider.as_deref() == Some(tilo_action_services::workspace_invocations::PROVIDER)
+        {
+            if let Some(session) = &self.session
+                && let Err(refusal) = session.check(caller, &self.workspaces)
+            {
+                return Pending::ready(Err(refusal.into()));
+            }
+            // The calls that wait for their person are listed beside the ones the device kept
+            // a record of: their asked records name them, and their person answers them from
+            // the invocation that record gives, which a walk of this tree finds.
+            let waiting = self
+                .workspaces
+                .copies()
+                .asked_store()
+                .map(|store| store.waiting_in(&self.workspace))
+                .unwrap_or_default();
+            return Pending::ready(self.broker.state().invocation_page(
+                &self.workspace,
+                caller,
+                &query,
+                &waiting,
+            ));
+        }
+        if query.provider.as_deref() == Some(tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER)
+            && self.is_the_person(caller)
+            && let Some((tree, device)) = self.workspace_tree(caller)
+        {
+            return tree.answers.query(&device, query);
+        }
+        if let Some(session) = &self.session {
+            // Owner discovery remains the ordinary read path: no per-query
+            // identity-store resolution. Opening a result uses retained ownership.
+            if session.projection.is_some() && session.admits(caller) {
+                if !self.admitted(caller) {
+                    return Pending::ready(Err(ActionCallError::NotPermitted));
+                }
+                // The person's own shell is this device's own process: it is offered what
+                // reaches this device alone, the seat's providers it serves itself among them
+                // (Settings' sections, the activity). Any other run here lists as a caller this
+                // device does not vouch for.
+                let listed = if session.own_shell {
+                    caller.clone()
+                } else {
+                    on_this_device(caller)
+                };
+                let answer = self.broker.state().action_query(&listed, &query);
+                return self.with_devices(caller, answer, &query);
+            }
+            if let Err(refusal) = session.check(caller, &self.workspaces) {
+                return Pending::ready(Err(refusal.into()));
+            }
+            // A key or an agent of the person's reaches the workspace's own tree as itself
+            // ([`Self::workspace_tree`]): what it offers them is decided by their own grants.
+            if query.provider.as_deref()
+                == Some(tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER)
+                && let Some((tree, asked)) = self.workspace_tree(caller)
+            {
+                return tree.answers.query(&asked, query);
+            }
+            if query
+                .provider
+                .as_ref()
+                .is_some_and(|provider| certified_provider(provider))
+            {
+                let answer = session.provider.query(caller, query.clone());
+                return self.with_devices(caller, answer, &query);
+            }
+            // Existing general catalogue/builtin APIs retain the exact
+            // authenticated run. They make no SDK original-ownership claim.
+            let answer = self.broker.state().action_query(session.acting(), &query);
+            let answer = session.guarded(Arc::clone(&self.workspaces), caller.clone(), answer);
+            return self.with_devices(caller, answer, &query);
+        }
+        if !self.admitted(caller) {
+            return Pending::ready(Err(ActionCallError::NotPermitted));
+        }
+        let answer = self
+            .broker
+            .state()
+            .action_query(&on_this_device(caller), &query);
+        self.with_devices(caller, answer, &query)
+    }
+}
+
 fn on_this_device(caller: &Caller) -> Caller {
     // The person on a connection the kernel says is their own account, on this device's own
     // daemon, is this device's as their shell is: offered and answered what reaches this device
@@ -6875,87 +6995,20 @@ impl ActionProvider for RuntimeActionProvider {
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        if query.provider.as_deref() == Some(tilo_action_services::workspace_invocations::PROVIDER)
-        {
-            if let Some(session) = &self.session
-                && let Err(refusal) = session.check(caller, &self.workspaces)
-            {
-                return Pending::ready(Err(refusal.into()));
-            }
-            // The calls that wait for their person are listed beside the ones the device kept
-            // a record of: their asked records name them, and their person answers them from
-            // the invocation that record gives, which a walk of this tree finds.
-            let waiting = self
-                .workspaces
-                .copies()
-                .asked_store()
-                .map(|store| store.waiting_in(&self.workspace))
-                .unwrap_or_default();
-            return Pending::ready(self.broker.state().invocation_page(
-                &self.workspace,
-                caller,
-                &query,
-                &waiting,
-            ));
+        if !self.seat_kept_from(caller) {
+            return self.listing(caller, query);
         }
-        if query.provider.as_deref() == Some(tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER)
-            && self.is_the_person(caller)
-            && let Some((tree, device)) = self.workspace_tree(caller)
-        {
-            return tree.answers.query(&device, query);
+        if query.provider.as_deref().is_some_and(is_seat_provider) {
+            return Pending::ready(Err(seat_refused()));
         }
-        if let Some(session) = &self.session {
-            // Owner discovery remains the ordinary read path: no per-query
-            // identity-store resolution. Opening a result uses retained ownership.
-            if session.projection.is_some() && session.admits(caller) {
-                if !self.admitted(caller) {
-                    return Pending::ready(Err(ActionCallError::NotPermitted));
-                }
-                // The person's own shell is this device's own process: it is offered what
-                // reaches this device alone, the seat's providers it serves itself among them
-                // (Settings' sections, the activity). Any other run here lists as a caller this
-                // device does not vouch for.
-                let listed = if session.own_shell {
-                    caller.clone()
-                } else {
-                    on_this_device(caller)
-                };
-                let answer = self.broker.state().action_query(&listed, &query);
-                return self.with_devices(caller, answer, &query);
-            }
-            if let Err(refusal) = session.check(caller, &self.workspaces) {
-                return Pending::ready(Err(refusal.into()));
-            }
-            // A key or an agent of the person's reaches the workspace's own tree as itself
-            // ([`Self::workspace_tree`]): what it offers them is decided by their own grants.
-            if query.provider.as_deref()
-                == Some(tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER)
-                && let Some((tree, asked)) = self.workspace_tree(caller)
-            {
-                return tree.answers.query(&asked, query);
-            }
-            if query
-                .provider
-                .as_ref()
-                .is_some_and(|provider| certified_provider(provider))
-            {
-                let answer = session.provider.query(caller, query.clone());
-                return self.with_devices(caller, answer, &query);
-            }
-            // Existing general catalogue/builtin APIs retain the exact
-            // authenticated run. They make no SDK original-ownership claim.
-            let answer = self.broker.state().action_query(session.acting(), &query);
-            let answer = session.guarded(Arc::clone(&self.workspaces), caller.clone(), answer);
-            return self.with_devices(caller, answer, &query);
-        }
-        if !self.admitted(caller) {
-            return Pending::ready(Err(ActionCallError::NotPermitted));
-        }
-        let answer = self
-            .broker
-            .state()
-            .action_query(&on_this_device(caller), &query);
-        self.with_devices(caller, answer, &query)
+        self.listing(caller, query).map(|page| {
+            page.map(|mut page| {
+                page.rows.retain(|row| !is_seat_provider(&row.provider));
+                page.providers
+                    .retain(|provider| !is_seat_provider(&provider.provider));
+                page
+            })
+        })
     }
 
     fn invoke(
@@ -6970,6 +7023,9 @@ impl ActionProvider for RuntimeActionProvider {
         // nothing.
         if self.session_stopped(caller) {
             return Pending::ready(Err(ActionCallError::NotPermitted));
+        }
+        if self.seat_kept_from(caller) && is_seat_provider(&request.target.provider) {
+            return Pending::ready(Err(seat_refused()));
         }
         // The device's one search, answered from its index as the caller may read it.
         if tilo_workspace_records::search::is_search(&request.target) {
