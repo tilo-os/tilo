@@ -192,6 +192,7 @@ fn platform_stamp(
     acted_for: Option<[u8; 32]>,
 ) -> Stamp {
     Stamp {
+        invoked: String::new(),
         verb: verb.to_owned(),
         invoker: actor.map(|actor| Stamp::by(&actor)).unwrap_or_default(),
         acted_for: acted_for.map(hex::encode),

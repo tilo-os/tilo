@@ -427,6 +427,7 @@ fn apply(content: &mut Map<String, Json>, edit: &Edit) {
 /// The stamp of one write of `person`'s own state, of the verb `verb`.
 fn stamp(verb: &str, person: &str) -> Stamp {
     Stamp {
+        invoked: String::new(),
         verb: verb.to_owned(),
         invoker: Stamp::by(&actor(person)),
         invocation: uuid::Uuid::new_v4().to_string(),

@@ -21,6 +21,7 @@ use tilo_workspace_service::work::Where;
 /// The change `actor` made to a message in Chat.
 fn posted(actor: Acting) -> DocumentEvent {
     DocumentEvent {
+        invoked: None,
         workspace: "ws-1".into(),
         record: "general".into(),
         app: CHAT.to_owned(),

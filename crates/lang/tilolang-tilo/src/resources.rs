@@ -4028,6 +4028,8 @@ impl ResourceStore {
         };
         Stamp {
             verb,
+            // A step of another action says which action was invoked.
+            invoked: note.invoked.clone().unwrap_or_default(),
             invoker: note
                 .invoker
                 .as_ref()

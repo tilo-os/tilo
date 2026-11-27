@@ -1690,3 +1690,94 @@ async fn a_filed_problem_report_fires_the_automation_watching_for_reports() {
     }
     device.shutdown().await;
 }
+
+/// A trigger naming an action fires on what the action wrote through the actions it called:
+/// Chat's report writes its message through `send`, and a trigger on reports fires once per
+/// report. A trigger on `send` fires on that message too, and on a message sent directly, which
+/// is no report.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_trigger_on_an_action_fires_on_what_its_called_actions_wrote() {
+    use tilo_workspace_service::agent_shortcuts::{CHAT, MESSAGE};
+
+    let device = Device::start("Feedback", Some(CHAT)).await;
+    let (key, cert) = (&device.key, &device.cert);
+    let workspaces = device.workspaces();
+    let workspace = device.workspace.clone();
+    let chat = tilolang_workspace::records::built_in(CHAT)
+        .expect("the built-in packages compile")
+        .expect("Chat is built in");
+    let id = |action: &str| {
+        chat.action_id(action)
+            .unwrap_or_else(|| panic!("Chat offers {action}"))
+    };
+    let on = |shortcut: &str, action: &str| -> tilo_automation::Shortcut {
+        serde_json::from_value(json!({
+            "id": shortcut,
+            "name": shortcut,
+            "steps": [],
+            "triggers": [{
+                "trigger": "resource_changed",
+                "kind": MESSAGE,
+                "actions": [id(action)],
+            }],
+        }))
+        .unwrap()
+    };
+    for shortcut in [
+        on("on-report", tilo_app_id::chat::REPORT_PROBLEM),
+        on("on-send", tilo_app_id::chat::SEND),
+    ] {
+        save_signed(workspaces, &workspace, shortcut, (key, cert)).await;
+    }
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    runner.arm().await;
+    let mut writes = workspaces.document_writes();
+    let person =
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(&workspace);
+    let fired_by = |firings: &[tilo_app_host::triggers::Firing]| {
+        let mut shortcuts: Vec<String> = firings.iter().map(|f| f.shortcut.clone()).collect();
+        shortcuts.sort();
+        shortcuts
+    };
+
+    for at in 0..2 {
+        tilolang_workspace::records::provided::calls::call(
+            workspaces,
+            &person,
+            CHAT,
+            tilo_app_id::chat::REPORT_PROBLEM,
+            json!({ "body": format!("The book failed to open {at}") }),
+        )
+        .await
+        .unwrap_or_else(|refused| panic!("report {at} is filed: {refused}"));
+        let firings = super::fired(&mut runner, &mut writes, &started).await;
+        assert_eq!(
+            fired_by(&firings),
+            ["on-report", "on-send"],
+            "report {at} fires the trigger on reports once, and the one on sends: {firings:?}"
+        );
+    }
+
+    tilolang_workspace::records::provided::calls::call(
+        workspaces,
+        &person,
+        CHAT,
+        tilo_app_id::chat::SEND,
+        json!({ "body": "Thanks, looking into it" }),
+    )
+    .await
+    .unwrap_or_else(|refused| panic!("the message is sent: {refused}"));
+    let firings = super::fired(&mut runner, &mut writes, &started).await;
+    assert_eq!(
+        fired_by(&firings),
+        ["on-send"],
+        "a message sent directly fires the trigger on sends, and is no report: {firings:?}"
+    );
+    device.shutdown().await;
+}

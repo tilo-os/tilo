@@ -2034,6 +2034,7 @@ impl ViewInstance {
             return Ok(EditOutcome::Applied);
         }
         let change = ChangeNote {
+            invoked: None,
             action: "$edit".into(),
             args: serde_json::json!([field.id, to_json(value).map_err(RuntimeError::BadArgs)?]),
             invoker: Some(self.live.viewer.clone()),

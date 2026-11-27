@@ -3794,6 +3794,7 @@ mod origin_tests {
 
     fn stamp(invoker: &str, device: [u8; 32]) -> Stamp {
         Stamp {
+            invoked: String::new(),
             verb: collab_types::Stamp::ORIGIN_VERB.to_owned(),
             invoker: invoker.to_owned(),
             device: hex::encode(device),

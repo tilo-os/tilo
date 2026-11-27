@@ -1931,6 +1931,7 @@ mod store {
 
     fn stamp(verb: &str, invocation: &str) -> Stamp {
         Stamp {
+            invoked: String::new(),
             verb: verb.to_owned(),
             invoker: "ada".to_owned(),
             invocation: invocation.to_owned(),
@@ -4975,6 +4976,7 @@ mod outside_effects {
 
     fn stamp(verb: &str, invocation: &str) -> Stamp {
         Stamp {
+            invoked: String::new(),
             verb: verb.to_owned(),
             invoker: "ada".to_owned(),
             invocation: invocation.to_owned(),

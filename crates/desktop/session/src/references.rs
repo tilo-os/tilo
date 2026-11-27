@@ -38,6 +38,7 @@ pub enum Bring {
 /// A stamp of one invocation of the verb `verb`.
 pub(crate) fn stamp(verb: &str) -> tilo_resource_store::Stamp {
     tilo_resource_store::Stamp {
+        invoked: String::new(),
         verb: verb.to_owned(),
         invocation: uuid::Uuid::new_v4().to_string(),
         ..tilo_resource_store::Stamp::default()

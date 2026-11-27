@@ -495,6 +495,9 @@ pub enum FieldValue {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChangeNote {
     pub action: String,
+    /// The action invoked, where [`Self::action`] ran as a step of it: the action at the top of
+    /// the calls the invocation made ([`crate::run::Journal::invoked`]).
+    pub invoked: Option<String>,
     pub args: Json,
     /// Who made it; `None` for a change an app's package made that names no one.
     #[serde(default, skip_serializing_if = "Option::is_none")]

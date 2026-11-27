@@ -92,6 +92,7 @@ fn a_posted_message(
     message: &str,
 ) -> tilo_automation::dispatch::DocumentEvent {
     tilo_automation::dispatch::DocumentEvent {
+        invoked: None,
         workspace: workspace.to_owned(),
         record: "general".to_owned(),
         app: CHAT.to_owned(),

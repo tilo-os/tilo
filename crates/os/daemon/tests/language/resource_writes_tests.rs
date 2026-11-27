@@ -91,6 +91,7 @@ const KIND: &str = "tl.so.tilo.tasks.Task";
 /// own program writes a record it makes.
 fn create() -> Stamp {
     Stamp {
+        invoked: String::new(),
         verb: "$create".to_owned(),
         ..Stamp::default()
     }

@@ -689,6 +689,7 @@ fn shape_of(section: &str) -> Option<ui::tilo_resource::Shape> {
 /// The stamp a write of `leaf` carries: its verb, who made it and the invocation.
 fn stamp(leaf: &str, origin: &ChangeOrigin, invocation: &str) -> Stamp {
     Stamp {
+        invoked: String::new(),
         verb: verb(leaf),
         invoker: origin.actor.clone().unwrap_or_default(),
         invocation: invocation.to_owned(),

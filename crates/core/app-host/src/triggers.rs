@@ -534,6 +534,8 @@ pub fn store_events(
                         tilo_actions::ActionKey::new(app, &kind, &stamp.verb),
                         [],
                     ),
+                    // What the invocation was, where this change is a step of it.
+                    invoked: (!stamp.invoked.is_empty()).then(|| stamp.invoked.clone()),
                     kind,
                     change: change.hash().to_string(),
                     actor: actor.clone(),

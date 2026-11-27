@@ -440,6 +440,7 @@ fn message_written(
     text: &str,
 ) -> tilo_automation::dispatch::DocumentEvent {
     tilo_automation::dispatch::DocumentEvent {
+        invoked: None,
         workspace: workspace.to_owned(),
         record: "asked-1".to_owned(),
         app: CHAT.to_owned(),

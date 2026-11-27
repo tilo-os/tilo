@@ -62,6 +62,7 @@ impl ActionStamp {
     /// secret).
     fn as_stamp(&self) -> collab_types::Stamp {
         collab_types::Stamp {
+            invoked: String::new(),
             verb: self.verb.to_owned(),
             invoker: collab_types::Stamp::by(&self.by),
             invocation: self.invocation.clone(),

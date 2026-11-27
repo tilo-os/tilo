@@ -304,6 +304,11 @@ pub struct Journal {
     /// ([`crate::exec`]).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub invocation: String,
+    /// The action at the top of the calls the invocation made, where this run is one of its
+    /// steps: what every change the run makes says was invoked, so a trigger naming that action
+    /// fires on them. Empty for the run at the top, and in a journal kept before it was.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub invoked: String,
     /// The invocation the host serves this run as, when it serves one: the host's request id and
     /// the invocation's own id, which outlives the host, so a host starting over this store can
     /// answer it if the run cannot go on.

@@ -2049,6 +2049,7 @@ async fn a_host_fills_the_workspace_emoji_and_context_inputs_a_shortcut_declares
     // What a change of one of the workspace's records fires: the dispatcher reads who made it
     // and what they did into the firing's context.
     let event = DocumentEvent {
+        invoked: None,
         workspace: workspace.clone(),
         record: "record".into(),
         app: "so.tilo.tasks".into(),

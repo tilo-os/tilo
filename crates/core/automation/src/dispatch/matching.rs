@@ -144,6 +144,7 @@ fn matches(trigger: &TriggerSpec, index: usize, armed: &Armed<'_>, event: Event<
                 && ((actions.is_empty() && fields.is_empty() && !change.housekeeping)
                     || verbs_of(&change.did)
                         .iter()
+                        .chain(&change.invoked)
                         .any(|verb| actions.contains(verb))
                     || edited_paths(&change.did)
                         .iter()

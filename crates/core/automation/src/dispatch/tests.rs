@@ -38,6 +38,7 @@ fn verb(action: &str) -> Did {
 
 fn post(actor: Acting, change: &str, caused_by: Option<Cause>) -> DocumentEvent {
     DocumentEvent {
+        invoked: None,
         workspace: "ws-1".into(),
         record: "rec-1".into(),
         app: "so.tilo.chat".into(),

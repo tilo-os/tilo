@@ -9,6 +9,12 @@ use serde::{Deserialize, Serialize};
 pub struct Stamp {
     /// The verb invoked.
     pub verb: String,
+    /// The action invoked, where [`Self::verb`] ran as a step of it: the action at the top of
+    /// the calls the invocation made (Chat's report, whose message its `send` writes). A trigger
+    /// naming the action invoked fires on what its steps wrote. Empty where the verb is the
+    /// action invoked; a change written before it was kept reads as empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub invoked: String,
     /// Who invoked it: a person, or an agent acting for one, as [`Stamp::by`] writes the actor.
     /// History names the change's author by it, so it is the actor every reader parses back
     /// ([`Stamp::invoked_by`]), never a bare id.

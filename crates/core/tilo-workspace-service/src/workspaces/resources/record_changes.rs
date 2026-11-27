@@ -1067,6 +1067,7 @@ mod tests {
 
     fn typed_by(invoker: &Actor) -> Stamp {
         Stamp {
+            invoked: String::new(),
             verb: Stamp::TYPE_VERB.to_owned(),
             invoker: Stamp::by(invoker),
             invocation: "typing".to_owned(),

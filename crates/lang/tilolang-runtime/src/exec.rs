@@ -137,6 +137,7 @@ impl ExecCtx {
             parent: None,
             served: None,
             invocation,
+            invoked: String::new(),
         }
     }
 }
@@ -872,6 +873,7 @@ impl Core {
                 effects: 0,
                 parent: None,
                 invocation: String::new(),
+                invoked: String::new(),
             };
             let state = ActionState {
                 txn,
@@ -2003,6 +2005,9 @@ impl Core {
         if !state.journal.invocation.is_empty() {
             note.invocation = Some(state.journal.invocation.clone());
         }
+        if !state.journal.invoked.is_empty() {
+            note.invoked = Some(state.journal.invoked.clone());
+        }
         let kind = match txn {
             Some(txn) => FrameKind::Action(ActionState {
                 txn,
@@ -2501,10 +2506,17 @@ impl Core {
         // are the same on a device that runs the invocation again from the top, so what the
         // call does is held under the keys the first device used.
         let child = format!("{run}/{}", journal.entries.len());
+        // The call's changes say which action was invoked: the one at the top of the calls.
+        let invoked = if journal.invoked.is_empty() {
+            journal.action.clone().unwrap_or_default()
+        } else {
+            journal.invoked.clone()
+        };
         let child_journal = Journal {
             parent: Some(run.clone()),
             asked: journal.asked,
             pressed: journal.pressed,
+            invoked,
             ..ctx.journal(aref, journal.invocation.clone())
         };
         match self.drive(&child, child_journal)? {

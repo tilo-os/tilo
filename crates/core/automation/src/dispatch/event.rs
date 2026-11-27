@@ -28,6 +28,11 @@ pub struct DocumentEvent {
     pub change: String,
     pub actor: Acting,
     pub did: Did,
+    /// The action invoked, where what [`Self::did`] names ran as a step of it: the action at the
+    /// top of the calls the invocation made ([`tilo_actions::Stamp::invoked`]). A trigger naming
+    /// that action fires on the change.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invoked: Option<String>,
     /// The full recorded arguments of the verb, when the change was one.
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub arguments: Map<String, Value>,
@@ -94,6 +99,7 @@ pub fn event_of(
             .map(|facet| facet.value.clone())
     };
     DocumentEvent {
+        invoked: None,
         workspace: workspace.to_owned(),
         record: record.to_owned(),
         // The verb names the app it is an action of; a change that is no verb names none.
