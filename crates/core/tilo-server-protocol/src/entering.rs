@@ -20,9 +20,10 @@
 //! **The proof.** A host's challenge used to make the device's proofs fresh:
 //! the device signed the host's nonce (`HelloAck2`) and the workspace's join
 //! challenge, a round trip after its hello. The entry's proof
-//! ([`Entry::proof`]) is the device's signature over [`entry_digest`] instead:
-//! the entry, under keying material both ends export from the TLS session of
-//! the QUIC connection that carries it ([`ENTRY_BINDING_LABEL`], RFC 5705).
+//! ([`Entry::proof`]) is the device's signature over what the entry asks
+//! instead: the entry, under keying material both ends export from the TLS
+//! session of the QUIC connection that carries it ([`ENTRY_BINDING_LABEL`],
+//! RFC 5705).
 //! That material is derived from both ends' handshake randomness and their
 //! key exchange, so it is unique to the connection and nobody outside it
 //! learns it: a captured proof proves nothing on any other connection, as an
@@ -67,11 +68,8 @@ use crate::workspaces::Role;
 pub const ENTERING_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The label both ends export the connection's keying material under
-/// (RFC 5705), with an empty context: what [`entry_digest`] binds an entry to.
+/// (RFC 5705), with an empty context: what an entry's proof is bound to.
 pub const ENTRY_BINDING_LABEL: &[u8] = b"tilo/session-entry/v1";
-
-/// The domain of the device's signature over an entry ([`entry_digest`]).
-const ENTRY_PROOF_DOMAIN: &[u8] = b"tilo/session-entry-proof/v1\0";
 
 /// What a device that is not in the workspace yet asks for in its hello: to
 /// come into `workspace`, through its entry or with an invitation.
@@ -121,37 +119,11 @@ pub struct Entry {
     /// state, which asks as a member later. A request for another group, or
     /// from another device, is not handed on.
     pub access: Option<collab_types::MlsAccessRequestV1>,
-    /// The device's signature over [`entry_digest`] of this entry, under the
-    /// connection's keying material: it proves the device holds its key on
-    /// this connection and asks exactly this.
+    /// The device's signature over this entry, under the connection's keying
+    /// material: it proves the device holds its key on this connection and asks
+    /// exactly this.
     #[serde(with = "serde_bytes")]
     pub proof: [u8; 64],
-}
-
-/// What a device signs to enter as `entering` asks, on the connection whose
-/// keying material ([`ENTRY_BINDING_LABEL`]) is `binding`, as `device`.
-#[must_use]
-pub fn entry_digest(binding: &[u8; 32], device: &[u8; 32], entering: &Entering) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(ENTRY_PROOF_DOMAIN);
-    hasher.update(binding);
-    hasher.update(device);
-    let (invitation, token): (&[u8], Option<&[u8]>) = match &entering.through {
-        Through::Entry => (&[], None),
-        Through::Invitation { invitation, token } => (invitation, token.as_deref()),
-    };
-    let field = |hasher: &mut blake3::Hasher, field: &[u8]| {
-        hasher.update(&u64::try_from(field.len()).unwrap_or(u64::MAX).to_le_bytes());
-        hasher.update(field);
-    };
-    field(&mut hasher, entering.workspace.as_bytes());
-    field(&mut hasher, entering.name.as_bytes());
-    hasher.update(&entering.request_id);
-    hasher.update(&[u8::from(matches!(entering.through, Through::Entry))]);
-    field(&mut hasher, invitation);
-    hasher.update(&[u8::from(token.is_some())]);
-    field(&mut hasher, token.unwrap_or_default());
-    *hasher.finalize().as_bytes()
 }
 
 /// Why an entry or its workspace did not let a device in.

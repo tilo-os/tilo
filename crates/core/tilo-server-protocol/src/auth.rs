@@ -393,10 +393,6 @@ pub enum AuthError {
     /// a replay, or a bug in the peer's implementation.
     #[error("challenge signature did not verify")]
     BadChallengeSig,
-    /// An endpoint-bound certificate names a device other than the
-    /// transport endpoint that presented it.
-    #[error("certificate does not match the authenticated endpoint")]
-    EndpointMismatch,
 }
 
 /// Who a server endpoint admits at the handshake, by name.
@@ -503,76 +499,6 @@ pub fn server_begin(
     Ok((PendingServer { peer, server_nonce }, ack))
 }
 
-/// The server side of an entry ([`crate::entering`]): check the entering
-/// device's certificate as any device's (valid and unrevoked, of any person)
-/// and its proof under `binding`, the keying material this end exported from
-/// the connection carrying the hello, and return the peer with the
-/// [`HelloAck`] that proves this server to it. No `HelloAck2` follows: the
-/// entry's proof is the device's proof of its key on this connection.
-///
-/// `server_nonce` must be fresh randomness for every handshake.
-///
-/// # Errors
-///
-/// [`AuthError::BadChallengeSig`] for a hello that carries no entry or whose
-/// proof does not verify; then as [`server_begin`] for the certificate, so a
-/// certificate is refused only to a device that holds its key.
-pub fn server_enter(
-    identity: &ServerIdentity<'_>,
-    revocations: &RevocationList,
-    hello: &Hello,
-    binding: &[u8; 32],
-    now_ns: u64,
-    server_nonce: [u8; 32],
-) -> Result<(AuthenticatedPeer, HelloAck), AuthError> {
-    let entry = hello.entering.as_ref().ok_or(AuthError::BadChallengeSig)?;
-    // The proof first: what is then said of the certificate
-    // ([`HelloRefusal::said_of`]) is said to a device that holds its key.
-    let device = &hello.cert.device_public_key;
-    let digest = crate::entering::entry_digest(binding, device, &entry.entering);
-    ed25519_dalek::VerifyingKey::from_bytes(device)
-        .map_err(|_| AuthError::BadChallengeSig)?
-        .verify(&digest, &ed25519_dalek::Signature::from_bytes(&entry.proof))
-        .map_err(|_| AuthError::BadChallengeSig)?;
-    let peer = admit_cert(
-        &hello.cert,
-        identity.own_user,
-        HandshakeTrust::AnyCertifiedDevice,
-        revocations,
-        now_ns,
-    )?;
-    let ack = build_hello_ack(
-        identity.cert.clone(),
-        identity.key,
-        server_nonce,
-        &hello.client_nonce,
-    );
-    Ok((peer, ack))
-}
-
-/// Authenticate a certificate offered over a transport that already proved
-/// possession of `remote`, the device key of its endpoint (an Iroh
-/// connection's remote id). Binds the certificate to that key and applies
-/// the handshake's validity, revocation and trust checks.
-///
-/// # Errors
-///
-/// Returns [`AuthError::EndpointMismatch`] if the certificate names another
-/// device, otherwise as [`server_begin`].
-pub fn authenticate_endpoint_bound(
-    cert: &DeviceCert,
-    remote: &[u8; 32],
-    own_user_public_key: &[u8; 32],
-    trust: HandshakeTrust<'_>,
-    revocations: &RevocationList,
-    now_ns: u64,
-) -> Result<AuthenticatedPeer, AuthError> {
-    if &cert.device_public_key != remote {
-        return Err(AuthError::EndpointMismatch);
-    }
-    admit_cert(cert, own_user_public_key, trust, revocations, now_ns)
-}
-
 fn admit_cert(
     cert: &DeviceCert,
     own_user_public_key: &[u8; 32],
@@ -623,37 +549,9 @@ pub fn refusal_digest(client_nonce: &[u8; 32], refusal: HelloRefusal) -> [u8; 32
     *hasher.finalize().as_bytes()
 }
 
-/// Server-side: verify the client's `Hello` against `own_user_pk` +
-/// `policy` + `revocations`. Returns the authenticated peer state
-/// on success.
-///
-/// This is the hello check alone. A server endpoint runs the whole
-/// handshake through [`server_begin`] and [`PendingServer::finish`].
-///
-/// # Errors
-///
-/// Returns [`AuthError::Cert`] if the client's cert doesn't verify or
-/// is expired, [`AuthError::Revoked`] if its device is revoked, or
-/// [`AuthError::PolicyReject`] if `policy` does not admit it.
-pub fn accept_hello(
-    hello: &Hello,
-    own_user_public_key: &[u8; 32],
-    policy: &TrustPolicy,
-    revocations: &RevocationList,
-    now_ns: u64,
-) -> Result<AuthenticatedPeer, AuthError> {
-    admit_cert(
-        &hello.cert,
-        own_user_public_key,
-        HandshakeTrust::Live(policy),
-        revocations,
-        now_ns,
-    )
-}
-
 /// Server-side: build the `HelloAck` reply — signs the client's
 /// nonce with the server's device signing key.
-pub fn build_hello_ack(
+fn build_hello_ack(
     own_cert: DeviceCert,
     own_signing_key: &ed25519_dalek::SigningKey,
     server_nonce: [u8; 32],
@@ -671,7 +569,7 @@ pub fn build_hello_ack(
 
 /// Server-side: build the [`HelloRefused`] that answers the hello carrying
 /// `client_nonce` with `refusal`, signed with the server's device signing key.
-pub fn build_hello_refused(
+fn build_hello_refused(
     own_cert: DeviceCert,
     own_signing_key: &ed25519_dalek::SigningKey,
     client_nonce: &[u8; 32],
@@ -790,64 +688,6 @@ fn verify_hello_ack_inner(
     })
 }
 
-/// Verify the exact primary device authorized by a signed, workspace-scoped
-/// interactive-owner hint. This exception does not grant host capability and
-/// cannot be reached from the generic pinned-host API.
-///
-/// # Errors
-///
-/// Returns [`AuthError`] unless the ACK certificate is the exact expected host,
-/// is current and non-revoked, can own workspaces, and proves the challenge
-/// with its certified device key.
-pub fn verify_interactive_owner_ack(
-    ack: &impl ServerProof,
-    expected_host: &DeviceCert,
-    revocations: &RevocationList,
-    now_ns: u64,
-    challenge_client_nonce: &[u8; 32],
-) -> Result<AuthenticatedPeer, AuthError> {
-    verify_hello_ack_cryptographic(ack, revocations, now_ns, challenge_client_nonce)?;
-    if ack.cert() != expected_host || !ack.cert().capabilities.can_own_workspaces {
-        return Err(AuthError::PolicyReject);
-    }
-    Ok(AuthenticatedPeer {
-        cert: ack.cert().clone(),
-        user_public_key: ack.cert().user_public_key,
-        device_public_key: ack.cert().device_public_key,
-    })
-}
-
-/// Verify the exact device of the client's own person that hosts workspaces
-/// itself: the ACK certificate chains to `own_user_public_key`, is the
-/// device `expected_device`, is current and unrevoked, and proves the
-/// challenge with its certified key. No host capability is asked of it: a
-/// person's device serves the workspaces placed on it, and the session it opens
-/// is the person's own.
-///
-/// # Errors
-///
-/// Returns [`AuthError`] unless every condition above holds.
-pub fn verify_own_device_ack(
-    ack: &impl ServerProof,
-    own_user_public_key: &[u8; 32],
-    expected_device: &[u8; 32],
-    revocations: &RevocationList,
-    now_ns: u64,
-    challenge_client_nonce: &[u8; 32],
-) -> Result<AuthenticatedPeer, AuthError> {
-    verify_hello_ack_cryptographic(ack, revocations, now_ns, challenge_client_nonce)?;
-    if &ack.cert().user_public_key != own_user_public_key
-        || &ack.cert().device_public_key != expected_device
-    {
-        return Err(AuthError::PolicyReject);
-    }
-    Ok(AuthenticatedPeer {
-        cert: ack.cert().clone(),
-        user_public_key: ack.cert().user_public_key,
-        device_public_key: ack.cert().device_public_key,
-    })
-}
-
 fn verify_hello_ack_cryptographic(
     ack: &impl ServerProof,
     revocations: &RevocationList,
@@ -938,80 +778,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn an_ack_proves_only_the_device_and_direction_it_was_signed_for;
-
-        phase an_own_device_proves_itself_only_as_the_pinned_device;
-        {
-            let (root_sk, user) = UserIdentity::generate("Alice", 1);
-            let laptop = enrol(
-                &root_sk,
-                user.public_key,
-                "laptop",
-                DeviceCapabilities::primary(),
-            );
-            let phone = enrol(
-                &root_sk,
-                user.public_key,
-                "phone",
-                DeviceCapabilities::primary(),
-            );
-            let (other_root, other) = UserIdentity::generate("Bob", 1);
-            let stranger = enrol(
-                &other_root,
-                other.public_key,
-                "laptop",
-                DeviceCapabilities::primary(),
-            );
-            let revs = RevocationList::new();
-            let nonce = [5u8; 32];
-            let ack = build_hello_ack(laptop.cert.clone(), &laptop.sk, [6u8; 32], &nonce);
-            let peer = verify_own_device_ack(
-                &ack,
-                &user.public_key,
-                &laptop.cert.device_public_key,
-                &revs,
-                1000,
-                &nonce,
-            )
-            .unwrap();
-            assert_eq!(peer.device_public_key, laptop.cert.device_public_key);
-            // Another of the person's devices is not the one pinned.
-            assert!(matches!(
-                verify_own_device_ack(
-                    &ack,
-                    &user.public_key,
-                    &phone.cert.device_public_key,
-                    &revs,
-                    1000,
-                    &nonce,
-                ),
-                Err(AuthError::PolicyReject)
-            ));
-            // Another person's device is never the person's own.
-            let foreign = build_hello_ack(stranger.cert.clone(), &stranger.sk, [6u8; 32], &nonce);
-            assert!(matches!(
-                verify_own_device_ack(
-                    &foreign,
-                    &user.public_key,
-                    &stranger.cert.device_public_key,
-                    &revs,
-                    1000,
-                    &nonce,
-                ),
-                Err(AuthError::PolicyReject)
-            ));
-            // A proof over another challenge is no proof.
-            assert!(matches!(
-                verify_own_device_ack(
-                    &ack,
-                    &user.public_key,
-                    &laptop.cert.device_public_key,
-                    &revs,
-                    1000,
-                    &[7u8; 32],
-                ),
-                Err(AuthError::BadChallengeSig)
-            ));
-        }
 
         phase a_signature_from_one_direction_is_never_a_proof_in_the_other;
         {
@@ -1161,24 +927,27 @@ mod tests {
 
             // Happy path: both directions verify.
             let revs = RevocationList::new();
+            let policy = TrustPolicy::default();
             let client_nonce = [1u8; 32];
             let server_nonce = [2u8; 32];
             let hello = Hello::new(client.cert.clone(), client_nonce);
-            let server_peer = accept_hello(
-                &hello,
-                &user.public_key,
-                &TrustPolicy::default(),
+            let (pending, ack) = server_begin(
+                &identity(&server, &user.public_key),
+                HandshakeTrust::Live(&policy),
                 &revs,
+                &hello,
                 1000,
+                server_nonce,
             )
             .unwrap();
-            assert_eq!(server_peer.device_public_key, client.cert.device_public_key);
-            let ack = build_hello_ack(server.cert.clone(), &server.sk, server_nonce, &client_nonce);
+            assert_eq!(ack.server_nonce, server_nonce);
             let client_peer =
                 verify_hello_ack(&ack, &user.public_key, &revs, 1000, &client_nonce).unwrap();
             assert_eq!(client_peer.device_public_key, server.cert.device_public_key);
-            let ack2 = build_hello_ack2(&client.sk, &server_nonce);
-            verify_hello_ack2(&ack2, &client.cert.device_public_key, &server_nonce).unwrap();
+            let server_peer = pending
+                .finish(&build_hello_ack2(&client.sk, &server_nonce))
+                .unwrap();
+            assert_eq!(server_peer.device_public_key, client.cert.device_public_key);
 
             // Wrong user: the server is Alice's; the client presents Bob's cert.
             let (bob_root, bob) = UserIdentity::generate("Bob", 1);
@@ -1190,12 +959,13 @@ mod tests {
             );
             let hello = Hello::new(bob_client.cert, [0u8; 32]);
             assert!(matches!(
-                accept_hello(
-                    &hello,
-                    &user.public_key,
-                    &TrustPolicy::default(),
+                server_begin(
+                    &identity(&server, &user.public_key),
+                    HandshakeTrust::Live(&policy),
                     &revs,
-                    1000
+                    &hello,
+                    1000,
+                    [2u8; 32],
                 )
                 .unwrap_err(),
                 AuthError::PolicyReject
@@ -1214,12 +984,13 @@ mod tests {
             revoked.insert(rev).unwrap();
             let hello = Hello::new(client.cert, [0u8; 32]);
             assert!(matches!(
-                accept_hello(
-                    &hello,
-                    &user.public_key,
-                    &TrustPolicy::default(),
+                server_begin(
+                    &identity(&server, &user.public_key),
+                    HandshakeTrust::Live(&policy),
                     &revoked,
-                    1000
+                    &hello,
+                    1000,
+                    [2u8; 32],
                 )
                 .unwrap_err(),
                 AuthError::Revoked
@@ -1245,10 +1016,9 @@ mod tests {
             let peer = pending
                 .finish(&build_hello_ack2(&laptop.sk, &ack.server_nonce))
                 .unwrap();
-            let expected = accept_hello(&hello(&laptop), &alice, &policy, &revocations, 1000).unwrap();
-            assert_eq!(peer.cert, expected.cert);
-            assert_eq!(peer.user_public_key, expected.user_public_key);
-            assert_eq!(peer.device_public_key, expected.device_public_key);
+            assert_eq!(peer.cert, laptop.cert);
+            assert_eq!(peer.user_public_key, alice);
+            assert_eq!(peer.device_public_key, laptop.cert.device_public_key);
         }
 
         phase owner_devices_only_rejects_admitted_member;
@@ -1338,18 +1108,6 @@ mod tests {
                     .unwrap_err(),
                     AuthError::Revoked
                 ));
-                assert!(matches!(
-                    authenticate_endpoint_bound(
-                        &laptop.cert,
-                        &laptop.cert.device_public_key,
-                        &alice,
-                        trust,
-                        &revocations,
-                        1000,
-                    )
-                    .unwrap_err(),
-                    AuthError::Revoked
-                ));
             }
         }
 
@@ -1387,54 +1145,6 @@ mod tests {
                 .unwrap();
         }
 
-        phase endpoint_bound_rejects_mismatched_remote;
-        {
-            let (_, laptop, member, alice, _) = alice_relay_and_bob();
-            let revocations = RevocationList::new();
-            let bind = |remote: &[u8; 32], trust| {
-                authenticate_endpoint_bound(&laptop.cert, remote, &alice, trust, &revocations, 1000)
-            };
-            assert!(matches!(
-                bind(
-                    &member.cert.device_public_key,
-                    HandshakeTrust::AnyCertifiedDevice
-                )
-                .unwrap_err(),
-                AuthError::EndpointMismatch
-            ));
-            let peer = bind(
-                &laptop.cert.device_public_key,
-                HandshakeTrust::AnyCertifiedDevice,
-            )
-            .unwrap();
-            assert_eq!(peer.device_public_key, laptop.cert.device_public_key);
-            assert!(matches!(
-                authenticate_endpoint_bound(
-                    &member.cert,
-                    &member.cert.device_public_key,
-                    &alice,
-                    HandshakeTrust::OwnerDevicesOnly,
-                    &revocations,
-                    1000,
-                )
-                .unwrap_err(),
-                AuthError::PolicyReject
-            ));
-            let mut forged = laptop.cert.clone();
-            forged.capabilities.foreign = !forged.capabilities.foreign;
-            assert!(matches!(
-                authenticate_endpoint_bound(
-                    &forged,
-                    &forged.device_public_key,
-                    &alice,
-                    HandshakeTrust::AnyCertifiedDevice,
-                    &revocations,
-                    1000,
-                )
-                .unwrap_err(),
-                AuthError::Cert(_)
-            ));
-        }
     }
 
     fn alice_relay_and_bob() -> (Party, Party, Party, [u8; 32], SigningKey) {
@@ -1478,15 +1188,15 @@ mod tests {
         Hello::new(party.cert.clone(), [3; 32])
     }
 
-    fn server_accepts(frame: &[u8], user: &[u8; 32]) -> Option<AuthenticatedPeer> {
-        let hello: Hello = decode_handshake(frame).ok()?;
-        let policy = TrustPolicy::default();
-        accept_hello(&hello, user, &policy, &RevocationList::new(), 1000).ok()
-    }
-
     #[test]
     fn devices_on_another_peer_version_are_told_which_and_read_nothing_else() {
         let (root_sk, user) = UserIdentity::generate("Alice", 1);
+        let server = enrol(
+            &root_sk,
+            user.public_key,
+            "server",
+            DeviceCapabilities::member(),
+        );
         let foreign = enrol(
             &root_sk,
             user.public_key,
@@ -1501,17 +1211,33 @@ mod tests {
             hello.protocol = protocol;
             postcard::to_stdvec(&hello).unwrap()
         };
+        let server_accepts = |frame: &[u8]| -> Option<AuthenticatedPeer> {
+            let hello: Hello = decode_handshake(frame).ok()?;
+            let policy = TrustPolicy::default();
+            let (pending, ack) = server_begin(
+                &identity(&server, &user.public_key),
+                HandshakeTrust::Live(&policy),
+                &RevocationList::new(),
+                &hello,
+                1000,
+                [5; 32],
+            )
+            .ok()?;
+            pending
+                .finish(&build_hello_ack2(&foreign.sk, &ack.server_nonce))
+                .ok()
+        };
 
         // The same version: the server admits it, with the marker the workspace's
         // role cap reads.
-        let peer = server_accepts(&frame(PEER_PROTOCOL_VERSION), &user.public_key).unwrap();
+        let peer = server_accepts(&frame(PEER_PROTOCOL_VERSION)).unwrap();
         assert!(peer.cert.capabilities.foreign);
 
         // The next version works with this one while a rollout goes on, and
         // so does the one before while this build still speaks it.
-        assert!(server_accepts(&frame(PEER_PROTOCOL_VERSION + 1), &user.public_key).is_some());
+        assert!(server_accepts(&frame(PEER_PROTOCOL_VERSION + 1)).is_some());
         assert_eq!(
-            server_accepts(&frame(PEER_PROTOCOL_VERSION - 1), &user.public_key).is_some(),
+            server_accepts(&frame(PEER_PROTOCOL_VERSION - 1)).is_some(),
             neighbour_wire::OLDEST_PEER_PROTOCOL_VERSION < PEER_PROTOCOL_VERSION
         );
 
@@ -1523,7 +1249,7 @@ mod tests {
         ] {
             let refused = decode_handshake::<Hello>(&frame(theirs)).unwrap_err();
             assert_eq!(refused.peer_version(), Some(theirs));
-            assert!(server_accepts(&frame(theirs), &user.public_key).is_none());
+            assert!(server_accepts(&frame(theirs)).is_none());
         }
         let mut newer = postcard::to_stdvec(&(PEER_PROTOCOL_VERSION + 2)).unwrap();
         newer.extend_from_slice(b"a shape this build has never seen");
@@ -1688,11 +1414,7 @@ mod tests {
             assert!(matches!(error, AuthError::Cert(_)));
             assert_eq!(said, Some(HelloRefusal::CertificateRejected));
             // No other refusal says anything, whatever the endpoint admits.
-            for error in [
-                AuthError::PolicyReject,
-                AuthError::BadChallengeSig,
-                AuthError::EndpointMismatch,
-            ] {
+            for error in [AuthError::PolicyReject, AuthError::BadChallengeSig] {
                 assert_eq!(
                     HelloRefusal::said_of(
                         &error,
@@ -1718,18 +1440,9 @@ mod tests {
                 None,
             );
             assert_eq!(refused.protocol, PEER_PROTOCOL_VERSION);
-            // Its server's, for this hello: believed by each check an ack passes.
+            // Its server's, for this hello: believed by the check an ack passes.
             let peer = verify_hello_ack(&refused, &alice, &revs, 1000, &nonce).unwrap();
             assert_eq!(peer.device_public_key, server.cert.device_public_key);
-            verify_own_device_ack(
-                &refused,
-                &alice,
-                &server.cert.device_public_key,
-                &revs,
-                1000,
-                &nonce,
-            )
-            .unwrap();
             // A refusal of another hello is none of this one.
             assert!(matches!(
                 verify_hello_ack(&refused, &alice, &revs, 1000, &[4u8; 32]),
@@ -1745,17 +1458,6 @@ mod tests {
             );
             assert!(matches!(
                 verify_hello_ack(&foreign, &alice, &revs, 1000, &nonce),
-                Err(AuthError::PolicyReject)
-            ));
-            assert!(matches!(
-                verify_own_device_ack(
-                    &foreign,
-                    &alice,
-                    &server.cert.device_public_key,
-                    &revs,
-                    1000,
-                    &nonce
-                ),
                 Err(AuthError::PolicyReject)
             ));
             // Nor does a key under this server's certificate that is not its own.
@@ -1857,72 +1559,6 @@ mod tests {
             assert!(matches!(
                 decode_handshake::<HelloRefused>(&later),
                 Err(HandshakeFrameError::Codec(_))
-            ));
-        }
-    }
-
-    #[test]
-    fn an_entry_proves_its_key_before_its_certificate_is_judged() {
-        use crate::entering::{Entering, Entry, Through, entry_digest};
-        let (server, laptop, _, alice, alice_root) = alice_and_bob();
-        let revocations = removed(&alice_root, &laptop);
-        let binding = [7u8; 32];
-        let entering = Entering {
-            workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".to_owned(),
-            name: "Alice".to_owned(),
-            request_id: [2; 32],
-            through: Through::Entry,
-            admission: Vec::new(),
-        };
-        let entry = |proof| {
-            Hello::entering(
-                laptop.cert.clone(),
-                [3; 32],
-                Entry {
-                    entering: entering.clone(),
-                    access: None,
-                    proof,
-                },
-            )
-        };
-        let enter = |hello: &Hello, revocations: &RevocationList| {
-            server_enter(
-                &identity(&server, &alice),
-                revocations,
-                hello,
-                &binding,
-                1000,
-                [5; 32],
-            )
-        };
-        let proof = laptop
-            .sk
-            .sign(&entry_digest(
-                &binding,
-                &laptop.cert.device_public_key,
-                &entering,
-            ))
-            .to_bytes();
-        // Proved and not removed: in.
-        enter(&entry(proof), &RevocationList::new()).unwrap();
-        // Proved and removed: refused as removed, which the server may then say.
-        let error = enter(&entry(proof), &revocations).unwrap_err();
-        assert!(matches!(error, AuthError::Revoked));
-        assert_eq!(
-            HelloRefusal::said_of(
-                &error,
-                &laptop.cert,
-                &alice,
-                HandshakeTrust::AnyCertifiedDevice
-            ),
-            Some(HelloRefusal::DeviceRevoked)
-        );
-        // Not proved: refused for that, removed or not, so nothing of the certificate is said
-        // to whoever only shows it.
-        for revocations in [&RevocationList::new(), &revocations] {
-            assert!(matches!(
-                enter(&entry([0; 64]), revocations).unwrap_err(),
-                AuthError::BadChallengeSig
             ));
         }
     }
