@@ -1,0 +1,65 @@
+# Files: a made-up home seeded into the profile (never the home of the machine
+# the shots run on), shown with its places, as a grid, with a selection, and
+# five levels down.
+
+[[file]]
+path = "Documents/Quarterly plan.md"
+text = "# Quarterly plan\n\n- Ship the new file service\n- Review the pricing page\n- Hire a support engineer\n"
+
+[[file]]
+path = "Documents/notes.md"
+text = "Shopping: oat milk, bread, lemons\n\nCall the dentist on Monday.\n"
+
+[[file]]
+path = "Music/playlist.txt"
+text = "A quiet morning\nLong way home\nThe tide\n"
+
+[[file]]
+path = "Pictures/sunset.png"
+base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+
+[[file]]
+path = "Projects/tilo/README.md"
+text = "# Tilo\n\nA workspace that spans devices.\n"
+
+[[file]]
+path = "Projects/tilo/designs/2026/spring/notes.md"
+text = "# Spring\n\nA folder five levels under the home.\n"
+
+[[file]]
+path = "budget.csv"
+text = "month,income,spent\nJanuary,3200,2810\nFebruary,3200,2604\n"
+
+[[situation]]
+name = "home-folder"
+title = "A home folder with its places"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.file-explorer:root-rbuvwnu3", action = "go", args = { place = "~" } }
+
+[[situation]]
+name = "grid"
+title = "A folder as a grid"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.file-explorer:root-rbuvwnu3", action = "go", args = { place = "~" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.file-explorer:root-rbuvwnu3", action = "show_grid", args = { grid = true } }
+
+[[situation]]
+name = "selection"
+title = "Files selected, with their actions"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.file-explorer:root-rbuvwnu3", action = "go", args = { place = "~" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.file-explorer:root-rbuvwnu3", action = "select_all" }
+
+[[situation]]
+name = "deep-folder"
+title = "A folder five levels under the home"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.file-explorer:root-rbuvwnu3", action = "show", args = { path = "${HOME}/Projects/tilo/designs/2026/spring" } }

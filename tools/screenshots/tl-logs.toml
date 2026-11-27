@@ -1,0 +1,19 @@
+# Logs: this computer's journal, filtered through the window's own actions.
+
+[[situation]]
+name = "journal"
+title = "The journal"
+
+[[situation]]
+name = "live-tail"
+title = "Following new entries"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.logs:root-ydaofznc", action = "follow", args = { on = true } }
+
+[[situation]]
+name = "errors"
+title = "Only the errors"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.logs:root-ydaofznc", action = "set_severity", args = { value = "err" } }

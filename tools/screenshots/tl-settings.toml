@@ -1,0 +1,86 @@
+# Settings: panes chosen in the window's sidebar. A pane is a row of its list,
+# which it publishes as `key:item:<pane>`.
+
+[[situation]]
+name = "appearance"
+title = "Appearance"
+
+[[situation.steps]]
+perform = { target = "key:item:appearance", action = "activate" }
+
+[[situation]]
+name = "keyboard"
+title = "Keyboard and pointing"
+
+[[situation.steps]]
+perform = { target = "key:item:input", action = "activate" }
+
+[[situation]]
+name = "accessibility"
+title = "Accessibility"
+
+[[situation.steps]]
+perform = { target = "key:item:accessibility", action = "activate" }
+
+[[situation]]
+name = "notifications"
+title = "Notifications"
+
+[[situation.steps]]
+perform = { target = "key:item:notifications", action = "activate" }
+
+[[situation]]
+name = "sound"
+title = "Sound"
+
+[[situation.steps]]
+perform = { target = "key:item:sound", action = "activate" }
+
+[[situation]]
+name = "displays"
+title = "Displays"
+
+[[situation.steps]]
+perform = { target = "key:item:displays", action = "activate" }
+
+[[situation]]
+name = "power"
+title = "Power"
+
+[[situation.steps]]
+perform = { target = "key:item:power", action = "activate" }
+
+[[situation]]
+name = "keyboard-shortcuts"
+title = "Keyboard shortcuts"
+
+[[situation.steps]]
+perform = { target = "key:item:shortcuts", action = "activate" }
+
+[[situation]]
+name = "spelling"
+title = "Spelling and text"
+
+[[situation.steps]]
+perform = { target = "key:item:spelling", action = "activate" }
+
+[[situation]]
+name = "time-and-date"
+title = "Time and date"
+
+[[situation.steps]]
+perform = { target = "key:item:time", action = "activate" }
+
+[[situation]]
+name = "about"
+title = "About this computer"
+
+[[situation.steps]]
+perform = { target = "key:item:about", action = "activate" }
+
+[[situation]]
+name = "network"
+title = "Network"
+
+[[situation.steps]]
+perform = { target = "key:item:network", action = "activate" }

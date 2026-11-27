@@ -1,0 +1,7 @@
+# Windows apps: the manager as a fresh profile opens it. The programs it lists
+# are this computer's own, read from the device, so a capture shows the manager
+# before any program is installed.
+
+[[situation]]
+name = "manager"
+title = "Windows programs on this computer"

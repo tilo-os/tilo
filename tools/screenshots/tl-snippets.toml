@@ -1,0 +1,24 @@
+# Snippets: a library from the app's own scenario, the window's search narrowing
+# it, and an empty library.
+
+[[situation]]
+name = "library"
+title = "A library of everyday snippets"
+scenario = "a small library"
+
+[[situation]]
+name = "search"
+title = "Searching the snippets"
+scenario = "a small library"
+
+# The window's search is the system's, scoped to the app: it opens in the bar
+# and what is typed reaches the list.
+[[situation.steps]]
+perform = { target = "window-search-open", action = "activate" }
+
+[[situation.steps]]
+perform = { target = "window-search-query", action = "set_value", value = "sql" }
+
+[[situation]]
+name = "empty"
+title = "The library before the first snippet"

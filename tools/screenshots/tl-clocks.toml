@@ -1,0 +1,78 @@
+# Clocks: world clocks, alarms, timers and the stopwatch set up through the
+# collection's actions. Each place of the window is a row of its sidebar.
+
+[[situation]]
+name = "world-clocks"
+title = "World clocks for a distributed team"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "add_world_clock", args = { city = "New York", zone = "America/New_York" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "add_world_clock", args = { city = "London", zone = "Europe/London" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "add_world_clock", args = { city = "Bengaluru", zone = "Asia/Kolkata" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "add_world_clock", args = { city = "Tokyo", zone = "Asia/Tokyo" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "add_world_clock", args = { city = "Sydney", zone = "Australia/Sydney" } }
+
+[[situation.steps]]
+perform = { target = "key:item:world", action = "activate" }
+
+[[situation]]
+name = "alarms"
+title = "Weekday and weekend alarms"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "add_alarm", args = { label = "Wake up", hour = 6, minute = 45, days = ["mon", "tue", "wed", "thu", "fri"] } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "add_alarm", args = { label = "Swimming", hour = 7, minute = 30, days = ["sat"] } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "add_alarm", args = { label = "Take out the recycling", hour = 20, minute = 0, days = ["wed"] } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "add_alarm", args = { label = "Pick up the dry cleaning", hour = 17, minute = 15 } }
+
+[[situation.steps]]
+perform = { target = "key:item:alarms", action = "activate" }
+
+[[situation]]
+name = "timers"
+title = "Kitchen timers running"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "add_timer", args = { label = "Pasta", seconds = 540 } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "add_timer", args = { label = "Bread proving", seconds = 3600 } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "add_timer", args = { label = "Tea", seconds = 240 } }
+
+[[situation.steps]]
+perform = { target = "key:item:timers", action = "activate" }
+
+[[situation]]
+name = "stopwatch"
+title = "A stopwatch with laps"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "start_stopwatch" }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "lap" }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "lap" }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.clocks:root-ppcjxruc", action = "pause_stopwatch" }
+
+[[situation.steps]]
+perform = { target = "key:item:stopwatch", action = "activate" }

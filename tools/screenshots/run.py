@@ -666,6 +666,17 @@ def main() -> int:
     args.out = args.out.resolve()
 
     entries = catalog()
+    # A plan is found by the app's own name in the collection. One left under a name no app has
+    # would be skipped without a word, and the app captured as it opens: fewer situations than
+    # its plan asks for, and nothing said about it. So a plan whose name no app answers to
+    # stops the run.
+    named = {entry["name"] for entry in entries}
+    orphans = sorted(path.stem for path in PLANS.glob("*.toml") if path.stem not in named)
+    if orphans:
+        parser.error(
+            f"no app of the default collection is named {', '.join(orphans)}: "
+            f"rename each plan in {PLANS} to the app it captures"
+        )
     if args.apps.split():
         wanted = set(args.apps.split())
         unknown = wanted - {e["name"] for e in entries}

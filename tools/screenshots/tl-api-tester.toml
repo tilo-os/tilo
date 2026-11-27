@@ -1,0 +1,30 @@
+# API tester: collections and environments kept through the workspace's actions,
+# and a saved API as the app holds it. Nothing is sent.
+
+[[situation]]
+name = "collections"
+title = "Collections of saved requests"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.api-tester:root-vyss2ux2", action = "new_collection", args = { name = "Weather service" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.api-tester:root-vyss2ux2", action = "new_collection", args = { name = "Payments sandbox" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.api-tester:root-vyss2ux2", action = "new_collection", args = { name = "Internal admin" } }
+
+[[situation]]
+name = "saved-api"
+title = "A saved API with an environment and the answer it gave"
+scenario = "a users API"
+
+[[situation]]
+name = "environments"
+title = "Environments with variables"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.api-tester:root-vyss2ux2", action = "new_environment", args = { name = "Staging" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.api-tester:root-vyss2ux2", action = "new_environment", args = { name = "Production" } }

@@ -1,0 +1,16 @@
+# Retired: the Imager (the install-media creator) is no longer an app of the
+# default collection: it has no `tilo-app.toml`, so tools/screenshots/build.sh
+# stages no build of it and a capture has nothing to start. The plan names no
+# app the harness can open. It stays here rather than being deleted, for the
+# day the Imager joins the collection again; the situations would then be
+# ported to its actions as the other plans are.
+
+[[situation]]
+name = "start"
+title = "Choosing what to write"
+scenario = "source"
+
+[[situation]]
+name = "drive"
+title = "Choosing a drive"
+scenario = "drive"

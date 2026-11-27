@@ -1,0 +1,30 @@
+# Weather: saved places, through the locations' actions. Forecasts need the
+# network, which a screenshot run does not have; the pictures show the places
+# and what the app says while it cannot fetch.
+
+[[situation]]
+name = "saved-places"
+title = "Saved places around Europe"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.weather:root-sevkk4o7", action = "save_place", args = { name = "Berlin", latitude = 52.52, longitude = 13.405, region = "Berlin", country = "Germany" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.weather:root-sevkk4o7", action = "save_place", args = { name = "Lisbon", latitude = 38.7223, longitude = -9.1393, country = "Portugal" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.weather:root-sevkk4o7", action = "save_place", args = { name = "Innsbruck", latitude = 47.2692, longitude = 11.4041, country = "Austria" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.weather:root-sevkk4o7", action = "save_place", args = { name = "Edinburgh", latitude = 55.9533, longitude = -3.1883, country = "United Kingdom" } }
+
+[[situation]]
+name = "one-place"
+title = "A single home place"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.weather:root-sevkk4o7", action = "save_place", args = { name = "Leipzig", latitude = 51.3397, longitude = 12.3731, region = "Saxony", country = "Germany" } }
+
+[[situation]]
+name = "empty"
+title = "No places saved yet"

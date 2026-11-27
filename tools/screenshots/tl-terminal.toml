@@ -1,0 +1,12 @@
+# Terminal: sessions of the app's own scenarios (never a shell of the machine
+# the shots run on).
+
+[[situation]]
+name = "session"
+title = "A shell session"
+scenario = "a build that failed"
+
+[[situation]]
+name = "card"
+title = "A command waiting for a card"
+scenario = "a command waits for a card"

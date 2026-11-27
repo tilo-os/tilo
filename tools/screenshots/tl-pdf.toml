@@ -1,0 +1,6 @@
+# PDF viewer: the library before a document is opened. The reader draws a
+# document whole; it has no sidebar or page-list panes to fold away.
+
+[[situation]]
+name = "empty"
+title = "Before a document is opened"

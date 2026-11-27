@@ -1,0 +1,50 @@
+# Hex editor: file headers seeded into the profile and read through the
+# document's actions, and a text file with a few bytes changed.
+
+[[file]]
+path = "sunset.png"
+base64 = "iVBORw0KGgoAAAANSUhEUgAAB4AAAAQ4CAYAAADo08FDAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAACAASURBVHhe7L0HmBzFtfZ9d2Z2Ja1yzjkIIQSSUM45ByFEzgiJHEwwGAw2YBtsMCYa22BjsMEYbGMDNtgYEwwmmBxMMNmAyZhswAZsMDnn"
+
+[[file]]
+path = "hello"
+base64 = "f0VMRgIBAQAAAAAAAAAAAAMAtwABAAAAQBAAAAAAAABAAAAAAAAAAKg2AAAAAAAAAAAAAEAAOAANAEAAHgAdAAYAAAAEAAAAQAAAAAAAAABAAAAAAAAAAEAAAAAAAAAA2AIAAAAAAADYAgAAAAAAAAgAAAAAAAAAAwAAAAQAAAAYAwAAAAAAABgDAAAAAAAAGAMAAAAAAAAbAAAAAAAAABsAAAAAAAAAAQAAAAAAAAAvbGliL2xkLWxpbnV4LWFhcmNoNjQuc28uMQA="
+
+[[file]]
+path = "notes.txt"
+text = "Shopping: oat milk, bread, lemons\nCall the dentist on Monday\nWater the plants\n"
+
+[[situation]]
+name = "png-header"
+title = "The start of a PNG file"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.hex-editor:root-v5bn27jt", action = "open_path", args = { path = "${HOME}/sunset.png" } }
+
+[[situation.steps]]
+perform = { target = "sunset.png", action = "activate" }
+
+[[situation]]
+name = "elf-header"
+title = "An ELF executable's header"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.hex-editor:root-v5bn27jt", action = "open_path", args = { path = "${HOME}/hello" } }
+
+[[situation.steps]]
+perform = { target = "hello", action = "activate" }
+
+[[situation]]
+name = "edited-text-file"
+title = "A text file with a few bytes changed"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.hex-editor:root-v5bn27jt", action = "open_path", args = { path = "${HOME}/notes.txt" }, bind = "document" }
+
+[[situation.steps]]
+perform = { target = "notes.txt", action = "activate" }
+
+[[situation.steps]]
+invoke = { resource = "{{document.resources.0}}", action = "overwrite_bytes", args = { offset = 10, bytes = "4f 41 54" } }
+
+[[situation.steps]]
+invoke = { resource = "{{document.resources.0}}", action = "insert_bytes", args = { offset = 33, bytes = "2c 20 63 6f 66 66 65 65" } }

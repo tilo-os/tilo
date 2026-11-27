@@ -1,0 +1,49 @@
+# Browser: the library's bookmarks and history, and a page after an afternoon of
+# browsing from the app's own scenario. Pages need the network.
+
+[[situation]]
+name = "bookmarks"
+title = "Bookmarks in the library"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.browser:root-hh26i3w2", action = "bookmark", args = { url = "https://www.openstreetmap.org/", title = "OpenStreetMap" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.browser:root-hh26i3w2", action = "bookmark", args = { url = "https://en.wikipedia.org/wiki/Main_Page", title = "Wikipedia" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.browser:root-hh26i3w2", action = "bookmark", args = { url = "https://www.bbc.co.uk/food", title = "BBC Food" } }
+
+# The library opens from the page's menu; its sections are rows of its sidebar.
+[[situation.steps]]
+perform = { target = "Page", action = "activate" }
+
+[[situation.steps]]
+perform = { target = "Bookmarks", action = "activate" }
+
+[[situation.steps]]
+perform = { target = "key:item:bookmarks", action = "activate" }
+
+[[situation]]
+name = "history"
+title = "History in the library"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.browser:root-hh26i3w2", action = "visit", args = { url = "https://www.openstreetmap.org/", title = "OpenStreetMap", at = "${TODAY}T09:12:00Z" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.browser:root-hh26i3w2", action = "visit", args = { url = "https://en.wikipedia.org/wiki/Main_Page", title = "Wikipedia", at = "${TODAY}T10:05:00Z" } }
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.browser:root-hh26i3w2", action = "visit", args = { url = "https://www.bbc.co.uk/food", title = "BBC Food", at = "${TODAY}T11:40:00Z" } }
+
+[[situation.steps]]
+perform = { target = "Page", action = "activate" }
+
+[[situation.steps]]
+perform = { target = "History", action = "activate" }
+
+[[situation]]
+name = "first-afternoon"
+title = "A page after an afternoon of browsing"
+scenario = "a first afternoon"

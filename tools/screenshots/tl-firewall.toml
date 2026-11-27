@@ -1,0 +1,7 @@
+# Firewall: this computer's firewall as the window opens. Reading the machine's
+# firewalld is the app's own action, so a capture never runs it; the window
+# shows what the app holds before that read.
+
+[[situation]]
+name = "status"
+title = "This computer's firewall"

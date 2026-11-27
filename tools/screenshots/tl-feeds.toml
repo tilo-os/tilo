@@ -1,0 +1,30 @@
+# Feeds: a library of subscriptions from the app's own scenario, and the reading
+# settings the article page is set in. Fetching needs the network; the fixtures
+# are the articles the app stages.
+
+[[situation]]
+name = "subscriptions"
+title = "Subscriptions filed into folders"
+scenario = "a library of feeds"
+
+[[situation]]
+name = "reader-settings"
+title = "Reading set in sepia, a size larger"
+scenario = "a library of feeds"
+
+[[situation.steps]]
+invoke = { resource = "tl:so.tilo.feeds:root-u5mhrzrx", action = "begin_reading", bind = "reader" }
+
+[[situation.steps]]
+invoke = { resource = "{{reader.resources.0}}", action = "larger_text" }
+
+[[situation.steps]]
+invoke = { resource = "{{reader.resources.0}}", action = "set_paper", args = { paper = "sepia" } }
+
+# The article is a row of the list; opening it shows its page in the window.
+[[situation.steps]]
+perform = { target = "A quiet morning in the city", action = "activate" }
+
+[[situation]]
+name = "empty"
+title = "The library before the first subscription"

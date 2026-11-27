@@ -1,0 +1,7 @@
+# Store: the catalogue as a fresh profile opens it. The catalogue is read from
+# the workspace's sources and the network, so the pictures show the app before a
+# source has answered.
+
+[[situation]]
+name = "home"
+title = "The catalogue as it opens"

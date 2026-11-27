@@ -1,7 +1,0 @@
-# Firewall: the configuration of the app's own scenario (never the firewall
-# of the machine the shots run on).
-
-[[situation]]
-name = "status"
-title = "Firewall services"
-scenario = "services"

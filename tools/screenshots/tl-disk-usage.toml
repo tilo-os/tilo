@@ -4,9 +4,9 @@
 [[situation]]
 name = "start"
 title = "Choosing what to analyze"
-scenario = "home"
+scenario = "the places"
 
 [[situation]]
 name = "home"
 title = "The home folder analyzed"
-scenario = "analysis"
+scenario = "a home folder measured"

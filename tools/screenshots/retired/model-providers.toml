@@ -1,0 +1,8 @@
+# Retired: no app named model-providers exists in the default collection or
+# anywhere else in the tree; model providers are Settings' Agent models page
+# now. The plan stays here rather than being deleted. Settings' own plan covers
+# that page's pane.
+
+[[situation]]
+name = "providers"
+title = "The provider list"
