@@ -115,20 +115,38 @@ view face_button(p: device.Person) {
     }
 }
 
-/// The actor a person the session lists is, where the workspace lists their name: a face on a
-/// button, which takes the member rather than a name.
+/// The actor a person the session lists is: the member their root key is, so a face wears one
+/// colour whoever it stands beside, and someone nobody named has a face all the same. Software
+/// whose row names no root is found by its own name, which is its identity.
 fn face_of(p: device.Person) -> Option<Actor> {
+    if p.agent {
+        return face_named(p.name)
+    }
+    if p.user_key != "" {
+        if let member = face_of_person(p.user_key) {
+            return member
+        }
+    }
     return face_named(p.name)
 }
 
-/// The actor named `name` here, where the workspace lists that name: a face on a button or a chip.
-/// Someone nobody named has no name to be found by: they are the member the workspace keeps no
-/// name for, and their face is still theirs.
+/// The member `root` is here, where the workspace lists that person: by the root every device of
+/// theirs acts for, never by a name, which two people may share and nobody named may lack.
+fn face_of_person(root: Text) -> Option<Actor> {
+    if root == "" {
+        return .none
+    }
+    return workspace.members.people.find(m -> m.person() == root)
+}
+
+/// The member named `name` here: an agent, a bot, or a person the workspace named no root for.
+/// Someone with no name has none to be found by, and is nobody rather than the first unnamed
+/// member in the list.
 fn face_named(name: Text) -> Option<Actor> {
-    let unnamed = name == "" or name == std.say("Someone")
-    return workspace.members.people
-        .filter(m -> if unnamed { m.name() == "" } else { m.name() == name })
-        .first()
+    if name == "" {
+        return .none
+    }
+    return workspace.members.people.find(m -> m.name() == name)
 }
 
 /// An agent here, as its presence: a chip that opens its menu. The menu says what it is doing and
@@ -270,18 +288,13 @@ view roster(board: device.People, tall: Float) {
         secondary: availability_word(board.me),
         mark: if board.following != "" { .eye } else { .user },
     ) {
-        avatar: {
+        leading: {
             // The same face the bar draws for them: a member's face is theirs, in one colour
-            // wherever it stands.
+            // wherever it stands, and the roster's faces form one leading column.
             if let me = face_of(board.me) {
-                ui.Avatar(me, status: presence_status(board.me), call: board.me.call != "")
+                ui.Avatar(me, colour: board.me.colour)
             } else {
-                ui.Avatar(
-                    name: board.me.name,
-                    colour: board.me.colour,
-                    status: presence_status(board.me),
-                    call: board.me.call != "",
-                )
+                ui.Avatar(name: board.me.name, colour: board.me.colour)
             }
         }
         on activate: device.show_person(device.people, person: "self")
@@ -421,20 +434,15 @@ view person_row(p: device.Person, board: device.People, mirror: Float) {
             .eye
         } else if p.agent { .bot } else if is_follower(p) { .users } else { .user },
     ) {
-        avatar: {
-            // Someone in a call wears the arc sweeping round their face, as they do on the bar; a
-            // face is theirs, in one colour on the bar and in the roster alike.
+        leading: {
+            // Their face in the colour the workspace gives them: the same face the bar draws,
+            // ring and all, in the roster's one leading column of faces.
             if let face = face_of(p) {
-                ui.Avatar(face, status: presence_status(p), call: p.call != "")
+                ui.Avatar(face, colour: p.colour)
             } else if p.agent {
                 ui.Avatar(name: p.name, colour: p.colour, square: true, glyph: .bot)
             } else {
-                ui.Avatar(
-                    name: p.name,
-                    colour: p.colour,
-                    status: presence_status(p),
-                    call: p.call != "",
-                )
+                ui.Avatar(name: p.name, colour: p.colour)
             }
         }
         trailing: {
@@ -1316,8 +1324,9 @@ view arrival_notice() {
             std.say("{short} and {others} others are here")
         }
         // Whoever nobody named reads as "Someone" here, as a roster row names them: their face is
-        // still theirs, and says who to open.
-        if let face = face_named(first) {
+        // still theirs, found by the person they are and not by the name they arrived with.
+        let arriving = board.arrived_keys.first() ?? ""
+        if let face = face_arriving(board, arriving) {
             ui.Chip(label, faces: [face], tone: .success, live: .polite) {
                 on press: device.show(device.people)
             }
@@ -1327,6 +1336,17 @@ view arrival_notice() {
             }
         }
     }
+}
+
+/// A face for whoever arrived with the presence key `key`: their row here, and the member it is.
+fn face_arriving(board: device.People, key: Text) -> Option<Actor> {
+    if key == "" {
+        return .none
+    }
+    if let row = board.rows.find(r -> r.key == key) {
+        return face_of(row)
+    }
+    return .none
 }
 
 /// The question the session puts to the person about themselves, as a card on their own card,

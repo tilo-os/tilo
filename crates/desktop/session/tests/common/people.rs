@@ -961,9 +961,17 @@ impl Person {
             unsigned_cert([0; 32]),
         );
         first.restart_daemon();
+        // A person who gives no name is founded with the store's unnamed display name, which
+        // every surface reads as no name (`given_name`): the machine's account name is not a
+        // name they gave, and a person founded with none must stay unnamed.
+        let founded_name = if name.trim().is_empty() {
+            tilo_identity::store::UNNAMED_DISPLAY_NAME
+        } else {
+            name
+        };
         // Followed past its end, a founding is read where the person's part answers, which says
         // the device is theirs already: the founding is done once that part answers.
-        let made = first.device_action(FOUND, json!({ "name": name }));
+        let made = first.device_action(FOUND, json!({ "name": founded_name }));
         if let Err(refused) = made
             && !refused.message.contains(ALREADY_A_PERSONS)
         {

@@ -212,6 +212,9 @@ imports! {
     ActorEq = "actor_eq" ([H, H] -> [I32]);
     ActorName = "actor_name" ([H] -> [H]);
     ActorId = "actor_id" ([H] -> [H]);
+    // The person a member acts for: their root key in hex, or empty for software that acts for
+    // no person. What tells two members apart by who they are, never by what they are called.
+    ActorPerson = "actor_person" ([H] -> [H]);
     Now = "now" ([] -> [H]);
     PageCall = "page_call" ([H] -> [H]);
     Zones = "zones" ([] -> [H]);

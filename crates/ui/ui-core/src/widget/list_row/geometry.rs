@@ -103,7 +103,7 @@ impl ListRowFace<'_> {
             Some(RowLeading::Icon(_) | RowLeading::Swatch(_) | RowLeading::Signal(_)) => {
                 (m.icon, m.icon)
             }
-            Some(RowLeading::Face(_)) => (m.icon, m.icon),
+            Some(RowLeading::Face(_)) => (avatar, avatar),
             Some(RowLeading::Checkbox { icon, .. }) => match icon {
                 Some(_) => (2.0 * m.icon + m.column_gap, m.icon),
                 None if self.glyph_column => (2.0 * m.icon + m.column_gap, m.icon),
@@ -141,7 +141,12 @@ impl ListRowFace<'_> {
         let big_leading = fact_avatar > 0.0
             || matches!(
                 self.leading,
-                Some(RowLeading::Avatar(_) | RowLeading::Thumbnail(_) | RowLeading::Media(..))
+                Some(
+                    RowLeading::Avatar(_)
+                        | RowLeading::Face(_)
+                        | RowLeading::Thumbnail(_)
+                        | RowLeading::Media(..),
+                )
             );
         let held = self
             .text_block(text, &m)

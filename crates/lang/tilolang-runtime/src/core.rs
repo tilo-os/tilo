@@ -22,12 +22,12 @@ use crate::value::Value;
 use Imp::{
     Abort, ActAnswer, ActBlur, ActCall, ActCallInput, ActCallVolume, ActChoose, ActChooseFolder,
     ActClose, ActMadeFrom, ActMany, ActOpen, ActRef, ActRunLine, ActSave, ActSet, ActThen, ActUndo,
-    Actions, ActorApp, ActorEq, ActorId, ActorKind, ActorName, ActorPrincipal, ActorRole,
-    AgentNamed, ArgAt, Base64Decode, Blake3, BytesLength, CallFn, CallInputs, CallMembers,
-    CanvasCombine, CanvasCompare, CanvasDiff, CanvasDiffPicture, CanvasExport, CanvasFind,
-    CanvasGrade, CanvasInspect, CanvasLook, CanvasMeasure, CanvasOpen, CanvasRemoveAlong,
-    CanvasSave, CanvasSelect, CanvasSvg, CanvasSvgImport, CanvasWand, ChangeView,
-    ClipboardCopyImage, ClipboardCopySecret, ClipboardCopyText, ClipboardPasteImage,
+    Actions, ActorApp, ActorEq, ActorId, ActorKind, ActorName, ActorPerson, ActorPrincipal,
+    ActorRole, AgentNamed, ArgAt, Base64Decode, Blake3, BytesLength, CallFn, CallInputs,
+    CallMembers, CanvasCombine, CanvasCompare, CanvasDiff, CanvasDiffPicture, CanvasExport,
+    CanvasFind, CanvasGrade, CanvasInspect, CanvasLook, CanvasMeasure, CanvasOpen,
+    CanvasRemoveAlong, CanvasSave, CanvasSelect, CanvasSvg, CanvasSvgImport, CanvasWand,
+    ChangeView, ClipboardCopyImage, ClipboardCopySecret, ClipboardCopyText, ClipboardPasteImage,
     ClipboardPasteText, CollCount, CollCounted, CollEmpty, CollInsert, CollInsertAs,
     CollInsertKeyed, CollMove, CollMoveAmong, CollMoveTo, CollOrdered, CollPlace, CollRelatives,
     CollRemove, CollValues, CollWhere, CollWhereWith, CountBy, DateShow, DayParse, DayPart,
@@ -898,8 +898,8 @@ impl Core {
             | Ranked | VersionEnd | FieldChanged | Phrase | Word | EntryParts => {
                 self.platform_import(imp, a)
             }
-            Members | MayRead | Speakers | ActorId | ActorKind | ActorRole | ActorApp
-            | ActorPrincipal => self.members_import(imp, a),
+            Members | MayRead | Speakers | ActorId | ActorPerson | ActorKind | ActorRole
+            | ActorApp | ActorPrincipal => self.members_import(imp, a),
             EditField => self.edit_field(a),
             Print | Find | ReadText | OfType | Keep | Grep | Describe | DescribeRef | ReadWith
             | PrintRows | CountBy | GroupBy | Take | Single | Me | ForeignRef | MatchGroup

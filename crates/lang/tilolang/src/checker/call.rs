@@ -4848,6 +4848,11 @@ impl Checker<'_> {
             (Ty::Actor, "name") if args.is_empty() => Ex::host(Imp::ActorName, vec![r], Ty::Text),
             // What names them whatever they are called: a key every device makes the same.
             (Ty::Actor, "id") if args.is_empty() => Ex::host(Imp::ActorId, vec![r], Ty::Text),
+            // The person a member is, by their root key: empty for software, and the one fact
+            // that finds a member by who they are rather than what they are called.
+            (Ty::Actor, "person") if args.is_empty() => {
+                Ex::host(Imp::ActorPerson, vec![r], Ty::Text)
+            }
             (Ty::Actor, "kind") if args.is_empty() => {
                 Ex::host(Imp::ActorKind, vec![r], Ty::Choice("actor_kind"))
             }
@@ -5010,7 +5015,7 @@ impl Checker<'_> {
             (other, _) => {
                 let t = self.show(other);
                 let known = match other {
-                    Ty::Actor => "name, kind, role".to_owned(),
+                    Ty::Actor => "name, id, person, principal, kind, role".to_owned(),
                     Ty::Action => "then, made_from".to_owned(),
                     other => super::methods::described(other),
                 };

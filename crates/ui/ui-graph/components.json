@@ -4782,6 +4782,13 @@
           }
         },
         {
+          "name": "leading",
+          "doc": "Who the item is, as their face in the leading column: the face every surface draws them ([`tilo_ui_base::presence::Face`]), its ring and the ground around it included, so a list of people lines up in one leading column of faces.",
+          "accepts": {
+            "component": "Avatar"
+          }
+        },
+        {
           "name": "trailing",
           "doc": "A control on the trailing edge, which moves under the text when the row is narrow.",
           "accepts": "view"

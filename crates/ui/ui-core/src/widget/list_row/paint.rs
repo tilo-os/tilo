@@ -796,12 +796,8 @@ impl ListRowFace<'_> {
                 face.paint(ctx, Rect::from_center_size(slot.center(), (side, side)));
             }
             RowLeading::Face(face) => {
-                let side = slot.height();
-                face.paint(
-                    ctx,
-                    Rect::from_center_size(slot.center(), (side, side)),
-                    under,
-                );
+                // The ring and the ground around it fit the leading column the face was given.
+                face.paint(ctx, tilo_ui_base::presence::Face::disc_in(slot), under);
             }
             RowLeading::Badge(badge) => paint_badge(ctx, m, slot, badge),
             RowLeading::Thumbnail(image) => {

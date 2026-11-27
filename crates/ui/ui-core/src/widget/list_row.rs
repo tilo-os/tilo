@@ -977,6 +977,18 @@ enum Leading {
     },
     Swatch(Color),
     Signal(crate::widget::SignalLevel),
+    /// A person's face in the leading column, as every surface draws them: a ring in their colour
+    /// and the ground between it and the face, so a list's people line up under each other.
+    Face {
+        who: Option<tilo_ui_base::component::Person>,
+        name: String,
+        identity: String,
+        image: Option<ImageData>,
+        square: bool,
+        glyph: Option<Icon>,
+        agent: bool,
+        colour: Color,
+    },
 }
 
 struct FactAvatar {
@@ -2315,6 +2327,38 @@ impl ListRow {
                         None => avatar,
                     };
                     RowLeading::Avatar(if *agent { avatar.agent() } else { avatar })
+                }
+                Leading::Face {
+                    who,
+                    name,
+                    identity,
+                    image,
+                    square,
+                    glyph,
+                    agent,
+                    colour,
+                } => {
+                    let avatar = if let Some(who) = who {
+                        AvatarFace::of(who)
+                    } else {
+                        let avatar = AvatarFace::new(name, identity);
+                        let avatar = if *square { avatar.square() } else { avatar };
+                        let avatar = match glyph {
+                            Some(glyph) => avatar.glyph(*glyph),
+                            None => avatar,
+                        };
+                        if *agent { avatar.agent() } else { avatar }
+                    }
+                    .image(image.as_ref())
+                    .presence(*colour);
+                    RowLeading::Face(tilo_ui_base::presence::Face {
+                        avatar,
+                        colour: *colour,
+                        dimmed: false,
+                        active: None,
+                        scale: 1.0,
+                        follows_you: false,
+                    })
                 }
                 Leading::Icon(icon) => RowLeading::Icon(*icon),
                 Leading::Badge(badge) => RowLeading::Badge(badge),

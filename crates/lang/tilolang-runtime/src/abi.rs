@@ -181,6 +181,7 @@ imports! {
     (ActorEq, "actor_eq", "ii", "i"),
     (ActorName, "actor_name", "i", "i"),
     (ActorId, "actor_id", "i", "i"),
+    (ActorPerson, "actor_person", "i", "i"),
     (Now, "now", "", "i"),
     (PageCall, "page_call", "i", "i"),
     (Zones, "zones", "", "i"),

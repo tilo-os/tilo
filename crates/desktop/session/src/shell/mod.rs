@@ -197,6 +197,56 @@ pub(crate) fn reconcile_displays(
     handle.set_displays(&displays);
 }
 
+/// What the shell calls `member`, in the order a workspace knows a name: the member record's own
+/// name, then the name the session's roster gives them (by their person or by their device), then
+/// the name the workspace's profile keeps for them, then the name their device goes by. A person
+/// is never shown as nobody while any of those names them.
+fn shell_member_name(
+    member: &collab_types::Member,
+    named: &std::collections::HashMap<String, String>,
+    devices: Option<&[[u8; 32]]>,
+    labels: &std::collections::BTreeMap<[u8; 32], String>,
+    view: &tilo_session_client::workspace_view::WorkspaceView,
+    workspace: &str,
+) -> String {
+    if !member.name.trim().is_empty() {
+        return member.name.clone();
+    }
+    let by_person = member
+        .id
+        .person_id()
+        .and_then(|person| named.get(person))
+        .map(String::as_str);
+    let profile = member
+        .id
+        .person_id()
+        .and_then(|person| {
+            tilo_failure::ignored!(
+                "a person id in a member row is a root key's hex, so it decodes",
+                hex::decode(person)
+            )
+            .ok()
+        })
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+        .and_then(|root| view.name_of(workspace, root));
+    let by_device = devices
+        .into_iter()
+        .flatten()
+        .find_map(|device| named.get(&hex::encode(device)))
+        .map(String::as_str);
+    let device_name = devices
+        .into_iter()
+        .flatten()
+        .find_map(|device| labels.get(device))
+        .map(String::as_str)
+        .filter(|name| !name.trim().is_empty());
+    by_person
+        .or_else(|| profile.as_deref().filter(|name| !name.trim().is_empty()))
+        .or(by_device)
+        .or(device_name)
+        .map_or_else(|| member.name.clone(), str::to_owned)
+}
+
 impl Shell {
     /// The shell over every output of `compositor` , published on `surfaces` . The screen's views
     /// report their wells to `wells` , the handle the window policy places every window by
@@ -632,27 +682,36 @@ impl Shell {
                 } else {
                     named.insert(key.to_owned(), name.to_owned());
                 }
+                // Their root names the member row as soon as the roster knows the person, before
+                // the workspace's own devices list has taken their device: a face is drawn by
+                // their name, never as a member the workspace keeps no name for.
+                if let Some(root) = row
+                    .get("user_key")
+                    .and_then(Value::as_str)
+                    .filter(|root| !root.is_empty())
+                {
+                    named.insert(root.to_owned(), name.to_owned());
+                }
             }
         }
         let owner = view.owner_of(workspace).ok();
+        // The certificate name of each device here, by key: the last name a member with no
+        // name of their own is shown by.
+        let device_labels = view.device_labels(workspace);
         let people: Vec<Value> = members
             .members
             .iter()
             .filter(|member| !member.removed)
             .map(|member| {
                 let mut row = member.clone();
-                if member.name.trim().is_empty() {
-                    let by_person = member.id.person_id().and_then(|person| named.get(person));
-                    let by_device = members
-                        .devices
-                        .get(&member.id)
-                        .into_iter()
-                        .flatten()
-                        .find_map(|device| named.get(&hex::encode(device)));
-                    if let Some(name) = by_person.or(by_device) {
-                        row.name.clone_from(name);
-                    }
-                }
+                row.name = shell_member_name(
+                    member,
+                    &named,
+                    members.devices.get(&member.id).map(Vec::as_slice),
+                    &device_labels,
+                    view,
+                    workspace,
+                );
                 row.members_row(
                     member
                         .id

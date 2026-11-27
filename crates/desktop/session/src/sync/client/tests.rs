@@ -276,6 +276,29 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase a_name_that_arrives_after_its_person_names_the_arrival;
+    // A device arrives before the name its person goes by reaches everyone: the bar says someone
+    // came, and when the name arrives it says who, for the same moment again.
+    {
+        let (sync, _said) = session("Quinten", Some(0x04));
+        sync.hear(hello(1, 0xaa, "Framework 16"));
+        here(&sync, 1);
+        let unnamed = sync.arrival_notice().expect("the bar says someone is here");
+        assert_eq!(
+            unnamed.names,
+            [tilo_ui_base::presence::unnamed_person_label()]
+        );
+        named(&sync, 1, "Ada");
+        let arrival = sync
+            .arrival_notice()
+            .expect("the bar still says who arrived");
+        assert_eq!(arrival.names, ["Ada"], "the person's name is said");
+        assert_eq!(
+            arrival.people, unnamed.people,
+            "the same person, now named"
+        );
+    }
+
     phase what_a_peer_says_they_are_doing_is_the_roster_line;
     {
         let (sync, _said) = session("Quinten", Some(0x04));

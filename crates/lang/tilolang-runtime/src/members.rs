@@ -522,6 +522,12 @@ impl Core {
                 let who = self.actor_arg(a.h(0)?)?;
                 self.ret_h(Value::Text(crate::ids::actor_text(&who)))
             }
+            // The person a member acts for: their root key, or empty for software that acts for
+            // no one. Two members of one person are one person by this, whatever they are called.
+            Imp::ActorPerson => {
+                let who = self.actor_arg(a.h(0)?)?;
+                self.ret_h(Value::Text(who.person_id().unwrap_or_default().to_owned()))
+            }
             // The app whose process the invoker calls through, as the action API admitted it.
             Imp::ActorApp => {
                 let who = self.actor_arg(a.h(0)?)?;

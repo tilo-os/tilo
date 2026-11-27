@@ -67,6 +67,11 @@ pub struct ListRowProps {
     /// has got.
     #[component(part)]
     pub avatar: Option<AvatarProps>,
+    /// Who the item is, as their face in the leading column: the face every surface draws them
+    /// ([`tilo_ui_base::presence::Face`]), its ring and the ground around it included, so a list
+    /// of people lines up in one leading column of faces.
+    #[component(part)]
+    pub leading: Option<AvatarProps>,
     /// A control on the trailing edge, which moves under the text when the row is narrow.
     #[component(part)]
     pub trailing: Option<Element>,
@@ -124,6 +129,7 @@ impl ListRowProps {
             icon: self.icon,
             selected: self.selected,
             avatar: self.avatar.clone(),
+            leading: self.leading.clone(),
             trailing: None,
             below: None,
             checkbox: self.checkbox.clone(),
@@ -171,6 +177,7 @@ enum Kind {
     Icon,
     Badge,
     Checkbox,
+    Face,
     Other,
 }
 
@@ -180,12 +187,15 @@ fn leading_kind(leading: Option<&Leading>) -> Kind {
         Some(Leading::Icon(_)) => Kind::Icon,
         Some(Leading::Badge(_)) => Kind::Badge,
         Some(Leading::Checkbox { .. }) => Kind::Checkbox,
+        Some(Leading::Face { .. }) => Kind::Face,
         Some(_) => Kind::Other,
     }
 }
 
 fn props_kind(props: &ListRowProps) -> Kind {
-    if props.checkbox.is_some() {
+    if props.leading.is_some() {
+        Kind::Face
+    } else if props.checkbox.is_some() {
         Kind::Checkbox
     } else if props
         .badge
@@ -225,6 +235,7 @@ impl ListRow {
             icon,
             selected,
             avatar,
+            leading,
             trailing,
             below,
             checkbox,
@@ -285,7 +296,42 @@ impl ListRow {
             )),
             Event::None | Event::View(_) => None,
         };
-        self.leading = if let Some(bound) = checkbox {
+        self.leading = if let Some(face) = leading {
+            let (name, identity) = face.name_and_identity();
+            let agent = face
+                .who
+                .as_ref()
+                .and_then(|who| who.identity.member_id())
+                .is_some_and(|member| !member.is_person());
+            let colour = face
+                .colour
+                .as_deref()
+                .and_then(crate::widget::avatar::colour_of);
+            match colour {
+                // A person leads the row as their face everywhere: the presence face, its ring
+                // and the ground around it included, so a list of people lines up in one column.
+                Some(colour) => Some(Leading::Face {
+                    who: face.who,
+                    name,
+                    identity,
+                    image: None,
+                    square: face.square,
+                    glyph: face.glyph,
+                    agent,
+                    colour,
+                }),
+                // A caller that names no colour still leads with the face's own.
+                None => Some(Leading::Avatar {
+                    name,
+                    identity,
+                    image: None,
+                    square: face.square,
+                    glyph: face.glyph,
+                    tint: None,
+                    agent,
+                }),
+            }
+        } else if let Some(bound) = checkbox {
             // The box follows the value it is bound to: one set elsewhere (another device, an
             // agent, an undo) shows in the row rather than only in the state behind it.
             let (checked, binding) = tilo_ui_base::widget::binding::local(&bound.state);

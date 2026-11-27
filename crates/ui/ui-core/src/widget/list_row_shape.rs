@@ -66,14 +66,13 @@ impl ListRowFace<'_> {
                 None => RowLeadingShape::None,
                 Some(
                     RowLeading::Icon(_)
-                    | RowLeading::Face(_)
                     | RowLeading::Badge(_)
                     | RowLeading::Checkbox { .. }
                     | RowLeading::Swatch(_)
                     | RowLeading::Signal(_),
                 ) => RowLeadingShape::Mark,
                 Some(RowLeading::Avatar(face)) if face.is_square() => RowLeadingShape::Tile,
-                Some(RowLeading::Avatar(_)) => RowLeadingShape::Avatar,
+                Some(RowLeading::Avatar(_) | RowLeading::Face(_)) => RowLeadingShape::Avatar,
                 Some(RowLeading::Thumbnail(_) | RowLeading::Paint(_)) => RowLeadingShape::Tile,
                 Some(RowLeading::Media(_, aspect)) => RowLeadingShape::Media(aspect),
             },

@@ -174,7 +174,9 @@ type Key = (
     String,
     String,
     String,
-    Vec<String>,
+    // Who arrived, their names and their keys: a name that arrives for an arrival already said
+    // moves the reading again.
+    (Vec<String>, Vec<String>),
     (String, String),
     // A tuple holds twelve values; what the person may invite, whom they waved at, a follow they
     // just ended and what their own card offers close the key as one.
@@ -236,7 +238,7 @@ impl PeopleDevice {
     /// to say.
     fn key(&self) -> Key {
         let own = self.sync.as_ref().map(|sync| sync.own());
-        let (waved, arrived, arrived_seen) = self.notices();
+        let (waved, arrived, arrived_keys, arrived_seen) = self.notices();
         let mine = self.mine();
         (
             self.handle.revision(),
@@ -262,7 +264,7 @@ impl PeopleDevice {
                 .map(|status| status.text.clone())
                 .unwrap_or_default(),
             own.and_then(|own| own.following).unwrap_or_default(),
-            arrived,
+            (arrived, arrived_keys),
             (waved, arrived_seen),
             (
                 self.invitable.get(),
@@ -573,6 +575,7 @@ impl PeopleDevice {
         // have not: an empty field says what to type and leaves nothing to type over.
         let given = Self::given();
         let (name, identity) = self.face();
+        let name = self.name_here(&name, &identity);
         let colour_id = settings_store::identity::COLOUR.get().unwrap_or_default();
         let Some(sync) = &self.sync else {
             let (red, green, blue) = crate::people::own_rgb(&identity);
@@ -586,6 +589,7 @@ impl PeopleDevice {
                 given,
                 colour_slot: u32::try_from(Self::worn_colour(&identity)).ok(),
                 colour_id,
+                user_key: root_key(&identity).map_or_else(String::new, hex::encode),
                 ..Person::default()
             };
         };
@@ -612,14 +616,64 @@ impl PeopleDevice {
             given,
             colour_slot: u32::try_from(Self::worn_colour(&identity)).ok(),
             colour_id,
+            user_key: root_key(&identity).map_or_else(String::new, hex::encode),
             ..Person::default()
         }
     }
 
-    /// What the bar still says of a wave or an arrival, as the notices read now.
-    fn notices(&self) -> (String, Vec<String>, String) {
+    /// The name the person at this device is shown by: the one they gave, else the name the
+    /// workspace's profile keeps for them, else the name this device goes by. A person is never
+    /// shown as nobody while any of the three names them.
+    fn name_here(&self, name: &str, identity: &str) -> String {
+        let name = name.trim();
+        if !name.is_empty() {
+            return name.to_owned();
+        }
         let Some(sync) = &self.sync else {
-            return (String::new(), Vec::new(), String::new());
+            return String::new();
+        };
+        let Some(view) = sync.view() else {
+            return String::new();
+        };
+        let Some(workspace) = self.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        }) else {
+            return String::new();
+        };
+        if let Some(root) = root_key(identity)
+            && let Some(profile) = view
+                .name_of(&workspace, root)
+                .filter(|name| !name.trim().is_empty())
+        {
+            return profile;
+        }
+        if let Some(label) = view
+            .device_labels(&workspace)
+            .get(&view.device())
+            .cloned()
+            .filter(|label| !label.trim().is_empty())
+        {
+            return label;
+        }
+        // A workspace that has admitted no device of theirs yet still has the name the
+        // certificate gives this one.
+        #[cfg(target_os = "linux")]
+        if let Some(label) = crate::sync::device_identity()
+            .map(|identity| identity.device_cert.device_label)
+            .filter(|label| !label.trim().is_empty())
+        {
+            return label;
+        }
+        String::new()
+    }
+
+    /// What the bar still says of a wave or an arrival, as the notices read now: who waved, the
+    /// names of who arrived and the presence key of each, in the same order, and the words a first
+    /// visit shows instead.
+    fn notices(&self) -> (String, Vec<String>, Vec<String>, String) {
+        let Some(sync) = &self.sync else {
+            return (String::new(), Vec::new(), Vec::new(), String::new());
         };
         // The waves heard since the last look, which this shell says itself: the same queue the
         // desktop's own bar reads.
@@ -636,6 +690,10 @@ impl PeopleDevice {
             arrived
                 .as_ref()
                 .map(|notice| notice.names.clone())
+                .unwrap_or_default(),
+            arrived
+                .as_ref()
+                .map(|notice| notice.people.clone())
                 .unwrap_or_default(),
             arrived.and_then(|notice| notice.seen).unwrap_or_default(),
         )
@@ -684,7 +742,7 @@ impl PeopleDevice {
 
     /// The reading as it stands.
     fn read(&self) -> People {
-        let (waved, arrived, arrived_seen) = self.notices();
+        let (waved, arrived, arrived_keys, arrived_seen) = self.notices();
         let rows = self.rows();
         let following = self
             .sync
@@ -729,6 +787,7 @@ impl PeopleDevice {
             waved,
             waved_to: self.waved_to(),
             arrived,
+            arrived_keys,
             arrived_seen,
             may_invite: self.invitable.get(),
         }
@@ -1362,6 +1421,13 @@ fn screen_of(
 /// A colour as the reading writes it, `rrggbb`.
 fn colour_of((red, green, blue): (u8, u8, u8)) -> String {
     format!("{red:02x}{green:02x}{blue:02x}")
+}
+
+/// `identity` as a person's root key, when it is one: a device's live key is no person's root,
+/// and a name found by it would name nobody.
+fn root_key(identity: &str) -> Option<[u8; 32]> {
+    let bytes = hex::decode(identity.trim()).ok()?;
+    <[u8; 32]>::try_from(bytes.as_slice()).ok()
 }
 
 impl Service for PeopleDevice {

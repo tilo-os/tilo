@@ -297,12 +297,12 @@ impl Face<'_> {
     /// ring and the gap around it.
     pub const REACH: f64 = GAP + RING + GAP;
 
-    /// The disc of a face whose ring and gap fill `outer` exactly: where a
-    /// caller with a fixed cell (a column at a screen edge, a list row)
-    /// paints [`Self::paint`] so nothing reaches past the cell.
+    /// The disc of a face whose ground, ring and gap fill `outer` exactly: where a caller with a
+    /// fixed cell (a column at a screen edge, a list row) paints [`Self::paint`] so nothing
+    /// reaches past the cell.
     #[must_use]
     pub fn disc_in(outer: Rect) -> Rect {
-        outer.inset(-(RING + GAP))
+        outer.inset(GAP + RING + GAP)
     }
 
     /// Paint this face alone in `rect` over `ground`: the ground gap, the colour

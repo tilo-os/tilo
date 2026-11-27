@@ -601,17 +601,66 @@ impl Roster {
             .filter(|member| member.kind != "agent")
             .map(|member| (member, tilo_ui_base::presence::person_label(&member.label)))
             .collect();
-        if people.is_empty() || self.arrived_in.borrow().as_deref() == Some(workspace) {
+        if people.is_empty() {
             return;
         }
-        *self.arrived_in.borrow_mut() = Some(workspace.to_owned());
+        if self.arrived_in.borrow().as_deref() != Some(workspace) {
+            tracing::debug!(
+                %workspace,
+                names = ?people.iter().map(|(_, name)| name.as_str()).collect::<Vec<_>>(),
+                "the bar says who is here"
+            );
+            *self.arrived_in.borrow_mut() = Some(workspace.to_owned());
+            self.say_arrival(&people);
+            return;
+        }
+        // The arrival was said already. A person whose name reaches this session after they came
+        // arrived unnamed a moment before ("Someone is here"); their name is what everyone calls
+        // them, so the bar says who arrived for the same moment again rather than leave the
+        // person unnamed on it. A name that changes after it was known is the person's own and
+        // is not announced.
+        let Some(notice) = self.arrival.borrow().clone() else {
+            return;
+        };
+        let names: Vec<String> = notice
+            .people
+            .iter()
+            .zip(&notice.names)
+            .map(|(publisher, was)| {
+                people
+                    .iter()
+                    .find(|(member, _)| &member.publisher == publisher)
+                    .map_or_else(|| was.clone(), |(_, name)| name.clone())
+            })
+            .collect();
+        let unnamed = tilo_ui_base::presence::is_unnamed_person;
+        let learned = notice
+            .names
+            .iter()
+            .zip(&names)
+            .any(|(was, now)| unnamed(was) && !unnamed(now));
+        if !learned {
+            return;
+        }
+        tracing::debug!(was = ?notice.names, now = ?names, "the arrival learns its name");
+        *self.arrival.borrow_mut() =
+            Some(tilo_session_core::desktop::host::chrome::ArrivalNotice {
+                people: notice.people,
+                names,
+                seen: notice.seen,
+                at: ui::time::now(),
+            });
+    }
+
+    /// Say who arrived in the workspace in front, `people`, from now: the bar's moment for it.
+    fn say_arrival(&self, people: &[(&LiveMember, String)]) {
         *self.arrival.borrow_mut() =
             Some(tilo_session_core::desktop::host::chrome::ArrivalNotice {
                 people: people
                     .iter()
                     .map(|(member, _)| member.publisher.clone())
                     .collect(),
-                names: people.into_iter().map(|(_, name)| name).collect(),
+                names: people.iter().map(|(_, name)| name.clone()).collect(),
                 seen: None,
                 at: ui::time::now(),
             });

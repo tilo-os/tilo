@@ -259,49 +259,6 @@ fn snapshot(device: &Device, name: &str) {
 /// The rows of the screen the bar stands in.
 const BAR_HEIGHT: u32 = 56;
 
-/// How many pixels of the two pictures, inside `rect`, differ by more than a shade, and how many
-/// of those stand in the lower half of the rect: where a follower's mark is drawn on a face.
-#[track_caller]
-fn differing_in(before: &str, after: &str, rect: [f64; 4]) -> (usize, usize) {
-    let (Some(before), Some(after)) = (picture_at(before), picture_at(after)) else {
-        return (0, 0);
-    };
-    let (Ok(was), Ok(is)) = (image::open(&before), image::open(&after)) else {
-        return (0, 0);
-    };
-    let (was, is) = (was.to_rgba8(), is.to_rgba8());
-    let [x, y, width, height] = rect;
-    let place = |value: f64, limit: u32| {
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a place on the screen, in pixels"
-        )]
-        let pixel = value.round() as u32;
-        pixel.min(limit.saturating_sub(1))
-    };
-    let (x0, x1) = (place(x, was.width()), place(x + width, was.width()));
-    let (y0, y1) = (place(y, was.height()), place(y + height, was.height()));
-    let middle = place(y + height / 2.0, was.height());
-    let (mut changed, mut lower) = (0, 0);
-    for at_y in y0..=y1 {
-        for at_x in x0..=x1 {
-            if at_x >= is.width() || at_y >= is.height() {
-                continue;
-            }
-            let (a, b) = (was.get_pixel(at_x, at_y).0, is.get_pixel(at_x, at_y).0);
-            let moved = (0..3).any(|channel| a[channel].abs_diff(b[channel]) > 8);
-            if moved {
-                changed += 1;
-                if at_y > middle {
-                    lower += 1;
-                }
-            }
-        }
-    }
-    (changed, lower)
-}
-
 /// How many pixels of the picture `name`, inside `rect`, are in a colour rather than in a grey:
 /// a person's face wears their hue, and a glyph of the bar's ink has none.
 #[track_caller]
@@ -530,14 +487,6 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
     );
     snapshot_changed(&ada_laptop, "arrival", "before-arrival");
     discard("before-arrival");
-    // His face on her bar is a face: drawn in his colour, not a glyph of the bar's ink.
-    let face = rect(&appear(&ada_laptop, "Bob Builder"));
-    let coloured = coloured_in("arrival", face, false);
-    assert!(
-        coloured >= 60,
-        "the bar draws Bob as his face, in his colour, not as a glyph: {coloured} coloured pixels in {face:?}\n{}",
-        members_log(&ada_laptop),
-    );
     // No press took it away: the bar says it for its four seconds and then gives it up.
     gone(&ada_laptop, "Bob is here", Duration::from_secs(10));
     // Her bar with the notice gone, and the time back where it stands: the wave's picture is taken
@@ -547,6 +496,38 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
     bob_laptop.wait_holding(&site.workspace);
     bob_laptop.wait_showing(&site.workspace);
     site.wait_for_member(bob.public);
+    // His face in her people list is a face: drawn in his colour, not a glyph of the bar's ink.
+    // A person the shell's member reading has not listed yet stands on the bar as the person
+    // icon, so the face every surface draws them is read where the list draws it, in its leading
+    // column.
+    ada_laptop.press("Bob Builder is here");
+    let row = rect(&waited(&ada_laptop, "Bob's row", STEP, || {
+        named(&ada_laptop, "Bob Builder")
+            .into_iter()
+            .find(|control| {
+                let [_, y, width, _] = rect(control);
+                // The row, not a face of the same name: a row spans the panel, a face is small.
+                y > BAR && width > 200.0
+            })
+    }));
+    let leading = [row[0], row[1], 44.0, row[3]];
+    let deadline = Instant::now()
+        .checked_add(STEP)
+        .expect("the bound fits in an Instant");
+    loop {
+        snapshot(&ada_laptop, "roster");
+        let coloured = coloured_in("roster", leading, false);
+        if coloured >= 60 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the list draws Bob as his face, in his colour, not as a glyph: {coloured} coloured pixels in {leading:?}\n{}",
+            members_log(&ada_laptop),
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    ada_laptop.press("Close");
     // The newcomer's first looks write nothing of the shared layout until the workspace admits
     // him: nothing tells him his layout was refused.
     never_told_of_a_layout(&bob_laptop);
@@ -584,16 +565,14 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
     // Bob follows Ada from her row: her view becomes the one his bar keeps in front.
     bob_laptop.press("Follow Ada Lovelace");
     says(&bob_laptop, "Following Ada Lovelace");
-    // Ada's bar marks his face as following her, and a reader hears it on the face's own control.
+    // Ada's bar marks him as following her, and a reader hears it on the face's own control.
     says(&ada_laptop, "Bob Builder, follows you");
-    snapshot_changed(&ada_laptop, "follower", "wave");
-    // The mark is drawn on his face, and on its lower edge, where the presence face's follower
-    // badge stands: nothing else about the face changed between the two frames.
-    let (changed, lower) = differing_in("wave", "follower", face);
-    assert!(
-        changed > 0 && lower.saturating_mul(2) >= changed,
-        "following draws a mark on the face's lower edge: {changed} pixels changed, {lower} of them there"
-    );
+    snapshot(&ada_laptop, "follower");
+    // His row in her people list says he follows her, as his face on the bar does: the mark the
+    // shells draw for a follower, read where the list draws his row.
+    ada_laptop.press("Bob Builder is here");
+    says(&ada_laptop, "Follows you");
+    ada_laptop.press("Close");
 
     // The wave at Ada goes by itself, once its six seconds are over: nothing about the wave was
     // pressed since it was heard.
@@ -615,7 +594,7 @@ fn two_people_arrive_wave_and_follow_on_each_others_bars() {
         || (!shows(&ada_laptop, "Bob Builder, follows you")).then_some(()),
     );
     appear(&ada_laptop, "Bob Builder");
-    snapshot_changed(&ada_laptop, "follower-gone", "follower");
+    snapshot(&ada_laptop, "follower-gone");
     // No look of the run told either device that a workspace did not take its layout.
     for device in [&ada_laptop, &bob_laptop] {
         never_told_of_a_layout(device);

@@ -37,6 +37,10 @@ pub struct People {
     pub waved_to: String,
     /// Who arrived where this person is, by their name here, while the bar still says it.
     pub arrived: Vec<String>,
+    /// The presence key of each person in [`Self::arrived`], in the same order: what finds their
+    /// member and face by who they are, not by the name they arrived with.
+    #[serde(default)]
+    pub arrived_keys: Vec<String>,
     /// The first time in a public workspace, what its people see of the person; empty otherwise.
     pub arrived_seen: String,
     /// This person may invite someone into the workspace in front, as the loop last answered it:
