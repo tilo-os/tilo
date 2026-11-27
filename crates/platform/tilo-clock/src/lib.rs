@@ -564,10 +564,27 @@ pub mod local {
     }
 }
 
-/// The clock types under `std::time`'s names, for signatures that need one;
-/// times are read through [`now`] and [`wall`].
+/// The clock under one module path: the types under `std::time`'s names, for signatures that
+/// need one, and every reading, made through [`now`] and [`wall`]. The UI toolkit and the process
+/// services name the clock through this module and never `std::time`, so a process whose clock
+/// must be virtualised (a deterministic replay, a test) has one boundary to provide.
 pub mod time {
     pub use crate::imp::{Duration, Instant, SystemTime, SystemTimeError, UNIX_EPOCH};
+    /// A clock held at one wall time; tilo-clock's own tests hold it per thread instead.
+    #[cfg(not(test))]
+    pub use crate::pin_wall;
+    pub use crate::{
+        from_std, is_synchronised, local_zone_name, now, to_std, try_unix_now, try_unix_now_ms,
+        try_unix_now_ns, unix_now, unix_now_i64, unix_now_ms, unix_now_ms_i64, unix_now_ns, wall,
+        wall_frozen,
+    };
+
+    /// A file-system timestamp, as `std::fs::Metadata::modified` reports it, as a [`SystemTime`].
+    pub use crate::from_std as from_file_time;
+
+    /// Scoped clock readings used by production-path input and deadline tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub use crate::testing;
 }
 
 #[cfg(any(not(target_family = "wasm"), tilo_no_js))]

@@ -1443,7 +1443,7 @@ inputs = [
   "crates/lang/tilo-app-module/",
   "crates/engines/tilo-archive/",
   "crates/engines/tilo-capture/",
-  "crates/engines/tilo-image-codec/",
+  "crates/platform/image-codec/",
   "crates/engines/tilo-media/",
   "crates/engines/tilo-pdf/",
   "crates/engines/tilo-subject/",

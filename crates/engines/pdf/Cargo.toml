@@ -11,7 +11,7 @@ description = "A PDF as a reader works with it: its pages, text, links, contents
 # export, through pdfium in a sandboxed helper or the portable renderer.
 tilo-pdf = { path = "../tilo-pdf" }
 # A page kept as a picture is a PNG whatever platform the reader runs on.
-tilo-image-codec = { path = "../tilo-image-codec" }
+tilo-image-codec = { path = "../../platform/image-codec" }
 serde.workspace = true
 serde_json.workspace = true
 

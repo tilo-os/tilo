@@ -663,7 +663,10 @@ mod more_keys_tests {
 /// ([`crate::presence::PointerSpace::Surface`]) — both ends must spell the
 /// surface the same way by calling this same function.
 pub fn local_surface_id() -> String {
-    let app_id = crate::process::environment().identity.app_id.clone();
+    let app_id = tilo_process::environment::environment()
+        .identity
+        .app_id
+        .clone();
     let binary = std::env::current_exe()
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));

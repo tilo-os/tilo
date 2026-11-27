@@ -84,6 +84,26 @@ pub use speaker::{Priority, Speaker, Utterance};
 #[cfg(unix)]
 pub use speechd::SpeechDispatcherSpeaker;
 
+/// How [`current_speaker`] makes the speech output of the process a reader belongs to, once the
+/// process's services say ([`install_speaker_resolver`]).
+static SPEAKER_RESOLVER: std::sync::OnceLock<fn() -> Box<dyn Speaker>> = std::sync::OnceLock::new();
+
+/// Let [`current_speaker`] answer with `resolve`: the process services install the speech of
+/// whichever services are current on the calling thread. The first install holds.
+pub fn install_speaker_resolver(resolve: fn() -> Box<dyn Speaker>) {
+    let _ = SPEAKER_RESOLVER.set(resolve);
+}
+
+/// A fresh speaker for this thread's process: what its services speak through, or a
+/// [`NullSpeaker`] before any are installed. Never fails.
+#[must_use]
+pub fn current_speaker() -> Box<dyn Speaker> {
+    SPEAKER_RESOLVER.get().map_or_else(
+        || Box::new(NullSpeaker::new()) as Box<dyn Speaker>,
+        |resolve| resolve(),
+    )
+}
+
 #[cfg(test)]
 mod integration_tests {
     //! Cross-module behaviour: the queue + a recording backend modelling what the reader

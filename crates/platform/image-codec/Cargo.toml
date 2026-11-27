@@ -16,7 +16,7 @@ serde.workspace = true
 # Format and size from an image's header alone, on every target.
 imagesize = { version = "0.14", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 # What the container says before pixels are decoded: its orientation turns them upright.
-tilo-image-info = { version = "0.1.0", path = "../tilo-image-info" }
+tilo-image-info = { version = "0.1.0", path = "../image-info" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }

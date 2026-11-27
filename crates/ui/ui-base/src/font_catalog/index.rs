@@ -26,7 +26,7 @@ fn system_inputs() -> Vec<PathBuf> {
     .into_iter()
     .map(PathBuf::from)
     .collect();
-    let paths = &crate::process::environment().paths;
+    let paths = &tilo_process::environment::environment().paths;
     if let Some(config) = paths.config_dir() {
         inputs.push(config.join("fontconfig"));
         inputs.push(config.join("fontconfig/fonts.conf"));
@@ -43,7 +43,7 @@ fn system_inputs() -> Vec<PathBuf> {
 /// recorded — else `tilo/font-index` under its cache directory.
 #[cfg(not(test))]
 pub(crate) fn location() -> Option<PathBuf> {
-    let paths = &crate::process::environment().paths;
+    let paths = &tilo_process::environment::environment().paths;
     let dir = match &paths.font_index {
         Some(dir) => dir.clone(),
         None => paths.cache_dir()?.join("tilo").join("font-index"),

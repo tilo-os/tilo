@@ -482,7 +482,7 @@ impl RenderContext {
         }
         let features = adapter.features();
         let maybe_features = wgpu::Features::CLEAR_TEXTURE | wgpu::Features::PIPELINE_CACHE;
-        let diagnostics = &crate::process::environment().diagnostics;
+        let diagnostics = &tilo_process::environment::environment().diagnostics;
         let gpu_timestamps_requested = diagnostics.gpu_timestamps;
         let dispatch_timestamps_requested = diagnostics.gpu_dispatch_timestamps;
         let timestamp_feature = wgpu::Features::TIMESTAMP_QUERY;

@@ -4,9 +4,12 @@
 
 use std::path::{Path, PathBuf};
 
-/// The host's [`crate::process::ProcessPaths::user_home`].
+/// The host's [`tilo_process::environment::ProcessPaths::user_home`].
 pub fn user_home_override() -> Option<PathBuf> {
-    let path = crate::process::environment().paths.user_home.clone()?;
+    let path = tilo_process::environment::environment()
+        .paths
+        .user_home
+        .clone()?;
     path.is_dir().then_some(path)
 }
 

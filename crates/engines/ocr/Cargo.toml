@@ -9,7 +9,7 @@ license.workspace = true
 bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
 image.workspace = true
 # What callers hand it: the toolkit codec's decoded pixels.
-tilo-image-codec = { path = "../tilo-image-codec" }
+tilo-image-codec = { path = "../../platform/image-codec" }
 serde.workspace = true
 thiserror.workspace = true
 tempfile.workspace = true

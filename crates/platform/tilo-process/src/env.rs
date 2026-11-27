@@ -8,7 +8,7 @@ use std::ffi::OsString;
 pub fn var_os(name: &str) -> Option<OsString> {
     #[cfg(feature = "native")]
     {
-        crate::native::env_vars::var_os(name)
+        std::env::var_os(name)
     }
     #[cfg(not(feature = "native"))]
     {

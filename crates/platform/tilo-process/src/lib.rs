@@ -13,7 +13,9 @@ pub mod confinement;
 pub mod descriptor;
 #[cfg(feature = "native-editor")]
 pub mod editor;
+pub mod env;
 pub mod environment;
+pub mod library;
 pub use tilo_platform_caps::{Availability, availability, available};
 #[cfg(unix)]
 pub mod local_socket;

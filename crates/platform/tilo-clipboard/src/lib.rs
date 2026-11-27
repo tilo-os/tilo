@@ -486,6 +486,30 @@ fn backend() -> std::sync::Arc<dyn ClipboardBackend> {
     unavailable()
 }
 
+/// How [`current`] finds the clipboard of the process an effect belongs to, once the process's
+/// services say ([`install_resolver`]).
+static RESOLVER: OnceLock<fn() -> std::sync::Arc<dyn ClipboardBackend>> = OnceLock::new();
+
+/// Let [`current`] answer with `resolve`: the process services install the clipboard of whichever
+/// services are current on the calling thread. The first install holds.
+pub fn install_resolver(resolve: fn() -> std::sync::Arc<dyn ClipboardBackend>) {
+    let _ = RESOLVER.set(resolve);
+}
+
+/// The clipboard a copy or paste on this thread reaches: the current process services' (a
+/// process running several apps gives each its own), or, before any are installed, one that keeps
+/// copy and paste inside this process.
+#[must_use]
+pub fn current() -> std::sync::Arc<dyn ClipboardBackend> {
+    static IN_PROCESS: OnceLock<std::sync::Arc<dyn ClipboardBackend>> = OnceLock::new();
+    if let Some(resolve) = RESOLVER.get() {
+        return resolve();
+    }
+    IN_PROCESS
+        .get_or_init(|| std::sync::Arc::new(InProcessClipboard::default()))
+        .clone()
+}
+
 /// A clipboard that holds nothing and takes nothing: a process its session handed no clipboard
 /// connection, which must refuse rather than keep a copy that reaches no one.
 pub fn unavailable() -> std::sync::Arc<dyn ClipboardBackend> {

@@ -390,7 +390,7 @@ class AppReleaseTests(unittest.TestCase):
             # the formats it reads. Apps decode through the toolkit's one codec,
             # so the formats a slides tapp carries are the codec's.
             expected = {
-                ROOT / "crates/engines/tilo-image-codec/Cargo.toml": ["gif", "jpeg", "png", "webp"],
+                ROOT / "crates/platform/image-codec/Cargo.toml": ["gif", "jpeg", "png", "webp"],
                 ROOT / "crates/engines/tilo-doc-pdf/Cargo.toml": ["jpeg", "png"],
             }
             for manifest, formats in expected.items():

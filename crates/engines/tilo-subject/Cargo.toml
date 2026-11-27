@@ -12,7 +12,7 @@ tilo-model-client = { path = "../../sdk/model-client", default-features = false 
 # The matte, and refining an edge and defringing, which run in the app.
 tilo-segment = { path = "../segment" }
 # Shared synchronous JPEG encoder for the model request.
-tilo-image-codec = { path = "../tilo-image-codec" }
+tilo-image-codec = { path = "../../platform/image-codec" }
 base64.workspace = true
 hex.workspace = true
 image = { workspace = true, features = ["png"] }

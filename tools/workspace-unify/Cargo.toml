@@ -1142,8 +1142,8 @@ doc = false
 "tilo-host-search" = { path = "../../crates/integrations/tilo-host-search", default-features = false, features = [] }
 "tilo-identity" = { path = "../../crates/core/tilo-identity", default-features = false, features = ["test-support", "throwaway-test-identity"] }
 "tilo-identity-client" = { path = "../../crates/core/tilo-identity-client", default-features = false, features = [] }
-"tilo-image-codec" = { path = "../../crates/engines/tilo-image-codec", default-features = false, features = [] }
-"tilo-image-info" = { path = "../../crates/engines/tilo-image-info", default-features = false, features = [] }
+"tilo-image-codec" = { path = "../../crates/platform/image-codec", default-features = false, features = [] }
+"tilo-image-info" = { path = "../../crates/platform/image-info", default-features = false, features = [] }
 "tilo-image-policy-check" = { path = "../../crates/os/image-policy-check", default-features = false, features = [] }
 "tilo-innertube" = { path = "../../crates/integrations/tilo-innertube", default-features = false, features = [] }
 "tilo-install-helpers" = { path = "../../crates/os/install-helpers", default-features = false, features = [] }
@@ -1285,7 +1285,7 @@ doc = false
 "tilo-typst-fonts" = { path = "../../crates/engines/tilo-typst-fonts", default-features = false, features = [] }
 "tilo-ui" = { path = "../../crates/ui/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "host-portals", "local-daemons", "model", "mpris", "native", "portal", "syntax-definitions", "test-support", "webview-adblock"] }
 "tilo-ui-app" = { path = "../../crates/ui/ui-app", default-features = false, features = [] }
-"tilo-ui-base" = { path = "../../crates/ui/ui-base", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "host-portals", "local-daemons", "model", "mpris", "native", "portal", "syntax-definitions", "test-support", "webview-adblock"] }
+"tilo-ui-base" = { path = "../../crates/ui/ui-base", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "model", "native", "syntax-definitions", "test-support", "webview-adblock"] }
 "tilo-ui-graph" = { path = "../../crates/ui/ui-graph", default-features = false, features = [] }
 "tilo-ui-kms" = { path = "../../crates/ui/ui-kms", default-features = false, features = [] }
 "tilo-ui-paint" = { path = "../../crates/ui/ui-paint", default-features = false, features = [] }
@@ -2281,8 +2281,8 @@ doc = false
 "tilo-formats" = { path = "../../crates/ui/tilo-formats", default-features = false, features = ["model"] }
 "tilo-headless-schema" = { path = "../../crates/platform/headless-schema", default-features = false, features = [] }
 "tilo-history" = { path = "../../crates/sdk/tilo-history", default-features = false, features = [] }
-"tilo-image-codec" = { path = "../../crates/engines/tilo-image-codec", default-features = false, features = [] }
-"tilo-image-info" = { path = "../../crates/engines/tilo-image-info", default-features = false, features = [] }
+"tilo-image-codec" = { path = "../../crates/platform/image-codec", default-features = false, features = [] }
+"tilo-image-info" = { path = "../../crates/platform/image-info", default-features = false, features = [] }
 "tilo-key-group" = { path = "../../crates/core/key-group", default-features = false, features = [] }
 "tilo-lock" = { path = "../../crates/platform/tilo-lock", default-features = false, features = [] }
 "tilo-machine" = { path = "../../crates/platform/tilo-machine", default-features = false, features = [] }
@@ -3590,8 +3590,8 @@ doc = false
 "tilo-host-search" = { path = "../../crates/integrations/tilo-host-search", default-features = false, features = [] }
 "tilo-identity" = { path = "../../crates/core/tilo-identity", default-features = false, features = [] }
 "tilo-identity-client" = { path = "../../crates/core/tilo-identity-client", default-features = false, features = [] }
-"tilo-image-codec" = { path = "../../crates/engines/tilo-image-codec", default-features = false, features = [] }
-"tilo-image-info" = { path = "../../crates/engines/tilo-image-info", default-features = false, features = [] }
+"tilo-image-codec" = { path = "../../crates/platform/image-codec", default-features = false, features = [] }
+"tilo-image-info" = { path = "../../crates/platform/image-info", default-features = false, features = [] }
 "tilo-image-policy-check" = { path = "../../crates/os/image-policy-check", default-features = false, features = [] }
 "tilo-innertube" = { path = "../../crates/integrations/tilo-innertube", default-features = false, features = [] }
 "tilo-install-helpers" = { path = "../../crates/os/install-helpers", default-features = false, features = [] }

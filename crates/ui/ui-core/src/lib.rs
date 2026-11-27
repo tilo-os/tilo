@@ -105,6 +105,7 @@
 // The toolkit's base, under the toolkit's own name: a program that depends on tilo-ui alone
 // reaches every widget, state, text and theme type through it.
 pub use tilo_ui_base::*;
+pub mod settings_device;
 pub mod surface_services;
 
 pub mod a11y_tree;
@@ -187,6 +188,8 @@ mod host_chrome;
 #[cfg(not(all(windows, feature = "native")))]
 #[path = "host_notifications_unsupported.rs"]
 pub mod host_notifications;
+#[cfg(all(windows, feature = "native"))]
+pub use tilo_process_services::notify::windows_toasts as host_notifications;
 pub mod hosted_window;
 /// What a frame shows an inspector, a screen reader and an automated check: the widget and
 /// semantic tree, the named targets a caller addresses, and the accessibility issues it reports.
@@ -295,11 +298,11 @@ pub use tilo_process_services::models;
 #[doc(inline)]
 pub use {
     tilo_process_services::background, tilo_process_services::capture,
-    tilo_process_services::clipboard, tilo_process_services::env, tilo_process_services::jpeg,
-    tilo_process_services::location, tilo_process_services::mpris, tilo_process_services::notify,
-    tilo_process_services::png, tilo_process_services::portal, tilo_process_services::process,
-    tilo_process_services::secrets, tilo_process_services::shell_choosers,
-    tilo_process_services::time, tilo_process_services::wake,
+    tilo_process_services::clipboard, tilo_process_services::env, tilo_process_services::location,
+    tilo_process_services::mpris, tilo_process_services::notify, tilo_process_services::portal,
+    tilo_process_services::process, tilo_process_services::secrets,
+    tilo_process_services::shell_choosers, tilo_process_services::time,
+    tilo_process_services::wake,
 };
 
 /// The AccessKit types the bridge and [`headless::Driver`] hand back, re-exported so an app crate

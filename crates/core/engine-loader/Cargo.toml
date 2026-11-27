@@ -13,8 +13,9 @@ description = "Opens a runtime engine library the first time the toolkit uses it
 name = "tilo_engine_loader"
 path = "src/lib.rs"
 
-[target.'cfg(unix)'.dependencies]
-libc.workspace = true
+[dependencies]
+# Opening a library and reaching its entry is the platform's; the engines' entries are this crate's.
+tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.

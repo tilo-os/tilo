@@ -269,7 +269,7 @@ pub fn extend_span_drag<T: Ord + Copy>(
 }
 
 fn clipboard() -> std::sync::Arc<dyn crate::clipboard::ClipboardBackend> {
-    crate::process::current().clipboard
+    crate::clipboard::current()
 }
 
 /// Whether this process has a clipboard a copy can reach. A program its session or launcher
@@ -487,10 +487,84 @@ mod tests {
         previous.map_or((byte, byte), |range| (range.start, range.end))
     }
 
+    use crate::clipboard::{ClipboardBackend, InProcessClipboard};
+    use std::cell::RefCell;
+    use std::sync::{Arc, Mutex, OnceLock};
+
+    thread_local! {
+        /// The clipboard a test hosts on its thread, as the process services host one.
+        static HOSTED: RefCell<Option<Arc<dyn ClipboardBackend>>> = const { RefCell::new(None) };
+    }
+
+    /// Hosts `clipboard` on this thread until the guard drops.
+    fn hosted(clipboard: Arc<dyn ClipboardBackend>) -> impl Drop {
+        static IN_PROCESS: OnceLock<Arc<dyn ClipboardBackend>> = OnceLock::new();
+        crate::clipboard::install_resolver(|| {
+            HOSTED
+                .with(|hosted| hosted.borrow().clone())
+                .unwrap_or_else(|| {
+                    IN_PROCESS
+                        .get_or_init(|| Arc::new(InProcessClipboard::default()))
+                        .clone()
+                })
+        });
+        HOSTED.with(|hosted| *hosted.borrow_mut() = Some(clipboard));
+        struct Unhost;
+        impl Drop for Unhost {
+            fn drop(&mut self) {
+                HOSTED.with(|hosted| *hosted.borrow_mut() = None);
+            }
+        }
+        Unhost
+    }
+
+    /// A clipboard shared with the system, which keeps what is copied to it and records each
+    /// copy and secret.
+    #[derive(Default)]
+    struct Recording {
+        buffer: InProcessClipboard,
+        copies: Mutex<Vec<String>>,
+        secrets: Mutex<Vec<String>>,
+    }
+
+    impl Recording {
+        fn hosted() -> (impl Drop, Arc<Self>) {
+            let recording = Arc::new(Self::default());
+            (hosted(recording.clone()), recording)
+        }
+
+        fn copies(&self) -> Vec<String> {
+            self.copies.lock().unwrap().clone()
+        }
+
+        fn secret_copies(&self) -> Vec<String> {
+            self.secrets.lock().unwrap().clone()
+        }
+    }
+
+    impl ClipboardBackend for Recording {
+        fn set_text(&self, target: ClipboardTarget, text: &str) -> bool {
+            self.copies.lock().unwrap().push(text.to_owned());
+            self.buffer.set_text(target, text)
+        }
+
+        fn set_secret_text(&self, text: &str) -> bool {
+            self.secrets.lock().unwrap().push(text.to_owned());
+            self.buffer.set_text(ClipboardTarget::Clipboard, text)
+        }
+
+        fn text(&self, target: ClipboardTarget) -> Option<String> {
+            self.buffer.text(target)
+        }
+
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+    }
+
     #[test]
     fn empty_clipboard_is_unavailable_but_whitespace_is_content() {
-        let (services, _) = crate::process::ProcessServices::recording();
-        let _host = crate::process::enter(&services);
+        let _host = Recording::hosted();
         clipboard_copy("");
         assert_eq!(clipboard_paste(), None);
         clipboard_copy(" \n");
@@ -499,9 +573,8 @@ mod tests {
 
     #[test]
     fn a_secret_copy_is_cleared_only_while_the_clipboard_still_holds_it() {
-        let (services, recorder) = crate::process::ProcessServices::recording();
-        let clipboard = services.clipboard.clone();
-        let _host = crate::process::enter(&services);
+        let (_host, recorder) = Recording::hosted();
+        let clipboard: std::sync::Arc<dyn crate::clipboard::ClipboardBackend> = recorder.clone();
         assert_eq!(
             try_clipboard_copy_secret("hunter2", std::time::Duration::from_secs(3600)).outcome(),
             Some(true)
@@ -531,9 +604,10 @@ mod tests {
 
     #[test]
     fn a_secret_copy_is_refused_without_a_shared_clipboard_and_cleared_on_time() {
-        let services = crate::process::ProcessServices::null();
         {
-            let _host = crate::process::enter(&services);
+            let _host = hosted(std::sync::Arc::new(
+                crate::clipboard::InProcessClipboard::default(),
+            ));
             assert!(
                 try_clipboard_copy_secret("hunter2", std::time::Duration::ZERO).outcome()
                     == Some(false),
@@ -541,8 +615,7 @@ mod tests {
             );
             assert_eq!(clipboard_paste(), None);
         }
-        let (services, recorder) = crate::process::ProcessServices::recording();
-        let _host = crate::process::enter(&services);
+        let (_host, recorder) = Recording::hosted();
         assert_eq!(
             try_clipboard_copy_secret("hunter2", std::time::Duration::ZERO).outcome(),
             Some(true)

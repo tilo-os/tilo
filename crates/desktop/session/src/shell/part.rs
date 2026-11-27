@@ -348,7 +348,7 @@ impl SessionLink {
     pub fn ask(&self, mut ask: Ask) {
         ask.resource = tilolang_tilo::platform::on_device(
             &ask.resource,
-            &tilo_ui_base::settings_device::settings_device(),
+            &ui::settings_device::settings_device(),
         );
         self.asked
             .borrow_mut()

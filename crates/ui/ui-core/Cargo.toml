@@ -117,16 +117,16 @@ gpu-video = ["dmabuf-import", "tilo-ui-base/gpu-video"]
 # hermetic build / `--shots` / CI need no D-Bus; an app enables it (e.g. Tube's
 # `media` feature turns on `ui/media-session`). zbus runs on the workspace's tokio
 # backend; the server lives on its own thread with a private runtime.
-mpris = ["native", "tilo-process-services/mpris", "tilo-ui-base/mpris"]
+mpris = ["native", "tilo-process-services/mpris"]
 # Location and screen capture through the XDG Desktop Portal (Linux). The SDK's
 # native runner enables it on Linux targets; apps do not. File choosers
 # (`ui::portal`) and notifications (`ui::notify`) need no feature: their
 # platform crates select each target's backend.
-portal = ["native", "tilo-process-services/portal", "tilo-ui-base/portal"]
+portal = ["native", "tilo-process-services/portal"]
 # The host's own portal clients (a foreign desktop's chooser, opener and wallpaper), for a
 # runner hosting an app outside Tilo. A Tilo app process reaches the session's chooser and
 # opener over their sockets and never enables this.
-host-portals = ["tilo-process-services/host-portals", "tilo-ui-base/host-portals"]
+host-portals = ["tilo-process-services/host-portals"]
 
 [dependencies]
 tilo-action-services = { version = "0.1.0", path = "../../core/action-services", features = ["test-support"] }
@@ -308,7 +308,7 @@ serde_json.workspace = true
 base64.workspace = true
 uuid.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
-tilo-image-codec = { version = "0.1.0", path = "../../engines/tilo-image-codec" }
+tilo-image-codec = { version = "0.1.0", path = "../../platform/image-codec" }
 jiff.workspace = true
 # Shared Tilo media layer. The `VideoPlayer` widget owns a `media::MediaEngine`
 # and pulls frames from it; `media`'s default (no `decode`) build carries no

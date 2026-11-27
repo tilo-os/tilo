@@ -120,6 +120,7 @@ pub mod doc_source;
 #[cfg(any(all(windows, feature = "dx12-shader-cache"), test))]
 mod dx12_shader_cache;
 pub mod edge_autoscroll;
+pub mod emoji_catalogue;
 pub mod evdev;
 pub mod fact;
 pub mod focus_visible;
@@ -128,13 +129,10 @@ pub mod format;
 pub mod fullscreen;
 pub mod gesture;
 pub mod gpu;
+pub mod held_images;
 #[cfg(feature = "native")]
 pub mod host_appearance;
 pub mod host_data;
-#[cfg(all(windows, feature = "native"))]
-pub use native::host_notifications;
-pub mod emoji_catalogue;
-pub mod held_images;
 pub mod i18n;
 pub mod icons;
 pub mod image_decoders;
@@ -143,6 +141,7 @@ pub mod ime;
 pub mod input;
 pub mod input_generation;
 pub mod interaction;
+pub mod jpeg;
 pub mod keycaps;
 pub mod keys;
 pub mod latin_chord;
@@ -162,6 +161,7 @@ pub mod people_photos;
 pub mod permissions;
 pub mod person_card;
 pub mod platform;
+pub mod png;
 pub mod presence;
 pub mod press;
 pub mod query_text;
@@ -173,7 +173,7 @@ pub use settings_store::placement as settings_placement;
 #[cfg(feature = "model")]
 pub use settings_store::workspace::verb as setting_verb;
 pub use tilo_ui_paint::raster;
-pub mod settings_device;
+
 pub mod settings_source;
 pub mod workspace_sync;
 pub use tilo_lock::deferred;
@@ -262,10 +262,6 @@ pub use text_break::discretionary_hyphen_breaks;
 pub use tilo_image_codec as image_codec;
 /// Locks that hand out a poisoned lock's guard (`ui::lock::MutexRecover`).
 pub use tilo_lock as lock;
-/// The model services an app's inference and provider administration travel as.
-#[cfg(feature = "model")]
-#[doc(inline)]
-pub use tilo_process_services::models;
 /// The async runtime model: the app runtime off the UI thread, the CPU pool, the file-I/O pool and
 /// `block_on` for synchronous entry points.
 pub use tilo_rt as rt;
@@ -323,18 +319,15 @@ pub use {
     theme::AppearanceIntent, theme::ContentSurface, theme::SurfaceShape, theme::Theme,
     theme::WindowAppearance, theme::resolve_theme_layers, theme::workspace_hue,
 };
+#[doc(inline)]
+pub use {
+    tilo_clipboard as clipboard, tilo_clock::time, tilo_dialogs::portal,
+    tilo_dialogs::shell as shell_choosers, tilo_notify as notify, tilo_process::env,
+    tilo_rt::background, tilo_rt::wake, tilo_secrets as secrets,
+};
 pub use {
     tilo_doc::paragraph::ComposedLine, tilo_doc::paragraph::ParagraphBox,
     tilo_doc::paragraph::ParagraphOptions, tilo_doc::paragraph::compose_paragraph,
-};
-#[doc(inline)]
-pub use {
-    tilo_process_services::background, tilo_process_services::capture,
-    tilo_process_services::clipboard, tilo_process_services::env, tilo_process_services::jpeg,
-    tilo_process_services::location, tilo_process_services::mpris, tilo_process_services::notify,
-    tilo_process_services::png, tilo_process_services::portal, tilo_process_services::process,
-    tilo_process_services::secrets, tilo_process_services::shell_choosers,
-    tilo_process_services::time, tilo_process_services::wake,
 };
 pub use {vello::kurbo, vello::peniko};
 pub use {

@@ -62,7 +62,7 @@ mod lazy {
             // where it is defined (crates/engines/loadable/theme-painter), in
             // the same build.
             let entry = unsafe {
-                tilo_engine_loader::entry::<PainterEntry>(
+                tilo_process::library::entry::<PainterEntry>(
                     PAINTER_ENGINE_LIBRARY,
                     PAINTER_ENGINE_ENTRY,
                 )

@@ -473,7 +473,8 @@ impl<'a> AvatarFace<'a> {
             if self.tint == Tint::Neutral {
                 None
             } else {
-                crate::local_identity::photo_for(self.identity).map(|photo| profile_image(&photo))
+                crate::local_identity::photo_for(self.identity)
+                    .map(|photo| profile_image(photo.rgba(), photo.width(), photo.height()))
             }
         } else {
             None
@@ -703,15 +704,15 @@ pub(crate) fn initials_style(theme: &Theme, side: f64) -> TextStyle {
         .with_content_size(crate::num::f32_of_f64(side * share))
 }
 
-// The photo type comes from tilo-identity-client, which only `local-daemons`
-// builds link; portable builds (the browser's) show initials or an image.
-#[cfg(feature = "local-daemons")]
-pub fn profile_image(photo: &tilo_identity_client::ProfilePhoto) -> peniko::ImageData {
+/// A person's profile photo, as the identity keeps it (`width` by `height` RGBA pixels), as an
+/// image a face draws.
+#[must_use]
+pub fn profile_image(rgba: &[u8], width: u16, height: u16) -> peniko::ImageData {
     peniko::ImageData {
-        data: peniko::Blob::new(std::sync::Arc::new(photo.rgba().to_vec())),
+        data: peniko::Blob::new(std::sync::Arc::new(rgba.to_vec())),
         format: peniko::ImageFormat::Rgba8,
         alpha_type: peniko::ImageAlphaType::Alpha,
-        width: u32::from(photo.width()),
-        height: u32::from(photo.height()),
+        width: u32::from(width),
+        height: u32::from(height),
     }
 }

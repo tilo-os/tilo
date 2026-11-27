@@ -333,14 +333,16 @@ impl Drop for ProcessScope {
     }
 }
 
-/// Let the platform crates' free functions (`portal::PickRequest::send`,
-/// `portal::open_uri`, …) reach [`current`]. Runs before any services other
-/// than [`ProcessServices::null`] can be current.
+/// Let the platform crates' free functions (`portal::PickRequest::send`, `portal::open_uri`,
+/// `tilo_clipboard::current`, `tts::current_speaker`, …) reach [`current`]. Runs before any
+/// services other than [`ProcessServices::null`] can be current.
 fn install_resolvers() {
     tilo_dialogs::install_resolver(tilo_dialogs::Resolver {
         picker: || current().files,
         opener: || current().opener,
     });
+    tilo_clipboard::install_resolver(|| current().clipboard);
+    tts::install_speaker_resolver(|| current().speech.make());
 }
 
 /// The services effects on this thread should reach right now; see the

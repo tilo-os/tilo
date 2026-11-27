@@ -434,7 +434,7 @@ pub fn parse_locale_or_default(locale: &str) -> LanguageIdentifier {
 }
 
 pub fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
-    crate::process::parse_posix_locale(locale)
+    tilo_process::environment::parse_posix_locale(locale)
         .ok_or_else(|| I18nError::InvalidLocale(locale.to_owned()))
 }
 

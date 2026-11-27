@@ -16,7 +16,7 @@ tilo-content = { path = "../../core/content" }
 tilo-content-device = { path = "../../core/content-device" }
 # The blob service the device's daemon serves, which the image model reads a picture's bytes from.
 runtime-fs = { package = "tilo-runtime-fs", path = "../../core/runtime-fs" }
-tilo-image-codec = { path = "../../engines/tilo-image-codec" }
+tilo-image-codec = { path = "../../platform/image-codec" }
 tilo-model-client = { path = "../../sdk/model-client", default-features = false }
 tilo-ocr = { path = "../../engines/ocr" }
 agent-provider-config = { package = "tilo-agent-provider-config", path = "../../integrations/provider-config" }

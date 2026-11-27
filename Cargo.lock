@@ -17199,7 +17199,7 @@ dependencies = [
 name = "tilo-engine-loader"
 version = "0.1.0"
 dependencies = [
- "libc",
+ "tilo-process",
  "workspace-hack",
 ]
 
@@ -19299,7 +19299,6 @@ name = "tilo-process-services"
 version = "0.1.0"
 dependencies = [
  "ashpd",
- "image",
  "jni 0.21.1",
  "serde",
  "serde_json",
@@ -21401,15 +21400,16 @@ dependencies = [
  "tilo-appearance",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-clipboard",
  "tilo-clock",
  "tilo-collab-types",
  "tilo-collaboration",
  "tilo-content",
  "tilo-cosmic-text",
  "tilo-cpu-raster",
+ "tilo-dialogs",
  "tilo-doc",
  "tilo-emoji",
- "tilo-engine-loader",
  "tilo-face",
  "tilo-failure",
  "tilo-files",
@@ -21419,17 +21419,16 @@ dependencies = [
  "tilo-highlight",
  "tilo-highlight-grammars",
  "tilo-history",
- "tilo-identity-client",
  "tilo-image-codec",
  "tilo-local-identity",
  "tilo-lock",
  "tilo-mime",
+ "tilo-notify",
  "tilo-paths",
  "tilo-platform-caps",
  "tilo-presence",
  "tilo-presentation",
  "tilo-process",
- "tilo-process-services",
  "tilo-reference",
  "tilo-registry-types",
  "tilo-render-protocol",
@@ -21438,6 +21437,7 @@ dependencies = [
  "tilo-rt",
  "tilo-runtime-collab",
  "tilo-search",
+ "tilo-secrets",
  "tilo-settings-model",
  "tilo-settings-store",
  "tilo-sort",

@@ -28,14 +28,15 @@ default = ["native", "broker-transport"]
 # history and undo, presence, search and the resource-backed views. Without
 # it the crate is a UI toolkit that knows nothing about Tilo. `tilo-app` turns
 # it on.
-model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-reference", "settings-model/model", "tilo-process-services/models", "tilo-actions/document-read"]
+model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-reference", "settings-model/model", "tilo-actions/document-read"]
 # The native runner and its services: the winit event loop with its
 # AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
 # warmup, the system appearance a standalone app follows, and the
 # `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
-# host supplies its own `ui::process::ProcessServices`.
-native = ["local-daemons", "collaboration?/native", "tilo-process-services/native", "tilo-process-services/system-status", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store?/watch"]
+# host supplies its own clipboard and speech (`tilo_clipboard::install_resolver`,
+# `tts::install_speaker_resolver`).
+native = ["local-daemons", "collaboration?/native", "tilo-process/native", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store?/watch"]
 # X11 windows (winit's X11 backend), for development builds on an X11 host:
 # `cargo run -p <app> --features ui/x11` (through `tilo-app`'s `x11`). Every
 # Tilo app runs as a Wayland client in its sandbox, so the shared runtime
@@ -52,19 +53,19 @@ syntax-definitions = ["tilo-highlight-grammars/syntax-definitions"]
 # library's own build (crates/engines/loadable/highlight) turns this on, so the
 # shared runtime every app maps leaves syntect and the grammars out; any
 # other build links them.
-lazy-highlight = ["dep:tilo-engine-loader"]
+lazy-highlight = []
 # The interpreter a theme's painter sets run on is not linked: `part_paint`
 # opens it from libtilo_theme_painter_engine.so the first time a theme names
 # a set. The engine library's own build (crates/engines/loadable/theme-painter)
 # turns this on, so the shared runtime every app maps leaves wasmi out; any
 # other build links it.
-lazy-painter = ["dep:tilo-engine-loader"]
+lazy-painter = []
 # Clients of the local session daemons: the runtime portal's inherited
 # service descriptors and the runtime identity service with its on-disk
 # identity. Without it the host installs a `local_identity::LocalIdentitySource`
 # (default: none). Settings are not guarded here: `settings-store` reads
 # `settings.json` unless the host installs a `settings_store::SettingsSource`.
-local-daemons = ["dep:tilo-identity-client", "collaboration?/local-daemons", "tilo-webview/local-daemons"]
+local-daemons = ["collaboration?/local-daemons", "tilo-webview/local-daemons"]
 # The collaboration manager's built-in transport: the collaboration wire's
 # client on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
@@ -73,7 +74,7 @@ broker-transport = ["local-daemons", "collaboration?/broker-transport", "runtime
 # An integration test links the library once, without its `cfg(test)`: the
 # fixtures a test draws with ([`headless::Driver::mount`], the pinned font
 # catalogue) come with it.
-test-support = ["tilo-process-services/test-support", "collaboration?/test-support", "runtime-collab?/settings-host"]
+test-support = ["tilo-clock/test-support", "collaboration?/test-support", "runtime-collab?/settings-host"]
 presentation-feedback = ["dep:wgpu-hal"]
 # Persist DXC-compiled shaders between runs on Windows. It needs the patched
 # wgpu-hal (vendor/wgpu-hal), which crates.io does not have, so it stays off
@@ -89,7 +90,7 @@ webview-adblock = ["tilo-webview/webview-adblock"]
 # library's own build (crates/engines/loadable/adblock) turns this on, so the
 # shared runtime every app maps leaves adblock-rust out; any other build links
 # the compiler.
-lazy-adblock = ["webview-adblock", "tilo-webview/lazy-adblock", "dep:tilo-engine-loader"]
+lazy-adblock = ["webview-adblock", "tilo-webview/lazy-adblock"]
 # Zero-copy DMA-BUF -> wgpu texture import via Vulkan external memory
 # (`dmabuf_import`). Shared by the WebView's rendered pages and the video
 # decoder's hardware frames — both hand over a GPU buffer as a dmabuf. Pulls
@@ -102,22 +103,6 @@ dmabuf-import = ["dep:ash"]
 # decoder's output. Plane upload and the YUV->RGB conversion (`gpu_video`)
 # are always built; without this, frames are uploaded instead.
 gpu-video = ["dmabuf-import"]
-# System media integration (MPRIS `org.mpris.MediaPlayer2`) for the
-# `VideoPlayer` widget: media keys + the system top-bar now-playing widget can
-# drive playback and show the current title/artist/art. Off by default so the
-# hermetic build / `--shots` / CI need no D-Bus; an app enables it (e.g. Tube's
-# `media` feature turns on `ui/media-session`). zbus runs on the workspace's tokio
-# backend; the server lives on its own thread with a private runtime.
-mpris = ["native", "tilo-process-services/mpris"]
-# Location and screen capture through the XDG Desktop Portal (Linux). The SDK's
-# native runner enables it on Linux targets; apps do not. File choosers
-# (`ui::portal`) and notifications (`ui::notify`) need no feature: their
-# platform crates select each target's backend.
-portal = ["native", "tilo-process-services/portal"]
-# The host's own portal clients (a foreign desktop's chooser, opener and wallpaper), for a
-# runner hosting an app outside Tilo. A Tilo app process reaches the session's chooser and
-# opener over their sockets and never enables this.
-host-portals = ["tilo-process-services/host-portals"]
 
 [dependencies]
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }
@@ -132,10 +117,13 @@ tilo-mime = { version = "0.1.0", path = "../../platform/tilo-mime" }
 # What this target's build offers, for portable code that offers less on the web.
 tilo-platform-caps = { version = "0.1.0", path = "../../platform/tilo-platform-caps" }
 fnv.workspace = true
-# Host services: the clock, background work, clipboard, file choosers,
-# notifications, media sessions, location and screen capture, and their
-# native backends. Re-exported under the toolkit's own module paths.
-tilo-process-services = { version = "0.1.0", path = "../../sdk/tilo-process-services", default-features = false }
+# The host services the toolkit reaches, each in its platform crate under the toolkit's module
+# path: background work and wakes, the clipboard, file choosers and URI opening,
+# notifications and secrets.
+tilo-clipboard.workspace = true
+tilo-dialogs.workspace = true
+tilo-notify.workspace = true
+tilo-secrets.workspace = true
 tilo-ui-paint = { version = "0.1.0", path = "../ui-paint" }
 # The web engine client the `WebView` widget displays: the Chromium helper transport,
 # the page protocol and their commands, so code that talks to a web engine links that
@@ -191,8 +179,6 @@ percent-encoding.workspace = true
 form_urlencoded.workspace = true
 # First-frame marks are shared with the greeter's startup metrics capture.
 tilo-startup-metrics = { version = "0.1.0", path = "../../platform/startup-metrics" }
-# Opens the engine libraries the toolkit uses on first use (`lazy-*`).
-tilo-engine-loader = { version = "0.1.0", path = "../../core/engine-loader", optional = true }
 # runtime-collab is the collaboration wire and its client. Its vocabulary
 # types are part of `CollabRequest` / `CollabEvent`; the client behind
 # them is only needed by the `broker-transport` feature.
@@ -201,7 +187,6 @@ runtime-collab = { package = "tilo-runtime-collab", version = "0.1.0", path = ".
 # the local identity boundary, local action reports and the history a document
 # keeps, under their toolkit paths.
 collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration", optional = true }
-tilo-identity-client = { version = "0.1.0", path = "../../core/tilo-identity-client", optional = true }
 automerge.workspace = true
 tilo-automerge = { workspace = true, optional = true }
 tilo-spellcheck = { version = "0.1.0", path = "../spellcheck" }
@@ -269,8 +254,11 @@ serde.workspace = true
 serde_json.workspace = true
 base64.workspace = true
 uuid.workspace = true
+# PNG and JPEG encoding for every app (`png`, `jpeg`): written here, in the
+# shared runtime, so an app that encodes an image does not instantiate the
+# encoders' generic code into its own binary.
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
-tilo-image-codec = { version = "0.1.0", path = "../../engines/tilo-image-codec" }
+tilo-image-codec = { version = "0.1.0", path = "../../platform/image-codec" }
 jiff.workspace = true
 # Shared collaboration types used by the history/conflict/channel widgets and
 # by the signed wire envelopes carried by
@@ -402,8 +390,6 @@ tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 # Paused-clock tests of the collaboration endpoints' deadlines.
 tokio = { workspace = true, features = ["test-util"] }
-# The scoped chooser and URI fixtures the invocation-scope tests select.
-tilo-process-services = { path = "../../sdk/tilo-process-services", features = ["test-support"] }
 # The settings capability the shell hands an app, served by the fake broker.
 runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab", features = ["settings-host"] }
 

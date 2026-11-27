@@ -179,8 +179,8 @@ toolkit_reaches = [
     "tilo-history",                     # crates/sdk/tilo-history
     "tilo-host-search",                 # crates/integrations/tilo-host-search
     "tilo-identity-client",             # crates/core/tilo-identity-client
-    "tilo-image-codec",                 # crates/engines/tilo-image-codec
-    "tilo-image-info",                  # crates/engines/tilo-image-info
+    "tilo-image-codec",                 # crates/platform/image-codec
+    "tilo-image-info",                  # crates/platform/image-info
     "tilo-key-group",                   # crates/core/key-group
     "tilo-local-identity",              # crates/platform/local-identity
     "tilo-lock",                        # crates/platform/tilo-lock

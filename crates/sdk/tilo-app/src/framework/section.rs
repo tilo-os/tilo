@@ -714,12 +714,8 @@ pub(crate) fn one_per_place(
 /// preferences (`app`).
 #[must_use]
 pub fn section_address(section: &str, app: Option<&str>) -> String {
-    ui_core::settings_placement::address(
-        section,
-        app,
-        &tilo_ui_base::settings_device::settings_device(),
-    )
-    .id
+    ui_core::settings_placement::address(section, app, &ui_core::settings_device::settings_device())
+        .id
 }
 
 /// The generic actions a record publishes that would set any of a section's

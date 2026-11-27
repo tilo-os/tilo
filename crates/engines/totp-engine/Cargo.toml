@@ -10,7 +10,7 @@ description = "Authenticator's device work: a setup link read, the QR code of a 
 # A picture a chooser hands over is kept where every device reads it, by address.
 tilo-resource = { path = "../../core/tilo-resource" }
 # The picture's bytes as its pixels: the QR detector reads a still image.
-tilo-image-codec = { path = "../tilo-image-codec" }
+tilo-image-codec = { path = "../../platform/image-codec" }
 serde.workspace = true
 serde_json.workspace = true
 # RFC 4648 base32.

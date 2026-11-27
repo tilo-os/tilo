@@ -27,7 +27,7 @@ pub(crate) use android::android_font_system;
 
 /// What a process does when no root in [`catalog_roots`] has a catalog it
 /// accepts: say so in the log, and, where the run was promised one
-/// (`TILO_REQUIRE_FONTS=1`, [`crate::process::RunnerDiagnostics::fonts_required`]),
+/// (`TILO_REQUIRE_FONTS=1`, [`tilo_process::environment::RunnerDiagnostics::fonts_required`]),
 /// stop. Text falls back to the host's faces either way, which is nearly right
 /// and wrong in a way only a review of the picture notices — so a run that was
 /// promised the catalog fails here, naming where a catalog comes from.
@@ -38,7 +38,10 @@ pub(crate) use android::android_font_system;
 )]
 fn no_catalog(errors: &[FontCatalogError]) {
     tracing::error!(?errors, "Tilo font catalog unavailable");
-    if !crate::process::environment().diagnostics.fonts_required {
+    if !tilo_process::environment::environment()
+        .diagnostics
+        .fonts_required
+    {
         return;
     }
     #[cfg(feature = "native")]
@@ -167,7 +170,7 @@ pub(crate) fn catalog_in_memory(locale: &str) -> Option<FontSystem> {
 /// by this build's manifest digest, then this build's verified artifact catalog, so a binary run from a
 /// checkout sets text in the faces the product ships.
 pub(crate) fn catalog_roots() -> Vec<PathBuf> {
-    let mut roots: Vec<PathBuf> = crate::process::environment()
+    let mut roots: Vec<PathBuf> = tilo_process::environment::environment()
         .paths
         .font_catalog
         .clone()
@@ -185,7 +188,7 @@ pub(crate) fn catalog_roots() -> Vec<PathBuf> {
     roots.push(
         PathBuf::from("/usr/share/tilo/font-catalogs").join(tilo_font_catalog::manifest_sha256()),
     );
-    let paths = &crate::process::environment().paths;
+    let paths = &tilo_process::environment::environment().paths;
     for cache in paths.font_artifact_cache.iter().cloned().chain(
         paths
             .cache_dir()

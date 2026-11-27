@@ -35,7 +35,8 @@ pub mod action_authority;
 pub mod background;
 pub mod capture;
 pub mod clipboard;
-pub mod env;
+/// The toolkit's debug, capture and benchmark knobs: `tilo_process::env`.
+pub use tilo_process::env;
 pub mod location;
 #[cfg(feature = "models")]
 pub mod models;
@@ -51,8 +52,6 @@ pub mod native;
 pub mod secrets {
     pub use tilo_secrets::*;
 }
-pub mod jpeg;
-pub mod png;
 /// File choosers and URI opening: `tilo_dialogs::portal` under the
 /// toolkit's module path.
 pub use tilo_dialogs::portal;

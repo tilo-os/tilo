@@ -158,7 +158,7 @@ impl Avatar {
     #[cfg(feature = "local-daemons")]
     #[must_use]
     pub fn with_profile_photo(self, photo: &tilo_identity_client::ProfilePhoto) -> Self {
-        self.with_image(profile_image(photo))
+        self.with_image(profile_image(photo.rgba(), photo.width(), photo.height()))
     }
 
     #[must_use]
