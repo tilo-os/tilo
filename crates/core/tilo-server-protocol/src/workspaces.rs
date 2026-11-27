@@ -740,9 +740,9 @@ pub const CREATE_OWN_WORKSPACE: &str = "workspace.create-own";
 /// The workspace a request to the host itself is signed for, where it names one: the invitation
 /// into a workspace that is there already ([`CREATE_OWN_WORKSPACE`] with its `workspace` and
 /// nothing that makes or labels another). A device entering that workspace signs for it, so an
-/// agent's grant whose scope reaches that one workspace alone proves its key for the invitation,
-/// and for nothing else of the host's. `None` for every other request, which is signed for no
-/// workspace.
+/// agent's grant proves its key for the invitation only where its scope reaches that workspace.
+/// `None` for every other request, which is signed for no workspace: what a grant asks there
+/// beyond its scope waits for its person's approval.
 #[must_use]
 pub fn invitation_scope(request: &InvokeRequest) -> Option<&str> {
     let target = &request.target;

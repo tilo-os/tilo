@@ -925,10 +925,11 @@ impl HostOperations {
     }
 
     /// The certificate the signed invocation `request` carries, checked as a host checks one:
-    /// signed by its device, fresh, and not revoked. It is signed for no workspace, but for the
-    /// invitation into a workspace, which is signed for that one
-    /// ([`tilo_server_protocol::workspaces::invitation_scope`]): an agent's grant proves its key
-    /// for that invitation only where its root-signed scope reaches that workspace.
+    /// signed by its device, fresh, and not revoked. The invitation into a workspace is signed
+    /// for that one ([`tilo_server_protocol::workspaces::invitation_scope`]), and an agent's grant
+    /// proves its key for it only where its root-signed scope reaches that workspace. Every other
+    /// operation is signed for no workspace, and what a grant asks there beyond its scope waits
+    /// for its person's approval.
     fn certificate(
         &self,
         request: &tilo_actions::remote::InvokeRequest,
@@ -938,16 +939,59 @@ impl HostOperations {
                 reason: "this host cannot read its revocations".into(),
             }
         })?;
-        tilo_server_protocol::invocation::verify_invocation(
-            tilo_server_protocol::workspaces::invitation_scope(request).unwrap_or_default(),
-            request,
-            &revocations,
-            tilo_clock::unix_now_ns(),
-        )
+        let now = tilo_clock::unix_now_ns();
+        match tilo_server_protocol::workspaces::invitation_scope(request) {
+            Some(workspace) => tilo_server_protocol::invocation::verify_invocation(
+                workspace,
+                request,
+                &revocations,
+                now,
+            ),
+            None => {
+                tilo_server_protocol::invocation::verify_host_invocation(request, &revocations, now)
+            }
+        }
         .map_err(|error| tilo_actions::remote::ActionCallError::Refused {
             reason: format!("the request does not prove its device: {error}"),
         })
     }
+}
+
+/// Whether the host's operation `receipt` accepted waits in its asked record for its person's
+/// yes ([`tilo_actions::remote::asked::ASKED_PHASE`]).
+async fn asked_of_its_person(
+    server: &dyn AppActionServer,
+    (caller, certificate): (&Caller, &tilo_user_identity::DeviceCert),
+    receipt: &tilo_actions::remote::InvocationReceipt,
+) -> bool {
+    if !matches!(
+        receipt.status,
+        tilo_actions::remote::ReceiptStatus::Accepted
+    ) {
+        return false;
+    }
+    let Some(observed) = server.serve_host(
+        caller,
+        certificate,
+        RemoteActionMessage::Observe {
+            correlation: 0,
+            invocation: receipt.invocation,
+            wait_ms: None,
+            seen: None,
+        },
+    ) else {
+        return false;
+    };
+    matches!(
+        observed.await,
+        Some(RemoteActionMessage::Update {
+            state: Some(tilo_actions::remote::InvocationState {
+                update: tilo_actions::InvocationUpdate::Progress { ref phase, .. },
+                ..
+            }),
+            ..
+        }) if phase == tilo_actions::remote::asked::ASKED_PHASE
+    )
 }
 
 /// Whether `target` asks this host to hold a workspace another host serves.
@@ -1012,12 +1056,29 @@ impl ActionProvider for HostOperations {
                 }));
                 return;
             };
-            completer.complete(match reply.await {
-                Some(RemoteActionMessage::Receipt(receipt)) => Ok(receipt),
-                _ => Err(ActionCallError::Unavailable {
+            let Some(RemoteActionMessage::Receipt(receipt)) = reply.await else {
+                completer.complete(Err(ActionCallError::Unavailable {
                     reason: "the host answered no receipt".into(),
-                }),
-            });
+                }));
+                return;
+            };
+            completer.complete(Ok(
+                if asked_of_its_person(&*server, (&caller, &certificate), &receipt).await {
+                    // Kept as its asked record until its person answers on a device that holds
+                    // their identity; whoever asked hears that it waits for them. This operation is
+                    // the host's own, in no workspace whose invocations the asker reads.
+                    tilo_actions::remote::InvocationReceipt {
+                        invocation: receipt.invocation,
+                        status: tilo_actions::remote::ReceiptStatus::Rejected {
+                            error: ActionCallError::Refused {
+                                reason: tilo_actions::remote::AWAITING_APPROVAL_REASON.to_owned(),
+                            },
+                        },
+                    }
+                } else {
+                    receipt
+                },
+            ));
         });
         answer
     }

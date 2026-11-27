@@ -194,6 +194,28 @@ pub fn verify_invocation(
     signer_of(signed, workspace, revocations, (now_ns, None))
 }
 
+/// Check `request`, one of a host's own operations signed for no workspace, as
+/// [`verify_invocation`] does, and return its signer's certificate. An agent's grant proves its
+/// key here whatever workspaces it reaches: what it asks of the host beyond them is the
+/// operation's to judge, which asks the agent's person before it does it.
+///
+/// # Errors
+///
+/// As [`verify_invocation`], never [`InvocationError::OutOfScope`].
+pub fn verify_host_invocation(
+    request: &InvokeRequest,
+    revocations: &RevocationList,
+    now_ns: u64,
+) -> Result<DeviceCert, InvocationError> {
+    let signed = request.signed.as_ref().ok_or(InvocationError::Unsigned)?;
+    check_signature(signed)?;
+    signed.statement().covers("", request)?;
+    if !signed.statement().fresh_at(now_ns) {
+        return Err(InvocationError::Stale);
+    }
+    proven_signer(signed, revocations, (now_ns, None))
+}
+
 /// Check the invocation `request` serves ([`SignedInvocation::serves`]): a call an app makes while
 /// it runs that invocation for its caller, which carries it as its proof. Checks the signature,
 /// that the invocation is this workspace's, the certificate and its revocation now, and that a
@@ -924,6 +946,26 @@ fn signer_of(
     revocations: &RevocationList,
     (at_ns, revoked_from): (u64, Option<u64>),
 ) -> Result<DeviceCert, InvocationError> {
+    let cert = proven_signer(signed, revocations, (at_ns, revoked_from))?;
+    if cert
+        .capabilities
+        .agent
+        .as_ref()
+        .is_some_and(|scope| !scope.reaches(workspace))
+    {
+        return Err(InvocationError::OutOfScope);
+    }
+    Ok(cert)
+}
+
+/// The certificate of the key that signed `signed`: the one it carries for the signing key,
+/// valid at `at_ns` and not revoked in `revocations` (from `revoked_from`, where given). What
+/// workspace a grant reaches is not checked here.
+fn proven_signer(
+    signed: &SignedInvocation,
+    revocations: &RevocationList,
+    (at_ns, revoked_from): (u64, Option<u64>),
+) -> Result<DeviceCert, InvocationError> {
     let cert = decode_cert(signed.signer_cert())?;
     if cert.device_public_key != signed.statement().signer {
         return Err(InvocationError::SignerMismatch);
@@ -935,14 +977,6 @@ fn signer_of(
     };
     if revoked {
         return Err(InvocationError::Revoked);
-    }
-    if cert
-        .capabilities
-        .agent
-        .as_ref()
-        .is_some_and(|scope| !scope.reaches(workspace))
-    {
-        return Err(InvocationError::OutOfScope);
     }
     Ok(cert)
 }
