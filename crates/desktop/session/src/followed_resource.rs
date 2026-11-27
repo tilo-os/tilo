@@ -203,6 +203,15 @@ impl Readings {
     }
 }
 
+/// Whether `answer` carried the resource itself: a document, or the reading a provider publishes.
+/// An answer that carried nothing of it — one the workspace holds none of, or one still arriving —
+/// has no revision the workspace's wait can be made against.
+fn carried(answer: &serde_json::Value) -> bool {
+    answer["records"]
+        .get(0)
+        .is_some_and(|record| record.get("document").is_some() || record.get("value").is_some())
+}
+
 /// A read of `app`'s `id` of `workspace`, whole, once it moved past `after`.
 fn read_of(workspace: &str, app: &str, id: &str, after: Option<String>) -> ResourceReadRequest {
     ResourceReadRequest {
@@ -244,11 +253,19 @@ impl<P: Resource> FollowedResource<P> {
                         .await
                     {
                         Ok(answer) => {
-                            after = answer
+                            let told = answer
                                 .get("revision")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_owned);
+                            // An answer that carried nothing of the record has no revision of it
+                            // to wait past: the daemon answers at once, and asking again at once
+                            // asks a daemon that holds nothing on every round trip.
+                            let idle = !carried(&answer) || told == after;
+                            after = told;
                             readings.take(&answer);
+                            if idle {
+                                tokio::time::sleep(ASK_AGAIN).await;
+                            }
                         }
                         Err(error) => {
                             tilo_failure::ignored!(
@@ -828,16 +845,24 @@ where
                         .await
                     {
                         Ok(readings) => {
-                            after = readings
+                            let told = readings
                                 .get("revision")
                                 .and_then(serde_json::Value::as_str)
                                 .map(str::to_owned);
+                            // Nothing of the resource was here, so there is no revision of it to
+                            // wait past: asking again at once asks a daemon that holds nothing on
+                            // every round trip.
+                            let idle = !carried(&readings) || told == after;
+                            after = told;
                             if let Some(now) = reading_value::<T>(&readings) {
                                 let mut latest = latest.lock_recover();
                                 latest.0 = latest.0.wrapping_add(1);
                                 latest.1 = now;
                                 drop(latest);
                                 wake();
+                            }
+                            if idle {
+                                tokio::time::sleep(ASK_AGAIN).await;
                             }
                         }
                         Err(error) => {
