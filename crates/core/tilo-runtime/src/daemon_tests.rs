@@ -3375,6 +3375,214 @@ fn a_founding_link_is_never_an_apps_or_another_programs() {
     assert!(refused, "another program made a person: {why}");
 }
 
+/// A system daemon whose account set the person up: a session signed in, redeemed its founding
+/// link, founded the person and certified the key this computer made its account, all before the
+/// person's services started. The link it asks for is the one that waits for them.
+struct Founded {
+    native: std::sync::Arc<super::Native>,
+    socket: std::path::PathBuf,
+    uid: u32,
+    person: [u8; 32],
+    _home: tilo_test_env::TestHome,
+    _key: tilo_device_identity::persist::DeviceKeyLock,
+}
+
+/// One request on the native endpoint, from the account `uid`, as the daemon answers it: no
+/// descriptor rides with it.
+#[track_caller]
+fn founding_ask(
+    uid: u32,
+    socket: &std::path::Path,
+    request: &serde_json::Value,
+) -> serde_json::Value {
+    use io::{BufRead as _, Write as _};
+    use std::sync::atomic::Ordering;
+    FOUNDING_PEER.store(uid, Ordering::SeqCst);
+    let stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    writeln!(writer, "{request}").unwrap();
+    let mut line = String::new();
+    io::BufReader::new(stream)
+        .read_line(&mut line)
+        .expect("the daemon answers");
+    serde_json::from_str(&line).unwrap()
+}
+
+/// What a test asks the device's own actions as one typed call.
+fn founding_call(uid: u32, socket: &std::path::Path, path: &str) -> serde_json::Value {
+    founding_ask(
+        uid,
+        socket,
+        &serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "tilo_do", "arguments": {"path": path, "args": {}}}}),
+    )
+}
+
+fn founded_daemon() -> Founded {
+    use serde_json::json;
+    const DAEMON: u32 = 990;
+    const ADA: u32 = 1000;
+
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    home.env()
+        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+    let root = home.root().to_owned();
+    let keys = tilo_api::calls::device_keys();
+    let (key, _) = tilo_device_identity::persist::load_or_create_device_key(&keys).unwrap();
+    let key_taken = tilo_device_identity::persist::take_device_key(&keys).unwrap();
+    let place = tilo_device_identity::login::Place::at(root.join("login"), keys);
+    let admission: &'static tilo_api::daemon::admission::Admission = Box::leak(Box::new(
+        tilo_api::daemon::admission::Admission::new(DAEMON, true),
+    ));
+    let answers = crate::device::unclaimed::DeviceOnly::at(key, place, root.clone(), DAEMON);
+    let native = std::sync::Arc::new(super::Native::new(answers, founding_peer, admission));
+    let sockets = root.join("sockets");
+    std::fs::create_dir_all(&sockets).unwrap();
+    let listener =
+        tilo_files::native::private::bind_socket(&sockets.join(tilo_machine::DAEMON_NATIVE))
+            .unwrap();
+    {
+        let native = std::sync::Arc::clone(&native);
+        std::thread::spawn(move || native.accept(&listener));
+    }
+    let socket = sockets.join(tilo_machine::DAEMON_NATIVE);
+    // Root says Ada's account signed in with no identity: her session is answered the founding
+    // link's one-use secret, which it redeems for its link.
+    let signed = founding_ask(
+        0,
+        &socket,
+        &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "tilo_do", "arguments": {"path": "seats#signed-in",
+                "args": {"uid": ADA}}}}),
+    );
+    let said = signed["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default();
+    let token = said
+        .split("\"token\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("the sign-in answers the founding link's secret")
+        .to_owned();
+    let linked = founding_ask(
+        ADA,
+        &socket,
+        &json!({"native": "shells#link", "token": token}),
+    );
+    assert_eq!(linked["founding"], true, "{linked}");
+    // The session founds its person, and certifies the key this computer made its account.
+    for action in ["devices#found", "seats#certified"] {
+        let answer = founding_call(ADA, &socket, action);
+        assert_ne!(answer["result"]["isError"], true, "{action}: {answer}");
+    }
+    let who = founding_ask(ADA, &socket, &json!({"native": "account#who"}));
+    let person = who["person"]
+        .as_str()
+        .expect("the session that made the person acts as them");
+    let person = hex::decode(person)
+        .ok()
+        .and_then(|person| <[u8; 32]>::try_from(person).ok())
+        .expect("the person is their root key");
+    Founded {
+        native,
+        socket,
+        uid: ADA,
+        person,
+        _home: home,
+        _key: key_taken,
+    }
+}
+
+/// A link is asked while the person's services start, as a sign-in as the computer boots asks
+/// one: the daemon holds that one request, without refusing it or holding anything else, and
+/// answers it once they run, in the person's seat.
+#[test]
+fn a_shell_link_asked_while_the_persons_services_start_is_answered_once_they_run() {
+    use io::Write as _;
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
+
+    let founded = founded_daemon();
+    FOUNDING_PEER.store(founded.uid, Ordering::SeqCst);
+    let stream = std::os::unix::net::UnixStream::connect(&founded.socket).unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    writeln!(writer, "{}", json!({"native": "shells#link"})).unwrap();
+    let (asked, answer) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = asked.send(runtime_portal::fd_transport::recv_with_fd(&stream));
+    });
+    assert!(
+        answer.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the link is not refused while the person's services start"
+    );
+
+    // Their services come up, and the link the request waited for is made.
+    let shells = std::sync::Arc::new(Linked::default());
+    shells.person(founded.person);
+    founded
+        .native
+        .seats
+        .serve(std::sync::Arc::clone(&shells) as _);
+    let (said, link) = tilo_test_env::recv("the link's answer", &answer)
+        .expect("the daemon answers the link it held");
+    let answer: serde_json::Value = serde_json::from_slice(&said).unwrap();
+    assert_eq!(answer["shell"], true, "{answer}");
+    assert!(answer["error"].is_null(), "{answer}");
+    shells.reaches(link.expect("the link is handed with its answer"));
+    let who = founding_ask(
+        founded.uid,
+        &founded.socket,
+        &json!({"native": "account#who"}),
+    );
+    assert_eq!(
+        who["person"],
+        json!(hex::encode(founded.person)),
+        "the seat acts as the person its link was made for: {who}"
+    );
+}
+
+/// The person's services that do not start answer the link that waited for them with their own
+/// failure, so the screen that says Tilo did not start says what kept it from starting.
+#[test]
+fn a_shell_link_whose_persons_services_did_not_start_answers_why() {
+    use io::Write as _;
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
+
+    let founded = founded_daemon();
+    FOUNDING_PEER.store(founded.uid, Ordering::SeqCst);
+    let stream = std::os::unix::net::UnixStream::connect(&founded.socket).unwrap();
+    let mut writer = stream.try_clone().unwrap();
+    writeln!(writer, "{}", json!({"native": "shells#link"})).unwrap();
+    let (asked, answer) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = asked.send(runtime_portal::fd_transport::recv_with_fd(&stream));
+    });
+    assert!(
+        answer.recv_timeout(Duration::from_millis(300)).is_err(),
+        "the link waits for the person's services"
+    );
+
+    founded.native.seats.did_not_start(
+        "this computer's person's services did not start: the device's store could not be opened"
+            .to_owned(),
+    );
+    let (said, link) = tilo_test_env::recv("the link's answer", &answer)
+        .expect("the daemon answers the link it held");
+    let answer: serde_json::Value = serde_json::from_slice(&said).unwrap();
+    assert!(link.is_none(), "no link is handed: {answer}");
+    let why = answer["error"]
+        .as_str()
+        .expect("the link is answered why it is not made");
+    assert!(
+        why.contains("the device's store could not be opened"),
+        "the answer is the failure's own: {why}"
+    );
+}
+
 /// A call a person's program made over the action wire, still running as the person's part
 /// ends, is answered on the connection it was made on; a call made on it while the part changes
 /// waits there and is answered by the part that starts next. Nothing the caller sent is lost,

@@ -32,7 +32,6 @@ use std::ffi::OsString;
 use std::io;
 use std::process::Child;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use runtime_portal::process_link::Descriptor;
 use tilo_socket::Stream;
@@ -78,9 +77,6 @@ const LINK: &str = runtime_collab::wire::shell::SHELL_LINK;
 /// Hand the device's tilolang processes an instance: `{secret}`, the one-use secret the daemon
 /// answered the shell's link with, and the packet socket as the line's one descriptor.
 const PROCESSES: &str = runtime_collab::wire::shell::SHELL_PROCESSES;
-/// How long a shell's start waits for the person's services, which the daemon starts after its
-/// native endpoint answers: a sign-in as the computer boots asks before they run.
-const SERVICES_START: Duration = Duration::from_secs(120);
 /// Why anyone but root is refused the seats' actions.
 pub(crate) const ROOT_ALONE: &str = "only root says who signed in on this computer, or who left";
 
@@ -330,6 +326,19 @@ enum SeatLink {
     Person { person: [u8; 32], device: bool },
 }
 
+/// What this daemon's person's services are, as the seats find them: still starting, running, or
+/// ended in the failure that kept them from starting.
+#[derive(Clone)]
+enum Services {
+    /// Nothing serves the person yet: a request that needs them waits for their start.
+    Starting,
+    /// The person's services run, and answer for them through these shells.
+    Running(Arc<dyn Shells>),
+    /// They did not start, and the daemon ends: a request that waited for them is answered this
+    /// rather than waiting for a part that will not come.
+    Failed(String),
+}
+
 /// The daemon's seats: its admission, and the device it answers for.
 #[derive(Clone)]
 pub(crate) struct Seats {
@@ -339,8 +348,9 @@ pub(crate) struct Seats {
     /// What finds the app the daemon started a peer process as, once the daemon keeps its
     /// launch records.
     app_of: Arc<Mutex<Option<AppOf>>>,
-    /// What the daemon does for its person once their services run: `None` until they do.
-    shells: Arc<tokio::sync::watch::Sender<Option<Arc<dyn Shells>>>>,
+    /// What the daemon does for its person, and whether their services started: `Starting` until
+    /// they run, and why they did not when their start failed.
+    shells: Arc<tokio::sync::watch::Sender<Services>>,
     /// The shells this daemon started, by pid, until one is waited for.
     started: Arc<Mutex<HashMap<u32, Child>>>,
     /// The key each account signed in as another person than the device's acts as, by uid,
@@ -361,7 +371,7 @@ impl Seats {
             device,
             peer_of,
             app_of: Arc::default(),
-            shells: Arc::new(tokio::sync::watch::channel(None).0),
+            shells: Arc::new(tokio::sync::watch::channel(Services::Starting).0),
             started: Arc::default(),
             keys: Arc::default(),
             founding: Arc::default(),
@@ -520,11 +530,24 @@ impl Seats {
     /// Serve the person's shells with `shells` from now on: what a sign-in and a shell's start do.
     pub(crate) fn serve(&self, shells: Arc<dyn Shells>) {
         self.shells.send_if_modified(|served| {
-            let first = served.is_none();
+            let first = matches!(served, Services::Starting);
             if first {
-                *served = Some(shells);
+                *served = Services::Running(shells);
             }
             first
+        });
+    }
+
+    /// Say that the person's services did not start, as `why` says: a link that waited for them is
+    /// answered that, rather than waiting for a part that will not come. A daemon whose person's
+    /// services ran once keeps them: a later part that fails does not take them away.
+    pub(crate) fn did_not_start(&self, why: String) {
+        self.shells.send_if_modified(|served| {
+            let starting = matches!(served, Services::Starting);
+            if starting {
+                *served = Services::Failed(why);
+            }
+            starting
         });
     }
 
@@ -656,16 +679,23 @@ impl Seats {
         Ok(())
     }
 
-    /// What the daemon does for its person once their services run, waiting up to
-    /// [`SERVICES_START`] for them to.
+    /// What the daemon does for its person once their services run, waiting for them to start:
+    /// their shells, or the failure their start ended in. The wait is this request's alone, on
+    /// the connection's own task, never the daemon's other callers.
     async fn shells(&self) -> Result<Arc<dyn Shells>, String> {
         let mut served = self.shells.subscribe();
-        let shells = tokio::time::timeout(SERVICES_START, served.wait_for(Option::is_some))
-            .await
-            .map_err(|_| "this daemon's person's services did not start".to_owned())?
-            .map_err(|_| "this daemon is stopping".to_owned())?
-            .clone();
-        shells.ok_or_else(|| "this daemon's person's services did not start".to_owned())
+        loop {
+            let state = served.borrow_and_update().clone();
+            match state {
+                Services::Running(shells) => return Ok(shells),
+                Services::Failed(why) => return Err(why),
+                Services::Starting => {}
+            }
+            served
+                .changed()
+                .await
+                .map_err(|_| "this daemon is stopping".to_owned())?;
+        }
     }
 
     /// Start the person's shell as `request` says (`{args, env}`), once their services run:
@@ -716,7 +746,8 @@ impl Seats {
 
     /// The one request that establishes a shell link: `{token?}`, the one-use secret a daemon gave
     /// this shell the first time; without one, the seat a link was admitted for before. The link is
-    /// answered as a descriptor, and kept for the seat it was made for.
+    /// answered as a descriptor, and kept for the seat it was made for. It waits for the person's
+    /// services when they have not started, and answers why when their start failed.
     fn link(&self, seat: &Seat, request: &Value, handed: &Hand) -> Answer<'static> {
         let handed = Arc::clone(handed);
         let token = request
@@ -758,30 +789,23 @@ impl Seats {
                 seats.record_founding(uid, pid);
                 return Ok(Some(json!({"founding": true, "shell": false})));
             }
-            // The person's services answer at once when they run, and a shell asks again shortly
-            // while they start: no link request waits on them here.
-            let Some(shells) = seats.shells.borrow().clone() else {
-                return refusal(
-                    "this device's person's services are still starting: ask again in a moment"
-                        .to_owned(),
-                );
-            };
-            // A token is the daemon's own word for whose shell this is; without one, the record of
-            // a link this daemon admitted for the same process before is.
-            let person = if let Some(token) = token {
+            // Whose shell this is: a token is the daemon's own word for it, and without one the
+            // record of a link this daemon admitted for the same process before is. A token is
+            // kept by the person's services, so a token waits for them before it is read; a
+            // process with no record is no seat at all, and is refused at once, never after a
+            // wait.
+            let (person, shells) = if let Some(token) = token {
+                let shells = match seats.shells().await {
+                    Ok(shells) => shells,
+                    Err(why) => return refusal(why),
+                };
                 let Some(holder) = shells.token_holder(&token) else {
                     return refusal(
                         "this token is no shell link the daemon made, or it was taken already"
                             .to_owned(),
                     );
                 };
-                if !Self::acts_as(&shells, admitted, holder) {
-                    return refusal(
-                        "this account does not act as the person this token was made for"
-                            .to_owned(),
-                    );
-                }
-                holder
+                (holder, shells)
             } else {
                 let Some(person) = seats
                     .seated_person(uid, pid)
@@ -792,13 +816,18 @@ impl Seats {
                             .to_owned(),
                     );
                 };
-                if !Self::acts_as(&shells, admitted, person) {
-                    return refusal(
-                        "this account does not act as the seat's person now".to_owned(),
-                    );
-                }
-                person
+                // The link itself is the person's services' to make: it is answered once they
+                // run, however long their start takes, and a start that failed answers why. The
+                // wait is this request's alone, on the connection's own task.
+                let shells = match seats.shells().await {
+                    Ok(shells) => shells,
+                    Err(why) => return refusal(why),
+                };
+                (person, shells)
             };
+            if !Self::acts_as(&shells, admitted, person) {
+                return refusal("this account does not act as the seat's person now".to_owned());
+            }
             if shells.live(seat_id) {
                 return refusal("this seat's shell is linked already".to_owned());
             }
@@ -843,10 +872,17 @@ impl Seats {
         let (Some(packets), true) = (received.pop(), received.is_empty()) else {
             return Err("a hand-over sends one packet socket with its request".to_owned());
         };
-        let shells =
-            self.shells.borrow().clone().ok_or(
-                "this device's person's services are still starting: ask again in a moment",
-            )?;
+        let state = self.shells.borrow().clone();
+        let shells = match state {
+            Services::Running(shells) => shells,
+            // A hand-over follows the link a shell's secret was answered, so it comes only once
+            // the person's services run: a start that failed is answered why, and one still
+            // under way serves no process yet.
+            Services::Failed(why) => return Err(why),
+            Services::Starting => {
+                return Err("this daemon serves no person's processes yet".to_owned());
+            }
+        };
         shells.hand_processes(seat.uid, &secret, packets)
     }
 
@@ -1120,8 +1156,13 @@ impl Seats {
         self.keys.lock_recover().remove(&uid);
         let importing = request.get("importing").and_then(Value::as_bool) == Some(true);
         // The secret the session root starts redeems for its link: none while the person's
-        // services still start, and that session then reaches nothing of theirs.
-        let served = self.shells.borrow().clone();
+        // services have not started, and the session asks for its link itself, which is answered
+        // once they run.
+        let state = self.shells.borrow().clone();
+        let served = match state {
+            Services::Running(shells) => Some(shells),
+            Services::Starting | Services::Failed(_) => None,
+        };
         let token = served.and_then(|shells| {
             shells
                 .token(importing)

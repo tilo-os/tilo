@@ -76,35 +76,28 @@ pub fn take_launch_link() -> Launch {
     }
 }
 
-/// How long a session whose sign-in founded or joined a person waits for the person's services to
-/// answer its link, and how often it asks.
-const PERSON_LINK_WITHIN: Duration = Duration::from_secs(120);
-const PERSON_LINK_EVERY: Duration = Duration::from_millis(250);
-
 /// The person's link for the session a sign-in answered a founding link: asked of this computer's
-/// service once the person exists, and again while their services start. `None` when they never
-/// answer, and the session then reads no workspace, as any session the daemon did not start.
+/// service once the person exists. The daemon answers it once their services run, so the session
+/// waits there rather than asking again. `None` when the service answers no link, and the session
+/// then reads no workspace, as any session the daemon did not start.
 #[must_use]
 pub fn founding_link() -> Option<std::os::fd::OwnedFd> {
     let socket = tilo_api::daemon::this_computer()
         .ok()
         .map(|place| place.native())?;
-    let deadline = std::time::Instant::now().checked_add(PERSON_LINK_WITHIN);
-    loop {
-        let why = match tilo_session_client::daemon_documents::link_with(&socket, None) {
-            Ok(tilo_session_client::daemon_documents::ShellLinkAnswer::Shell(link)) => {
-                return Some(link);
-            }
-            Ok(tilo_session_client::daemon_documents::ShellLinkAnswer::Founding) => {
-                "this computer is still setting its person up".to_owned()
-            }
-            Err(error) => error,
-        };
-        if deadline.is_none_or(|deadline| std::time::Instant::now() >= deadline) {
-            eprintln!("tilo-session: this session's person's link: {why}");
-            return None;
+    match tilo_session_client::daemon_documents::link_with(&socket, None) {
+        Ok(tilo_session_client::daemon_documents::ShellLinkAnswer::Shell(link)) => Some(link),
+        Ok(tilo_session_client::daemon_documents::ShellLinkAnswer::Founding) => {
+            eprintln!(
+                "tilo-session: this session's person's link: this computer is still setting its \
+                 person up"
+            );
+            None
         }
-        std::thread::sleep(PERSON_LINK_EVERY);
+        Err(error) => {
+            eprintln!("tilo-session: this session's person's link: {error}");
+            None
+        }
     }
 }
 

@@ -850,7 +850,15 @@ fn serve_device(
                 }
                 continue;
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                // The person's services did not start, and this daemon ends: a shell that asked
+                // for its link is answered why, rather than waiting for a part that will not
+                // come, so the screen that says Tilo did not start says what did it.
+                native.seats.did_not_start(format!(
+                    "this computer's person's services did not start: {error}"
+                ));
+                return Err(error);
+            }
         };
         drop(watched);
         tracing::info!("this daemon's person's part started");

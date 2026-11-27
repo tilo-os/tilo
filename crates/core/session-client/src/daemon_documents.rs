@@ -68,7 +68,8 @@ pub fn link_with(socket: &std::path::Path, token: Option<&str>) -> Result<ShellL
     use std::io::Write as _;
     let mut stream = tilo_socket::connect(socket)
         .map_err(|error| format!("this device's daemon at {}: {error}", socket.display()))?;
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(10)));
+    // No read bound: the daemon answers a link once the person's services run, which a start
+    // may take a while to reach, and the wait is the daemon's to give.
     let request = match token {
         Some(token) => serde_json::json!({"native": "shells#link", "token": token}),
         None => serde_json::json!({"native": "shells#link"}),

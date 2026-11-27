@@ -5,9 +5,13 @@
 //! The daemon takes the device's lock ([`ThisDevice`]) and answers its apps' native endpoint
 //! with the device's own actions ([`DeviceOnly`]): what the device is, and logging it in with a
 //! ticket.
-//! Whatever needs a person is refused, saying the device has no person yet, or that their
-//! services are starting. A ticket handed to it as the `tilo.ticket` credential at its start is
-//! spent once ([`take_handed_ticket`]): the person's root certifies this key, and the person's
+//! Whatever needs a person is refused, saying the device has no person yet, or that the action
+//! is the person's, whose own part answers it. A session asking for its shell's link is not
+//! refused while that part starts: the request is held until it runs, or answered with the
+//! failure that kept it from starting.
+//!
+//! A ticket handed to it as the `tilo.ticket` credential at its start is spent once
+//! ([`take_handed_ticket`]): the person's root certifies this key, and the person's
 //! workspaces open as on any device of theirs. Otherwise the device waits for a certificate that
 //! names its key: `tilo login`, or a person founded here explicitly (`tilo login --new-identity`).
 
@@ -51,9 +55,6 @@ const HEARING: Duration = Duration::from_millis(100);
 /// follows the call sees it move, and a stage that takes long is never mistaken for a daemon
 /// that stopped answering.
 const REPORTING: Duration = Duration::from_secs(2);
-/// What a call that needs the person's part is told when it does not run yet.
-const STILL_STARTING: &str =
-    "this device's person's services are still starting: ask again in a moment";
 /// What a device no person's certificate names says to a call that needs one.
 const NO_PERSON: &str = "this device has no person yet: set it up with `tilo login \
                          --new-identity`, or log it in with a ticket from one of your devices \
@@ -577,8 +578,11 @@ impl DeviceOnly {
 
     /// Why an action that needs a person is not answered now.
     fn needs_a_person(&self) -> ActionCallError {
+        // A device whose person exists answers this action through their own part, which this
+        // endpoint never serves: what the person's services do is theirs, and a request for it
+        // that needs waiting is held for them before it reaches here.
         let reason = if self.claimed() {
-            STILL_STARTING
+            "this action is this computer's person's, which this endpoint does not serve"
         } else {
             NO_PERSON
         };
@@ -973,7 +977,10 @@ impl DeviceOnly {
             let Ok(unlocking) =
                 tokio::time::timeout(crate::daemon::WAITED_WITHIN, founding.boot_unlock()).await
             else {
-                let update = failed(invocation, STILL_STARTING);
+                let update = failed(
+                    invocation,
+                    "this computer's person's part did not answer its boot unlock in time",
+                );
                 answering.keep(invocation, update);
                 return;
             };
