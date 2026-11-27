@@ -667,38 +667,7 @@ pub struct WorkspaceService {
     actions: Arc<dyn AppActionServer>,
     handlers: Vec<(&'static [u8], Arc<dyn DynProtocolHandler>)>,
     /// The thread the service makes its writes on, once it made one.
-    writes: std::sync::OnceLock<Option<WritesThread>>,
-}
-
-/// A thread of the service's own that makes its writes: a write holds its workspace's lock while it
-/// waits (for the key service, for the disk), and the threads that asked for it, a broker's loop or
-/// a runtime's workers, may block on that lock to answer a read. A write on a thread nothing else
-/// uses finishes whatever those threads wait for.
-struct WritesThread {
-    runtime: tokio::runtime::Handle,
-    /// Dropped with the service, which ends the thread.
-    _stop: tokio::sync::oneshot::Sender<()>,
-}
-
-impl WritesThread {
-    fn start() -> std::io::Result<Self> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let handle = runtime.handle().clone();
-        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        std::thread::Builder::new()
-            .name("tilo-ws-writes".into())
-            .spawn(move || {
-                runtime.block_on(async {
-                    let _ = stopped.await;
-                });
-            })?;
-        Ok(Self {
-            runtime: handle,
-            _stop: stop,
-        })
-    }
+    writes: std::sync::OnceLock<Option<crate::workspaces::WritesThread>>,
 }
 
 impl std::fmt::Debug for WorkspaceService {
@@ -770,13 +739,15 @@ impl WorkspaceService {
     #[must_use]
     pub fn writes_runtime(&self) -> Option<tokio::runtime::Handle> {
         let started = self.writes.get_or_init(|| {
-            WritesThread::start()
+            crate::workspaces::WritesThread::start()
                 .inspect_err(|error| {
                     tracing::warn!(%error, "the workspace service's writes thread did not start");
                 })
                 .ok()
         });
-        let runtime = started.as_ref().map(|writes| writes.runtime.clone());
+        let runtime = started
+            .as_ref()
+            .map(crate::workspaces::WritesThread::runtime);
         // The records this service serves carry their writes there too: a write waits on the key
         // service or a link, and the thread that asked for it may be a record's reactor, which
         // the write needs to run what it awaited.

@@ -297,7 +297,52 @@ impl Workspaces {
     /// Keep `parsed`, changes of `app`'s record `record` (of `kind`, which a new record names),
     /// as `device`'s write in `workspace`: founding the record when the store holds none of it,
     /// as part of `action` when they are one write of an app's action.
+    ///
+    /// The write is made on the runtime the service carries its writes on, never on the one that
+    /// asked ([`Workspaces::carry_write`]): it holds its workspace's lock while it waits for the
+    /// key service or a link, and the thread that asked may be one something else waits on — a
+    /// broker's loop answering a shell, or an app runtime whose thread is sending to a process.
+    /// A write left on such a thread holds the workspace's lock until that thread is free, and
+    /// every write of the workspace waits behind it.
     async fn keep_record_change(
+        &self,
+        (workspace, device): (&str, std::sync::Arc<super::super::MemberDevice>),
+        (app, kind, record): (&str, Option<&str>, &str),
+        (parsed, action): (Vec<AmChange>, Option<&collab_types::WorkspaceCommit>),
+        founding_refusal: Option<&str>,
+    ) -> Result<(), String> {
+        let copies = self.clone();
+        let (workspace, app, record) = (workspace.to_owned(), app.to_owned(), record.to_owned());
+        let kind = kind.map(str::to_owned);
+        let action = action.cloned();
+        let founding_refusal = founding_refusal.map(str::to_owned);
+        // The write keeps what it reads of its caller's task (the writing it notes its items as):
+        // carried on another thread, a task's values are carried with it.
+        let kept = tilo_peer_state::reach::carrying(async move {
+            copies
+                .keep_record_change_here(
+                    (&workspace, device),
+                    (&app, kind.as_deref(), &record),
+                    (parsed, action.as_ref()),
+                    founding_refusal.as_deref(),
+                )
+                .await
+        });
+        match self.record_writes_runtime() {
+            Some(runtime) => match runtime.spawn(kept).await {
+                Ok(kept) => kept,
+                Err(error) if error.is_panic() => std::panic::resume_unwind(error.into_panic()),
+                Err(_) => Err(
+                    "this device's workspace service stopped before the write was answered"
+                        .to_owned(),
+                ),
+            },
+            None => kept.await,
+        }
+    }
+
+    /// [`Self::keep_record_change`], on the thread that asked.
+    async fn keep_record_change_here(
         &self,
         (workspace, device): (&str, std::sync::Arc<super::super::MemberDevice>),
         (app, kind, record): (&str, Option<&str>, &str),
@@ -1182,6 +1227,51 @@ mod tests {
             invocation: "typing".to_owned(),
             ..Stamp::default()
         }
+    }
+
+    /// A record's write is retained on a thread of the service's own, never on the runtime that
+    /// asked for it: a caller whose runtime is not driving tasks — the daemon's layout provider
+    /// asks for its writes through one, whose thread may be held by a send to an app's process —
+    /// still has its write kept and answered, and the workspace's lock is let go for the next.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_record_write_is_kept_without_the_runtime_that_asked_driving_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, workspace) = kitchen(dir.path()).await;
+        let workspaces = Workspaces::clone(host.workspaces());
+        let me = caller_of(&workspaces, &workspace).acting().by.clone();
+        let mut note = note(&workspaces, &workspace, "plan", "Before", &me).await;
+        let (changes, _) = retitled(&mut note, "Kept elsewhere", &me);
+
+        // The runtime that asks: a current-thread runtime no thread drives, as a caller's is
+        // while its thread is held somewhere else.
+        let asking = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (answered, heard) = tokio::sync::oneshot::channel();
+        let written_in = workspace.clone();
+        let asking_thread = std::thread::spawn(move || {
+            let _asking = asking.enter();
+            let written = futures::executor::block_on(async move {
+                workspaces
+                    .own_record_write(&written_in, (NOTES, None, "plan"), &changes)
+                    .await
+            });
+            let _ = answered.send(written);
+        });
+        let written = tokio::time::timeout(std::time::Duration::from_secs(10), heard)
+            .await
+            .expect("the write is kept though the runtime that asked drives nothing")
+            .expect("the thread that asked answers");
+        written.expect("the write is taken");
+        asking_thread.join().unwrap();
+        assert_eq!(
+            title_in(host.workspaces(), &workspace, "plan")
+                .await
+                .as_deref(),
+            Some("Kept elsewhere"),
+            "the record holds the write the asking thread made"
+        );
     }
 
     /// A window's typing is its caller's: the store keeps a change whose label names the caller,

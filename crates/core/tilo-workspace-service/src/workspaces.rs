@@ -130,6 +130,10 @@ mod pages;
 mod peer_parts;
 mod reads;
 mod writes;
+#[cfg(not(target_arch = "wasm32"))]
+mod writes_thread;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use writes_thread::WritesThread;
 // The workspace's one vault, Passwords' document, as this device holds it.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod vault;
@@ -1187,8 +1191,16 @@ struct WorkspacesInner {
     /// The runtime an embedder's own writes of a record are carried by: the service's writes
     /// thread ([`crate::service::WorkspaceService::writes_runtime`]), whose thread nothing else
     /// uses, so a write that waits on the key service or a link never waits on the thread that
-    /// asked for it — nor on the reactor a record's read was made on.
+    /// asked for it — nor on the reactor a record's read was made on. `None` when the embedder
+    /// named none, in which case the service's own writes thread serves
+    /// ([`WorkspacesInner::own_writes`]).
     record_writes: std::sync::OnceLock<Option<tokio::runtime::Handle>>,
+    /// The writes thread this host starts for itself when its embedder names no runtime for its
+    /// writes: a host that keeps workspaces without a [`crate::service::WorkspaceService`], as a
+    /// device's daemon does. A record's write is made on a thread nothing else uses, never on the
+    /// one that asked, whose thread may be one that something else waits on.
+    #[cfg(not(target_arch = "wasm32"))]
+    own_writes: std::sync::OnceLock<Option<WritesThread>>,
     /// Who waits for whom while workspaces are created ([`Creating`]).
     creating: creating::Creating,
     /// The workspace UUID after each settled governance decision.
@@ -1740,6 +1752,8 @@ impl Workspaces {
                 action_service,
                 jobs,
                 record_writes: std::sync::OnceLock::new(),
+                #[cfg(not(target_arch = "wasm32"))]
+                own_writes: std::sync::OnceLock::new(),
                 applications: host.apps.clone(),
                 workspaces,
                 readings: readings::Readings::default(),
@@ -2853,8 +2867,10 @@ impl Workspaces {
         let _ = self.inner.record_writes.set(Some(runtime));
     }
 
-    /// The runtime a record's writes are carried on: the one the embedder named, else the
-    /// reactor that asks.
+    /// The runtime a record's writes are carried on: the one the embedder named, else this host's
+    /// own writes thread, else the reactor that asks. A host that keeps workspaces without a
+    /// [`crate::service::WorkspaceService`] — a device's daemon — starts its own thread here, so a
+    /// write never runs on the runtime that asked for it.
     #[must_use]
     pub(crate) fn record_writes_runtime(&self) -> Option<tokio::runtime::Handle> {
         self.inner
@@ -2862,7 +2878,32 @@ impl Workspaces {
             .get()
             .cloned()
             .flatten()
+            .or_else(|| self.own_writes_runtime())
             .or_else(|| tokio::runtime::Handle::try_current().ok())
+    }
+
+    /// The runtime of this host's own writes thread ([`WorkspacesInner::own_writes`]), started on
+    /// the first write that needs one: a thread nothing else uses, so a write that waits on the
+    /// key service, a link or the disk finishes whatever the thread that asked it is waiting for.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn own_writes_runtime(&self) -> Option<tokio::runtime::Handle> {
+        self.inner
+            .own_writes
+            .get_or_init(|| {
+                WritesThread::start()
+                    .inspect_err(|error| {
+                        tracing::warn!(%error, "the workspace service's writes thread did not start");
+                    })
+                    .ok()
+            })
+            .as_ref()
+            .map(WritesThread::runtime)
+    }
+
+    /// A page's writes are kept on the page's own runtime, which drives what it awaits.
+    #[cfg(target_arch = "wasm32")]
+    fn own_writes_runtime(&self) -> Option<tokio::runtime::Handle> {
+        None
     }
 
     /// Carry `work`, this device's write of a record, on the runtime the service named for its

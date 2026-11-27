@@ -2697,7 +2697,16 @@ impl Workspaces {
         let workspaces = self.clone();
         // Once retention starts, every write is kept even if the caller goes away: the batch is
         // one action, and its records are noted as the write the caller is making.
-        tokio::spawn(tilo_peer_state::reach::carrying(async move {
+        //
+        // Kept on the runtime the service carries its writes on, never on the one that asked:
+        // the retained work owns the workspace's lock until it is done, so a caller's runtime
+        // that is not driving tasks — a current-thread runtime whose thread is held, as the
+        // daemon's layout provider asks through the app runtime while that thread may be sending
+        // to a tilolang process — would hold the lock for good and every other write of the
+        // workspace behind it. The service's writes thread runs nothing else that waits on a
+        // process, and a write waits out the key service or a link there without the thread
+        // that asked ([`Workspaces::carry_write`]).
+        let retained = tilo_peer_state::reach::carrying(async move {
             let result = workspaces
                 .keep_batches(&mut hosted, &device, &app, (&writes, &requests), whole)
                 .await;
@@ -2718,7 +2727,12 @@ impl Workspaces {
             }
             hosted.resources.batch_kept();
             let _ = complete.send(result);
-        }));
+        });
+        match self.record_writes_runtime() {
+            Some(runtime) => drop(runtime.spawn(retained)),
+            // No runtime at all is one no caller can be on: a write asks from a task.
+            None => drop(tokio::spawn(retained)),
+        }
         answer
             .await
             .map_err(|_| "the resource writer stopped".to_owned())?
