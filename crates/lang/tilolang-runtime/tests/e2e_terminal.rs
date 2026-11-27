@@ -42,12 +42,12 @@ mod cases {
         exit: i64,
         ended_ms: i64,
         output: &str,
-        items: Json,
+        items: &Json,
     ) -> String {
         json!({
             "command": command,
             "cwd": cwd,
-            "started_ms": ended_ms - 5,
+            "started_ms": ended_ms.saturating_sub(5),
             "ended_ms": ended_ms,
             "exit": exit,
             "output": output,
@@ -68,7 +68,7 @@ mod cases {
             101,
             ended_ms,
             TEST_OUTPUT,
-            test_items(),
+            &test_items(),
         )
     }
 
@@ -86,6 +86,12 @@ mod cases {
         opened: Rc<RefCell<u64>>,
         /// The relay a carried session's shell opens on, as the device answers.
         carries: Rc<RefCell<Option<String>>>,
+        /// What the next open answers instead of a shell, when the device's answer is bad.
+        answer_open: Rc<RefCell<Option<String>>>,
+        /// The shells this device opened: one it does not hold is unknown to it.
+        live: Rc<RefCell<Vec<String>>>,
+        /// What the screen a read reports holds.
+        screen: Rc<RefCell<String>>,
     }
 
     impl Engine {
@@ -134,7 +140,13 @@ mod cases {
                     if let Some(why) = self.refuse_open.borrow_mut().take() {
                         return Err(why);
                     }
-                    *self.opened.borrow_mut() += 1;
+                    let mut opened = self.opened.borrow_mut();
+                    *opened = opened.saturating_add(1);
+                    if let Some(bad) = self.answer_open.borrow_mut().take() {
+                        return Ok(bad);
+                    }
+                    let shell = format!("shell-{opened}");
+                    self.live.borrow_mut().push(shell.clone());
                     // Where a session runs when it names nowhere of its own: the workspace's
                     // default environment.
                     let target = asked["target"].as_str().unwrap_or_default();
@@ -144,7 +156,7 @@ mod cases {
                         target
                     };
                     Ok(json!({
-                        "shell": format!("shell-{}", self.opened.borrow()),
+                        "shell": shell,
                         "shell_name": "ush",
                         "target": target,
                         "relay_session": self
@@ -155,13 +167,19 @@ mod cases {
                     })
                     .to_string())
                 }
-                "inspect" => Ok(json!({
-                    "shell": asked["shell"],
-                    "shell_name": "ush",
-                    "relay_session": "",
-                    "ended": *self.ended.borrow(),
-                })
-                .to_string()),
+                "inspect" => {
+                    let shell = asked["shell"].as_str().unwrap_or_default();
+                    if !self.live.borrow().iter().any(|live| live == shell) {
+                        return Err(format!("no session `{shell}` is live on this device"));
+                    }
+                    Ok(json!({
+                        "shell": shell,
+                        "shell_name": "ush",
+                        "relay_session": "",
+                        "ended": *self.ended.borrow(),
+                    })
+                    .to_string())
+                }
                 "environments" => Ok(r#"{"available":true,"self_hosted":true}"#.to_owned()),
                 // The way a tool runs one of its tests: its own command line for that test.
                 "rerun_test" => Ok(json!({
@@ -173,7 +191,12 @@ mod cases {
                     "test": asked["test"],
                 })
                 .to_string()),
-                "read_screen" => Ok(r#"{"text":"","truncated":false,"links":[]}"#.to_owned()),
+                "read_screen" => Ok(json!({
+                    "text": *self.screen.borrow(),
+                    "truncated": false,
+                    "links": [],
+                })
+                .to_string()),
                 _ => Ok("{}".to_owned()),
             }
         }
@@ -245,6 +268,8 @@ mod cases {
         here: ResourceRef,
         engine: Engine,
         disk: Disk,
+        /// Windows this device opened, so each session root has a document of its own.
+        windows: Rc<RefCell<u64>>,
     }
 
     impl Term {
@@ -279,6 +304,7 @@ mod cases {
                 here,
                 engine,
                 disk,
+                windows: Rc::default(),
             }
         }
 
@@ -451,19 +477,53 @@ mod cases {
                 .unwrap_or_else(|why| panic!("the run's end was refused: {why}"));
         }
 
-        /// The key of the grid the window draws.
-        fn grid(&self, window: &ViewInstance) -> String {
-            of_kind(window.tree(), "ui.Terminal")
-                .first()
-                .unwrap_or_else(|| panic!("the window draws no grid: {}", dump(window.tree())))
-                .key
-                .clone()
+        /// Another window's session, as the system opens one: a document of its own.
+        fn new_session(&self) -> ResourceRef {
+            let mut opened = self.windows.borrow_mut();
+            *opened += 1;
+            let ty = type_id(&self.app, "Session");
+            let id = format!("windows/{}/session-{opened}", self.app.meta().app);
+            self.rt.create_root_at(&id, &ty).expect("a second session")
         }
+
+        /// The window `s` draws, as `who` reads it.
+        fn window_as(&self, who: &Actor, s: &ResourceRef) -> ViewInstance {
+            self.rt
+                .open_view(
+                    who,
+                    &self.app.view("session_window"),
+                    vec![Value::resource(s)],
+                )
+                .expect("the terminal's window opens")
+        }
+
+        /// The places a window can run in, as `who` opens the window's menu.
+        fn target_menu(&self, who: &Actor, s: &ResourceRef) -> ViewInstance {
+            self.rt
+                .open_view(who, &self.app.view("target_menu"), vec![Value::resource(s)])
+                .expect("the target menu opens")
+        }
+
+        /// The text an action answered with.
+        fn answer(&self, who: &Actor, action: &str, given: &[(&str, Value)]) -> String {
+            match self.call_as(who, action, given) {
+                InvokeOutcome::Done(Value::Text(said)) => said,
+                other => panic!("{action} answered {other:?}"),
+            }
+        }
+    }
+
+    /// The key of the grid a window draws.
+    fn grid_key(window: &ViewInstance) -> String {
+        of_kind(window.tree(), "ui.Terminal")
+            .first()
+            .unwrap_or_else(|| panic!("the window draws no grid: {}", dump(window.tree())))
+            .key
+            .clone()
     }
 
     /// Every text a window's nodes carry, in document order.
     fn words(node: &UiNode) -> Vec<String> {
-        let mut out = Vec::new();
         fn go(node: &UiNode, out: &mut Vec<String>) {
             for value in node.props.values() {
                 if let Value::Text(text) = value {
@@ -474,6 +534,8 @@ mod cases {
                 go(child, out);
             }
         }
+
+        let mut out = Vec::new();
         go(node, &mut out);
         out
     }
@@ -487,6 +549,23 @@ mod cases {
         match node.props.get(name) {
             Some(Value::Text(text)) => Some(text.clone()),
             Some(Value::Opt(Some(inner))) => inner.as_text().map(str::to_owned),
+            _ => None,
+        }
+    }
+
+    /// Whether a node's `name` is on.
+    fn flag(node: &UiNode, name: &str) -> bool {
+        matches!(node.props.get(name), Some(Value::Bool(true)))
+    }
+
+    /// Who a node's `name` names, when it names someone.
+    fn actor_of(node: &UiNode, name: &str) -> Option<Actor> {
+        match node.props.get(name) {
+            Some(Value::Opt(Some(inner))) => match inner.as_ref() {
+                Value::Actor(actor) => Some(actor.clone()),
+                _ => None,
+            },
+            Some(Value::Actor(actor)) => Some(actor.clone()),
             _ => None,
         }
     }
@@ -631,6 +710,29 @@ mod cases {
                 dump(window.tree())
             );
         }
+
+        phase a_session_another_member_holds_is_shown_and_claimed_by_nobody;
+        {
+            let t = Term::opened();
+            let bob = person("bob");
+            let opened = t.engine.count("open");
+            t.call_as(&bob, "attach", &[("s", t.s())]);
+            assert_eq!(
+                t.engine.count("open"),
+                opened,
+                "the window that joins opens no shell"
+            );
+            let theirs = t.window_as(&bob, &t.session);
+            assert!(
+                shows(theirs.tree(), "This session runs on another device"),
+                "the member is told where it runs: {}",
+                dump(theirs.tree())
+            );
+            assert!(
+                of_kind(theirs.tree(), "ui.Terminal").is_empty(),
+                "and offered no input of their own"
+            );
+        }
     }
 
     tilo_test_env::scenario! {
@@ -640,7 +742,7 @@ mod cases {
         {
             let t = Term::opened();
             let window = t.window();
-            let grid = t.grid(&window);
+            let grid = grid_key(&window);
             window
                 .fire_with(
                     &grid,
@@ -740,7 +842,7 @@ mod cases {
             t.run_ended(
                 &one,
                 "run-1",
-                &reported("cargo build", "/work", 0, 2000, "Compiling tilo", json!([])),
+                &reported("cargo build", "/work", 0, 2000, "Compiling tilo", &json!([])),
             );
             let commands = t.items(&t.session, "commands");
             assert_eq!(commands.len(), 1);
@@ -754,7 +856,7 @@ mod cases {
             let history = t.items(&t.terminal, "history");
             assert_eq!(history.len(), 1, "the workspace's history kept it once");
             assert_eq!(t.text(&history[0], "command"), "cargo build");
-            assert_eq!(t.read(&history[0], "actor"), Value::some(Value::Actor(one.clone())));
+            assert_eq!(t.read(&history[0], "actor"), Value::some(Value::Actor(one)));
         }
 
         phase a_command_line_the_device_cannot_take_is_refused_before_it_starts;
@@ -792,7 +894,7 @@ mod cases {
                     "finished",
                     &[
                         ("s", t.s()),
-                        ("said", Value::text(reported(command, "/work", 0, ended, "", json!([])))),
+                        ("said", Value::text(reported(command, "/work", 0, ended, "", &json!([])))),
                     ],
                 );
             }
@@ -852,7 +954,7 @@ mod cases {
         {
             let t = Term::opened();
             let mut window = t.window();
-            let grid = t.grid(&window);
+            let grid = grid_key(&window);
             window
                 .fire_with(
                     &grid,
@@ -863,6 +965,12 @@ mod cases {
                 )
                 .expect("the host says what it holds");
             window.poll_patches().unwrap();
+            assert_eq!(
+                of_kind(window.tree(), "ui.Terminal").len(),
+                1,
+                "the prompt the command waits at is still the grid: {}",
+                dump(window.tree())
+            );
             let banner = of_kind(window.tree(), "ui.Banner")
                 .into_iter()
                 .next()
@@ -890,7 +998,7 @@ mod cases {
         {
             let t = Term::opened();
             let mut window = t.window();
-            let grid = t.grid(&window);
+            let grid = grid_key(&window);
             window
                 .fire_with(&grid, "exit", Some(&Value::text("exited")))
                 .expect("the shell says it exited");
@@ -932,7 +1040,7 @@ mod cases {
             t.call("attach", &[("s", t.s())]);
             assert_eq!(t.text(&t.session, "relay"), RELAY);
             let window = t.window();
-            let grid = t.grid(&window);
+            let grid = grid_key(&window);
             window
                 .fire_with(&grid, "lost", Some(&Value::text("the connection dropped")))
                 .expect("the shell says its connection was lost");
@@ -949,7 +1057,7 @@ mod cases {
         {
             let t = Term::opened();
             let mut window = t.window();
-            let grid = t.grid(&window);
+            let grid = grid_key(&window);
             window
                 .fire_with(&grid, "lost", Some(&Value::text("the connection dropped")))
                 .expect("the shell says its connection was lost");
@@ -1169,6 +1277,786 @@ mod cases {
                 t.refused("open_link", &[("s", t.s()), ("url", Value::text(refused))]);
             }
             assert_eq!(t.disk.opened.borrow().len(), 2, "nothing else opened");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_window_says_where_it_runs_and_opens_there;
+
+        phase the_bar_holds_the_places_to_run_and_the_body_holds_only_the_grid;
+        {
+            let t = Term::opened();
+            let window = t.window();
+            let bar = of_kind(window.tree(), "ui.NavShell")
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("a window has its bar: {}", dump(window.tree())));
+            // The places to run are the window's own menu, drawn beside the grid rather than by
+            // it: the one view that draws them is the app's target menu.
+            node_with(window.tree(), "ui.MenuItem", "label", "Default environment");
+            assert!(
+                !of_kind(bar, "ui.Terminal").is_empty(),
+                "the window's body is the grid: {}",
+                dump(window.tree())
+            );
+            let grid = of_kind(window.tree(), "ui.Terminal")
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("the body is the shell's grid: {}", dump(window.tree())));
+            assert!(
+                of_kind(grid, "ui.NavShell").is_empty()
+                    && of_kind(grid, "ui.MenuButton").is_empty()
+                    && of_kind(grid, "ui.MenuItem").is_empty(),
+                "the content carries no chrome of its own: {}",
+                dump(grid)
+            );
+            // The menu the bar offers is the app's one view of the places it can run.
+            let menu = t.target_menu(&me(), &t.session);
+            assert!(
+                shows(menu.tree(), "Default environment"),
+                "the menu names where the session runs: {}",
+                dump(menu.tree())
+            );
+            assert!(
+                of_kind(menu.tree(), "ui.Terminal").is_empty(),
+                "the menu is no grid of its own"
+            );
+        }
+
+        phase opening_waits_for_the_device_and_shows_no_grid_until_its_answer;
+        {
+            let t = Term::new();
+            assert_eq!(t.state(), "opening: Default environment");
+            let window = t.window();
+            assert!(
+                shows(window.tree(), "Opening the shell where this workspace runs…"),
+                "the window says it is opening a shell: {}",
+                dump(window.tree())
+            );
+            assert!(
+                of_kind(window.tree(), "ui.Terminal").is_empty(),
+                "there is no grid to type into before the shell answers: {}",
+                dump(window.tree())
+            );
+            t.call("attach", &[("s", t.s())]);
+            assert_eq!(t.state(), "open: Default environment");
+            assert_eq!(
+                of_kind(t.window().tree(), "ui.Terminal").len(),
+                1,
+                "the answer is the shell its grid shows"
+            );
+        }
+
+        phase a_new_window_opens_the_environment_used_last_and_never_the_device_by_habit;
+        {
+            let t = Term::opened();
+            t.call(
+                "open_in",
+                &[("s", t.s()), ("target", Value::text("environment:work"))],
+            );
+            assert_eq!(t.text(&t.here, "recent"), "environment:work");
+            assert_eq!(t.text(&t.session, "target"), "environment:work");
+            let second = t.new_session();
+            t.call("attach", &[("s", Value::resource(&second))]);
+            assert_eq!(
+                t.engine.asks("open").last().unwrap()["target"],
+                "environment:work",
+                "a window with nowhere of its own opens where the last one ran"
+            );
+            // A shell on the device is no environment to remember: the next window opens where
+            // the person's environment is, not where their own shell is.
+            t.call("open_in", &[("s", t.s()), ("target", Value::text("host"))]);
+            assert_eq!(
+                t.text(&t.here, "recent"),
+                "environment:work",
+                "the device's own shell is no habit"
+            );
+            let third = t.new_session();
+            t.call("attach", &[("s", Value::resource(&third))]);
+            assert_eq!(
+                t.text(&third, "target"),
+                "environment:work",
+                "a new window opens the environment, never the device's shell"
+            );
+        }
+
+        phase a_refused_shell_is_not_where_the_next_window_opens;
+        {
+            let t = Term::new();
+            *t.engine.refuse_open.borrow_mut() =
+                Some("The device's own shell is not allowed for this app".to_owned());
+            t.call(
+                "record_target",
+                &[("s", t.s()), ("target", Value::text("host"))],
+            );
+            t.call("attach", &[("s", t.s())]);
+            assert_eq!(
+                t.state(),
+                "failed: Your shell on this device, The device's own shell is not allowed for this app"
+            );
+            assert_ne!(t.text(&t.here, "recent"), "host");
+            let next = t.new_session();
+            t.call("attach", &[("s", Value::resource(&next))]);
+            assert_eq!(
+                t.text(&next, "target"),
+                "environment",
+                "a refused shell is no place for the next window"
+            );
+            assert_eq!(
+                t.engine.asks("open").last().unwrap()["target"],
+                "",
+                "the next window names no target of its own"
+            );
+        }
+
+        phase reading_the_screen_answers_what_the_device_shows;
+        {
+            let t = Term::opened();
+            *t.engine.screen.borrow_mut() = "cargo test\nrunning 2 tests".to_owned();
+            let read = t.answer(&me(), "read_screen", &[("s", t.s())]);
+            assert!(
+                read.contains("running 2 tests"),
+                "a read answers with the device's screen: {read}"
+            );
+            assert_eq!(
+                t.state(),
+                "open: Default environment",
+                "and the session still says where it runs"
+            );
+        }
+
+        phase moving_a_window_moves_its_shell;
+        {
+            let t = Term::opened();
+            t.call("open_in", &[("s", t.s()), ("target", Value::text("host"))]);
+            let opens = t.engine.asks("open");
+            assert_eq!(opens.len(), 2, "{opens:?}");
+            assert_eq!(opens[1]["target"], "host", "the tab runs where its target says");
+            assert!(
+                t.engine
+                    .asks("close")
+                    .iter()
+                    .any(|closed| closed["shell"] == "shell-1"),
+                "the shell it ran before is let go"
+            );
+            assert_eq!(t.text(&t.session, "shell"), "shell-2");
+            assert_eq!(t.state(), "open: Your shell on this device");
+            let window = t.window();
+            assert_eq!(
+                prop(
+                    node_with(window.tree(), "ui.Terminal", "session", "shell-2"),
+                    "label"
+                )
+                .as_deref(),
+                Some("Terminal, Your shell on this device")
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_carried_session_reopens_on_its_relay_or_fresh_when_it_is_gone;
+
+        phase reopening_re_attaches_to_the_relay_this_device_gave_it;
+        {
+            let t = Term::new();
+            *t.engine.carries.borrow_mut() = Some(RELAY.to_owned());
+            t.call(
+                "record_target",
+                &[("s", t.s()), ("target", Value::text("environment"))],
+            );
+            t.call("attach", &[("s", t.s())]);
+            assert_eq!(t.text(&t.session, "relay"), RELAY);
+            *t.engine.ended.borrow_mut() = true;
+            t.call("attach", &[("s", t.s())]);
+            let opens = t.engine.asks("open");
+            assert_eq!(opens.len(), 2, "{opens:?}");
+            assert_eq!(
+                opens[1]["attach"], RELAY,
+                "reopening re-attaches to the session the relay still runs"
+            );
+            assert_eq!(t.text(&t.session, "shell"), "shell-2");
+        }
+
+        phase a_relay_that_is_gone_is_replaced_afresh_once;
+        {
+            let t = Term::new();
+            t.call(
+                "record_target",
+                &[("s", t.s()), ("target", Value::text("environment"))],
+            );
+            t.call(
+                "record_relay_session",
+                &[("s", t.s()), ("session", Value::some(Value::text(RELAY)))],
+            );
+            *t.engine.refuse_open.borrow_mut() = Some("the relay session is gone".to_owned());
+            t.call("attach", &[("s", t.s())]);
+            let opens = t.engine.asks("open");
+            assert_eq!(opens.len(), 2, "the relay is tried, then opened afresh: {opens:?}");
+            assert_eq!(opens[0]["attach"], RELAY);
+            assert_eq!(opens[1]["attach"], "", "the second attempt carries nothing");
+            assert_eq!(t.text(&t.session, "relay"), "");
+            assert_eq!(t.text(&t.session, "shell"), "shell-1");
+            assert_eq!(t.state(), "open: Default environment");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_sessions_commands_show_with_their_output_and_how_they_ended;
+
+        phase the_windows_rows_show_output_and_how_each_command_ended;
+        {
+            let t = Term::opened();
+            t.call(
+                "finished",
+                &[("s", t.s()), ("said", Value::text(failing_test_run(900)))],
+            );
+            t.call(
+                "finished",
+                &[
+                    ("s", t.s()),
+                    (
+                        "said",
+                        Value::text(reported("ls", "/work", 0, 1000, "src\n", &json!([]))),
+                    ),
+                ],
+            );
+            t.call(
+                "record_target",
+                &[
+                    ("s", t.s()),
+                    ("target", Value::text("environment")),
+                    ("device", Value::some(Value::text("another-device"))),
+                ],
+            );
+            t.call("attach", &[("s", t.s())]);
+            let window = t.window();
+            assert!(
+                shows(window.tree(), TEST_OUTPUT),
+                "a command shows what it printed: {}",
+                dump(window.tree())
+            );
+            assert!(
+                words(window.tree())
+                    .iter()
+                    .any(|shown| shown.trim() == "src"),
+                "the other command's output is drawn too: {}",
+                dump(window.tree())
+            );
+            assert_eq!(
+                prop(
+                    node_with(window.tree(), "ui.DisclosureRow", "title", "$ cargo test"),
+                    "secondary"
+                )
+                .as_deref(),
+                Some("Exit 101, in /home/ada/src/tilo"),
+                "a row says how its command ended"
+            );
+            assert_eq!(
+                prop(
+                    node_with(window.tree(), "ui.DisclosureRow", "title", "$ ls"),
+                    "secondary"
+                )
+                .as_deref(),
+                Some("Done, in /work")
+            );
+        }
+
+        phase a_job_nobody_asked_for_is_kept_on_its_session_alone;
+        {
+            let t = Term::opened();
+            let job = json!({
+                "command": "cargo build",
+                "cwd": "/work",
+                "started_ms": 100,
+                "ended_ms": 500,
+                "exit": 0,
+                "output": "Compiling",
+                "truncated": false,
+                "tool": "cargo",
+                "undoable": false,
+                "items": [],
+                "job": 3,
+            });
+            t.call(
+                "finished",
+                &[("s", t.s()), ("said", Value::text(job.to_string()))],
+            );
+            assert_eq!(t.items(&t.session, "commands").len(), 1);
+            assert!(
+                t.items(&t.terminal, "history").is_empty(),
+                "nobody asked for the job by name: the history keeps no line of it"
+            );
+            t.call(
+                "finished",
+                &[
+                    ("s", t.s()),
+                    (
+                        "said",
+                        Value::text(reported("fg", "/work", 0, 600, "waiting", &json!([]))),
+                    ),
+                ],
+            );
+            let history = t.items(&t.terminal, "history");
+            assert_eq!(history.len(), 1);
+            assert_eq!(t.text(&history[0], "command"), "fg");
+        }
+
+        phase two_sessions_commands_are_read_in_one_history;
+        {
+            let t = Term::opened();
+            let other = t.new_session();
+            t.call(
+                "record_command",
+                &[
+                    ("s", Value::resource(&other)),
+                    ("command", Value::text("make")),
+                    ("cwd", Value::text("/src/demo")),
+                    ("started_ms", Value::Int(10)),
+                    ("ended_ms", Value::Int(20)),
+                    ("exit", Value::Int(0)),
+                    ("id", Value::text("run-a")),
+                ],
+            );
+            t.call(
+                "record_command",
+                &[
+                    ("s", t.s()),
+                    ("command", Value::text("cargo test")),
+                    ("cwd", Value::text("/home/ada/src/tilo")),
+                    ("started_ms", Value::Int(10)),
+                    ("ended_ms", Value::Int(20)),
+                    ("exit", Value::Int(101)),
+                    ("id", Value::text("run-b")),
+                ],
+            );
+            let history = t.items(&t.terminal, "history");
+            assert_eq!(history.len(), 2, "both sessions' commands are one history");
+            let overview = t
+                .rt
+                .open_view(
+                    &me(),
+                    &t.app.view("terminal_overview"),
+                    vec![Value::resource(&t.terminal)],
+                )
+                .expect("the workspace's terminal opens");
+            assert_eq!(
+                prop(
+                    node_with(overview.tree(), "ui.ListRow", "title", "make"),
+                    "note"
+                )
+                .as_deref(),
+                Some("/src/demo"),
+                "a command that ended well says where it ran"
+            );
+            assert_eq!(
+                prop(
+                    node_with(overview.tree(), "ui.ListRow", "title", "cargo test"),
+                    "note"
+                )
+                .as_deref(),
+                Some("Exit 101, in /home/ada/src/tilo"),
+                "a command that failed says how and where"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn only_the_person_opens_the_devices_own_shell;
+
+        phase an_agents_window_offers_the_device_shell_to_no_agent;
+        {
+            let t = Term::opened();
+            let one = agent("claude");
+            let menu = t.target_menu(&one, &t.session);
+            assert!(
+                shows(menu.tree(), "Default environment"),
+                "an agent runs in the workspace's environments: {}",
+                dump(menu.tree())
+            );
+            assert!(
+                !shows(menu.tree(), "Your shell on this device"),
+                "the device's own shell is the person's: {}",
+                dump(menu.tree())
+            );
+            t.refused_as(
+                &one,
+                "open_in",
+                &[("s", t.s()), ("target", Value::text("host"))],
+            );
+            let host = Term::at("host");
+            let before = host.engine.count("open");
+            host.refused_as(&one, "open_shell", &[("s", host.s())]);
+            assert_eq!(
+                host.engine.count("open"),
+                before,
+                "an agent's open of the device's shell is refused before it starts"
+            );
+            host.refused_as(&one, "run", &[("s", host.s()), ("command", Value::text("whoami"))]);
+        }
+
+        phase an_agent_reads_the_session_it_ran_in_but_claims_nothing;
+        {
+            let t = Term::opened();
+            let one = agent("claude");
+            t.call_as(
+                &one,
+                "run",
+                &[("s", t.s()), ("command", Value::text("cargo build"))],
+            );
+            t.run_ended(
+                &one,
+                "run-1",
+                &reported("cargo build", "/work", 0, 2000, "Compiling tilo", &json!([])),
+            );
+            let opens = t.engine.count("open");
+            assert_eq!(
+                t.answer(&one, "inspect_session", &[("s", t.s())]),
+                "open: Default environment",
+                "the agent reads where its session runs"
+            );
+            assert_eq!(t.engine.count("open"), opens, "reading opens nothing");
+            let commands = t.items(&t.session, "commands");
+            assert_eq!(t.text(&commands[0], "command"), "cargo build");
+            assert_eq!(
+                t.read(&commands[0], "actor"),
+                Value::some(Value::Actor(one.clone())),
+                "the run it reads is its own"
+            );
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn an_agents_run_is_shown_as_the_agents;
+
+        phase the_rows_say_who_ran_them_and_an_agent_reruns_its_failing_test;
+        {
+            let t = Term::opened();
+            let one = agent("claude");
+            t.call(
+                "finished",
+                &[
+                    ("s", t.s()),
+                    (
+                        "said",
+                        Value::text(reported("cargo build", "/work", 0, 500, "ok", &json!([]))),
+                    ),
+                ],
+            );
+            t.call_as(
+                &one,
+                "run",
+                &[("s", t.s()), ("command", Value::text("cargo test"))],
+            );
+            t.run_ended(&one, "run-1", &failing_test_run(900));
+            t.call(
+                "record_target",
+                &[
+                    ("s", t.s()),
+                    ("target", Value::text("environment")),
+                    ("device", Value::some(Value::text("another-device"))),
+                ],
+            );
+            t.call("attach", &[("s", t.s())]);
+            let window = t.window();
+            let mine = node_with(window.tree(), "ui.DisclosureRow", "title", "$ cargo build");
+            assert_eq!(
+                actor_of(mine, "who"),
+                Some(me()),
+                "the run the person typed is theirs: {}",
+                dump(window.tree())
+            );
+            let agents = node_with(window.tree(), "ui.DisclosureRow", "title", "$ cargo test");
+            assert_eq!(
+                actor_of(agents, "who"),
+                Some(one.clone()),
+                "the run an agent asked for is the agent's"
+            );
+            // The agent's own window offers its failing test again, and the run it starts is the
+            // agent's.
+            let theirs = t.window_as(&one, &t.session);
+            let again = node_with(theirs.tree(), "ui.Button", "label", "Run this test again").key.clone();
+            assert!(matches!(
+                theirs.fire(&again, "press").unwrap(),
+                InvokeOutcome::Done(_)
+            ));
+            let asked = t.engine.asked_of("rerun_test");
+            assert_eq!(asked["test"], "parse::reads_a_long_line", "{asked}");
+            let run = t.engine.asked_of("run");
+            assert_eq!(run["agent"], true, "the rerun is the agent's: {run}");
+            assert_eq!(
+                run["text"], "cargo test -- --exact parse::reads_a_long_line",
+                "{run}"
+            );
+        }
+
+        phase a_refused_agents_run_shows_the_person_the_card_and_lets_go;
+        {
+            let t = Term::opened();
+            let mut window = t.window();
+            let grid = grid_key(&window);
+            window
+                .fire_with(
+                    &grid,
+                    "held",
+                    Some(&Value::text(
+                        r#"{"title":"This needs a Linux machine.","message":"No machine runs the workspace yet.","url":"https://tilo.sh/billing","agent":true}"#,
+                    )),
+                )
+                .expect("the host says it holds the agent's run");
+            window.poll_patches().unwrap();
+            let banner = of_kind(window.tree(), "ui.Banner")
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("the window shows the held run: {}", dump(window.tree())));
+            assert_eq!(
+                prop(banner, "title").as_deref(),
+                Some("This needs a Linux machine.")
+            );
+            assert_eq!(prop(banner, "action").as_deref(), Some("Add a card"));
+            assert_eq!(prop(banner, "secondary_action").as_deref(), Some("Cancel"));
+            assert_eq!(
+                of_kind(window.tree(), "ui.Terminal").len(),
+                1,
+                "the person's prompt is still the grid: {}",
+                dump(window.tree())
+            );
+            assert!(matches!(
+                window.fire(&banner.key, "secondary_act").unwrap(),
+                InvokeOutcome::Done(_)
+            ));
+            assert_eq!(t.text(&t.session, "held"), "");
+            assert_eq!(t.engine.asked_of("interrupt")["shell"], "shell-1");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_shell_that_could_not_start_says_why_and_runs_again_where_it_can;
+
+        phase a_bad_answer_from_the_device_opens_no_shell;
+        {
+            let t = Term::new();
+            *t.engine.answer_open.borrow_mut() = Some(r#"{"nonsense":true}"#.to_owned());
+            t.call(
+                "record_target",
+                &[("s", t.s()), ("target", Value::text("environment"))],
+            );
+            t.call("attach", &[("s", t.s())]);
+            assert!(
+                t.state().starts_with("failed: Default environment"),
+                "a bad answer is a failure with its own words: {}",
+                t.state()
+            );
+            assert_eq!(t.text(&t.session, "shell"), "", "no session was opened");
+            let window = t.window();
+            assert!(shows(window.tree(), "The shell couldn't start"));
+            assert!(of_kind(window.tree(), "ui.Terminal").is_empty());
+        }
+
+        phase the_shell_runs_again_after_it_ended_or_was_lost;
+        {
+            let t = Term::opened();
+            let mut window = t.window();
+            let grid = grid_key(&window);
+            window
+                .fire_with(&grid, "exit", Some(&Value::text("exited")))
+                .expect("the shell exits");
+            assert_eq!(t.state(), "ended: Default environment");
+            window.poll_patches().unwrap();
+            let again = node_with(window.tree(), "ui.EmptyState", "action", "Restart shell").key.clone();
+            assert!(matches!(
+                window.fire(&again, "act").unwrap(),
+                InvokeOutcome::Done(_)
+            ));
+            window.poll_patches().unwrap();
+            assert_eq!(t.text(&t.session, "shell"), "shell-2");
+            assert_eq!(t.state(), "open: Default environment");
+
+            // A lost connection without a relay is reopened when the person asks.
+            let grid = grid_key(&window);
+            window
+                .fire_with(&grid, "lost", Some(&Value::text("the connection dropped")))
+                .expect("the shell says its connection was lost");
+            assert_eq!(t.state(), "lost: Default environment, the connection dropped");
+            window.poll_patches().unwrap();
+            let banner = of_kind(window.tree(), "ui.Banner")
+                .into_iter()
+                .next()
+                .expect("the window says it reconnects");
+            assert_eq!(prop(banner, "action").as_deref(), Some("Restart shell"));
+            assert!(matches!(
+                window.fire(&banner.key, "act").unwrap(),
+                InvokeOutcome::Done(_)
+            ));
+            window.poll_patches().unwrap();
+            assert_eq!(
+                t.engine.asks("open").last().unwrap()["attach"],
+                "",
+                "no relay carries this shell"
+            );
+            assert_eq!(t.text(&t.session, "shell"), "shell-3");
+            assert_eq!(t.state(), "open: Default environment");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn the_grids_menu_drives_the_shell;
+
+        phase the_menu_clears_restarts_and_offers_paste_only_while_the_shell_is_live;
+        {
+            let t = Term::opened();
+            let mut window = t.window();
+            let clear = node_with(window.tree(), "ui.MenuItem", "label", "Clear screen").key.clone();
+            assert!(matches!(
+                window.fire(&clear, "choose").unwrap(),
+                InvokeOutcome::Done(_)
+            ));
+            assert_eq!(t.engine.asked_of("clear")["shell"], "shell-1");
+
+            let restart = node_with(window.tree(), "ui.MenuItem", "label", "Restart shell").key.clone();
+            assert!(matches!(
+                window.fire(&restart, "choose").unwrap(),
+                InvokeOutcome::Done(_)
+            ));
+            assert!(
+                t.engine
+                    .asks("close")
+                    .iter()
+                    .any(|closed| closed["shell"] == "shell-1"),
+                "the menu's restart lets the old shell go"
+            );
+            assert_eq!(t.text(&t.session, "shell"), "shell-2");
+
+            // A shell whose connection was lost takes no paste until it runs again.
+            let grid = grid_key(&window);
+            window
+                .fire_with(&grid, "lost", Some(&Value::text("the connection dropped")))
+                .expect("the shell says its connection was lost");
+            window.poll_patches().unwrap();
+            let paste = node_with(window.tree(), "ui.MenuItem", "label", "Paste");
+            assert!(
+                flag(paste, "disabled"),
+                "an ended shell takes no paste: {}",
+                dump(window.tree())
+            );
+        }
+
+        phase input_the_device_cannot_review_is_refused_before_it_is_written;
+        {
+            let t = Term::opened();
+            let before = (t.engine.count("send"), t.engine.count("paste"));
+            for refused in [
+                String::new(),
+                "x".repeat(8193),
+                "one\ntwo".to_owned(),
+                "one\rtwo".to_owned(),
+            ] {
+                t.refused("send", &[("s", t.s()), ("text", Value::text(refused.as_str()))]);
+            }
+            t.refused(
+                "paste",
+                &[("s", t.s()), ("text", Value::text("x".repeat(65537).as_str()))],
+            );
+            assert_eq!(
+                (t.engine.count("send"), t.engine.count("paste")),
+                before,
+                "a refused input never reaches the shell"
+            );
+            t.call("send", &[("s", t.s()), ("text", Value::text("cargo bu"))]);
+            assert_eq!(t.engine.asked_of("send")["text"], "cargo bu");
+            t.call("paste", &[("s", t.s()), ("text", Value::text("ls\n"))]);
+            assert_eq!(t.engine.asked_of("paste")["text"], "ls\n");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_runs_items_open_only_what_is_public;
+
+        phase a_links_found_in_the_output_open_and_other_items_stay;
+        {
+            let t = Term::opened();
+            t.call(
+                "finished",
+                &[
+                    ("s", t.s()),
+                    (
+                        "said",
+                        Value::text(
+                            json!({
+                                "command": "cargo test",
+                                "cwd": "/work",
+                                "started_ms": 10,
+                                "ended_ms": 20,
+                                "exit": 0,
+                                "output": "https://example.com https://token@evil.example",
+                                "items": [
+                                    {"kind": "url", "text": "https://example.com", "path": "https://example.com"},
+                                    {"kind": "url", "text": "https://token@evil.example", "path": "https://token@evil.example"},
+                                ],
+                            })
+                            .to_string(),
+                        ),
+                    ),
+                ],
+            );
+            let run = t.items(&t.session, "commands")[0].clone();
+            t.call(
+                "open_item",
+                &[
+                    ("s", t.s()),
+                    ("prior", Value::resource(&run)),
+                    ("position", Value::Int(0)),
+                ],
+            );
+            assert_eq!(*t.disk.opened.borrow(), ["https://example.com".to_owned()]);
+            // The one that carries a credential does not open.
+            t.refused(
+                "open_item",
+                &[
+                    ("s", t.s()),
+                    ("prior", Value::resource(&run)),
+                    ("position", Value::Int(1)),
+                ],
+            );
+            assert_eq!(t.disk.opened.borrow().len(), 1);
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_sessions_facts_are_the_valid_ones_it_closed;
+
+        phase targets_panes_and_relays_are_refused_unless_they_name_something;
+        {
+            let t = Term::new();
+            t.refused("record_target", &[("s", t.s()), ("target", Value::text(""))]);
+            t.refused("claim_pane", &[("s", t.s()), ("pane", Value::text(""))]);
+            for bad in ["abc", &"Z".repeat(32), &"0".repeat(33)] {
+                t.refused(
+                    "record_relay_session",
+                    &[("s", t.s()), ("session", Value::some(Value::text(bad)))],
+                );
+            }
+            assert_eq!(t.text(&t.session, "relay"), "");
+            t.call(
+                "record_target",
+                &[("s", t.s()), ("target", Value::text("environment"))],
+            );
+            t.call(
+                "claim_pane",
+                &[
+                    ("s", t.s()),
+                    ("pane", Value::text("6f1c2b8e-0000-4000-8000-000000000001")),
+                ],
+            );
+            t.call(
+                "record_relay_session",
+                &[("s", t.s()), ("session", Value::some(Value::text(RELAY)))],
+            );
+            assert_eq!(t.text(&t.session, "target"), "environment");
+            assert_eq!(
+                t.text(&t.session, "pane"),
+                "6f1c2b8e-0000-4000-8000-000000000001"
+            );
+            assert_eq!(t.text(&t.session, "relay"), RELAY);
         }
     }
 

@@ -642,6 +642,38 @@ tilo_test_env::scenario! {
         assert_eq!(widget.screen().lines.len(), 1);
     }
 
+    phase a_bell_flashes_the_grid_only_while_the_person_asks;
+    {
+        let intents = tilo_ui_base::Intents::default();
+        let fake = std::sync::Arc::new(Fake::with_lines(&["$ "]));
+        let mut widget = Terminal::new(fake.clone()).with_bell_flash(true);
+        widget.update_events(GridEvents {
+            rung: Event::View(Intent::new(&intents, "terminal", "rung")),
+            ..GridEvents::default()
+        });
+        let (_tree, _node) = placed(&mut widget);
+        paint(&mut widget);
+        let doc = automerge::AutoCommit::new();
+        fake.bump(SessionEvent::Bell);
+        widget.sync(&doc, &automerge::ROOT);
+        assert!(widget.bell_flashing(), "the bell flashes the grid");
+        assert!(!intents.take().is_empty(), "and the app hears that it rang");
+
+        // A person who asked for no flash still hears the bell, and their grid stays still.
+        let quiet = tilo_ui_base::Intents::default();
+        let fake = std::sync::Arc::new(Fake::with_lines(&["$ "]));
+        let mut off = Terminal::new(fake.clone());
+        off.update_events(GridEvents {
+            rung: Event::View(Intent::new(&quiet, "terminal", "rung")),
+            ..GridEvents::default()
+        });
+        let (_tree, _node) = placed(&mut off);
+        fake.bump(SessionEvent::Bell);
+        off.sync(&doc, &automerge::ROOT);
+        assert!(!off.bell_flashing(), "no flash unless the person asked");
+        assert!(!quiet.take().is_empty(), "the bell still reaches the app");
+    }
+
     phase a_pasted_text_reaches_the_process_as_a_paste;
     {
         let fake = std::sync::Arc::new(Fake::with_lines(&["$ "]));
