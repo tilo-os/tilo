@@ -355,6 +355,23 @@ impl Scrollable {
         if along == 0.0 {
             return false;
         }
+        // A notch of a wheel walks the detents of content that offers them, as it does where the
+        // view scrolls itself: the host presents the edge the notch leads to, so a row of windows
+        // comes to rest with one at its edge rather than wherever the step stopped. A finger's
+        // travel is no notch: it asks for the ground it covered, and the release settles it.
+        if !pixel && self.snaps() {
+            let base = self
+                .last_asked
+                .or(self.bound)
+                .unwrap_or_else(|| self.offset_along_axis());
+            if let Some(edge) = self.step_detent(base + along, along) {
+                // A notch that lands on an edge ends the hand's run: a pan that follows counts
+                // its travel from the edge, not from where a gesture before the wheel began.
+                self.hand_at = None;
+                self.ask_offset(edge);
+                return true;
+            }
+        }
         self.ask_hand(along);
         true
     }

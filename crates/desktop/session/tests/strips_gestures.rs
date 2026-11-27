@@ -585,24 +585,29 @@ fn the_row_settles_on_a_window_edge_after_it_is_scrolled() {
         place(&mut session, note);
         names.push(shown_as(&session, TITLES[index]));
     }
-    let row_start = bar_of(&mut session, &names[0]).0;
-    // The pointer rests over the row and one notch of the wheel turns toward the windows after
-    // the first. The row offers each window's leading edge to settle on, so the notch lands the
-    // second window's edge at the row's own edge.
-    let over = bar_of(&mut session, &names[0]);
-    // The pointer rests on the row itself, in the gap between the two windows: the shell's own
-    // ground, which the row's scroll takes the wheel on.
+    // The row keeps the window just opened in view: the desktop presents the row at its end, the
+    // last window flush against the shell's edge, and the row in front is drawn there.
+    until(&mut session, "the row at the window in front", |session| {
+        let front = bar_of(session, &names[3]);
+        (front.0 + front.2 - f64::from(WIDTH)).abs() <= 1.5
+    });
+    // The pointer rests on the row itself, in the gap between the second window and the third:
+    // the shell's own ground, which the row's scroll takes the wheel on.
+    let over = bar_of(&mut session, &names[1]);
     session
         .compositor()
         .input(InputEvent::PointerMotion {
             x: over.0 + over.2 + 6.0,
-            y: over.1 + over.3 + 120.0,
+            y: over.1 + 300.0,
         })
         .expect("the pointer");
     session.step(Duration::from_millis(16)).expect("step");
+    // One notch of the wheel turns back toward the windows before the one in front. The row
+    // offers each window's leading edge to settle on, so the notch lands the second window's
+    // edge at the row's own edge.
     session
         .compositor()
-        .input(InputEvent::PointerAxis(Scroll::Notches(1.0, 0.0)))
+        .input(InputEvent::PointerAxis(Scroll::Notches(-1.0, 0.0)))
         .expect("the wheel");
     for _ in 0..40 {
         session.step(Duration::from_millis(16)).expect("step");
@@ -612,8 +617,8 @@ fn the_row_settles_on_a_window_edge_after_it_is_scrolled() {
         .map(|name| bar_of(&mut session, name))
         .collect();
     assert!(
-        placed.iter().any(|rect| (rect.0 - row_start).abs() <= 1.5),
-        "a window's leading edge stands at the row's edge after the scroll: {placed:?} beside {row_start}"
+        placed.iter().any(|rect| rect.0.abs() <= 1.5),
+        "a window's leading edge stands at the row's edge after the scroll: {placed:?}"
     );
 }
 

@@ -1383,13 +1383,11 @@ impl Decorator for WindowFrame {
         self.keep.as_deref()
     }
 
-    /// A window in a row the person carries settles on its own edges: each window's leading and
-    /// trailing edge is a detent the row's scroll comes to rest on, so a throw lands on a window
-    /// rather than between two.
+    /// A window in a row the person carries settles on its leading edge: the row's scroll comes
+    /// to rest with a window flush at its edge, never between two or over the gap before one.
     fn snap_points(&self, axis: tilo_ui_base::widget::ScrollAxis, out: &mut Vec<f32>) {
         if matches!(axis, tilo_ui_base::widget::ScrollAxis::Horizontal) && self.rect.width() > 0.0 {
             out.push(0.0);
-            out.push(tilo_ui_base::num::f32_of_f64(self.rect.width()));
         }
     }
 

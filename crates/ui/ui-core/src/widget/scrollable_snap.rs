@@ -115,6 +115,18 @@ impl Scrollable {
         self.settle_at(target, carried, source, now);
     }
 
+    /// The detent a step of `along` from `from` along the axis this view scrolls leads to, where
+    /// the content offers detents: a view a host presents asks for it, so a wheel notch walks the
+    /// detents as it does where the view scrolls itself.
+    pub(super) fn step_detent(&self, from: f32, along: f32) -> Option<f32> {
+        let points = if self.axis_has_horizontal() {
+            &self.snap_x
+        } else {
+            &self.snap_y
+        };
+        step_on(points, f64::from(from), f64::from(along)).map(tilo_ui_base::num::f32_of_f64)
+    }
+
     /// A step of `dx`, `dy` (a wheel notch, a key): to the detent the step
     /// leads to from where the view is going, so keys and wheel notches walk
     /// the detents one at a time.
