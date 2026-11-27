@@ -2164,8 +2164,8 @@ impl ListRow {
         ))
     }
 
-    /// The row as the face it draws, read by the list that builds it and by its tests.
-    #[cfg(any(test, feature = "test-support"))]
+    /// The row as the face it draws, read by its own layout and paint, the list that builds it and
+    /// its tests.
     pub fn with_face<R>(&self, f: impl FnOnce(&ListRowFace<'_>) -> R) -> R {
         self.with_face_over(self.trailing_reserve(), self.secondary_shown, f)
     }
