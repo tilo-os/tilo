@@ -1,7 +1,7 @@
-"""An app's call lane through the daemon's transport, as a bridge program in Python uses it.
+"""An app's call lane through the daemon's connection, as a bridge program in Python uses it.
 
-The native part stands in for the daemon here: it answers the JSON text the extension
-answers, so the lane is driven through the SDK's public surface down to that boundary.
+The native part stands in for the daemon here: it answers the JSON text the extension answers, so
+the lane is driven through the SDK's public surface down to that boundary.
 """
 
 from __future__ import annotations
@@ -11,11 +11,11 @@ from typing import Any
 
 import pytest
 
-from tilo import AsyncTilo, CallAsk, CallFrame, DaemonTransport, Refused, Tilo
+from tilo import CallAsk, CallFrame, Refused, Tilo
 
 
 class Daemon:
-    """The extension's daemon, as an app's held connection answers it."""
+    """The extension's connection, as an app's answers it."""
 
     workspace = "workspace-1"
 
@@ -51,13 +51,10 @@ class Daemon:
         asked, self.ask = self.ask, None
         return json.dumps({"answer": {"frames": frames, "asked": asked}})
 
-    async def call(self, *args: Any) -> str:
-        return json.dumps({"answer": {}})
-
 
 async def test_a_carried_call_goes_both_ways_and_says_where_the_app_is_wanted() -> None:
     daemon = Daemon()
-    async with AsyncTilo(transport=DaemonTransport(daemon)) as tilo:
+    async with Tilo(daemon=daemon) as tilo:
         lane = tilo.workspace().call_lane
         await lane.carry({"outside": "458", "tilo": "voice-tl"})
         assert daemon.carried == [{"outside": "458", "tilo": "voice-tl"}]
@@ -91,26 +88,20 @@ async def test_a_carried_call_goes_both_ways_and_says_where_the_app_is_wanted() 
 
 async def test_a_workspace_that_grants_no_call_refuses_the_lane_with_why() -> None:
     daemon = Daemon(refuse="this workspace grants the bridge no call")
-    async with AsyncTilo(transport=DaemonTransport(daemon)) as tilo:
+    async with Tilo(daemon=daemon) as tilo:
         lane = tilo.workspace().call_lane
-        with pytest.raises(Refused) as refused:
+        with pytest.raises(Refused) as refusal:
             await lane.carry({"outside": "458", "tilo": "voice-tl"})
-        assert "grants the bridge no call" in str(refused.value)
+        assert "grants the bridge no call" in str(refusal.value)
         with pytest.raises(Refused):
             await lane.heard("7001", b"\x01")
 
 
-def test_a_program_that_is_no_app_has_no_lane() -> None:
+async def test_a_program_that_is_no_app_has_no_lane() -> None:
     class Plain:
         workspace = "workspace-1"
 
-        async def call(self, *args: Any) -> Any:
-            return {}
-
-        async def aclose(self) -> None:
-            return None
-
-    with Tilo(transport=Plain()) as tilo:
-        with pytest.raises(Refused) as refused:
-            tilo.workspace().call_lane.carry({"outside": "458", "tilo": "voice-tl"})
-        assert refused.value.code == "not_permitted"
+    with pytest.raises(Refused) as refusal:
+        async with Tilo(daemon=Plain()) as tilo:  # type: ignore[arg-type]
+            await tilo.workspace().call_lane.carry({"outside": "458", "tilo": "voice-tl"})
+    assert refusal.value.code == "not_permitted"

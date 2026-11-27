@@ -21,7 +21,7 @@ import random
 import sys
 import time
 
-from tilo import AsyncTilo, Refused
+from tilo import Refused, Tilo, run
 
 API_URL, KEY, RECORDS, MESSAGES = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 WORDS = ("tilo lounge workspace shell window share agent record history people call notes "
@@ -34,7 +34,7 @@ def size(path: str) -> int:
 
 
 async def main() -> int:
-    tilo = AsyncTilo(key=KEY, url=API_URL)
+    tilo = Tilo(key=KEY, url=API_URL)
     lounge = tilo.workspace("Lounge")
     rng = random.Random(1)
     began, posted = time.monotonic(), 0
@@ -45,7 +45,11 @@ async def main() -> int:
         refusal = None
         for attempt in range(5):
             try:
-                await lounge.do("chat/Messages#post", channel=CHANNELS[index % 7 == 0], text=text)
+                await run(
+                    lounge,
+                    {"path": "chat/Messages", "action": "post"},
+                    {"channel": CHANNELS[index % 7 == 0], "text": text},
+                )
                 return
             except Refused as error:
                 # The first calls wait for the workspace's app workers to start.

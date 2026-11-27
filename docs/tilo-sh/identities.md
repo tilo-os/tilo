@@ -50,7 +50,7 @@ tilo do account/keys#mint workspace=project-alpha name="Alpha agent"   # prints 
 ```
 
 Revoke any key via the CLI or on [your grants page](https://mcp.tilo.sh/grants). Revocation
-terminates active sessions immediately; subsequent requests fail with `KeyRevoked`
+terminates active sessions immediately; subsequent requests are refused with `key_revoked`
 ([errors](errors.md)).
 
 ### The page scope
@@ -70,57 +70,90 @@ tilo do account/keys#create name="Read-only agent" workspace=project-alpha brows
 This mints a key for one workspace, uses it as the agent would, and revokes it:
 
 ```python example=key-scopes
-from tilo import KeyRevoked, Tilo
+import asyncio
 
-tilo = Tilo()
-workspace = tilo.workspace(tilo.workspaces.create("One customer").id)
+from tilo import Refused, Tilo, run
 
-# A key that reaches this workspace and nothing else.
-minted = tilo.keys.mint(workspace, name="Their agent")
-print("agent's MCP URL:", minted.mcp_url)
-print("it reaches:", minted.workspace)
 
-# The agent's own client: with that key it sees this workspace's apps.
-agent = Tilo(key=minted.token)
-print("the agent sees", len(agent.workspace(minted.workspace).ls().rows), "apps")
+async def main() -> None:
+    async with Tilo() as tilo:
+        made = await run(
+            tilo, {"path": "account/workspaces", "action": "create"}, {"name": "One customer"}
+        )
+        workspace = made["result"]["workspace"]["id"]
 
-# Revoking it ends the agent's access at once.
-tilo.keys.revoke(minted.grant)
-try:
-    agent.workspace(minted.workspace).ls()
-    print("still allowed")
-except KeyRevoked as error:
-    print("after revoking:", error.code, "at", error.revoked_at_ms)
+        # A key that reaches this workspace and nothing else.
+        minted = (
+            await run(
+                tilo,
+                {"path": "account/keys", "action": "mint"},
+                {"workspace": workspace, "name": "Their agent"},
+            )
+        )["result"]
+        print("agent's MCP URL:", minted.get("mcp_url"))
+        print("it reaches:", minted.get("workspace"))
+
+        # The agent's own client: with that key it sees this workspace's apps.
+        agent = Tilo(key=minted["token"])
+        print(
+            "the agent sees",
+            len((await agent.workspace(workspace).list_resources())["rows"]),
+            "apps",
+        )
+
+        # Revoking it ends the agent's access at once.
+        await run(tilo, {"path": f"account/keys/{minted['grant']}", "action": "revoke"})
+        try:
+            await agent.workspace(workspace).list_resources()
+            print("still allowed")
+        except Refused as error:
+            print("after revoking:", error.code, "at", error.error.get("revoked_at_ms"))
+        await agent.aclose()
+
+
+asyncio.run(main())
 ```
 
 ```typescript example=key-scopes
-import { KeyRevoked, Tilo } from "tilo-sdk";
+import { Refused, Tilo, run } from "tilo-sdk";
 
 const tilo = new Tilo();
-const workspace = tilo.workspace((await tilo.workspaces.create("One customer")).id);
+const made = await run(tilo, { path: "account/workspaces", action: "create" }, { name: "One customer" });
+const workspace = (made.result as { workspace: { id: string } }).workspace.id;
 
 // A key that reaches this workspace and nothing else.
-const minted = await tilo.keys.mint(workspace, "Their agent");
-console.log("agent's MCP URL:", minted.mcpUrl);
+const mintedAnswer = await run(
+  tilo,
+  { path: "account/keys", action: "mint" },
+  { workspace, name: "Their agent" },
+);
+const minted = mintedAnswer.result as {
+  grant: string;
+  token: string;
+  workspace?: string;
+  mcp_url?: string;
+};
+console.log("agent's MCP URL:", minted.mcp_url);
 console.log("it reaches:", minted.workspace);
 
 // The agent's own client: with that key it sees this workspace's apps.
 const agent = new Tilo({ key: minted.token });
-const apps = await agent.workspace(minted.workspace).ls();
+const apps = await agent.workspace(workspace).listResources();
 console.log("the agent sees", apps.rows.length, "apps");
 
 // Revoking it ends the agent's access at once.
-await tilo.keys.revoke(minted.grant);
+await run(tilo, { path: `account/keys/${minted.grant}`, action: "revoke" });
 try {
-  await agent.workspace(minted.workspace).ls();
+  await agent.workspace(workspace).listResources();
   console.log("still allowed");
 } catch (error) {
-  if (error instanceof KeyRevoked) {
-    console.log("after revoking:", error.code, "at", error.revokedAtMs);
+  if (error instanceof Refused) {
+    console.log("after revoking:", error.code, "at", error.error.revoked_at_ms);
   } else {
     throw error;
   }
 }
+agent.close();
 ```
 
 ```curl example=key-scopes
@@ -153,4 +186,5 @@ curl -sS "$api/workspaces/$workspace/resources" -H "$agent" \
 - **The command**: `tilo do account/keys#create name="My backend"` (with `--out <file>` it writes the
   key there instead), `tilo ls account/keys`, `tilo do account/keys#mint workspace=<workspace>`, and
   `tilo do "account/keys/<grant>#revoke"`.
-- **The SDKs**: `tilo.keys.list()`, `create()`, `mint()`, `revoke()`, and `workspace.keys.mint()`.
+- **The SDKs**: `run(tilo, {"path": "account/keys", "action": "list"})`, `#create`, `#mint` (with the
+  workspace it reaches), and `"account/keys/<grant>"#revoke`.

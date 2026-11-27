@@ -44,51 +44,74 @@ An undo is the app's own action, so it is recorded like anything else and is its
 - **A person**: Undo in the record's history, which is those same actions.
 
 ```python example=invocation-and-undo
-from tilo import Tilo
+import asyncio
 
-tilo = Tilo()
-workspace = tilo.workspace(tilo.workspaces.create("Invocations and history").id)
+from tilo import Tilo, run
 
-# One invocation: every call inside it is one step of this app's history.
-with workspace.invocation("Write the cover letter") as invocation:
-    workspace.do("word-processor#append_paragraph", text="Dear Visa Officer,")
-    workspace.do("word-processor#append_paragraph", text="Yours faithfully, Jane Doe")
 
-listed = next(i for i in workspace.invocations() if i.title == "Write the cover letter")
-print("one invocation:", invocation.title, "|", listed.changes, "changes")
+async def main() -> None:
+    async with Tilo() as tilo:
+        made = await run(
+            tilo,
+            {"path": "account/workspaces", "action": "create"},
+            {"name": "Invocations and history"},
+        )
+        workspace = tilo.workspace(made["result"]["workspace"]["id"])
 
-# Take the invocation back: exactly what its calls changed.
-invocation.undo()
+        # One invocation: every call inside it is one step of this app's history.
+        async with workspace.invocation("Write the cover letter") as group:
+            await run(
+                workspace,
+                {"path": "word-processor", "action": "append_paragraph"},
+                {"text": "Dear Visa Officer,"},
+            )
+            await run(
+                workspace,
+                {"path": "word-processor", "action": "append_paragraph"},
+                {"text": "Yours faithfully, Jane Doe"},
+            )
 
-listed = next(i for i in workspace.invocations() if i.title == "Write the cover letter")
-print("undone:", listed.undone, "of", listed.changes, "changes")
+        print("one invocation:", group.title, "|", len(group.invocations), "calls")
+
+        # Take the invocation back: exactly what its calls changed.
+        await group.undo()
+        print("undone:", group.title)
+
+
+asyncio.run(main())
 ```
 
 ```typescript example=invocation-and-undo
-import { Tilo } from "tilo-sdk";
+import { Tilo, run } from "tilo-sdk";
 
 const tilo = new Tilo();
-const workspace = tilo.workspace((await tilo.workspaces.create("Invocations and history")).id);
+const made = await run(
+  tilo,
+  { path: "account/workspaces", action: "create" },
+  { name: "Invocations and history" },
+);
+const workspace = tilo.workspace((made.result as { workspace: { id: string } }).workspace.id);
 
 // One invocation: every call inside it is one step of this app's history.
-const invocation = await workspace.invocation("Write the cover letter", async (group) => {
-  await workspace.do("word-processor#append_paragraph", { text: "Dear Visa Officer," });
-  await workspace.do("word-processor#append_paragraph", { text: "Yours faithfully, Jane Doe" });
+const group = await workspace.invocation("Write the cover letter", async (group) => {
+  await run(
+    workspace,
+    { path: "word-processor", action: "append_paragraph" },
+    { text: "Dear Visa Officer," },
+  );
+  await run(
+    workspace,
+    { path: "word-processor", action: "append_paragraph" },
+    { text: "Yours faithfully, Jane Doe" },
+  );
   return group;
 });
 
-let listed = (await workspace.invocations()).items.find(
-  (item) => item.title === "Write the cover letter",
-);
-console.log("one invocation:", invocation.title, "|", listed?.changes ?? 0, "changes");
+console.log("one invocation:", group.title, "|", group.invocations.length, "calls");
 
 // Take the invocation back: exactly what its calls changed.
-await invocation.undo();
-
-listed = (await workspace.invocations()).items.find(
-  (item) => item.title === "Write the cover letter",
-);
-console.log("undone:", listed?.undone ?? 0, "of", listed?.changes ?? 0, "changes");
+await group.undo();
+console.log("undone:", group.title);
 ```
 
 ```curl example=invocation-and-undo
@@ -122,8 +145,9 @@ working in a workspace of their own leave one list per workspace of what was inv
 and what can still be taken back.
 
 The invocations are a record of the workspace, `record:tilo.invocations:`, read whole through the
-record API (`ws.invocations()`; `GET /v1/workspaces/{workspace}/resources/record:tilo.invocations:`;
-over MCP `tilo_read record:tilo.invocations:`; `tilo invocations -w <workspace>` pages it). A reader
+resource API (`ws.readResource({ path: "record:tilo.invocations:" })`; `GET
+/v1/workspaces/{workspace}/resources/record:tilo.invocations:`; over MCP `tilo_read
+record:tilo.invocations:`; `tilo invocations -w <workspace>` pages it). A reader
 pages it itself, 50 unless it says (at most 200), and the record also answers one invocation by its
 id, `record:tilo.invocations:<id>`. Each says:
 
@@ -164,65 +188,103 @@ a key that may read the record it asked about. A Read taken away shows in the ne
 invocation was given, what it answered and the words of its failure stay with whoever made it.
 
 ```python example=list-invocations
-from tilo import Tilo
+import asyncio
 
-tilo = Tilo()
-workspace = tilo.workspace(tilo.workspaces.create("Every invocation").id)
+from tilo import Tilo, run
 
-with workspace.invocation("Write the cover letter"):
-    workspace.do("word-processor#append_paragraph", text="Dear Visa Officer,")
 
-listed = workspace.invocations()
-print(listed.total, "invocations, newest first;", listed.waiting, "waiting for you")
-for invocation in listed:
-    print(
-        " ",
-        invocation.status,
-        "by",
-        invocation.by,
-        "|",
-        invocation.title,
-        "|",
-        invocation.changes,
-        "changes",
-    )
+async def main() -> None:
+    async with Tilo() as tilo:
+        made = await run(
+            tilo, {"path": "account/workspaces", "action": "create"}, {"name": "Every invocation"}
+        )
+        workspace = tilo.workspace(made["result"]["workspace"]["id"])
 
-letter = next(item for item in listed.invocations if item.title == "Write the cover letter")
-assert letter.status == "ended" and letter.undoable, letter
-print("found:", letter.id, letter.records[0]["app"])
+        async with workspace.invocation("Write the cover letter"):
+            await run(
+                workspace,
+                {"path": "word-processor", "action": "append_paragraph"},
+                {"text": "Dear Visa Officer,"},
+            )
+
+        # The workspace keeps its invocations as a record; its items are newest first.
+        record = await workspace.read_resource("record:tilo.invocations:")
+        fields = record.get("fields") or {}
+        items = fields.get("items") or []
+        print(fields.get("total", 0), "invocations;", fields.get("waiting", 0), "waiting for you")
+        for item in items:
+            print(
+                " ",
+                item.get("status"),
+                "by",
+                (item.get("by") or {}).get("name"),
+                "|",
+                item.get("title"),
+                "|",
+                item.get("changes"),
+                "changes",
+            )
+
+        letter = next(item for item in items if item.get("title") == "Write the cover letter")
+        assert letter.get("status") == "ended" and letter.get("undoable"), letter
+        print("found:", letter.get("id"), (letter.get("records") or [{}])[0].get("app"))
+
+
+asyncio.run(main())
 ```
 
 ```typescript example=list-invocations
-import { Tilo } from "tilo-sdk";
+import { Tilo, run } from "tilo-sdk";
 
 const tilo = new Tilo();
-const workspace = tilo.workspace((await tilo.workspaces.create("Every invocation")).id);
+const made = await run(
+  tilo,
+  { path: "account/workspaces", action: "create" },
+  { name: "Every invocation" },
+);
+const workspace = tilo.workspace((made.result as { workspace: { id: string } }).workspace.id);
 
 await workspace.invocation("Write the cover letter", async () => {
-  await workspace.do("word-processor#append_paragraph", { text: "Dear Visa Officer," });
+  await run(
+    workspace,
+    { path: "word-processor", action: "append_paragraph" },
+    { text: "Dear Visa Officer," },
+  );
 });
 
-const listed = await workspace.invocations();
-console.log(listed.total, "invocations, newest first;", listed.waiting, "waiting for you");
-for await (const invocation of listed) {
+// The workspace keeps its invocations as a record; its items are newest first.
+type Listed = {
+  status: string;
+  title?: string;
+  by?: { name?: string };
+  changes?: number;
+  id?: string;
+  undoable?: boolean;
+  records?: { app?: string }[];
+};
+const record = await workspace.readResource({ path: "record:tilo.invocations:" });
+const fields = (record.fields ?? {}) as { total?: number; waiting?: number; items?: Listed[] };
+const items = fields.items ?? [];
+console.log(fields.total ?? 0, "invocations;", fields.waiting ?? 0, "waiting for you");
+for (const item of items) {
   console.log(
     " ",
-    invocation.status,
+    item.status,
     "by",
-    invocation.by,
+    item.by?.name,
     "|",
-    invocation.title,
+    item.title,
     "|",
-    invocation.changes,
+    item.changes ?? 0,
     "changes",
   );
 }
 
-const letter = listed.invocations.find((item) => item.title === "Write the cover letter");
+const letter = items.find((item) => item.title === "Write the cover letter");
 if (letter === undefined || letter.status !== "ended" || !letter.undoable) {
   throw new Error(`the letter's invocation is listed as ended: ${JSON.stringify(letter)}`);
 }
-console.log("found:", letter.id, letter.records[0]?.app);
+console.log("found:", letter.id, letter.records?.[0]?.app);
 ```
 
 ```curl example=list-invocations
@@ -252,9 +314,10 @@ the workspace's members, so invite the person first.
 https://tilo.sh/app/#/@eu1.tilo.sh/w/6f1c…/so.tilo.pdf-viewer/uuid:a65e…
 ```
 
-`ws.link(path)` answers the link to anything a path names. An invocation collects the links to every
-record it changed, once each, in `invocation.links`, and `invocation.link` is the one link when it changed
-one record.
+A resource's `share-link` action answers the link to anything its path names
+(`run(ws, {"path": …, "action": "share-link"})`). An invocation group collects the links to every record
+its calls changed, once each, in `group.links`, and `group.link` is the one link when they changed one
+record.
 
 ## Watching it happen
 

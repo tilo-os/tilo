@@ -18,29 +18,45 @@ You can keep workspaces across more than one host. Listing workspaces shows whic
 one and your role in it:
 
 ```python example=workspaces-and-hosts
-from tilo import Tilo
+import asyncio
 
-tilo = Tilo()
-listing = tilo.workspaces.list()
+from tilo import Tilo, run
 
-for workspace in listing:
-    print(f"{workspace.name}  on {workspace.host}  as {workspace.role or 'owner'}")
 
-created = tilo.workspaces.create("A workspace of my own")
-print("created:", created.name, "on", created.host)
+async def main() -> None:
+    async with Tilo() as tilo:
+        listed = (await run(tilo, {"path": "account/workspaces", "action": "list"}))["result"]
+        for workspace in listed["workspaces"]:
+            print(
+                f"{workspace['name']}  on {workspace.get('host')}  "
+                f"as {workspace.get('role') or 'owner'}"
+            )
+
+        made = (await run(
+            tilo, {"path": "account/workspaces", "action": "create"}, {"name": "A workspace of my own"}
+        ))["result"]["workspace"]
+        print("created:", made["name"], "on", made.get("host"))
+
+
+asyncio.run(main())
 ```
 
 ```typescript example=workspaces-and-hosts
-import { Tilo } from "tilo-sdk";
+import { Tilo, run } from "tilo-sdk";
 
 const tilo = new Tilo();
-const listing = await tilo.workspaces.list();
-
-for (const workspace of listing.workspaces) {
+const listed = await run(tilo, { path: "account/workspaces", action: "list" });
+type WorkspaceInfo = { id: string; name: string; host?: string; role?: string };
+for (const workspace of (listed.result as { workspaces: WorkspaceInfo[] }).workspaces) {
   console.log(`${workspace.name}  on ${workspace.host}  as ${workspace.role || "owner"}`);
 }
 
-const created = await tilo.workspaces.create("A workspace of my own");
+const made = await run(
+  tilo,
+  { path: "account/workspaces", action: "create" },
+  { name: "A workspace of my own" },
+);
+const created = (made.result as { workspace: WorkspaceInfo }).workspace;
 console.log("created:", created.name, "on", created.host);
 ```
 
@@ -58,12 +74,12 @@ created=$(curl -sS --fail-with-body "$api/resources/account/workspaces/actions/c
 echo "created: $(jq -r .name <<<"$created") on $(jq -r .host <<<"$created")"
 ```
 
-The rows you list carry the role you hold in each workspace: `owner` for one of your own, else the role
+The rows you list carry the role you have in each workspace: `owner` for one of your own, else the role
 you were invited with.
 
 The API in front of the hosts keeps no workspace itself. It checks the key against the grant it carries
 and forwards each call to the host that serves that workspace best right now, so the same key works
-through any of our API servers and through yours. When only hosts that hold a workspace's encrypted data
+through any of our API servers and through yours. When only hosts that keep a workspace's encrypted data
 are online, none that can read it, the call is refused in plain words rather than answered.
 
 ## One workspace on more than one server
@@ -73,7 +89,7 @@ keep it too, say. Both keep the whole workspace, a change on either reaches the 
 other members reach it at either, also while the first one is off.
 
 A server names itself to you with its own `web-host.json` line, which its operator hands over: its
-certificate and where it is dialled. No site of the server's is asked who it is, so what you hold is
+certificate and where it is dialled. No site of the server's is asked who it is, so what you have is
 what names it.
 
 ```sh

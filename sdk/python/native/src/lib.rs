@@ -1,21 +1,20 @@
 //! `tilo._native`: the Python SDK's way into Tilo, the device daemon's native endpoint.
 //!
 //! A program connects to this computer's daemon as `tilo`'s workspace commands do
-//! ([`tilo_api::calls::Calls`]): action frames ([`tilo_actions::remote::RemoteActionFrame`]),
-//! one per line, carried by the line wire's one client, walked as the agent surface's tools in
-//! this process. The daemon admits the connection as whoever makes it: the person's own
-//! account, or an app process the daemon started, in the one workspace it was started in.
+//! ([`tilo_api::calls::Calls`]), over the line wire's one client. The daemon admits the
+//! connection as whoever makes it: the person's own account, or an app process the daemon
+//! started, in the one workspace it was started in. Every request of the API (`/v1`) on it is
+//! answered by the daemon as that connection is admitted ([`Calls::request`]); its body streams
+//! back in pieces, as a stream of events goes on sending. The vault and the call lane are the
+//! app's connection's own, answered as JSON text.
 //!
-//! Every call runs on one tokio runtime for the process and is awaited from asyncio without
-//! holding the GIL; it answers `{"answer": ...}` or `{"refused": {"error": {...}}}` as JSON text,
-//! the refusal's body as the SDK raises its typed errors from. The Automerge bytes a call reads
-//! are decoded in sandboxed workers, started as the `tilo-automerge-worker` program the wheel
-//! carries beside this module.
+//! The Automerge bytes a call reads are decoded in sandboxed workers, started as the
+//! `tilo-automerge-worker` program the wheel carries beside this module.
 
 use pyo3::exceptions::{PyConnectionError, PyImportError, PyValueError};
 use pyo3::prelude::*;
 use std::sync::Arc;
-use tilo_api::calls::Calls;
+use tilo_api::calls::{ApiAnswer, Calls};
 
 /// A connection to this computer's daemon.
 #[pyclass(frozen, module = "tilo._native")]
@@ -31,37 +30,48 @@ impl Daemon {
         self.calls.served_workspace().map(str::to_owned)
     }
 
-    /// Call `tool` with `args` (JSON text) in `workspace` (`None`: the account's own tree), as a
-    /// step of `group` (JSON text of `{id, title}`) when one is named: awaits JSON text of
-    /// `{"answer": ...}` or `{"refused": {"error": {...}}}`.
-    #[pyo3(signature = (workspace, tool, args, group=None))]
-    fn call<'py>(
+    /// Have the daemon answer `method` on `target` (a `/v1` path with its query) with `headers`
+    /// and `body`, as its API answers this connection: an app with its own grants, never its
+    /// person's. Awaits the [`Reply`]; raises `ConnectionError` when the daemon did not answer.
+    /// A refusal is an answer, with its status.
+    #[pyo3(signature = (method, target, headers, body=None))]
+    fn request<'py>(
         &self,
         py: Python<'py>,
-        workspace: Option<String>,
-        tool: String,
-        args: &str,
-        group: Option<&str>,
+        method: String,
+        target: String,
+        headers: Vec<Vec<String>>,
+        body: Option<Vec<u8>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        let args: serde_json::Value = serde_json::from_str(args)
-            .map_err(|error| PyValueError::new_err(format!("the arguments: {error}")))?;
-        let group: Option<serde_json::Value> = group
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(|error| PyValueError::new_err(format!("the group: {error}")))?;
+        let headers = headers
+            .into_iter()
+            .filter_map(|pair| match <[String; 2]>::try_from(pair) {
+                Ok([name, value]) => Some((name, value)),
+                Err(_) => None,
+            })
+            .collect();
+        let body = body.unwrap_or_default();
         let calls = Arc::clone(&self.calls);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let answer = match calls.call(workspace.as_deref(), &tool, args, group).await {
-                Ok(answer) => serde_json::json!({ "answer": answer }),
-                Err(refused) => serde_json::json!({ "refused": refused }),
-            };
-            Ok(answer.to_string())
+            let answer = calls
+                .request(&method, &target, headers, body)
+                .await
+                .map_err(PyConnectionError::new_err)?;
+            Ok(Reply {
+                status: answer.status,
+                headers: answer
+                    .headers
+                    .iter()
+                    .map(|(name, value)| vec![name.clone(), value.clone()])
+                    .collect(),
+                body: Arc::new(answer),
+            })
         })
     }
 
     /// Make the web call `args` (JSON text) names with the key of the vault item it names, in
     /// `workspace` (`None`: the one this connection acts in): awaits JSON text of
-    /// `{"answer": ...}` or `{"refused": {"error": {...}}}`. An app's held connection has the
+    /// `{"answer": ...}` or `{"refused": {"error": {...}}}`. An app's own connection has the
     /// vault add the key to the request; the secret never reaches the app.
     #[pyo3(signature = (workspace, args))]
     fn web_call<'py>(
@@ -95,6 +105,27 @@ impl Daemon {
         let calls = Arc::clone(&self.calls);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let answer = match calls.release(workspace.as_deref(), &item).await {
+                Ok(answer) => serde_json::json!({ "answer": answer }),
+                Err(refused) => serde_json::json!({ "refused": refused }),
+            };
+            Ok(answer.to_string())
+        })
+    }
+
+    /// The reference of the vault item tagged for `app` and `purpose` in `workspace` (`None`:
+    /// the one this connection acts in), found on this app's own connection ([`Calls::find`]):
+    /// awaits JSON text of `{"answer": {"reference": ...}}` or `{"answer": {}}`, or
+    /// `{"refused": {"error": {...}}}`. It releases nothing.
+    fn find<'py>(
+        &self,
+        py: Python<'py>,
+        workspace: Option<String>,
+        app: String,
+        purpose: String,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let calls = Arc::clone(&self.calls);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let answer = match calls.find(workspace.as_deref(), &app, &purpose).await {
                 Ok(answer) => serde_json::json!({ "answer": answer }),
                 Err(refused) => serde_json::json!({ "refused": refused }),
             };
@@ -151,6 +182,38 @@ impl Daemon {
     }
 }
 
+/// What the daemon's API answered one request with: its status and headers, and its body as it
+/// comes.
+#[pyclass(frozen, module = "tilo._native")]
+struct Reply {
+    status: u16,
+    headers: Vec<Vec<String>>,
+    body: Arc<ApiAnswer>,
+}
+
+#[pymethods]
+impl Reply {
+    #[getter]
+    fn status(&self) -> u16 {
+        self.status
+    }
+
+    /// Each header as `[name, value]`.
+    #[getter]
+    fn headers(&self) -> Vec<Vec<String>> {
+        self.headers.clone()
+    }
+
+    /// The next piece of the body; `None` once it ended. Raises `ConnectionError` when the
+    /// connection closed first.
+    fn next<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let body = Arc::clone(&self.body);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            body.next().await.map_err(PyConnectionError::new_err)
+        })
+    }
+}
+
 /// A call's outcome as the SDK reads it: `{"answer": ...}` or `{"refused": ...}`.
 fn answered(outcome: Result<serde_json::Value, serde_json::Value>) -> serde_json::Value {
     match outcome {
@@ -199,6 +262,7 @@ fn serve_workers_beside_module(py: Python<'_>) -> PyResult<()> {
 #[pymodule]
 fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Daemon>()?;
+    module.add_class::<Reply>()?;
     module.add_function(wrap_pyfunction!(connect, module)?)?;
     Ok(())
 }

@@ -10,7 +10,8 @@ name it `First steps`.
 
 > [!NOTE]
 > You can also create a workspace from the CLI (`tilo do account/workspaces#create name="First steps"`) or SDK
-> (`tilo.workspaces.create("First steps")`). Once a workspace is set up the way you want, branch it
+> (`run(tilo, {"path": "account/workspaces", "action": "create"}, {"name": "First steps"})`). Once a
+> workspace is set up the way you want, branch it
 > instead of starting over: `tilo do account/workspaces#branch workspace="First steps" name="Second try"`
 > ([branch a workspace](workspaces.md#branch-a-workspace)).
 
@@ -61,33 +62,47 @@ The SDKs read `TILO_API_KEY` from the environment, so nothing is hard-coded. Thi
 its own, lists the apps in it, writes a snippet and reads it back:
 
 ```python example=first-workspace
-from tilo import Tilo
+import asyncio
 
-tilo = Tilo()                                         # the key in TILO_API_KEY
-created = tilo.workspaces.create("First steps")       # or reuse one you have
-workspace = tilo.workspace(created.id)
+from tilo import Tilo, run
 
-print("workspace:", created.name, created.id)
-print("apps:", len(workspace.ls().rows))
 
-workspace.do("snippets#new-snippet", title="Hello")
-snippet = workspace.read("snippets/Hello")
-print("snippet:", snippet.kind, "title:", snippet.fields["title"])
+async def main() -> None:
+    async with Tilo() as tilo:               # the key in TILO_API_KEY
+        made = await run(                  # or reuse one you have
+            tilo, {"path": "account/workspaces", "action": "create"}, {"name": "First steps"}
+        )
+        workspace = tilo.workspace(made["result"]["workspace"]["id"])
+
+        print("workspace:", made["result"]["workspace"]["name"], await workspace.id())
+        print("apps:", len((await workspace.list_resources())["rows"]))
+
+        await run(workspace, {"path": "snippets", "action": "new-snippet"}, {"title": "Hello"})
+        snippet = await workspace.resource("snippets/Hello").load()
+        print("snippet:", snippet.kind, "title:", snippet.fields["title"])
+
+
+asyncio.run(main())
 ```
 
 ```typescript example=first-workspace
-import { Tilo } from "tilo-sdk";
+import { Tilo, run } from "tilo-sdk";
 
 const tilo = new Tilo();                                     // the key in TILO_API_KEY
-const created = await tilo.workspaces.create("First steps"); // or reuse one you have
+const made = await run(                                     // or reuse one you have
+  tilo,
+  { path: "account/workspaces", action: "create" },
+  { name: "First steps" },
+);
+const created = (made.result as { workspace: { id: string; name: string } }).workspace;
 const workspace = tilo.workspace(created.id);
 
-console.log("workspace:", created.name, created.id);
-const apps = await workspace.ls();
+console.log("workspace:", created.name, await workspace.id());
+const apps = await workspace.listResources();
 console.log("apps:", apps.rows.length);
 
-await workspace.do("snippets#new-snippet", { title: "Hello" });
-const snippet = await workspace.read("snippets/Hello");
+await run(workspace, { path: "snippets", action: "new-snippet" }, { title: "Hello" });
+const snippet = await workspace.resource("snippets/Hello").load();
 console.log("snippet:", snippet.kind, "title:", snippet.fields.title);
 ```
 

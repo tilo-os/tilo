@@ -35,13 +35,14 @@ const FORM = "pdf-viewer/application.pdf";
 const FIRST = ["Jane", "Amara", "Luis", "Mei", "Omar", "Priya", "Tomas", "Yuki", "Noah", "Zara"];
 const LAST = ["Doe", "Okafor", "Garcia", "Chen", "Haddad", "Rao", "Novak", "Sato", "Berg", "Ali"];
 
-const FILLED: Record<string, unknown> = {
-  surname: { kind: "text", value: "Doe" },
-  given_names: { kind: "text", value: "Jane" },
-  passport_number: { kind: "text", value: "X1234567" },
-  purpose: { kind: "choice", value: "Business" },
-  declaration: { kind: "checked", value: { on: true, export: "Yes" } },
+/** What the agent fills in, by the kind of field the PDF carries. */
+const TEXT_FIELDS: Record<string, string> = {
+  surname: "Doe",
+  given_names: "Jane",
+  passport_number: "X1234567",
 };
+const CHOICE_FIELDS: Record<string, string> = { purpose: "Business" };
+const CHECKED_FIELDS: Record<string, string> = { declaration: "Yes" };
 
 const LETTER = [
   "Dear Visa Officer,",
@@ -184,20 +185,41 @@ async function workspacesOf(client: Tilo): Promise<WorkspaceInfo[]> {
   return (await act<{ workspaces: WorkspaceInfo[] }>(client, "account/workspaces#list")).workspaces;
 }
 
-interface FormField {
-  name: string;
-  kind: string;
-  path: unknown;
-  value: unknown;
+/** Everything the agent fills in, as the document's fields read it back. */
+function filledExpected(): Record<string, unknown> {
+  const said: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(TEXT_FIELDS)) {
+    said[name] = { kind: "text", value };
+  }
+  for (const [name, value] of Object.entries(CHOICE_FIELDS)) {
+    said[name] = { kind: "choice", value };
+  }
+  for (const [name, value] of Object.entries(CHECKED_FIELDS)) {
+    said[name] = { kind: "checked", value: { on: true, export: value } };
+  }
+  return said;
 }
 
-function valuesOf(fields: FormField[]): Record<string, unknown> {
-  return Object.fromEntries(fields.map((field) => [field.name, field.value]));
-}
-
-async function fieldsOf(workspace: Workspace): Promise<FormField[]> {
-  const read = await act<{ fields: FormField[] }>(workspace, `${FORM}#read-form-fields`);
-  return read.fields;
+/** The form's values as it reads now: what people filled in, by kind. */
+async function values(workspace: Workspace): Promise<Record<string, unknown>> {
+  const read = await workspace.readResource({ path: FORM });
+  const fields = (read.fields ?? {}) as {
+    form_text?: Record<string, string>;
+    form_choice?: Record<string, string>;
+    form_checked?: Record<string, boolean>;
+    form_export?: Record<string, string>;
+  };
+  const said: Record<string, unknown> = {};
+  for (const [name, text] of Object.entries(fields.form_text ?? {})) {
+    said[name] = { kind: "text", value: text };
+  }
+  for (const [name, choice] of Object.entries(fields.form_choice ?? {})) {
+    said[name] = { kind: "choice", value: choice };
+  }
+  for (const [name, on] of Object.entries(fields.form_checked ?? {})) {
+    said[name] = { kind: "checked", value: { on, export: fields.form_export?.[name] } };
+  }
+  return said;
 }
 
 /** How the host refused `call`: the refusal's code, or `allowed`. */
@@ -303,29 +325,27 @@ async function main(): Promise<number> {
   );
 
   const group = await agentWorkspace.invocation(INVOCATION_TITLE, async (invocation) => {
-    await act(agentWorkspace, "pdf-viewer#open");
-    const imported = await act(agentWorkspace, "pdf-viewer#import-pdf-content", {
-      content: application,
+    const opened = await act(agentWorkspace, "pdf-viewer#open_source", {
+      address: application,
       name: "application.pdf",
     });
-    say("   imported", JSON.stringify(imported).slice(0, 200));
-    const before = await fieldsOf(agentWorkspace);
-    say("   fields", before.map((field) => `${field.name} (${field.kind})`).join(", "));
-    check(
-      Object.keys(FILLED).every((name) => before.some((field) => field.name === name)),
-      "the form has every field the agent fills",
-    );
-    for (const field of before) {
-      if (field.name in FILLED) {
-        await act(agentWorkspace, `${FORM}#field-edit`, {
-          edit: { path: field.path, op: "set", value: FILLED[field.name] },
-        });
-      }
+    say("   opened", JSON.stringify(opened).slice(0, 200));
+    await act(agentWorkspace, `${FORM}#read_fields`);
+    for (const [name, text] of Object.entries(TEXT_FIELDS)) {
+      await act(agentWorkspace, `${FORM}#fill_field`, { name, text });
     }
-    const filled = valuesOf(await fieldsOf(agentWorkspace));
+    for (const [name, choice] of Object.entries(CHOICE_FIELDS)) {
+      await act(agentWorkspace, `${FORM}#choose_field`, { name, choice });
+    }
+    for (const [name, exported] of Object.entries(CHECKED_FIELDS)) {
+      await act(agentWorkspace, `${FORM}#check_field`, { name, on: true, export: exported });
+    }
+    const filled = await values(agentWorkspace);
     say("   filled", JSON.stringify(filled));
     check(
-      Object.entries(FILLED).every(([name, value]) => JSON.stringify(filled[name]) === JSON.stringify(value)),
+      Object.entries(filledExpected()).every(
+        ([name, value]) => JSON.stringify(filled[name]) === JSON.stringify(value),
+      ),
       "every field has what the agent set",
     );
 
@@ -404,9 +424,11 @@ async function main(): Promise<number> {
   const reviewing = reviewer.workspace(jane.name);
   const seen = await reviewing.resource(FORM).load();
   say("   read", `${seen.kind}: ${Object.keys(seen.fields).sort().join(", ")}`);
-  const reviewed = valuesOf(await fieldsOf(reviewing));
+  const reviewed = await values(reviewing);
   check(
-    Object.entries(FILLED).every(([name, value]) => JSON.stringify(reviewed[name]) === JSON.stringify(value)),
+    Object.entries(filledExpected()).every(
+      ([name, value]) => JSON.stringify(reviewed[name]) === JSON.stringify(value),
+    ),
     `the reviewer sees the filled values: ${JSON.stringify(reviewed)}`,
   );
 
@@ -437,14 +459,16 @@ async function main(): Promise<number> {
   say("4d. The reviewer undoes the agent's invocation");
   const groupId = [...groups.keys()][0];
   await act(reviewing, `${FORM}#undo`, { invocation: groupId });
-  const back = valuesOf(await fieldsOf(reviewing));
+  const back = await values(reviewing);
   say("   after undo", JSON.stringify(back));
   check(
-    JSON.stringify(back.surname) === JSON.stringify({ kind: "text", value: "" }),
+    JSON.stringify(back.surname ?? { kind: "text", value: "" }) ===
+      JSON.stringify({ kind: "text", value: "" }),
     "the surname is empty again",
   );
   check(
-    JSON.stringify(back.purpose) === JSON.stringify({ kind: "choice", value: "Tourism" }),
+    JSON.stringify(back.purpose ?? { kind: "choice", value: "Tourism" }) ===
+      JSON.stringify({ kind: "choice", value: "Tourism" }),
     "the purpose is back to what the form said",
   );
 

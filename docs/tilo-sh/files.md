@@ -120,56 +120,75 @@ nor needs a computer of yours to be on.
 
 A bare name (`notes.md`, with no folder before it) that an agent asks on a computer where Files
 is open is first the entry by that name of the folder Files shows there, as the agent sees it
-listed. A name that folder does not hold, every path with a folder in it, and every name asked
+listed. A name that folder does not have, every path with a folder in it, and every name asked
 where Files is not open (an agent working on your server) is a file of the workspace's folder.
 
 `write-file` writes a file into a folder, making the folders on the way: from `text`, up to 256
 KiB, or from `content`, the `tilo.content:` reference an upload or another app's export answered,
 so a PDF Writer made lands in a task's folder. A name that is taken is refused; `replace: true`
 gives that file the new content. Like the verbs it answers as `undo` the one call that takes it
-back: the trash for a new file, and for one written over the write of what it held before.
+back: the trash for a new file, and for one written over the write of what it had before.
 
 ## The round trip
 
 Upload a file, make one, and read it back:
 
 ```python example=upload-and-export
-from tilo import Tilo
+import asyncio
 
-tilo = Tilo()
-workspace = tilo.workspace(tilo.workspaces.create("Files and letters").id)
+from tilo import Tilo, run
 
-# Bytes go up once, and the reference is what the apps take.
-reference = workspace.files.upload(b"passport scan, in bytes")
-print("uploaded:", reference)
 
-# An action that makes a file answers a reference to it.
-workspace.do("word-processor#append_paragraph", text="Dear Visa Officer,")
-letter = workspace.do("word-processor#export_document", format="docx")
+async def main() -> None:
+    async with Tilo() as tilo:
+        made = await run(
+            tilo, {"path": "account/workspaces", "action": "create"}, {"name": "Files and letters"}
+        )
+        workspace = tilo.workspace(made["result"]["workspace"]["id"])
 
-# And the bytes come back out.
-data = workspace.files.download(letter)
-print("the letter is", len(data), "bytes, a Word file:", data[:2] == b"PK")
+        # Bytes go up once, and the reference is what the apps take.
+        reference = await workspace.upload(b"passport scan, in bytes")
+        print("uploaded:", reference)
+
+        # An action that makes a file answers a reference to it.
+        await run(
+            workspace, {"path": "word-processor", "action": "append_paragraph"}, {"text": "Dear Visa Officer,"}
+        )
+        letter = (
+            await run(workspace, {"path": "word-processor", "action": "export_document"}, {"format": "docx"})
+        ).get("result")
+
+        # And the bytes come back out.
+        data = await workspace.download(str(letter))
+        print("the letter is", len(data), "bytes, a Word file:", data[:2] == b"PK")
+
+
+asyncio.run(main())
 ```
 
 ```typescript example=upload-and-export
-import { Tilo } from "tilo-sdk";
+import { Tilo, run } from "tilo-sdk";
 
 const tilo = new Tilo();
-const workspace = tilo.workspace((await tilo.workspaces.create("Files and letters")).id);
+const made = await run(
+  tilo,
+  { path: "account/workspaces", action: "create" },
+  { name: "Files and letters" },
+);
+const workspace = tilo.workspace((made.result as { workspace: { id: string } }).workspace.id);
 
 // Bytes go up once, and the reference is what the apps take.
-const reference = await workspace.files.upload(
-  new TextEncoder().encode("passport scan, in bytes"),
-);
+const reference = await workspace.upload(new TextEncoder().encode("passport scan, in bytes"));
 console.log("uploaded:", reference);
 
 // An action that makes a file answers a reference to it.
-await workspace.do("word-processor#append_paragraph", { text: "Dear Visa Officer," });
-const letter = await workspace.do("word-processor#export_document", { format: "docx" });
-
-// And the bytes come back out.
-const bytes = await workspace.files.download(String(letter));
+await run(workspace, { path: "word-processor", action: "append_paragraph" }, { text: "Dear Visa Officer," });
+const letter = await run(
+  workspace,
+  { path: "word-processor", action: "export_document" },
+  { format: "docx" },
+);
+const bytes = await workspace.download(String(letter.result));
 console.log("the letter is", bytes.length, "bytes, a Word file:", bytes[0] === 0x50 && bytes[1] === 0x4b);
 ```
 
@@ -196,7 +215,7 @@ yourself. Folders keep their names from the folder you gave: `tilo files put not
 ## Who may
 
 A member who may change the workspace's records puts files and takes them out; a viewer only reads. An
-agent is held to the same line: its key reaches the one workspace, and its role there decides.
+agent follows the same line: its key reaches the one workspace, and its role there decides.
 
 Under the covers a put is `PUT /v1/workspaces/<workspace>/contents/<hash>`, the lowercase BLAKE3
 hash of the bytes, one request or, for a large file, pieces with `Content-Range`; a download is

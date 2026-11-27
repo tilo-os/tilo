@@ -19,48 +19,54 @@ new API key — pause until a person approves them on their own device.
 
 ## Pending approval lifecycle
 
-When an action requires approval, the API returns a **pending** status rather than an error, along
-with an invocation ID and approval URL. Both SDKs raise `AskPending`.
+When an action requires approval, the API answers **pending** rather than an error, with the
+invocation it runs under and the `ask` the person answers. `run` follows it until they decide.
 
 Nothing executes while the invocation is pending. Retrying the same request with the same
-idempotency key returns the existing pending invocation rather than duplicating it. Once approved,
-the invocation completes with `ok`; if denied, it completes with `failed` and nothing executes.
+idempotency key answers the existing pending invocation rather than duplicating it. Once approved,
+the invocation completes; if denied, it fails and nothing executes.
 
 ## Example: requesting an API key
 
-Requesting a new API key raises `AskPending` with an approval link. Calling `wait()` blocks until
-the person approves or denies it:
+Requesting a new API key asks the person, and `run` answers it once they approve it on a device of
+theirs:
 
 ```python example=ask-for-key
-from tilo import AskPending, Tilo
+import asyncio
 
-tilo = Tilo()
+from tilo import Tilo, run
 
-try:
-    tilo.keys.create("Nightly job", expires_in=30 * 24 * 60 * 60)
-    print("a key was made without asking anyone")
-except AskPending as ask:
-    print("waiting for the person at", ask.url)
-    print("ask:", ask.invocation_id)
-    # ask.wait() follows the approval until they decide, and answers the key.
+
+async def main() -> None:
+    async with Tilo() as tilo:
+        # Making a key asks the person: the call answers `pending` with the ask until they
+        # approve it on a device of theirs, and `run` asks again with the same Idempotency-Key.
+        answer = await run(
+            tilo,
+            {"path": "account/keys", "action": "create"},
+            {"name": "Nightly job", "expires_in": 30 * 24 * 60 * 60},
+        )
+        made = answer.get("result") or {}
+        print("a key was made:", bool(made.get("token") or made.get("key")))
+
+
+asyncio.run(main())
 ```
 
 ```typescript example=ask-for-key
-import { AskPending, Tilo } from "tilo-sdk";
+import { Tilo, run } from "tilo-sdk";
 
 const tilo = new Tilo();
 
-try {
-  await tilo.keys.create("Nightly job", null, 30 * 24 * 60 * 60);
-  console.log("a key was made without asking anyone");
-} catch (error) {
-  if (!(error instanceof AskPending)) {
-    throw error;
-  }
-  console.log("waiting for the person at", error.url);
-  console.log("invocation:", error.invocationId);
-  // await error.wait() follows it until they decide, and answers the key.
-}
+// Making a key asks the person: the request answers `pending` with the ask until they approve
+// it on a device of theirs, and `run` asks again with the same Idempotency-Key.
+const answer = await run(
+  tilo,
+  { path: "account/keys", action: "create" },
+  { name: "Nightly job", expires_in: 30 * 24 * 60 * 60 },
+);
+const made = (answer.result ?? {}) as { token?: string; key?: string };
+console.log("a key was made:", Boolean(made.token ?? made.key));
 ```
 
 ## Commands in a workspace's machine
@@ -92,42 +98,74 @@ What stays as it was:
 A workspace's listing says `unattended` while it is on.
 
 ```python example=run-unattended
-from tilo import AskPending, Tilo
+import asyncio
 
-tilo = Tilo()
-template = tilo.workspaces.create("Release checks template")
+from tilo import Tilo, run
 
-try:
-    template_ws = tilo.workspace(template.id)
-    print("now:", template_ws.unattended())
-except AskPending as ask:
-    print("waiting for the person to let it run commands unattended")
-    print("ask:", ask.invocation_id)
-    # ask.wait() follows it until they decide: {"workspace": ..., "unattended": True}.
 
-# Turning it off again asks nobody.
-print("off:", tilo.workspace(template.id).unattended(on=False))
+async def main() -> None:
+    async with Tilo() as tilo:
+        made = await run(
+            tilo,
+            {"path": "account/workspaces", "action": "create"},
+            {"name": "Release checks template"},
+        )
+        workspace = made["result"]["workspace"]["id"]
+
+        # Turning it on asks the person on their approving device, whichever key asks.
+        print(
+            "now:",
+            (
+                await run(
+                    tilo,
+                    {"path": "account/workspaces", "action": "unattended"},
+                    {"workspace": workspace, "on": True},
+                )
+            ).get("result"),
+        )
+
+        # Turning it off again asks nobody.
+        print(
+            "off:",
+            (
+                await run(
+                    tilo,
+                    {"path": "account/workspaces", "action": "unattended"},
+                    {"workspace": workspace, "on": False},
+                )
+            ).get("result"),
+        )
+
+
+asyncio.run(main())
 ```
 
 ```typescript example=run-unattended
-import { AskPending, Tilo } from "tilo-sdk";
+import { Tilo, run } from "tilo-sdk";
 
 const tilo = new Tilo();
-const template = await tilo.workspaces.create("Release checks template");
+const made = await run(
+  tilo,
+  { path: "account/workspaces", action: "create" },
+  { name: "Release checks template" },
+);
+const workspace = (made.result as { workspace: { id: string } }).workspace.id;
 
-try {
-  console.log("now:", await tilo.workspace(template.id).unattended());
-} catch (error) {
-  if (!(error instanceof AskPending)) {
-    throw error;
-  }
-  console.log("waiting for the person to let it run commands unattended");
-  console.log("ask:", error.invocationId);
-  // await error.wait() follows it until they decide: { workspace, unattended: true }.
-}
+// Turning it on asks the person on their approving device, whichever key asks.
+const on = await run(
+  tilo,
+  { path: "account/workspaces", action: "unattended" },
+  { workspace, on: true },
+);
+console.log("now:", on.result);
 
 // Turning it off again asks nobody.
-console.log("off:", await tilo.workspace(template.id).unattended(false));
+const off = await run(
+  tilo,
+  { path: "account/workspaces", action: "unattended" },
+  { workspace, on: false },
+);
+console.log("off:", off.result);
 ```
 
 From the command line, `tilo do account/workspaces#unattended workspace=<workspace> on=true` asks and
@@ -154,4 +192,4 @@ The whole flow, with the person answering, is in [the hosted Browser](hosted-bro
 ## Where next
 
 - [Invocations and history](invocations-and-history.md): what the approved action recorded.
-- [Errors](errors.md): `AskPending` among the rest.
+- [Errors](errors.md): a refusal among the rest, and a pending answer that is not one.

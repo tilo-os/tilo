@@ -837,7 +837,8 @@ fn described(apps: &[App]) -> Result<serde_json::Value> {
     tilo_api::v1::openapi::document(&apps).map_err(|error| anyhow!(error))
 }
 
-/// The Python types of `apps`: a module per app, and their package.
+/// The Python types of `apps`: a module per app, their package, and the client of the API's
+/// operations.
 pub fn python_files(apps: &[App]) -> Result<Vec<(PathBuf, String)>> {
     let mut files = Vec::new();
     let modules = module_names(apps);
@@ -853,6 +854,10 @@ pub fn python_files(apps: &[App]) -> Result<Vec<(PathBuf, String)>> {
         ));
     }
     files.push((PathBuf::from("__init__.py"), python_package()));
+    files.push((
+        PathBuf::from(PYTHON_CLIENT),
+        python_client(&described(apps)?),
+    ));
     Ok(files)
 }
 
@@ -900,10 +905,9 @@ fn python_module(app: &App, types: &Types) -> String {
         ),
         "`await ….load()`: its fields are the app's fields (read-only ones without a setter)"
             .to_owned(),
-        "and its methods are its actions. A method answers what the app declares; an action"
+        "and its methods are its actions. A method answers what the app declares; `run` follows"
             .to_owned(),
-        "that takes longer answers an `Invocation`. A record is the dict the wire carries, and an"
-            .to_owned(),
+        "one that takes longer. A record is the dict the wire carries, and an".to_owned(),
         "enum whose cases carry fields is an object whose tag the app's schema names. An"
             .to_owned(),
         "action whose name is one the class already has is run with `action(\"…\")`, which"
@@ -925,7 +929,7 @@ fn python_module(app: &App, types: &Types) -> String {
     out.push_str("\"\"\"\n\n");
     out.push_str("from __future__ import annotations\n\n");
     out.push_str("from typing import Any, Literal, NotRequired, TypedDict\n");
-    let _ = writeln!(out, "from tilo import Entry, Invocation, Resource\n");
+    let _ = writeln!(out, "from tilo import Entry, Resource\n");
     let mut all: Vec<String> = types
         .declarations
         .iter()
@@ -1112,7 +1116,7 @@ fn python_fields(out: &mut String, class: &Class) -> Vec<String> {
         }
         taken.push(name.clone());
         if field.readonly || name != field.wire {
-            // A read-only field is a property; so is one whose wire name Python cannot hold (a
+            // A read-only field is a property; so is one whose wire name Python cannot name (a
             // tilolang record keeps its fields under ids, some of them starting with a digit):
             // the property reads the key the wire has, so `note.updated` and `note._2od7mwir`
             // both reach the field the app keeps.
@@ -1342,6 +1346,362 @@ fn python_result(action: &Action) -> String {
         .result
         .as_ref()
         .map_or_else(|| "None".to_owned(), python_type)
+}
+
+// -- The Python client of `/v1` --------------------------------------------
+
+/// The module the Python client is written to. No app's module can be named so: an app's is
+/// written with no dot at all ([`module_name`]).
+const PYTHON_CLIENT: &str = "api_v1.py";
+
+/// The Python client of `described`, the API's description: its schemas as typed dicts, and an
+/// operation each as a method, in two classes: the account's operations, and a workspace's,
+/// which name it themselves. The SDK's own `Tilo` and `Workspace` are those classes, carried by
+/// the transport the SDK was given.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one client, from its schemas to its operations, in the order the description gives them"
+)]
+fn python_client(described: &serde_json::Value) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "\"\"\"The client of Tilo's API, `/v1`, written by `tilo sdk gen` from the API's\n\
+         description: its schemas as types, and each of its operations as a method. Write it\n\
+         again rather than editing it.\n\
+         \"\"\"\n\n\
+         from __future__ import annotations\n\n\
+         from collections.abc import AsyncIterator, Mapping\n\
+         from dataclasses import dataclass\n\
+         from typing import Any, Literal, NotRequired, TypeAlias, TypedDict\n\n",
+    );
+    let empty = serde_json::Map::new();
+    let schemas = at(described, "/components/schemas")
+        .as_object()
+        .unwrap_or(&empty);
+    for (name, schema) in schemas {
+        // An app action's own schema (`notes.notebook.rename.Arguments`): its app's module
+        // types it.
+        if name.contains('.') {
+            continue;
+        }
+        let said = at(schema, "/description").as_str().unwrap_or_default();
+        if said.trim().is_empty() {
+            let _ = writeln!(
+                out,
+                "#: The `{name}` schema, as the API's requests and answers carry it."
+            );
+        } else {
+            let _ = writeln!(out, "#: {}", one_line(said));
+        }
+        match at(schema, "/properties").as_object() {
+            Some(properties) => {
+                let required: Vec<&str> = at(schema, "/required")
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect();
+                let _ = writeln!(out, "{name} = TypedDict(\"{name}\", {{");
+                for (property, shape) in properties {
+                    let ty = py_of(shape);
+                    if required.contains(&property.as_str()) {
+                        let _ = writeln!(out, "    {property:?}: \"{ty}\",");
+                    } else {
+                        let _ = writeln!(out, "    {property:?}: NotRequired[\"{ty}\"],");
+                    }
+                }
+                out.push_str("})\n\n");
+            }
+            None => {
+                let _ = writeln!(out, "{name}: TypeAlias = {}\n", py_of(schema));
+            }
+        }
+    }
+    out.push_str(
+        "\n@dataclass(frozen=True)\n\
+         class Operation:\n\
+         \x20   \"\"\"One operation of the API: how a request for it is written, and what it answers.\"\"\"\n\
+         \x20   method: str\n\
+         \x20   path: str\n\
+         \x20   query: tuple[str, ...]\n\
+         \x20   body: str | None\n\
+         \x20   answer: str\n\
+         \x20   mutating: bool\n\n",
+    );
+    let operations = operations_of(described);
+    out.push_str("OPERATIONS: dict[str, Operation] = {\n");
+    for operation in &operations {
+        let query: Vec<String> = operation
+            .query
+            .iter()
+            .map(|name| format!("{name:?}"))
+            .collect();
+        let _ = writeln!(
+            out,
+            "    {:?}: Operation(\n        method={:?},\n        path={:?},\n        query={},\n        body={},\n        answer={:?},\n        mutating={},\n    ),",
+            operation.id,
+            operation.method,
+            operation.path,
+            if query.is_empty() {
+                "()".to_owned()
+            } else {
+                format!("({},)", query.join(", "))
+            },
+            match &operation.body {
+                None => "None".to_owned(),
+                Some(Body::Json(_)) => "\"json\"".to_owned(),
+                Some(Body::Bytes) => "\"bytes\"".to_owned(),
+            },
+            match operation.answer {
+                Answer::Json(_) => "json",
+                Answer::Events => "events",
+                Answer::Bytes => "bytes",
+            },
+            if operation.mutating { "True" } else { "False" }
+        );
+    }
+    out.push_str("}\n\n");
+    for (class, said, workspace) in [
+        (
+            "AccountOperations",
+            "The operations of the API outside every workspace: the API itself, and the key's account.",
+            false,
+        ),
+        (
+            "WorkspaceOperations",
+            "The operations of one workspace, which names it in each request itself.",
+            true,
+        ),
+    ] {
+        let _ = writeln!(out, "class {class}:");
+        let _ = writeln!(out, "    \"\"\"{said}\"\"\"\n");
+        out.push_str(
+            "    async def _send(\n\
+             \x20       self,\n\
+             \x20       operation: Operation,\n\
+             \x20       params: Mapping[str, Any],\n\
+             \x20       body: Any,\n\
+             \x20       headers: Mapping[str, str],\n\
+             \x20   ) -> Any:\n\
+             \x20       \"\"\"One request for `operation`, its answer read as the operation answers it.\"\"\"\n\
+             \x20       raise NotImplementedError\n\n\
+             \x20   def _stream(\n\
+             \x20       self,\n\
+             \x20       operation: Operation,\n\
+             \x20       params: Mapping[str, Any],\n\
+             \x20       body: Any,\n\
+             \x20       headers: Mapping[str, str],\n\
+             \x20   ) -> AsyncIterator[dict[str, Any]]:\n\
+             \x20       \"\"\"One request for `operation`, its answer's events as they come.\"\"\"\n\
+             \x20       raise NotImplementedError\n\n",
+        );
+        for operation in operations
+            .iter()
+            .filter(|operation| operation.path.starts_with(WORKSPACE_PATH) == workspace)
+        {
+            python_operation(&mut out, operation, workspace);
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// One operation of the client as a Python method: its path parameters, its query and its body,
+/// and the answer the description names.
+fn python_operation(out: &mut String, operation: &Operation<'_>, workspace: bool) {
+    let name = method_snake(operation.id);
+    let path: Vec<(&str, bool)> = operation
+        .params
+        .iter()
+        .copied()
+        .filter(|(name, _)| !(workspace && *name == "workspace"))
+        .collect();
+    let mut arguments: Vec<String> = Vec::new();
+    for (param, required) in &path {
+        if *required {
+            arguments.push(format!("{param}: str"));
+        } else {
+            arguments.push(format!("{param}: str | None = None"));
+        }
+    }
+    let body = operation.py_body.as_deref();
+    let body_expression = match body {
+        Some("bytes") => {
+            arguments.push("body: bytes".to_owned());
+            "body"
+        }
+        Some("dict[str, Any]") => {
+            arguments.push("body: dict[str, Any] | None = None".to_owned());
+            "body"
+        }
+        Some(ty) => {
+            arguments.push(format!("body: {ty}"));
+            "body"
+        }
+        None => "None",
+    };
+    let keyword: Vec<String> = operation
+        .query
+        .iter()
+        .map(|name| format!("{name}: str | None = None"))
+        .chain(["headers: Mapping[str, str] | None = None".to_owned()])
+        .collect();
+    arguments.push("*".to_owned());
+    arguments.extend(keyword);
+    let mut params: Vec<String> = path
+        .iter()
+        .map(|(name, _)| format!("{name:?}: {name}"))
+        .collect();
+    params.extend(
+        operation
+            .query
+            .iter()
+            .map(|name| format!("{name:?}: {name}")),
+    );
+    let params = format!("{{{}}}", params.join(", "));
+    let answer = match &operation.answer {
+        Answer::Events => "AsyncIterator[dict[str, Any]]",
+        Answer::Bytes => "bytes",
+        Answer::Json(_) => operation.py_answer.as_str(),
+    };
+    let declaration = if matches!(operation.answer, Answer::Events) {
+        "def"
+    } else {
+        "async def"
+    };
+    let _ = writeln!(
+        out,
+        "    {declaration} {name}(self, {}) -> {answer}:",
+        arguments.join(", ")
+    );
+    doc(out, operation.summary, 2);
+    let call = format!(
+        "OPERATIONS[{:?}], {params}, {body_expression}, headers or {{}}",
+        operation.id
+    );
+    match operation.answer {
+        Answer::Events => {
+            let _ = writeln!(out, "        return self._stream({call})\n");
+        }
+        _ => {
+            let _ = writeln!(out, "        return await self._send({call})\n");
+        }
+    }
+}
+
+/// `id` as a Python method name: `getApi` is `get_api`.
+fn method_snake(id: &str) -> String {
+    let characters: Vec<char> = id.chars().collect();
+    let mut out = String::new();
+    for (index, character) in characters.iter().enumerate() {
+        if !character.is_uppercase() {
+            out.push(*character);
+            continue;
+        }
+        let previous = index.checked_sub(1).and_then(|at| characters.get(at));
+        let following = index.checked_add(1).and_then(|at| characters.get(at));
+        let boundary = previous
+            .is_some_and(|before| before.is_lowercase() || before.is_ascii_digit())
+            || (previous.is_some_and(|before| before.is_uppercase())
+                && following.is_some_and(|after| after.is_lowercase()));
+        if boundary && !out.ends_with('_') && !out.is_empty() {
+            out.push('_');
+        }
+        out.extend(character.to_lowercase());
+    }
+    out
+}
+
+/// The Python type of a JSON schema of the description.
+fn py_of(schema: &serde_json::Value) -> String {
+    use serde_json::Value;
+    let Some(map) = schema.as_object() else {
+        return "Any".to_owned();
+    };
+    if let Some(reference) = map.get("$ref").and_then(Value::as_str) {
+        let name = reference.rsplit('/').next().unwrap_or_default();
+        // An app action's own schema is its app module's to type.
+        return if name.contains('.') {
+            "Any".to_owned()
+        } else {
+            name.to_owned()
+        };
+    }
+    if let Some(value) = map.get("const") {
+        return match value {
+            Value::String(_) => "str".to_owned(),
+            Value::Bool(_) => "bool".to_owned(),
+            Value::Number(number) if number.is_f64() => "float".to_owned(),
+            Value::Number(_) => "int".to_owned(),
+            _ => "Any".to_owned(),
+        };
+    }
+    if let Some(values) = map.get("enum").and_then(Value::as_array) {
+        let literals: Vec<String> = values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|value| format!("{value:?}"))
+            .collect();
+        if literals.len() == values.len() {
+            return format!("Literal[{}]", literals.join(", "));
+        }
+        return union_py(values.iter().map(py_of).collect());
+    }
+    for cases in ["anyOf", "oneOf"] {
+        if let Some(cases) = map.get(cases).and_then(Value::as_array) {
+            return union_py(cases.iter().map(py_of).collect());
+        }
+    }
+    match map.get("type") {
+        Some(Value::Array(types)) => union_py(
+            types
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|ty| py_of_type(ty, schema))
+                .collect(),
+        ),
+        Some(Value::String(ty)) => py_of_type(ty, schema),
+        _ if map.contains_key("properties") => py_of_type("object", schema),
+        _ => "Any".to_owned(),
+    }
+}
+
+fn py_of_type(ty: &str, schema: &serde_json::Value) -> String {
+    match ty {
+        "string" => "str".to_owned(),
+        "integer" => "int".to_owned(),
+        "number" => "float".to_owned(),
+        "boolean" => "bool".to_owned(),
+        "null" => "None".to_owned(),
+        "array" => {
+            if let Some(items) = at(schema, "/prefixItems").as_array() {
+                let items: Vec<String> = items.iter().map(py_of).collect();
+                format!("tuple[{}]", items.join(", "))
+            } else {
+                format!("list[{}]", py_of(at(schema, "/items")))
+            }
+        }
+        "object" if at(schema, "/properties").is_object() => "dict[str, Any]".to_owned(),
+        "object" if at(schema, "/additionalProperties").is_object() => {
+            format!("dict[str, {}]", py_of(at(schema, "/additionalProperties")))
+        }
+        "object" => "dict[str, Any]".to_owned(),
+        _ => "Any".to_owned(),
+    }
+}
+
+/// `types` as one: each once, `Any` for none.
+fn union_py(types: Vec<String>) -> String {
+    let mut once: Vec<String> = Vec::new();
+    for ty in types {
+        if !once.contains(&ty) {
+            once.push(ty);
+        }
+    }
+    if once.is_empty() {
+        return "Any".to_owned();
+    }
+    once.join(" | ")
 }
 
 // -- TypeScript -------------------------------------------------------------
@@ -1886,8 +2246,12 @@ struct Operation<'a> {
     query: Vec<&'a str>,
     /// What it takes: JSON of a type, or bytes (`None` for nothing).
     body: Option<Body>,
+    /// What it takes, as the Python client writes it.
+    py_body: Option<String>,
     /// What it answers on success.
     answer: Answer,
+    /// What it answers, as the Python client writes it.
+    py_answer: String,
     mutating: bool,
 }
 
@@ -2157,7 +2521,16 @@ fn operations_of(described: &serde_json::Value) -> Vec<Operation<'_>> {
                         |json| Some(Body::Json(ts_of(at(json, "/schema")))),
                     )
                 });
+            let py_body = at(operation, "/requestBody/content")
+                .as_object()
+                .and_then(|content| {
+                    content.get("application/json").map_or_else(
+                        || (!content.is_empty()).then_some("bytes".to_owned()),
+                        |json| Some(py_of(at(json, "/schema"))),
+                    )
+                });
             let mut answers: Vec<String> = Vec::new();
+            let mut py_answers: Vec<String> = Vec::new();
             let mut answer = None;
             for (status, response) in at(operation, "/responses")
                 .as_object()
@@ -2173,6 +2546,10 @@ fn operations_of(described: &serde_json::Value) -> Vec<Operation<'_>> {
                     if !answers.contains(&ty) {
                         answers.push(ty);
                     }
+                    let py = py_of(at(json, "/schema"));
+                    if !py_answers.contains(&py) {
+                        py_answers.push(py);
+                    }
                 } else if content.is_some_and(|content| content.contains_key("text/event-stream")) {
                     answer = Some(Answer::Events);
                 } else {
@@ -2187,7 +2564,9 @@ fn operations_of(described: &serde_json::Value) -> Vec<Operation<'_>> {
                 params: named("path"),
                 query: named("query").into_iter().map(|(name, _)| name).collect(),
                 body,
+                py_body,
                 answer: answer.unwrap_or_else(|| Answer::Json(union_of(answers))),
+                py_answer: union_py(py_answers),
                 mutating: parameters.iter().any(|parameter| {
                     at(parameter, "/$ref")
                         .as_str()
@@ -2374,6 +2753,45 @@ mod tests {
             "events(params: { path?: string } = {}, headers: Record<string, string> = {}): AsyncIterableIterator<Event>",
             "getContent(params: { hash: string }, headers: Record<string, string> = {}): Promise<Uint8Array>",
             "listAccountResources(params: { path?: string; cursor?: string; limit?: string; kind?: string } = {}",
+        ] {
+            assert!(client.contains(written), "{written}:\n{client}");
+        }
+        assert!(!client.contains(".Arguments"), "{client}");
+    }
+
+    /// The Python client is the API's description in Python: a method for each of its operations,
+    /// in the class of the account's or of a workspace's, its answers the description's schemas,
+    /// and an app action's own schema left to the app's module.
+    #[test]
+    fn the_python_client_has_a_method_per_operation() {
+        let notes = fleet()
+            .expect("the fleet's surfaces read")
+            .into_iter()
+            .find(|app| app.id == "so.tilo.notes")
+            .expect("the fleet ships notes");
+        let files = python_files(std::slice::from_ref(&notes)).expect("python generates");
+        let client = &files
+            .iter()
+            .find(|(name, _)| name == Path::new(PYTHON_CLIENT))
+            .expect("the client is written")
+            .1;
+        for operation in tilo_api::v1::operations::OPERATIONS.iter() {
+            let name = method_snake(operation.id);
+            assert!(
+                client.contains(&format!("def {name}(self")),
+                "{} has no method:\n{client}",
+                operation.id
+            );
+        }
+        for written in [
+            "class AccountOperations:",
+            "class WorkspaceOperations:",
+            "async def run_action(self, path: str, action: str, body: dict[str, Any] | None = None, *, headers: Mapping[str, str] | None = None) -> ActionAnswer:",
+            "async def put_content(self, hash: str, body: bytes, *, headers: Mapping[str, str] | None = None) -> PutContent:",
+            "def events(self, *, path: str | None = None, headers: Mapping[str, str] | None = None) -> AsyncIterator[dict[str, Any]]:",
+            "async def get_content(self, hash: str, *, headers: Mapping[str, str] | None = None) -> bytes:",
+            "async def list_account_resources(self, *, path: str | None = None, cursor: str | None = None, limit: str | None = None, kind: str | None = None, headers: Mapping[str, str] | None = None) -> Listing:",
+            "Listing = TypedDict(\"Listing\", {",
         ] {
             assert!(client.contains(written), "{written}:\n{client}");
         }

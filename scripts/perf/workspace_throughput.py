@@ -31,7 +31,7 @@ import tempfile
 import time
 from typing import Any, Callable
 
-from tilo import AsyncTilo
+from tilo import Tilo, rows, run
 
 
 def issue(index: int) -> dict[str, Any]:
@@ -57,11 +57,10 @@ def quantile(samples: list[float], q: float) -> float:
 
 
 async def resource_of(ws: Any, app: str, kind: str, action: str) -> str:
-    listing = await ws.ls(app, limit=200)
-    for row in listing:
-        actions = getattr(row, "actions", None) or []
-        if getattr(row, "kind", None) == kind or action in actions:
-            return row.path
+    async for row in rows(ws, path=app, limit="200"):
+        actions = row.get("actions") or []
+        if row.get("kind") == kind or action in actions:
+            return str(row["path"])
     raise SystemExit(f"no {kind} with {action} under {app}")
 
 
@@ -69,7 +68,7 @@ async def heard(watch: Any, since: float, timeout: float = 20.0) -> float | None
     try:
         async with asyncio.timeout(timeout):
             async for event in watch:
-                if getattr(event, "kind", None) == "change":
+                if event.get("type") == "change":
                     return time.perf_counter() - since
     except TimeoutError:
         return None
@@ -78,13 +77,13 @@ async def heard(watch: Any, since: float, timeout: float = 20.0) -> float | None
 
 async def run(args: argparse.Namespace) -> list[dict[str, Any]]:
     table: list[dict[str, Any]] = []
-    async with AsyncTilo() as tilo, AsyncTilo() as other:
+    async with Tilo() as tilo, Tilo() as other:
         for size in args.sizes:
-            made = await tilo.workspaces.create(f"Bench {size}")
-            ws = tilo.workspace(made.id)
-            seen = other.workspace(made.id)
+            made = (await run(tilo, {"path": "account/workspaces", "action": "create"}, {"name": f"Bench {size}"}))["result"]["workspace"]
+            ws = tilo.workspace(made["id"])
+            seen = other.workspace(made["id"])
             for _, app, _, _, _ in KINDS:
-                await ws.do(f"{app}#open")
+                await run(ws, {"path": app, "action": "open"})
             for name, app, kind, action, make in KINDS:
                 path = await resource_of(ws, app, kind, action)
                 record = ws.resource(path)
@@ -94,9 +93,9 @@ async def run(args: argparse.Namespace) -> list[dict[str, Any]]:
                 took: list[float] = []
                 arrived: list[float] = []
                 for index in range(args.singles):
-                    watch = seen.watch(path).__aiter__()
+                    watch = seen.events(path=path)
                     began = time.perf_counter()
-                    await ws.do(f"{path}#{action}", **make(size + index))
+                    await run(ws, {"path": path, "action": action}, make(size + index))
                     took.append(time.perf_counter() - began)
                     late = await heard(watch, began)
                     if late is not None:
@@ -128,7 +127,7 @@ async def run(args: argparse.Namespace) -> list[dict[str, Any]]:
                             out.write(f"fn file_{index}() {{}}\n" * 40)
                     began = time.perf_counter()
                     subprocess.run(
-                        ["tilo", "files", "put", folder, "-w", made.id, "--to", "src"],
+                        ["tilo", "files", "put", folder, "-w", str(made["id"]), "--to", "src"],
                         check=True,
                         stdout=subprocess.DEVNULL,
                     )
@@ -138,11 +137,11 @@ async def run(args: argparse.Namespace) -> list[dict[str, Any]]:
                     table.append(row)
 
         if args.large_mb:
-            made = await tilo.workspaces.create("Bench large")
-            ws = tilo.workspace(made.id)
+            made = (await run(tilo, {"path": "account/workspaces", "action": "create"}, {"name": "Bench large"}))["result"]["workspace"]
+            ws = tilo.workspace(made["id"])
             data = os.urandom(args.large_mb * 1024 * 1024)
             began = time.perf_counter()
-            await ws.files.upload(data)
+            await ws.upload(data)
             rate = args.large_mb / (time.perf_counter() - began)
             row = {"kind": f"upload {args.large_mb} MB", "size": 0, "bulk_per_s": rate}
             print(json.dumps(row), flush=True)

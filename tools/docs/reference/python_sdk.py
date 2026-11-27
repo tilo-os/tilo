@@ -36,24 +36,13 @@ PYPROJECT = "sdk/python/pyproject.toml"
 # new export cannot reach the page without a place to sit.
 GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Client", ("Tilo", "AsyncTilo")),
-    ("Transports", ("Transport", "DaemonTransport", "KeyTransport")),
+    ("Transports", ("Daemon", "DaemonConnection", "Send", "DEFAULT_URL", "NATIVE_MODULE", "VERSION")),
     ("Calls", ("CallLane", "CallAsk", "CallFrame")),
-    ("Workspaces", ("Workspaces", "Workspace", "WorkspaceInfo", "WorkspaceList", "WorkspaceExport")),
-    ("Resources", ("Resource", "Entry", "FieldMap", "Listing", "Row", "made")),
-    ("Invocations", (
-        "Invocation", "InvocationGroup", "InvocationOpening", "InvocationList", "InvocationInfo",
-        "ProgramAnswer", "Event", "ChangeEvent", "EventWhat",
-    )),
-    ("Files", ("Files",)),
+    ("Workspaces", ("Workspace", "InvocationGroup")),
+    ("Actions", ("run",)),
+    ("Resources", ("Resource", "Entry", "FieldMap", "made", "resource_proxy", "rows", "exported")),
     ("Vault", ("Vault",)),
-    ("Keys", ("AccountKeys", "WorkspaceKeys", "Key", "MintedKey")),
-    ("Members", ("Members", "Member", "Invitation", "Person")),
-    ("Usage", ("Usage", "WorkspaceUsage")),
-    ("Errors", (
-        "Refused", "AskPending", "ProtocolError",
-        "KeyRefused", "KeyRevoked", "KeyExpired", "SurfaceChanged", "Unreachable",
-        "NOT_OFFERED", "UNKNOWN_ACTION",
-    )),
+    ("Errors", ("Refused",)),
 )
 
 # Its value is in the lead, where a reader meets the version first.
@@ -62,7 +51,6 @@ LEAD_NAMES = frozenset({"__version__"})
 # Members a caller never calls: the SDK's own plumbing, named so that dropping
 # one is noticed rather than leaving a stale exemption behind.
 INTERNAL_MEMBERS = frozenset({
-    ("AsyncTilo", "handoff"),
     ("InvocationGroup", "note"),
 })
 

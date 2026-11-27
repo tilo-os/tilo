@@ -305,6 +305,13 @@ def typescript_configuration(repository: Path) -> str:
     return json.dumps({"compilerOptions": {"paths": paths}}, indent=2) + "\n"
 
 
+def sdk_root(repository: Path) -> Path:
+    """Where the SDKs an example imports live: the tree's, unless the check that runs it names a
+    copy of them (`TILO_DOCS_SDK_ROOT`), as a read-only tree with their generated clients needs."""
+    named = os.environ.get("TILO_DOCS_SDK_ROOT")
+    return Path(named).resolve() if named else repository
+
+
 def command_for(block: Block, repository: Path, tilo: Path | None) -> list[str]:
     """The program that runs one block, as a reader would run what the block shows.
 
@@ -346,17 +353,19 @@ def execute(
     is, which the check that brought that host up handed it (`TILO_API_URL`, `TILO_API_KEY`,
     `TILO_KEY_FILE`).
     """
-    command = command_for(block, repository, tilo)
+    command = command_for(block, sdk_root(repository), tilo)
     program = command if api is None else [str(api), "--", *command]
     with tempfile.TemporaryDirectory(prefix=f"docs-example-{block.example or block.lang}.") as scratch:
         directory = Path(scratch)
         (directory / FILENAMES[block.lang]).write_text(block.code + "\n", encoding="utf-8")
         if block.lang == "typescript":
-            (directory / TYPESCRIPT_CONFIG).write_text(typescript_configuration(repository), encoding="utf-8")
+            (directory / TYPESCRIPT_CONFIG).write_text(
+                typescript_configuration(sdk_root(repository)), encoding="utf-8"
+            )
         environment = dict(os.environ)
         if block.lang == "python":
             # `import tilo` is the tree's: uv syncs the SDK's dependencies, not the SDK.
-            environment["PYTHONPATH"] = str(repository / "sdk/python/src")
+            environment["PYTHONPATH"] = str(sdk_root(repository) / "sdk/python/src")
         if block.lang == "sh":
             # `tilo` on PATH, as the command is installed.
             assert tilo is not None

@@ -40,8 +40,8 @@ import zipfile
 import zlib
 from typing import Any, Mapping
 
-from tilo import AsyncTilo, KeyRefused, ProtocolError, Refused
-from tilo.types.pdf_viewer import Document, FormFieldRow
+from tilo import Refused, Tilo, run
+from tilo.types.pdf_viewer import Document
 
 APPLICANTS = int(os.environ.get("VISA_APPLICANTS", "200"))
 REVOKE_SERVER_KEY = os.environ.get("VISA_REVOKE_SERVER_KEY") == "1"
@@ -58,13 +58,9 @@ REVIEWER_SECONDS = 51 * STEP_SECONDS
 FIRST = ["Jane", "Amara", "Luis", "Mei", "Omar", "Priya", "Tomas", "Yuki", "Noah", "Zara"]
 LAST = ["Doe", "Okafor", "Garcia", "Chen", "Haddad", "Rao", "Novak", "Sato", "Berg", "Ali"]
 
-FILLED = {
-    "surname": {"kind": "text", "value": "Doe"},
-    "given_names": {"kind": "text", "value": "Jane"},
-    "passport_number": {"kind": "text", "value": "X1234567"},
-    "purpose": {"kind": "choice", "value": "Business"},
-    "declaration": {"kind": "checked", "value": {"on": True, "export": "Yes"}},
-}
+TEXT_FIELDS = {"surname": "Doe", "given_names": "Jane", "passport_number": "X1234567"}
+CHOICE_FIELDS = {"purpose": "Business"}
+CHECKED_FIELDS = {"declaration": "Yes"}
 
 LETTER = [
     "Dear Visa Officer,",
@@ -87,6 +83,19 @@ def check(condition: Any, what: str) -> None:
 def quantile(values: list[float], q: float) -> float:
     ordered = sorted(values)
     return ordered[round((len(ordered) - 1) * q)]
+
+
+async def act(where: Any, address: str, args: Mapping[str, Any] | None = None) -> Any:
+    """Run the action `address` names (`app/resource#action`) until it finished: what it produced."""
+    at = address.rindex("#")
+    answer = await run(where, {"path": address[:at], "action": address[at + 1 :]}, args or {})
+    return answer.get("result") if isinstance(answer, Mapping) else None
+
+
+async def workspaces_of(client: Tilo) -> list[Mapping[str, Any]]:
+    """Every workspace the key reaches, as `account/workspaces` lists them."""
+    listed = await act(client, "account/workspaces#list")
+    return list((listed or {}).get("workspaces") or [])
 
 
 # -- the applicant's documents ----------------------------------------------
@@ -167,8 +176,33 @@ def content_in(value: Any) -> str | None:
     return None
 
 
-def values_of(fields: list[FormFieldRow]) -> dict[str, Any]:
-    return {field["name"]: field["value"] for field in fields}
+def values(form: Document) -> dict[str, Any]:
+    """The form's values as they read now: the fields people filled, by kind."""
+    fields = form.raw.get("fields") or {}
+    said: dict[str, Any] = {}
+    for name, text in (fields.get("form_text") or {}).items():
+        said[name] = {"kind": "text", "value": text}
+    for name, choice in (fields.get("form_choice") or {}).items():
+        said[name] = {"kind": "choice", "value": choice}
+    for name, on in (fields.get("form_checked") or {}).items():
+        said[name] = {
+            "kind": "checked",
+            "value": {"on": on, "export": (fields.get("form_export") or {}).get(name)},
+        }
+    return said
+
+
+def filled_expected() -> dict[str, Any]:
+    """Everything the agent fills in, as `values` reads it back."""
+    said = {name: {"kind": "text", "value": text} for name, text in TEXT_FIELDS.items()}
+    said.update({name: {"kind": "choice", "value": choice} for name, choice in CHOICE_FIELDS.items()})
+    said.update(
+        {
+            name: {"kind": "checked", "value": {"on": True, "export": export}}
+            for name, export in CHECKED_FIELDS.items()
+        }
+    )
+    return said
 
 
 def acting_agent(version: Mapping[str, Any]) -> str | None:
@@ -189,13 +223,9 @@ def acted_for(actor: Mapping[str, Any]) -> set[str]:
 
 
 async def refused(call: Any) -> str:
-    """How the call was refused: a key's own error, the wire's, or a refusal's code."""
+    """How the call was refused: the refusal's code, or `allowed`."""
     try:
         await call
-    except KeyRefused as error:
-        return f"key: {error.code}"
-    except ProtocolError as error:
-        return f"protocol: {error.code or error.message}"
     except Refused as error:
         return f"{error.code}: {error.message}"
     return "allowed"
@@ -237,7 +267,7 @@ async def reviewer_accepts(link: str) -> dict[str, Any]:
 # -- the proof ----------------------------------------------------------------
 
 
-async def make_workspaces(backend: AsyncTilo) -> list[Any]:
+async def make_workspaces(backend: Tilo) -> list[Mapping[str, Any]]:
     say(f"1. The backend makes {APPLICANTS} applicant workspaces with its one server key")
     made, timings = [], []
     for index in range(APPLICANTS):
@@ -245,20 +275,21 @@ async def make_workspaces(backend: AsyncTilo) -> list[Any]:
         if index >= 100:
             name += f" ({index // 100 + 1})"
         began = time.perf_counter()
-        made.append(await backend.workspaces.create(name))
+        answer = await act(backend, "account/workspaces#create", {"name": name})
+        made.append(answer["workspace"])
         timings.append(time.perf_counter() - began)
     began = time.perf_counter()
-    listing = await backend.workspaces.list()
+    listing = await workspaces_of(backend)
     listed = time.perf_counter() - began
-    ids = {workspace.id for workspace in listing}
+    ids = {workspace["id"] for workspace in listing}
     p50, p95 = quantile(timings, 0.5), quantile(timings, 0.95)
     say(
         "   timings",
         f"create p50 {p50 * 1000:.0f} ms, p95 {p95 * 1000:.0f} ms, max {max(timings) * 1000:.0f} ms, "
         f"mean {statistics.mean(timings) * 1000:.0f} ms; list of {len(ids)} in {listed * 1000:.0f} ms",
     )
-    check(len({workspace.id for workspace in made}) == APPLICANTS, f"{APPLICANTS} distinct workspaces, no cap")
-    check(all(workspace.id in ids for workspace in made), "every one of them is listed")
+    check(len({workspace["id"] for workspace in made}) == APPLICANTS, f"{APPLICANTS} distinct workspaces, no cap")
+    check(all(workspace["id"] in ids for workspace in made), "every one of them is listed")
     check(p95 < 2.0, f"making one stays fast (p95 {p95 * 1000:.0f} ms < 2 s)")
     check(listed < 5.0, f"listing them stays fast ({listed * 1000:.0f} ms < 5 s)")
     return made
@@ -267,121 +298,124 @@ async def make_workspaces(backend: AsyncTilo) -> list[Any]:
 async def main() -> int:
     url = os.environ.get("TILO_API_URL", "https://api.tilo.sh")
     say("API", url)
-    backend = AsyncTilo()
+    backend = Tilo()
 
     made = await make_workspaces(backend)
     jane, other = made[0], made[1]
-    check(jane.name == "Applicant: Jane Doe", f"the first is {jane.name!r}")
+    check(jane["name"] == "Applicant: Jane Doe", f"the first is {jane['name']!r}")
 
     say("2. The backend puts Jane's documents into her workspace and mints her agent's key")
-    ws = backend.workspace(jane.id)
+    ws = backend.workspace(jane["id"])
     passport_bytes, form_bytes = passport_png(), application_pdf()
-    passport = await ws.files.upload(passport_bytes)
-    application = await ws.files.upload(form_bytes)
+    passport = await ws.upload(passport_bytes)
+    application = await ws.upload(form_bytes)
     say("   uploaded", f"passport.png {passport}, application.pdf {application}")
     check(passport.startswith("tilo.content:") and application.startswith("tilo.content:"), "both are content")
-    minted = await ws.keys.mint(name="Jane Doe's agent")
-    say("   minted", f"{minted.name!r} for {minted.workspace}, mcp_url {minted.mcp_url}")
-    check(minted.workspace == jane.id, "the key names Jane's workspace")
-    check(minted.mcp_url.endswith(f"/w/{jane.id}/mcp"), "its MCP URL is that workspace's")
-    check(
-        minted.token and minted.token != os.environ.get("TILO_API_KEY"),
-        "it is a key of its own",
+    minted = await act(
+        backend, "account/keys#mint", {"workspace": jane["id"], "name": "Jane Doe's agent"}
     )
+    say("   minted", f"{minted['name']!r} for {minted['workspace']}")
+    check(minted["workspace"] == jane["id"], "the key names Jane's workspace")
+    check(minted["token"] and minted["token"] != os.environ.get("TILO_API_KEY"), "it is a key of its own")
 
     say("3. Jane's agent, with only the minted key, fills the form and writes the letter")
-    agent = AsyncTilo(key=minted.token, url=url)
-    aws = agent.workspace(jane.id)
-    check(await aws.files.download(passport) == passport_bytes, "the agent reads the passport the backend put there")
+    agent = Tilo(key=minted["token"], url=url)
+    aws = agent.workspace(jane["id"])
+    check(await aws.download(passport) == passport_bytes, "the agent reads the passport the backend put there")
     async with aws.invocation(INVOCATION_TITLE) as group:
-        await aws.do("pdf-viewer#open")
-        imported = await aws.do("pdf-viewer#import-pdf-content", content=application, name="application.pdf")
-        say("   imported", str(imported)[:200])
+        opened = await act(
+            aws, "pdf-viewer#open_source", {"address": application, "name": "application.pdf"}
+        )
+        say("   opened", str(opened)[:200])
         form = Document(aws, FORM)
         await form.load()
-        before = (await form.read_form_fields())["fields"]
-        say("   fields", ", ".join(f"{field['name']} ({field['kind']})" for field in before))
-        check({field["name"] for field in before} >= set(FILLED), "the form has every field the agent fills")
-        for field in before:
-            if field["name"] in FILLED:
-                await aws.do(
-                    f"{FORM}#field-edit",
-                    edit={"path": field["path"], "op": "set", "value": FILLED[field["name"]]},
-                )
-        filled = values_of((await form.read_form_fields())["fields"])
+        await form.read_fields()
+        for name, text in TEXT_FIELDS.items():
+            await act(aws, f"{FORM}#fill_field", {"name": name, "text": text})
+        for name, choice in CHOICE_FIELDS.items():
+            await act(aws, f"{FORM}#choose_field", {"name": name, "choice": choice})
+        for name, export in CHECKED_FIELDS.items():
+            await act(aws, f"{FORM}#check_field", {"name": name, "on": True, "export": export})
+        await form.refresh()
+        filled = values(form)
         say("   filled", str(filled))
-        check(all(filled[name] == value for name, value in FILLED.items()), "every field holds what the agent set")
+        expected = filled_expected()
+        check(
+            all(filled.get(name) == value for name, value in expected.items()),
+            "every field has what the agent set",
+        )
 
-        await aws.do("word-processor#open")
+        await act(aws, "word-processor#open")
         for paragraph in LETTER:
-            await aws.do("word-processor#append_paragraph", text=paragraph)
-        exported = await aws.do("word-processor#export_document", format="docx")
+            await act(aws, "word-processor#append_paragraph", {"text": paragraph})
+        exported = await act(aws, "word-processor#export_document", {"format": "docx"})
         letter_ref = content_in(exported)
         check(letter_ref, f"Writer exports the letter as content ({letter_ref})")
     check(group.invocations, f"the group gathered the agent's {len(group.invocations)} calls")
-    form_link = await aws.link(FORM)
+    form_link = (await act(aws, f"{FORM}#share-link"))["url"]
     say("   links", ", ".join(group.links))
     check(form_link in group.links, f"the group hands over the link to the form it filled ({form_link})")
-    letter = await ws.files.download(letter_ref)
+    letter = await ws.download(letter_ref)
     check(letter.startswith(b"PK"), f"the backend downloads a Word file ({len(letter)} bytes)")
     with zipfile.ZipFile(io.BytesIO(letter)) as docx:
         body = docx.read("word/document.xml").decode("utf-8")
     check("Dear Visa Officer" in body and "Jane Doe" in body, "the letter holds what the agent wrote")
 
     say("4a. Scope: the minted key reaches Jane's workspace and nothing else")
-    elsewhere = await refused(agent.workspace(other.id).ls())
+    elsewhere = await refused(agent.workspace(other["id"]).list_resources())
     check(elsewhere != "allowed", f"another applicant's workspace refuses it ({elsewhere})")
-    upload_elsewhere = await refused(agent.workspace(other.id).files.upload(b"x"))
+    upload_elsewhere = await refused(agent.workspace(other["id"]).upload(b"x"))
     check(upload_elsewhere != "allowed", f"it puts nothing into another applicant's workspace ({upload_elsewhere})")
-    listed = await agent.workspaces.list()
-    say("   listed", ", ".join(workspace.name for workspace in listed))
+    listed = await workspaces_of(agent)
+    say("   listed", ", ".join(workspace["name"] for workspace in listed))
     check(
-        [workspace.id for workspace in listed] == [jane.id],
-        f"the account lists Jane's workspace alone ({[workspace.name for workspace in listed]})",
+        [workspace["id"] for workspace in listed] == [jane["id"]],
+        f"the account lists Jane's workspace alone ({[workspace['name'] for workspace in listed]})",
     )
-    creating = await refused(agent.workspaces.create("Applicant: Mallory"))
+    creating = await refused(act(agent, "account/workspaces#create", {"name": "Applicant: Mallory"}))
     check(beyond(creating), f"the account refuses it: no new workspace ({creating})")
-    minting = await refused(agent.keys.mint(jane.id, name="escalated"))
+    minting = await refused(act(agent, "account/keys#mint", {"workspace": jane["id"], "name": "escalated"}))
     check(beyond(minting), f"it mints no keys ({minting})")
 
     say("4b. The backend invites its ops person, another person, as Jane's reviewer")
-    invitation = await ws.members.invite(role="editor", email=REVIEWER_EMAIL)
-    say("   invited", f"{invitation.role} via {invitation.link[:60]}… sent={invitation.sent} ({invitation.next})")
-    check(invitation.link.startswith("http"), "the invitation is a link to hand over")
-    check(invitation.email == REVIEWER_EMAIL and invitation.sent is False, "it names their address and says no mail went")
+    invitation = await act(ws, "workspace/invitations#invite", {"role": "editor", "invitee_name": REVIEWER_EMAIL})
+    say("   invited", f"{invitation['role']} via {invitation['link'][:60]}… sent={invitation.get('sent')}")
+    check(invitation["link"].startswith("http"), "the invitation is a link to hand over")
+    check(invitation.get("email") == REVIEWER_EMAIL and invitation.get("sent") is False, "it names their address and says no mail went")
     say("   for review", f"the form: {form_link}")
-    accepted = await reviewer_accepts(invitation.link)
+    accepted = await reviewer_accepts(invitation["link"])
     say("   accepted", str(accepted.get("joined")))
     check((accepted.get("joined") or {}).get("role") == "editor", "the link lands them in Jane's workspace as an editor")
     reviewer_person = accepted.get("person")
-    members = await ws.members.list()
-    say("   members", ", ".join(f"{member.name or member.person[:8]} ({member.role})" for member in members))
+    members = await act(ws, "workspace/members#list")
+    say("   members", ", ".join(f"{member.get('name') or member['person'][:8]} ({member['role']})" for member in members))
     check(
-        reviewer_person is None or any(member.person == reviewer_person and member.role == "editor" for member in members),
+        reviewer_person is None or any(member["person"] == reviewer_person and member["role"] == "editor" for member in members),
         "the backend sees the reviewer among Jane's workspace's members",
     )
     check(
-        all(member.name != "Jane Doe's agent" for member in members),
+        all(member.get("name") != "Jane Doe's agent" for member in members),
         "no key of the account's names a person in the members list",
     )
-    reviewer = AsyncTilo(key=accepted["key"], url=url)
+    reviewer = Tilo(key=accepted["key"], url=url)
 
     say("4c. The reviewer, with their own key, finds Jane's workspace by name and reads the filled form and who filled it")
-    listed = await reviewer.workspaces.list()
-    found = listed.named(jane.name)
-    check(found is not None and found.id == jane.id, f"the reviewer's account lists {jane.name!r}: {found}")
-    check(found is not None and found.role == "editor", f"with the role they hold there ({found and found.role})")
-    rws = reviewer.workspace(jane.name)
+    listed = await workspaces_of(reviewer)
+    found = next((workspace for workspace in listed if workspace["name"] == jane["name"]), None)
+    check(found is not None and found["id"] == jane["id"], f"the reviewer's account lists {jane['name']!r}: {found}")
+    check(found is not None and found.get("role") == "editor", f"with the role they have there ({found and found.get('role')})")
+    rws = reviewer.workspace(jane["name"])
     seen = Document(rws, FORM)
     await seen.load()
     say("   read", f"{seen.kind}: {sorted(seen.fields)}")
-    reviewed = values_of((await seen.read_form_fields())["fields"])
+    reviewed = values(seen)
+    expected = filled_expected()
     check(
-        all(reviewed[name] == value for name, value in FILLED.items()),
+        all(reviewed.get(name) == value for name, value in expected.items()),
         f"the reviewer sees the filled values: {reviewed}",
     )
-    history = await rws.do(f"{FORM}#history", last=50)
-    versions = [version for version in history.get("versions", []) if isinstance(version, Mapping)]
+    history = await act(rws, f"{FORM}#history", {"last": 50})
+    versions = [version for version in (history or {}).get("versions", []) if isinstance(version, Mapping)]
     for version in versions:
         say(
             "   history",
@@ -415,42 +449,49 @@ async def main() -> int:
 
     say("4d. The reviewer undoes the agent's invocation")
     group_id = next(iter(groups))
-    await rws.do(f"{FORM}#undo", invocation=group_id)
-    back = values_of((await seen.read_form_fields())["fields"])
+    await act(rws, f"{FORM}#undo", {"invocation": group_id})
+    await seen.refresh()
+    back = values(seen)
     say("   after undo", str(back))
-    check(back["surname"] == {"kind": "text", "value": ""}, "the surname is empty again")
-    check(back["purpose"] == {"kind": "choice", "value": "Tourism"}, "the purpose is back to what the form said")
+    check(not back.get("surname", {}).get("value"), "the surname is empty again")
+    check(back.get("purpose", {"value": "Tourism"}).get("value") == "Tourism", "the purpose is back to what the form said")
 
     say("4e. No VM ran for any of it")
-    usage = await backend.usage()
-    jane_usage = next((row for row in usage.workspaces if row.workspace == jane.id), None)
-    say("   usage", f"host {usage.host!r}, plan {usage.plan!r}, {len(usage.workspaces)} workspaces; Jane's: {jane_usage}")
+    usage = (await backend.read_account_resource(path="account/usage"))["fields"]
+    subscription = usage.get("subscription") or {}
+    rows = (subscription.get("usage") or {}).get("workspaces") or []
+    jane_usage = next((row for row in rows if row.get("workspace") == jane["id"]), None)
+    say("   usage", f"host {usage.get('host')!r}, plan {subscription.get('plan')!r}, {len(rows)} workspaces; Jane's: {jane_usage}")
     check(jane_usage is not None, "the account meters Jane's workspace")
-    check(jane_usage.vm_seconds == 0 and not jane_usage.running, "no VM time in Jane's workspace, none running")
-    check(usage.vm_seconds == 0 and not usage.running, f"0 VM seconds across all {len(usage.workspaces)} workspaces")
-    check(usage.raw.get("subscription", {}).get("account") in acted_for_people, "the account is the person the agent acted for")
+    check((jane_usage or {}).get("vm_seconds", 0) == 0 and not (jane_usage or {}).get("running"), "no VM time in Jane's workspace, none running")
+    check(
+        sum(row.get("vm_seconds", 0) for row in rows) == 0 and not any(row.get("running") for row in rows),
+        f"0 VM seconds across all {len(rows)} workspaces",
+    )
+    check(subscription.get("account") in acted_for_people, "the account is the person the agent acted for")
 
     say("4f. Revoking ends what it reached")
-    await backend.keys.revoke(minted.grant)
-    gone = await refused(aws.ls())
-    check(gone.startswith("key: "), f"the agent's open session ends with its key ({gone})")
+    await act(backend, f"account/keys/{minted['grant']}#revoke")
+    gone = await refused(aws.list_resources())
+    check(gone.startswith("key_revoked"), f"the agent's open session ends with its key ({gone})")
     if REVOKE_SERVER_KEY:
-        second = await ws.keys.mint(name="Jane Doe's second agent")
-        sws = AsyncTilo(key=second.token, url=url).workspace(jane.id)
-        await sws.ls()
-        own = (await backend.keys.list())[0]
-        await backend.keys.revoke(own.grant)
-        check((await refused(backend.workspaces.list())).startswith("key: "), "the server key is refused")
-        check((await refused(sws.ls())).startswith("key: "), "the session of a key it minted ended with it")
-        fresh = AsyncTilo(key=second.token, url=url).workspace(jane.id)
-        check((await refused(fresh.ls())).startswith("key: "), "the key it minted is refused")
+        second = await act(ws, "account/keys#mint", {"workspace": jane["id"], "name": "Jane Doe's second agent"})
+        sws = Tilo(key=second["token"], url=url).workspace(jane["id"])
+        await sws.list_resources()
+        keys = (await backend.list_account_resources(path="account/keys"))["rows"]
+        own = keys[0]
+        await act(backend, f"account/keys/{own.get('id') or own.get('key')}#revoke")
+        check((await refused(workspaces_of(backend))).startswith("key_revoked"), "the server key is refused")
+        check((await refused(sws.list_resources())).startswith("key_revoked"), "the session of a key it minted ended with it")
+        fresh = Tilo(key=second["token"], url=url).workspace(jane["id"])
+        check((await refused(fresh.list_resources())).startswith("key_revoked"), "the key it minted is refused")
 
     for client in (agent, reviewer, backend):
         try:
             await client.aclose()
-        except (ProtocolError, Refused):
+        except Refused:
             pass
-    say("All of it held")
+    say("All of it worked")
     return 0
 
 

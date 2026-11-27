@@ -16,7 +16,7 @@ sheet (integration/person.mjs --answer, integration/page_person.py):
      shell and sees it change as the agent fills one more field: what the
      person approving a submit is looking at;
   c. `capture_page` answers a picture of the filled form, saved as a PNG;
-  d. the person refuses one submission: the window holds it, the call ends
+  d. the person refuses one submission: the window keeps it, the call ends
      refused, and the form stays filled and unsent — and the sheet they were
      asked on names the page it leaves from, and the form being sent, and
      where it goes;
@@ -27,12 +27,12 @@ sheet (integration/person.mjs --answer, integration/page_person.py):
      page, which holds none of their identity (`person.mjs --pair`): the
      person is asked on whichever of their devices they are at;
   e3. the page the person's root is in shows another workspace, and a second
-     browser of theirs, signed in by that page and holding none of the root,
+     browser of theirs, signed in by that page and with none of the root,
      is open in the applicant's: the question reaches that browser, and
      allowing there releases the submission. A submission they deny there is
      refused to the agent with the refusal's own code (`not_permitted`), and
      the filled page stays unsent;
-  f. a click on the submit button is held and asked the same way; the sheet
+  f. a click on the submit button waits and is asked the same way; the sheet
      names what leaves, just as the submission's did;
   g. a reviewer who joined by invitation reads the agent's run in History;
   h. a key minted with the scope unticked is asked about the page actions
@@ -79,7 +79,7 @@ import urllib.request
 from pathlib import Path
 
 from page_person import PagePerson
-from tilo import AsyncTilo, Invocation, ProtocolError, Refused
+from tilo import Refused, Tilo, run
 
 API_URL, SERVER_KEY, OUT, FORM_URL = sys.argv[1:5]
 
@@ -112,7 +112,7 @@ PERSON_PAGE = Path(__file__).with_name("person.mjs")
 PAGE_ASKS = os.environ.get("HOSTED_VISA_PAGE_ASKS", "")
 PAGE_ANSWERS = os.environ.get("HOSTED_VISA_PAGE_ANSWERS", "")
 # The workspace the person's page is open on, which is not the one their
-# agent works in: what the held page is put to them on a device of theirs,
+# agent works in: what the waiting page is put to them on a device of theirs,
 # wherever their page is showing.
 PAGE_WORKSPACE = os.environ.get("HOSTED_VISA_PAGE_WORKSPACE", "")
 # What the agent puts in the page's fields, by the name the page gives each
@@ -178,11 +178,20 @@ def content_ref(value: object) -> str | None:
 
 async def outcome(call: object) -> object:
     """What a page action answered: its result, or the run it waits in,
-    followed to its end (a held submission is answered when the person does)."""
+    followed to its end (a submission that waits is answered when the person
+    does)."""
     answer = await call
-    if isinstance(answer, Invocation):
-        return await answer.result()
-    return answer
+    if not isinstance(answer, dict):
+        return answer
+    result = answer.get("result")
+    if result is not None:
+        return result
+    made = [
+        reference
+        for reference in answer.get("resources") or []
+        if isinstance(reference, str) and reference.startswith("tilo.content:")
+    ]
+    return made[0] if len(made) == 1 else made or None
 
 
 async def refusal_of(call: object) -> str:
@@ -190,8 +199,6 @@ async def refusal_of(call: object) -> str:
     named, or `allowed`."""
     try:
         await outcome(call)
-    except ProtocolError as error:
-        return f"{error.code or ''}: {error.message or error.status or error}".strip(": ")
     except Refused as error:
         steps = ", ".join(error.next_steps or [])
         return f"{error.code}: {error.message}" + (f" (next: {steps})" if steps else "")
@@ -259,10 +266,10 @@ class PairedBrowser(PagePerson):
             except FileNotFoundError:
                 pass
         os.mkfifo(asks)
-        # Held open read-write, as check.sh holds the person's own FIFO: a
+        # Opened read-write, as check.sh opens the person's own FIFO: a
         # write never waits for the browser to reach a line, and one that
         # comes as it stops is kept rather than refused.
-        self.holder = os.open(asks, os.O_RDWR)
+        self.fifo = os.open(asks, os.O_RDWR)
         self.stdout = open(self.out, "w")
         self.stderr = open(self.log, "w")
         self.workspace = workspace
@@ -322,8 +329,8 @@ class PairedBrowser(PagePerson):
             self.ran.wait()
         self.stdout.close()
         self.stderr.close()
-        os.close(self.holder)
-        self.holder = -1
+        os.close(self.fifo)
+        self.fifo = -1
 
 
 class Page:
@@ -339,7 +346,7 @@ class Page:
         return f"browser/page#{action}"
 
     async def do(self, action: str, **args: object) -> object:
-        return await self.workspace.do(self.path(action), **args)  # type: ignore[attr-defined]
+        return await run(self.workspace, {"path": "browser/page", "action": action}, args)
 
     async def find(self, role: str, name: str, nth: int = 1) -> str:
         """The ref of the `nth` `role` on the page answering to `name`."""
@@ -364,7 +371,7 @@ class Shell:
     the session in the VM publishes: the check asks this person to keep a
     picture of it, and every picture that differs from the one before is a
     change they saw. It says those as lines while the check goes on working
-    the page, which is how the person's sight of the agent's work is held to,
+    the page, which is how the person's sight of the agent's work is checked,
     and not only the fact that they could have looked."""
 
     def __init__(self, link: str) -> None:
@@ -445,7 +452,7 @@ async def open_browser(workspace: object) -> tuple[Page, float]:
     so the listing is asked again until they do, and the last refusal is what
     a window that never published says."""
     began = time.perf_counter()
-    opened = await outcome(workspace.do("browser#open"))  # type: ignore[attr-defined]
+    opened = await outcome(run(workspace, {"path": "browser", "action": "open"}))
     live = time.perf_counter() - began
     say("   opened", str(opened)[:200])
     rows: list[str] = []
@@ -453,21 +460,24 @@ async def open_browser(workspace: object) -> tuple[Page, float]:
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         try:
-            listing = await workspace.ls("browser")  # type: ignore[attr-defined]
-        except (Refused, ProtocolError) as error:
+            listing = await workspace.list_resources(path="browser")
+        except Refused as error:
             refused = str(error)
             await asyncio.sleep(1)
             continue
         # The listing an agent reads: what the running window offers.
-        rows = [str(row.path) for row in listing.rows]
+        rows = [str(row["path"]) for row in listing["rows"]]
         if rows:
             break
         await asyncio.sleep(0.2)
     if not rows:
         try:
-            apps = await workspace.ls()  # type: ignore[attr-defined]
-            say("   the workspace's apps", "; ".join(f"{row.path} {row.state}" for row in apps.rows))
-        except (Refused, ProtocolError) as error:
+            apps = await workspace.list_resources()
+            say(
+                "   the workspace's apps",
+                "; ".join(f"{row['path']} {row.get('state')}" for row in apps["rows"]),
+            )
+        except Refused as error:
             say("   the workspace's apps were not listed", str(error))
     check(rows, f"the workspace's Browser window is live ({rows}; last refusal: {refused})")
     say("   listed", ", ".join(rows)[:200])
@@ -520,15 +530,29 @@ def post_invitee(link: str) -> dict:
 
 async def open_phase(report: dict[str, object]) -> int:
     """The workspace, its agent's key, and Browser opened in its VM."""
-    backend = AsyncTilo(key=SERVER_KEY, url=API_URL)
+    backend = Tilo(key=SERVER_KEY, url=API_URL)
     say("a. the startup makes an applicant's workspace and mints their agent's key")
-    workspace = await backend.workspaces.create("Visa applicant: Jane Doe")
-    report["workspace"] = workspace.id
-    made = backend.workspace(workspace.id)
-    minted = await made.keys.mint(name="Jane Doe's agent")
-    check(minted.mcp_url.endswith(f"/w/{workspace.id}/mcp"), "the key reaches that workspace alone")
-    agent = AsyncTilo(key=minted.token, url=API_URL)
-    aws = agent.workspace(workspace.id)
+    workspace = (
+        await run(
+            backend,
+            {"path": "account/workspaces", "action": "create"},
+            {"name": "Visa applicant: Jane Doe"},
+        )
+    )["result"]["workspace"]
+    report["workspace"] = workspace["id"]
+    minted = (
+        await run(
+            backend,
+            {"path": "account/keys", "action": "mint"},
+            {"workspace": workspace["id"], "name": "Jane Doe's agent"},
+        )
+    )["result"]
+    check(
+        minted["mcp_url"].endswith(f"/w/{workspace['id']}/mcp"),
+        "the key reaches that workspace alone",
+    )
+    agent = Tilo(key=minted["token"], url=API_URL)
+    aws = agent.workspace(workspace["id"])
 
     say("a. the key opens Browser in the workspace's VM")
     page, live = await open_browser(aws)
@@ -543,8 +567,8 @@ async def open_phase(report: dict[str, object]) -> int:
     with open(os.path.join(OUT, "open.json"), "w") as opened:
         json.dump(
             {
-                "workspace": workspace.id,
-                "key": minted.token,
+                "workspace": workspace["id"],
+                "key": minted["token"],
                 "window": page.record,
             },
             opened,
@@ -559,7 +583,7 @@ async def page_phase(report: dict[str, object]) -> int:
     VM, which is what the proofs of its sandbox and memory read."""
     with open(os.path.join(OUT, "open.json")) as opened:
         state = json.load(opened)
-    agent = AsyncTilo(key=state["key"], url=API_URL)
+    agent = Tilo(key=state["key"], url=API_URL)
     aws = agent.workspace(state["workspace"])
     page = Page(aws, str(state["window"]))
     say("b. the agent opens the visa form in the window")
@@ -576,18 +600,18 @@ async def page_phase(report: dict[str, object]) -> int:
 
 async def fill_phase(report: dict[str, object]) -> int:
     """The form filled with nothing asked, refused once, submitted once, and
-    a click held; the reviewer's History; the scope; and the metering."""
+    a click that waits; the reviewer's History; the scope; and the metering."""
     with open(os.path.join(OUT, "open.json")) as opened:
         state = json.load(opened)
     workspace = state["workspace"]
-    agent = AsyncTilo(key=state["key"], url=API_URL)
+    agent = Tilo(key=state["key"], url=API_URL)
     aws = agent.workspace(workspace)
     page = Page(aws, str(state["window"]))
     person = PagePerson(PAGE_ASKS, PAGE_ANSWERS, check=check)
     reviewer = None
 
     say("b. the agent fills the visa form through page actions, and the person is asked nothing")
-    async with aws.run(RUN_TITLE):
+    async with aws.invocation(RUN_TITLE):
         submit = await fill(page)
         read_back = await page.read()
         body = json.dumps(read_back)
@@ -600,7 +624,15 @@ async def fill_phase(report: dict[str, object]) -> int:
         report["questions_while_filling"] = person.answered()
 
         say("b2. a person invited into the workspace sees the agent's page on their shell")
-        shell = Shell((await aws.members.invite(role="editor", email=SHELL_EMAIL)).link)
+        shell = Shell(
+            (
+                await run(
+                    aws,
+                    {"path": "workspace/invitations", "action": "invite"},
+                    {"role": "editor", "invitee_name": SHELL_EMAIL},
+                )
+            )["result"]["link"]
+        )
         on_shell = await asyncio.to_thread(shell.wait, "shell", 240)
         check(
             on_shell.get("content", 0) >= 0.02,
@@ -625,7 +657,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         captured = await outcome(page.do("capture_page"))
         ref = content_ref(captured)
         if ref:
-            saved = write("filled-form.png", await aws.files.download(ref))
+            saved = write("filled-form.png", await aws.download(ref))
         else:
             inline = (captured or {}).get("data", {}).get("png") if isinstance(captured, dict) else None
             check(inline, f"capture_page answers the page's picture ({str(captured)[:200]})")
@@ -669,7 +701,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         check("TV-" in json.dumps(receipt), f"the page shows the reference it made ({json.dumps(receipt)[:300]})")
         report["receipt"] = True
 
-        say("e2. a browser the person signs in through a ticket, holding none of their identity, allows a submission there")
+        say("e2. a browser the person signs in through a ticket, with none of their identity, allows a submission there")
         phone = PairedBrowser(workspace, os.path.join(OUT, "phone"))
         person.sign_in(workspace)
         phone.report = phone.paired()
@@ -714,14 +746,21 @@ async def fill_phase(report: dict[str, object]) -> int:
         submit = await fill(page)
         asked = paired.begin("allow", "browser-allowed")
         began = time.perf_counter()
-        started = await page.do("submit_page", element=submit)
-        if isinstance(started, Invocation):
+        started = await aws.run_action(
+            "browser/page", "submit_page", {"element": submit}
+        )
+        if (
+            isinstance(started, dict)
+            and started.get("status") == "pending"
+            and isinstance(started.get("invocation"), str)
+        ):
             # The agent following it reads where it stands while it waits,
             # not only that nothing answered yet.
-            report["while_waiting"] = await started.endpoint.status(started.invocation_id)
-            released = await started.result()
-        else:
+            report["while_waiting"] = await aws.get_invocation(started["invocation"])
             released = started
+            while isinstance(released, dict) and released.get("status") == "pending":
+                released = await aws.get_invocation(released["invocation"], wait="60")
+        released = released.get("result") if isinstance(released, dict) else released
         report["browser_allow_seconds"] = round(time.perf_counter() - began, 2)
         check(
             "released" in json.dumps(released),
@@ -761,7 +800,7 @@ async def fill_phase(report: dict[str, object]) -> int:
         report["browser_denied"] = refused
         paired.stop()
 
-        say("f. a click on the submit button is held, and the person is asked once")
+        say("f. a click on the submit button waits, and the person is asked once")
         submit = await fill(page)
         asked = person.begin("allow", "click-allowed")
         clicked_once = await outcome(page.do("click_page", element=submit))
@@ -774,21 +813,29 @@ async def fill_phase(report: dict[str, object]) -> int:
         report["click_receipt"] = True
 
         say("g. a reviewer who joined by invitation reads the agent's run in History")
-        invitation = await aws.members.invite(role="editor", email=REVIEWER_EMAIL)
-        say("   invited", f"{invitation.role} via {invitation.link[:60]}…")
-        accepted = await asyncio.to_thread(post_invitee, invitation.link)
+        invitation = (
+            await run(
+                aws,
+                {"path": "workspace/invitations", "action": "invite"},
+                {"role": "editor", "invitee_name": REVIEWER_EMAIL},
+            )
+        )["result"]
+        say("   invited", f"{invitation['role']} via {invitation['link'][:60]}…")
+        accepted = await asyncio.to_thread(post_invitee, invitation["link"])
         check(
             (accepted.get("joined") or {}).get("role") == "editor",
             f"the reviewer joined as an editor: {accepted}",
         )
-        reviewer = AsyncTilo(key=accepted["key"], url=API_URL)
+        reviewer = Tilo(key=accepted["key"], url=API_URL)
         rws = reviewer.workspace(workspace)
-        listing = await rws.ls("browser")
+        listing = await rws.list_resources(path="browser")
         check(
-            bool(listing.rows),
+            bool(listing["rows"]),
             "the reviewer's listing names the hosted Browser window their shell shows",
         )
-        history = await rws.do("browser#history", last=50)
+        history = (
+            await run(rws, {"path": "browser", "action": "history"}, {"last": 50})
+        ).get("result")
         write_json("reviewer-history.json", history)
         # A page action runs as the caller's and changes no document, so the
         # app's history answers whether or not it holds a step of the run.
@@ -797,13 +844,13 @@ async def fill_phase(report: dict[str, object]) -> int:
 
     say("h. a key that may not operate web pages is asked about each page action")
     check(UNSCOPED_KEY, "the startup's key without the Browser scope is named")
-    unscoped = AsyncTilo(key=UNSCOPED_KEY, url=API_URL)
+    unscoped = Tilo(key=UNSCOPED_KEY, url=API_URL)
     ows = unscoped.workspace(workspace)
     other, _ = await open_browser(ows)
-    async with ows.run(RUN_TITLE):
+    async with ows.invocation(RUN_TITLE):
 
         async def asked_once(action: str, call: object) -> object:
-            """Run one page action of the key without the scope, and hold the
+            """Run one page action of the key without the scope, and check the
             person to being asked about it once."""
             asked = person.begin("allow", f"page-{action}")
             answer = await outcome(call)
@@ -850,7 +897,7 @@ async def fill_phase(report: dict[str, object]) -> int:
             continue
         try:
             await client.aclose()
-        except (ProtocolError, Refused):
+        except Refused:
             pass
     return 0
 

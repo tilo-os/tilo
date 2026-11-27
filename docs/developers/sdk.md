@@ -15,8 +15,7 @@ is `tilo`: plain `tilo` on PyPI is another project's name, so only the distribut
 | | Who uses it | What it sends | What comes back |
 |---|---|---|---|
 | MCP tools (`tilo_ls`, `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status`, `tilo`) | agents | paths and arguments | compact text, priced per token |
-| SDK (TypeScript) | your code and apps | the API's `/v1` requests, through a client generated from its OpenAPI description | typed values |
-| SDK (Python) | your code and apps | the same tool calls, in action frames to the daemon | typed values |
+| SDK (Python, TypeScript) | your code and apps | the API's `/v1` requests, through a client generated from its OpenAPI description | typed values |
 | tilolang (`tilo` tool, `tilo run`) | agents and scripts | programs | values, pasteable as input |
 | CLI (`tilo do`, `tilo ls`, `tilo files`) | shells | the API's `/v1` routes | text, or `--json` |
 
@@ -71,7 +70,7 @@ tilo sdk gen --lang python --check        # says whether the types in tilo_types
   a release carries its apps' surfaces as they are; the types are never committed. `gen -w`
   writes the apps installed in that workspace, including ones added later: each app's compiled surface is what
   the workspace's own read of the app answers, so an app that never ran there is not among
-  them. Without generated types, everything still works through `ws.do(path, **args)`.
+  them. Without an app's generated types, everything still works through `run(ws, {"path": …, "action": …}, args)`.
 - Python imports an app's module directly (`from tilo.types.pdf_viewer import Document`);
   TypeScript exports the modules as namespaces (`pdfViewer.Document`), because two apps may
   both call a type `Person`. Without `-w`, `gen` writes the apps of the checkout it runs in.
@@ -88,17 +87,18 @@ does to itself (its zoom, the caret) is no action of the catalogue.
 Almost everything in Tilo happens somewhere else: an action runs at its app's host, edits
 sync between devices, a Linux command runs in a VM. The SDK is async first.
 
-- **An action is an invocation.** `await form.read_form_fields()` resolves when the action
-  answers. An action that takes longer resolves to an `Invocation`, with
-  `invocation.output()` (an async iterator), `await invocation.result()`,
-  `await invocation.cancel()` and `await invocation.undo()`.
+- **An action is an invocation.** `await ws.run_action({"path", "action"}, args)` is one request;
+  `run(ws, {"path", "action"}, args)` follows a pending one until it answers. An invocation is
+  read with `ws.get_invocation(invocation, wait=…)`, its events with
+  `ws.invocation_output(invocation)`, and stopped or taken back with
+  `ws.cancel_invocation(invocation)` and `ws.undo_invocation(invocation)`.
 - **Reads are snapshots, and watches are live.** `async for change in doc.watch()` yields
   each change as it syncs, with who made it. The same goes for a collection, a workspace's
   runs, and presence.
 - **Concurrency is plain asyncio and Promises.** `asyncio.gather` over many workspaces is
   fine. Nothing is atomic across apps; each action commits at its own app, as in tilolang.
-- **There's a sync client for scripts.** Python has `AsyncTilo` and `Tilo`; `Tilo` runs its
-  own event loop and has the same surface without `await`. TypeScript is Promise-only.
+- **Both clients are async.** Python's methods are coroutines and TypeScript's are Promises;
+  neither runs an event loop of its own.
 
 ## Runs, attribution and undo
 
@@ -144,40 +144,41 @@ bulk form: `group` reports no member's answer, so the value would be lost.
 ## Links for people
 
 Work ends with a person looking at it, so every call that changed a resource answers that
-resource's link, the one a person copies in the app: `invocation.links` lists each resource its
-calls changed, once each, and `invocation.link` is the one link when they changed one resource
-(else `None`/`null`). A pending call's `Invocation` has `link` once it finished. `ws.link(path)` answers the
-link to anything a path names. A link opens the resource in its app for the workspace's members
-and carries no secret: invite the person first (`ws.members.invite`).
+resource's link, the one a person copies in the app: a group's `links` lists each resource its
+calls changed, once each, and `link` is the one link when they changed one resource (else
+`None`/`null`). An invocation's answer carries `link` once it finished. A resource's `share-link`
+action answers the link to anything its path names. A link opens the resource in its app for the
+workspace's members and carries no secret: invite the person first
+(`run(ws, {"path": "workspace/invitations", "action": "invite"}, {"role": "editor"})`).
 
 ## Errors
 
-A refusal is an exception carrying the workspace's reason and its next steps (`Refused`,
-`.next_steps`). An action that asks the person first raises `AskPending` with a link to
-the ask. A wrong path or argument names what's valid, as tilolang's errors do. A call the SDK
-will not run because the workspace's app publishes another surface than the generated types were
-written for raises `SurfaceChanged`, which says to run `tilo sdk gen`.
+A refusal is `Refused`, carrying the API's reason: `code` is what a program branches on
+(`not_permitted`, `key_revoked`, `surface_changed`, …), `message` its words for people,
+`next_steps` the calls that would work, and `status` the HTTP status. An action that asks the
+person first answers `pending` with the `ask` it waits on; `run` follows it until they decide. A
+call the SDK will not run because the workspace's app publishes another surface than the
+generated types were written for is refused `surface_changed`, which says to run `tilo sdk gen`.
 
 ## Keys
 
 A key is a grant: to the account (list and create workspaces, mint keys) or to one
 workspace. It expires and can be revoked; actions taken with it are attributed to it.
-`ws.keys.mint(...)` makes a grant narrower than the caller's own, with an expiry no later than
-the caller's. Revoking a key ends every key minted from it.
+`run(ws, {"path": "account/keys", "action": "mint"}, {"workspace": …})` makes a grant narrower
+than the caller's own, with an expiry no later than the caller's. Revoking a key ends every key
+minted from it.
 
 ## Wire
 
 A program on a computer that runs Tilo connects to that computer's daemon, the way `tilo`'s
 workspace commands do, on the daemon's native endpoint. The SDK's native part (`tilo._native`, the
-npm package `tilo-sdk-native`) is the line wire's one Rust client. The TypeScript SDK sends the
-API's own requests on it (`/v1`, as [api.md](api.md) describes them), each one frame with its body
-after it, and the daemon answers each with its in-process API, its body in pieces, as a stream of
-events goes on. The daemon admits the connection as whoever makes it: the person whose program it
-is, or an app the daemon started, which the launcher hands an open connection
-(`TILO_SVC_NATIVE_FD`) and its workspace (`TILO_WORKSPACE_ID`). An app's requests are decided by
-its own grants, in that one workspace, exactly as its action frames are; none reaches its person's
-account. The Python SDK still sends the tools an agent calls (`tilo_ls`, `tilo_read`, `tilo_do`,
-…), walked in the program's process.
+npm package `tilo-sdk-native`) is the line wire's one Rust client. Both SDKs send the API's own
+requests on it (`/v1`, as [api.md](api.md) describes them), each one frame with its body after it,
+and the daemon answers each with its in-process API, its body in pieces, as a stream of events goes
+on. The daemon admits the connection as whoever makes it: the person whose program it is, or an app
+the daemon started, which the launcher hands an open connection (`TILO_SVC_NATIVE_FD`) and its
+workspace (`TILO_WORKSPACE_ID`). An app's requests are decided by its own grants, in that one
+workspace, exactly as its action frames are; none reaches its person's account.
 
 A program with no daemon beside it uses a key instead (`TILO_API_KEY`) and sends the same `/v1`
 requests over HTTP to the API server (`TILO_API_URL`, `https://api.tilo.sh` by default). Every

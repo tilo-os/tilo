@@ -40,6 +40,20 @@ trap 'bash "$here/stack.sh" down >&2 || true' EXIT
 # shellcheck source=stack.sh
 . "$here/stack.sh"
 
+# The SDKs an example imports, as a copy with the clients `tilo sdk gen` writes: the tree is
+# read-only, and the generated clients are never committed. The packages their libraries import
+# come from the image's caches. `TILO_DOCS_SDK_ROOT` is where doc_examples.py finds that copy.
+step 'write the SDKs an example imports'
+library=$work/library
+mkdir -p "$library/sdk"
+tar -C "$repo/sdk" --exclude=node_modules --exclude=.venv -cf - python typescript \
+  | tar -C "$library/sdk" -xf -
+tilo=$(find_tilo)
+"$tilo" sdk gen --lang python --out "$library/sdk/python/src/tilo/types" >/dev/null
+"$tilo" sdk gen --lang ts --out "$library/sdk/typescript/src/types" >/dev/null
+(cd "$library/sdk/typescript" && bun install --frozen-lockfile --offline)
+export TILO_DOCS_SDK_ROOT=$library
+
 # The page a VM may reach: the server endpoint's own address and port, which pasta maps to this
 # machine's loopback (check.sh serves its form there too).
 step 'serve the visa test page where a VM reaches it'

@@ -32,11 +32,11 @@ names.
 
 ## Yours, and ones you were invited into
 
-You are the **owner** of the workspaces you make. In one you were invited into, you hold the role you were
+You are the **owner** of the workspaces you make. In one you were invited into, you have the role you were
 invited with: **viewer** reads, **commenter** also reacts and comments, **editor** also changes things,
 and a **moderator** decides who else is in. Listing your workspaces says which is which.
 
-Your agents are held to the same roles: an agent's key never makes the agent more than an editor in a
+Your agents follow the same roles: an agent's key never makes the agent more than an editor in a
 workspace. A key that reaches one workspace reaches no other, so a customer's agent cannot list, read or
 act anywhere else.
 
@@ -82,49 +82,81 @@ tilo do account/workspaces#branch workspace="Onboarding template" name="Onboardi
 ```
 
 ```python example=branch-workspace
-from tilo import Tilo
+import asyncio
 
-tilo = Tilo()
+from tilo import Tilo, run
 
-# Set a workspace up once.
-template = tilo.workspace(tilo.workspaces.create("Onboarding template").id)
-template.do("snippets#new-snippet", title="Welcome letter")
 
-# Branch it for a customer: the branch holds what the template holds.
-branch = tilo.workspaces.branch(template, "Onboarding: Acme", labels={"customer_id": "cus_8121"})
-acme = tilo.workspace(branch.id)
-letter = acme.read("snippets/Welcome letter")
-print("branch:", branch.name, "holds:", letter.fields["title"])
+async def main() -> None:
+    async with Tilo() as tilo:
+        # Set a workspace up once.
+        made = await run(
+            tilo, {"path": "account/workspaces", "action": "create"}, {"name": "Onboarding template"}
+        )
+        template = tilo.workspace(made["result"]["workspace"]["id"])
+        await run(template, {"path": "snippets", "action": "new-snippet"}, {"title": "Welcome letter"})
 
-# Change the branch: the template stays as it was.
-letter.favorite = True
-assert acme.read("snippets/Welcome letter").fields["favorite"]
-assert not template.read("snippets/Welcome letter").fields["favorite"]
-print("the branch changed, the template did not")
+        # Branch it for a customer: the branch keeps what the template keeps.
+        branch = (
+            await run(
+                tilo,
+                {"path": "account/workspaces", "action": "branch"},
+                {
+                    "workspace": await template.id(),
+                    "name": "Onboarding: Acme",
+                    "labels": {"customer_id": "cus_8121"},
+                },
+            )
+        )["result"]["workspace"]
+        acme = tilo.workspace(branch["id"])
+        letter = await acme.resource("snippets/Welcome letter").load()
+        print("branch:", branch["name"], "keeps:", letter.fields["title"])
+
+        # Change the branch: the template stays as it was.
+        letter.favorite = True
+        await letter.flush()
+        assert (await acme.resource("snippets/Welcome letter").load()).fields["favorite"]
+        assert not (await template.resource("snippets/Welcome letter").load()).fields["favorite"]
+        print("the branch changed, the template did not")
+
+
+asyncio.run(main())
 ```
 
 ```typescript example=branch-workspace
 import assert from "node:assert";
-import { Tilo } from "tilo-sdk";
+import { Tilo, run } from "tilo-sdk";
 
 const tilo = new Tilo();
 
 // Set a workspace up once.
-const template = tilo.workspace((await tilo.workspaces.create("Onboarding template")).id);
-await template.do("snippets#new-snippet", { title: "Welcome letter" });
+const made = await run(
+  tilo,
+  { path: "account/workspaces", action: "create" },
+  { name: "Onboarding template" },
+);
+const template = tilo.workspace((made.result as { workspace: { id: string } }).workspace.id);
+await run(template, { path: "snippets", action: "new-snippet" }, { title: "Welcome letter" });
 
-// Branch it for a customer: the branch holds what the template holds.
-const branch = await tilo.workspaces.branch(template, "Onboarding: Acme", {
-  labels: { customer_id: "cus_8121" },
-});
+// Branch it for a customer: the branch keeps what the template keeps.
+const branched = await run(
+  tilo,
+  { path: "account/workspaces", action: "branch" },
+  {
+    workspace: await template.id(),
+    name: "Onboarding: Acme",
+    labels: { customer_id: "cus_8121" },
+  },
+);
+const branch = (branched.result as { workspace: { id: string; name: string } }).workspace;
 const acme = tilo.workspace(branch.id);
-const letter = await acme.read("snippets/Welcome letter");
-console.log("branch:", branch.name, "holds:", letter.fields.title);
+const letter = await acme.resource("snippets/Welcome letter").load();
+console.log("branch:", branch.name, "keeps:", letter.fields.title);
 
 // Change the branch: the template stays as it was.
 await letter.edit(["favorite"], true);
-assert.ok((await acme.read("snippets/Welcome letter")).fields.favorite);
-assert.ok(!(await template.read("snippets/Welcome letter")).fields.favorite);
+assert.ok((await acme.resource("snippets/Welcome letter").load()).fields.favorite);
+assert.ok(!(await template.resource("snippets/Welcome letter").load()).fields.favorite);
 console.log("the branch changed, the template did not");
 ```
 
@@ -142,30 +174,60 @@ Inviting someone answers a link. Following it signs them in and lands them in th
 No mail is sent: you hand the link over.
 
 ```python example=workspace-members
-from tilo import Tilo
+import asyncio
 
-tilo = Tilo()
-workspace = tilo.workspace(tilo.workspaces.create("Hiring: Ada Lovelace").id)
+from tilo import Tilo, run
 
-invitation = workspace.members.invite(role="editor", email="reviewer@example.com")
-print("invite link:", invitation.link)
-print("sent by mail:", invitation.sent)
 
-for member in workspace.members.list():
-    print("member:", member.name or member.person, member.role)
+async def main() -> None:
+    async with Tilo() as tilo:
+        made = await run(
+            tilo, {"path": "account/workspaces", "action": "create"}, {"name": "Hiring: Ada Lovelace"}
+        )
+        workspace = tilo.workspace(made["result"]["workspace"]["id"])
+
+        invitation = (
+            await run(
+                workspace,
+                {"path": "workspace/invitations", "action": "invite"},
+                {"role": "editor", "invitee_name": "reviewer@example.com"},
+            )
+        )["result"]
+        print("invite link:", invitation["link"])
+        print("sent by mail:", invitation.get("sent"))
+
+        members = (
+            await run(workspace, {"path": "workspace/members", "action": "list"})
+        )["result"]
+        for member in members or []:
+            print("member:", member.get("name") or member["person"], member["role"])
+
+
+asyncio.run(main())
 ```
 
 ```typescript example=workspace-members
-import { Tilo } from "tilo-sdk";
+import { Tilo, run } from "tilo-sdk";
 
 const tilo = new Tilo();
-const workspace = tilo.workspace((await tilo.workspaces.create("Hiring: Ada Lovelace")).id);
+const made = await run(
+  tilo,
+  { path: "account/workspaces", action: "create" },
+  { name: "Hiring: Ada Lovelace" },
+);
+const workspace = tilo.workspace((made.result as { workspace: { id: string } }).workspace.id);
 
-const invitation = await workspace.members.invite({ role: "editor", email: "reviewer@example.com" });
+const invited = await run(
+  workspace,
+  { path: "workspace/invitations", action: "invite" },
+  { role: "editor", invitee_name: "reviewer@example.com" },
+);
+const invitation = invited.result as { link: string; sent?: boolean };
 console.log("invite link:", invitation.link);
 console.log("sent by mail:", invitation.sent);
 
-for (const member of await workspace.members.list()) {
+const listed = await run(workspace, { path: "workspace/members", action: "list" });
+for (const member of (listed.result ?? []) as { person: string; name?: string; role: string }[]) {
   console.log("member:", member.name || member.person, member.role);
 }
 ```

@@ -6,7 +6,7 @@ Serves `POST {"link": …}` on 127.0.0.1:PORT, the endpoint the visa run
 Chromium (person.mjs), arrives at the site, follows the link into the
 workspace it names, and approves a key of their own on the site's sign-in
 page. The answer is `{key, person, joined}`, where `joined` is the workspace
-the link landed them in with the role their key finds them holding there; a
+the link landed them in with the role their key finds them with there; a
 reviewer that gets stuck answers `{error}` with what the person was waiting
 for and what its page showed, within a step budget of the page drivers'
 `TILO_STEP_SECONDS`.
@@ -28,7 +28,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from tilo import AsyncTilo
+from tilo import Tilo, run
 
 PORT, SITE, SERVER, API_URL, TILO_BIN, OUT = sys.argv[1:7]
 PERSON = Path(__file__).with_name("person.mjs")
@@ -44,10 +44,19 @@ REVIEW_SECONDS = REVIEW_STEPS * STEP_SECONDS
 
 
 async def role_in(key: str, workspace: str) -> str | None:
-    client = AsyncTilo(key=key, url=API_URL)
+    client = Tilo(key=key, url=API_URL)
     try:
-        listed = await client.workspaces.list()
-        return next((row.role for row in listed if row.id == workspace), None)
+        listed = (await run(client, {"path": "account/workspaces", "action": "list"})).get(
+            "result"
+        ) or {}
+        return next(
+            (
+                row.get("role")
+                for row in listed.get("workspaces") or []
+                if row.get("id") == workspace
+            ),
+            None,
+        )
     finally:
         await client.aclose()
 

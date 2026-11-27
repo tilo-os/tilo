@@ -1,14 +1,13 @@
 """A resource as a typed object: its fields, its actions, and its edits.
 
-Attribute reads come from the resource's read; a method call is the
-resource's action (`read_form_fields()` runs `read-form-fields`); assigning a
-name is a field edit, through the generic `field-edit` action every resource
-publishes. `form.form_values["surname"] = "Doe"` is the same edit one level
-down.
+A field reads from the resource's `fields`; a method call is the resource's action
+(`read_form_fields()` runs `read-form-fields`); assigning a name is a field edit, through the
+generic `field-edit` action every resource publishes. `form.form_values["surname"] = "Doe"` is
+the same edit one level down.
 
-A generated class names the app surface it was written for (`__surface__`);
-an action or edit run through one says so, and a workspace whose app
-publishes another surface refuses it as `SurfaceChanged`.
+A resource made through generated types names its app's surface in every call (`Tilo-Surface`):
+a workspace whose app publishes another surface refuses the call (`surface_changed`) instead of
+running it.
 """
 
 from __future__ import annotations
@@ -17,10 +16,9 @@ import asyncio
 import functools
 import json
 from collections.abc import AsyncIterator, Iterable, Iterator, Mapping, MutableMapping, Sequence
-from typing import Any, Generic, TypeVar, TypedDict
+from typing import Any, Generic, TypedDict, TypeVar
 
-from ._errors import ProtocolError
-from ._models import Event
+from ._errors import Refused
 
 # Attributes that are the SDK's own, never an action of the resource.
 OWN = frozenset(
@@ -28,24 +26,27 @@ OWN = frozenset(
         "workspace",
         "path",
         "kind",
+        "surface",
         "fields",
         "children",
-        "cursor",
         "raw",
         "load",
         "refresh",
         "flush",
-        "do",
+        "action",
         "edit",
         "remove",
         "watch",
-        "action",
         "has",
         "many",
     }
 )
 
 T = TypeVar("T")
+
+# A bulk call's bounds: at most this many members, and about this much JSON, per call.
+MANY_MEMBERS = 500
+MANY_BYTES = 4 * 1024 * 1024
 
 
 class Entry(TypedDict, Generic[T]):
@@ -55,11 +56,6 @@ class Entry(TypedDict, Generic[T]):
 
     id: str
     value: T
-
-
-# A bulk call's bounds: at most this many members, and about this much JSON, per call.
-MANY_MEMBERS = 500
-MANY_BYTES = 4 * 1024 * 1024
 
 
 def kebab(name: str) -> str:
@@ -74,10 +70,44 @@ def kebab(name: str) -> str:
             continue
         previous = name[index - 1] if index else ""
         following = name[index + 1] if index + 1 < len(name) else ""
-        if previous and (previous.islower() or previous.isdigit() or previous.isupper() and following.islower()):
+        if previous and (
+            previous.islower() or previous.isdigit() or previous.isupper() and following.islower()
+        ):
             out.append("-")
         out.append(character.lower())
     return "".join(out)
+
+
+def segments(steps: Sequence[Any]) -> list[dict[str, Any]]:
+    """A field path as the field-edit action takes it.
+
+    The first step names a field of the resource; later steps are map keys, and a mapping
+    (`{"item": "c01e"}`) is passed through as an item or cell.
+    """
+    built: list[dict[str, Any]] = []
+    for index, step in enumerate(steps):
+        if isinstance(step, Mapping):
+            built.append(dict(step))
+        elif isinstance(step, str):
+            built.append({"field" if index == 0 else "key": step})
+        elif isinstance(step, int):
+            built.append({"key": str(step)})
+        else:
+            raise TypeError(f"a field path step is a name or a mapping, not {step!r}")
+    if not built:
+        raise TypeError("a field edit names a field")
+    return built
+
+
+def made(member: int, item: int = 0) -> dict[str, dict[str, int]]:
+    """A reference to an item an earlier item of the same `many` call makes.
+
+    `member` is the item's place in the call, counted from 0, and `item` which of the ids it made
+    (counted from 0, in the order it made them): usually 0, as a create makes one. The call fills
+    the reference with that id as it applies, and the change keeps the reference, so every device
+    resolves it the same.
+    """
+    return {"$made": {"member": member, "item": item}}
 
 
 class FieldMap(MutableMapping[str, Any]):
@@ -113,7 +143,7 @@ class FieldMap(MutableMapping[str, Any]):
 
 
 def wrap(resource: Resource, steps: tuple[Any, ...], value: Any) -> Any:
-    """A field's value as this proxy hands it out: maps stay editable."""
+    """A field's value as this object hands it out: maps stay editable."""
     if isinstance(value, Mapping):
         return FieldMap(resource, steps, value)
     if isinstance(value, list):
@@ -124,17 +154,16 @@ def wrap(resource: Resource, steps: tuple[Any, ...], value: Any) -> Any:
 class Resource:
     """One resource: a read snapshot, its actions and its field edits.
 
-    `await ws.resource(path).load()` reads it, then `res.title` is the title
-    and `res.title = "…"` edits it. With the sync client both work without
-    `await`, and an assignment has landed by the time it returns.
+    `await ws.resource(path).load()` reads it, then `res.title` is the title and
+    `res.title = "…"` edits it; `await res.flush()` waits for the edits on their way.
     """
 
-    def __init__(self, workspace: Any, path: str) -> None:
+    def __init__(self, workspace: Any, path: str, surface: str | None = None) -> None:
         object.__setattr__(self, "_workspace", workspace)
         object.__setattr__(self, "path", path)
+        object.__setattr__(self, "_surface", surface)
         object.__setattr__(self, "_answer", None)
         object.__setattr__(self, "_edits", [])
-        object.__setattr__(self, "_children", ())
 
     # -- the snapshot ----------------------------------------------------
 
@@ -142,6 +171,12 @@ class Resource:
     def kind(self) -> str:
         """The resource's kind, as its app names it."""
         return str((self._answer or {}).get("kind") or "")
+
+    @property
+    def surface(self) -> str | None:
+        """The app's surface the types were made from, `<app>@<digest>`, when they were."""
+        sent = getattr(type(self), "__surface__", None)
+        return sent if isinstance(sent, str) else self._surface
 
     @property
     def raw(self) -> Mapping[str, Any]:
@@ -154,43 +189,28 @@ class Resource:
         fields = (self._answer or {}).get("fields")
         if not isinstance(fields, Mapping):
             return {}
-        return {
-            key: wrap(self, (key,), value) for key, value in fields.items()
-        }
+        return {key: wrap(self, (key,), value) for key, value in fields.items()}
 
     @property
     def children(self) -> Sequence[Mapping[str, Any]]:
         """The child resources the last read listed."""
-        return self._children
+        children = (self._answer or {}).get("children")
+        return tuple(children) if isinstance(children, list) else ()
 
-    @property
-    def cursor(self) -> str | None:
-        """The cursor the last read stopped at, when it stopped before the end."""
-        cursor = (self._answer or {}).get("cursor")
-        return cursor if isinstance(cursor, str) else None
-
-    def load(self) -> Any:
-        """Read the resource; `await` it with the async client."""
-        return self._workspace.client.handoff(self._load())
-
-    async def _load(self) -> Resource:
-        await self._flush()
-        answer = await self._workspace._read(self.path, surface=self._surface())
+    async def load(self) -> Resource:
+        """Read the resource, after the edits on their way."""
+        await self.flush()
+        answer = await self._workspace.read_resource(self.path, headers=self._headers())
         object.__setattr__(self, "_answer", answer)
-        children = answer.get("children")
-        object.__setattr__(
-            self, "_children", tuple(children) if isinstance(children, list) else ()
-        )
         return self
 
-    def refresh(self) -> Any:
+    async def refresh(self) -> Resource:
         """Read it again, keeping no field of the earlier read."""
-        return self.load()
+        return await self.load()
 
-    def _surface(self) -> str | None:
-        """The `<app>@<digest>` the generated class was written for, if it says."""
-        sent = getattr(type(self), "__surface__", None)
-        return sent if isinstance(sent, str) else None
+    def _headers(self) -> dict[str, str]:
+        surface = self.surface
+        return {} if surface is None else {"tilo-surface": surface}
 
     # -- fields ----------------------------------------------------------
 
@@ -230,118 +250,80 @@ class Resource:
 
     # -- actions and edits ----------------------------------------------
 
-    def action(self, name: str, **args: Any) -> Any:
-        """Run one of the resource's actions by name.
+    async def action(self, name: str, **args: Any) -> Any:
+        """Run one of the resource's actions by name: what it produced, once it finished."""
+        from ._client import run
 
-        It answers what the action produced, waiting for a run still under
-        way rather than handing one back to follow.
-        """
-        return self._workspace.client.handoff(self._act(name, args))
-
-    async def _act(self, name: str, args: Mapping[str, Any]) -> Any:
-        from ._invocation import Invocation
-
-        answer = await self._workspace._outcome(
-            f"{self.path}#{kebab(name)}", args, surface=self._surface()
+        answer = await run(
+            self._workspace,
+            {"path": self.path, "action": kebab(name)},
+            args,
+            self._headers(),
         )
-        if isinstance(answer, Invocation):
-            return await answer._result(None)
-        return answer
+        return answer.get("result") if isinstance(answer, Mapping) else None
 
-    def do(self, name: str, **args: Any) -> Any:
-        """`action`, by its name in the app's own words."""
-        return self.action(name, **args)
-
-    def many(self, action: str, items: Sequence[Mapping[str, Any]]) -> Any:
+    async def many(self, action: str, items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         """Run `action` for each of `items`, a few calls at most.
 
-        Each call applies up to 500 items (and about 4 MiB of JSON) as one
-        all-or-nothing step, so if any one of them refuses none of that call
-        applies. Every call is the same run: History lists it once and one undo
-        takes it back. An empty list sends nothing. Answers the list of each
-        call's answer.
+        Each call applies up to 500 items (and about 4 MiB of JSON) as one all-or-nothing step,
+        so if any one of them refuses none of that call applies. Every call is the same
+        invocation group: History lists it once and one undo takes it back. An empty list sends
+        nothing. Answers the list of each call's answer.
 
-        An item names one an earlier item of the same call makes with
-        `made(place)`, e.g. `{"title": "Child", "parent": made(0)}` for the
-        second item of a parent-then-child list: the server fills in the id the
-        first item got as the call applies, so nothing has to be read between
-        two calls, and both are one change.
+        An item names one an earlier item of the same call makes with `made(place)`, e.g.
+        `{"title": "Child", "parent": made(0)}` for the second item of a parent-then-child list:
+        the server fills in the id the first item got as the call applies.
         """
-        return self._workspace.client.handoff(self._many(action, items))
+        from ._client import current_group, run
 
-    async def _many(
-        self, action: str, items: Sequence[Mapping[str, Any]]
-    ) -> list[dict[str, Any]]:
         members = _members(action, items)
         if not members:
             return []
-        endpoint = await self._workspace._endpoint()
-        if endpoint.group() is not None:
-            return await self._grouped(endpoint, members)
-        # The chunks are one invocation group, as `async with ws.invocation(...)`
-        # would make them one.
-        from ._workspace import InvocationOpening
 
-        async with InvocationOpening(self._workspace, f"{action} ({len(members)})"):
-            return await self._grouped(endpoint, members)
+        async def send() -> list[dict[str, Any]]:
+            answers: list[dict[str, Any]] = []
+            for chunk in _chunks(members):
+                answer = await run(
+                    self._workspace,
+                    {"path": self.path, "action": "group"},
+                    {"actions": chunk},
+                    self._headers(),
+                )
+                answers.append(dict(answer))
+            return answers
 
-    async def _grouped(self, endpoint: Any, members: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        surface = self._surface()
-        path = f"{self.path}#group"
-        answers: list[dict[str, Any]] = []
-        for chunk in _chunks(members):
-            answer = await endpoint.do_answer(
-                path, {"actions": chunk}, surface=surface
-            )
-            # Names the run on the workspace's record; a person's ask is raised here.
-            endpoint.follow(answer, path)
-            if answer.get("status") == "pending":
-                invocation = answer.get("invocation")
-                if isinstance(invocation, str) and invocation:
-                    answer = await endpoint.wait(invocation)
-            answers.append(dict(answer))
-        return answers
+        group = current_group()
+        if group is not None and group.workspace is self._workspace:
+            return await send()
+        async with self._workspace.invocation(f"{action} ({len(members)})"):
+            return await send()
 
-    def _edit_call(self, op: str, steps: tuple[Any, ...], value: Any) -> tuple[str, dict]:
+    def _edit_call(self, op: str, steps: tuple[Any, ...], value: Any) -> tuple[str, dict[str, Any]]:
         """The action and arguments an edit is: the field's own setter where each field is
         written by its setter (`__setters__`), taking its whole value or an edit below it; the
         field edit elsewhere."""
         if getattr(type(self), "__setters__", False) and steps and isinstance(steps[0], str):
-            setter = f"{self.path}#set-{steps[0].replace('_', '-')}"
+            setter = f"set-{steps[0].replace('_', '-')}"
             if len(steps) == 1 and op == "set":
                 return setter, {"value": value}
             return setter, {"edit": {"path": segments(steps)[1:], "op": op, "value": value}}
-        return f"{self.path}#field-edit", {
-            "edit": {"path": segments(steps), "op": op, "value": value}
-        }
+        return "field-edit", {"edit": {"path": segments(steps), "op": op, "value": value}}
 
-    def edit(self, *steps: Any, op: str = "set", value: Any = None) -> Any:
+    async def edit(self, *steps: Any, op: str = "set", value: Any = None) -> Any:
         """A field edit: the steps name the field, its map keys and its items."""
         action, arguments = self._edit_call(op, steps, value)
-        return self._workspace.client.handoff(
-            self._workspace._outcome(action, arguments, surface=self._surface())
-        )
+        return await self.action(action, **arguments)
 
-    def remove(self, *steps: Any) -> Any:
-        """Take a map entry away: `remove("form_values", "surname")`."""
-        return self.edit(*steps, op="remove-key")
+    async def remove(self, *steps: Any) -> Any:
+        """Take a map entry away: `await remove("form_values", "surname")`."""
+        return await self.edit(*steps, op="remove-key")
 
     def _send_edit(self, op: str, steps: tuple[Any, ...], value: Any) -> None:
         action, arguments = self._edit_call(op, steps, value)
-        coroutine = self._workspace._outcome(action, arguments, surface=self._surface())
-        client = self._workspace.client
-        if client.sync:
-            client.handoff(coroutine)
-            return
-        self._edits.append(asyncio.ensure_future(coroutine))
+        self._edits.append(asyncio.ensure_future(self.action(action, **arguments)))
 
-    def flush(self) -> Any:
+    async def flush(self) -> None:
         """Await the edits that are on their way, raising the first refusal."""
-        if self._workspace.client.sync:
-            return None
-        return self._flush()
-
-    async def _flush(self) -> None:
         while self._edits:
             pending, self._edits = self._edits, []
             answers = await asyncio.gather(*pending, return_exceptions=True)
@@ -351,39 +333,22 @@ class Resource:
 
     # -- watching --------------------------------------------------------
 
-    def watch(self) -> AsyncIterator[Event]:
+    def watch(self) -> AsyncIterator[dict[str, Any]]:
         """Each change to this resource, as it happens."""
-        return self._workspace.watch(self.path)
+        return self._workspace.events(path=self.path)
 
     def __repr__(self) -> str:
         return f"Resource({self.path!r})"
 
 
-
-def _members(
-    action: str, items: Iterable[Mapping[str, Any]]
-) -> list[dict[str, Any]]:
+def _members(action: str, items: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """`items` as the group action's members: each an action's arguments."""
     members: list[dict[str, Any]] = []
     for item in items:
         if not isinstance(item, Mapping):
-            raise ProtocolError(
-                f"a bulk call runs an action on each object of arguments, not on {item!r}"
-            )
+            raise TypeError(f"a bulk call runs an action on each object of arguments, not on {item!r}")
         members.append({"action": action, "args": dict(item)})
     return members
-
-
-def made(member: int, item: int = 0) -> dict[str, dict[str, int]]:
-    """A reference to an item an earlier item of the same `many` call makes.
-
-    `member` is the item's place in the call, counted from 0, and `item` which
-    of the ids it made (counted from 0, in the order it made them): usually 0,
-    as a create makes one. The call fills the reference with that id as it
-    applies, and the change keeps the reference, so every device resolves it
-    the same.
-    """
-    return {"$made": {"member": member, "item": item}}
 
 
 def _chunks(members: list[dict[str, Any]]) -> Iterator[list[dict[str, Any]]]:
@@ -394,7 +359,7 @@ def _chunks(members: list[dict[str, Any]]) -> Iterator[list[dict[str, Any]]]:
         try:
             weight = len(json.dumps(member, separators=(",", ":")).encode())
         except (TypeError, ValueError) as error:
-            raise ProtocolError(f"an action's arguments are not JSON: {error}") from None
+            raise TypeError(f"an action's arguments are not JSON: {error}") from None
         if chunk and (len(chunk) >= MANY_MEMBERS or size + weight > MANY_BYTES):
             yield chunk
             chunk, size = [], 0
@@ -404,22 +369,94 @@ def _chunks(members: list[dict[str, Any]]) -> Iterator[list[dict[str, Any]]]:
         yield chunk
 
 
-def segments(steps: Sequence[Any]) -> list[dict[str, Any]]:
-    """A field path as the field-edit action takes it.
+def resource_proxy(workspace: Any, path: str, surface: Any = None) -> Resource:
+    """A resource as a typed object: fields, actions and field edits. `surface` is the app's
+    version the types were made from, and every call through it names it."""
+    named = surface if isinstance(surface, str) else getattr(surface, "surface", None)
+    return Resource(workspace, path, named or None)
 
-    The first step names a field of the resource; later steps are map keys,
-    and a mapping (`{"item": "c01e"}`) is passed through as an item or cell.
-    """
-    built: list[dict[str, Any]] = []
-    for index, step in enumerate(steps):
-        if isinstance(step, Mapping):
-            built.append(dict(step))
-        elif isinstance(step, str):
-            built.append({"field" if index == 0 else "key": step})
-        elif isinstance(step, int):
-            built.append({"key": str(step)})
-        else:
-            raise ProtocolError(f"a field path step is a name or a mapping, not {step!r}")
-    if not built:
-        raise ProtocolError("a field edit names a field")
-    return built
+
+async def rows(
+    workspace: Any,
+    *,
+    path: str | None = None,
+    kind: str | None = None,
+    limit: str | None = None,
+) -> AsyncIterator[Mapping[str, Any]]:
+    """Every row under `path` (the apps without one), page after page: `listResources` with its
+    `next_cursor` followed."""
+    cursor: str | None = None
+    while True:
+        page = await workspace.list_resources(path=path, cursor=cursor, limit=limit, kind=kind)
+        for row in page.get("rows") or []:
+            yield row
+        cursor = page.get("next_cursor")
+        if not cursor:
+            return
+
+
+async def exported(workspace: Any) -> dict[str, Any]:
+    """Everything in the workspace, read whole: every resource of every app, found by walking the
+    listings from its apps, each read with every page of what it lists. Answers
+    `{"resources": [...], "unread": [{"path", "error"}]}`. The files the resources name
+    (`tilo.content:` references) download with `ws.download`. Take one before deleting a
+    customer's workspace."""
+    found: dict[str, Any] = {"resources": [], "unread": []}
+    seen: set[str] = set()
+    walk: list[str | None] = [None]
+    while walk:
+        path = walk.pop(0)
+        try:
+            listing_params = {} if path is None else {"path": path}
+            cursor: str | None = None
+            while True:
+                page = await workspace.list_resources(**listing_params, cursor=cursor)
+                for row in page.get("rows") or []:
+                    at = row.get("path") if isinstance(row, Mapping) else None
+                    if not isinstance(at, str) or at in seen:
+                        continue
+                    seen.add(at)
+                    if row.get("reads") is not False:
+                        try:
+                            found["resources"].append(await _read_whole(workspace, at))
+                        except Refused as refused:
+                            found["unread"].append({"path": at, "error": str(refused)})
+                    if row.get("has_children") is True:
+                        walk.append(at)
+                following = page.get("next_cursor")
+                if not isinstance(following, str) or following == cursor:
+                    break
+                cursor = following
+        except Refused as refused:
+            found["unread"].append({"path": path or "", "error": str(refused)})
+    return found
+
+
+async def _read_whole(workspace: Any, path: str) -> Mapping[str, Any]:
+    """`path` read with every page of what it has."""
+    page = await workspace.read_resource(path)
+    whole = dict(page)
+    whole["children"] = list(page.get("children") or [])
+    while True:
+        cursor = page.get("cursor")
+        if not isinstance(cursor, str) or cursor == "":
+            break
+        page = await workspace.read_resource(path, cursor=cursor)
+        whole["children"].extend(page.get("children") or [])
+        if page.get("cursor") == cursor:
+            break
+    whole.pop("cursor", None)
+    return whole
+
+
+__all__ = [
+    "Entry",
+    "FieldMap",
+    "Resource",
+    "exported",
+    "kebab",
+    "made",
+    "resource_proxy",
+    "rows",
+    "segments",
+]

@@ -74,7 +74,7 @@ import time
 from pathlib import Path
 
 from page_person import PagePerson
-from tilo import AsyncTilo, Invocation, ProtocolError, Refused
+from tilo import Refused, Tilo, run
 
 import plans
 
@@ -221,22 +221,31 @@ def write_json(name: str, value: object) -> str:
 
 
 async def outcome(call: object) -> object:
-    """What an action answered: its result, or the run it waits in, followed
-    to its end (a command can take longer than the API waits)."""
-    answer = await call
-    if isinstance(answer, Invocation):
-        try:
-            return await answer.result()
-        except Refused as error:
-            return {"refused": f"{error.code}: {error.message}", "next": error.next_steps}
-        except ProtocolError as error:
-            return {"refused": f"{error.code or ''}: {error.message or error}".strip(": ")}
-    return answer
+    """What an action answered: its result, or the refusal it gave.
+
+    A command can take longer than one request waits, so the call follows its
+    invocation to its end; one the person or the provider refuses answers a
+    `refused` object, as the checks here read it."""
+    try:
+        answer = await call
+    except Refused as error:
+        return {"refused": f"{error.code}: {error.message}", "next": error.next_steps}
+    if not isinstance(answer, dict):
+        return answer
+    result = answer.get("result")
+    if result is not None:
+        return result
+    made = [
+        reference
+        for reference in answer.get("resources") or []
+        if isinstance(reference, str) and reference.startswith("tilo.content:")
+    ]
+    return made[0] if len(made) == 1 else made or None
 
 
-def client(key: str) -> AsyncTilo:
+def client(key: str) -> Tilo:
     """A client of the API as the key's agent."""
-    return AsyncTilo(key=key, url=API_URL)
+    return Tilo(key=key, url=API_URL)
 
 
 async def state() -> dict[str, object]:
@@ -253,13 +262,25 @@ async def state() -> dict[str, object]:
                 return json.load(opened)
     backend = client(SERVER_KEY)
     try:
-        made = await backend.workspaces.create("A workspace's Linux commands")
-        minted = await backend.workspace(made.id).keys.mint(name=AGENT_KEY_NAME)
+        made = (
+            await run(
+                backend,
+                {"path": "account/workspaces", "action": "create"},
+                {"name": "A workspace's Linux commands"},
+            )
+        )["result"]["workspace"]
+        minted = (
+            await run(
+                backend,
+                {"path": "account/keys", "action": "mint"},
+                {"workspace": made["id"], "name": AGENT_KEY_NAME},
+            )
+        )["result"]
     finally:
         await backend.aclose()
-    kept = {"workspace": made.id, "key": minted.token, "made": True}
+    kept = {"workspace": made["id"], "key": minted["token"], "made": True}
     write_json("terminal-open.json", kept)
-    say("made", f"the workspace {made.id}, with a key for its agent")
+    say("made", f"the workspace {made['id']}, with a key for its agent")
     return kept
 
 
@@ -288,8 +309,8 @@ async def asked(one: PagePerson, call: object, answer: str = "allow", within: in
 async def find_run(workspace: object, run: str) -> tuple[str, dict]:
     """The Terminal session record holding the run `run`, and the run as it is
     recorded: whichever session of the app the host opened."""
-    listing = await workspace.ls("terminal")  # type: ignore[attr-defined]
-    paths = [str(row.path) for row in listing.rows]
+    listing = await workspace.list_resources(path="terminal")
+    paths = [str(row["path"]) for row in listing["rows"]]
     check(paths, f"the workspace has a Terminal session ({paths})")
     for path in paths:
         typed = await workspace.resource(path).load()  # type: ignore[attr-defined]
@@ -303,14 +324,16 @@ async def output_of(workspace: object, recorded: dict) -> bytes | None:
     """What a recorded run printed, when the host kept it in the content."""
     output = recorded.get("output")
     if isinstance(output, str) and output.startswith("tilo.content:"):
-        return await workspace.files.download(output)  # type: ignore[attr-defined]
+        return await workspace.download(output)
     return None
 
 
 async def history_named(workspace: object, name: str) -> list[dict]:
     """History's versions of the Terminal's changes, those named after `name`:
     the agent the key is, for the person it runs for."""
-    history = await workspace.do("terminal#history", last=100)  # type: ignore[attr-defined]
+    history = (
+        await run(workspace, {"path": "terminal", "action": "history"}, {"last": 100})
+    ).get("result")
     write_json(f"history-{re.sub(r'[^a-z0-9]+', '-', name.lower())}.json", history)
     versions = (history or {}).get("versions") if isinstance(history, dict) else None
     return [version for version in versions or [] if (version.get("actor") or {}).get("name") == name]
@@ -333,9 +356,12 @@ async def refused() -> dict[str, object]:
         began = time.perf_counter()
         # In a run, as an agent's commands go: the shell fails at once with
         # the refusal, where a person's own command would wait for the card.
-        async with aws.run("A Linux command the account cannot pay for yet"):
+        async with aws.invocation("A Linux command the account cannot pay for yet"):
             answer, questions = await asked(
-                one, outcome(aws.do("terminal#run", command=REFUSED_COMMAND))
+                one,
+                outcome(
+                    run(aws, {"path": "terminal", "action": "run"}, {"command": REFUSED_COMMAND})
+                ),
             )
         seconds = time.perf_counter() - began
         say("answered", f"{seconds:.2f} s: {json.dumps(answer, default=str)[:400]}")
@@ -375,7 +401,7 @@ async def refused() -> dict[str, object]:
         # way, before anything starts in the VM.
         say("the agent opens a Linux app in the workspace, without a card")
         try:
-            app = await outcome(aws.do("linux#open", app=GUI_APP))
+            app = await outcome(run(aws, {"path": "linux", "action": "open"}, {"app": GUI_APP}))
         except Refused as error:
             app = {"refused": f"{error.code}: {error.message}", "next": error.next_steps}
         say("answered", json.dumps(app, default=str)[:400])
@@ -407,7 +433,7 @@ async def card() -> dict[str, object]:
     The card is the account's, and one file says so: the plans file the VM
     host admits Linux actions by and the server counts page actions by. So the
     Browser's page action the free allowance refused a moment ago runs here
-    too, when this run opened a Browser window to hold it to."""
+    too, when this run opened a Browser window to check it on."""
     kept = await state()
     check(PLANS and os.path.isfile(PLANS), f"the plans file is where the provider writes it ({PLANS})")
     plans.add_account(PLANS, ACCOUNT)
@@ -419,12 +445,11 @@ async def card() -> dict[str, object]:
         agent = client(str(kept["key"]))
         try:
             aws = agent.workspace(workspace)
-            listing = await aws.ls("browser")
-            open_rows = [str(row.path) for row in listing.rows]
+            listing = await aws.list_resources(path="browser")
+            open_rows = [str(row["path"]) for row in listing["rows"]]
             check(open_rows, f"the workspace's Browser window is open ({open_rows})")
-            page = "browser/page#read_page"
             began = time.perf_counter()
-            answer = await outcome(aws.do(page))
+            answer = await outcome(run(aws, {"path": "browser/page", "action": "read_page"}))
             seconds = time.perf_counter() - began
             refused = isinstance(answer, dict) and "refused" in answer
             check(
@@ -436,7 +461,7 @@ async def card() -> dict[str, object]:
         finally:
             await agent.aclose()
     else:
-        say("no Browser", "this run opened none, so only the Linux command it releases is held (the next step)")
+        say("no Browser", "this run opened none, so only the Linux command it releases waits for the next step")
     return report
 
 
@@ -451,7 +476,8 @@ async def terminal() -> dict[str, object]:
         say("the person's own key runs a command in the workspace's Terminal")
         began = time.perf_counter()
         answer, questions = await asked(
-            one, outcome(ows.do("terminal#run", command=TERMINAL_COMMAND))
+            one,
+            outcome(run(ows, {"path": "terminal", "action": "run"}, {"command": TERMINAL_COMMAND})),
         )
         seconds = time.perf_counter() - began
         check(
@@ -586,7 +612,7 @@ async def agent() -> dict[str, object]:
         pending = re.search(r"pending ([0-9a-f-]{8,})", out)
         if pending:
             say("followed", f"the command answered pending {pending.group(1)}")
-            answer = await aws.status(pending.group(1))
+            answer = await aws.get_invocation(pending.group(1))
             check("succeeded" in json.dumps(answer), f"the run it started ended well ({answer})")
         say("History keeps it as the agent's run")
         versions = await history_named(aws, AGENT_KEY_NAME)
@@ -632,7 +658,10 @@ async def isolated() -> dict[str, object]:
         one = person()
         say("a command runs as the tenant, and neither it nor the Browser user reads the other's files")
         began = time.perf_counter()
-        answer, questions = await asked(one, outcome(ows.do("terminal#run", command=ISOLATION_COMMAND)))
+        answer, questions = await asked(
+            one,
+            outcome(run(ows, {"path": "terminal", "action": "run"}, {"command": ISOLATION_COMMAND})),
+        )
         seconds = time.perf_counter() - began
         check(
             len(questions) == 1,
@@ -657,12 +686,15 @@ async def isolated() -> dict[str, object]:
         other, second = await asked(
             one,
             outcome(
-                ows.do(
-                    "terminal#run",
-                    command=(
-                        f"ls /home/tilo-browser && echo leaked"
-                        f" ; sudo -n -u tilo-browser -- cat {REFUSED_MARKER}.tenant && echo leaked"
-                    ),
+                run(
+                    ows,
+                    {"path": "terminal", "action": "run"},
+                    {
+                        "command": (
+                            f"ls /home/tilo-browser && echo leaked"
+                            f" ; sudo -n -u tilo-browser -- cat {REFUSED_MARKER}.tenant && echo leaked"
+                        )
+                    },
                 )
             ),
         )
@@ -687,7 +719,9 @@ async def isolated() -> dict[str, object]:
 
 async def vm_memory(ows: object, one: PagePerson, what: str) -> dict[str, object]:
     """What the VM holds in memory now, and the apps session's processes."""
-    answer, _ = await asked(one, outcome(ows.do("terminal#run", command=GUI_MEMORY_COMMAND)))  # type: ignore[attr-defined]
+    answer, _ = await asked(
+        one, outcome(run(ows, {"path": "terminal", "action": "run"}, {"command": GUI_MEMORY_COMMAND}))
+    )
     output = str((answer or {}).get("output") or "")
     used = next(
         (int(line.split()[1]) for line in output.splitlines() if line.startswith("used_kib ")),
@@ -734,7 +768,7 @@ async def gui() -> dict[str, object]:
         before = await vm_memory(ows, one, "before the app")
         say("the agent opens the guest's X11 terminal in the workspace", GUI_APP)
         began = time.perf_counter()
-        opened = await outcome(aws.do("linux#open", app=GUI_APP))
+        opened = await outcome(run(aws, {"path": "linux", "action": "open"}, {"app": GUI_APP}))
         open_seconds = time.perf_counter() - began
         say("opened", f"{open_seconds:.2f} s: {json.dumps(opened, default=str)[:300]}")
         check(
@@ -744,7 +778,12 @@ async def gui() -> dict[str, object]:
         # The app runs, as the tenant, before anyone looks at it: what it costs
         # the VM is measured with its window up.
         await asyncio.sleep(5)
-        isolation, _ = await asked(one, outcome(ows.do("terminal#run", command=GUI_ISOLATION_COMMAND)))
+        isolation, _ = await asked(
+            one,
+            outcome(
+                run(ows, {"path": "terminal", "action": "run"}, {"command": GUI_ISOLATION_COMMAND})
+            ),
+        )
         said = str((isolation or {}).get("output") or "")
         check(
             any(line.split() == ["tilo", "xterm"] for line in said.splitlines()),
@@ -765,7 +804,13 @@ async def gui() -> dict[str, object]:
         }
         write_json("gui.json", report)
         say("a person is invited into the workspace, to see it on their shell")
-        invitation = await ows.members.invite(role="editor", email="gui-person@example.invalid")
+        invitation = (
+            await run(
+                ows,
+                {"path": "workspace/invitations", "action": "invite"},
+                {"role": "editor", "invitee_name": "gui-person@example.invalid"},
+            )
+        )["result"]
         began = time.perf_counter()
         person_said = await asyncio.to_thread(type_on_the_shell, invitation.link)
         window = person_said.get("window") or {}
@@ -775,7 +820,10 @@ async def gui() -> dict[str, object]:
         written = ""
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
-            answer, _ = await asked(one, outcome(ows.do("terminal#run", command=f"cat {GUI_FILE}")))
+            answer, _ = await asked(
+                one,
+                outcome(run(ows, {"path": "terminal", "action": "run"}, {"command": f"cat {GUI_FILE}"})),
+            )
             written = str((answer or {}).get("output") or "")
             if "typed-on-the-shell" in written:
                 break
@@ -803,25 +851,25 @@ async def gui() -> dict[str, object]:
         await agent.aclose()
 
 
-async def own_settings(backend: AsyncTilo) -> dict[str, object]:
+async def own_settings(backend: Tilo) -> dict[str, object]:
     """The person's own settings records in each workspace that is theirs, as
     they read now: what the VM's session must never write."""
-    listed = await backend._workspace_list()
+    listed = (await run(backend, {"path": "account/workspaces", "action": "list"})).get("result") or {}
     found: dict[str, object] = {}
-    for one in listed.workspaces:
-        if one.role != "owner":
+    for one in listed.get("workspaces") or []:
+        if one.get("role") != "owner":
             continue
         try:
-            found[one.id] = await backend.workspace(one.id)._read("settings")
-        except ProtocolError as error:
-            found[one.id] = {"unread": str(error)}
+            found[str(one["id"])] = await backend.workspace(str(one["id"])).read_resource("settings")
+        except Refused as error:
+            found[str(one["id"])] = {"unread": str(error)}
     return found
 
 
 async def kept_in_environment(ows: object) -> dict[str, object]:
     """What the VM session keeps for its next one, as the environment's record
     holds it (each record by its name), as the host sealed it."""
-    record = await ows._read(RESTART_RECORD)  # type: ignore[attr-defined]
+    record = await ows.read_resource(RESTART_RECORD)
     write_json("restart-record.json", record)
     fields = record.get("fields") if isinstance(record, dict) else None
     settings = fields.get("settings") if isinstance(fields, dict) else None
@@ -842,7 +890,7 @@ async def restart_change() -> dict[str, object]:
     """Before the VM restarts: an agent's run in the VM changes its session's
     wallpaper and has the Linux app's window cover the display, both landing in
     the environment's record, and the person's own settings records are read
-    to hold them to after."""
+    to check them against afterwards."""
     kept = await state()
     workspace = str(kept["workspace"])
     backend = client(SERVER_KEY)
@@ -851,32 +899,37 @@ async def restart_change() -> dict[str, object]:
         one = person()
         settings_before = await own_settings(backend)
         say("an agent's run in the VM changes its session's wallpaper and what it shows", RESTART_CHANGE_COMMAND)
-        changed, _ = await asked(one, outcome(ows.do("terminal#run", command=RESTART_CHANGE_COMMAND)))
+        changed, _ = await asked(
+            one,
+            outcome(
+                run(ows, {"path": "terminal", "action": "run"}, {"command": RESTART_CHANGE_COMMAND})
+            ),
+        )
         check(
             isinstance(changed, dict) and changed.get("exit") == 0,
             f"the VM's daemon took the ordinary settings and shell actions ({json.dumps(changed, default=str)[:300]})",
         )
-        held: dict[str, object] = {}
+        kept_environment: dict[str, object] = {}
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
-            held = await kept_in_environment(ows)
-            if wallpaper_of(held) == RESTART_WALLPAPER and covering_of(held):
+            kept_environment = await kept_in_environment(ows)
+            if wallpaper_of(kept_environment) == RESTART_WALLPAPER and covering_of(kept_environment):
                 break
             await asyncio.sleep(1)
         check(
-            wallpaper_of(held) == RESTART_WALLPAPER,
-            f"the environment's record holds the VM session's wallpaper ({held.get(RESTART_WALLPAPERS)!r})",
+            wallpaper_of(kept_environment) == RESTART_WALLPAPER,
+            f"the environment's record keeps the VM session's wallpaper ({kept_environment.get(RESTART_WALLPAPERS)!r})",
         )
         check(
-            covering_of(held),
-            f"the environment's record holds the window covering the VM session's display ({held.get(RESTART_SHOWN)!r})",
+            covering_of(kept_environment),
+            f"the environment's record keeps the window covering the VM session's display ({kept_environment.get(RESTART_SHOWN)!r})",
         )
         # The change is the VM's, made on the person's behalf: History names the
         # person, never a device of its own.
         versions = await history_named(ows, PERSON_KEY_NAME)
         report = {
             "wallpaper": RESTART_WALLPAPER,
-            "covering": covering_of(held),
+            "covering": covering_of(kept_environment),
             "history_versions": len(versions),
             "own_settings": settings_before,
         }
@@ -903,7 +956,10 @@ async def restart_back() -> dict[str, object]:
         said = ""
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
-            answer, _ = await asked(one, outcome(ows.do("terminal#run", command=RESTART_COMMAND)))
+            answer, _ = await asked(
+                one,
+                outcome(run(ows, {"path": "terminal", "action": "run"}, {"command": RESTART_COMMAND})),
+            )
             said = str((answer or {}).get("output") or "")
             if RESTART_WALLPAPER in said:
                 break
@@ -916,21 +972,21 @@ async def restart_back() -> dict[str, object]:
             "no-kept-store" in said,
             f"the VM keeps no store of its session's on its disk: what came back came from the record ({said.strip()[:300]!r})",
         )
-        held = await kept_in_environment(ows)
-        check(wallpaper_of(held) == before["wallpaper"], f"the record still holds the wallpaper ({held.get(RESTART_WALLPAPERS)!r})")
+        kept_environment = await kept_in_environment(ows)
+        check(wallpaper_of(kept_environment) == before["wallpaper"], f"the record still keeps the wallpaper ({kept_environment.get(RESTART_WALLPAPERS)!r})")
         # A session that started without taking up what it showed writes what it
         # shows now over it: the window still covering the display is the
         # session having read it back.
         check(
-            covering_of(held) == before["covering"],
-            f"the VM session shows what it showed before the restart ({held.get(RESTART_SHOWN)!r})",
+            covering_of(kept_environment) == before["covering"],
+            f"the VM session shows what it showed before the restart ({kept_environment.get(RESTART_SHOWN)!r})",
         )
         settings_after = await own_settings(backend)
         check(
             settings_after == before["own_settings"],
             "the person's own settings records are unchanged by the VM session's wallpaper and what it shows",
         )
-        say("after the restart", f"wallpaper {wallpaper_of(held)!r}, covering {covering_of(held)!r}")
+        say("after the restart", f"wallpaper {wallpaper_of(kept_environment)!r}, covering {covering_of(kept_environment)!r}")
         report = {**before, "own_settings_unchanged": True}
         report.pop("own_settings", None)
         write_json("restart.json", report)

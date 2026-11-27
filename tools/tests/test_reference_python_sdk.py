@@ -57,21 +57,15 @@ class PythonSdkReferenceTests(unittest.TestCase):
         page = self.page()
         self.assertTrue(page.startswith("# Python SDK\n"))
         self.assertEqual(page.count("\n# "), 0, "one H1 only")
-        for section in ("Client", "Workspaces", "Resources", "Invocations", "Files", "Keys", "Members", "Errors"):
+        for section in ("Client", "Transports", "Calls", "Workspaces", "Actions", "Resources", "Vault", "Errors"):
             self.assertIn(f"## {section}\n", page)
-        self.assertIn("### AsyncTilo\n", page)
-        self.assertIn("class AsyncTilo\nAsyncTilo(key: str | None = None", page)
-        self.assertIn("#### Workspace.ls\n", page)
-        self.assertIn(
-            "Workspace.ls(path: str | None = None, *, kind: str | None = None, "
-            "limit: int | None = None, cursor: str | None = None) -> Any",
-            page,
-        )
-        self.assertIn("The apps, an app's resources, or one resource's children and actions;", page)
-        self.assertIn("`cursor` reads on from where a page ended.", page)
-        self.assertIn("#### Event.path\n", page)
+        self.assertIn("### Tilo\n", page)
+        self.assertIn("class Tilo(AccountOperations)\nTilo(key: str | None = None", page)
+        self.assertIn("#### Workspace.upload\n", page)
+        self.assertIn("Workspace.upload(data: Any) -> str", page)
+        self.assertIn("Put a file's bytes into the workspace", page)
+        self.assertIn("#### Resource.load\n", page)
         self.assertIn("### Refused\n", page)
-        self.assertIn("### Unreachable\n", page)
         self.assertIn("## App types", page)
         self.assertIn("tilo sdk gen --lang python --out tilo/types", page)
         self.assertNotIn("sdk/python/src/tilo/types", page)
@@ -97,17 +91,17 @@ class PythonSdkReferenceTests(unittest.TestCase):
 
     def test_an_undocumented_method_stops_the_page(self) -> None:
         self.edit(
-            "_workspace.py",
-            '"""The workspace as the account lists it: its id, name, host and your role."""',
+            "_resource.py",
+            '"""Read the resource, after the edits on their way."""',
             '""""""',
         )
         result = self.generate()
         self.assertEqual(result.returncode, 1)
-        self.assertIn("Workspace.info", result.stderr)
+        self.assertIn("Resource.load", result.stderr)
         self.assertIn("no docstring", result.stderr)
 
     def test_an_export_no_group_holds_stops_the_page(self) -> None:
-        self.edit("_models.py", "def _text(", 'def extra() -> None:\n    """Something new."""\n\n\ndef _text(')
+        self.edit("_errors.py", "def refusal_of(", 'def extra() -> None:\n    """Something new."""\n\n\ndef refusal_of(')
         self.edit("__init__.py", '    "__version__",', '    "__version__",\n    "extra",')
         result = self.generate()
         self.assertEqual(result.returncode, 1)

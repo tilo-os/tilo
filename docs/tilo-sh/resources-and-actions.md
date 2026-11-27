@@ -59,42 +59,66 @@ and `remove` for sets and collections, `remove-key` for a map entry, `set-cell` 
 this: assigning a field is an edit, and so is assigning inside a map field.
 
 ```python example=read-and-edit
-from tilo import Tilo
+import asyncio
 
-tilo = Tilo()
-workspace = tilo.workspace(tilo.workspaces.create("Snippets and actions").id)
+from tilo import Tilo, run
 
-# An action: make a snippet.
-workspace.do("snippets#new_snippet", title="Visa checklist")
 
-# A read: the snippet as a resource, with the fields the app publishes.
-snippet = workspace.read("snippets/Visa checklist")
-print("kind:", snippet.kind, "title:", snippet.fields["title"], "favorite:", snippet.fields["favorite"])
+async def main() -> None:
+    async with Tilo() as tilo:
+        made = await run(
+            tilo,
+            {"path": "account/workspaces", "action": "create"},
+            {"name": "Snippets and actions"},
+        )
+        workspace = tilo.workspace(made["result"]["workspace"]["id"])
 
-# A field edit, twice: assigning a field, and naming the operation.
-snippet.favorite = True
-snippet.edit("tags", op="insert", value="visa")
-after = workspace.read("snippets/Visa checklist")
-print("favorite:", after.fields["favorite"], "tags:", after.fields["tags"])
+        # An action: make a snippet.
+        await run(workspace, {"path": "snippets", "action": "new_snippet"}, {"title": "Visa checklist"})
+
+        # A read: the snippet as a resource, with the fields the app publishes.
+        snippet = await workspace.resource("snippets/Visa checklist").load()
+        print(
+            "kind:",
+            snippet.kind,
+            "title:",
+            snippet.fields["title"],
+            "favorite:",
+            snippet.fields["favorite"],
+        )
+
+        # A field edit, twice: assigning a field, and naming the operation.
+        snippet.favorite = True
+        await snippet.edit("tags", op="insert", value="visa")
+        after = await workspace.resource("snippets/Visa checklist").load()
+        print("favorite:", after.fields["favorite"], "tags:", after.fields["tags"])
+
+
+asyncio.run(main())
 ```
 
 ```typescript example=read-and-edit
-import { Tilo } from "tilo-sdk";
+import { Tilo, run } from "tilo-sdk";
 
 const tilo = new Tilo();
-const workspace = tilo.workspace((await tilo.workspaces.create("Snippets and actions")).id);
+const made = await run(
+  tilo,
+  { path: "account/workspaces", action: "create" },
+  { name: "Snippets and actions" },
+);
+const workspace = tilo.workspace((made.result as { workspace: { id: string } }).workspace.id);
 
 // An action: make a snippet.
-await workspace.do("snippets#new_snippet", { title: "Visa checklist" });
+await run(workspace, { path: "snippets", action: "new_snippet" }, { title: "Visa checklist" });
 
 // A read: the snippet as a resource, with the fields the app publishes.
-const snippet = await workspace.read("snippets/Visa checklist");
+const snippet = await workspace.resource("snippets/Visa checklist").load();
 console.log("kind:", snippet.kind, "title:", snippet.fields.title, "favorite:", snippet.fields.favorite);
 
 // A field edit, twice: assigning a field, and naming the operation.
 snippet.favorite = true;
 await snippet.edit(["tags"], "visa", "insert");
-const after = await workspace.read("snippets/Visa checklist");
+const after = await workspace.resource("snippets/Visa checklist").load();
 console.log("favorite:", after.fields.favorite, "tags:", after.fields.tags);
 ```
 
@@ -155,8 +179,8 @@ Then a PDF's document is a `Document`, and every action is a method: `read_field
 `readFields()` in TypeScript — the app's `read_fields`, in each language's spelling. An assignment is a field edit, and a read-only field has
 no setter, so the compiler says what the app would have refused.
 
-Without generated types nothing is missing: a path is a string, an action is `ws.do(path, …)`, and a
-resource is `ws.resource(path)`.
+Without generated types nothing is missing: a path is a string, an action is
+`run(ws, {"path": …, "action": …}, args)`, and a resource is `ws.resource(path)`.
 
 ## Where next
 

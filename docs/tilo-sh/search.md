@@ -17,31 +17,47 @@ ls snippets/Todo   → the fields of one snippet, and the actions it offers
 Paging is `limit`, and a listing answers a cursor for the rest.
 
 ```python example=find-by-listing
-from tilo import Tilo
+import asyncio
 
-tilo = Tilo()
-workspace = tilo.workspace(tilo.workspaces.create("Looking for things").id)
+from tilo import Tilo, run
 
-workspace.do("snippets#new-snippet", title="Visa checklist")
-workspace.do("snippets#new-snippet", title="Packing list")
 
-wanted = "visa"
-for row in workspace.ls("snippets").rows:
-    if wanted in (row.label or row.name).lower():
-        print(row.path, "|", row.label, "|", row.kind)
+async def main() -> None:
+    async with Tilo() as tilo:
+        made = await run(
+            tilo, {"path": "account/workspaces", "action": "create"}, {"name": "Looking for things"}
+        )
+        workspace = tilo.workspace(made["result"]["workspace"]["id"])
+
+        await run(workspace, {"path": "snippets", "action": "new-snippet"}, {"title": "Visa checklist"})
+        await run(workspace, {"path": "snippets", "action": "new-snippet"}, {"title": "Packing list"})
+
+        wanted = "visa"
+        listing = await workspace.list_resources(path="snippets")
+        for row in listing["rows"]:
+            if wanted in (row.get("label") or row.get("name") or "").lower():
+                print(row["path"], "|", row.get("label"), "|", row.get("kind"))
+
+
+asyncio.run(main())
 ```
 
 ```typescript example=find-by-listing
-import { Tilo } from "tilo-sdk";
+import { Tilo, run } from "tilo-sdk";
 
 const tilo = new Tilo();
-const workspace = tilo.workspace((await tilo.workspaces.create("Looking for things")).id);
+const made = await run(
+  tilo,
+  { path: "account/workspaces", action: "create" },
+  { name: "Looking for things" },
+);
+const workspace = tilo.workspace((made.result as { workspace: { id: string } }).workspace.id);
 
-await workspace.do("snippets#new-snippet", { title: "Visa checklist" });
-await workspace.do("snippets#new-snippet", { title: "Packing list" });
+await run(workspace, { path: "snippets", action: "new-snippet" }, { title: "Visa checklist" });
+await run(workspace, { path: "snippets", action: "new-snippet" }, { title: "Packing list" });
 
 const wanted = "visa";
-const snippets = await workspace.ls("snippets");
+const snippets = await workspace.listResources({ path: "snippets" });
 for (const row of snippets.rows) {
   if ((row.label || row.name).toLowerCase().includes(wanted)) {
     console.log(row.path, "|", row.label, "|", row.kind);
@@ -70,31 +86,52 @@ curl -sS --fail-with-body "$resources?path=snippets" -H "$auth" \
 ## Search by words
 
 `find` (the `search#find` action, `POST /v1/workspaces/{workspace}/resources/search/actions/find`) is the host's search over what the workspace's
-records hold: their titles and text. It answers hits, best first, one per record, each as your own
+records keep: their titles and text. It answers hits, best first, one per record, each as your own
 listing shows it: a `path` the other calls take, its `kind`, its `label`, and the `action` the row offers
 (`open` when the row opens the resource itself). A record sealed end to end that the host cannot open is
 not found by words; walk to it instead. What a change says joins the index a moment after it lands, so a
 search made right after a write may answer none of it yet.
 
 ```python example=find-by-words
-from tilo import Tilo
+import asyncio
 
-tilo = Tilo()
-workspace = tilo.workspace(tilo.workspaces.create("Searching").id)
-workspace.do("snippets#new-snippet", title="Visa passport checklist")
+from tilo import Tilo, run
 
-for hit in workspace.find("passport"):
-    print(hit.path, "|", hit.label, "|", hit.kind)
+
+async def main() -> None:
+    async with Tilo() as tilo:
+        made = await run(
+            tilo, {"path": "account/workspaces", "action": "create"}, {"name": "Searching"}
+        )
+        workspace = tilo.workspace(made["result"]["workspace"]["id"])
+        await run(
+            workspace, {"path": "snippets", "action": "new-snippet"}, {"title": "Visa passport checklist"}
+        )
+
+        found = (
+            await run(workspace, {"path": "search", "action": "find"}, {"query": "passport"})
+        ).get("result") or {}
+        for hit in found.get("hits") or []:
+            print(hit["path"], "|", hit.get("label"), "|", hit.get("kind"))
+
+
+asyncio.run(main())
 ```
 
 ```typescript example=find-by-words
-import { Tilo } from "tilo-sdk";
+import { Tilo, run } from "tilo-sdk";
 
 const tilo = new Tilo();
-const workspace = tilo.workspace((await tilo.workspaces.create("Searching")).id);
-await workspace.do("snippets#new-snippet", { title: "Visa passport checklist" });
+const made = await run(
+  tilo,
+  { path: "account/workspaces", action: "create" },
+  { name: "Searching" },
+);
+const workspace = tilo.workspace((made.result as { workspace: { id: string } }).workspace.id);
+await run(workspace, { path: "snippets", action: "new-snippet" }, { title: "Visa passport checklist" });
 
-for (const hit of await workspace.find("passport")) {
+const found = await run(workspace, { path: "search", action: "find" }, { query: "passport" });
+for (const hit of ((found.result ?? {}) as { hits?: { path: string; label?: string; kind?: string }[] }).hits ?? []) {
   console.log(hit.path, "|", hit.label, "|", hit.kind);
 }
 ```
@@ -112,10 +149,11 @@ curl -sS --fail-with-body "$api/workspaces/$workspace/resources/search/actions/f
   -H "Content-Type: application/json" -d '{"query": "passport"}' \
   | jq -r '.result.hits[] | "\(.path) | \(.label) | \(.kind)"'
 ```
-`ws.find(query, app=None, limit=None)` narrows it to one app and a count.
+`run(ws, {"path": "search", "action": "find"}, {"query": …, "app": …, "limit": …})` narrows it to one app
+and a count.
 
 > [!NOTE]
-> A hosted workspace does not run the desktop's search today. `find` there answers a refusal that says so
+> A hosted workspace does not run the desktop's search today. `search#find` there answers a refusal that says so
 > and points at `ls`, so walking the tree — the example above — is what works from your code and from an
 > agent right now.
 

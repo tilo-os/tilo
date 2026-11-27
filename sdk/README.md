@@ -4,25 +4,23 @@ Script a Tilo workspace from your own code: the same resources, actions,
 permissions, history and undo a person clicking or an agent over MCP gets.
 There is no second API. The design is `docs/developers/sdk.md`.
 
-- `python/`: the `tilo-sdk` package (`AsyncTilo` and the sync `Tilo`), imported as `tilo`.
-  uv project, Python 3.11 or newer.
-- `typescript/`: the `tilo-sdk` package, Promise-only. bun project, ESM.
+- `python/`: the `tilo-sdk` package, imported as `tilo`. uv project, Python 3.11 or newer.
+- `typescript/`: the `tilo-sdk` package. bun project, ESM.
 
 ```sh
 uv add tilo-sdk          # Python:        from tilo import Tilo
 bun add tilo-sdk         # TypeScript:    import { Tilo } from "tilo-sdk"
 ```
 
-The TypeScript SDK is a client of Tilo's HTTP API, `/v1` (`docs/developers/api.md`): `tilo sdk
-gen` writes its `Tilo` and `Workspace`, one method per operation, from the API's description. The
-Python SDK still calls the tools an agent calls (`tilo_ls`, `tilo_read`, `tilo_do`, ...). On a
-computer that runs Tilo both reach its daemon through their native part (`python/native`,
+Both SDKs are clients of Tilo's HTTP API, `/v1` (`docs/developers/api.md`): `tilo sdk gen`
+writes each one's `Tilo` and `Workspace`, one method per operation, from the API's description.
+On a computer that runs Tilo both reach its daemon through their native part (`python/native`,
 `typescript/native`), admitted as the person, or as the app the daemon started the program as.
 Without a daemon, a key (`TILO_API_KEY`) reaches the API server (`TILO_API_URL`,
-`https://api.tilo.sh` by default): `/v1` for TypeScript, its MCP endpoint for Python.
+`https://api.tilo.sh` by default) over HTTP.
 
 `tilo sdk gen` writes per-app types into
-`python/src/tilo/types/` and `typescript/src/types/` (with the TypeScript client) when a package
+`python/src/tilo/types/` and `typescript/src/types/` (with each client) when a package
 is built or tested; they are not committed. `bun run types` in `typescript/` writes both
 from this checkout (`tools/ci/sdk-gen.sh`). Both packages ship the types and
 the proxies they stand on.

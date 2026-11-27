@@ -1,4 +1,4 @@
-"""The SDK's native part: this computer's daemon, reached in its action frames.
+"""The SDK's native part: this computer's daemon, reached over its native endpoint.
 
 Built from ``sdk/python/native`` into every wheel; absent when ``tilo`` runs
 from a checkout that did not build it, in which case a key over HTTPS is the
@@ -12,19 +12,19 @@ class Daemon:
     def workspace(self) -> str | None:
         """The workspace this connection acts in when a call names none."""
 
-    async def call(
+    async def request(
         self,
-        workspace: str | None,
-        tool: str,
-        args: str,
-        group: str | None = None,
-    ) -> str:
-        """Call ``tool`` with ``args`` (JSON text) in ``workspace`` (``None``: the
-        account's own tree), as a step of ``group`` (JSON text of ``{id, title}``)
-        when one is named.
+        method: str,
+        target: str,
+        headers: list[list[str]],
+        body: bytes | None = None,
+    ) -> Reply:
+        """Have the daemon answer ``method`` on ``target`` (a ``/v1`` path with
+        its query) with ``headers`` and ``body``, as its API answers this
+        connection: an app with its own grants, never its person's.
 
-        Answers JSON text: ``{"answer": ...}`` for a call that ran, and
-        ``{"refused": {"error": {...}}}`` for one that was refused.
+        Awaits the ``Reply``. Raises ``ConnectionError`` when the daemon did not
+        answer at all; a refusal is a reply, with its status.
         """
 
     async def web_call(self, workspace: str | None, args: str) -> str:
@@ -33,7 +33,7 @@ class Daemon:
         in).
 
         Answers JSON text: ``{"answer": ...}``, or
-        ``{"refused": {"error": {...}}}``. An app's held connection has the
+        ``{"refused": {"error": {...}}}``. An app's own connection has the
         vault add the key to the request; the secret never reaches the app.
         """
 
@@ -43,6 +43,33 @@ class Daemon:
 
         Answers JSON text: ``{"answer": {"secret": ...}}``, or
         ``{"refused": {"error": {...}}}``.
+        """
+
+    async def find(self, workspace: str | None, app: str, purpose: str) -> str:
+        """The reference of the vault item tagged for ``app`` and ``purpose`` in
+        ``workspace`` (``None``: the one this connection acts in), found on this
+        app's own connection.
+
+        Answers JSON text: ``{"answer": {"reference": ...}}`` or
+        ``{"answer": {}}``, or ``{"refused": {"error": {...}}}``. It releases
+        nothing.
+        """
+
+class Reply:
+    """What the daemon's API answered one request with."""
+
+    @property
+    def status(self) -> int:
+        """The status it answered with."""
+
+    @property
+    def headers(self) -> list[list[str]]:
+        """Each header as ``[name, value]``."""
+
+    async def next(self) -> bytes | None:
+        """The next piece of the body; ``None`` once it ended.
+
+        Raises ``ConnectionError`` when the connection closed first.
         """
 
 async def connect(socket: str | None = None, workspace: str | None = None) -> Daemon:

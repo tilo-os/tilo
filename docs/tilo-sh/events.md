@@ -24,55 +24,61 @@ wants.
 
 ## Watching from your code
 
-`ws.watch()` is an async iterator: Python's `async for`, TypeScript's `for await`. Here a watch is opened,
+`ws.events()` is an async iterator: Python's `async for`, TypeScript's `for await`. Here a watch is opened,
 a snippet is made, and the first event is printed:
 
 ```python example=watch-stream
 import asyncio
 
-from tilo import AsyncTilo
+from tilo import Tilo, run
 
 
 async def main() -> None:
-    tilo = AsyncTilo()
-    workspace = tilo.workspace((await tilo.workspaces.create("Watching")).id)
+    async with Tilo() as tilo:
+        made = await run(
+            tilo, {"path": "account/workspaces", "action": "create"}, {"name": "Watching"}
+        )
+        workspace = tilo.workspace(made["result"]["workspace"]["id"])
+        events = workspace.events()
 
-    async def first_change():
-        async for event in workspace.watch():
-            if event.kind == "change":
-                return event
-        raise RuntimeError("the watch ended without a change")
+        async def first_change():
+            async for event in events:
+                if event["type"] == "change":
+                    return event
+            raise RuntimeError("the watch ended without a change")
 
-    watcher = asyncio.create_task(first_change())
-    await asyncio.sleep(1)                      # let the watch attach
-    await workspace.do("snippets#new-snippet", title="Arrivals")
+        watcher = asyncio.create_task(first_change())
+        await asyncio.sleep(1)                  # let the watch attach
+        await run(workspace, {"path": "snippets", "action": "new-snippet"}, {"title": "Arrivals"})
 
-    event = await asyncio.wait_for(watcher, timeout=30)
-    print(
-        "kind:",
-        event.kind,
-        "path:",
-        event.path,
-        "sentence:",
-        event.sentence,
-        "invocation:",
-        event.invocation,
-    )
-    await tilo.aclose()
+        event = await asyncio.wait_for(watcher, timeout=30)
+        data = event["data"]
+        print(
+            "type:",
+            event["type"],
+            "path:",
+            data.get("path"),
+            "what:",
+            data.get("what"),
+            "change:",
+            data.get("change"),
+        )
 
 
 asyncio.run(main())
 ```
 
 ```typescript example=watch-stream
-import { Tilo } from "tilo-sdk";
+import { Tilo, run } from "tilo-sdk";
 
 const tilo = new Tilo();
-const workspace = tilo.workspace((await tilo.workspaces.create("Watching")).id);
+const made = await run(tilo, { path: "account/workspaces", action: "create" }, { name: "Watching" });
+const workspace = tilo.workspace((made.result as { workspace: { id: string } }).workspace.id);
+const events = workspace.events();
 
 async function firstChange() {
-  for await (const event of workspace.watch()) {
-    if (event.kind === "change") {
+  for await (const event of events) {
+    if (event.type === "change") {
       return event;
     }
   }
@@ -81,22 +87,24 @@ async function firstChange() {
 
 const watcher = firstChange();
 await new Promise((resolve) => setTimeout(resolve, 1000)); // let the watch attach
-await workspace.do("snippets#new-snippet", { title: "Arrivals" });
+await run(workspace, { path: "snippets", action: "new-snippet" }, { title: "Arrivals" });
 
 const event = await Promise.race([
   watcher,
   new Promise<never>((_, reject) => setTimeout(() => reject(new Error("no change in 30s")), 30000)),
 ]);
+const data = event.data as { path?: string; what?: string; change?: string };
 console.log(
-  "kind:",
-  event.kind,
+  "type:",
+  event.type,
   "path:",
-  event.path,
-  "sentence:",
-  event.sentence,
-  "invocation:",
-  event.invocation,
+  data.path,
+  "what:",
+  data.what,
+  "change:",
+  data.change,
 );
+await events.return?.();
 process.exit(0);
 ```
 
@@ -118,14 +126,13 @@ grep -A1 '^event: change' events.txt | head -2
 ```
 
 The call's own `invocation` events arrive too; the example reads past them to the first `change`, which
-names the app, the record, the sentence a person would read, and the invocation that made it.
+names the app, the record, the sentence a person would read, and what the change did.
 
 ## Watching one invocation
 
-An `Invocation` has the same stream narrowed to itself: `invocation.output()` answers its events, from
-`started` to
-`succeeded`, `failed` or `cancelled`, and stops there. That is how a caller follows a long action without
-polling its status.
+`ws.invocationOutput(invocation)` (`invocation_output` in Python) is the same stream narrowed to one
+run: its events, from `started` to `succeeded`, `failed` or `cancelled`, and stops there. That is how a
+caller follows a long action without polling its status.
 
 ## Webhooks
 
