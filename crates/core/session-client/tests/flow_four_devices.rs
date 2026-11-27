@@ -20,13 +20,12 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_server_protocol::WorkspaceId as ServerWorkspaceId;
 use tilo_server_protocol::servers::person_workspace_id;
-use tilo_server_protocol::workspaces::{
-    CREATE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, WorkspaceLabels,
-};
+use tilo_server_protocol::workspaces::WorkspaceLabels;
 use tilo_session_client::Link;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
 use tilo_workspace_records::models as model_providers;
 use tilo_workspace_records::vault as workspace_vault;
+use tilo_workspace_service::workspaces::OwnWorkspaceOffer;
 
 use crate::support::flow;
 use crate::support::{Device, TestHost, enrol, start_workspace_host_relaying};
@@ -55,7 +54,8 @@ struct Four {
     laptop_person: Link,
     _state: tempfile::TempDir,
     /// The person's own computer, which founded their own workspace and handed it to the server.
-    _desk: TestHost,
+    desk: Device,
+    desk_host: TestHost,
     _desk_state: tempfile::TempDir,
 }
 
@@ -105,6 +105,10 @@ async fn four_devices() -> Four {
     let desk_host =
         start_workspace_host_relaying(&root, &desk, desk_state.path(), false, true).await;
     let desk_workspaces = desk_host.server.workspaces().unwrap();
+    // As the person's computer keeps the workspaces they make on it as their own.
+    desk_workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("desk"))
+        .unwrap();
     let person_workspace =
         tilo_workspace_service::workspaces::person_workspace::found(desk_workspaces)
             .await
@@ -160,7 +164,8 @@ async fn four_devices() -> Four {
         laptop_session,
         laptop_person,
         _state: state,
-        _desk: desk_host,
+        desk,
+        desk_host,
         _desk_state: desk_state,
     }
 }
@@ -316,26 +321,20 @@ async fn flow_always_on_server_holds_all_workspaces_at_once() {
     let f = Box::pin(four_devices()).await;
     let desktop = f.client(&f.desktop_session, &f.desktop, "fedora-desktop");
     let laptop = f.client(&f.laptop_session, &f.laptop, "snapdragon-laptop");
-    // The person makes a workspace on each of two devices, through the published action.
+    // The person makes a workspace on each of two devices: their computer that founded their
+    // own workspace founds it for them, places it at their server and lists it.
     let mut made: Vec<(&str, String)> = Vec::new();
-    for (who, device) in [("the desktop", &desktop), ("the laptop", &laptop)] {
-        let created = flow::ask(
-            device,
-            f.work_id(),
-            HOST_ACTIONS_PROVIDER,
-            HOST_WORKSPACES_RESOURCE,
-            CREATE_WORKSPACE,
-            json!({ "name": "Ada's work" }),
-        )
-        .await
-        .unwrap_or_else(|error| panic!("{who} makes a workspace: {error:?}"));
-        made.push((
-            who,
-            created["workspace"]
-                .as_str()
-                .expect("the workspace it made")
-                .to_owned(),
-        ));
+    for (who, device) in [("the desktop", &f.desktop), ("the laptop", &f.laptop)] {
+        let session = flow::session(&f.desk_host, device, &f.desk.cert);
+        let (listing, _) = flow::client(&session, device, &f.desk.cert, who)
+            .own_workspace(
+                serde_json::Map::from_iter([("name".to_owned(), json!("Ada's work"))]),
+                tilo_actions::InvocationId::new(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{who} makes a workspace: {error:?}"));
+        session.close();
+        made.push((who, listing.workspace));
     }
 
     // Their server holds each without being asked: it is theirs, and takes their work by
