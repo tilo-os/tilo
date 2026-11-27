@@ -16,13 +16,13 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::EffectiveMotion;
 use tilo_ui_base::widget::{DrawChild, Element, Spacer, Widget};
 
-/// How far from an item's middle the pointer still makes it grow, in its own heights: three
-/// about four items each way, as a dock's icons reach.
-const REACH_HEIGHTS: f64 = 4.5;
+/// How fast the growth falls away from the pointer, in an item's own heights: a neighbour is
+/// half again as far, the next twice that, so the icons nearest the pointer grow most and each
+/// one further grows less — a dock's taper.
+const DECAY_HEIGHTS: f64 = 2.0;
 
-/// The smallest reach, in logical pixels: an item smaller than a control should not magnify
-/// only at the pixel under the pointer.
-const REACH_MIN: f64 = 64.0;
+/// Below this share of the peak an item rests: far enough that its growth is not seen.
+const REST_SHARE: f64 = 0.02;
 
 /// How long the growth takes to settle after the pointer stops: short enough that the item
 /// answers the pointer, long enough to read as motion rather than as a jump.
@@ -92,15 +92,13 @@ impl Magnify {
         if rest.width() <= 0.0 || rest.height() <= 0.0 {
             return 0.0;
         }
-        let reach = (rest.width().max(rest.height()) * REACH_HEIGHTS).max(REACH_MIN);
+        let decay = (rest.height().max(1.0) * DECAY_HEIGHTS).max(1.0);
         let distance = (pointer - rest.center()).hypot();
-        if distance >= reach {
+        let share = (-distance / decay).exp();
+        if share < REST_SHARE {
             return 0.0;
         }
-        let near = 1.0 - distance / reach;
-        // Smooth at both ends: no edge where an item starts or stops growing.
-        let eased = near * near * (3.0 - 2.0 * near);
-        self.zoom * eased
+        self.zoom * share
     }
 
     /// Take `view` as what it holds, laid at the growth it stands at now: a rebuilt item must not
