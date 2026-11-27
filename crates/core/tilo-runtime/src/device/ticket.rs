@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::workspaces::ServiceWorkspaces;
+use crate::device::issuing::{Role, TicketServer};
 use anyhow::{Context as _, Result, anyhow, bail};
 use ed25519_dalek::SigningKey;
 use iroh::Endpoint;
@@ -39,7 +40,6 @@ use tilo_device_identity::login::{
     RECOVERY_WORDS, RELEASE_HALF, REMOVE_IDENTITY, RENAME, REPORTED, RESOURCE, RESTORE, REVOKE,
     Report, TICKET_LIFETIME_NS, Ticket, UPDATE, USE_IDENTITY,
 };
-use tilo_device_tickets::{Role, TicketServer};
 use tilo_identity::store::SigningIdentity;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::{ActionService, NoActions};

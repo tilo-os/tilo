@@ -29,13 +29,13 @@ const REACH_WITHIN: Duration = Duration::from_secs(10);
 
 use std::sync::Arc;
 
+use crate::device::issuing::{Issuer, Role, Root};
 use collab_types::signer::DeviceSigner;
 use ed25519_dalek::SigningKey;
 use futures_util::future::BoxFuture;
 use iroh::Endpoint;
 use tilo_desktop_model::WorkspaceId;
 use tilo_device_identity::login::{Entry, Reached};
-use tilo_device_tickets::{Issuer, Role, Root};
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::workspaces::Workspaces;
 

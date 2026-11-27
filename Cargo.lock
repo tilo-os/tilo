@@ -16984,30 +16984,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-device-tickets"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek 3.0.0",
- "futures",
- "hex",
- "iroh",
- "iroh-base",
- "serde_json",
- "tilo-accounts",
- "tilo-actions",
- "tilo-clock",
- "tilo-collab-types",
- "tilo-device-identity",
- "tilo-lock",
- "tilo-peer-state",
- "tilo-user-identity",
- "tilo-workspace-service",
- "tokio",
- "tracing",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-device-vpn"
 version = "0.1.0"
 dependencies = [
@@ -19152,7 +19128,6 @@ dependencies = [
  "tilo-collab-types",
  "tilo-daemon",
  "tilo-device-identity",
- "tilo-device-tickets",
  "tilo-machine",
  "tilo-mime",
  "tilo-paths",
@@ -19730,10 +19705,12 @@ dependencies = [
  "blake3",
  "ed25519-dalek 3.0.0",
  "fuser",
+ "futures",
  "futures-util",
  "getrandom 0.4.3",
  "hex",
  "iroh",
+ "iroh-base",
  "iroh-blobs",
  "launcher",
  "launcher-macos",
@@ -19749,6 +19726,7 @@ dependencies = [
  "tempfile",
  "test-server",
  "thiserror 2.0.21",
+ "tilo-accounts",
  "tilo-action-policy",
  "tilo-action-services",
  "tilo-actions",
@@ -19772,7 +19750,6 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-device-identity",
- "tilo-device-tickets",
  "tilo-device-vpn",
  "tilo-dialogs",
  "tilo-endpoint-reachability",
@@ -20224,7 +20201,6 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-device-identity",
- "tilo-device-tickets",
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-font-catalog",
@@ -20669,7 +20645,6 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-device-identity",
- "tilo-device-tickets",
  "tilo-endpoint-reachability",
  "tilo-fs",
  "tilo-fs-protocol",
@@ -27928,7 +27903,6 @@ dependencies = [
  "tilo-device-protocol",
  "tilo-device-steps",
  "tilo-device-surfaces",
- "tilo-device-tickets",
  "tilo-device-vpn",
  "tilo-dialogs",
  "tilo-dictation",

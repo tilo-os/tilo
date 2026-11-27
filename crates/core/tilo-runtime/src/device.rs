@@ -127,6 +127,7 @@ pub(crate) mod ush_line;
 mod vpn;
 /// How the person's workspaces stand, as the daemon publishes them to its person's shells.
 pub use shell::Standing;
+pub mod issuing;
 pub mod shortcuts;
 pub(crate) mod signing;
 #[cfg(not(windows))]

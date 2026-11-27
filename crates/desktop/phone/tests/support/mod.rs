@@ -146,4 +146,4 @@ pub fn shown(phone: &tilo_runtime::in_process::Device) -> tilo_runtime::in_proce
 
 /// The person's laptop, serving one ticket: the workspace service's stand-in device, which the
 /// phone's tests and the flow's share without reaching into the sync engine.
-pub use tilo_device_tickets::test_support::Issuing;
+pub use tilo_runtime::device::issuing::test_support::Issuing;

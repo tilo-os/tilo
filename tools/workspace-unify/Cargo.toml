@@ -1103,7 +1103,6 @@ doc = false
 "tilo-device-protocol" = { path = "../../crates/os/tilo-device-protocol", default-features = false, features = [] }
 "tilo-device-steps" = { path = "../../crates/os/tilo-device-steps", default-features = false, features = [] }
 "tilo-device-surfaces" = { path = "../../crates/desktop/device-surfaces", default-features = false, features = [] }
-"tilo-device-tickets" = { path = "../../crates/core/device-tickets", default-features = false, features = ["test-support"] }
 "tilo-device-vpn" = { path = "../../crates/os/device-vpn", default-features = false, features = ["default", "service", "session", "test-support", "tunnel"] }
 "tilo-dialogs" = { path = "../../crates/platform/tilo-dialogs", default-features = false, features = ["portal-client", "test-support"] }
 "tilo-dictation" = { path = "../../crates/desktop/dictation", default-features = false, features = [] }

@@ -30,7 +30,9 @@ agents = ["tilo-server/agents"]
 # made ([`daemon::Running::link_shell`]), and a test's daemon start the test build of the session
 # as its person's shell ([`daemon::TEST_SHELL_ENV`]), which is not installed beside it. A
 # production start never builds it: its shell is the session installed beside the daemon.
-test-support = []
+# It also gives an embedder's tests the fixtures they issue tickets for a new computer with
+# ([`device::issuing::test_support`]).
+test-support = ["tilo-workspace-service/test-support", "tilo-peer-state/test-support"]
 
 # The integration tests: one binary, its files included as modules by
 # `tests/it.rs` (a file per binary linked the whole crate once each).
@@ -39,7 +41,9 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
-tilo-device-tickets = { path = "../device-tickets" }
+accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
+futures = { workspace = true, default-features = true }
+iroh-base.workspace = true
 tilo-action-services = { version = "0.1.0", path = "../action-services", features = ["test-support"] }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 tilo-action-policy = { path = "../action-policy" }
