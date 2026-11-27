@@ -593,8 +593,10 @@ const PERSONS_WORKSPACE_LONGEST_PAUSE: std::time::Duration = std::time::Duration
 
 /// The people whose root this process just made, until the start of their services that follows
 /// founds their own workspace: the one step that founds it, on the device that made the root.
-/// Kept in memory alone, so a root whose founding never finished founds nothing at a later start,
-/// and no device that was handed a root founds a second workspace beside the one it made.
+/// A deployment handed its owner's root ([`adopt_owner_root`]) is that root's device, and makes it
+/// here too. Kept in memory alone, so a root whose founding never finished founds nothing at a
+/// later start, and no device that was handed a root otherwise founds a second workspace beside
+/// the one it made.
 static ROOTS_MADE_HERE: Mutex<Vec<[u8; 32]>> = Mutex::new(Vec::new());
 
 /// Found the person of the account `uid` on this computer, the one way a person is made
@@ -1229,7 +1231,6 @@ fn adopt_root_file(
         None,
         tilo_identity::provisioning::IdentityStorage::Files,
     )
-    .map(drop)
     .map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -1238,7 +1239,13 @@ fn adopt_root_file(
                 file.display()
             ),
         )
-    })
+    })?;
+    // The deployment is its person's root device: their root is made here, as on a first device,
+    // and the start of their services that follows founds their workspace.
+    ROOTS_MADE_HERE
+        .lock_recover()
+        .push(SigningKey::from_bytes(&seed).verifying_key().to_bytes());
+    Ok(())
 }
 
 /// In a test: the record [`device_root_record`] answers while [`root_record_for_test`]'s guard

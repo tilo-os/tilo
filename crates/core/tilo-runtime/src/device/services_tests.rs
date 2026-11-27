@@ -2739,6 +2739,10 @@ fn a_deployment_given_its_owner_root_founds_its_kept_workspaces_entry_once() {
             daemon.cert.user_public_key, owner,
             "the device acts as the owner root"
         );
+        // The deployment is its person's root device: its first start founds their own
+        // workspace, which host search starts on, and a restart holds that one again.
+        let own = tilo_server_protocol::servers::person_workspace_id(&owner);
+        assert_eq!(daemon.first.here_blocking().as_deref(), Ok(own.as_str()));
         let runtime = tilo_rt::daemon("owner-root-test").build().unwrap();
         let workspaces = daemon.workspaces.service().workspaces();
         let entry = runtime
