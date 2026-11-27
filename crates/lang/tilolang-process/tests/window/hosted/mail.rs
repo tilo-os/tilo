@@ -3443,9 +3443,12 @@ fn mail_that_arrives_before_the_members_are_read_is_announced_once_they_are() {
             .find(|t| session.text(t, "subject") == "Lunch on Monday?")
             .cloned()
     });
-    // The announcement waits for the members it would tell: nobody is told, and the moment it
-    // came is not cleared before it ran.
-    for _ in 0..20 {
+    // The arrival is marked, and waits for the members it would tell: nobody is told, and the
+    // moment it came is not cleared before the announcement ran.
+    session.wait_for("the arrival to be marked", |session| {
+        matches!(session.value_of(&lunch, "arrived"), RtValue::Opt(Some(_))).then_some(())
+    });
+    for _ in 0..10 {
         session.settle();
     }
     assert!(
