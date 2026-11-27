@@ -1865,10 +1865,21 @@ fn a_login_the_daemon_did_not_start_says_so_and_logs_out() {
     // It stands in front of the whole desktop on the person's wallpaper: around the failure, which
     // stands in the middle, the screen is the wallpaper's smooth ground, with none of the desktop's
     // bar, dock or windows drawn over it (their words and icons are sharp edges).
-    let shot = session
-        .compositor()
-        .screenshot("HEADLESS-1")
-        .expect("a frame");
+    // The screen comes to stand there once its first frames are in: a frame drawn while the
+    // wallpaper or the failure still came up may show something else for a moment.
+    let shot = crate::common::wait_for(
+        &mut session,
+        "the screen to show the wallpaper's smooth ground around the failure",
+        |session| {
+            let shot = session
+                .compositor()
+                .screenshot("HEADLESS-1")
+                .expect("a frame");
+            sharp_edge_around_the_middle(&shot)
+                .is_none()
+                .then_some(shot)
+        },
+    );
     if let Some(dir) = std::env::var_os("TL_SHELL_SHOTS") {
         let dir = std::path::PathBuf::from(dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1880,27 +1891,6 @@ fn a_login_the_daemon_did_not_start_says_so_and_logs_out() {
             image::ColorType::Rgba8,
         )
         .unwrap();
-    }
-    let pixel = |x: u32, y: u32| {
-        let at = usize::try_from((y * shot.width + x) * 4).unwrap();
-        [shot.rgba[at], shot.rgba[at + 1], shot.rgba[at + 2]]
-    };
-    let (width, height) = (shot.width, shot.height);
-    let around = |x: u32, y: u32| {
-        y < height / 5 || y >= height * 4 / 5 || x < width / 6 || x >= width * 5 / 6
-    };
-    for y in 0..height {
-        for x in 0..width - 1 {
-            if !around(x, y) || !around(x + 1, y) {
-                continue;
-            }
-            let (here, next) = (pixel(x, y), pixel(x + 1, y));
-            assert!(
-                here.iter().zip(next).all(|(a, b)| a.abs_diff(b) <= 4),
-                "only the wallpaper's ground shows around the failure, yet ({x}, {y}) is \
-                 {here:?} beside {next:?}"
-            );
-        }
     }
     let names: Vec<String> = session
         .controls()
@@ -1923,6 +1913,27 @@ fn a_login_the_daemon_did_not_start_says_so_and_logs_out() {
         .expect("a press by name");
     session.step(Duration::from_millis(1)).unwrap();
     assert!(session.ended(), "logging out ends the session");
+}
+
+/// The first two pixels side by side, outside the middle of `shot`, that differ by more than the
+/// wallpaper's grain: the sharp edge of a word, an icon or a window's border.
+fn sharp_edge_around_the_middle(shot: &tilo_compositor::Screenshot) -> Option<String> {
+    let pixel = |x: u32, y: u32| {
+        let at = usize::try_from((y * shot.width + x) * 4).unwrap();
+        [shot.rgba[at], shot.rgba[at + 1], shot.rgba[at + 2]]
+    };
+    let (width, height) = (shot.width, shot.height);
+    let around = |x: u32, y: u32| {
+        y < height / 5 || y >= height * 4 / 5 || x < width / 6 || x >= width * 5 / 6
+    };
+    (0..height)
+        .flat_map(|y| (0..width - 1).map(move |x| (x, y)))
+        .filter(|&(x, y)| around(x, y) && around(x + 1, y))
+        .find_map(|(x, y)| {
+            let (here, next) = (pixel(x, y), pixel(x + 1, y));
+            (!here.iter().zip(next).all(|(a, b)| a.abs_diff(b) <= 4))
+                .then(|| format!("({x}, {y}) is {here:?} beside {next:?}"))
+        })
 }
 
 /// A login whose daemon answered no link carries the daemon's own words for what kept the person's
