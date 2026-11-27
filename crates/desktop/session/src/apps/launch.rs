@@ -461,8 +461,16 @@ fn said_lines(stderr: &[String]) -> Option<String> {
         .filter(|line| !line.starts_with(launcher::SAYS))
         .collect();
     let quoted: Vec<String> = if app.is_empty() {
-        lines
+        // The launcher's account of the argv it ran is one enormous line, and says how the
+        // program was started rather than how it ended: what fits is quoted, and the enormous
+        // line only where nothing else is.
+        let fits: Vec<&str> = lines
             .iter()
+            .copied()
+            .filter(|line| line.chars().count() <= SAID_LINE_CHARS)
+            .collect();
+        let from = if fits.is_empty() { &lines } else { &fits };
+        from.iter()
             .rev()
             .take(SAID_LINES)
             .rev()
@@ -647,5 +655,23 @@ mod tests {
         let long = format!("tilo-launcher: {} ended: exit status: 2", "x".repeat(1000));
         let said = said_lines(&lines(&long)).expect("how it ended");
         assert_eq!(said.chars().count(), SAID_LINE_CHARS);
+    }
+
+    /// A silent child's answer names how it ended, not the page of mounts the launcher ran it
+    /// with: the enormous line is skipped while anything shorter is there to say.
+    #[test]
+    fn a_silent_childs_answer_skips_the_argument_page() {
+        let huge = format!(
+            "tilo-launcher: so.tilo.chat ran bwrap {}",
+            "--ro-bind /a /b ".repeat(400)
+        );
+        let said = said_lines(&lines(&format!(
+            "{huge}\ntilo-launcher: so.tilo.chat ended: exit status: 2"
+        )));
+        assert_eq!(
+            said.as_deref(),
+            Some("so.tilo.chat ended: exit status: 2"),
+            "how it ended, without the arguments it was started with"
+        );
     }
 }
