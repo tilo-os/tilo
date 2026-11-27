@@ -125,6 +125,7 @@ impl Apps {
             args,
             env: desktop_entry::launch::inherited_environment(),
             window_identities: vec![launch.app_id.clone()],
+            ticket: None,
         };
         let asked = launch.asked.as_str();
         self.spawn_by(

@@ -47,6 +47,8 @@ mod connection;
 pub(crate) mod connectors;
 mod failures;
 pub(crate) use failures::{Failures, Retry};
+mod executor;
+pub(crate) use executor::DeviceLauncher;
 mod instances;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -164,6 +166,12 @@ pub struct Apps {
     failures: Arc<Failures>,
     /// How a start that failed is retried.
     retry: Retry,
+    /// Who starts a decided launch's process: this daemon, or the seat's shell.
+    executor: executor::Executor,
+    /// The launches ordered of the seat's shell that it has not taken yet.
+    orders: Arc<executor::SeatOrders>,
+    /// Every launch this daemon decided, by ticket: what a connection is admitted as.
+    tickets: Arc<executor::Tickets>,
 }
 impl Apps {
     /// Hand each origin connector this device starts the connection to its dispatch through
@@ -217,6 +225,7 @@ impl Apps {
             launcher_candidates(),
         );
         apps.connection_wait = true;
+        apps.executor = executor::Executor::of_daemon(profile);
         #[cfg(any(target_os = "macos", windows))]
         if let Some(catalog) = apps.catalog.as_ref() {
             carried::install_carried_runtimes(catalog);
@@ -281,7 +290,18 @@ impl Apps {
             launching: Mutex::default(),
             device_grants: tilo_peer_state::DeviceGrants::unkept(),
             grants: OnceLock::new(),
+            executor: executor::Executor::Local,
+            orders: Arc::default(),
+            tickets: Arc::default(),
         }
+    }
+
+    /// Order every launch that shows a window of the seat's shell, as the computer's own daemon
+    /// on Tilo OS does.
+    #[cfg(test)]
+    pub(crate) const fn ordering_of_the_seat(mut self) -> Self {
+        self.executor = executor::Executor::Seat;
+        self
     }
 
     /// Wait for a start's first connection, as a daemon does.
@@ -767,21 +787,14 @@ impl Apps {
                 &original,
                 (origin, socket.as_fd()),
             )?;
-            self.launched.record_showing(
-                connectors::pid(&child),
-                app_id,
-                workspace,
-                Shows::Connection,
-                None,
-            );
+            self.record_connection(connectors::pid(&child), app_id, workspace);
             Ok(child)
         }
         #[cfg(target_os = "macos")]
         {
             let child = macos::connector(self, &app, workspace, (origin, socket.as_fd()))?;
             if let Some(pid) = connectors::pid(&child) {
-                self.launched
-                    .record_showing(pid, app_id, workspace, Shows::Connection, None);
+                self.record_connection(pid, app_id, workspace);
             }
             Ok(child)
         }
@@ -859,9 +872,24 @@ impl Apps {
     /// connection through, rather than starting the app's process.
     #[cfg(feature = "test-support")]
     pub(crate) fn record_connection_for_test(&self, pid: u32, app: &str, workspace: &str) {
-        let _ = self
+        self.record_connection(pid, app, workspace);
+    }
+
+    /// Decide and record `pid` as the process this runtime started as `app`'s held connection in
+    /// `workspace`: a connector, which the device starts for the app's origin.
+    #[cfg(any(target_os = "linux", target_os = "macos", feature = "test-support"))]
+    fn record_connection(&self, pid: u32, app: &str, workspace: &str) {
+        let ticket =
+            self.tickets
+                .decide(app, workspace, (None, true, None), executor::Kind::Package);
+        if self
             .launched
-            .record_showing(pid, app, workspace, Shows::Connection, None);
+            .record_showing(pid, app, workspace, Shows::Connection, None, ticket)
+        {
+            self.tickets.here(ticket);
+        } else {
+            self.tickets.forget(ticket);
+        }
     }
 
     /// Record `pid` as the tilolang process that runs `app`'s own instances in `workspace`, as the
@@ -935,6 +963,15 @@ impl Apps {
             // The lock is a launch's: no window process of its own runs to keep it.
             drop(guard);
             return started;
+        }
+        if self.executor == executor::Executor::Seat {
+            // The seat's shell starts the window as its person; the lock is the launch's.
+            drop(guard);
+            return self
+                .launch_asked(&runtime_collab::wire::shell::LaunchAsk::package(
+                    app_id, workspace,
+                ))
+                .map(drop);
         }
         let launch = self.start(app_id, workspace).await?;
         self.watch(app_id, launch, move || {
@@ -1093,14 +1130,6 @@ impl Apps {
     ///
     /// # Errors
     /// As [`Self::start`].
-    #[cfg_attr(
-        target_os = "android",
-        expect(
-            unreachable_code,
-            unused_variables,
-            reason = "with no app sandbox here, the launch is refused before it starts"
-        )
-    )]
     fn start_showing(
         &self,
         app_id: &str,
@@ -1109,11 +1138,37 @@ impl Apps {
         open: Option<&str>,
         runs: &Runs,
     ) -> Result<Launch, String> {
-        if !self.launches_into(workspace) {
-            return Err(format!(
-                "workspace {workspace} is not served by this runtime"
-            ));
+        let mut ask = runtime_collab::wire::shell::LaunchAsk::package(app_id, workspace);
+        ask.windowless = shows != Shows::Window;
+        let ticket = self.decide(&ask)?;
+        let launch = self
+            .start_showing_ticketed(ticket, app_id, workspace, shows, open, runs)
+            .inspect_err(|_| self.tickets.forget(ticket))?;
+        // A capture is no connection of the app's: its launch admits nothing once started.
+        if shows == Shows::Capture {
+            self.tickets.forget(ticket);
         }
+        Ok(launch)
+    }
+
+    /// [`Self::start_showing`] of the launch `ticket`, which this daemon decided already.
+    #[cfg_attr(
+        target_os = "android",
+        expect(
+            unreachable_code,
+            unused_variables,
+            reason = "with no app sandbox here, the launch is refused before it starts"
+        )
+    )]
+    fn start_showing_ticketed(
+        &self,
+        ticket: u64,
+        app_id: &str,
+        workspace: &str,
+        shows: Shows,
+        open: Option<&str>,
+        runs: &Runs,
+    ) -> Result<Launch, String> {
         // A held connection shows nothing, so it needs no window of its own: the launcher runs
         // its entrypoint's `bin`.
         let app = if shows == Shows::Connection {
@@ -1127,13 +1182,7 @@ impl Apps {
             return Err(reason);
         }
         // The record the app is asked to open, as a window of the session asks for one.
-        let open_uri = open
-            .map(|record| {
-                collab_types::document::DocumentId::parse(record)
-                    .map(|record| record.uri())
-                    .ok_or_else(|| format!("{record} is not a record id"))
-            })
-            .transpose()?;
+        let open_uri = open.map(open_uri).transpose()?;
         self.run_with_signed_surface(&app);
         let sockets = self.sockets.clone();
         #[cfg(target_os = "linux")]
@@ -1176,9 +1225,14 @@ impl Apps {
         // A capture ends by itself, and is no connection of the app's: nothing attests it and
         // nothing takes a call with it.
         if shows != Shows::Capture
-            && !self
-                .launched
-                .record_showing(launch.pid, &app.app_id, workspace, shows, open)
+            && !self.launched.record_showing(
+                launch.pid,
+                &app.app_id,
+                workspace,
+                shows,
+                open,
+                ticket,
+            )
         {
             launch.kill();
             return Err(format!(
@@ -1194,6 +1248,7 @@ impl Apps {
         }
         // A person opening the app is a change: what stopped coming up here is tried again.
         self.failures.forget(workspace, app_id);
+        self.tickets.here(ticket);
         Ok(launch)
     }
 
@@ -1299,11 +1354,16 @@ impl Apps {
         let watched = app.to_owned();
         let pid = launch.pid;
         let launched = Arc::clone(&self.launched);
+        let tickets = Arc::clone(&self.tickets);
+        let ticket = self.launched.ticket(pid);
         std::thread::Builder::new()
             .name("tilo-app-reaper".into())
             .spawn(move || {
                 watch_end(&watched, launch);
                 launched.forget(pid);
+                if let Some(ticket) = ticket {
+                    tickets.forget(ticket);
+                }
                 ended();
             })
             .map(drop)
@@ -1331,6 +1391,10 @@ impl Apps {
     /// its process watched and its record forgotten once reaped, never waiting for the app to
     /// connect. What the app publishes is what such a caller waits for, on its own. The launch's
     /// ticket.
+    ///
+    /// The launch goes through the device's one launcher ([`Self::launch_asked`]): decided and
+    /// recorded first, then started here, or ordered of the seat's shell where it shows a window
+    /// and this daemon runs as the device's own account.
     fn start_running(
         &self,
         app: &str,
@@ -1338,11 +1402,26 @@ impl Apps {
         shows: Shows,
         record: Option<&str>,
     ) -> Result<Option<u64>, String> {
-        let launch = self.start_showing(app, workspace, shows, record, &Runs::default())?;
-        let ticket = self.launched.ticket(launch.pid);
+        let mut ask = runtime_collab::wire::shell::LaunchAsk::package(app, workspace);
+        ask.windowless = shows != Shows::Window;
+        ask.open = record.map(str::to_owned);
+        self.launch_asked(&ask).map(Some)
+    }
+
+    /// Start the decided launch `ticket` here, its process watched and its record forgotten once
+    /// reaped, never waiting for the app to connect.
+    fn start_ticketed(
+        &self,
+        ticket: u64,
+        app: &str,
+        workspace: &str,
+        shows: Shows,
+        open: Option<&str>,
+    ) -> Result<(), String> {
+        let launch =
+            self.start_showing_ticketed(ticket, app, workspace, shows, open, &Runs::default())?;
         self.watch(app, launch, || {})
-            .map_err(|error| format!("could not watch the launched app: {error}"))?;
-        Ok(ticket)
+            .map_err(|error| format!("could not watch the launched app: {error}"))
     }
 
     /// Start what the window of the tilolang app `app` in `workspace` runs: an instance of the
@@ -1361,6 +1440,24 @@ impl Apps {
         }
         started
     }
+}
+
+/// The link a launch opens its window on: a record's id as the URI that asks an app to open it,
+/// or a link (`scheme:…`) as it is.
+///
+/// # Errors
+/// `open` is neither.
+fn open_uri(open: &str) -> Result<String, String> {
+    collab_types::document::DocumentId::parse(open).map_or_else(
+        || {
+            if open.contains(':') {
+                Ok(open.to_owned())
+            } else {
+                Err(format!("{open} is not a record id"))
+            }
+        },
+        |record| Ok(record.uri()),
+    )
 }
 
 /// Follow `app`'s `launch` until it ends, and say how: an app the device started that stops
@@ -1928,7 +2025,6 @@ impl Launch {
 /// launch ticket handed out.
 pub(crate) struct Launched(
     Mutex<HashMap<u32, LaunchRecord>>,
-    AtomicU64,
     /// The daemon's own tilolang processes by pid, and the app and workspace each runs: the
     /// instances it starts, the origin connectors and the task hosts. A connection from one is
     /// admitted as the app it runs, never as the account that started it.
@@ -1942,7 +2038,6 @@ impl Default for Launched {
     fn default() -> Self {
         Self(
             Mutex::default(),
-            AtomicU64::default(),
             Mutex::default(),
             tokio::sync::watch::channel(0).0,
         )
@@ -2005,11 +2100,11 @@ impl Launched {
         workspace: &str,
         shows: Shows,
         record: Option<&str>,
+        ticket: u64,
     ) -> bool {
         let Some(start_time) = process_start_time(pid) else {
             return false;
         };
-        let ticket = self.1.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         self.0.lock_recover().insert(
             pid,
             LaunchRecord {
@@ -2095,14 +2190,14 @@ impl Launched {
     /// A launch has connected: the start waiting for it wakes, and the others look again at the
     /// record each waits on.
     fn connected_now(&self) {
-        self.3
+        self.2
             .send_modify(|connections| *connections = connections.wrapping_add(1));
     }
 
     /// A receiver woken whenever a launch connects, for a start to wait on: taken before the
     /// record is looked at, so no connection made meanwhile is missed.
     fn connections(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.3.subscribe()
+        self.2.subscribe()
     }
 
     /// Whether the app launched as `pid` has connected.
@@ -2135,7 +2230,7 @@ impl Launched {
     /// Forget `pid`, once its process has been reaped.
     pub(crate) fn forget(&self, pid: u32) {
         self.0.lock_recover().remove(&pid);
-        self.2.lock_recover().remove(&pid);
+        self.1.lock_recover().remove(&pid);
     }
 
     /// Record `pid` as the process this runtime started to run `app` in `workspace`; `false`
@@ -2176,7 +2271,7 @@ impl Launched {
             workspace: workspace.to_owned(),
             own: false,
         };
-        let mut started_here = self.2.lock_recover();
+        let mut started_here = self.1.lock_recover();
         started_here.retain(|pid, record| process_start_time(*pid) == Some(record.start_time));
         started_here.insert(pid, record);
         drop(started_here);
@@ -2187,7 +2282,7 @@ impl Launched {
         let Some(start_time) = process_start_time(pid) else {
             return false;
         };
-        self.2.lock_recover().insert(
+        self.1.lock_recover().insert(
             pid,
             StartedRecord {
                 start_time,
@@ -2250,7 +2345,7 @@ impl Launched {
 
     /// What `pid` exactly is, recorded here, while its start time still matches the record.
     fn recorded(&self, pid: u32) -> Option<ProcessOf> {
-        let started = self.2.lock_recover().get(&pid).map(|record| {
+        let started = self.1.lock_recover().get(&pid).map(|record| {
             (
                 record.start_time,
                 ProcessOf::Started {

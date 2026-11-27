@@ -782,7 +782,7 @@ pub(crate) fn same_process(description: &Description) -> bool {
 }
 
 /// A descriptor for `pid`, for a signal that can reach no later process with its pid.
-pub(crate) fn pidfd(pid: u32) -> Option<OwnedFd> {
+pub fn pidfd(pid: u32) -> Option<OwnedFd> {
     let pid = libc::pid_t::try_from(pid).ok()?;
     // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor or -1.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
@@ -1259,12 +1259,13 @@ mod tests {
                 args: Vec::new(),
                 env: BTreeMap::new(),
                 window_identities: vec!["org.example.Kept".into()],
+                ticket: None,
             };
             spawner
                 .start_with(
                     &planned,
                     None,
-                    &|_| {},
+                    &|_| Ok(()),
                     "workspace-1",
                     Some("org.example.Kept"),
                 )

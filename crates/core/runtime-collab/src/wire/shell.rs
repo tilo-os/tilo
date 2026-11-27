@@ -113,23 +113,165 @@ pub enum HandedTo {
     Speakers,
 }
 
-/// The app a [`Vouch`] admits its connection as.
+/// The launch a [`Vouch`] admits its connection as: the daemon decided and recorded the launch
+/// before any process of it existed, so the connection is admitted from that record (its app,
+/// workspace, window and the member it acts as), never from what the shell says of it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VouchedApp {
-    pub app: String,
-    pub workspace: String,
-    /// The window the app runs in, as the shell's launch named it.
-    pub window: Option<u64>,
-    /// The app runs with no window: it takes its actions on its records, never an open.
-    pub windowless: bool,
-    /// The ticket the shell's launch answered, which the app's open is tied back to.
-    pub ticket: Option<u64>,
-    /// The number of the descriptor pinning the app's process (a pidfd), and of its launcher's
-    /// when the launcher handed the app's process over.
+    /// The ticket of the daemon's launch the connecting process belongs to: the launch's own
+    /// process, or one the shell judged descends from it.
+    pub ticket: u64,
+    /// The number of the descriptor pinning the connecting process (a pidfd).
     pub process: u32,
-    pub launcher: Option<u32>,
-    /// The workspace agent the shell launched the app to act as; `None` for its person.
+}
+
+/// The machine's own kinds of application, which run unconfined as the person: what a host launch
+/// is, and the daemon decides whether one may start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HostKind {
+    /// A Flatpak, in its own sandbox.
+    Flatpak,
+    /// An `AppImage` the person downloaded.
+    AppImage,
+    /// A program the person added.
+    Program,
+    /// One of the operating system's applications.
+    System,
+}
+
+/// The machine's own application a host launch starts, as the shell names it: the executor
+/// resolves it to a command from the entry it names, never from a command the asker wrote.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HostEntry {
+    /// A desktop entry, by its id, with the files and links it opens and whether it is asked for
+    /// another window of an app already showing one.
+    Desktop {
+        id: String,
+        files: Vec<String>,
+        urls: Vec<String>,
+        new_window: bool,
+    },
+    /// A program file with no desktop entry (a downloaded `AppImage`, an executable opened in
+    /// Files).
+    Program { path: std::path::PathBuf },
+}
+
+impl HostEntry {
+    /// The id the launch is recorded and shown under: the desktop entry's, or the program's file
+    /// name.
+    #[must_use]
+    pub fn id(&self) -> String {
+        match self {
+            Self::Desktop { id, .. } => id.clone(),
+            Self::Program { path } => path
+                .file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned()),
+        }
+    }
+}
+
+/// What a launch starts. A Tilo package's command is only ever built by the daemon, from the
+/// package's signed manifest; a host launch names the entry its executor resolves. Neither turns
+/// into the other: a package asked for as a host app is refused.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LaunchKind {
+    Package,
+    Host { kind: HostKind, entry: HostEntry },
+}
+
+/// A launch the shell asks the daemon for ([`ShellCall::Launch`]): the daemon checks the app is
+/// installed, the workspace is served here and the kind may launch, records the launch and only
+/// then orders the shell to start its process ([`LaunchOrder`]).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchAsk {
+    /// The app: a package id, or the host entry's id.
+    pub app: String,
+    /// The workspace it runs in; empty for a host app launched into none.
+    pub workspace: String,
+    pub kind: LaunchKind,
+    /// The record or link the app's window opens (`tilo://…`), for a package.
+    pub open: Option<String>,
+    /// The window opens the record for whoever works it, with none of the person's sign-ins.
+    pub visitor: bool,
+    /// The tab the shell holds for the launch's window.
+    pub window: Option<u64>,
+    /// The app runs with no window, for an action that shows nothing.
+    pub windowless: bool,
+    /// The workspace agent the app acts as; `None` for the person.
     pub member: Option<String>,
+}
+
+impl LaunchAsk {
+    /// The person's launch of the package `app` in `workspace`, showing a window.
+    #[must_use]
+    pub fn package(app: impl Into<String>, workspace: impl Into<String>) -> Self {
+        Self {
+            app: app.into(),
+            workspace: workspace.into(),
+            kind: LaunchKind::Package,
+            open: None,
+            visitor: false,
+            window: None,
+            windowless: false,
+            member: None,
+        }
+    }
+
+    /// The person's launch of the machine's own application `entry`, of `kind`, in `workspace`.
+    #[must_use]
+    pub fn host(kind: HostKind, entry: HostEntry, workspace: impl Into<String>) -> Self {
+        Self {
+            app: entry.id(),
+            workspace: workspace.into(),
+            kind: LaunchKind::Host { kind, entry },
+            open: None,
+            visitor: false,
+            window: None,
+            windowless: false,
+            member: None,
+        }
+    }
+}
+
+/// A Tilo package's launch as the daemon built it from the package's signed manifest: what
+/// `tilo-launcher run` is started with. The executor adds only what is its own (the display, its
+/// services, its environment) and the file it writes `grants` to.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageCommand {
+    pub manifest: std::path::PathBuf,
+    pub payload_root: std::path::PathBuf,
+    /// The hash the package was admitted with, which the launcher checks before it runs.
+    pub package_hash: String,
+    /// The grants the person gave the app in the workspace (`collab_types::caps::LaunchGrants`
+    /// as JSON), which the launcher reads from its capabilities file.
+    pub grants: String,
+    /// The record or link the window opens.
+    pub open: Option<String>,
+    pub visitor: bool,
+}
+
+/// What a [`LaunchOrder`] starts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OrderCommand {
+    Package(PackageCommand),
+    Host { kind: HostKind, entry: HostEntry },
+}
+
+/// A launch the daemon decided and recorded, which this shell starts as its person: one the shell
+/// asked for itself ([`ShellReply::Launching`]), or one the daemon ordered of it for another
+/// caller ([`ShellReply::Orders`]) because it runs as the device's own account and cannot start a
+/// process as the person or reach their display. The shell starts it held, reports it
+/// ([`ShellCall::Started`]), and lets it go on once the daemon bound the process to the ticket.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaunchOrder {
+    pub ticket: u64,
+    pub app: String,
+    /// The name the app is shown by.
+    pub title: String,
+    pub workspace: String,
+    pub window: Option<u64>,
+    pub windowless: bool,
+    pub command: OrderCommand,
 }
 
 /// The window a press on the system's own surfaces (the shell's palette, menus and shortcuts)
@@ -291,6 +433,18 @@ pub enum ShellCall {
     /// The key of an agent the person admitted at the shell: made, certified and kept by the
     /// device, which signs as it, so no key of an agent's is ever the shell's.
     AgentKey(AgentKeyCall),
+    /// Launch an app as the person: answered with the order the shell starts it by once the
+    /// daemon decided and recorded it ([`ShellReply::Launching`]), or why it refused, before any
+    /// process exists.
+    Launch(LaunchAsk),
+    /// The launches the daemon ordered this shell to start since it last asked, waited for until
+    /// there is one ([`ShellReply::Orders`]).
+    Orders,
+    /// The process of the ordered launch `ticket` started, held at its launch hold: `process` is
+    /// the number of the descriptor pinning it (a pidfd), and `pid` its id as the shell sees it.
+    /// Answered once the daemon bound it to the launch ([`ShellReply::Started`]); only then does
+    /// the shell let the process go on.
+    Started { ticket: u64, pid: u32, process: u32 },
 }
 
 /// What the shell asks of the key of an agent its person admitted ([`ShellCall::AgentKey`]).
@@ -585,6 +739,14 @@ pub enum ShellReply {
     MemberChanges(Result<Vec<ShellMemberChange>, String>),
     /// A [`ShellCall::AgentKey`], or why the device refused it.
     AgentKey(Result<AgentKeyAnswer, String>),
+    /// A [`ShellCall::Launch`]: the order the shell starts the launch by, or why the daemon
+    /// refused it.
+    Launching(Result<LaunchOrder, String>),
+    /// A [`ShellCall::Orders`].
+    Orders(Vec<LaunchOrder>),
+    /// A [`ShellCall::Started`]: the process is the launch's, or why the daemon refused it (the
+    /// shell then ends it).
+    Started(Result<(), String>),
 }
 
 /// One change of a workspace's members as its governance names it: the change's hash, the

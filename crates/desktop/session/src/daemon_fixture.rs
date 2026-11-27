@@ -335,6 +335,7 @@ impl TestDaemon {
                 vpn: None,
                 speakers: Some(speakers_links(&speakers)),
                 speaking: None,
+                launcher: None,
             })),
             // The providers registered on the device, the seat a shell serves among them.
             providers: Some(workspaces.providers()),

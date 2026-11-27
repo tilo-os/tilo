@@ -105,6 +105,9 @@ pub enum PlanError {
     /// No Tilo launcher is installed, and every app starts through it.
     #[error("no tilo-launcher is installed, so no app can start here")]
     NoLauncher,
+    /// The device's daemon, which decides every launch, refused this one.
+    #[error("{0}")]
+    Refused(String),
     /// A record launch names something that is not a record id: starting the
     /// app would open nothing, so the app is not started.
     #[error("{record} is not a record of {app}")]
@@ -127,7 +130,7 @@ impl PlanError {
             | Self::Authority { app, .. }
             | Self::NotARecord { app, .. }
             | Self::ContentUnavailable { app } => Some(app),
-            Self::Host(_) | Self::NothingToStart(_) | Self::NoLauncher => None,
+            Self::Host(_) | Self::NothingToStart(_) | Self::NoLauncher | Self::Refused(_) => None,
         }
     }
 }
@@ -148,6 +151,27 @@ pub struct Planned {
     pub env: BTreeMap<String, String>,
     /// Every string the app's windows may announce themselves by.
     pub window_identities: Vec<String>,
+    /// The ticket of the device's launch this plan executes, when the device's daemon decided it
+    /// ([`Planned::ordered_package`]): the process is reported to the daemon under it before it
+    /// may go on, and every connection of it is admitted by it.
+    pub ticket: Option<u64>,
+}
+
+/// A package's launch as the device's daemon ordered it: the daemon decided it and built what it
+/// starts from the package's signed manifest; the session adds only what is its own (the display,
+/// its services, its environment).
+pub struct OrderedPackage<'a> {
+    pub ticket: u64,
+    pub app: &'a str,
+    pub title: &'a str,
+    pub manifest: &'a Path,
+    pub payload_root: &'a Path,
+    /// The hash of the signed package the daemon decided on: the launcher refuses any other.
+    pub package_hash: &'a str,
+    /// The grants the daemon read for the app in its workspace.
+    pub grants: &'a collab_types::caps::LaunchGrants,
+    pub open: Option<&'a Open>,
+    pub visitor: bool,
 }
 
 /// What a spare window's launch is named by, in the log and to the spawner: no app's.
@@ -280,11 +304,50 @@ impl Planned {
             manifest: &installed.manifest_path,
             payload_root: &installed.payload_root,
         };
-        Self::planned_package(package, launcher, open, visitor, context)
+        Self::planned_package_granted(package, launcher, open, visitor, context)
+    }
+
+    /// The process the device's daemon ordered for `ordered`: the launcher's command line for the
+    /// exact package the daemon decided on, with the grants it read, in this session's display and
+    /// environment.
+    ///
+    /// # Errors
+    /// No launcher is installed, or the grants cannot be written.
+    pub fn ordered_package(
+        ordered: &OrderedPackage<'_>,
+        context: &PlanContext<'_>,
+    ) -> Result<Self, PlanError> {
+        let launcher = context.launcher.clone().ok_or(PlanError::NoLauncher)?;
+        let capabilities = launcher::capabilities::write_capability_file(
+            &context.workspace.directory,
+            ordered.app,
+            ordered.grants,
+        )
+        .map_err(|source| PlanError::Grants {
+            app: ordered.app.to_owned(),
+            source,
+        })?;
+        let package = Package {
+            id: ordered.app,
+            title: ordered.title,
+            manifest: ordered.manifest,
+            payload_root: ordered.payload_root,
+        };
+        let mut planned = Self::planned_package(
+            package,
+            launcher,
+            (ordered.open, ordered.visitor),
+            capabilities.as_deref(),
+            context,
+        )?;
+        planned.args.push("--expected-package-hash".to_owned());
+        planned.args.push(ordered.package_hash.to_owned());
+        planned.ticket = Some(ordered.ticket);
+        Ok(planned)
     }
 
     /// The launcher's command line and environment for `package`.
-    fn planned_package(
+    fn planned_package_granted(
         package: Package<'_>,
         launcher: PathBuf,
         open: Option<&Open>,
@@ -298,6 +361,24 @@ impl Planned {
                 app: package.id.to_owned(),
                 source,
             })?;
+        Self::planned_package(
+            package,
+            launcher,
+            (open, visitor),
+            capabilities.as_deref(),
+            context,
+        )
+    }
+
+    /// The launcher's command line and environment for `package`, its grants written to
+    /// `capabilities`.
+    fn planned_package(
+        package: Package<'_>,
+        launcher: PathBuf,
+        (open, visitor): (Option<&Open>, bool),
+        capabilities: Option<&Path>,
+        context: &PlanContext<'_>,
+    ) -> Result<Self, PlanError> {
         // What the person gave this app a choice on: bound into its sandbox at each reference,
         // and nothing another app was given.
         let granted = launcher::capabilities::write_granted_file(
@@ -405,6 +486,7 @@ impl Planned {
             args,
             env,
             window_identities: package_identities(package.id),
+            ticket: None,
         })
     }
 
@@ -471,6 +553,8 @@ impl Planned {
             args,
             env,
             window_identities: Vec::new(),
+            // A spare is no app's launch yet: the window that binds it is the app's.
+            ticket: None,
         })
     }
 
@@ -614,6 +698,7 @@ fn run_host(
         // of the session's own: a host app is told nothing of Tilo's.
         env: desktop_entry::launch::inherited_environment(),
         window_identities: planned.window_identities,
+        ticket: None,
     }
 }
 
@@ -699,7 +784,7 @@ mod tests {
         let context = planning(&environment, &workspace);
 
         // A package launches through the launcher with its workspace and the session's displays.
-        let planned = Planned::planned_package(
+        let planned = Planned::planned_package_granted(
             notes(),
             launcher(),
             Some(&Open::File("/home/you/notes.tilo-note".into())),
@@ -762,8 +847,8 @@ mod tests {
             authority: Some(&authority),
             ..planning(&environment, &authority_workspace)
         };
-        let planned =
-            Planned::planned_package(notes(), launcher(), None, false, &handed).expect("a plan");
+        let planned = Planned::planned_package_granted(notes(), launcher(), None, false, &handed)
+            .expect("a plan");
         let at = planned
             .args
             .iter()
@@ -790,7 +875,7 @@ mod tests {
             ..planning(&environment, &unsupported)
         };
         assert!(
-            !Planned::planned_package(notes(), launcher(), None, false, &blind)
+            !Planned::planned_package_granted(notes(), launcher(), None, false, &blind)
                 .expect("a plan")
                 .args
                 .iter()
@@ -814,7 +899,7 @@ mod tests {
             render_node: Some(PathBuf::from("/dev/dri/renderD128")),
             ..planning(&connector_environment, &workspace)
         };
-        let planned = Planned::planned_package(
+        let planned = Planned::planned_package_granted(
             mail(),
             launcher(),
             // Nothing a connector names to open is handed on either.
@@ -879,8 +964,9 @@ mod tests {
             Launch::Record { record, .. } => crate::routing::record(&record),
             other => panic!("a record launch: {other:?}"),
         };
-        let planned = Planned::planned_package(notes(), launcher(), open.as_ref(), false, &context)
-            .expect("a plan");
+        let planned =
+            Planned::planned_package_granted(notes(), launcher(), open.as_ref(), false, &context)
+                .expect("a plan");
         assert!(
             planned
                 .args
@@ -894,8 +980,9 @@ mod tests {
             "the person's own window browses with their sign-ins: {:?}",
             planned.args
         );
-        let visitor = Planned::planned_package(notes(), launcher(), open.as_ref(), true, &context)
-            .expect("a plan");
+        let visitor =
+            Planned::planned_package_granted(notes(), launcher(), open.as_ref(), true, &context)
+                .expect("a plan");
         assert!(
             visitor.args.iter().any(|arg| arg == "--open-as-visitor"),
             "a window for an agent browses as a visitor: {:?}",

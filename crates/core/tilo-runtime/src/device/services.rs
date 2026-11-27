@@ -4181,6 +4181,7 @@ fn shell_services(
             vpn: parts.vpn.clone(),
             speakers: parts.speakers.map(speaker_links),
             speaking: Arc::clone(parts.live) as Arc<dyn tilo_app_host::shell::ShellSpeaking>,
+            launcher: Arc::new(crate::apps::DeviceLauncher(Arc::clone(parts.apps))),
         },
     )));
     // A workspace placed on a host has its records changed there: the person's actions on

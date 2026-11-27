@@ -244,11 +244,10 @@ async fn accept(
                     connection,
                     app,
                     process,
-                    launcher,
                 } => {
-                    let name = app.app.clone();
+                    let name = format!("launch {}", app.ticket);
                     shell
-                        .vouch(connection, Some((app, process, launcher)))
+                        .vouch(connection, Some((app, process)))
                         .await
                         .map_err(|error| (name, error))
                 }

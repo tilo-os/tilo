@@ -1331,7 +1331,7 @@ tilo_test_env::scenario! {
             !launched.attest(pid, VIEWER, WORKSPACE),
             "unknown until recorded"
         );
-        assert!(launched.record_showing(pid, VIEWER, WORKSPACE, Shows::Window, None));
+        assert!(launched.record_showing(pid, VIEWER, WORKSPACE, Shows::Window, None, 1));
         assert!(launched.attest(pid, VIEWER, WORKSPACE));
         assert!(!launched.attest(pid, "so.tilo.other", WORKSPACE));
         assert!(!launched.attest(pid, VIEWER, "another-workspace"));
@@ -1342,7 +1342,7 @@ tilo_test_env::scenario! {
         launched.0.lock().unwrap().get_mut(&pid).unwrap().start_time += 1;
         assert!(!launched.attest(pid, VIEWER, WORKSPACE));
         launched.forget(pid);
-        assert!(launched.record_showing(pid, VIEWER, WORKSPACE, Shows::Window, None));
+        assert!(launched.record_showing(pid, VIEWER, WORKSPACE, Shows::Window, None, 1));
 
         child.kill().unwrap();
         child.wait().unwrap();
@@ -1371,8 +1371,8 @@ tilo_test_env::scenario! {
             .spawn_locked()
             .unwrap();
         let ours = std::process::id();
-        assert!(apps.launched.record_showing(ours, VIEWER, WORKSPACE, Shows::Window, None));
-        assert!(apps.launched.record_showing(child.id(), VIEWER, WORKSPACE, Shows::Window, None));
+        assert!(apps.launched.record_showing(ours, VIEWER, WORKSPACE, Shows::Window, None, 1));
+        assert!(apps.launched.record_showing(child.id(), VIEWER, WORKSPACE, Shows::Window, None, 2));
         let ticket = |pid| {
             apps.authenticated_launch(pid, VIEWER, WORKSPACE, None)
                 .unwrap()
@@ -2328,3 +2328,7 @@ fn a_failing_apps_attempts_move_no_catalogue_revision() {
         "nothing of the app ran to publish anything"
     );
 }
+
+#[cfg(target_os = "linux")]
+#[path = "apps_executor_tests.rs"]
+mod executor_tests;

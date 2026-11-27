@@ -290,6 +290,57 @@ pub trait ShellActions: Send + Sync {
     ) -> ShellDispatch;
 }
 
+/// The device's one launcher, as a person's shell reaches it: the daemon decides and records
+/// every launch before any process of it exists, and has the process started itself or, where it
+/// runs as the device's own account and cannot start one as the person, orders the seat's shell
+/// to start it.
+pub trait ShellLauncher: Send + Sync {
+    /// Decide and record `ask`, the person's launch: the order their shell starts it by, or why
+    /// it is refused.
+    ///
+    /// # Errors
+    /// The app is not installed, the workspace is not served here, or its kind may not launch.
+    fn launch(
+        &self,
+        ask: runtime_collab::wire::shell::LaunchAsk,
+    ) -> Result<runtime_collab::wire::shell::LaunchOrder, String>;
+
+    /// The launches ordered of the seat's shell since it last asked, waited for until there is
+    /// one.
+    fn orders(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Vec<runtime_collab::wire::shell::LaunchOrder>> + Send>,
+    >;
+
+    /// Bind the process the shell started for the ordered launch `ticket`, which it says runs as
+    /// `pid` and `process` pins, to that launch: from now on a connection the shell vouches for
+    /// with the ticket is admitted as the launch, until the process ends.
+    ///
+    /// # Errors
+    /// No order with that ticket waits for its process.
+    fn started(
+        &self,
+        ticket: u64,
+        pid: u32,
+        process: runtime_portal::descriptors::Owned,
+    ) -> Result<(), String>;
+
+    /// What the launch `ticket` was recorded as, while it runs: what a connection vouched for
+    /// with it is admitted as.
+    fn admitted(&self, ticket: u64) -> Option<AdmittedLaunch>;
+}
+
+/// A launch the daemon recorded, as a connection vouched for with its ticket is admitted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedLaunch {
+    pub app: String,
+    pub workspace: String,
+    pub window: Option<u64>,
+    pub windowless: bool,
+    pub member: Option<String>,
+}
+
 /// The writes a device takes to its workspaces' documents, as they come.
 pub type DocumentWrites =
     tokio::sync::broadcast::Receiver<tilo_workspace_service::workspaces::ResourceWrite>;
@@ -346,6 +397,10 @@ pub struct ShellServices {
     /// person says of themselves and which call they are in. `None` where the device runs no
     /// live session, and the shell's word is refused.
     pub speaking: Option<Arc<dyn ShellSpeaking>>,
+    /// The device's launcher, which decides and records the shell's launches and orders it to
+    /// start the ones the daemon cannot start as the person. `None` where the device launches
+    /// nothing, and a launch is refused.
+    pub launcher: Option<Arc<dyn ShellLauncher>>,
 }
 
 /// The device's one word in each of its workspaces' live sessions, as the person's shell tells

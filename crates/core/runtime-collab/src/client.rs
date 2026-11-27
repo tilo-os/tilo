@@ -1615,22 +1615,17 @@ impl ShellClient {
             .clone()
     }
 
-    /// Hand the daemon `connection`, made on this shell's app socket, to serve: as the app `app`
-    /// names when the shell attested it (its `process` and `launcher` numbers are filled here
-    /// from `pinned`, the pidfds of the app's process and of its launcher's when the launcher
-    /// handed the app over), or as a client admitted by what it presents. From here on the
-    /// connection speaks to the daemon directly.
+    /// Hand the daemon `connection`, made on this shell's app socket, to serve: as the launch
+    /// `app` names by its ticket when the shell attested it (its `process` number is filled here
+    /// from the pidfd of the connecting process), or as a client admitted by what it presents.
+    /// From here on the connection speaks to the daemon directly.
     ///
     /// # Errors
     /// The link carries no descriptors, or the daemon refused the vouch.
     pub async fn vouch(
         &self,
         connection: std::os::fd::OwnedFd,
-        app: Option<(
-            crate::wire::shell::VouchedApp,
-            std::os::fd::OwnedFd,
-            Option<std::os::fd::OwnedFd>,
-        )>,
+        app: Option<(crate::wire::shell::VouchedApp, std::os::fd::OwnedFd)>,
     ) -> Result<(), NotAvailable> {
         self.hand(crate::wire::shell::HandedTo::Collaboration, connection, app)
             .await
@@ -1715,11 +1710,7 @@ impl ShellClient {
         &self,
         to: crate::wire::shell::HandedTo,
         connection: std::os::fd::OwnedFd,
-        app: Option<(
-            crate::wire::shell::VouchedApp,
-            std::os::fd::OwnedFd,
-            Option<std::os::fd::OwnedFd>,
-        )>,
+        app: Option<(crate::wire::shell::VouchedApp, std::os::fd::OwnedFd)>,
     ) -> Result<(), NotAvailable> {
         let connection_client = self.current();
         let sender = connection_client.descriptors.as_ref().ok_or_else(|| {
@@ -1727,9 +1718,8 @@ impl ShellClient {
         })?;
         let connection = sender.send(connection)?;
         let app = match app {
-            Some((mut app, process, launcher)) => {
+            Some((mut app, process)) => {
                 app.process = sender.send(process)?;
-                app.launcher = launcher.map(|launcher| sender.send(launcher)).transpose()?;
                 Some(app)
             }
             None => None,
@@ -1746,6 +1736,76 @@ impl ShellClient {
             crate::wire::shell::ShellReply::Vouched => Ok(()),
             other => Err(NotAvailable::Refused(format!(
                 "the daemon answered a vouch with {other:?}"
+            ))),
+        }
+    }
+
+    /// Ask the daemon to launch `ask` as this shell's person: the order this shell starts it by,
+    /// once the daemon decided and recorded it.
+    ///
+    /// # Errors
+    /// The daemon refused the launch (not installed, a workspace it does not serve, a kind that
+    /// may not launch), or the link is down.
+    pub async fn launch(
+        &self,
+        ask: crate::wire::shell::LaunchAsk,
+    ) -> Result<crate::wire::shell::LaunchOrder, NotAvailable> {
+        match self
+            .call(crate::wire::shell::ShellCall::Launch(ask))
+            .await?
+        {
+            crate::wire::shell::ShellReply::Launching(answer) => {
+                answer.map_err(NotAvailable::Refused)
+            }
+            other => Err(NotAvailable::Refused(format!(
+                "the daemon answered a launch with {other:?}"
+            ))),
+        }
+    }
+
+    /// The launches the daemon ordered this shell to start, waited for until there is one.
+    ///
+    /// # Errors
+    /// The link is down.
+    pub async fn orders(&self) -> Result<Vec<crate::wire::shell::LaunchOrder>, NotAvailable> {
+        match self.call(crate::wire::shell::ShellCall::Orders).await? {
+            crate::wire::shell::ShellReply::Orders(orders) => Ok(orders),
+            other => Err(NotAvailable::Refused(format!(
+                "the daemon answered a follow of its orders with {other:?}"
+            ))),
+        }
+    }
+
+    /// Tell the daemon the ordered launch `ticket` runs as `pid`, pinned by `process` (its pidfd),
+    /// held at its launch hold: answered once the daemon bound the process to the launch, after
+    /// which the shell lets it go on.
+    ///
+    /// # Errors
+    /// The daemon refused the process (no such order, one already started), or the link is down.
+    pub async fn started(
+        &self,
+        ticket: u64,
+        pid: u32,
+        process: std::os::fd::OwnedFd,
+    ) -> Result<(), NotAvailable> {
+        let connection_client = self.current();
+        let sender = connection_client.descriptors.as_ref().ok_or_else(|| {
+            NotAvailable::Refused("this shell link carries no descriptors".to_owned())
+        })?;
+        let process = sender.send(process)?;
+        match self
+            .call(crate::wire::shell::ShellCall::Started {
+                ticket,
+                pid,
+                process,
+            })
+            .await?
+        {
+            crate::wire::shell::ShellReply::Started(answer) => {
+                answer.map_err(NotAvailable::Refused)
+            }
+            other => Err(NotAvailable::Refused(format!(
+                "the daemon answered a started launch with {other:?}"
             ))),
         }
     }

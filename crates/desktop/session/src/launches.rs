@@ -119,6 +119,26 @@ pub struct Launches {
     waiting: Mutex<Vec<LaunchRequest>>,
     /// What wakes that loop when a launch is waiting for it.
     wake: Mutex<Option<tilo_service::Wake>>,
+    /// The link to the device's daemon, which decides every launch this session starts.
+    shell: std::sync::OnceLock<runtime_collab::ShellClient>,
+    /// The daemon's ticket of each process this session started for a launch the daemon decided,
+    /// by pid: what a connection from it, or from a process below it, is vouched for with.
+    tickets: Mutex<BTreeMap<u32, u64>>,
+}
+
+/// Run `asked` on the session's runtime and wait for its answer: what the session's loop, which
+/// is no task of that runtime, asks its daemon with.
+fn on_link<T: Send + 'static>(
+    asked: impl std::future::Future<Output = T> + Send + 'static,
+) -> Result<T, String> {
+    let runtime = tilo_rt::try_app().map_err(|error| error.to_string())?;
+    let (answer, answered) = std::sync::mpsc::sync_channel(1);
+    runtime.spawn(async move {
+        let _ = answer.send(asked.await);
+    });
+    answered
+        .recv_timeout(LAUNCH_ANSWER_WAIT)
+        .map_err(|_| "the device's daemon did not answer the launch in time".to_owned())
 }
 
 impl Launches {
@@ -126,6 +146,63 @@ impl Launches {
     /// layout record and the layout.
     pub(crate) fn notes(&self) -> std::sync::Arc<crate::continuations::Continuations> {
         std::sync::Arc::clone(&self.notes)
+    }
+
+    /// Ask the device's daemon over `shell` for every launch from now on: it decides each, and
+    /// this session starts what it orders.
+    pub(crate) fn link(&self, shell: runtime_collab::ShellClient) {
+        let _ = self.shell.set(shell);
+    }
+
+    /// Whether the device's daemon decides this session's launches: a session with no link to it
+    /// (a test of the desktop alone) plans them itself.
+    pub(crate) fn decided_by_the_daemon(&self) -> bool {
+        self.shell.get().is_some()
+    }
+
+    /// Ask the device's daemon to decide `ask`: the order this session starts it by.
+    ///
+    /// # Errors
+    /// The daemon refused the launch, or did not answer.
+    pub(crate) fn order(
+        &self,
+        ask: runtime_collab::wire::shell::LaunchAsk,
+    ) -> Result<runtime_collab::wire::shell::LaunchOrder, String> {
+        let shell = self
+            .shell
+            .get()
+            .cloned()
+            .ok_or("this session has no link to the device's daemon")?;
+        on_link(async move { shell.launch(ask).await })?.map_err(|error| error.to_string())
+    }
+
+    /// Tell the device's daemon the launch `ticket` it ordered runs as `pid`, held: answered once
+    /// the daemon bound the process to the launch, which may then go on.
+    ///
+    /// # Errors
+    /// The daemon refused the process, did not answer, or the process cannot be pinned.
+    pub(crate) fn report_started(&self, ticket: u64, pid: u32) -> Result<(), String> {
+        let shell = self
+            .shell
+            .get()
+            .cloned()
+            .ok_or("this session has no link to the device's daemon")?;
+        let pinned = tilo_app_launch::kept::pidfd(pid)
+            .ok_or("the started process cannot be pinned, so the daemon cannot know it")?;
+        on_link(async move { shell.started(ticket, pid, pinned).await })?
+            .map_err(|error| error.to_string())?;
+        self.tickets.lock_recover().insert(pid, ticket);
+        Ok(())
+    }
+
+    /// The daemon's ticket of the launch `pid` is, or descends from: the nearest process at or
+    /// above it this session started for a launch the daemon decided.
+    pub(crate) fn ticket_of(&self, pid: u32) -> Option<u64> {
+        let lineage = ancestry(pid);
+        let tickets = self.tickets.lock_recover();
+        lineage
+            .into_iter()
+            .find_map(|process| tickets.get(&process).copied())
     }
 
     /// Wake the session's loop with `wake` when a launch is waiting for it: the loop is the only
@@ -490,7 +567,7 @@ impl Launches {
         }
         Some(AuthenticatedApplicationLaunch {
             continuation_instance: Some(instance),
-            launch_ticket: None,
+            launch_ticket: record.launch.and_then(|launch| self.ticket_of(launch)),
             windowless: record.no_view,
             opened_for: None,
             opened_with: None,
@@ -644,7 +721,8 @@ impl LauncherServices for Launches {
         if let Some((_, windowless)) = self.live_launch(pid, app, workspace) {
             return Ok(Some(AuthenticatedApplicationLaunch {
                 continuation_instance: None,
-                launch_ticket: None,
+                // The daemon's ticket of the launch: what the connection is vouched for with.
+                launch_ticket: self.ticket_of(pid),
                 windowless,
                 opened_for: None,
                 opened_with: None,

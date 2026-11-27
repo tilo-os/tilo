@@ -52,6 +52,8 @@ pub(crate) struct Serving {
     pub vpn: Option<tilo_app_host::shell::DeviceVpnLinks>,
     pub speakers: Option<tilo_app_host::shell::SpeakersLinks>,
     pub speaking: Arc<dyn tilo_app_host::shell::ShellSpeaking>,
+    /// The device's launcher, which decides and records the shell's launches.
+    pub launcher: Arc<dyn tilo_app_host::shell::ShellLauncher>,
 }
 
 pub(crate) fn services(
@@ -68,6 +70,7 @@ pub(crate) fn services(
         vpn,
         speakers,
         speaking,
+        launcher,
     } = serving;
     let standing = Standing::new(
         workspaces.copies().clone(),
@@ -91,6 +94,7 @@ pub(crate) fn services(
         vpn,
         speakers,
         speaking: Some(speaking),
+        launcher: Some(launcher),
         actions: Arc::new(Actions {
             kept: Arc::new(Kept {
                 workspaces: Arc::clone(workspaces),

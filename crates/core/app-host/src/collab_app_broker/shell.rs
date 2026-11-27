@@ -157,34 +157,38 @@ fn seat_account(seat: u64) -> u32 {
     u32::try_from(seat >> 32).unwrap_or(u32::MAX)
 }
 
-/// An app's connection a shell handed over and vouched for ([`ShellCall::Vouch`]), with the
-/// process it pinned: served as that app, as a launch the daemon attested itself would be.
+/// An app's connection a shell handed over and vouched for by the ticket of a launch the daemon
+/// recorded ([`ShellCall::Vouch`]), with the process it pinned: served as that launch, as one the
+/// daemon started itself would be.
 pub(super) struct Handed {
-    pub(super) vouch: runtime_collab::wire::shell::VouchedApp,
+    pub(super) ticket: u64,
+    pub(super) launch: crate::shell::AdmittedLaunch,
     pub(super) process: super::app_process::PeerProcess,
 }
 
 impl Handed {
-    /// What the shell's vouch established about the connection: the app's process, and the
-    /// launch its open is tied back to.
+    /// What the daemon's record of the launch establishes about the connection: the app's
+    /// process, and the launch its open is tied back to.
     pub(super) fn admitted(self) -> Result<super::socket::AuthenticatedHandoff, String> {
-        let Self { vouch, process } = self;
+        let Self {
+            ticket,
+            launch: recorded,
+            process,
+        } = self;
         let launch = crate::services::AuthenticatedApplicationLaunch {
-            continuation_instance: vouch.window,
-            launch_ticket: vouch.ticket,
-            windowless: vouch.windowless,
+            continuation_instance: recorded.window,
+            launch_ticket: Some(ticket),
+            windowless: recorded.windowless,
             opened_for: None,
             opened_with: None,
         };
-        let opened = vouch
-            .ticket
-            .map(|ticket| super::workspace_open::ConnectedLaunch {
-                ticket,
-                app_id: vouch.app.clone(),
-                workspace: vouch.workspace.clone(),
-            });
+        let opened = Some(super::workspace_open::ConnectedLaunch {
+            ticket,
+            app_id: recorded.app.clone(),
+            workspace: recorded.workspace.clone(),
+        });
         let local_media = super::app_process::LocalAppConnection::attested_keeping(
-            (vouch.app, vouch.workspace, vouch.member),
+            (recorded.app, recorded.workspace, recorded.member),
             process,
             launch,
         )
@@ -290,17 +294,19 @@ fn vouch_for(
     }
     let handed = match app {
         Some(vouch) => {
-            if vouch.app.trim().is_empty() || vouch.workspace.trim().is_empty() {
-                return Err("a vouch names an empty app or workspace".to_owned());
-            }
             let task = taken(vouch.process, "app process")?;
-            let launcher = vouch
-                .launcher
-                .map(|number| taken(number, "launcher process"))
-                .transpose()?;
-            let process = super::app_process::PeerProcess::handed(task, launcher)
+            // Admitted from the daemon's own record of the launch alone: a ticket it holds no
+            // running launch for admits nothing.
+            let launch = launcher(&shell.services)?
+                .admitted(vouch.ticket)
+                .ok_or_else(|| format!("no launch with ticket {} runs here", vouch.ticket))?;
+            let process = super::app_process::PeerProcess::handed(task, None)
                 .ok_or("the app the shell vouched for has ended")?;
-            Some(Handed { vouch, process })
+            Some(Handed {
+                ticket: vouch.ticket,
+                launch,
+                process,
+            })
         }
         None => None,
     };
@@ -312,7 +318,7 @@ fn vouch_for(
     let peer_id = state.next_peer_id();
     let app = handed
         .as_ref()
-        .map_or_else(String::new, |handed| handed.vouch.app.clone());
+        .map_or_else(String::new, |handed| handed.launch.app.clone());
     tokio::task::spawn_local(async move {
         if let Err(error) =
             super::session::drive_connection(stream, state, directories, peer_id, None, handed)
@@ -322,6 +328,43 @@ fn vouch_for(
         }
     });
     Ok(ShellReply::Vouched)
+}
+
+/// Answer a shell's launch, its follow of the launches ordered of it, or its report of one it
+/// started, from the device's launcher.
+#[allow(
+    clippy::future_not_send,
+    reason = "a connection is served on the dispatch's LocalSet, as every other is"
+)]
+async fn launching(
+    shell: &Shell,
+    services: &ShellServices,
+    call: ShellCall,
+) -> Result<ShellReply, String> {
+    let launcher = launcher(services)?;
+    Ok(match call {
+        ShellCall::Launch(ask) => ShellReply::Launching(launcher.launch(ask)),
+        ShellCall::Orders => ShellReply::Orders(launcher.orders().await),
+        ShellCall::Started {
+            ticket,
+            pid,
+            process,
+        } => {
+            let process = shell.received.take(process).ok_or_else(|| {
+                format!("the shell handed no started process as descriptor {process}")
+            })?;
+            ShellReply::Started(launcher.started(ticket, pid, process))
+        }
+        other => return Err(format!("{other:?} is no launch")),
+    })
+}
+
+/// The device's launcher, which a shell's launches reach.
+fn launcher(services: &ShellServices) -> Result<Arc<dyn crate::shell::ShellLauncher>, String> {
+    services
+        .launcher
+        .clone()
+        .ok_or_else(|| "this device launches no app for its shell".to_owned())
 }
 
 /// The connection a shell handed over as a descriptor.
@@ -362,7 +405,7 @@ const ASKING_SHOWN: usize = 300;
 /// desktop that waits on those, is found from it.
 pub(super) fn answer(shell: Option<Shell>, call: ShellCall) -> ShellAnswer {
     // The shell's follow of the writes it took waits for the next one, however long that is.
-    if matches!(call, ShellCall::Writes) {
+    if matches!(call, ShellCall::Writes | ShellCall::Orders) {
         return answered(shell, call);
     }
     // A read or an observe that asked to be held until something moves is held at most
@@ -531,6 +574,9 @@ fn answered(shell: Option<Shell>, call: ShellCall) -> ShellAnswer {
             | ShellCall::KeepsReceipts { .. }
             | ShellCall::Authorizes { .. }) => Box::pin(kept(&services.workspaces, call)).await,
             ShellCall::Vouch(vouch) => vouch_for(&shell, vouch)?,
+            call @ (ShellCall::Launch(_) | ShellCall::Orders | ShellCall::Started { .. }) => {
+                launching(&shell, &services, call).await?
+            }
             ShellCall::Processes => hand_over(&shell)?,
             ShellCall::Action {
                 workspace,

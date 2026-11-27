@@ -2266,12 +2266,32 @@ impl Apps {
         new_window: bool,
         instance: Option<u64>,
     ) -> Result<Planned, tilo_app_launch::PlanError> {
+        let decided = self
+            .state
+            .borrow()
+            .launches
+            .as_ref()
+            .filter(|launches| launches.decided_by_the_daemon())
+            .cloned();
+        // Nothing the daemon decides (a window already arriving, a notice, content no plan opens
+        // here) is planned here, and the plan says why it starts nothing.
+        let order = match decided.zip(asked_of(launch, workspace, new_window, instance)) {
+            Some((launches, ask)) => Some(
+                launches
+                    .order(ask)
+                    .map_err(tilo_app_launch::PlanError::Refused)?,
+            ),
+            None => None,
+        };
         self.with_plan_context(
             Some(&launch.id()),
             workspace,
             new_window,
             instance,
-            |context| Planned::of(launch, context),
+            |context| match &order {
+                Some(order) => ordered(order, context),
+                None => Planned::of(launch, context),
+            },
         )
     }
 
@@ -2918,3 +2938,144 @@ fn handed<'a>(
 
 #[cfg(test)]
 mod tests;
+
+/// What the device's daemon is asked to decide for `launch` in `workspace`: a package, a record
+/// of one, or one of the machine's own apps, with the tab the shell holds for its window. `None`
+/// for a launch that starts nothing.
+fn asked_of(
+    launch: &Launch,
+    workspace: &Workspace,
+    new_window: bool,
+    instance: Option<u64>,
+) -> Option<runtime_collab::wire::shell::LaunchAsk> {
+    use runtime_collab::wire::shell::{HostEntry, HostKind, LaunchAsk};
+    let into = if workspace.is_workspace() {
+        workspace.id.clone()
+    } else {
+        String::new()
+    };
+    let opened = |open: Option<&tilo_app_launch::Open>| {
+        open.map(|open| match open {
+            tilo_app_launch::Open::File(path) => path.display().to_string(),
+            tilo_app_launch::Open::Uri(uri) => uri.clone(),
+        })
+    };
+    let mut ask = match launch {
+        Launch::Package { app, open } => {
+            let mut ask = LaunchAsk::package(app.clone(), into);
+            ask.open = opened(open.as_ref());
+            ask
+        }
+        Launch::Record {
+            app,
+            record,
+            visitor,
+        } => {
+            // A record id that names no record is no launch: its plan says so.
+            let opens = tilo_app_launch::routing::record(record)?;
+            let mut ask = LaunchAsk::package(app.clone(), into);
+            ask.open = opened(Some(&opens));
+            ask.visitor = *visitor;
+            ask
+        }
+        Launch::Host { desktop_id, open } => {
+            let scan =
+                desktop_entry::cache::cached_scan(&desktop_entry::locale::language_candidates(
+                    tilo_ui_base::i18n::preferred_language().as_deref(),
+                ));
+            let kind = match scan.find(desktop_id).map(Kind::of_entry) {
+                Some(Kind::Flatpak) => HostKind::Flatpak,
+                Some(Kind::AppImage) => HostKind::AppImage,
+                Some(Kind::Program) => HostKind::Program,
+                // An entry the scan does not know is planned, and refused, as the system's.
+                Some(Kind::System | Kind::Package) | None => HostKind::System,
+            };
+            let (files, urls) = match open {
+                Some(tilo_app_launch::Open::File(path)) => {
+                    (vec![path.display().to_string()], Vec::new())
+                }
+                Some(tilo_app_launch::Open::Uri(uri)) => (Vec::new(), vec![uri.clone()]),
+                None => (Vec::new(), Vec::new()),
+            };
+            LaunchAsk::host(
+                kind,
+                HostEntry::Desktop {
+                    id: desktop_id.clone(),
+                    files,
+                    urls,
+                    new_window,
+                },
+                into,
+            )
+        }
+        Launch::Content { .. } | Launch::Window { .. } | Launch::Crashed { .. } => return None,
+    };
+    ask.window = instance;
+    Some(ask)
+}
+
+/// The process the device's daemon ordered by `order`, planned in this session's display and
+/// environment: a package's exact command as the daemon built it, or the machine's own app from
+/// the entry the daemon let start.
+///
+/// # Errors
+/// No launcher is installed, the grants cannot be written, or the entry does not run.
+fn ordered(
+    order: &runtime_collab::wire::shell::LaunchOrder,
+    context: &PlanContext<'_>,
+) -> Result<Planned, tilo_app_launch::PlanError> {
+    use runtime_collab::wire::shell::{HostEntry, OrderCommand};
+    let mut planned = match &order.command {
+        OrderCommand::Package(command) => {
+            let grants: collab_types::caps::LaunchGrants = serde_json::from_str(&command.grants)
+                .map_err(|error| {
+                    tilo_app_launch::PlanError::Refused(format!(
+                        "the grants the daemon read for {} do not read: {error}",
+                        order.app
+                    ))
+                })?;
+            let open = command.open.as_ref().map(|open| {
+                if std::path::Path::new(open).is_absolute() {
+                    tilo_app_launch::Open::File(std::path::PathBuf::from(open))
+                } else {
+                    tilo_app_launch::Open::Uri(open.clone())
+                }
+            });
+            return Planned::ordered_package(
+                &tilo_app_launch::plan::OrderedPackage {
+                    ticket: order.ticket,
+                    app: &order.app,
+                    title: &order.title,
+                    manifest: &command.manifest,
+                    payload_root: &command.payload_root,
+                    package_hash: &command.package_hash,
+                    grants: &grants,
+                    open: open.as_ref(),
+                    visitor: command.visitor,
+                },
+                context,
+            );
+        }
+        OrderCommand::Host {
+            entry: HostEntry::Desktop {
+                id, files, urls, ..
+            },
+            ..
+        } => {
+            let open = files
+                .first()
+                .map(|file| tilo_app_launch::Open::File(std::path::PathBuf::from(file)))
+                .or_else(|| {
+                    urls.first()
+                        .map(|url| tilo_app_launch::Open::Uri(url.clone()))
+                });
+            Planned::host(id, open.as_ref(), context)?
+        }
+        OrderCommand::Host {
+            entry: HostEntry::Program { path },
+            ..
+        } => Planned::program(path, context)?,
+    };
+    planned.ticket = Some(order.ticket);
+    Ok(planned)
+}

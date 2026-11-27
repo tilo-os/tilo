@@ -18,14 +18,13 @@ use crate::services::{LauncherServices, ProcessServices};
 
 /// A connection on the seat's app socket, once attested.
 pub enum Attested {
-    /// An app the seat launched: its connection, the app it was attested as (descriptor
-    /// numbers left for [`runtime_collab::ShellClient::vouch`] to fill), the pidfd of its
-    /// process, and of its launcher's when the launcher handed it over.
+    /// A process of a launch the daemon decided and the seat started: its connection, the
+    /// launch's ticket (the descriptor number left for [`runtime_collab::ShellClient::vouch`] to
+    /// fill), and the pidfd of the connecting process.
     App {
         connection: OwnedFd,
         app: VouchedApp,
         process: OwnedFd,
-        launcher: Option<OwnedFd>,
     },
     /// A client that named no launch: it is admitted by what it presents, as any connection to
     /// the daemon's socket is.
@@ -73,24 +72,20 @@ pub async fn attest(
     let Some(app) = handoff.local_media else {
         return Attested::Unnamed(connection);
     };
-    let Some((process, launcher)) = app.pidfds() else {
+    // The daemon admits the connection by the launch it decided: one the seat started no
+    // decided launch for is no app's.
+    let Some(ticket) = handoff.launch.map(|launch| launch.ticket) else {
+        tracing::error!(app = %app.app_id, "an app's connection belongs to no launch the daemon decided");
+        return Attested::Refused;
+    };
+    let Some((process, _launcher)) = app.pidfds() else {
         tracing::error!(app = %app.app_id, "an app's process cannot be pinned on this system");
         return Attested::Refused;
     };
     Attested::App {
         connection,
-        app: VouchedApp {
-            app: app.app_id.clone(),
-            workspace: app.workspace_id.clone(),
-            window: app.continuation_instance,
-            windowless: app.windowless,
-            ticket: handoff.launch.map(|launch| launch.ticket),
-            process: 0,
-            launcher: None,
-            member: app.member.clone(),
-        },
+        app: VouchedApp { ticket, process: 0 },
         process,
-        launcher,
     }
 }
 

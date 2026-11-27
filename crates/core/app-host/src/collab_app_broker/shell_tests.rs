@@ -73,6 +73,62 @@ impl Launched {
             .find(|(at, a, w, _)| *at == pid && a == app && w == workspace)
             .and_then(|(.., window)| *window)
     }
+
+    /// The ticket the device's launcher recorded the launch of `app` as `pid` in `workspace`
+    /// under: its place in the record, counted from one.
+    fn ticket_of(&self, pid: u32, app: &str, workspace: &str) -> Option<u64> {
+        let at = self
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .position(|(at, a, w, _)| *at == pid && a == app && w == workspace)?;
+        u64::try_from(at).ok()?.checked_add(1)
+    }
+}
+
+/// The device's launcher, which decided each launch these tests record: what a connection the
+/// shell vouches for by its ticket is admitted as.
+impl crate::shell::ShellLauncher for Launched {
+    fn launch(
+        &self,
+        _: runtime_collab::wire::shell::LaunchAsk,
+    ) -> Result<runtime_collab::wire::shell::LaunchOrder, String> {
+        Err("this device launches nothing for its shell".into())
+    }
+
+    fn orders(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Vec<runtime_collab::wire::shell::LaunchOrder>> + Send>,
+    > {
+        Box::pin(std::future::pending())
+    }
+
+    fn started(
+        &self,
+        ticket: u64,
+        _: u32,
+        _: runtime_portal::descriptors::Owned,
+    ) -> Result<(), String> {
+        Err(format!("no launch {ticket} was ordered of this shell"))
+    }
+
+    fn admitted(&self, ticket: u64) -> Option<crate::shell::AdmittedLaunch> {
+        let (_, app, workspace, window) = self
+            .0
+            .lock()
+            .unwrap()
+            .get(usize::try_from(ticket).ok()?.checked_sub(1)?)?
+            .clone();
+        Some(crate::shell::AdmittedLaunch {
+            app,
+            workspace,
+            window,
+            windowless: false,
+            member: None,
+        })
+    }
 }
 
 impl crate::services::LauncherServices for Launched {
@@ -113,7 +169,7 @@ impl crate::services::LauncherServices for Launched {
         Ok(self.attest_process(pid, app, workspace).then_some(
             crate::services::AuthenticatedApplicationLaunch {
                 continuation_instance: self.window_of(pid, app, workspace),
-                launch_ticket: None,
+                launch_ticket: self.ticket_of(pid, app, workspace),
                 windowless: false,
                 opened_for: None,
                 opened_with: None,
@@ -337,6 +393,7 @@ async fn device_carrying(live: Option<crate::shell::LiveLinks>) -> Device {
                 vpn: None,
                 speakers: None,
                 speaking: None,
+                launcher: Some(Arc::clone(&launched) as _),
             })),
             // A person's call an app makes is admitted with its evidence, as on a device.
             journal_root: Some(dir.path().join("invocations")),
@@ -409,10 +466,9 @@ impl Device {
                 connection,
                 app: vouched,
                 process,
-                launcher,
             } => self
                 .shell
-                .vouch(connection, Some((vouched, process, launcher)))
+                .vouch(connection, Some((vouched, process)))
                 .await
                 .unwrap(),
             seat::Attested::Unnamed(connection) => {
@@ -613,14 +669,8 @@ async fn a_vouch_for_a_connection_never_handed_over_is_refused() {
             runtime_collab::wire::shell::Vouch {
                 connection: 40,
                 app: Some(runtime_collab::wire::shell::VouchedApp {
-                    app: APP.to_owned(),
-                    workspace: device.workspace.clone(),
-                    window: None,
-                    windowless: false,
-                    ticket: None,
+                    ticket: 1,
                     process: 41,
-                    launcher: None,
-                    member: None,
                 }),
                 to: runtime_collab::wire::shell::HandedTo::Collaboration,
             },
@@ -1556,5 +1606,43 @@ async fn a_follow_that_asks_to_wait_long_is_answered_within_the_remote_wait() {
             .as_deref()
             .is_ok_and(|reading| reading.contains("0.4")),
         "the follow is answered with the reading as it stands: {reading:?}"
+    );
+}
+
+/// A connection the shell vouches for by a ticket no launch the daemon decided holds is refused:
+/// the daemon admits an app's connection from its own record of the launch alone, whatever the
+/// shell says.
+#[cfg(target_os = "linux")]
+#[tokio::test(flavor = "current_thread")]
+async fn a_connection_vouched_for_by_no_decided_launch_is_refused() {
+    use std::os::fd::FromRawFd as _;
+    let device = device_with_shell().await;
+    let (ours, _theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+    // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor or -1; this process
+    // is alive.
+    let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, std::process::id(), 0) };
+    let fd = i32::try_from(raw)
+        .ok()
+        .filter(|fd| *fd >= 0)
+        .expect("pidfd_open");
+    // SAFETY: pidfd_open returned a new descriptor nothing else owns.
+    let pinned = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
+    let refused = device
+        .shell
+        .vouch(
+            std::os::fd::OwnedFd::from(ours),
+            Some((
+                runtime_collab::wire::shell::VouchedApp {
+                    ticket: 999,
+                    process: 0,
+                },
+                pinned,
+            )),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("no launch with ticket 999"),
+        "{refused}"
     );
 }

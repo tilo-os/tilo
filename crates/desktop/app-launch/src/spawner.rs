@@ -435,7 +435,7 @@ impl Spawner {
     /// # Errors
     /// The program could not be started.
     pub fn start(&mut self, planned: &Planned) -> Result<Started, SpawnError> {
-        self.start_with(planned, None, &|_| {}, "", None)
+        self.start_with(planned, None, &|_| Ok(()), "", None)
             .map(|(started, _)| started)
     }
 
@@ -461,7 +461,7 @@ impl Spawner {
         &mut self,
         planned: &Planned,
         link: Option<HeldLink>,
-        write_down: &dyn Fn(u32),
+        write_down: &dyn Fn(u32) -> Result<(), String>,
         workspace: &str,
         asked: Option<&str>,
     ) -> Result<(Started, Option<HeldLink>), SpawnError> {
@@ -477,7 +477,7 @@ impl Spawner {
     pub fn start_handed(
         &mut self,
         planned: &Planned,
-        write_down: &dyn Fn(u32),
+        write_down: &dyn Fn(u32) -> Result<(), String>,
         workspace: &str,
         asked: Option<&str>,
         handed: Handed,
@@ -494,7 +494,7 @@ impl Spawner {
         &mut self,
         planned: &Planned,
         mut link: Option<HeldLink>,
-        write_down: &dyn Fn(u32),
+        write_down: &dyn Fn(u32) -> Result<(), String>,
         workspace: &str,
         asked: Option<&str>,
         #[cfg(target_os = "linux")] handed: Option<Handed>,
@@ -528,9 +528,13 @@ impl Spawner {
         let diagnostics = diagnostics_file(planned);
         measure_startup(&mut command);
         let output = Arc::new(AppOutput::new(planned.app.clone(), diagnostics));
-        let hold = match link {
-            Some(_) => match launcher::launch_hold::install(&mut command) {
-                Ok(hold) => Some(hold),
+        // A launch the device's daemon decided is held until the daemon bound its process to the
+        // launch, as one with a link is until the session wrote it down.
+        let until_bound =
+            link.is_some() || (planned.ticket.is_some() && planned.kind == Kind::Package);
+        let hold = if until_bound {
+            match launcher::launch_hold::install(&mut command) {
+                Ok(installed) => Some(installed),
                 // Without its hold the launch would run unreleased: it starts
                 // nothing, as an app that cannot start does.
                 Err(error) => {
@@ -539,8 +543,9 @@ impl Spawner {
                         reason: format!("no launch hold: {error}"),
                     });
                 }
-            },
-            None => None,
+            }
+        } else {
+            None
         };
         let (kept, handed_down) =
             self.kept_launch(planned, workspace, asked, &mut command, handed)?;
@@ -592,7 +597,17 @@ impl Spawner {
         let (app_of, heard) = self.app_of(started.pid, &planned.app, kept.as_ref());
         let asked_to_end = Arc::clone(&app_of.asked_to_end);
         running(&self.running).insert(id, app_of);
-        write_down(started.pid);
+        if let Err(reason) = write_down(started.pid) {
+            // Not the launch it was decided as: it never goes on.
+            running(&self.running).remove(&id);
+            let _ = child.kill();
+            let _ = child.wait();
+            self.abandon(kept.as_ref());
+            return Err(SpawnError {
+                app: planned.app.clone(),
+                reason,
+            });
+        }
         if let Some(hold) = hold {
             // The launch is written down: the app may connect.
             let served = link.as_mut().and_then(|link| link.serve(started.pid));
@@ -1677,6 +1692,7 @@ mod tests {
             args: vec!["-c".into(), script.into()],
             env,
             window_identities: Vec::new(),
+            ticket: None,
         }
     }
 

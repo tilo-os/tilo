@@ -90,6 +90,7 @@ fn shell(app: &str, script: &str) -> Planned {
         args: vec!["-c".to_owned(), script.to_owned()],
         env: BTreeMap::new(),
         window_identities: Vec::new(),
+        ticket: None,
     }
 }
 

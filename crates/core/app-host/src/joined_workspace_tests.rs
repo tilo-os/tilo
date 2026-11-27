@@ -65,6 +65,7 @@ async fn shell_on_a_joined_workspace(
                 vpn: None,
                 speakers: None,
                 speaking: None,
+                launcher: None,
             })),
             ..crate::services::ProcessServices::default()
         },
