@@ -3,7 +3,7 @@
 //! gutter from one page to the next.
 
 use tilo_ui_app::app::driver::Driver;
-use tilo_ui_app::widget::{Column, GuidedPage, Spacer, Text};
+use tilo_ui_app::widget::{Column, GuidedPage, Row, Scrollable, Spacer, Stepper, Text};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
 
@@ -60,5 +60,38 @@ fn a_card_holds_the_body_at_one_width_across_its_steps() {
     assert!(
         (short - tall).abs() < 0.5,
         "the card's body is {short} wide on a short step and {tall} on a long one"
+    );
+}
+
+/// A page inside a page that already scrolls, as a settings pane holds its wizard, stands at the
+/// height of its parts and lets the outer page scroll: it takes the height it is offered only
+/// when the surface holds it to one.
+#[test]
+fn an_embedded_page_in_a_scrolling_page_keeps_its_content_height() {
+    let page = GuidedPage::new(tall_page())
+        .embedded()
+        .stepper(Stepper::new(vec!["One".to_owned(), "Two".to_owned()]))
+        .actions(Row::new().push(Box::new(Text::new("Back"))));
+    let content = Column::new().with_intrinsic_height().push(Box::new(page));
+    let root = Scrollable::new_vertical()
+        .fill_parent_height()
+        .with_child(Box::new(content));
+    let mut harness = Driver::new_with_theme(
+        tilo_ui_app::State::new(),
+        Box::new(root),
+        (900, 700),
+        Theme::light(),
+    );
+    harness.relayout();
+    let _ = harness.recompose();
+    let (height, parts) = harness
+        .with_widget_mut(|page: &mut GuidedPage| {
+            (page.get_rect().height() as f32, page.children().len())
+        })
+        .expect("the guided page stands in the page that scrolls");
+    assert_eq!(parts, 3, "the track, the page and the ways forward");
+    assert!(
+        height > 600.0,
+        "the embedded page stands at its parts' height, never at none of the surface's: {height}"
     );
 }
