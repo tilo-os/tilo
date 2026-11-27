@@ -457,17 +457,7 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
                 fields: std::collections::BTreeMap::new(),
             }))
         }
-        (Ty::Actor, Json::Object(target)) if target.len() == 1 => {
-            // A member as arguments name them (`{"person": id}`), else an actor as values
-            // carry one.
-            match serde_json::from_value::<tilolang_runtime::ids::MemberId>(json.clone()) {
-                Ok(member) => Ok(Value::Actor(Actor::Member(member))),
-                Err(_) => from_json(json).and_then(|value| match value {
-                    Value::Actor(actor) => Ok(Value::Actor(actor)),
-                    _ => Err("an actor is a person or an agent".to_owned()),
-                }),
-            }
-        }
+        (Ty::Actor, Json::Object(target)) if target.len() == 1 => actor_value(json),
         // Rich text given as text: its lines as paragraphs.
         (Ty::RichText, Json::String(text)) => Ok(Value::Rich(
             tilolang_runtime::rich::RichValue::from_text(text),
@@ -490,6 +480,7 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
             .map(|(ty, item)| value_of_ty(host, meta, item, ty))
             .collect::<Result<_, _>>()
             .map(Value::Tuple),
+        (Ty::File, Json::Object(_)) => file_value(json),
         (Ty::Float, Json::Number(number)) => number
             .as_f64()
             .map(Value::Float)
@@ -501,6 +492,25 @@ fn value_of_ty(host: &HostInner, meta: &Meta, json: &Json, ty: &Ty) -> Result<Va
         (Ty::Union(keys), _) => union_value(host, meta, json, keys),
         _ => from_json(json),
     }
+}
+
+/// An actor as arguments name one: a member (`{"person": id}`), else an actor as values carry
+/// one.
+fn actor_value(json: &Json) -> Result<Value, String> {
+    match serde_json::from_value::<tilolang_runtime::ids::MemberId>(json.clone()) {
+        Ok(member) => Ok(Value::Actor(Actor::Member(member))),
+        Err(_) => from_json(json).and_then(|value| match value {
+            Value::Actor(actor) => Ok(Value::Actor(actor)),
+            _ => Err("an actor is a person or an agent".to_owned()),
+        }),
+    }
+}
+
+/// A file as a caller hands one in: the content reference a put answered, and what the file is
+/// (`{"content", "name", "media", "size"}`), which is what an action's file answer gives back
+/// ([`answer_json`]).
+fn file_value(json: &Json) -> Result<Value, String> {
+    tilolang_runtime::blob::file_from_json(json).map(|file| Value::File(Rc::new(file)))
 }
 
 /// Whole seconds for a `Duration` parameter, bare or in the boxed scalar form (`{"some": N}`)

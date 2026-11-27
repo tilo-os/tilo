@@ -520,9 +520,23 @@ struct Running {
 }
 
 impl Running {
-    /// The workspace the step lands in, reached as the migration acting for its caller.
-    fn open(&self) -> Result<Box<dyn Workspace>> {
+    /// The workspace the step lands in, reached as the migration acting for its caller: what a
+    /// run makes there is theirs, one History entry each run.
+    fn open_target(&self) -> Result<Box<dyn Workspace>> {
         self.host.open(&self.caller, &self.workspace)
+    }
+
+    /// The workspace Migrate keeps its own state in, where it is installed: its migration
+    /// records, what each review found and how each run went. A step that lands elsewhere keeps
+    /// nothing of the app's there.
+    fn open_state(&self) -> Result<Box<dyn Workspace>> {
+        self.host.open(&self.caller, &self.host.workspace())
+    }
+
+    /// Where the migration's own records are kept: the state workspace's, so one source on one
+    /// device is one record whichever workspace its run lands in.
+    fn state_place(&self) -> Place {
+        self.host.place(&self.host.workspace())
     }
 
     fn run(self, action: &str, arguments: &Map<String, Value>) {
@@ -567,7 +581,7 @@ impl Running {
         // The sources this device reads are offered in the Migrations app, for a person to pick.
         if action == "sources" {
             let listed = self.stepped(action, arguments)?;
-            let open = || self.open();
+            let open = || self.open_state();
             records::offered(&open, &self.device, &listed)
                 .context("the sources were not offered in Migrations")?;
             return Ok(listed);
@@ -633,8 +647,8 @@ impl Running {
         let Some(source) = source else {
             return Ok(());
         };
-        let place = self.host.place(&self.workspace);
-        let open = || self.open();
+        let place = self.state_place();
+        let open = || self.open_state();
         let mut records = Records::of(&open, &place, &self.device, &source);
         match answered {
             Ok(value) if action == "undo" => records.forgot(
@@ -657,13 +671,13 @@ impl Running {
     fn stepped(&self, action: &str, arguments: &Map<String, Value>) -> Result<Value> {
         let text = |name: &str| arguments.get(name).and_then(Value::as_str);
         let flag = |name: &str| arguments.get(name).and_then(Value::as_bool) == Some(true);
-        let place = self.host.place(&self.workspace);
+        let place = self.state_place();
         let (home, folders, scratch) = (
             self.host.home(),
             self.host.folders(),
             self.host.scratch(&self.workspace),
         );
-        let open = || self.open();
+        let open = || self.open_target();
         let given = text("secret").map(|secret| Zeroizing::new(secret.to_owned()));
         let secret = |prompt: &str, _: Option<&std::path::Path>| {
             given
@@ -789,9 +803,9 @@ impl Running {
         let mut confirm = |_: &str| -> Result<bool> { Ok(yes) };
         let stopping = || self.step.cancelled.load(Ordering::SeqCst);
         let workspace = self.workspace.clone();
-        // The migration's record follows the run, through a session of its own: the run's own
-        // session lands what it brings.
-        let open = || self.open();
+        // The migration's record follows the run, through a session of its own in the workspace
+        // Migrate keeps its state in: the run's own session lands what it brings.
+        let open = || self.open_state();
         let mut records = Records::of(&open, cx.place, &self.device, key);
         let mut run = None;
         let mut told = |told: engine::Told<'_>| match told {
@@ -823,7 +837,7 @@ impl Running {
                 workspace: &workspace,
                 hosted: false,
             },
-            &|| self.open(),
+            &|| self.open_target(),
         );
         self.going.lock_recover().remove(&going_key);
         // A run that began says how it ended; one refused before it began says why.

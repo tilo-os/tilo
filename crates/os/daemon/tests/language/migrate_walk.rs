@@ -17,6 +17,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
+use tilo_actions::remote::CatalogueQuery;
 use tilo_actions::remote::asked::Asked;
 use tilo_migrate::provider::caller::{Answering, Asks, Steps, question_said};
 use tilo_migrate::thunderbird::fixture::WORK_EMAIL;
@@ -24,6 +25,9 @@ use tilo_migrate::thunderbird::fixture::WORK_EMAIL;
 use crate::language::agent_fixture::said;
 use crate::language::host;
 use crate::language::migrate_window::{agent_does, engine};
+
+/// The Migrations app, whose own records a step's review is kept in.
+const MIGRATE: &str = "so.tilo.migrate";
 
 /// What a step answered, and every line it said on the way, the questions asked included.
 struct Stepped {
@@ -162,12 +166,21 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
                     Err("IMAP server rejected the credential".into())
                 }
             });
+        // Migrate keeps its own state in the workspace it is installed in: the person's own,
+        // as a person who installs it there makes it.
+        host.install_app(MIGRATE).await;
         host.daemon().serve_migrations();
         let device = device_of(&engine(host.as_ref()));
+        // The terminal reaches the daemon on the person's own connection, which the kernel says
+        // is theirs: what their CLI's prompt answers, and what leaves their devices, is theirs.
+        let (own, caller) = host
+            .daemon()
+            .own_connection_in(host.workspace())
+            .expect("the person's own connection reaches the workspace");
         let steps_in = |named: &str| {
             let mut steps = Steps::new(
-                host.dispatch(),
-                host.caller(),
+                Arc::clone(&own),
+                caller.clone(),
                 &device,
                 host.workspace().to_owned(),
                 None,
@@ -250,6 +263,19 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
                 .await
                 .contains("Grace Hopper"),
             "the device's own workspace has none of it"
+        );
+        // Migrate keeps its own state in the workspace it is installed in: the lab holds no
+        // migration record of its own, and the device's own workspace lists the lab's.
+        let in_lab = migrations_offered(host.as_ref(), &lab).await;
+        assert!(
+            in_lab.is_empty(),
+            "the lab holds no Migrate records: {in_lab:?}"
+        );
+        assert!(
+            !migrations_offered(host.as_ref(), host.workspace())
+                .await
+                .is_empty(),
+            "the device's own workspace lists the lab's migration"
         );
 
         // The workspace the device is in runs by its id: what follows lands there.
@@ -362,4 +388,30 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
         assert_eq!(status.answer["state"], "complete", "{:#}", status.answer);
         drop(agent);
     });
+}
+
+/// The migrations the Migrations app offers in `workspace`, as the person's catalogue lists
+/// them there: the resources its `start` is published on.
+async fn migrations_offered(host: &host::Host, workspace: &str) -> Vec<String> {
+    let page = host
+        .dispatch()
+        .query(
+            &host.caller().in_workspace(workspace.to_owned()),
+            CatalogueQuery {
+                app_id: Some(MIGRATE.to_owned()),
+                action: Some("start".to_owned()),
+                ..CatalogueQuery::default()
+            },
+        )
+        .await
+        .expect("the catalogue answers")
+        .expect("the catalogue lists the app");
+    page.rows
+        .iter()
+        .filter_map(|row| row.action.as_ref())
+        // A migration's own record, not the app's surface row for its type: a record is
+        // published by its id (`tl:<app>:<id>`), a type by its name (`tl.<app>.<Type>`).
+        .filter(|action| action.address.action == "start" && action.address.resource.contains(':'))
+        .map(|action| action.address.resource.clone())
+        .collect()
 }

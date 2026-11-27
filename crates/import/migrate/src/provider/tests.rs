@@ -447,15 +447,17 @@ fn a_step_naming_a_workspace_lands_there_only_when_the_device_is_a_member() {
     assert_eq!(value(&started)["state"], "complete", "{started:?}");
     let reached = device.kept.reached.lock().expect("reached").clone();
     assert!(
-        !reached.is_empty() && reached.iter().all(|workspace| workspace == LAB),
-        "every reach is the lab's: {reached:?}"
+        !reached.is_empty()
+            && reached
+                .iter()
+                .all(|workspace| workspace == OWN || workspace == LAB)
+            && reached.iter().any(|workspace| workspace == LAB),
+        "the migration's own state is the device's, and the run lands in the lab: {reached:?}"
     );
-    // The device's own workspace has no migration of thunderbird; the lab's is complete.
+    // Migrate keeps its state where it is installed: the device's own workspace has the
+    // migration, complete, though the run landed in the lab.
     let own = run(&migrations, "status", json!({"source": "thunderbird"}));
-    let InvocationUpdate::Failed { error, .. } = &own else {
-        panic!("nothing of thunderbird was reviewed for the device's own workspace: {own:?}")
-    };
-    assert!(error.message.contains("reviewed"), "{error:?}");
+    assert_eq!(value(&own)["state"], "complete", "{own:?}");
     let lab = run(
         &migrations,
         "status",
@@ -510,16 +512,17 @@ fn the_terminals_steps_land_in_the_workspace_it_names() {
         .expect("the review runs in the lab");
     let reached = device.kept.reached.lock().expect("reached").clone();
     assert!(
-        !reached.is_empty() && reached.iter().all(|workspace| workspace == LAB),
-        "{reached:?}"
+        !reached.is_empty() && reached.iter().all(|workspace| workspace == OWN),
+        "a review keeps the migration where Migrate is installed: {reached:?}"
     );
 
     let own = steps_in("studio").expect("the device's own workspace, by its name");
-    let refused =
-        step(&own, "status", json!({"source": "thunderbird"})).expect("status reaches the device");
-    assert!(
-        refused.is_err(),
-        "the device's own workspace reviewed nothing: {refused:?}"
+    let read = step(&own, "status", json!({"source": "thunderbird"}))
+        .expect("status reaches the device")
+        .expect("the review is the device's, whichever workspace it lands in");
+    assert_eq!(
+        read["state"], "reviewed",
+        "the review is kept where Migrate is installed: {read}"
     );
 
     let elsewhere = "00000000-0000-4000-8000-000000000000";

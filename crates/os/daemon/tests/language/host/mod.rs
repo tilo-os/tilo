@@ -464,6 +464,34 @@ impl Host {
         )
     }
 
+    /// Record `app`'s install in the person's workspace, as installing it there records one: the
+    /// workspace runs the version this computer has, and the app keeps its own records in it.
+    /// A computer that installed an app in its own store alone is a workspace that never knew
+    /// the app, whose records it then refuses.
+    ///
+    /// # Panics
+    ///
+    /// When the workspace refuses the install.
+    pub async fn install_app(&self, app: &str) {
+        self.install_app_into(self.workspace(), app).await;
+    }
+
+    /// [`Self::install_app`] in `workspace`, one this device is a member of.
+    ///
+    /// # Panics
+    ///
+    /// When the workspace refuses the install.
+    pub async fn install_app_into(&self, workspace: &str, app: &str) {
+        let daemon = self.daemon();
+        tilo_workspace_service::workspaces::fixtures::install_app(
+            daemon.workspaces(),
+            workspace,
+            app,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{app} is installed in {workspace}: {error}"));
+    }
+
     /// Stop the daemon and start it again on the same home, as the computer does when it
     /// restarts: what it kept is read back. Keys and devices made before reach the stopped
     /// one, so the test drops them first and makes new ones.

@@ -129,7 +129,7 @@ impl Session {
         let wait = u64::try_from(ACTION_WAIT.as_millis()).unwrap_or(u64::MAX);
         let call = self.call(
             &json!({"path": action, "args": args, "wait_ms": wait}),
-            None,
+            Some(typed_answer_meta()),
         )?;
         match call.status {
             Status::Ok => Ok(call.answer()),
@@ -149,6 +149,12 @@ impl Session {
 
 /// What opens the person's own session, the first time one of their calls is made.
 pub type OpensOwn = Box<dyn FnOnce() -> Result<Box<dyn Rpc>> + Send>;
+
+/// The `_meta` a call asks its typed answer with: what the workspace keeps beside its words, so a
+/// step decides on the answer and never on text it has to read out of a sentence.
+fn typed_answer_meta() -> Value {
+    json!({"so.tilo.mcp": {"structured": true}})
+}
 
 /// The workspace through the migration's session with it, and the person's for their own calls.
 pub struct Mcp {
@@ -250,7 +256,7 @@ impl Workspace for Mcp {
             .checked_add(PERSON_WAIT)
             .ok_or_else(|| anyhow!("no time to wait for the person in"))?;
         loop {
-            let typed = person.tool("tilo_do", &call, None)?;
+            let typed = person.tool("tilo_do", &call, Some(typed_answer_meta()))?;
             // A call the person's grants leave to them is kept as its asked record until they
             // answer it: this reads the record the workspace says it waits in, and asks again
             // under the same invocation id until the answer moves it on.

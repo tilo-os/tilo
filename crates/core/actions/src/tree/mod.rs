@@ -33,9 +33,9 @@ pub use target::Called;
 pub use walk::{
     ANSWER_WAIT, AppRef, Asker, DEEP_READS, FILES_APP, InstalledApp, LEVEL_PAGES, LISTED_NEAR,
     Levels, ListingResolution, Pause, RESOLVED_PATHS, RESTART_PAUSE_MAX, ROOT_PEEK, Resolved, Tree,
-    Unresolved, app_named, app_names, app_of, as_the_service, below_app, is_window, list_names,
-    list_or_none, listed_as, names_a_type, names_files, not_running, restart_pause, type_address,
-    within,
+    Unresolved, app_named, app_names, app_of, as_the_service, below_app, is_device_resource,
+    is_window, list_names, list_or_none, listed_as, names_a_type, names_files, not_running,
+    restart_pause, type_address, within,
 };
 
 /// How many names an error lists before it stops.

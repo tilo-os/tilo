@@ -16,7 +16,10 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tilo_actions::InvocationUpdate;
-use tilo_actions::remote::{CatalogueQuery, InvocationState, application_action_target};
+use tilo_action_services::workspace_invocations::{self, Invocation, InvocationStatus};
+use tilo_actions::remote::{
+    CatalogueQuery, InvocationState, ResourceAddress, ResourceCopy, application_action_target,
+};
 use tilo_server_protocol::page::{PageAction, PageAddress};
 use tilo_workspace_service::app_serving::PageAct;
 
@@ -68,6 +71,106 @@ pub(crate) async fn agent_does(
     } else {
         Err(result.to_string())
     }
+}
+
+/// What the agent's `action` on `path` answered, approving each step the device asks its person
+/// about as they answer it in their shell: a step of the agent's outside the workspace waits in
+/// its asked record until they say yes.
+async fn agent_does_approved(
+    host: &host::Host,
+    agent: &host::Agent,
+    path: &str,
+    action: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let invocation = uuid::Uuid::new_v4().to_string();
+    let mut answer = agent
+        .tool_structured(
+            "tilo_do",
+            &json!({"path": format!("{path}#{action}"), "args": args,
+                    "invocation_id": invocation, "wait_ms": 5_000}),
+        )
+        .await;
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let typed = answer["structuredContent"].clone();
+        match typed["status"].as_str() {
+            Some("ok") => return Ok(typed["result"].clone()),
+            Some("asked") => {
+                let record = typed["record"].as_str().unwrap_or_default().to_owned();
+                approve(host, &record).await;
+            }
+            Some("pending") => {}
+            _ => return Err(answer.to_string()),
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the agent's {action} never ended: {answer}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        answer = agent
+            .tool_structured("tilo_status", &json!({"invocation_id": invocation}))
+            .await;
+    }
+}
+
+/// Approve the invocation waiting in the asked `record` as the person does: on their own
+/// connection, where Tilo asks them, which a program's plain connection may not answer for.
+async fn approve(host: &host::Host, record: &str) {
+    let (workspace, record) = record
+        .split_once('/')
+        .unwrap_or_else(|| panic!("an asked record is <workspace>/<record>: {record:?}"));
+    let request = host::call(
+        workspace_invocations::PROVIDER,
+        tilo_actions::ActionAddress::new(record.to_owned(), tilo_actions::remote::asked::RESOLVE),
+        &json!({"resolution": "approve"}),
+    );
+    let (own, person) = host
+        .daemon()
+        .own_connection_in(workspace)
+        .expect("the person's own connection reaches the workspace");
+    own.invoke(&person, request)
+        .await
+        .expect("the dispatch answers")
+        .unwrap_or_else(|error| panic!("the person's answer is taken: {error:?}"));
+}
+
+/// The invocations the workspace's list holds, as its record reads them.
+async fn listed(host: &host::Host) -> Vec<Invocation> {
+    let dispatch = host.dispatch();
+    let caller = host.caller();
+    let reads = dispatch
+        .resource_reads()
+        .expect("the dispatch reads records");
+    let address = ResourceAddress {
+        workspace: host.workspace().to_owned(),
+        app: workspace_invocations::PROVIDER.to_owned(),
+        record: String::new(),
+    };
+    let reading = reads
+        .read(&caller, &address)
+        .await
+        .expect("the workspace's invocations read");
+    let whole = match reading {
+        ResourceCopy::Reading { value, .. } => value,
+        other => panic!("the invocations are a reading, not {other:?}"),
+    };
+    serde_json::from_value(whole["items"].clone()).expect("the items read as invocations")
+}
+
+/// Approve the first invocation of the workspace's that waits for its person, as they answer it
+/// on their screen; whether one was waiting.
+pub(crate) async fn approve_waiting(host: &host::Host) -> bool {
+    let Some(id) = listed(host)
+        .await
+        .into_iter()
+        .find(|invocation| invocation.status == InvocationStatus::Waiting)
+        .and_then(|invocation| invocation.id)
+    else {
+        return false;
+    };
+    approve(host, &format!("{}/{id}", host.workspace())).await;
+    true
 }
 
 /// The key the review lists the item of `kind` under, and its title.
@@ -248,9 +351,15 @@ fn an_agent_and_the_window_drive_one_migration_on_the_device() {
 
         // The agent reviews Thunderbird: the device writes the migration, and the window shows
         // what the review found, nothing of it chosen yet.
-        let review = agent_does(&agent, &engine, "review", &json!({"source": "thunderbird"}))
-            .await
-            .expect("the agent reviews Thunderbird");
+        let review = agent_does_approved(
+            host.as_ref(),
+            &agent,
+            &engine,
+            "review",
+            &json!({"source": "thunderbird"}),
+        )
+        .await
+        .expect("the agent reviews Thunderbird");
         let (book, book_title) = item_of(&review, "contacts");
         let (calendar, calendar_title) = item_of(&review, "calendar");
         let resource = migration(host.as_ref()).await;
@@ -286,7 +395,8 @@ fn an_agent_and_the_window_drive_one_migration_on_the_device() {
 
         // The agent chooses the address book and the calendar; the window shows both chosen,
         // and the refusal is gone.
-        agent_does(
+        agent_does_approved(
+            host.as_ref(),
             &agent,
             &engine,
             "choose",
@@ -304,9 +414,15 @@ fn an_agent_and_the_window_drive_one_migration_on_the_device() {
         window.check(&calendar_title).await;
         let deadline = tilo_test_env::hang_deadline();
         loop {
-            let status = agent_does(&agent, &engine, "status", &json!({"source": "thunderbird"}))
-                .await
-                .expect("the agent reads the migration");
+            let status = agent_does_approved(
+                host.as_ref(),
+                &agent,
+                &engine,
+                "status",
+                &json!({"source": "thunderbird"}),
+            )
+            .await
+            .expect("the agent reads the migration");
             if chosen(&status) == [book.clone()] {
                 break;
             }
@@ -324,9 +440,15 @@ fn an_agent_and_the_window_drive_one_migration_on_the_device() {
         window.press("Bring in").await;
         let body = window.shows("Complete").await;
         assert!(body.contains("2 contacts"), "{body}");
-        let status = agent_does(&agent, &engine, "status", &json!({"source": "thunderbird"}))
-            .await
-            .expect("the agent reads the migration");
+        let status = agent_does_approved(
+            host.as_ref(),
+            &agent,
+            &engine,
+            "status",
+            &json!({"source": "thunderbird"}),
+        )
+        .await
+        .expect("the agent reads the migration");
         assert_eq!(status["state"], "complete", "{status:#}");
 
         // The window takes the run back: what it brought leaves, and the migration stands
@@ -334,9 +456,15 @@ fn an_agent_and_the_window_drive_one_migration_on_the_device() {
         window.press("Undo").await;
         let body = window.shows("Reviewed").await;
         assert!(!body.contains("2 contacts"), "{body}");
-        let status = agent_does(&agent, &engine, "status", &json!({"source": "thunderbird"}))
-            .await
-            .expect("the agent reads the migration");
+        let status = agent_does_approved(
+            host.as_ref(),
+            &agent,
+            &engine,
+            "status",
+            &json!({"source": "thunderbird"}),
+        )
+        .await
+        .expect("the agent reads the migration");
         assert_eq!(status["state"], "reviewed", "{status:#}");
         drop(agent);
     });
@@ -388,6 +516,9 @@ async fn offered(host: &host::Host, title: &str) -> String {
 #[test]
 fn a_person_picks_a_source_from_the_list_and_brings_it_in() {
     host::run_with(&["migrate", "contacts"], |host| async move {
+        // Migrate keeps its own state in the workspace it is installed in, as a person who
+        // installs it there does.
+        host.install_app(MIGRATE).await;
         let home = PathBuf::from(std::env::var_os("HOME").expect("the test's home"));
         tilo_migrate::thunderbird::fixture::write_sample_profile(&home);
         host.daemon().serve_migrations();

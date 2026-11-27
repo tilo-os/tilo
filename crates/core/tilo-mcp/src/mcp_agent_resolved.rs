@@ -88,6 +88,70 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         self.invoked_at(known, value).await
     }
 
+    /// The resolution of the call `action` for the device's address `parsed` names, where a
+    /// provider registered on this device publishes it (a device's own engine at
+    /// `devices/<device>/migrate`, which the packages this device hands its apps to compile
+    /// their calls against name too), and no app called `devices` lists it: the workspace says
+    /// which provider answers there, and the call is that provider's. `None` for any other
+    /// path, which the app walk resolves as it always has.
+    async fn device_action(
+        &self,
+        parsed: &Address,
+        action: &str,
+        arguments: serde_json::Map<String, Value>,
+    ) -> Result<Option<Resolution>, Failure> {
+        if !tilo_actions::tree::is_device_resource(parsed) {
+            return Ok(None);
+        }
+        Ok(self
+            .device_address(parsed, action, arguments)
+            .await?
+            .map(|(known, arguments)| Resolution::At(Box::new(known), arguments)))
+    }
+
+    /// The action `action` at the device's address `parsed` names, where a provider registered
+    /// on this device publishes it: the row the workspace answers for that address, with the
+    /// arguments bound as its action takes them. `None` where no such provider publishes it.
+    async fn device_address(
+        &self,
+        parsed: &Address,
+        action: &str,
+        arguments: serde_json::Map<String, Value>,
+    ) -> Result<Option<(ResolvedAction, serde_json::Map<String, Value>)>, Failure> {
+        let resource = parsed.resource();
+        let page = self
+            .ask(CatalogueQuery {
+                target: Some(tilo_actions::ActionAddress::new(
+                    resource.clone(),
+                    action.to_owned(),
+                )),
+                max_results: 1,
+                ..CatalogueQuery::default()
+            })
+            .await?;
+        // A provider a device registered answers by name; an app's instance is a peer number,
+        // and what it publishes under the device is reached through the app.
+        let Some((provider, app_id, descriptor)) = page.rows.into_iter().find_map(|row| {
+            let descriptor = row.action?;
+            (descriptor.address.resource == resource
+                && descriptor.address.action == action
+                && row.provider.parse::<u64>().is_err())
+            .then_some((row.provider, row.app_id, descriptor))
+        }) else {
+            return Ok(None);
+        };
+        let arguments = self.bind_resource_arguments(&descriptor, arguments).await?;
+        Ok(Some((
+            ResolvedAction {
+                app_id,
+                provider,
+                path: resource,
+                descriptor,
+            },
+            arguments,
+        )))
+    }
+
     /// Invoke the action `known` names with `arguments`: the server's answer,
     /// or why nothing was invoked.
     async fn invoke_at(
@@ -147,6 +211,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 "invalid_arguments: name the action: {path}#<action>; tilo_ls {path} lists them"
             )
         })?;
+        if let Some(resolution) = self.device_action(&parsed, &action, arguments.clone()).await? {
+            return Ok(resolution);
+        }
         // An app that is not running declares its actions in the surface its package
         // publishes: a name none of them has is no action of it, and nothing starts for it.
         // Answered here, the caller reads the refusal at once instead of after a launch.

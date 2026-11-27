@@ -25,6 +25,7 @@ use tilo_actions::{
 };
 
 use crate::language::host;
+use crate::language::migrate_window::approve_waiting;
 
 /// The Migrations app.
 const MIGRATE: &str = "so.tilo.migrate";
@@ -270,10 +271,30 @@ async fn ended(person: &Person<'_>, id: InvocationId) -> InvocationUpdate {
     }
 }
 
-/// Wait until `seen` holds, asked again until it does.
-async fn until(what: &str, seen: impl Fn() -> bool) {
+/// How invocation `id` ended, approving each step the device asks its person about meanwhile.
+async fn ended_approved(host: &host::Host, id: tilo_actions::InvocationId) -> InvocationUpdate {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let state = host.dispatch().observe(&host.caller(), &id);
+        if let Some(state) = state.filter(InvocationState::is_terminal) {
+            return state.update;
+        }
+        approve_waiting(host).await;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "invocation {id:?} never ends"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Wait until `seen` holds, asked again until it does, approving each step the device asks its
+/// person about on the way: the app's call of the engine is one they allow, as their press of
+/// the control in the window is.
+async fn until(host: &host::Host, what: &str, seen: impl Fn() -> bool) {
     let deadline = tilo_test_env::hang_deadline();
     while !seen() {
+        approve_waiting(host).await;
         assert!(std::time::Instant::now() < deadline, "never: {what}");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
@@ -357,16 +378,16 @@ fn the_migrations_app_starts_follows_and_stops_the_devices_engine() {
                     "handle": "/home/ada"}),
         )
         .await;
-        let InvocationUpdate::Succeeded { output, .. } = ended(&person, reviewed.invocation).await
-        else {
-            panic!("the migration is made");
+        let update = ended(&person, reviewed.invocation).await;
+        let InvocationUpdate::Succeeded { output, .. } = update else {
+            panic!("the migration is made: {update:?}");
         };
         let migration = output.resources.first().expect("the migration").clone();
 
         // Start: the app's call reaches the engine at the device's address, as the provider it
         // registered, and the app's invocation waits on it.
         let started = invoke(&person, &migration, "start", &json!({})).await;
-        until("the engine is asked to start", || {
+        until(person.host, "the engine is asked to start", || {
             !engine.asked("start").is_empty()
         })
         .await;
@@ -393,13 +414,13 @@ fn the_migrations_app_starts_follows_and_stops_the_devices_engine() {
         let stopped = invoke(&person, &migration, "stop", &json!({})).await;
         assert!(
             matches!(
-                ended(&person, stopped.invocation).await,
+                ended_approved(person.host, stopped.invocation).await,
                 InvocationUpdate::Succeeded { .. }
             ),
             "the stop runs"
         );
         assert_eq!(engine.asked("stop").len(), 1);
-        let start_ended = ended(&person, started.invocation).await;
+        let start_ended = ended_approved(person.host, started.invocation).await;
         assert!(
             !matches!(start_ended, InvocationUpdate::Succeeded { .. }),
             "a stopped run did not bring everything in: {start_ended:?}"
@@ -407,7 +428,7 @@ fn the_migrations_app_starts_follows_and_stops_the_devices_engine() {
 
         // Cancel: cancelling the app's start cancels the engine's run it waits on.
         let again = invoke(&person, &migration, "start", &json!({})).await;
-        until("the engine is asked to start again", || {
+        until(person.host, "the engine is asked to start again", || {
             engine.asked("start").len() == 2
         })
         .await;
@@ -418,7 +439,7 @@ fn the_migrations_app_starts_follows_and_stops_the_devices_engine() {
             .await
             .expect("the dispatch answers")
             .expect("the app's start is cancelled");
-        until("the engine's run is cancelled", || {
+        until(person.host, "the engine's run is cancelled", || {
             engine.cancelled.lock().unwrap().contains(&run)
         })
         .await;

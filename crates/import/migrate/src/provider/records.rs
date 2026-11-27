@@ -287,12 +287,14 @@ fn example_of(arguments: &str, flag: &str) -> String {
     String::new()
 }
 
-/// The path of the Migrations app's record `id`.
+/// The path of the Migrations app's record `id`. A record's id holds the steps of its document
+/// and the item in it (`root-…/i…`): the address is one name in the path, so its slashes are
+/// escaped.
 fn path_of(id: &str) -> String {
     let address = if id.starts_with("tl:") {
         id.to_owned()
     } else {
         format!("tl:{APP}:{id}")
     };
-    format!("{APP}/{address}")
+    format!("{APP}/{}", address.replace('/', "\\/"))
 }
