@@ -860,25 +860,57 @@ impl Store {
             .unwrap_or_default()
     }
 
-    /// The last sequence number this store already holds for `lineage`, `author`'s line of one
-    /// record of `workspace`: the block a device reserved before it stopped, and the frames the
-    /// store still keeps of it. A line this store has handed no number of yet starts past it.
+    /// The next `count` sequence numbers of `lineage`, `author`'s line of one record of
+    /// `workspace`, the first of them: what a device numbers its own writes under. None is at or
+    /// below `floor`, the last number the record gave the line. The block whose numbers they come
+    /// from is made durable here before any of them is returned, so a device that stops before it
+    /// sends a write skips the rest of the block when it starts again instead of taking a number
+    /// another device already holds for it; a block lasts [`SEQUENCE_BLOCK`] writes.
     ///
     /// # Errors
     ///
-    /// The line's reservation cannot be read.
-    fn last_sequence(&self, workspace: WorkspaceId, lineage: Lineage) -> Result<u64, StoreError> {
-        let kept = self
-            .state(&sequence_state_name(workspace, lineage))?
-            .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
-            .map(u64::from_le_bytes)
-            .unwrap_or(0);
-        let stood = self
-            .stands(workspace)
-            .into_iter()
-            .find(|(cursor, _)| cursor.lineage == lineage)
-            .map_or(0, |(cursor, _)| cursor.after_seq);
-        Ok(kept.max(stood))
+    /// The block could not be written.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the reservation is held while its block is written, so a block is handed out once"
+    )]
+    pub fn reserve_sequence(
+        &self,
+        workspace: WorkspaceId,
+        lineage: Lineage,
+        floor: u64,
+        count: u64,
+    ) -> Result<u64, StoreError> {
+        let mut reserved = self.sequences.lock_recover();
+        let entry = reserved
+            .entry((workspace, lineage))
+            .or_insert_with(Reserved::default);
+        if !entry.loaded {
+            // Past everything already durable for the line: the block a device reserved before it
+            // stopped, and the frames the store or the workspace's record still hold for it.
+            let kept = self
+                .state(&sequence_state_name(workspace, lineage))?
+                .and_then(|bytes| <[u8; 8]>::try_from(bytes.as_slice()).ok())
+                .map_or(0, u64::from_le_bytes);
+            let stood = self
+                .stands(workspace)
+                .into_iter()
+                .find(|(cursor, _)| cursor.lineage == lineage)
+                .map_or(0, |(cursor, _)| cursor.after_seq);
+            let after = kept.max(stood);
+            entry.next = after.saturating_add(1);
+            entry.end = after;
+            entry.loaded = true;
+        }
+        let start = entry.next.max(floor.saturating_add(1));
+        let last = start.saturating_add(count.saturating_sub(1));
+        if last > entry.end {
+            let end = last.max(start.saturating_add(SEQUENCE_BLOCK.saturating_sub(1)));
+            self.keep_state(&sequence_state_name(workspace, lineage), &end.to_le_bytes())?;
+            entry.end = end;
+        }
+        entry.next = last.saturating_add(1);
+        Ok(start)
     }
 
     /// Keep `frame` for `workspace`, unless the store holds that frame of
