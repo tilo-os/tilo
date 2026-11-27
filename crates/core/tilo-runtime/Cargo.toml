@@ -292,7 +292,7 @@ fuser.workspace = true
 ush = { path = "../../vm/ush", features = ["quic"] }
 # The environment record a workspace's machine is: the daemon reads the records its workspace
 # keeps as any other record of it, and publishes them to the apps it serves.
-tilo-environment = { path = "../../vm/environment" }
+tilo-environment = { path = "../environment" }
 
 # App Sandbox or Seatbelt: how every app launches on stock macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -343,7 +343,7 @@ collab-types = { package = "tilo-collab-types", path = "../collab-types" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 # The environment record ush makes in a test's workspace.
-tilo-environment = { path = "../../vm/environment" }
+tilo-environment = { path = "../environment" }
 # The Thunderbird profile a migration test's home holds.
 tilo-migrate = { path = "../../import/migrate", features = ["fixture"] }
 # Builds the tilolang apps a test's device has installed, and the runtime bundles they run on.

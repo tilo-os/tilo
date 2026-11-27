@@ -27,7 +27,7 @@ exactly what its environment record lists — on every device it opens on.
 
 An environment is a synced record declared by the Terminal app
 (`#[resource(kind = "environment")]`, in
-[`tilo-environment`](../../crates/vm/environment/src/lib.rs)):
+[`tilo-environment`](../../crates/core/environment/src/lib.rs)):
 
 ```rust
 pub struct Environment {
@@ -672,7 +672,7 @@ session's own runs are search entries of the session whose `open` shows it.
 
 `pkg install pandoc` inside a guest asks the broker (`Request::AddTool`). The
 broker builds a `tool` image for the environment's runtime through the
-[`ToolBuilder`](../../crates/vm/environment/src/lib.rs) boundary — the build
+[`ToolBuilder`](../../crates/core/environment/src/lib.rs) boundary — the build
 runs `dnf` as uid 0 in its own build sandbox, never in your guest — and appends
 it to the record with `add-tool`. Running sessions pick it up on `restart`; new
 sessions have it immediately. A package another tool already provides is not
@@ -725,7 +725,7 @@ Tilo ships no signature database, and this runtime does not provide one.
 
 These are the guest's own verbs, under the names the person already types, and
 each is one of the environment record's published actions
-([`tilo_environment::files`](../../crates/vm/environment/src/files.rs)):
+([`tilo_environment::files`](../../crates/core/environment/src/files.rs)):
 `copy`, `move`, `remove`, `make-dir`, `remove-dir`, `link`, `truncate`, `touch`
 and `append`. A shell's redirect is one too: `> file` is `write` (the file's
 whole contents; contents that are not text travel as base64, and `set -C`

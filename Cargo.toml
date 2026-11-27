@@ -399,7 +399,7 @@ members = [
     "crates/core/tilo-wasm-host",
     # Ahead-of-time compiled wasmtime modules: the daemon compiles, the runtimes deserialize.
     "crates/platform/tilo-wasm-aot",
-    "crates/vm/environment",
+    "crates/core/environment",
     "crates/core/egress",
     "crates/vm/ush",
     "crates/vm/ush-shell",

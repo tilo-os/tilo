@@ -1115,7 +1115,7 @@ doc = false
 "tilo-emoji" = { path = "../../crates/ui/emoji", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../crates/core/endpoint-reachability", default-features = false, features = ["test-support"] }
 "tilo-engine-loader" = { path = "../../crates/core/engine-loader", default-features = false, features = [] }
-"tilo-environment" = { path = "../../crates/vm/environment", default-features = false, features = [] }
+"tilo-environment" = { path = "../../crates/core/environment", default-features = false, features = [] }
 "tilo-esp-write" = { path = "../../crates/os/esp-write", default-features = false, features = [] }
 "tilo-extension" = { path = "../../crates/os/extension-helper", default-features = false, features = [] }
 "tilo-face" = { path = "../../crates/platform/tilo-face", default-features = false, features = [] }
@@ -2274,7 +2274,7 @@ doc = false
 "tilo-doc" = { path = "../../crates/sdk/tilo-doc", default-features = false, features = ["bulk-instrumentation", "default", "model"] }
 "tilo-doc-codecs" = { path = "../../crates/engines/tilo-doc-codecs", default-features = false, features = ["book", "docx", "epub", "html", "markdown", "ods", "odt", "office", "rtf", "xlsx"] }
 "tilo-doc-pdf" = { path = "../../crates/engines/tilo-doc-pdf", default-features = false, features = [] }
-"tilo-environment" = { path = "../../crates/vm/environment", default-features = false, features = [] }
+"tilo-environment" = { path = "../../crates/core/environment", default-features = false, features = [] }
 "tilo-face" = { path = "../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-failure" = { path = "../../crates/platform/tilo-failure", default-features = false, features = [] }
 "tilo-files" = { path = "../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
@@ -3566,7 +3566,7 @@ doc = false
 "tilo-emoji" = { path = "../../crates/ui/emoji", default-features = false, features = [] }
 "tilo-endpoint-reachability" = { path = "../../crates/core/endpoint-reachability", default-features = false, features = ["test-support"] }
 "tilo-engine-loader" = { path = "../../crates/core/engine-loader", default-features = false, features = [] }
-"tilo-environment" = { path = "../../crates/vm/environment", default-features = false, features = [] }
+"tilo-environment" = { path = "../../crates/core/environment", default-features = false, features = [] }
 "tilo-esp-write" = { path = "../../crates/os/esp-write", default-features = false, features = [] }
 "tilo-extension" = { path = "../../crates/os/extension-helper", default-features = false, features = [] }
 "tilo-face" = { path = "../../crates/platform/tilo-face", default-features = false, features = [] }

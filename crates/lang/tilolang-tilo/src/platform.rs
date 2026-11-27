@@ -525,7 +525,7 @@ const PUBLISHED: &[Published] = &[
             "Environments",
             tilo_action_services::environment_commands::ENVIRONMENTS,
         )],
-        files: &[include_str!("../../../vm/environment/surface.json")],
+        files: &[include_str!("../../../core/environment/surface.json")],
         described: true,
         listed: &[],
     },
@@ -1028,8 +1028,9 @@ mod tests {
         struct Verb {
             id: String,
         }
-        let file: File = serde_json::from_str(include_str!("../../../vm/environment/surface.json"))
-            .expect("the environment surface reads");
+        let file: File =
+            serde_json::from_str(include_str!("../../../core/environment/surface.json"))
+                .expect("the environment surface reads");
         assert_eq!(file.resources.len(), 1, "one resource is the environments");
         let mut published: Vec<&str> = file.resources[0]
             .verbs

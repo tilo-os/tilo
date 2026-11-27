@@ -49,7 +49,7 @@ ush-shell = { path = "../ush-shell" }
 # The shell's host on the Tilo side, outside every guest.
 ush-tilo = { path = "../ush-tilo" }
 # The environment record a guest is built from, and the tool builder boundary.
-tilo-environment = { path = "../environment" }
+tilo-environment = { path = "../../core/environment" }
 # Two sessions of one environment never carry the same file action out twice.
 tilo-advisory-lock = { path = "../../platform/advisory-lock" }
 # Atomic writes of the host-shell decisions.

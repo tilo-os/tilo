@@ -22,7 +22,7 @@ bounded-command = { package = "tilo-bounded-command", path = "../../platform/bou
 tilo-app-package = { path = "../../core/tilo-app-package" }
 # The publisher key file.
 registry-types = { package = "tilo-registry-types", path = "../../core/registry-types" }
-tilo-environment = { path = "../environment" }
+tilo-environment = { path = "../../core/environment" }
 # The build sandbox reaches its runtime's repositories and nothing else.
 tilo-egress = { path = "../../core/egress" }
 package-store = { package = "tilo-package-store", path = "../../core/package-store", features = ["store"] }

@@ -20,7 +20,7 @@ uuid.workspace = true
 # A selection cuts whole glyphs: a cell column is not a byte offset.
 unicode-width = { version = "0.2.2" }
 # Where a session can run, and the environment records it can run in.
-tilo-environment = { version = "0.1.0", path = "../../vm/environment" }
+tilo-environment = { version = "0.1.0", path = "../../core/environment" }
 # The registry an app reaches its device's engines through (`engine.call`, `engine.start`).
 tilolang-engine = { version = "0.1.0", path = "../../lang/tilolang-engine" }
 

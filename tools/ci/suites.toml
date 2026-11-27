@@ -979,7 +979,7 @@ inputs = [
   "crates/sdk/tilo-app-window/locales/en-US.ftl",
   "crates/core/tilo-contact-directory/surface.json",
   "crates/core/tilo-workspace-service/workspace-surface.json",
-  "crates/vm/environment/surface.json",
+  "crates/core/environment/surface.json",
   # The runtime's version is keyed alike by the packing's shell helper and by the crate.
   "tools/apps/tilolang_packages.sh",
   "crates/lang/tilolang-process/tilo-runtime.toml",

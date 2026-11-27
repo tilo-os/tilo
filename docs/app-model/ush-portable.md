@@ -27,7 +27,7 @@ commands that need Linux, and only for as long as they need it.
 
 - **File commands are actions.** `cp`, `mv`, `rm`, `mkdir`, `rmdir`, `ln`,
   `truncate`, `touch` and `append` are the environment record's own verbs
-  ([`tilo_environment::files`](../../crates/vm/environment/src/files.rs)):
+  ([`tilo_environment::files`](../../crates/core/environment/src/files.rs)):
   checked as a whole against the record's grants, queued in its `files`
   outbox for the device whose disk they change, and undone from its History.
 - **Files are versioned.** Every write to a Tilo mount appends a version, and
