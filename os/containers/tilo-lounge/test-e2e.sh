@@ -202,7 +202,7 @@ timing 'phase=the stack up'
 # runtimes they execute, and the key they and the packages are trusted by. A
 # page of the person's own workspace is served by it, so it needs what a
 # computer has — nothing here is special to any app.
-apps=${TILO_LOUNGE_APPS:?TILO_LOUNGE_APPS names the apps the Lounge's workspace runs}
+apps=${TILO_LOUNGE_APPS:?TILO_LOUNGE_APPS names the apps the Lounge runs}
 device=$work/device
 mkdir -p "$device/data"
 TILO_INSTALL=$apps/bin/tilo-install TILO_RUNTIME_BUNDLE_DIR=$apps/runtimes \
