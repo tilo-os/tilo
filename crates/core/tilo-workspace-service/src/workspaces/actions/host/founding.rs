@@ -1,14 +1,17 @@
-//! A workspace of a person's own that a host keeping their workspaces makes for a key acting for
-//! them (an agent's), which it founds nothing for: their device founds it.
+//! A workspace of a person's that a host keeping their workspaces, other than the device that
+//! founds them, is asked to make: their founding device founds it, whoever asks.
 //!
-//! The host hands the key's own call, as the key signed it for no workspace, to the device that
-//! founds the person's workspaces, over the action service both serve
-//! ([`Workspaces::found_through_their_device`]). That device decides it as the key's call (the
-//! signature proves the key, fresh and once), asks the person there where the key's grants leave
-//! it to them, founds the workspace on their yes, places it at the host that carried the call and
-//! invites the key in at the address the host signed for it. The host founds nothing, issues
-//! nothing and takes no one's word: it keeps the workspace it was handed as the person's own and
-//! answers the key with what their device answered, a wait for their yes and a no among it.
+//! The host hands the call to the device that founds the person's workspaces, over the action
+//! service both serve ([`Workspaces::found_through_their_device`]). A key's call (an agent's) goes
+//! as the key signed it for no workspace: that device decides it as the key's (the signature
+//! proves the key, fresh and once), asks the person there where the key's grants leave it to
+//! them, founds the workspace on their yes, places it at the host that carried the call and
+//! invites the key in at the address the host signed for it. A call of the person's own device,
+//! which carries no signature that device could check, the host asks as itself, a device of
+//! theirs: the founding device founds it, places it at their server and lists it with their
+//! others. The host founds nothing, issues nothing and takes no one's word: it keeps the
+//! workspace it was handed as the person's own and answers with what their device answered, a
+//! wait for their yes and a no among it.
 
 use std::sync::Arc;
 
@@ -31,11 +34,11 @@ const ANSWERED_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl Workspaces {
     /// Have the device that founds `device`'s person's workspaces make the one `request` asks
-    /// for, as `caller` asked it here, where this host founds nothing for that key
-    /// ([`Self::found_for`]): how that device answered, once it made it or while it waits for
-    /// the person's yes there. `None` where this host founds it itself, keeps no workspaces for
-    /// the person, the call carries no signature of the key's own, or no workspace kept here
-    /// names the person's founding device: it is then decided here as any other.
+    /// for, as `caller` asked it here, where this host does not found it ([`Self::found_for`]):
+    /// how that device answered, once it made it or while it waits for the person's yes there.
+    /// `None` where this host founds it itself, the call is neither signed by the key asking nor
+    /// asked by a device of this host's person, or no workspace kept here names the person's
+    /// founding device: it is then decided here as any other.
     ///
     /// # Errors
     /// The founding device did not answer, refused, or the person said no there.
@@ -46,31 +49,20 @@ impl Workspaces {
         (args, now): (&super::super::Args, u64),
     ) -> Result<Option<Answered>, ActionCallError> {
         let person = device.user_public_key;
-        let Some(own) = self.own() else {
-            return Ok(None);
-        };
-        let name = args.text("name")?;
         let labels: Option<WorkspaceLabels> = args.object("labels")?;
         let labels = labels.as_ref();
-        // What is theirs already is answered here: a workspace the ask names, the first of
-        // theirs where it names none, or the one a retried ask labelled.
-        if args.text("workspace")?.is_some()
-            || (name.is_none() && own.any_of(&person))
-            || self
-                .own_labelled_for(person, (name, None), labels, own)
-                .await
-                .is_some()
-        {
+        if self.theirs_already(person, args, labels).await? {
             return Ok(None);
         }
         let signed_by_the_key = request
             .signed
             .as_ref()
             .is_some_and(|signed| signed.statement().signer == device.device_public_key);
+        let here = self.device_cert().device_public_key;
+        let as_here = persons_own((caller, device)) && self.device_cert().user_public_key == person;
         if caller.forwarder().is_some()
-            || !signed_by_the_key
+            || !(signed_by_the_key || as_here)
             || caller.is_in_process()
-            || persons_own((caller, device))
             || self.founding_here(&person).await.is_ok()
             || !self.let_in(&person, now).await
         {
@@ -79,16 +71,29 @@ impl Workspaces {
         let Some((founding, addr)) = self.persons_founding_device(&person).await else {
             return Ok(None);
         };
-        let remote = Arc::new(
-            self.action_service()
-                .remote(&self.inner.host.endpoint, &addr, ""),
-        );
+        // The key's signed call proves it for no workspace; this host proves itself in the
+        // person's own workspace, which both keep, as a device of theirs.
+        let own_workspace = tilo_server_protocol::servers::person_workspace_id(&person);
+        let scope = if as_here { own_workspace.as_str() } else { "" };
+        let remote = Arc::new(self.action_service().remote(
+            &self.inner.host.endpoint,
+            &addr,
+            scope,
+        ));
         if remote.device() != founding {
             return Ok(None);
         }
         let mut carried = request.clone();
         carried.wait_ms = Some(CHANGE_WAIT_MS);
         let invocation = carried.invocation;
+        let asked_here;
+        let caller = if as_here {
+            carried.signed = None;
+            asked_here = Caller::authenticated(person, here).in_workspace(own_workspace.clone());
+            &asked_here
+        } else {
+            caller
+        };
         let unanswered = || ActionCallError::Unavailable {
             reason: "the device that makes your workspaces didn't answer".into(),
         };
@@ -141,6 +146,28 @@ impl Workspaces {
             .await;
         });
         Ok(Some(Answered::Live(following)))
+    }
+
+    /// Whether what `args` asks of `person` is theirs already, and answered here: a workspace
+    /// the ask names, the first of theirs where it names none, or the one a retried ask labelled.
+    async fn theirs_already(
+        &self,
+        person: [u8; 32],
+        args: &super::super::Args,
+        labels: Option<&WorkspaceLabels>,
+    ) -> Result<bool, ActionCallError> {
+        let name = args.text("name")?;
+        if args.text("workspace")?.is_some() {
+            return Ok(true);
+        }
+        let Some(own) = self.own() else {
+            return Ok(false);
+        };
+        Ok((name.is_none() && own.any_of(&person))
+            || self
+                .own_labelled_for(person, (name, None), labels, own)
+                .await
+                .is_some())
     }
 
     /// `ended`, how the person's founding device ended a make it was handed: one that made the

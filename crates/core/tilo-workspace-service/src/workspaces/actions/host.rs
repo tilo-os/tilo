@@ -748,13 +748,15 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let args = Args::of(&request.argument)?;
         let request_id = request_id(&device.user_public_key, request.invocation);
-        // A new workspace of their own that this host founds nothing for the key asking (an
-        // agent's) is its person's device's to found: that device decides the key's call, asks
-        // the person there what the key's grants leave to them, and places it here.
-        if operation == ServiceOperation::CreateOwnWorkspace
-            && let Some(handed) = self
-                .found_through_their_device((caller, device), request, (&args, now))
-                .await?
+        // A new workspace of theirs that this host does not found is their founding device's to
+        // found, whoever asks: that device decides it, asks the person there what an agent's
+        // grants leave to them, places it and lists it with their others.
+        if matches!(
+            operation,
+            ServiceOperation::CreateWorkspace | ServiceOperation::CreateOwnWorkspace
+        ) && let Some(handed) = self
+            .found_through_their_device((caller, device), request, (&args, now))
+            .await?
         {
             return Ok(handed);
         }

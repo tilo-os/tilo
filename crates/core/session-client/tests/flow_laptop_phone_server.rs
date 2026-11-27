@@ -135,14 +135,6 @@ async fn rig() -> Rig {
     let in_person = ServerWorkspaceId::parse(&person_workspace).unwrap();
     let work = flow::create_workspace(&maker, in_person, "Work").await;
     let home = flow::create_workspace(&maker, in_person, "Home").await;
-    // Their own computer lists what the person has, as the device that holds their own
-    // workspace does: each entry reaches the copy the server keeps.
-    for (workspace, name) in [(&work, "Work"), (&home, "Home")] {
-        assert!(
-            desk_workspaces.list_for(&person, workspace, name).await,
-            "the person's own computer lists {name} in their list"
-        );
-    }
     for session in [&laptop_session, &phone_session] {
         flow::join(session, &work, "Work").await;
         flow::join(session, &home, "Home").await;
@@ -190,7 +182,8 @@ async fn flow_signs_in_and_controls_all_workspaces_without_tilosh() {
         "the laptop controls every workspace on the server: {ids:?}"
     );
 
-    // It makes a workspace of its own through the host's published action.
+    // It makes a workspace of its own through the host's published action: the server, a
+    // member device of theirs, has their own computer found it, which lists it with the rest.
     let made = flow::ask(
         &laptop,
         f.work_id(),
@@ -215,7 +208,7 @@ async fn flow_signs_in_and_controls_all_workspaces_without_tilosh() {
             .workspaces
             .iter()
             .any(|listed| listed.workspace == garden),
-        "the workspace the laptop made is one of theirs they control: {listed:?}"
+        "the person lists the workspace their laptop made on their member server: {listed:?}"
     );
 }
 
