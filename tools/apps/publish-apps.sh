@@ -201,6 +201,7 @@ publish_entry() {
     request="$work/request.json"
     rm -f "$previous" "$request"
     "$cli" pending --registry "$registry" --identity "$identity" "$id" > "$previous"
+    tools/apps/drop-unserved-versions.sh "$previous"
     if jq -e --arg id "$id" '[.entries[] | select(.package_id == $id)] | length > 0' \
         "$snapshot" >/dev/null; then
       action=update

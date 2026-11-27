@@ -94,6 +94,7 @@ for attempt in 1 2 3; do
   # its versions (the other architecture's, say), so build on it.
   "$REGISTRY_CLI" pending --registry "$REGISTRY_URL" \
     --identity "$REGISTRY_IDENTITY" "$package_id" > "$previous"
+  "$(dirname "${BASH_SOURCE[0]}")/drop-unserved-versions.sh" "$previous"
   # Whether the package is published decides add or update; a request still
   # waiting for review (the other architecture's, say) is only the entry to
   # build on.
