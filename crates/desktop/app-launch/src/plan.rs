@@ -445,7 +445,10 @@ impl Planned {
     ) -> Result<Self, PlanError> {
         let launcher = context.launcher.clone().ok_or(PlanError::NoLauncher)?;
         let mut env = context.environment.variables();
-        crate::env::speak(&mut env, tilo_ui_base::i18n::preferred_language().as_deref());
+        crate::env::speak(
+            &mut env,
+            tilo_ui_base::i18n::preferred_language().as_deref(),
+        );
         let mut args = [
             launcher::run::tilolang_window::SUBCOMMAND,
             "--runtime",

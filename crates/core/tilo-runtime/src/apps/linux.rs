@@ -51,7 +51,13 @@ pub(super) fn launch(
             app.app_id
         ));
     }
-    spawn(apps, (app, workspace), (sockets, original), (shows, open), runs)
+    spawn(
+        apps,
+        (app, workspace),
+        (sockets, original),
+        (shows, open),
+        runs,
+    )
 }
 
 /// Start the launcher for [`launch`].

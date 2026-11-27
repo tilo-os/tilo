@@ -240,9 +240,7 @@ mod tests {
             (Path::new("/system/tilolang"), "0.1.0+tilolang"),
             (Path::new("/system/tilo-runtime"), "0.1.0"),
             "c0ffee00-0000-4000-8000-000000000001",
-            &WindowServices {
-                render: Some(9),
-            },
+            &WindowServices { render: Some(9) },
             Path::new("/usr/libexec/tilo-launcher"),
         );
         assert_eq!(

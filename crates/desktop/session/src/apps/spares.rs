@@ -40,8 +40,8 @@ pub(super) struct Spares {
     /// bound to.
     wanted: std::collections::BTreeMap<String, Runtimes>,
     /// The runtimes of the tilolang apps installed here, read once: what a workspace's first spare
-    /// runs on. `Some(None)` when none is installed.
-    installed: Option<Option<Runtimes>>,
+    /// runs on, or none when no tilolang app is installed.
+    installed: std::cell::OnceCell<Option<Runtimes>>,
     /// What each tilolang app's windows were bound with, by the app.
     packages: std::collections::BTreeMap<String, Rc<WindowPackage>>,
     /// How many spares in a row ended in each workspace before they were bound, or could not
@@ -72,6 +72,16 @@ struct SpareWindow {
     link: OwnedFd,
     /// Its Wayland connection, which the session binds to the app with it.
     connection: tilo_compositor::SpareConnection,
+}
+
+impl SpareWindow {
+    /// Whether this spare can be bound to an app of `workspace` that runs on `runtimes`: it is
+    /// that workspace's, on those runtimes, and its process still holds its link.
+    fn serves(&self, workspace: &str, runtimes: &Runtimes) -> bool {
+        self.workspace == workspace
+            && self.runtimes == *runtimes
+            && !runtime_portal::process_link::hung_up(&self.link)
+    }
 }
 
 /// What the session reads of an installed tilolang app to bind a spare to it, kept for as long as
@@ -212,25 +222,21 @@ impl Apps {
                 Ok(spare) => self.state.borrow_mut().spares.ready.push(spare),
                 Err(error) => {
                     tracing::warn!(%workspace, %error, "no spare window");
-                    *self
-                        .state
-                        .borrow_mut()
-                        .spares
-                        .ended
-                        .entry(workspace)
-                        .or_default() += 1;
+                    let mut state = self.state.borrow_mut();
+                    let in_a_row = state.spares.ended.entry(workspace).or_default();
+                    *in_a_row = in_a_row.saturating_add(1);
                 }
             }
         }
     }
 
     fn installed_runtimes(&self) -> Option<Runtimes> {
-        if let Some(installed) = self.state.borrow().spares.installed.clone() {
-            return installed;
-        }
-        let installed = installed_runtimes();
-        self.state.borrow_mut().spares.installed = Some(installed.clone());
-        installed
+        self.state
+            .borrow()
+            .spares
+            .installed
+            .get_or_init(installed_runtimes)
+            .clone()
     }
 
     /// Start a spare window in `workspace` on `runtimes`, its Wayland connection made and sent.
@@ -306,7 +312,7 @@ impl Apps {
         if spare.started.elapsed() >= LIVED {
             *in_a_row = 0;
         }
-        *in_a_row += 1;
+        *in_a_row = in_a_row.saturating_add(1);
         true
     }
 
@@ -388,11 +394,11 @@ impl Apps {
         let ready = {
             let mut state = self.state.borrow_mut();
             state.spares.ended.remove(&workspace.id);
-            let at = state.spares.ready.iter().position(|spare| {
-                spare.workspace == workspace.id
-                    && spare.runtimes == package.runtimes
-                    && !runtime_portal::process_link::hung_up(&spare.link)
-            });
+            let at = state
+                .spares
+                .ready
+                .iter()
+                .position(|spare| spare.serves(&workspace.id, &package.runtimes));
             at.map(|at| state.spares.ready.remove(at))
         };
         let spare = match ready {
