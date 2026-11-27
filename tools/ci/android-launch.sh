@@ -84,11 +84,25 @@ adb shell input tap 540 1200
 # The app redraws in its own time; a screenshot a few frames on shows what it drew.
 adb shell sleep 5
 adb exec-out screencap -p >"$out/later.png"
+# The soft keyboard: the first screen's ticket field, typed into. Android resizes and redraws
+# around the keyboard as it opens; the app keeps its window through that and shows the text.
+adb shell input tap 540 560
+adb shell sleep 3
+adb shell input text tilo1
+adb shell sleep 10
+keyboard=$(adb shell dumpsys input_method | grep -c "mInputShown=true" || true)
+adb exec-out screencap -p >"$out/typed.png"
 adb logcat -d -v brief >"$out/logcat.txt"
+[ "$keyboard" -gt 0 ] || fail "the soft keyboard did not open on the ticket field"
+if grep -q "the window stopped without being closed" "$out/logcat.txt"; then
+  fail "the app closed its window as the soft keyboard opened"
+fi
+[ "$(sha256sum <"$out/later.png")" != "$(sha256sum <"$out/typed.png")" ] ||
+  fail "the app drew nothing as it was typed into"
 
 if grep -qE "out of TLS keys|Fatal signal" "$out/logcat.txt"; then fail "the app aborted"; fi
 [ -n "$(adb shell pidof "$package")" ] || fail "the app is no longer running"
 [ -n "$shown" ] || fail "the app showed no frame"
 [ "$(sha256sum <"$out/first.png")" != "$(sha256sum <"$out/later.png")" ] ||
   fail "the app drew nothing after its first frame"
-echo "android-launch: $package drew past its first frame and is running"
+echo "android-launch: $package drew past its first frame, was typed into with the soft keyboard open, and is running"

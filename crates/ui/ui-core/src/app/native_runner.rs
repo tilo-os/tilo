@@ -58,6 +58,11 @@ fn create_accessibility_adapter(
 /// wgpu's context, surface and vello renderer live on a dedicated worker thread
 /// ([`crate::render_thread`]); this struct keeps only the channel ends that ship frames and recycle
 /// scene buffers.
+/// Surfaces an Android window may lose in a row, with no frame presented between them, before the
+/// app ends: past it the surface Android gives back never presents.
+#[cfg(target_os = "android")]
+const MAX_SURFACES_LOST: u8 = 3;
+
 struct AppHandler {
     app: App,
     animation_schedule: animation_schedule::AnimationSchedule,
@@ -93,6 +98,11 @@ struct AppHandler {
     /// What `suspended` took back from the render worker, for the next
     /// surface.
     suspended_renderer: Option<PreparedRenderer>,
+    /// Surfaces lost in a row with no frame presented between them: Android takes a window's
+    /// surface back while its activity lives on, and the window draws again on the one it has
+    /// now, until losing it again and again says it never will.
+    #[cfg(target_os = "android")]
+    surfaces_lost: u8,
     /// A real, separate fullscreen output for a root widget's audience view: not a floating
     /// surface, so it has no desktop-space proxy or compositor handoff, and it is always destroyed
     /// before its renderer and window.
@@ -2279,6 +2289,15 @@ impl AppHandler {
             );
             tilo_ui_base::arriving::set_frame_budget(self.animation_schedule.interval());
         }
+        // Android may have taken the window's surface back before it says so: the redraw waits
+        // for the one `resumed` brings.
+        #[cfg(target_os = "android")]
+        if self.render.is_none()
+            && tilo_ui_base::platform::android::app()
+                .is_some_and(|app| app.native_window().is_none())
+        {
+            return;
+        }
         if self.render.is_none() {
             tilo_startup_metrics::mark("first-redraw-init-render-start");
             let render_init = slow_event::phase("render_init");
@@ -2322,6 +2341,10 @@ impl AppHandler {
             }
             match outcome {
                 FrameOutcome::Presented => {
+                    #[cfg(target_os = "android")]
+                    {
+                        self.surfaces_lost = 0;
+                    }
                     self.last_primary_frame_presented = self.primary_frames_completed;
                     self.app
                         .capture_frame_presented(self.primary_frames_completed);
@@ -2387,6 +2410,20 @@ impl AppHandler {
         if surface_gone {
             let reason = crate::render_thread::take_surface_loss()
                 .unwrap_or_else(|| "its drawing surface was lost".to_owned());
+            // The activity lives on while Android replaces its window's surface (a keyboard
+            // opening, a resize): the window draws again on the surface it has now, as it does
+            // after a suspend.
+            #[cfg(target_os = "android")]
+            if self.surfaces_lost < MAX_SURFACES_LOST {
+                self.surfaces_lost += 1;
+                tracing::warn!(%reason, "the window's surface was lost; drawing on its current one");
+                if let Some(mut render) = self.render.take() {
+                    render.shutdown_and_join();
+                }
+                self.app.layout.layout_dirty = true;
+                window.request_redraw();
+                return;
+            }
             stop_abnormally(&self.closing, reason);
             return;
         }
@@ -5530,6 +5567,8 @@ impl App {
             render: None,
             surface_suspended: false,
             suspended_renderer: HANDED_RENDERER.with(|slot| slot.borrow_mut().take()),
+            #[cfg(target_os = "android")]
+            surfaces_lost: 0,
             audience_presentation: None,
             floating_windows: Vec::new(),
             a11y_adapter: None,
