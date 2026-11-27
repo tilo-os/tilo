@@ -112,7 +112,14 @@ async fn rig() -> Rig {
             .await
             .unwrap();
     assert_eq!(person_workspace, person_workspace_id(&person));
-    let host = start_server_daemon(&root, &desk_host, &desk, &person_workspace, "the-server");
+    let host = start_server_daemon(
+        &root,
+        &desk_host,
+        &desk,
+        &person_workspace,
+        "the-server",
+        None,
+    );
     let server_device = host.device();
     desk_workspaces
         .attach_server(

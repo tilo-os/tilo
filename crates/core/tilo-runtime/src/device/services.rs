@@ -3272,6 +3272,7 @@ impl Daemon {
         // through this daemon, whose fan-out holds the apps' connections.
         Arc::new(super::window_follow::WindowFollow::new(Arc::clone(&fanout)))
             .register(&workspaces.copies().providers());
+        sign_in_at_the_named_addresses(&workspaces);
         start_agents(&broker, &workspaces, &tickets, (&asked, &invocations));
         // The apps installed here that keep a long-lived connection: the trigger runner takes
         // each one's turn where this device has what it needs, and runs it while it holds it.
@@ -8409,6 +8410,27 @@ fn serve_agent_steps(workspaces: &ServiceWorkspaces, fanout: &Arc<FanoutState>) 
     Arc::new(agents::triggered::Answers::new(service, Arc::clone(fanout))).register(&providers);
     #[cfg(target_os = "linux")]
     Arc::new(super::agent_tools::AgentToolSteps::default()).register(&providers);
+}
+
+/// Point this daemon's `OpenAI` sign-in at the addresses its environment names, where it names
+/// any: `OPENAI_ISSUER`, and `CHATGPT_BACKEND` and `OPENAI_API` beside it, as a proxy prints
+/// them. An operator's own proxy and a test's fake both take the real endpoints' place this way,
+/// so a person's sign-in never leaves the machine.
+fn sign_in_at_the_named_addresses(workspaces: &ServiceWorkspaces) {
+    let Ok(issuer) = std::env::var("OPENAI_ISSUER") else {
+        return;
+    };
+    let mut sign_in = tilo_person_services::OpenAiSignIn {
+        issuer,
+        ..Default::default()
+    };
+    if let Ok(backend) = std::env::var("CHATGPT_BACKEND") {
+        sign_in.backend = backend;
+    }
+    if let Ok(api) = std::env::var("OPENAI_API") {
+        sign_in.api = api;
+    }
+    workspaces.people().sign_in_to_openai_at(sign_in);
 }
 
 /// Run the agents of the workspaces this device's service holds, in this daemon: the one engine

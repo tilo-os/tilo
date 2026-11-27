@@ -361,12 +361,15 @@ impl DaemonHost {
 /// The person's server, a machine started as one and signed in with a ticket their computer
 /// `desk` prints, as a deployment is: the ticket enters it into their own workspace
 /// `person_workspace`, which `desk_host` keeps, and lists it in the record of their devices.
+/// With `sign_in`, its people sign in to `OpenAI` at that fake's addresses, as a server an
+/// operator pointed at a proxy does.
 pub fn start_server_daemon(
     root: &SigningKey,
     desk_host: &TestHost,
     desk: &Device,
     person_workspace: &str,
     label: &str,
+    sign_in: Option<&fake_model_providers::FakeProviders>,
 ) -> DaemonHost {
     let entry = tilo_device_identity::login::Entry {
         workspace: person_workspace.to_owned(),
@@ -378,12 +381,22 @@ pub fn start_server_daemon(
     };
     let runtime = tokio::runtime::Handle::current();
     let workspaces = desk_host.server.workspaces().unwrap().clone();
+    let env: Vec<(&'static str, std::ffi::OsString)> = sign_in
+        .map(|fake| {
+            vec![
+                ("OPENAI_ISSUER", fake.issuer_url().into()),
+                ("CHATGPT_BACKEND", fake.chatgpt_backend_url().into()),
+                ("OPENAI_API", fake.openai_api_url().into()),
+            ]
+        })
+        .unwrap_or_default();
     tokio::task::block_in_place(|| {
         let issuing = tilo_runtime::device::issuing::test_support::Issuing::start(
             &runtime, root, entry, workspaces,
         )
         .expect("the person's computer prints a ticket");
-        let daemon = test_server::ServerDaemon::start(&issuing.ticket(), label, &["chat"]);
+        let daemon =
+            test_server::ServerDaemon::start_with_env(&issuing.ticket(), label, &["chat"], &env);
         HOSTS
             .lock()
             .unwrap()

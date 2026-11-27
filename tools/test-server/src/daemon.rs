@@ -34,6 +34,9 @@ pub struct ServerDaemon {
     cert: DeviceCert,
     /// The environment that names its apps, their launcher and runtimes' publisher.
     installed: Vec<(&'static str, OsString)>,
+    /// What the caller points the daemon at besides, as its own environment: a test's fake
+    /// `OpenAI` sign-in's addresses among them.
+    env: Vec<(&'static str, OsString)>,
 }
 
 impl Drop for ServerDaemon {
@@ -50,6 +53,18 @@ impl ServerDaemon {
     /// on it, with the runtimes they run on.
     #[must_use]
     pub fn start(ticket: &str, label: &str, apps: &[&str]) -> Self {
+        Self::start_with_env(ticket, label, apps, &[])
+    }
+
+    /// [`Self::start`] with `env` in the daemon's environment besides what it starts with: what
+    /// points it at a fake, an `OpenAI` sign-in on loopback among them.
+    #[must_use]
+    pub fn start_with_env(
+        ticket: &str,
+        label: &str,
+        apps: &[&str],
+        env: &[(&'static str, OsString)],
+    ) -> Self {
         let home = tempfile::tempdir().expect("the server's home");
         let root = home.path();
         let installed = super::apps::install(&root.join("installed"), &root.join("data"), apps);
@@ -76,7 +91,7 @@ impl ServerDaemon {
         std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
             .create(root.join("runtime"))
             .expect("the server's runtime directory");
-        let mut child = spawn(root, &config, &installed);
+        let mut child = spawn(root, &config, &installed, env);
         let env_out = root.join("session.env");
         let native = root.join("runtime/tilo/native.sock");
         // A machine nobody signed in to answers its device actions on its native endpoint, and
@@ -100,6 +115,7 @@ impl ServerDaemon {
             key,
             cert,
             installed,
+            env: env.to_vec(),
         }
     }
 
@@ -160,7 +176,7 @@ impl ServerDaemon {
         let root = self.home.path();
         let env_out = root.join("session.env");
         std::fs::remove_file(&env_out).expect("the address the server named before");
-        let mut child = spawn(root, &root.join("server.toml"), &self.installed);
+        let mut child = spawn(root, &root.join("server.toml"), &self.installed, &self.env);
         self.addr = until(&mut child, root, "keep again", || named(&env_out));
         self.child = Some(child);
     }
@@ -175,7 +191,12 @@ fn named(env_out: &Path) -> Option<iroh::EndpointAddr> {
 
 /// The daemon over `root`, as its server configuration `config` starts it with the apps whose
 /// environment is `installed`, logging below it.
-fn spawn(root: &Path, config: &Path, installed: &[(&'static str, OsString)]) -> Child {
+fn spawn(
+    root: &Path,
+    config: &Path,
+    installed: &[(&'static str, OsString)],
+    env: &[(&'static str, OsString)],
+) -> Child {
     let log = std::fs::File::create(root.join("logs/daemon.log")).expect("the daemon's log");
     let mut command = Command::new(tilo_test_env::sibling_binary("tilo-daemon", "tilo-runtime"));
     command
@@ -191,6 +212,7 @@ fn spawn(root: &Path, config: &Path, installed: &[(&'static str, OsString)]) -> 
         .env("TILO_SECRETS_DIR", root.join("secrets"))
         .env("TILO_IDENTITY_FILE_SECRETS", "1")
         .envs(installed.iter().map(|(name, value)| (*name, value)))
+        .envs(env.iter().map(|(name, value)| (*name, value)))
         .env(super::loopback_relay().0, super::loopback_relay().1)
         .env(tilo_endpoint_reachability::NETWORKS_ENV, "127.0.0.1")
         .env(

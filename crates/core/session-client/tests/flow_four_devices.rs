@@ -42,6 +42,9 @@ struct Four {
     pi: Device,
     laptop: Device,
     host: DaemonHost,
+    /// The fake model providers on loopback the server signs in to `OpenAI` at and answers
+    /// its turns through, as an operator's own proxy.
+    fake: fake_model_providers::FakeProviders,
     work: String,
     home: String,
     person_workspace: String,
@@ -106,7 +109,17 @@ async fn four_devices() -> Four {
             .await
             .unwrap();
     assert_eq!(person_workspace, person_workspace_id(&person));
-    let host = start_server_daemon(&root, &desk_host, &desk, &person_workspace, "tilo.sh");
+    // The fake the server signs in to OpenAI at and asks its turns through: started before
+    // the server, which is pointed at its addresses as its environment names them.
+    let fake = fake_model_providers::FakeProviders::start().await.unwrap();
+    let host = start_server_daemon(
+        &root,
+        &desk_host,
+        &desk,
+        &person_workspace,
+        "tilo.sh",
+        Some(&fake),
+    );
     let server_device = host.device();
     desk_workspaces
         .attach_server(
@@ -156,6 +169,7 @@ async fn four_devices() -> Four {
         pi,
         laptop,
         host,
+        fake,
         work,
         home,
         person_workspace,
@@ -521,7 +535,7 @@ async fn flow_window_moved_by_its_move_action_shows_on_the_other_devices_monitor
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_laptop_asleep_mid_turn_the_server_finishes_it() {
     let f = Box::pin(four_devices()).await;
-    let fake = fake_model_providers::FakeProviders::start().await.unwrap();
+    let fake = &f.fake;
     let laptop = f.client(&f.laptop_session, &f.laptop, "snapdragon-laptop");
     flow::run_work_on(&laptop, f.work_id(), &fake.openai_api_url(), "custom-model").await;
     flow::make_agent(&laptop, &f.work, "Scout", "scout").await;
@@ -555,7 +569,7 @@ async fn flow_laptop_asleep_mid_turn_the_server_finishes_it() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_five_model_providers_each_answer_a_turn() {
     let f = Box::pin(four_devices()).await;
-    let fake = fake_model_providers::FakeProviders::start().await.unwrap();
+    let fake = &f.fake;
     let laptop = f.client(&f.laptop_session, &f.laptop, "snapdragon-laptop");
     let work = f.work_id();
 
