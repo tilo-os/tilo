@@ -3256,7 +3256,13 @@ fn start_requested(
         return Ok(json!({"captured": true, "writes": writes}));
     }
     // The app's default presentation is one: a second start shows the one running, and while the
-    // first has shown nothing the launch's own lock waits for it, as a launch takes it.
+    // first has shown nothing the launch's own lock waits for it, as a launch takes it. A
+    // tilolang app's window is the person's layout's, so its start shows that window there and a
+    // second start brings the window already showing it forward; nothing waits on a process.
+    #[cfg(target_os = "linux")]
+    if request.presentation && crate::device::package_runs::runs_in_process(&app.app_id) {
+        return start_in_layout(&daemon, &app.app_id, workspace);
+    }
     let guard = if request.presentation {
         match default_launch_guard(apps.root(), &app.app_id, PRESENTATION_GRACE)? {
             Some(guard) => Some(guard),
@@ -3487,6 +3493,29 @@ fn default_launch_guard(
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+/// Start the window of the tilolang app `app` in `workspace`, which the person's layout holds:
+/// shown where the layout shows none, and brought in front where it shows one. What a start of
+/// the app's default presentation answers.
+#[cfg(target_os = "linux")]
+fn start_in_layout(daemon: &Arc<Daemon>, app: &str, workspace: &str) -> io::Result<Value> {
+    if daemon
+        .show_app_window(app, workspace)
+        .map_err(io::Error::other)?
+    {
+        return Ok(json!({"activated": true}));
+    }
+    let (app, workspace) = (app.to_owned(), workspace.to_owned());
+    let starting = Arc::clone(daemon);
+    crate::device::workspaces::block_on_owned(async move {
+        starting
+            .apps()
+            .start_watched_window(&app, &workspace, None)
+            .await
+    })
+    .map_err(io::Error::other)?;
+    Ok(json!({"started": true}))
 }
 
 #[cfg(test)]

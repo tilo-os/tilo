@@ -461,12 +461,6 @@ impl Peer {
             }),
         )?;
         match answer.get("error").and_then(serde_json::Value::as_str) {
-            // The app is open already and its window cannot be brought forward: the loop has what
-            // it started for, and saying why is the whole of what is left to do about it.
-            Some(error) if error.contains("does not support activation") => {
-                eprintln!("==> {app} is open; its window cannot be brought forward");
-                Ok(())
-            }
             Some(error) => Err(format!("starting {app}: {error}")),
             None => Ok(()),
         }

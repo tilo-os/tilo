@@ -148,6 +148,119 @@ fn a_page_of_an_installed_app_is_drawn_by_its_own_window() {
     });
 }
 
+/// The apps a start opens: the sheets, and another with a window of its own.
+const SHEETS: &str = "so.tilo.sheets";
+const COUNTER: &str = "so.tilo.lang.counter";
+
+/// A second start of a tilolang app that is open brings its window forward: it answers the window
+/// the first start opened as activated, with no error, and starts no second writer.
+#[test]
+fn a_second_start_of_a_running_app_brings_its_window_forward() {
+    host::in_own_process_with(&["sheets", "counter"], |profile| {
+        let running = tilo_runtime::daemon::Running::start(profile).unwrap();
+        let native = running.native_socket().to_owned();
+        let ask = |request: serde_json::Value| {
+            use std::io::{BufRead as _, BufReader, Write as _};
+            let mut stream =
+                std::os::unix::net::UnixStream::connect(&native).expect("the daemon answers");
+            writeln!(stream, "{request}").expect("the request is written");
+            let mut line = String::new();
+            BufReader::new(stream).read_line(&mut line).unwrap();
+            line
+        };
+        // The person's first call founds their workspace, as their own client's does.
+        ask(serde_json::json!({"jsonrpc":"2.0","id":1,"method":"ping"}));
+        let status = ask(serde_json::json!({"native": "status"}));
+        let workspace = serde_json::from_str::<serde_json::Value>(&status).unwrap()["workspace"]
+            .as_str()
+            .expect("the person's workspace is founded")
+            .to_owned();
+        let start = |app: &str| {
+            let answered = ask(serde_json::json!({
+                "native": "launch",
+                "app_id": app,
+                "workspace": workspace,
+                "presentation": true,
+            }));
+            let answered: serde_json::Value =
+                serde_json::from_str(&answered).unwrap_or_else(|error| {
+                    panic!("{app}'s start answers a line ({error}): {answered}")
+                });
+            answered
+        };
+
+        // The first start shows the app's window on the person's layout.
+        assert_eq!(start(SHEETS), serde_json::json!({"started": true}));
+        let sheets = window_showing(&layout(&native, &workspace), SHEETS);
+        // A window of another app opens after it.
+        assert_eq!(start(COUNTER), serde_json::json!({"started": true}));
+        // A second start of the sheets brings the window it opened forward, and starts no
+        // second writer: it answers the same window as activated, and nothing fails.
+        assert_eq!(start(SHEETS), serde_json::json!({"activated": true}));
+        let after = layout(&native, &workspace);
+        assert_eq!(
+            window_showing(&after, SHEETS),
+            sheets,
+            "the window the first start opened stands"
+        );
+        assert_eq!(
+            after["windows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|window| window["app"] == SHEETS)
+                .count(),
+            1,
+            "one window of the sheets stands: {after}"
+        );
+    });
+}
+
+/// The person's layout of `workspace`, as their shell reads it: its windows, each by key with the
+/// app it shows, and the strips.
+fn layout(native: &std::path::Path, workspace: &str) -> serde_json::Value {
+    use tilo_action_services::LineClient;
+    use tilo_actions::InvocationId;
+    use tilo_actions::remote::{
+        ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
+        RemoteActionTarget,
+    };
+    let line = LineClient::connect(native).unwrap();
+    let caller = Caller::local_person(workspace);
+    let request = InvokeRequest {
+        invocation: InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: "so.tilo.layout".into(),
+            address: tilo_actions::ActionAddress::new("workspace:layout", "read"),
+        },
+        argument: InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: Some(5_000),
+        appearance: None,
+        signed: None,
+    };
+    let status = settled(line.invoke(&caller, request))
+        .expect("the layout answers")
+        .status;
+    match status {
+        ReceiptStatus::Completed { output } => output.value.expect("the layout reads as a value"),
+        other => panic!("the layout did not read: {other:?}"),
+    }
+}
+
+/// The key of the window `layout` has showing `app`.
+fn window_showing(layout: &serde_json::Value, app: &str) -> serde_json::Value {
+    layout["windows"]
+        .as_array()
+        .and_then(|windows| windows.iter().find(|window| window["app"] == app))
+        .and_then(|window| window["key"].as_str())
+        .map(|key| serde_json::json!(key))
+        .unwrap_or_else(|| panic!("the layout shows {app}: {layout}"))
+}
+
 /// What `answer` settles to, waited for as a page's session waits.
 fn settled<T>(answer: tilo_actions::remote::Pending<T>) -> T {
     answer

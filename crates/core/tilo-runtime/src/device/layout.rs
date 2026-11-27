@@ -253,6 +253,63 @@ impl DeviceLayouts {
         }
     }
 
+    /// Show the window of `app` that shows `document` on `workspace`'s layout as this device's
+    /// person's: a layout showing none gets one placed, and the window showing it comes forward.
+    /// Whether the layout showed it already.
+    ///
+    /// # Errors
+    /// The layout has no place for the window, or a write was refused.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "a tilolang app's window is the person's layout's on Linux alone: every \
+                      other platform launches a window process for it"
+        )
+    )]
+    pub(crate) fn show(
+        &self,
+        workspace: &str,
+        (app, title, document): (&str, &str, &str),
+    ) -> Result<bool, String> {
+        let person = self.device_person();
+        let showing = self.showing(workspace, app, document);
+        if showing.is_none() {
+            self.place(workspace, &person, (app, title, document), None)?;
+        }
+        if let Some(tab) = self.showing(workspace, app, document) {
+            self.activate(workspace, &person, tab)?;
+        }
+        Ok(showing.is_some())
+    }
+
+    /// The window `workspace`'s layout shows `app`'s `document` in, where this device has the
+    /// layout.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "used by [`Self::show`], which only a Linux launch asks"
+        )
+    )]
+    fn showing(&self, workspace: &str, app: &str, document: &str) -> Option<u64> {
+        let LayoutHere::Here(layout) = self.layout(workspace) else {
+            return None;
+        };
+        let desktop = tilo_desktop_model::shared_resource::read(&layout, None)?;
+        desktop
+            .records
+            .iter()
+            .find(|(tab, shown)| {
+                shown == document
+                    && desktop.tree.tab(*tab).is_some_and(|tab| {
+                        tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+                            .is_some_and(|shown| shown == app)
+                    })
+            })
+            .map(|(tab, _)| *tab)
+    }
+
     /// Close the window `tab` on `workspace`'s layout as `person` closes it, everywhere the layout
     /// is shown. A window closed already, or a layout this device does not have, is left as it is.
     ///

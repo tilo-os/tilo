@@ -1332,6 +1332,26 @@ impl Daemon {
         &self.apps
     }
 
+    /// Show the tilolang app `app`'s window on `workspace`'s layout of this device's person: a
+    /// layout showing none gets one placed, and the window showing it comes forward. Whether the
+    /// person's layout showed it already.
+    ///
+    /// # Errors
+    /// The layout has no place for the window, or its write was refused.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(
+            dead_code,
+            reason = "a tilolang app's window is the person's layout's on Linux alone: every \
+                      other platform launches a window process for it"
+        )
+    )]
+    pub(crate) fn show_app_window(&self, app: &str, workspace: &str) -> Result<bool, String> {
+        let title = self.apps.display_name(app);
+        super::layout::DeviceLayouts::new(Arc::clone(&self.workspaces))
+            .show(workspace, (app, &title, ""))
+    }
+
     /// A new shell link: a connection to this daemon's dispatch that it opens itself and admits as
     /// the shell of the person this device acts for, by a one-use secret no other process ever
     /// sees. Whoever holds it is the shell; hand it only to the shell this daemon starts.
