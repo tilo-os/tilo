@@ -498,19 +498,30 @@ mod protected_document_tests {
         assert!(requires_independent_document_keys("so.tilo.mail", ""));
         assert!(requires_independent_document_keys("dev.tilo.mail", ""));
         assert!(!requires_independent_document_keys("so.tilo.notes", ""));
-        let history = crate::workspace_document_id("terminal.history");
-        assert!(requires_independent_document_keys(
-            "so.tilo.terminal",
-            &history
-        ));
+        // A record of a sealed kind seals under any app's name: Mail's root is sealed, so its
+        // kind's record does, whichever app asks.
+        let mailbox = crate::workspace_document_id("tl.so.tilo.mail");
+        assert!(requires_independent_document_keys("so.tilo.mail", &mailbox));
         assert!(requires_independent_document_keys(
             "so.tilo.notes",
-            &history
+            &mailbox
         ));
-        assert!(!requires_independent_document_keys(
-            "so.tilo.terminal",
-            &crate::workspace_document_id("terminal.machine-secrets")
-        ));
+        // Terminal declares no sealed kind: its records are each author's by the readers rule
+        // their types name, so its name seals neither its history nor its machine secrets.
+        for kind in [
+            "tl.so.tilo.terminal.Terminal",
+            "tl.so.tilo.terminal.MachineSecrets",
+        ] {
+            let record = crate::workspace_document_id(kind);
+            assert!(!requires_independent_document_keys(
+                "so.tilo.terminal",
+                &record
+            ));
+            assert!(!requires_independent_document_keys(
+                "so.tilo.passwords",
+                &record
+            ));
+        }
     }
 }
 
