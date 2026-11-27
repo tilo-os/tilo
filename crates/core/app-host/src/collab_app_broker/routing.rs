@@ -13,6 +13,10 @@ pub(super) struct ContextSub {
     /// The apps installed here, by what each is called, this receiver was last told: it is sent
     /// the context again when one is installed, removed, or renamed.
     pub(super) apps: Vec<collab_types::history::NamedApp>,
+    /// What the workspace's `workspace/members` resource was read from when this receiver was
+    /// last told it moved ([`AppBrokerState::members_digest`]): it is told again only when that
+    /// changes, not on every re-check of its admission.
+    pub(super) members: Option<[u8; 32]>,
 }
 
 #[derive(Clone)]
@@ -376,6 +380,7 @@ impl AppBrokerState {
                     tx,
                     native,
                     apps,
+                    members: None,
                 });
         }
         // A window's app now holds this record: the device's daemon publishes it.
@@ -611,10 +616,11 @@ impl AppBrokerState {
         }
         Ok(())
     }
-    /// Tell one native context subscriber that its workspace's membership may have moved: who
-    /// the members are is its `workspace/members` resource, which the window reads again
-    /// through the store, and the names of the apps installed here are sent with it when one
-    /// was installed or removed since it was last told. Returns whether it heard something.
+    /// Tell one native context subscriber that its workspace's membership moved: who the
+    /// members are is its `workspace/members` resource, which the window reads again through the
+    /// store, so it is told only when what that resource is read from changed since it was last
+    /// told, and the names of the apps installed here are sent when one was installed or removed
+    /// since. Returns whether it heard something.
     pub(super) fn tell_context_subscriber(
         &self,
         channel: &str,
@@ -622,6 +628,7 @@ impl AppBrokerState {
         admitted: &AdmittedJoinIdentity,
     ) -> Result<bool, String> {
         let apps = self.installed_apps();
+        let members = self.members_digest(&CrdtRoute::from_channel_key(channel).cluster_id);
         let members_moved =
             ContextUpdate::RecordsMoved(vec![tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned()]);
         let mut channels = self
@@ -629,6 +636,7 @@ impl AppBrokerState {
             .lock()
             .map_err(|_| "native context subscriptions unavailable")?;
         let mut changed = false;
+        let mut gone = false;
         if let Some(subscribers) = channels.get_mut(channel) {
             subscribers.context.retain_mut(|subscriber| {
                 let Some(native) = subscriber.native.as_mut() else {
@@ -637,10 +645,14 @@ impl AppBrokerState {
                 if subscriber.peer_id != peer_id || native.admitted != *admitted {
                     return true;
                 }
-                if subscriber.tx.send(members_moved.clone()).is_err() {
-                    return false;
+                if members.is_none() || subscriber.members != members {
+                    if subscriber.tx.send(members_moved.clone()).is_err() {
+                        gone = true;
+                        return false;
+                    }
+                    subscriber.members = members;
+                    changed = true;
                 }
-                changed = true;
                 if subscriber.apps == apps {
                     return true;
                 }
@@ -652,19 +664,52 @@ impl AppBrokerState {
                     })
                     .is_err()
                 {
+                    gone = true;
                     return false;
                 }
                 subscriber.apps.clone_from(&apps);
+                changed = true;
                 true
             });
         }
         drop(channels);
         // A subscriber that could not be told went away: what the windows here
         // hold is the daemon's to publish again.
-        if changed {
+        if gone {
             self.windows_changed();
         }
         Ok(changed)
+    }
+    /// A digest of what `workspace`'s `workspace/members` resource is read from, as this host's
+    /// authority holds it now: its policy, the people and members its governance names, and the
+    /// agents its record lists. `None` when it cannot be read, which tells every receiver.
+    pub(super) fn members_digest(&self, workspace: &str) -> Option<[u8; 32]> {
+        let membership = self.membership.as_ref()?;
+        let mut hasher = blake3::Hasher::new();
+        membership
+            .decide_in_workspace(workspace, |held| {
+                let held = held?;
+                let governance = (&held.policy, &held.people_names, &held.members);
+                hasher.update(&postcard::to_stdvec(&governance).ok()?);
+                Some(())
+            })
+            .ok()??;
+        for agent in self
+            .services
+            .agents
+            .as_deref()
+            .map(|roster| roster.listed(workspace))
+            .unwrap_or_default()
+        {
+            for field in [&agent.id, &agent.name, &agent.acts_for] {
+                hasher.update(&(field.len() as u64).to_le_bytes());
+                hasher.update(field.as_bytes());
+            }
+            let avatar = agent.avatar.as_deref().unwrap_or_default();
+            hasher.update(&(avatar.len() as u64).to_le_bytes());
+            hasher.update(avatar.as_bytes());
+        }
+        Some(*hasher.finalize().as_bytes())
     }
     /// Re-check every membership surface and native context subscriber,
     /// and register with

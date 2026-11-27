@@ -197,16 +197,17 @@ async fn a_native_context_subscriber_is_told_where_the_members_are() {
     tree.workspaces.push(workspace);
     let route = CrdtRoute::record("so.tilo.chat", &workspace_id, "main");
     let admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
+    let tree = tree.shared();
     let fanout = Arc::new(FanoutState::new());
     let (state, _bridge_rx) = AppBrokerState::new_configured(
         &fanout,
         Arc::new(Mutex::new(BrokerChannels::default())),
         PeerPublisher::disabled(),
-        Some(tree.shared().authority()),
+        Some(tree.authority()),
         None,
         None,
         ProcessServices {
-            workspace_memberships: Some(Arc::new(NativeWorkspace(workspace_id))),
+            workspace_memberships: Some(Arc::new(NativeWorkspace(workspace_id.clone()))),
             ..Default::default()
         },
     );
@@ -235,6 +236,29 @@ async fn a_native_context_subscriber_is_told_where_the_members_are() {
         stream.try_recv().unwrap(),
         ContextUpdate::RecordsMoved(vec![tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned()]),
         "the window is told where the members are, not who they are"
+    );
+    state.refresh_workspace_context_services().unwrap();
+    assert!(
+        stream.try_recv().is_err(),
+        "re-checked with nothing of its members changed, the window is not told again"
+    );
+    tree.write().workspaces[0]
+        .policy
+        .grant(tilo_action_policy::Grant::new(
+            "guest-reads",
+            tilo_action_policy::Grantee::person("guest"),
+            tilo_action_policy::TreePath::workspace(&workspace_id),
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(person_id_for_root(
+                root.verifying_key().to_bytes(),
+            )),
+        ));
+    state.refresh_workspace_context_services().unwrap();
+    assert_eq!(
+        stream.try_recv().unwrap(),
+        ContextUpdate::RecordsMoved(vec![tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned()]),
+        "a grant changes who is there: the window reads its members again"
     );
     {
         let mut channels = state.channels.lock().unwrap();
