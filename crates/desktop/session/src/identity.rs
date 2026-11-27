@@ -188,6 +188,10 @@ pub fn own_ids(options: &crate::Options) -> (String, Option<String>) {
 /// from before the workers' first read: the first read is this one, on this thread, with the
 /// watches already armed.
 pub fn install() {
+    // The name this host knows whoever is at it by, which the roster shows on the person's own row
+    // and asks for on every pass: the account database can be a network service, so it is read
+    // here, once, before the loop starts.
+    let _ = tilo_identity::provisioning::login_account_display_name();
     match tilo_identity::store::IdentityRegistryStore::from_env() {
         Ok(store) => {
             if let Err(error) = store.load_reconciled_prompt() {

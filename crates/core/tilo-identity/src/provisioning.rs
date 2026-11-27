@@ -87,9 +87,15 @@ fn identity_load_error(error: tilo_identity_client::NotAvailable) -> io::Error {
 
 /// Human-facing name of the Unix account running this process
 /// ([`account_display_name`]).
+///
+/// The account database can be a network service, and asking it waits on that service. The name
+/// is one for the life of the process, so it is read once and kept; a host reads it before its
+/// loop starts, and a loop that asks for the person's own row then waits on nothing.
 #[cfg(unix)]
 pub fn login_account_display_name() -> String {
-    account_display_name(rustix::process::geteuid().as_raw())
+    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| account_display_name(rustix::process::geteuid().as_raw()))
+        .clone()
 }
 
 /// Human-facing name of the Unix account `uid`: its full name (the first
