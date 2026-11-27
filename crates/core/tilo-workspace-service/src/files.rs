@@ -90,6 +90,8 @@ pub async fn start(
         peer: backend.copy,
         content: store,
         wakes: backend.wakes,
+        kept: None,
+        fill: None,
     })
     .await
 }

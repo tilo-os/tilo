@@ -9,6 +9,7 @@ use super::{
 /// The native backend is Linux's: other platforms serve the mount through FUSE.
 #[cfg(target_os = "linux")]
 use super::{native_config, run_native};
+use tilo_lock::MutexRecover as _;
 
 /// FUSE worker threads: `TILO_FS_FUSE_THREADS` when set, else one per CPU between 2 and 16.
 fn fuse_worker_threads() -> usize {
@@ -30,8 +31,9 @@ pub(super) struct MountConfig {
     pub(super) workspace_id: uuid::Uuid,
     pub(super) mount_point: PathBuf,
     /// The tree's documents kept on disk, if anywhere: every change is journaled there before
-    /// the request that made it is answered.
-    pub(super) kept: Option<Arc<KeptTree>>,
+    /// the request that made it is answered. A mount whose workspace is named after it stands
+    /// holds the slot empty until the tree opens, and journals from then on.
+    pub(super) kept: Option<KeptSlot>,
     /// Makes what the mount has already done durable before it stops, so nothing it answered is
     /// lost by the stop itself.
     pub(super) shutdown: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -41,6 +43,11 @@ pub(super) struct MountConfig {
     pub(super) read_only: bool,
     pub(super) backend: Option<(BackendArgs, [u8; 32])>,
 }
+
+/// Where a mount's kept tree is, once the workspace it serves is known: the mount stands before
+/// the session names the workspace, and its changes are journaled into the tree's documents from
+/// the moment it opens.
+pub(super) type KeptSlot = Arc<Mutex<Option<Arc<KeptTree>>>>;
 
 pub(super) struct MountServices {
     pub(super) namespace: Arc<Mutex<Namespace>>,
@@ -265,9 +272,14 @@ pub(super) async fn run_mount(
     // made it is answered, so a process killed at any instant starts again holding every change
     // it answered for. The journal reads the change under the namespace's lock and writes it
     // after letting that go, so a read of settled content never waits for the write.
-    let journal: Option<tilo_fs::fs::ChangeJournal> = kept.clone().map(|kept| {
-        Arc::new(move |namespace: &Mutex<Namespace>| kept.journal(namespace))
-            as tilo_fs::fs::ChangeJournal
+    let journal: Option<tilo_fs::fs::ChangeJournal> = kept.as_ref().map(|kept| {
+        let kept = Arc::clone(kept);
+        Arc::new(
+            move |namespace: &Mutex<Namespace>| match kept.lock_recover().as_ref() {
+                Some(kept) => kept.journal(namespace),
+                None => Ok(()),
+            },
+        ) as tilo_fs::fs::ChangeJournal
     });
     let fs = match journal.clone() {
         Some(journal) => fs.with_change_journal(journal),
@@ -281,8 +293,13 @@ pub(super) async fn run_mount(
     if std::env::var("TILO_FS_CONTENT_WINDOW").as_deref() != Ok("0") {
         fs.sync_on_window(
             Arc::clone(&content),
-            kept.clone()
-                .map(|kept| Arc::new(move || kept.sync()) as tilo_fs::fs::DurabilityHook),
+            kept.as_ref().map(|kept| {
+                let kept = Arc::clone(kept);
+                Arc::new(move || match kept.lock_recover().as_ref() {
+                    Some(kept) => kept.sync(),
+                    None => Ok(()),
+                }) as tilo_fs::fs::DurabilityHook
+            }),
         );
     }
     #[cfg(target_os = "linux")]

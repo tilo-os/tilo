@@ -15,7 +15,7 @@ use tilo_session_client::device_records::DeviceRecords;
 
 /// The device record what this device shows is kept in.
 #[cfg(target_os = "linux")]
-const KEPT: &str = "so.tilo.session-shown";
+const KEPT: &str = tilo_session_client::device_records::SHOWN;
 
 /// What this device shows of the session.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

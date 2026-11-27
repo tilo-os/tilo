@@ -84,8 +84,24 @@ impl KeptDocuments {
     /// The directory or a document in it cannot be read.
     pub fn open(dir: &Path) -> io::Result<(Self, Documents)> {
         std::fs::create_dir_all(dir)?;
+        let kept = Self {
+            dir: dir.to_path_buf(),
+            heads: Mutex::default(),
+            keep: Mutex::default(),
+            unsynced: AtomicBool::new(true),
+        };
+        let documents = kept.documents()?;
+        Ok((kept, documents))
+    }
+
+    /// The documents kept here now, as [`Self::open`] answers them: for a tree that opens on what
+    /// a mount already keeps here.
+    ///
+    /// # Errors
+    /// A document cannot be read.
+    pub fn documents(&self) -> io::Result<Documents> {
         let mut chunks = std::collections::BTreeSet::new();
-        for entry in std::fs::read_dir(dir)? {
+        for entry in std::fs::read_dir(&self.dir)? {
             let path = entry?.path();
             if let Some(chunk) = path
                 .file_name()
@@ -99,21 +115,13 @@ impl KeptDocuments {
         }
         let mut documents = Vec::new();
         for chunk in chunks {
-            let mut bytes = read_or_none(&file(dir, chunk, SAVED))?;
+            let mut bytes = read_or_none(&file(&self.dir, chunk, SAVED))?;
             for kind in [SET_ASIDE, JOURNAL] {
-                bytes.extend(frames(&read_or_none(&file(dir, chunk, kind))?));
+                bytes.extend(frames(&read_or_none(&file(&self.dir, chunk, kind))?));
             }
             documents.push((chunk, bytes));
         }
-        Ok((
-            Self {
-                dir: dir.to_path_buf(),
-                heads: Mutex::default(),
-                keep: Mutex::default(),
-                unsynced: AtomicBool::new(true),
-            },
-            documents,
-        ))
+        Ok(documents)
     }
 
     /// The documents [`Self::open`] answered, saves alone: what a namespace opens from when a

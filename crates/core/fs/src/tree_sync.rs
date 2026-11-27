@@ -382,6 +382,13 @@ pub struct Config {
     pub content: Option<Arc<crate::ContentStore>>,
     /// The wakes the peer sends, from [`TreeSync::wake`]'s waits.
     pub wakes: tokio::sync::mpsc::UnboundedReceiver<Wake>,
+    /// The documents already kept where this tree is kept: opened here instead of [`Self::kept_at`]
+    /// when a mount keeps them and shares this tree's namespace.
+    pub kept: Option<Arc<crate::kept_documents::KeptDocuments>>,
+    /// The namespace to open this tree in: a mount whose root stands before the workspace it
+    /// serves is known. The tree's documents replace what it holds, and the mount and the sync
+    /// share it from then on.
+    pub fill: Option<Arc<Mutex<Namespace>>>,
 }
 
 /// Where a tree's sync stands, and its changes: what a status reader follows instead of asking
@@ -488,6 +495,10 @@ impl TreeSync {
     ///
     /// # Errors
     /// The kept namespace cannot be read.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the kept namespace, its index and the sync that holds it open in one order"
+    )]
     pub async fn start(config: Config) -> std::io::Result<Self> {
         let Config {
             workspace,
@@ -499,6 +510,8 @@ impl TreeSync {
             peer,
             content,
             wakes,
+            kept: kept_before,
+            fill,
         } = config;
         // The mount of the person's certified device holds this workspace's tree: every document
         // it publishes starts from the founding every copy of the record derives, and names the
@@ -513,9 +526,22 @@ impl TreeSync {
         // it serves, wait for one — for as long as a repository's tree takes, so it goes to a
         // thread of the blocking pool instead.
         let (kept, namespace, records) = tokio::task::spawn_blocking(move || {
-            let (kept, documents) = KeptDocuments::open(&kept_at)?;
-            let (mut namespace, read) = open_namespace(&mount, &kept, documents)?;
-            kept.opened(&mut namespace, read)?;
+            let (kept, documents) = if let Some(kept) = kept_before {
+                let documents = kept.documents()?;
+                (kept, documents)
+            } else {
+                let (kept, documents) = KeptDocuments::open(&kept_at)?;
+                (Arc::new(kept), documents)
+            };
+            let (opened, read) = open_namespace(&mount, &kept, documents)?;
+            let namespace = match fill {
+                Some(fill) => {
+                    *fill.lock_recover() = opened;
+                    fill
+                }
+                None => Arc::new(Mutex::new(opened)),
+            };
+            kept.opened(&mut namespace.lock_recover(), read)?;
             // Where each record stood at the workspace when this device last merged it. A
             // record file that does not read is no record: the pass reads the record whole
             // again, which is what every start did before it was kept.
@@ -523,11 +549,10 @@ impl TreeSync {
                 tracing::warn!(%error, "where the tree's records stood does not read; each is read whole again");
                 BTreeMap::new()
             });
-            Ok::<_, std::io::Error>((Arc::new(kept), namespace, records))
+            Ok::<_, std::io::Error>((kept, namespace, records))
         })
         .await
         .map_err(std::io::Error::other)??;
-        let namespace = Arc::new(Mutex::new(namespace));
         let status = Arc::new(Shown::new());
         let paused = Arc::new(AtomicBool::new(false));
         let stopping = Arc::new(AtomicBool::new(false));
@@ -2110,6 +2135,8 @@ mod tests {
             peer: workspace,
             content: None,
             wakes,
+            kept: None,
+            fill: None,
         })
         .await
         .unwrap();
@@ -2153,6 +2180,8 @@ mod tests {
                     .unwrap(),
             )),
             wakes,
+            kept: None,
+            fill: None,
         })
         .await
         .unwrap();

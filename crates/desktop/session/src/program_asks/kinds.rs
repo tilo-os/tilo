@@ -327,7 +327,11 @@ fn bindings_answer(bindings: &[Binding], typed: &[Zeroizing<String>]) -> Answer 
 
 /// What `question` shows the person and what its answer means, `retry` saying why the last
 /// answer to it reached nothing; `None` for a kind nobody asks a person.
-pub(crate) fn put(question: &Question, retry: Option<Retry>) -> Option<Put> {
+pub(crate) fn put(
+    question: &Question,
+    retry: Option<Retry>,
+    workspace: Option<&str>,
+) -> Option<Put> {
     if question.kind == tilo_bluetooth_agent::KIND
         && let Some(shown) = code_on_show(question.details.clone())
     {
@@ -353,7 +357,7 @@ pub(crate) fn put(question: &Question, retry: Option<Retry>) -> Option<Put> {
         tilo_portal::global_shortcuts::SHORTCUTS_QUESTION => shortcuts(&who, details)?,
         tilo_portal::screencast::SCREENCAST_QUESTION => share(&who, details, false)?,
         tilo_portal::remote_desktop::REMOTE_DESKTOP_QUESTION => share(&who, details, true)?,
-        tilo_portal::file_chooser::FILE_CHOOSER_QUESTION => files(&who, details)?,
+        tilo_portal::file_chooser::FILE_CHOOSER_QUESTION => files(&who, details, workspace)?,
         tilo_polkit_agent::questions::KIND => authentication(details)?,
         NETWORK_KIND => network_secrets(details)?,
         CANNOT_JOIN_KIND => cannot_join(details)?,
@@ -1044,7 +1048,7 @@ fn source_label(source: &OfferedSource) -> String {
 }
 
 /// The file chooser: the files or the place, picked on the device that asked.
-fn files(who: &str, details: Value) -> Kind {
+fn files(who: &str, details: Value, workspace: Option<&str>) -> Kind {
     let asked: FileChooserQuestion = serde_json::from_value(details).ok()?;
     let title = if asked.title.is_empty() {
         words("portal-files-title", &[("app", who)])
@@ -1079,9 +1083,25 @@ fn files(who: &str, details: Value) -> Kind {
             })
             .collect(),
         name: asked.current_name.clone(),
-        folder: tilo_paths::home().map(|home| home.display().to_string()),
+        folder: files_folder(workspace),
     });
     Some((facts, Reply::Files))
+}
+
+/// The folder a files question opens in: the workspace's own folder in the mount this device
+/// serves its files at, and the person's home where it serves none. A file written there is the
+/// workspace's, which is the one the app asks it for.
+fn files_folder(workspace: Option<&str>) -> Option<String> {
+    workspace
+        .and_then(|workspace| {
+            tilo_app_launch::downloaded::workspace_roots()
+                .into_iter()
+                .find_map(|root| {
+                    tilo_paths::workspace_tree(&root, workspace).filter(|folder| folder.is_dir())
+                })
+        })
+        .map(|folder| folder.display().to_string())
+        .or_else(|| tilo_paths::home().map(|home| home.display().to_string()))
 }
 
 /// The administrator's password, which reaches polkit's helper and nothing else.

@@ -219,7 +219,22 @@ impl ProgramAsks {
     fn raise(&self, dispatch: &Dispatch, question: Question, retry: Option<Retry>) {
         let handle = question.handle.clone();
         self.withdraw(dispatch, &handle);
-        let raised = match kinds::put(&question, retry) {
+        // The call is the person's in the question's workspace: an asked record is kept by a
+        // workspace, and the device answers no call that names none. A question about files
+        // opens in that workspace's folder.
+        let Some(workspace) = self
+            .questions
+            .workspace_of(&handle)
+            .or_else(|| self.inner.in_front.lock_recover().clone())
+        else {
+            // It waits unraised until a workspace is in front ([`Self::in_front`]).
+            tracing::debug!(
+                kind = question.kind,
+                "a program's question waits for a workspace"
+            );
+            return;
+        };
+        let raised = match kinds::put(&question, retry, Some(&workspace)) {
             Some(Put::Ask(raised)) => raised,
             Some(Put::Shown(shown)) => {
                 self.inner
@@ -237,20 +252,6 @@ impl ProgramAsks {
                 self.questions.decline(&handle);
                 return;
             }
-        };
-        // The call is the person's in the question's workspace: an asked record is kept by a
-        // workspace, and the device answers no call that names none.
-        let Some(workspace) = self
-            .questions
-            .workspace_of(&handle)
-            .or_else(|| self.inner.in_front.lock_recover().clone())
-        else {
-            // It waits unraised until a workspace is in front ([`Self::in_front`]).
-            tracing::debug!(
-                kind = question.kind,
-                "a program's question waits for a workspace"
-            );
-            return;
         };
         let dispatch = Dispatch {
             actions: Arc::clone(&dispatch.actions),

@@ -49,6 +49,9 @@ pub struct Offers {
     /// The capability list (JSON) the mounts enforce, as the workspaces' member lists and the
     /// shell's grants decide it now; `None` until decided.
     pub access: watch::Receiver<Option<String>>,
+    /// The workspace this device's session shows, as its device keeps it: the mount serves this
+    /// one's files. `None` until a session shows one.
+    pub shown: watch::Receiver<Option<String>>,
 }
 
 /// How long a want of the workspace waits for its bytes.
@@ -237,7 +240,27 @@ async fn serve_one(
         sending,
         lender,
     } = wire;
-    let hello = asks.recv().await.transpose()?;
+    // Which workspace this device's session shows is asked before the tree is named: the daemon
+    // mounts that one, and cannot know it from the account alone. A session that shows none yet
+    // is told the one it shows as soon as it does, before the tree is named.
+    let mut watching = offers.shown.clone();
+    watching.mark_changed();
+    let mut updates = watching.clone();
+    let hello = loop {
+        tokio::select! {
+            changed = updates.changed() => {
+                if changed.is_ok() {
+                    let _ = tell.send(Told::Shown(watching.borrow_and_update().clone()));
+                }
+            }
+            ask = asks.recv() => match ask.transpose()? {
+                Some(Ask::Shown) => {
+                    let _ = tell.send(Told::Shown(watching.borrow_and_update().clone()));
+                }
+                ask => break ask,
+            },
+        }
+    };
     let admitted = admit(own, pid, hello, service, attest);
     let (workspaces, workspace) = match admitted {
         Ok(admitted) => admitted,
@@ -270,6 +293,7 @@ async fn serve_one(
         source: Arc::new(source),
         keys: offers.keys,
         folders: folders.clone(),
+        shown: offers.shown,
     }
     .run(asks, wakes, offers.access)
     .await;
@@ -355,6 +379,8 @@ struct Connection {
     source: Arc<super::WorkspaceSource>,
     keys: Keys,
     folders: super::Folders,
+    /// The workspace this device's session shows, told to the mount as it changes.
+    shown: watch::Receiver<Option<String>>,
 }
 
 impl Connection {
@@ -367,11 +393,25 @@ impl Connection {
         mut access: watch::Receiver<Option<String>>,
     ) -> Result<(), String> {
         let mut look = tokio::time::interval(PEER_EVERY);
-        // What the mount enforces goes first, before anything of the tree.
+        // What the mount enforces goes first, before anything of the tree, and the workspace
+        // the session shows with it.
         access.mark_changed();
+        let mut shown = self.shown.clone();
+        shown.mark_changed();
         let mut deciding = true;
+        let mut showing = true;
         loop {
             tokio::select! {
+                changed = shown.changed(), if showing => {
+                    if changed.is_err() {
+                        showing = false;
+                        continue;
+                    }
+                    let now = shown.borrow_and_update().clone();
+                    if self.tell.send(Told::Shown(now)).is_err() {
+                        return Ok(());
+                    }
+                }
                 changed = access.changed(), if deciding => {
                     if changed.is_err() {
                         // Nothing decides any more: the mount keeps what it was told last.
@@ -443,6 +483,9 @@ impl Connection {
     fn take(&self, ask: Ask) -> Result<(), String> {
         match ask {
             Ask::Hello { .. } => return Err("a connection names its workspace once".to_owned()),
+            Ask::Shown => {
+                let _ = self.tell.send(Told::Shown(self.shown.borrow().clone()));
+            }
             Ask::Open(chunk) => {
                 self.name(chunk);
                 self.copy.open(chunk);

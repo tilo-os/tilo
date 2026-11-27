@@ -77,6 +77,9 @@ pub enum Ask {
     /// Where the folder stands now, which the session shows: said when it changes, and on each
     /// connection.
     Status(super::Status),
+    /// Which workspace this device's session shows: the one whose files its mount serves. Asked
+    /// before the first [`Ask::Hello`], and told again whenever the session shows another.
+    Shown,
 }
 
 /// What the session tells the daemon.
@@ -130,6 +133,9 @@ pub enum Told {
     Keep {
         bytes: Vec<u8>,
     },
+    /// The workspace this device's session shows, as its daemon keeps it: the mount serves this
+    /// one's files, and opens its tree once it is named.
+    Shown(Option<String>),
 }
 
 /// Hold `workspace`'s tree, kept in `kept_at` between runs, as the device whose key is `device`
@@ -146,8 +152,24 @@ pub async fn start(
     content: Arc<crate::ContentStore>,
     path: PathBuf,
 ) -> std::io::Result<(TreeSync, Service)> {
+    let service = link(socket, (device, person), content);
+    let tree = service.attach(workspace, kept_at, None, None, path).await?;
+    Ok((tree, service))
+}
+
+/// Dial the device daemon at `socket` as the device whose key is `device` (of person `person`),
+/// and keep the connection up: what the session says of this device's workspaces reaches the
+/// [`Service`] from now on, and a tree opens on it with [`Service::attach`] once the workspace
+/// this device's session shows is named. Its file bytes are kept in `content`.
+#[must_use]
+pub fn link(
+    socket: PathBuf,
+    (device, person): ([u8; 32], [u8; 32]),
+    content: Arc<crate::ContentStore>,
+) -> Service {
     let link = Arc::new(Link {
-        workspace: workspace.clone(),
+        workspace: Mutex::new(None),
+        chosen: tokio::sync::Notify::new(),
         out: Mutex::new(None),
         waiting: Mutex::new(BTreeMap::new()),
         next: AtomicU64::new(0),
@@ -155,23 +177,17 @@ pub async fn start(
         store: Arc::clone(&content),
         access: tokio::sync::watch::channel(None).0,
         shown: Mutex::new(None),
+        shown_workspace: tokio::sync::watch::channel(None).0,
     });
     let (wakes, wake_events) = mpsc::unbounded_channel();
     tokio::spawn(keep_linked(Arc::clone(&link), socket, wakes));
-    let tree = TreeSync::start(Config {
-        workspace,
+    Service {
+        link,
+        wake_events: Arc::new(Mutex::new(Some(wake_events))),
         device,
         person,
-        kept_at,
-        documents: Arc::new(Remote(Arc::clone(&link))),
-        writer: Box::new(Remote(Arc::clone(&link))),
-        peer: Arc::new(Remote(Arc::clone(&link))),
-        content: Some(content),
-        wakes: wake_events,
-    })
-    .await?;
-    tokio::spawn(tell_status(Arc::clone(&link), tree.status_changes(), path));
-    Ok((tree, Service(link)))
+        content,
+    }
 }
 
 /// Tell the session where the folder stands each time that changes, until the sync is gone: with
@@ -198,13 +214,73 @@ async fn tell_status(
 
 /// What the session's connection carries beside the tree: file bytes, keys and access.
 #[derive(Clone)]
-pub struct Service(Arc<Link>);
+pub struct Service {
+    link: Arc<Link>,
+    /// The wakes the attached tree takes, once one is.
+    wake_events: Arc<Mutex<Option<mpsc::UnboundedReceiver<Wake>>>>,
+    device: [u8; 32],
+    person: [u8; 32],
+    content: Arc<crate::ContentStore>,
+}
 
 impl Service {
+    /// Open the tree of `workspace`, kept in `kept_at` (or in `kept` when a mount keeps it
+    /// already), on this service's connection: [`start`] for a tree whose workspace is known
+    /// before it is dialed.
+    ///
+    /// `fill`, when named, is the namespace a mount serves before the workspace is known: the
+    /// tree's documents replace what it holds, and the mount and the sync share it from then on.
+    ///
+    /// # Errors
+    /// The kept namespace cannot be read, or the tree was attached already.
+    pub async fn attach(
+        &self,
+        workspace: String,
+        kept_at: PathBuf,
+        fill: Option<Arc<Mutex<crate::namespace::Namespace>>>,
+        kept: Option<Arc<crate::kept_documents::KeptDocuments>>,
+        path: PathBuf,
+    ) -> std::io::Result<TreeSync> {
+        *self.link.workspace.lock_recover() = Some(workspace.clone());
+        self.link.chosen.notify_waiters();
+        let wake_events = self
+            .wake_events
+            .lock_recover()
+            .take()
+            .ok_or_else(|| std::io::Error::other("this session's tree was attached already"))?;
+        let tree = TreeSync::start(Config {
+            workspace,
+            device: self.device,
+            person: self.person,
+            kept_at,
+            documents: Arc::new(Remote(Arc::clone(&self.link))),
+            writer: Box::new(Remote(Arc::clone(&self.link))),
+            peer: Arc::new(Remote(Arc::clone(&self.link))),
+            content: Some(Arc::clone(&self.content)),
+            wakes: wake_events,
+            kept,
+            fill,
+        })
+        .await?;
+        tokio::spawn(tell_status(
+            Arc::clone(&self.link),
+            tree.status_changes(),
+            path,
+        ));
+        Ok(tree)
+    }
+
+    /// The workspace this device's session shows, as its daemon said last: `None` until it says
+    /// one, and each change after.
+    #[must_use]
+    pub fn shown(&self) -> tokio::sync::watch::Receiver<Option<String>> {
+        self.link.shown_workspace.subscribe()
+    }
+
     /// The workspace as the source of the bytes this device lacks.
     #[must_use]
     pub fn source(&self) -> Arc<dyn crate::hydration::ContentSource> {
-        Arc::new(Remote(Arc::clone(&self.0)))
+        Arc::new(Remote(Arc::clone(&self.link)))
     }
 
     /// The content keys of `workspace`'s tree, as the session hands them to this Files endpoint.
@@ -216,7 +292,7 @@ impl Service {
         workspace: collab_types::WorkspaceId,
     ) -> anyhow::Result<key_group::ContentKeys> {
         let told = self
-            .0
+            .link
             .ask(|id| Ask::Keys {
                 id,
                 workspace: workspace.to_string(),
@@ -238,7 +314,7 @@ impl Service {
     /// one on this run.
     #[must_use]
     pub fn access(&self) -> tokio::sync::watch::Receiver<Option<String>> {
-        self.0.access.subscribe()
+        self.link.access.subscribe()
     }
 }
 
@@ -257,7 +333,11 @@ struct PeerState {
 
 /// The connection to the session, while there is one.
 struct Link {
-    workspace: String,
+    /// The workspace whose tree this connection syncs, once it is known: a mount whose session
+    /// shows none yet waits for one.
+    workspace: Mutex<Option<String>>,
+    /// Told when a workspace is named, so a connection waiting to say [`Ask::Hello`] says it.
+    chosen: tokio::sync::Notify,
     out: Mutex<Option<mpsc::UnboundedSender<Ask>>>,
     waiting: Mutex<BTreeMap<u64, oneshot::Sender<Told>>>,
     next: AtomicU64,
@@ -268,12 +348,23 @@ struct Link {
     access: tokio::sync::watch::Sender<Option<String>>,
     /// Where the folder stood when it last said: what a new connection says first.
     shown: Mutex<Option<Status>>,
+    /// The workspace this device's session shows, as its daemon said last.
+    shown_workspace: tokio::sync::watch::Sender<Option<String>>,
 }
 
 /// What a sync is told when the session is not reachable.
 const UNREACHABLE: &str = "the session serving this device's workspaces is not reachable";
 
 impl Link {
+    /// The workspace this connection syncs, for a log line: the one named once the session's
+    /// is known.
+    fn named(&self) -> String {
+        self.workspace
+            .lock_recover()
+            .clone()
+            .unwrap_or_else(|| "no workspace yet".to_owned())
+    }
+
     fn send(&self, ask: Ask) -> bool {
         self.out
             .lock_recover()
@@ -324,6 +415,10 @@ impl Link {
             Told::Wake(_) => return Ok(true),
             Told::Access(capabilities) => {
                 self.access.send_replace(Some(capabilities.clone()));
+                return Ok(true);
+            }
+            Told::Shown(workspace) => {
+                self.shown_workspace.send_replace(workspace.clone());
                 return Ok(true);
             }
             Told::Lend { id, hash } => {
@@ -408,11 +503,11 @@ async fn keep_linked(link: Arc<Link>, socket: PathBuf, wakes: mpsc::UnboundedSen
     let _watching = match watching {
         Some(Ok(watching)) => watching,
         Some(Err(error)) => {
-            tracing::error!(workspace = link.workspace, %error, socket = %socket.display(), "the files daemon cannot follow the device daemon's socket: its tree syncs with nothing until it starts again");
+            tracing::error!(workspace = link.named(), %error, socket = %socket.display(), "the files daemon cannot follow the device daemon's socket: its tree syncs with nothing until it starts again");
             return;
         }
         None => {
-            tracing::error!(workspace = link.workspace, socket = %socket.display(), "the device daemon's socket names no directory");
+            tracing::error!(workspace = link.named(), socket = %socket.display(), "the device daemon's socket names no directory");
             return;
         }
     };
@@ -430,7 +525,7 @@ async fn keep_linked(link: Arc<Link>, socket: PathBuf, wakes: mpsc::UnboundedSen
         if let Err(error) = ended
             && said.as_ref() != Some(&error)
         {
-            tracing::warn!(workspace = link.workspace, %error, "the workspace's tree does not reach the device daemon; it is dialed again once the daemon binds its socket");
+            tracing::warn!(workspace = link.named(), %error, "the workspace's tree does not reach the device daemon; it is dialed again once the daemon binds its socket");
             said = Some(error);
         }
         tokio::select! {
@@ -460,16 +555,41 @@ async fn linked_once(
     let stream = tilo_files::native::socket::connect(socket)
         .and_then(tilo_files::native::socket::tokio::from_std)
         .map_err(|error| format!("connect to {}: {error}", socket.display()))?;
-    let (mut reader, mut writer) = tokio::io::split(stream);
+    let (reader, mut writer) = tokio::io::split(stream);
+    // The frames are read on a task of their own, each whole: a read dropped between a frame's
+    // length and its body while the sender waits for a workspace, or for an answer, would leave
+    // the stream reading an answer as a length.
+    let mut reading = {
+        let (link, wakes) = (Arc::clone(link), mpsc::UnboundedSender::clone(wakes));
+        tokio::spawn(async move { read_tolds(reader, &link, &wakes).await })
+    };
+    // Which workspace this device's session shows comes first: the daemon keeps it, and the
+    // tree this mount serves can only be opened once the session said one.
     FRAMING
-        .write_value_async(
-            &mut writer,
-            &Ask::Hello {
-                workspace: link.workspace.clone(),
-            },
-        )
+        .write_value_async(&mut writer, &Ask::Shown)
         .await
         .map_err(|error| error.to_string())?;
+    loop {
+        // Registered before the workspace is read, so a workspace named as the connection
+        // starts is never missed between the check and the wait.
+        let chosen = link.chosen.notified();
+        tokio::pin!(chosen);
+        let named = link.workspace.lock_recover().clone();
+        if let Some(workspace) = named {
+            FRAMING
+                .write_value_async(&mut writer, &Ask::Hello { workspace })
+                .await
+                .map_err(|error| error.to_string())?;
+            break;
+        }
+        tokio::select! {
+            () = &mut chosen => {}
+            read = &mut reading => {
+                read.map_err(|error| error.to_string())??;
+                return Ok(());
+            }
+        }
+    }
     let (out, mut outgoing) = mpsc::unbounded_channel();
     let shown = link.shown.lock_recover().clone();
     if let Some(shown) = shown {
@@ -487,33 +607,43 @@ async fn linked_once(
         }
         Ok(())
     };
-    let receive = async {
-        loop {
-            let told = FRAMING
-                .read_value_async::<_, Told>(&mut reader)
-                .await
-                .map_err(|error| error.to_string())?;
-            let Some(told) = told else {
-                return Err("the session closed the connection".to_owned());
-            };
-            if let Told::Wake(wake) = told {
-                if let Wake::Opened { chunk, answer } = &wake {
-                    link.state
-                        .lock_recover()
-                        .answers
-                        .insert(*chunk, Some(*answer));
-                }
-                if wakes.send(wake).is_err() {
-                    return Ok(());
-                }
-            } else if !link.take(told, wakes)? {
-                return Ok(());
-            }
-        }
-    };
     tokio::select! {
         sent = sending => sent,
-        received = receive => received,
+        read = &mut reading => read.map_err(|error| error.to_string())?,
+    }
+}
+
+/// Take every answer the session sends on `reader` until the connection ends: each frame whole,
+/// on a task of its own.
+async fn read_tolds(
+    mut reader: tokio::io::ReadHalf<tilo_files::native::socket::tokio::Stream>,
+    link: &Arc<Link>,
+    wakes: &mpsc::UnboundedSender<Wake>,
+) -> Result<(), String> {
+    loop {
+        let told = FRAMING
+            .read_value_async::<_, Told>(&mut reader)
+            .await
+            .map_err(|error| error.to_string())?;
+        let Some(told) = told else {
+            // The sender may be waiting for the workspace this connection never named: it is
+            // told the connection ended, and dials again.
+            link.chosen.notify_waiters();
+            return Err("the session closed the connection".to_owned());
+        };
+        if let Told::Wake(wake) = told {
+            if let Wake::Opened { chunk, answer } = &wake {
+                link.state
+                    .lock_recover()
+                    .answers
+                    .insert(*chunk, Some(*answer));
+            }
+            if wakes.send(wake).is_err() {
+                return Ok(());
+            }
+        } else if !link.take(told, wakes)? {
+            return Ok(());
+        }
     }
 }
 
@@ -528,10 +658,10 @@ impl Records for Remote {
         document: &str,
         since: Option<&[[u8; 32]]>,
     ) -> Result<Reading, String> {
-        if workspace != self.0.workspace || app != FILES_APP {
+        let synced = self.0.named();
+        if workspace != synced || app != FILES_APP {
             return Err(format!(
-                "this connection syncs {}'s tree, not {app}'s resources of {workspace}",
-                self.0.workspace
+                "this connection syncs {synced}'s tree, not {app}'s resources of {workspace}"
             ));
         }
         let told = self
@@ -667,7 +797,8 @@ mod tests {
             .block_on(crate::ContentStore::open(dir.path().join("content")))
             .unwrap();
         let link = Arc::new(Link {
-            workspace: "studio".to_owned(),
+            workspace: Mutex::new(Some("studio".to_owned())),
+            chosen: tokio::sync::Notify::new(),
             out: Mutex::new(None),
             waiting: Mutex::new(BTreeMap::new()),
             next: AtomicU64::new(0),
@@ -675,6 +806,7 @@ mod tests {
             store: Arc::new(store),
             access: tokio::sync::watch::channel(None).0,
             shown: Mutex::new(None),
+            shown_workspace: tokio::sync::watch::channel(None).0,
         });
         let (wakes, _wake_events) = mpsc::unbounded_channel();
         // Started before the daemon serves: nothing to dial yet.
@@ -685,6 +817,11 @@ mod tests {
             let (said, hello) = std::sync::mpsc::channel();
             let daemon = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
+                // The workspace the session shows is asked before the tree's workspace is named.
+                assert!(matches!(
+                    FRAMING.read_value::<_, Ask>(&mut stream).unwrap(),
+                    Some(Ask::Shown)
+                ));
                 let _ = said.send(FRAMING.read_value::<_, Ask>(&mut stream).unwrap());
             });
             let first = hello
@@ -726,7 +863,8 @@ mod tests {
             .block_on(crate::ContentStore::open(dir.path().join("content")))
             .unwrap();
         let link = Arc::new(Link {
-            workspace: "studio".to_owned(),
+            workspace: Mutex::new(Some("studio".to_owned())),
+            chosen: tokio::sync::Notify::new(),
             out: Mutex::new(None),
             waiting: Mutex::new(BTreeMap::new()),
             next: AtomicU64::new(0),
@@ -734,6 +872,7 @@ mod tests {
             store: Arc::new(store),
             access: tokio::sync::watch::channel(None).0,
             shown: Mutex::new(None),
+            shown_workspace: tokio::sync::watch::channel(None).0,
         });
         let (wakes, _wake_events) = mpsc::unbounded_channel();
         runtime.spawn(keep_linked(Arc::clone(&link), socket, wakes));

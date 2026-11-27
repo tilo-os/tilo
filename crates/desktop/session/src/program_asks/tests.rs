@@ -670,3 +670,42 @@ async fn a_program_cannot_ask_in_another_workspace() {
     assert!(device.store.waiting_in("theirs").is_empty());
     assert_eq!(device.store.waiting_in("ours").len(), 1);
 }
+
+/// A program's file question opens in the workspace's own folder in the mount this device
+/// serves its files at, not in the person's home: the app asks for a file of the workspace it
+/// runs in, and the file it is given there is that workspace's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_files_question_opens_in_the_workspaces_folder() {
+    use tilo_portal::file_chooser::{FILE_CHOOSER_QUESTION, FileChooserQuestion};
+
+    let mount = tempfile::tempdir().expect("a mount to serve");
+    let folder = mount.path().join(".workspaces").join(WORKSPACE);
+    std::fs::create_dir_all(&folder).expect("the workspace's folder");
+    let mut scoped = tilo_test_env::ScopedEnv::new();
+    scoped.set("TILO_WORKSPACE_ROOTS", mount.path());
+    let (sender, device) = session();
+    let _answer = sender.ask(tilo_service::Question {
+        handle: "portal-files-1".into(),
+        kind: FILE_CHOOSER_QUESTION.into(),
+        app_id: Some("org.example.Editor".into()),
+        label: "org.example.Editor".into(),
+        details: serde_json::to_value(FileChooserQuestion::default()).unwrap(),
+    });
+    let asked = device.asked().await;
+    let files = asked.facts.files.as_ref().expect("a files question");
+    assert_eq!(
+        files.folder.as_deref(),
+        folder.to_str(),
+        "the picker opens in the workspace's folder"
+    );
+    device
+        .resolve(
+            &asked,
+            Resolve {
+                resolution: Offer::Decline,
+                ..Resolve::default()
+            },
+        )
+        .await
+        .unwrap();
+}

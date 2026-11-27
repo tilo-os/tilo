@@ -15,6 +15,8 @@ mod collab_release_matrix;
 #[path = "corruption_matrix.rs"]
 mod corruption_matrix;
 // The licensed simulator is never part of an ordinary filesystem run.
+#[path = "files_mount.rs"]
+mod files_mount;
 #[cfg(feature = "rystic-tests")]
 #[path = "gdrive_rystic_volume.rs"]
 mod gdrive_rystic_volume;

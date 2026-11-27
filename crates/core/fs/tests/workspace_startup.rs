@@ -73,9 +73,9 @@ impl Profile {
     }
 
     fn save_namespace(&self) {
-        std::fs::create_dir_all(self.cache().join("namespace")).expect("create kept tree");
+        std::fs::create_dir_all(self.cache().join("trees/one")).expect("create kept tree");
         std::fs::write(
-            self.cache().join("namespace/0.automerge"),
+            self.cache().join("trees/one/0.automerge"),
             b"retained namespace",
         )
         .expect("write a kept document");
@@ -287,7 +287,7 @@ tilo_test_env::scenario! {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(
-            !profile.cache().join("namespace").exists(),
+            !profile.cache().join("trees").exists(),
             "the tree arrives with the first mount, from the workspace service"
         );
     }
@@ -301,7 +301,7 @@ tilo_test_env::scenario! {
         assert!(!profile.cache().join("mount").exists());
         assert_eq!(profile.made_in_runtime(), Vec::<std::path::PathBuf>::new());
         assert_eq!(
-            std::fs::read(profile.cache().join("namespace/0.automerge")).expect("namespace kept"),
+            std::fs::read(profile.cache().join("trees/one/0.automerge")).expect("namespace kept"),
             b"retained namespace"
         );
     }
@@ -311,7 +311,7 @@ tilo_test_env::scenario! {
         let profile = Profile::new();
         std::fs::create_dir_all(profile.cache()).expect("create cache");
         std::fs::write(profile.path("elsewhere"), b"namespace").expect("write target");
-        std::os::unix::fs::symlink(profile.path("elsewhere"), profile.cache().join("namespace"))
+        std::os::unix::fs::symlink(profile.path("elsewhere"), profile.cache().join("trees"))
             .expect("symlink the kept tree");
         assert_not_ready(&profile.launch(&[]));
         assert!(!profile.cache().join("mount").exists());
@@ -391,10 +391,10 @@ tilo_test_env::scenario! {
         let defaults = Profile::new();
         Profile::identity_at(&defaults.path(".local/share/tilo"));
         std::fs::create_dir_all(defaults.path(".local/state/tilo/files")).expect("create cache");
-        std::fs::create_dir_all(defaults.path(".local/state/tilo/files/namespace"))
+        std::fs::create_dir_all(defaults.path(".local/state/tilo/files/trees/one"))
             .expect("create kept tree");
         std::fs::write(
-            defaults.path(".local/state/tilo/files/namespace/0.automerge"),
+            defaults.path(".local/state/tilo/files/trees/one/0.automerge"),
             b"saved",
         )
         .expect("write a kept document");

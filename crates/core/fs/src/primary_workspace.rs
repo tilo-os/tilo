@@ -249,10 +249,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("isolated fixture");
         let home = dir.path().to_path_buf();
         std::fs::create_dir_all(home.join(".local/state/tilo/files")).expect("create cache");
-        std::fs::create_dir_all(home.join(".local/state/tilo/files/namespace"))
+        std::fs::create_dir_all(home.join(".local/state/tilo/files/trees/one"))
             .expect("create kept tree");
         std::fs::write(
-            home.join(".local/state/tilo/files/namespace/0.automerge"),
+            home.join(".local/state/tilo/files/trees/one/0.automerge"),
             b"saved",
         )
         .expect("write a kept document");

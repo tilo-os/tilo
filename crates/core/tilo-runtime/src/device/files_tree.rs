@@ -60,7 +60,45 @@ pub(crate) fn serve(
     });
     let (told, access) = watch::channel(None);
     let copies = workspaces.copies().clone();
-    let follows = tilo_rt::app().spawn(follow_access(copies, (person, device), told));
+    let follows = tilo_rt::app().spawn(follow_access(copies, (person.clone(), device), told));
+    // The workspace this device's session shows, as the session keeps it in the device's own
+    // record: a mount serves that one's files, and reads it here before it opens a tree.
+    let (told_shown, shown) = watch::channel(None);
+    {
+        let workspaces = Arc::clone(workspaces);
+        let own = tilo_action_policy::roles::workspace_of_person(&person);
+        let nil = tilo_desktop_model::WorkspaceId::nil().to_string();
+        tilo_rt::app().spawn(async move {
+            loop {
+                let now = workspaces
+                    .device_records()
+                    .and_then(|records| records.get(tilo_session_client::device_records::SHOWN))
+                    .and_then(|value| {
+                        tilo_session_client::device_records::shown_workspace(&value)
+                            .map(str::to_owned)
+                    })
+                    .filter(|workspace| own.as_deref() != Some(workspace.as_str()))
+                    .filter(|workspace| workspace != &nil)
+                    // A workspace the device does not hold yet is one a mount cannot open: it
+                    // is named once the device has it, and the mount opens then.
+                    .filter(|workspace| {
+                        workspaces
+                            .copies()
+                            .held_workspaces()
+                            .iter()
+                            .any(|held| held == workspace)
+                    });
+                told_shown.send_if_modified(|was| {
+                    if *was == now {
+                        return false;
+                    }
+                    *was = now;
+                    true
+                });
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        });
+    }
     // Where each folder a mount holds stands: how much it has to send and to fetch.
     let folders = Folders::default();
     workspaces.copies().publish_own(
@@ -79,6 +117,7 @@ pub(crate) fn serve(
             daemons,
             keys,
             access,
+            shown,
         },
         folders,
     );

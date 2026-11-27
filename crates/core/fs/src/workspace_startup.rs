@@ -24,6 +24,28 @@ impl WorkspaceStatus {
     }
 }
 
+/// Whether a workspace's tree is kept below `dir`, one directory per workspace: any of them holds
+/// a document or a journal of one.
+fn kept_trees(dir: &Path) -> Result<bool> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).context("inspect the kept workspaces' trees"),
+    };
+    for entry in entries {
+        let path = entry.context("inspect the kept workspaces' trees")?.path();
+        anyhow::ensure!(
+            path.is_dir(),
+            "the kept workspaces' trees hold {}, which is no workspace's tree",
+            path.display()
+        );
+        if kept_documents(&path)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Whether the tree's kept documents are there: the directory exists and holds a document or a
 /// journal of one.
 fn kept_documents(dir: &Path) -> Result<bool> {
@@ -49,7 +71,7 @@ fn kept_documents(dir: &Path) -> Result<bool> {
 /// What `cache` and the workspace service at `tree_socket` offer a mount that must not start
 /// empty.
 pub(super) fn inspect(cache: &Path, tree_socket: &Path) -> Result<WorkspaceStatus> {
-    let saved_namespace = kept_documents(&cache.join("namespace"))?;
+    let saved_namespace = kept_trees(&cache.join("trees"))?;
     let workspace_service = std::fs::symlink_metadata(tree_socket).is_ok_and(|metadata| {
         use std::os::unix::fs::FileTypeExt as _;
         metadata.file_type().is_socket()
@@ -79,14 +101,14 @@ mod tests {
         );
         assert!(!missing.exists());
 
-        std::fs::create_dir_all(dir.path().join("namespace")).unwrap();
+        std::fs::create_dir_all(dir.path().join("trees/one")).unwrap();
         assert!(
             inspect(dir.path(), &socket)
                 .unwrap()
                 .require_existing()
                 .is_err()
         );
-        std::fs::write(dir.path().join("namespace/0.automerge"), b"kept").unwrap();
+        std::fs::write(dir.path().join("trees/one/0.automerge"), b"kept").unwrap();
         inspect(dir.path(), &socket)
             .unwrap()
             .require_existing()
@@ -112,8 +134,9 @@ mod tests {
     #[test]
     fn a_kept_tree_that_is_not_a_directory_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("trees")).unwrap();
         std::fs::write(dir.path().join("elsewhere"), b"tree").unwrap();
-        std::os::unix::fs::symlink(dir.path().join("elsewhere"), dir.path().join("namespace"))
+        std::os::unix::fs::symlink(dir.path().join("elsewhere"), dir.path().join("trees/one"))
             .unwrap();
         assert!(inspect(dir.path(), &dir.path().join("absent.sock")).is_err());
     }

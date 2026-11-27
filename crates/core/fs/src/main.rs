@@ -624,7 +624,7 @@ async fn serve(
         storage_sock,
         blob_sock,
     } = sockets;
-    let np = namespace_path(cache_dir.as_deref());
+    let kept_root = kept_trees_path(cache_dir.as_deref());
     let thumb_dir = thumb_path(cache_dir.as_deref());
     let availability = open_availability(cache_dir.as_deref())?;
     let eviction_queue = open_eviction_queue(cache_dir.as_deref())?;
@@ -647,25 +647,49 @@ async fn serve(
     let workspace_id = mount_id(credentials.device_public_key());
     let store = Arc::new(open_workspace_store(cache_dir.clone(), &backend, workspace_id).await?);
     let author = hex::encode(credentials.device_public_key());
-    let fresh = np.as_ref().is_none_or(|dir| !namespace_kept(dir));
-    // This mount's tree, as the Files resources of one workspace, synced through this device's
-    // workspace service, which the device daemon serves the trees of. This daemon is the app's
-    // endpoint, so what changes here reaches the person's other devices and the workspace's
-    // members. The workspace's files are the tree under its id (`.workspaces/<id>`); the mount's
-    // root holds no one's files.
-    let workspace =
-        tilo_server_protocol::servers::person_workspace_id(&credentials.user_public_key());
     let trees = tree_socket(backend.native_owner.as_deref())?;
-    let (tree, namespace, kept, service) = open_tree(
-        np.as_deref(),
-        trees,
-        workspace.clone(),
-        &credentials,
-        author,
-        &store,
-        &mount_point,
-    )
-    .await?;
+    // A kept tree opens once the session names its workspace, which is after the mount stands:
+    // the native tree is laid out from the namespace it started with, so it cannot take one
+    // later. FUSE serves the namespace as it is, from the empty root to the workspace's files.
+    let backend = if kept_root.is_some() && backend.backend != BackendChoice::Fuse {
+        eprintln!("the workspace's tree opens once the session names it; serving it with FUSE");
+        BackendArgs {
+            backend: BackendChoice::Fuse,
+            ..backend
+        }
+    } else {
+        backend
+    };
+    let own = tilo_server_protocol::servers::person_workspace_id(&credentials.user_public_key());
+    // This mount's tree, as the Files resources of one workspace, synced through this device's
+    // workspace service, which the device daemon serves the trees of. Which workspace that is,
+    // is the one this device's session shows, as the daemon keeps it: the mount opens its tree
+    // once the session says, and serves an empty root until then. The workspace's files are the
+    // tree under its id (`.workspaces/<id>`); the mount's root holds no one's files.
+    // A kept tree replaces this namespace's contents when the session names its workspace; a
+    // mount with nowhere to keep a tree serves the person's own for this run alone.
+    let mount_author = match &kept_root {
+        Some(_) => MountAuthor::device(author.clone()),
+        None => MountAuthor::person(
+            own.clone(),
+            author.clone(),
+            member(credentials.user_public_key()),
+        ),
+    };
+    let namespace = Arc::new(Mutex::new(Namespace::new(mount_author)?));
+    // The kept tree is the session's workspace's, opened once the session names it: the slot is
+    // empty until then, and the mount journals into the tree from the moment it opens.
+    let kept: Option<mount::KeptSlot> = kept_root.as_ref().map(|_| Arc::new(Mutex::new(None)));
+    let service = kept_root.as_ref().map(|_| {
+        tilo_fs::tree_sync::remote::link(
+            trees,
+            (
+                credentials.device_public_key(),
+                credentials.user_public_key(),
+            ),
+            Arc::clone(&store),
+        )
+    });
     let hydrator = Hydrator::new(store.clone());
     let hydrator = match &service {
         Some(service) => hydrator.with_source(service.source()),
@@ -693,22 +717,100 @@ async fn serve(
         (Some(service), Some(caps)) => Some(follow_access(service.access(), caps)),
         _ => None,
     };
-
-    if fresh {
-        if let Some(seed) = seed {
-            let home = workspace_home(&namespace, &workspace)?;
-            seed_from_dir(&namespace, &store, home, &seed).await?;
-            println!("Seeded workspace from {}", seed.display());
-        }
-    } else if let Some(p) = &np {
-        println!("Restored workspace from {}", p.display());
-    }
-    let _home = keep_workspace_home(
-        tree.as_ref()
-            .map(tilo_fs::tree_sync::TreeSync::status_changes),
-        Arc::clone(&namespace),
-        workspace,
-    );
+    // Nothing keeps a tree on this run: the mount serves one in memory. A kept tree waits for
+    // the workspace the session shows, and opens into the mount's own namespace, so the mount
+    // and the sync serve one tree.
+    let (shutdown_tree, attach) = if let (Some(service), Some(slot)) = (&service, kept.clone()) {
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let service = (*service).clone();
+        let namespace = Arc::clone(&namespace);
+        let trees = kept_root
+            .clone()
+            .context("a kept tree needs its cache directory")?;
+        let store = Arc::clone(&store);
+        let mount_point = mount_point.clone();
+        let mut stopped = stopped;
+        let attach = tokio::spawn(async move {
+            let workspace = {
+                let mut shown = service.shown();
+                loop {
+                    let now = shown.borrow_and_update().clone();
+                    if let Some(workspace) = now {
+                        break workspace;
+                    }
+                    tokio::select! {
+                        _ = &mut stopped => return,
+                        changed = shown.changed() => {
+                            if changed.is_err() {
+                                return;
+                            }
+                        }
+                    }
+                }
+            };
+            // Each workspace keeps its own tree on this computer: one workspace's files are
+            // never opened as another's.
+            let kept_at = trees.join(&workspace);
+            let fresh = !namespace_kept(&kept_at);
+            let kept = match tilo_fs::kept_documents::KeptDocuments::open(&kept_at) {
+                Ok((kept, _)) => Arc::new(kept),
+                Err(error) => {
+                    eprintln!("the workspace's kept tree does not open: {error}");
+                    return;
+                }
+            };
+            println!(
+                "Serving the workspace this session shows: {workspace} ({})",
+                if fresh { "fresh" } else { "restored" }
+            );
+            let tree = match service
+                .attach(
+                    workspace.clone(),
+                    kept_at,
+                    Some(Arc::clone(&namespace)),
+                    Some(Arc::clone(&kept)),
+                    mount_point,
+                )
+                .await
+            {
+                Ok(tree) => tree,
+                Err(error) => {
+                    eprintln!("the workspace's tree does not open: {error:#}");
+                    return;
+                }
+            };
+            // The mount's changes are journaled into the tree from now on.
+            *slot.lock_recover() = Some(Arc::clone(&kept));
+            let _home = keep_workspace_home(
+                Some(tree.status_changes()),
+                Arc::clone(&namespace),
+                workspace.clone(),
+            );
+            if fresh && let Some(seed) = seed {
+                match workspace_home(&namespace, &workspace) {
+                    Ok(home) => {
+                        if let Err(error) = seed_from_dir(&namespace, &store, home, &seed).await {
+                            eprintln!("the workspace's seed: {error:#}");
+                        } else {
+                            println!("Seeded workspace from {}", seed.display());
+                        }
+                    }
+                    Err(error) => eprintln!("the workspace's folder: {error:#}"),
+                }
+            }
+            let keeper = spawn_keeper(Arc::clone(&namespace), Arc::clone(&kept));
+            let _ = stopped.await;
+            keeper.abort();
+            let _ = keeper.await;
+            tree.stop(TREE_STOPS_WITHIN).await;
+            keep_now(&namespace, &kept);
+        });
+        (Some(stop), Some(attach))
+    } else {
+        // No tree to wait for: the mount serves this run's own empty folder.
+        workspace_home(&namespace, &own)?;
+        (None, None)
+    };
 
     let media = blob_sock
         .as_deref()
@@ -717,22 +819,21 @@ async fn serve(
         .as_ref()
         .and_then(|_| blob_sock.clone())
         .map(ServedSocket);
-    let keeper = kept
-        .clone()
-        .map(|kept| spawn_keeper(namespace.clone(), kept));
     let shutdown = kept.clone().map(|kept| {
         let namespace = Arc::clone(&namespace);
         let store = Arc::clone(&store);
         Arc::new(move || {
             let _ = store.sync_pending();
-            keep_now(&namespace, &kept);
+            if let Some(kept) = kept.lock_recover().as_ref() {
+                keep_now(&namespace, kept);
+            }
         }) as Arc<dyn Fn() + Send + Sync>
     });
     let mount_outcome = run_mount(
         MountConfig {
             workspace_id,
             mount_point,
-            kept: kept.clone(),
+            kept,
             shutdown,
             predictive_cache_root: cache_dir.clone(),
             thumb_dir,
@@ -741,7 +842,7 @@ async fn serve(
             backend: Some((backend, *actor.device.as_bytes())),
         },
         MountServices {
-            namespace: namespace.clone(),
+            namespace,
             hydrator,
             acl,
             availability,
@@ -756,13 +857,15 @@ async fn serve(
         }
     };
     trace("the mount returned; syncing content");
-    let _ = store.sync_pending();
-    trace("content synced; flushing the tree");
-    if let Some(tree) = tree {
-        tree.stop(TREE_STOPS_WITHIN).await;
+    if let Some(stop) = shutdown_tree {
+        let _ = stop.send(());
     }
-    final_flush(keeper, &namespace, kept.as_ref()).await;
-    trace("tree flushed");
+    if let Some(attach) = attach {
+        let within = TREE_STOPS_WITHIN.saturating_add(Duration::from_secs(5));
+        let _ = tokio::time::timeout(within, attach).await;
+    }
+    let _ = store.sync_pending();
+    trace("content synced; the tree flushed");
     let MountOutcome::Unmounted = mount_outcome;
     Ok(())
 }
@@ -799,50 +902,6 @@ fn follow_access(
 /// How long an unmount waits for the tree's sync to keep what it has.
 const TREE_STOPS_WITHIN: Duration = Duration::from_secs(10);
 
-/// A mount's tree of `workspace`: kept at `dir` and synced through this device's workspace
-/// service, which the session serves the trees of; with no `dir`, an empty tree in memory for
-/// this run alone, synced with nothing.
-async fn open_tree(
-    dir: Option<&Path>,
-    trees: PathBuf,
-    workspace: String,
-    credentials: &tilo_fs::identity::PeerCredentials,
-    author: String,
-    store: &Arc<ContentStore>,
-    mount_point: &Path,
-) -> Result<(
-    Option<tilo_fs::tree_sync::TreeSync>,
-    Arc<Mutex<Namespace>>,
-    Option<Arc<KeptTree>>,
-    Option<tilo_fs::tree_sync::remote::Service>,
-)> {
-    let Some(dir) = dir else {
-        let mount = MountAuthor::person(workspace, author, member(credentials.user_public_key()));
-        return Ok((
-            None,
-            Arc::new(Mutex::new(Namespace::new(mount)?)),
-            None,
-            None,
-        ));
-    };
-    set_aside_older_namespace_file(dir)?;
-    let (tree, service) = tilo_fs::tree_sync::remote::start(
-        trees,
-        workspace,
-        (
-            credentials.device_public_key(),
-            credentials.user_public_key(),
-        ),
-        dir.to_path_buf(),
-        Arc::clone(store),
-        mount_point.to_path_buf(),
-    )
-    .await
-    .with_context(|| format!("open the kept workspace tree at {}", dir.display()))?;
-    let (namespace, kept) = (Arc::clone(&tree.namespace), tree.kept());
-    Ok((Some(tree), namespace, Some(kept), Some(service)))
-}
-
 /// Where this device's daemon serves the trees of the workspaces it belongs to: among the sockets
 /// of the daemon the mount's person reaches, the `--native-owner` (`UID:GID`) a machine's daemon
 /// mounts for, else this account. A machine's daemon is root's, so its own account names no
@@ -855,10 +914,10 @@ fn tree_socket(owner: Option<&str>) -> Result<PathBuf> {
     tilo_device_identity::login::files_tree_socket(account).map_err(anyhow::Error::msg)
 }
 
-/// The directory the mount keeps its tree's documents in, each with the journal of the changes
-/// it has made since it was last saved.
-fn namespace_path(cache_dir: Option<&Path>) -> Option<PathBuf> {
-    cache_dir.map(|d| d.join("namespace"))
+/// Where the mount keeps each workspace's tree, one directory per workspace: its documents, each
+/// with the journal of the changes it has made since it was last saved.
+fn kept_trees_path(cache_dir: Option<&Path>) -> Option<PathBuf> {
+    cache_dir.map(|d| d.join("trees"))
 }
 
 /// Whether `dir` already holds kept documents: a workspace this device has opened before.
@@ -914,79 +973,10 @@ fn spawn_keeper(
     })
 }
 
-/// The last save of a mount, on shutdown and unmount: stops its keeper (waiting, so the two never
-/// save at once), then saves what changed.
-async fn final_flush(
-    keeper: Option<tokio::task::JoinHandle<()>>,
-    namespace: &Arc<Mutex<Namespace>>,
-    kept: Option<&Arc<KeptTree>>,
-) {
-    let trace = |what: &str| {
-        if std::env::var_os("TILO_FS_BENCH_VERBOSE").is_some() {
-            eprintln!("final flush: {what}");
-        }
-    };
-    if let Some(keeper) = keeper {
-        trace("stopping the keeper");
-        keeper.abort();
-        let _ = keeper.await;
-        trace("keeper stopped");
-    }
-    if let Some(kept) = kept {
-        trace("saving the tree");
-        keep_now(namespace, kept);
-        trace("tree saved");
-    }
-}
-
 /// The member a person's root key is, as every workspace names them: the id their changes and
 /// the nodes they make are read by.
 fn member(key: [u8; 32]) -> tilo_actions::MemberId {
     tilo_actions::MemberId::person(tilo_actions::PersonId::from_root(key))
-}
-
-/// The build before this kept the whole tree in `namespace.bin` beside the tree's parts kept
-/// at `dir`; nothing reads it now, so it is set aside with the generations it kept rather than left
-/// looking like state this mount keeps.
-fn set_aside_older_namespace_file(dir: &Path) -> Result<()> {
-    let legacy = dir.with_file_name("namespace.bin");
-    if legacy.exists() {
-        let kept = set_aside_older_namespace(&legacy)?;
-        eprintln!(
-            "namespace {} was kept by an earlier build in one file; kept it as {}; this mount \
-             keeps the tree's documents at {}",
-            legacy.display(),
-            kept.display(),
-            dir.display()
-        );
-    }
-    Ok(())
-}
-
-/// Move the namespace file at `path`, and the directory of its retained generations, aside as
-/// `<name>.older-image-<unix seconds>`; returns where the namespace went.
-fn set_aside_older_namespace(path: &Path) -> Result<PathBuf> {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
-    let aside = |of: &Path| {
-        let mut name = of.as_os_str().to_owned();
-        name.push(format!(".older-image-{secs}"));
-        PathBuf::from(name)
-    };
-    let kept = aside(path);
-    std::fs::rename(path, &kept)
-        .with_context(|| format!("set the older namespace {} aside", path.display()))?;
-    let backups = tilo_fs::durable_backup::backup_dir(path)?;
-    if backups.exists() {
-        std::fs::rename(&backups, aside(&backups)).with_context(|| {
-            format!(
-                "set the older namespace's generations {} aside",
-                backups.display()
-            )
-        })?;
-    }
-    Ok(kept)
 }
 
 /// Chooses the backend and, for Tier 1, its configuration. `None` means the FUSE backend
