@@ -31,7 +31,6 @@ impl Host for Broker {
     }
 
     fn opened(driver: &mut Driver, author: &str) {
-        let actor = tilo_broker_core::BrokerActor::person(author);
         let own = workspace_of_person(author).and_then(|id| {
             let mut workspace = tilo_desktop_model::Workspace::new(
                 tilo_desktop_model::WorkspaceId::parse(&id)?,
@@ -40,22 +39,49 @@ impl Host for Broker {
             workspace.policy = WorkspacePolicy::new(id.clone(), author);
             Some((id, workspace))
         });
-        driver.decide_shown_actions(Box::new(move |actions| {
+        driver.decide_shown_actions(Box::new(move |actor, actions| {
             let now = tilo_app::time::unix_now();
+            let actor = broker_actor(actor);
             actions
                 .iter()
                 .map(|action| ActionDecision {
                     action: action.clone(),
-                    verdict: actor.shown_verdict(
-                        own.as_ref()
-                            .filter(|(id, _)| action.workspace.as_ref() == Some(id))
-                            .map(|(_, workspace)| workspace),
-                        action,
-                        now,
-                    ),
+                    verdict: match &actor {
+                        Some(actor) => actor.shown_verdict(
+                            own.as_ref()
+                                .filter(|(id, _)| action.workspace.as_ref() == Some(id))
+                                .map(|(_, workspace)| workspace),
+                            action,
+                            now,
+                        ),
+                        None => tilo_app::shown_actions::ActionVerdict::Refused(
+                            "only a member or their agent acts here".into(),
+                        ),
+                    },
                 })
                 .collect()
         }));
+    }
+}
+
+/// Who `acting` is as the broker decides for them: a person by their own grants; an agent by
+/// the grants it holds there and the delegation its person's device handed it, acting for its
+/// own person and never past what they may. `None` for anyone else, whom this host admits
+/// nothing.
+fn broker_actor(acting: &tilo_app::tilo_actions::Acting) -> Option<tilo_broker_core::BrokerActor> {
+    use tilo_app::tilo_actions::MemberId;
+    match acting.member_id()? {
+        MemberId::Person(person) => Some(tilo_broker_core::BrokerActor::person(person.clone())),
+        MemberId::Agent { id, person } => {
+            let agent = tilo_broker_core::BrokerActor::agent(id.clone(), person.clone())
+                .for_person(person.as_str());
+            Some(if acting.handed {
+                agent.session_delegated()
+            } else {
+                agent
+            })
+        }
+        MemberId::Bot(_) => None,
     }
 }
 

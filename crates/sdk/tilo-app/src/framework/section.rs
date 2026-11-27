@@ -654,7 +654,7 @@ impl SettingsResources {
     ) -> ui_core::app::driver::ServedProvider {
         let person = person.clone();
         Box::new(move |invocation| {
-            if invocation.actor.member_id() != Some(&person) {
+            if invocation.acting.by.member_id() != Some(&person) {
                 return Err(tilo_actions::ApiError::Unavailable {
                     code: "permission_denied".into(),
                     reason: "Only the person they belong to changes these settings".into(),

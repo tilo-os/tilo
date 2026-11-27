@@ -100,13 +100,28 @@ impl Remote {
     }
 
     /// Invoke `action` with `arguments` on the record's published resource `resource`, at the
-    /// app in the person's workspace.
+    /// app in the person's workspace, for `by`.
+    ///
+    /// The call carries the invocation it is made in, an agent's call this window runs for
+    /// the person: the person's workspace decides it as that invocation's caller, by the
+    /// caller's own grants there, and records it as theirs. Anyone but `me` themselves acts
+    /// only so; without an invocation to carry, the call would be decided as this window's
+    /// person, and it is refused instead.
     fn invoke(
         &self,
-        resource: &str,
-        action: &str,
+        (resource, action): (&str, &str),
         arguments: serde_json::Map<String, serde_json::Value>,
-    ) {
+        by: &tilo_actions::Actor,
+        me: &tilo_resource::MemberId,
+    ) -> Result<(), ActionError> {
+        let on_behalf_of =
+            super::effect::acting_for().or_else(ui_core::invocation_scope::delivered_invocation);
+        if on_behalf_of.is_none() && by.member_id() != Some(me) {
+            return Err(ActionError::Refused(
+                "Only a call made for you changes your record from a window in another workspace"
+                    .to_owned(),
+            ));
+        }
         let target = tilo_actions::remote::application_resource_target(
             &self.workspace,
             self.app,
@@ -114,10 +129,15 @@ impl Remote {
             resource,
             action,
         );
-        let call = self
-            .actions
-            .invoke(target, InvokeArgument::Json(arguments), None);
+        let call = self.actions.invoke_continuing(
+            on_behalf_of,
+            tilo_actions::InvocationId::new(),
+            target,
+            InvokeArgument::Json(arguments),
+            None,
+        );
         self.sent.borrow_mut().push((action.to_owned(), call));
+        Ok(())
     }
 
     /// Take up what the person's workspace answered since: a newer reading of the record merged
@@ -406,13 +426,19 @@ impl<P: Resource> PersonResource<P> {
                 stepped
             }
             Backing::There(there) => {
-                let held = step_held(there, &self.me, undo);
+                let by = super::resources::acting(&self.me);
+                let author = by.acting.by.member_id().unwrap_or(&self.me);
+                let held = step_held(there, author, undo)
+                    && there
+                        .remote
+                        .invoke(
+                            (&resource_id(P::KIND), if undo { "undo" } else { "redo" }),
+                            serde_json::Map::new(),
+                            &by.acting.by,
+                            &self.me,
+                        )
+                        .is_ok();
                 if held {
-                    there.remote.invoke(
-                        &resource_id(P::KIND),
-                        if undo { "undo" } else { "redo" },
-                        serde_json::Map::new(),
-                    );
                     there.wake();
                 }
                 held
@@ -449,8 +475,8 @@ impl<P: Resource> PersonResource<P> {
 }
 
 /// Send `invoke` to the app that keeps the record in the person's own workspace, which
-/// applies it as whoever this window's connection is: the person. The record shows it once
-/// that workspace answers the next reading.
+/// applies it as `invoker`: the person, or software acting for them in the call it carries
+/// ([`Remote::invoke`]). The record shows it once that workspace answers the next reading.
 fn send_there<P: Resource>(
     there: &There<P>,
     me: &tilo_resource::MemberId,
@@ -468,15 +494,18 @@ fn send_there<P: Resource>(
             P::LABEL.to_lowercase()
         )));
     }
-    if invoker.acting.by.member_id() != Some(me) {
+    if !super::resources::theirs(invoker, me) {
         return Err(ActionError::Refused(format!(
-            "Only you change your {} from a window in another workspace",
+            "Only you change your {}",
             P::LABEL.to_lowercase()
         )));
     }
-    there
-        .remote
-        .invoke(&resource_id(P::KIND), invoke.id, invoke.arguments.clone());
+    there.remote.invoke(
+        (&resource_id(P::KIND), invoke.id),
+        invoke.arguments.clone(),
+        &invoker.acting.by,
+        me,
+    )?;
     there.wake();
     Ok(())
 }
@@ -1059,13 +1088,17 @@ impl PersonState {
                 api: Rc::clone(&held) as Rc<dyn ResourceApi>,
                 step: Box::new(move |undo, by| {
                     stepping.upgrade().is_some_and(|there| {
-                        let held = step_held(&there, by.member_id().unwrap_or(&mine), undo);
+                        let held = step_held(&there, by.member_id().unwrap_or(&mine), undo)
+                            && there
+                                .remote
+                                .invoke(
+                                    (&resource_id(P::KIND), if undo { "undo" } else { "redo" }),
+                                    serde_json::Map::new(),
+                                    by,
+                                    &mine,
+                                )
+                                .is_ok();
                         if held {
-                            there.remote.invoke(
-                                &resource_id(P::KIND),
-                                if undo { "undo" } else { "redo" },
-                                serde_json::Map::new(),
-                            );
                             there.wake();
                             there.refresh();
                         }
@@ -1211,12 +1244,7 @@ impl PersonState {
         if !(1..=MAX_STEPS).contains(&steps) {
             return Err(format!("steps is 1 to {MAX_STEPS}"));
         }
-        let theirs = invoker.acting.by.member_id() == Some(&self.me)
-            || self
-                .me
-                .person_id()
-                .is_some_and(|person| invoker.acting.acted_for_person() == Some(person));
-        if !theirs {
+        if !super::resources::theirs(invoker, &self.me) {
             return Err(format!(
                 "`{}` is {}'s own; only they change it",
                 request.record, self.me

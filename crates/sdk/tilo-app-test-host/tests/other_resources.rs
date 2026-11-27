@@ -486,7 +486,14 @@ tilo_test_env::scenario! {
         assert!(!playback.with(|state| state.autoplay));
 
         // Someone else in the workspace does not change it; software acting for
-        // the person does.
+        // the person does: the agent her device handed its session to, which carries
+        // what that hands an agent in her workspace.
+        let helper = || {
+            tilo_actions::ActionInvoker::admitted(&tilo_actions::Acting::handed_agent(
+                "helper",
+                ada(),
+            ))
+        };
         let bob = tilo_actions::ActionInvoker::person("b0".repeat(32));
         assert!(
             app.call_by(
@@ -497,10 +504,8 @@ tilo_test_env::scenario! {
             )
             .is_err()
         );
-        let agent = tilo_actions::ActionInvoker::agent("helper", ada())
-            .acting_for(ada());
         app.call_by(
-            agent,
+            helper(),
             "person:test.playback",
             "mute",
             serde_json::json!({ "channel": "music" }),
@@ -510,10 +515,27 @@ tilo_test_env::scenario! {
         assert!(playback.with(|state| state.muted.contains(&"music".to_owned())));
         assert!(!playback.with(|state| state.muted.contains(&"sports".to_owned())));
 
-        // The agent's step is the agent's: the person's undo leaves it, the agent's takes it
-        // back.
+        // An agent of hers with no grant in her workspace acts for her here too: the window
+        // passes its call on, and her workspace refuses it, as it does another person's agent
+        // claiming to act for her.
+        for ungranted in [
+            tilo_actions::ActionInvoker::agent("scout", ada()).acting_for(ada()),
+            tilo_actions::ActionInvoker::agent("helper", "b0".repeat(32)).acting_for(ada()),
+        ] {
+            app.call_by(
+                ungranted,
+                "person:test.playback",
+                "mute",
+                serde_json::json!({ "channel": "games" }),
+            )
+            .unwrap();
+            app.settle();
+            assert!(!playback.with(|state| state.muted.contains(&"games".to_owned())));
+        }
+
+        // The agent's step is the agent's: the agent's undo takes it back.
         app.call_by(
-            tilo_actions::ActionInvoker::agent("helper", ada()).acting_for(ada()),
+            helper(),
             "person:test.playback",
             "undo",
             serde_json::json!({}),
@@ -521,6 +543,26 @@ tilo_test_env::scenario! {
         .unwrap();
         app.settle();
         assert!(playback.with(|state| state.muted.is_empty()));
+
+        // A change with no call behind it is the window's person's own, never the agent's that
+        // acted before: the agent has nothing to undo, and the person's undo takes it back.
+        let control = checkbox(&mut app, "autoplay");
+        app.harness().click_named(&control).unwrap();
+        app.settle();
+        assert!(playback.with(|state| state.autoplay));
+        assert!(
+            app.call_by(
+                helper(),
+                "person:test.playback",
+                "undo",
+                serde_json::json!({}),
+            )
+            .is_err()
+        );
+        app.call_on("person:test.playback", "undo", serde_json::json!({}))
+            .unwrap();
+        app.settle();
+        assert!(!playback.with(|state| state.autoplay));
 
         // A viewer of the workspace still changes their own record.
         app.set_role(Role::Viewer);

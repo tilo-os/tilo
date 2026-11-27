@@ -222,6 +222,16 @@ pub fn actor_handle(actor_hex: &str) -> Option<String> {
     Some(trimmed.to_string())
 }
 
+/// Whether the writer `actor_hex` writes as the member whose handle is `handle`
+/// ([`device_actor`]), from whichever device: how history matches a change to its author. An
+/// agent's handle names its person too, longer than [`actor_handle`] reads back to show.
+#[must_use]
+pub fn writes_as(actor_hex: &str, handle: &[u8]) -> bool {
+    hex::decode(actor_hex).is_ok_and(|bytes| {
+        bytes.split(|byte| *byte == DEVICE_SEPARATOR as u8).next() == Some(handle)
+    })
+}
+
 pub use crate::actors::{DEVICE_SEPARATOR, copy_writer, device_actor};
 
 /// The actors a copy of a record writes as, to tell its changes apart: its writer, and the

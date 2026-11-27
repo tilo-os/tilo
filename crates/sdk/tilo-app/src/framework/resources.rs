@@ -536,11 +536,6 @@ pub(crate) fn not_by_app<P: Resource>(action: &P::Action) -> Result<(), String> 
     Ok(())
 }
 
-/// Who a change made now is by: the invoker the host delivered the
-/// invocation being carried out for (an agent, a Shortcut, an app, or a
-/// person over the broker), else `me`, the person at this window. Every write
-/// path reads it, so an agent's change is the agent's in whichever record
-/// it lands, and names the person it acts for.
 /// Whether `invoker` is the person `me` themselves, or a device of theirs,
 /// rather than software acting on their behalf: whose step the window's Undo
 /// takes back.
@@ -550,13 +545,24 @@ pub(crate) fn acts_for(invoker: &ActionInvoker, me: &tilo_resource::MemberId) ->
         .by
         .member_id()
         .is_some_and(tilo_resource::MemberId::is_agent);
-    !by_agent
-        && (invoker.acting.by.member_id() == Some(me)
-            || me
-                .person_id()
-                .is_some_and(|person| invoker.acting.acted_for_person() == Some(person)))
+    !by_agent && theirs(invoker, me)
 }
 
+/// Whether `invoker` may ask for a change of what is `me`'s own: `me`
+/// themselves, or software acting for their person. How far that software
+/// reaches is decided where the record is kept, by its own grants there.
+pub(crate) fn theirs(invoker: &ActionInvoker, me: &tilo_resource::MemberId) -> bool {
+    invoker.acting.by.member_id() == Some(me)
+        || me
+            .person_id()
+            .is_some_and(|person| invoker.acting.acted_for_person() == Some(person))
+}
+
+/// Who a change made now is by: the invoker the host delivered the
+/// invocation being carried out for (an agent, a Shortcut, an app, or a
+/// person over the broker), else `me`, the person at this window. Every write
+/// path reads it, so an agent's change is the agent's in whichever record
+/// it lands, and names the person it acts for.
 pub(crate) fn acting(me: &tilo_resource::MemberId) -> ActionInvoker {
     ui_core::invocation_scope::current_invoker()
         .unwrap_or_else(|| ActionInvoker::member(me.clone()))
@@ -585,11 +591,7 @@ pub(crate) fn answer(
     }
     let me = me.ok_or("this window changes no record of anyone's")?;
     let invoker = acting(me);
-    let theirs = invoker.acting.by.member_id() == Some(me)
-        || me
-            .person_id()
-            .is_some_and(|person| invoker.acting.acted_for_person() == Some(person));
-    if !theirs {
+    if !theirs(&invoker, me) {
         return Err(format!(
             "`{}` is {me}'s own; only they change it",
             request.record

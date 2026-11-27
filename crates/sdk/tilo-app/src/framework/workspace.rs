@@ -250,10 +250,14 @@ impl Core {
     /// the change is attributed to and which
     /// [`ActionCx::author`](tilo_resource::action) answers inside the action.
     fn apply_as(&self, action: &Pending, invoker: &ActionInvoker) -> Applied {
-        let change = action.action.change_kind();
-        let edited = self.record.try_edit(change == ChangeKind::Content, |doc| {
-            self.apply_to(doc, action, invoker)
-        });
+        let undoable = action.action.change_kind() == ChangeKind::Content;
+        let edit = |doc: &mut ui_core::automerge::AutoCommit| self.apply_to(doc, action, invoker);
+        // The step is whoever made it: an agent's is its own to take back, never set down as
+        // its person's.
+        let edited = match invoker.acting.by.member_id() {
+            Some(author) => self.record.try_edit_by(author, undoable, edit),
+            None => self.record.try_edit(undoable, edit),
+        };
         match edited {
             Ok(result) => Applied::Done(result.map_err(ActionError::Refused)),
             Err(unavailable) if unavailable.is_momentary() => Applied::Waits,

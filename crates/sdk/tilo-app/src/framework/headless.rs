@@ -518,7 +518,7 @@ fn serve_persons_own<A: ResourceApp>(
     let reads = Rc::clone(&provider);
     driver.serve_provider(
         tilo_actions::remote::application_provider_token(&own, A::ID),
-        persons_own_invocations(invocations),
+        persons_own_invocations(invocations, own.clone()),
     );
     driver.serve_records(own, persons_own_reads(reads));
     Ok(Some(provider))
@@ -535,43 +535,13 @@ fn keeps_persons_records<A: ResourceApp>() -> bool {
             .any(|record| record.owner().is_none())
 }
 
-/// What answers a window's invocations on the app's own records in the person's workspace: the
-/// app there, called as the member the workspace admitted.
+/// What answers a window's invocations on the app's own records in the person's workspace
+/// `keeping`: the app there, called as the caller that workspace admitted.
 fn persons_own_invocations<A: ResourceApp>(
     served: Rc<std::cell::RefCell<HeadlessApp<A>>>,
+    keeping: String,
 ) -> ui_core::app::driver::ServedProvider {
-    Box::new(move |invocation| {
-        // Who called, as the workspace admitted them: an agent acts for the person its
-        // certificate chains to.
-        let invoker = match invocation.actor.member_id() {
-            Some(MemberId::Agent { id, person }) => {
-                tilo_actions::ActionInvoker::agent(id.clone(), person.clone())
-                    .acting_for(person.clone())
-            }
-            Some(member) => tilo_actions::ActionInvoker::member(member.clone()),
-            None => {
-                return Err(tilo_actions::ApiError::Unavailable {
-                    code: "permission_denied".into(),
-                    reason: "only a member changes their own records".into(),
-                });
-            }
-        };
-        let arguments = match invocation.argument {
-            tilo_actions::remote::InvokeArgument::Json(arguments) => arguments.clone(),
-            tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
-            tilo_actions::remote::InvokeArgument::Text(_) => {
-                return Err(tilo_actions::ApiError::InvalidArguments(
-                    "a change to a record carries typed arguments".into(),
-                ));
-            }
-        };
-        served.borrow_mut().call_by(
-            invoker,
-            &invocation.address.resource,
-            &invocation.address.action,
-            serde_json::Value::Object(arguments),
-        )
-    })
+    Box::new(move |invocation| answer_where_kept(&served, &keeping, invocation))
 }
 
 /// What answers a window's reads of the app's own records in the person's workspace.
@@ -619,6 +589,52 @@ fn persons_own_reads<A: ResourceApp>(
             }),
         })
     })
+}
+
+/// Answer `invocation`, a change this window asks of the person's record kept in their own
+/// workspace `own`, as the app `served` there does: decided first by its caller's own grants in
+/// that workspace (an agent's by the agent's, never past its person's), then applied as that
+/// caller, whose change the record keeps as theirs.
+fn answer_where_kept<A: ResourceApp>(
+    served: &std::cell::RefCell<HeadlessApp<A>>,
+    own: &str,
+    invocation: &ui_core::app::driver::ProvidedInvocation<'_>,
+) -> Result<tilo_actions::ActionOutput, tilo_actions::ApiError> {
+    // Who called, as the workspace admitted them: a member, or an agent acting for its
+    // person, whose change the record keeps as the agent's.
+    if invocation.acting.by.member_id().is_none() {
+        return Err(tilo_actions::ApiError::Unavailable {
+            code: "permission_denied".into(),
+            reason: "only a member changes their own records".into(),
+        });
+    }
+    let invoker = tilo_actions::ActionInvoker::admitted(invocation.acting);
+    let arguments = match invocation.argument {
+        tilo_actions::remote::InvokeArgument::Json(arguments) => arguments.clone(),
+        tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
+        tilo_actions::remote::InvokeArgument::Text(_) => {
+            return Err(tilo_actions::ApiError::InvalidArguments(
+                "a change to a record carries typed arguments".into(),
+            ));
+        }
+    };
+    // The person's workspace decides the call by its caller's own grants there: an
+    // agent's by the agent's, never past its person's.
+    let resources = served.borrow_mut().harness().resources();
+    let (resource, spec) = tilo_actions::api::locate(&resources, invocation.address)
+        .ok_or_else(|| tilo_actions::ApiError::Unknown(invocation.address.clone()))?;
+    invocation.admit(&ui_core::shown_actions::ShownAction::new(
+        Some(own),
+        A::ID,
+        (&resource.kind, resource.id.as_str(), &spec.id),
+        &spec.need_for(Some(&arguments), None),
+    ))?;
+    served.borrow_mut().call_by(
+        invoker,
+        &invocation.address.resource,
+        &invocation.address.action,
+        serde_json::Value::Object(arguments),
+    )
 }
 
 /// Stand in for the hosts keeping the records `A` declares kept by them

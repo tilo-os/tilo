@@ -10,10 +10,10 @@ use tilo_actions::remote::{
     InvocationReceipt, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionMessage,
     ResourceReadRequest,
 };
-use tilo_actions::{ActionOutput, Actor, ApiError};
+use tilo_actions::{Acting, ActionOutput, ApiError};
 
 use super::Driver;
-use crate::shown_actions::{ActionDecision, ShownAction};
+use crate::shown_actions::{ActionDecision, ActionVerdict, ShownAction};
 use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 
 /// One invocation of another provider's action ([`Driver::serve_provider`]).
@@ -21,10 +21,44 @@ pub struct ProvidedInvocation<'a> {
     /// The action as the provider publishes it.
     pub address: &'a tilo_actions::ActionAddress,
     pub argument: &'a InvokeArgument,
-    /// Who invoked it.
-    pub actor: &'a Actor,
+    /// Who invoked it: the caller of the call the app made it in when it continues one (an
+    /// agent acting for its person, with what that person handed it), else the window's person.
+    pub acting: &'a Acting,
     /// The person's yes, when the provider asked them and this is the call coming back.
     pub approval: Option<&'a tilo_actions::remote::asked::Approval>,
+    /// What decides, in place of the workspace holding a record, the actions of it for an actor
+    /// ([`Driver::decide_shown_actions`]); `None` where nothing does.
+    decide: Option<&'a std::cell::RefCell<&'a mut ShownHost>>,
+}
+
+impl ProvidedInvocation<'_> {
+    /// Admit this call, of `action` of a record its workspace holds, as that workspace admits
+    /// it: by the actor's own grants there, an agent's never past its person's. Admitted where
+    /// nothing decides it.
+    ///
+    /// # Errors
+    /// The workspace's refusal, or that it asks its person first.
+    pub fn admit(&self, action: &ShownAction) -> Result<(), ApiError> {
+        let Some(decide) = self.decide else {
+            return Ok(());
+        };
+        let verdict = (decide.borrow_mut())(self.acting, std::slice::from_ref(action))
+            .pop()
+            .map(|decision| decision.verdict);
+        let refused = |reason: String| ApiError::Unavailable {
+            code: "permission_denied".into(),
+            reason,
+        };
+        match verdict {
+            Some(ActionVerdict::Allowed) => Ok(()),
+            Some(ActionVerdict::AsksFirst) => Err(ApiError::ConfirmationRequired),
+            Some(ActionVerdict::Refused(why)) => Err(refused(why)),
+            None => Err(refused(format!(
+                "nothing decided `{}` of {}",
+                action.action, action.resource
+            ))),
+        }
+    }
 }
 
 /// What answers another provider's action in place of the workspace.
@@ -34,8 +68,10 @@ pub type ServedProvider = Box<dyn FnMut(&ProvidedInvocation<'_>) -> Result<Actio
 /// (`{"revision", "records": [...]}`) as the record API answers the read, or why it cannot.
 pub type ServedReads = Box<dyn Fn(&ResourceReadRequest) -> Result<serde_json::Value, String>>;
 
-/// What decides, in place of the device's daemon, the actions a window shows.
-pub type ShownHost = Box<dyn FnMut(&[ShownAction]) -> Vec<ActionDecision>>;
+/// What decides, in place of the device's daemon, the actions of records another workspace
+/// holds for the actor asking: those a window shows its person, and each call of one a served
+/// provider is asked for, for its caller ([`ProvidedInvocation::admit`]).
+pub type ShownHost = Box<dyn FnMut(&Acting, &[ShownAction]) -> Vec<ActionDecision>>;
 
 /// The providers the caller serves and what decides the window's shown actions.
 #[derive(Default)]
@@ -46,36 +82,51 @@ pub(super) struct Served {
     /// Reads waiting for a write past the revision they name, by their correlation: answered once
     /// the record moved, as the workspace holds a followed read.
     held: Vec<(u64, ResourceReadRequest)>,
-    /// What decides the shown actions, the actions the window last asked about, and the
-    /// permissions revision they were decided at.
-    shown: Option<(ShownHost, Vec<ShownAction>, Option<u64>)>,
+    /// What decides the shown actions, the window's person they are shown to, the actions the
+    /// window last asked about, and the permissions revision they were decided at.
+    shown: Option<(ShownHost, Acting, Vec<ShownAction>, Option<u64>)>,
 }
 
 impl Served {
-    /// The receipt of `request` from the provider the caller serves in its name; `None` when
-    /// the caller serves no such provider.
+    /// The key `request`'s provider is served under, when the caller serves it. A record of an
+    /// app in a workspace is the app's there: what serves the app in that workspace answers each
+    /// of its records, as the workspace delivers them to it.
+    fn served_as(&self, request: &InvokeRequest) -> Option<String> {
+        let provider = &request.target.provider;
+        if self.providers.contains_key(provider) {
+            return Some(provider.clone());
+        }
+        let (workspace, app) = tilo_actions::remote::application_provider(provider)?;
+        let token = tilo_actions::remote::application_provider_token(workspace, app);
+        self.providers.contains_key(&token).then_some(token)
+    }
+
+    /// Whether the caller serves `request`'s provider.
+    pub(super) fn serves(&self, request: &InvokeRequest) -> bool {
+        self.served_as(request).is_some()
+    }
+
+    /// The receipt of `request`, made for `acting`, from the provider the caller serves in its
+    /// name; `None` when the caller serves no such provider.
     pub(super) fn invoke(
         &mut self,
         request: &InvokeRequest,
-        actor: &Actor,
+        acting: &Acting,
     ) -> Option<RemoteActionMessage> {
-        // A record of an app in a workspace is the app's there: what serves the app in that
-        // workspace answers each of its records, as the workspace delivers them to it.
-        let provider = &request.target.provider;
-        let token = tilo_actions::remote::application_provider(provider).map(|(workspace, app)| {
-            tilo_actions::remote::application_provider_token(workspace, app)
-        });
-        let serve = match token {
-            Some(token) if !self.providers.contains_key(provider) => {
-                self.providers.get_mut(&token)?
-            }
-            _ => self.providers.get_mut(provider)?,
-        };
+        let key = self.served_as(request)?;
+        let Self {
+            providers, shown, ..
+        } = self;
+        let serve = providers.get_mut(&key)?;
+        let decide = shown
+            .as_mut()
+            .map(|(host, ..)| std::cell::RefCell::new(host));
         let status = match serve(&ProvidedInvocation {
             address: &request.target.address,
             argument: &request.argument,
-            actor,
+            acting,
             approval: request.approval(),
+            decide: decide.as_ref(),
         }) {
             Ok(output) => ReceiptStatus::Completed { output },
             Err(error) => ReceiptStatus::Failed {
@@ -154,7 +205,7 @@ impl Served {
         let CollabRequest::DecideShownActions { actions } = request else {
             return None;
         };
-        let (_, shown, decided) = self.shown.as_mut()?;
+        let (_, _, shown, decided) = self.shown.as_mut()?;
         shown.clone_from(actions);
         *decided = None;
         self.decide_shown()
@@ -163,7 +214,7 @@ impl Served {
     /// Whether the shown actions are owed a decision: permissions changed since they were
     /// decided, or a host was given after the window asked.
     pub(super) fn owes_decision(&self) -> bool {
-        self.shown.as_ref().is_some_and(|(_, _, decided)| {
+        self.shown.as_ref().is_some_and(|(_, _, _, decided)| {
             *decided != Some(tilo_ui_base::permissions::shared_revision())
         })
     }
@@ -178,13 +229,13 @@ impl Served {
     }
 
     fn decide_shown(&mut self) -> Option<CollabEvent> {
-        let (host, shown, decided) = self.shown.as_mut()?;
+        let (host, person, shown, decided) = self.shown.as_mut()?;
         *decided = Some(tilo_ui_base::permissions::shared_revision());
         if shown.is_empty() {
             return None;
         }
         Some(CollabEvent::ActionVerdicts {
-            verdicts: host(shown),
+            verdicts: host(person, shown),
         })
     }
 }
@@ -224,8 +275,10 @@ impl Driver {
     }
 
     /// Decide with `host`, as the device's daemon does, the actions the window shows: what the
-    /// window asks of them is answered as it asks, and again whenever permissions change.
-    /// Connects the driver's peer when it is not.
+    /// window asks of them is answered as it asks, and again whenever permissions change. The
+    /// same host decides each call of such an action a served provider is asked for, as the
+    /// workspace holding the record admits it for its caller. Connects the driver's peer when it
+    /// is not.
     pub fn decide_shown_actions(&mut self, host: ShownHost) {
         let asked = self
             .peer_requests()
@@ -235,7 +288,8 @@ impl Driver {
                 CollabRequest::DecideShownActions { actions } => Some(actions),
                 _ => None,
             });
-        self.served_mut().shown = Some((host, asked.unwrap_or_default(), None));
+        let person = Acting::member(self.app.local_author.clone());
+        self.served_mut().shown = Some((host, person, asked.unwrap_or_default(), None));
         self.run_frame();
     }
 }

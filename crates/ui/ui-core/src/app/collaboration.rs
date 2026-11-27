@@ -618,7 +618,7 @@ impl App {
     /// Send what the window's clients asked of the broker. An action request made while the
     /// connection still joins its primary route waits for it: the manager carries nothing else
     /// until then, and an invocation it dropped would never be answered.
-    fn send_collab_requests(&mut self) {
+    pub(super) fn send_collab_requests(&mut self) {
         let collaboration = &mut self.collaboration;
         collaboration
             .held_requests

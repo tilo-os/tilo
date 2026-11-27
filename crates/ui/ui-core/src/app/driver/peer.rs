@@ -228,14 +228,11 @@ impl Peer {
         let address = &request.target.address;
         let spec = tilo_actions::api::resolve(resources, address);
         let slot = request.argument.to_slot();
-        let need = spec.map(|spec| match &request.argument {
-            InvokeArgument::Json(arguments) => spec.need_for(Some(arguments), None).kind,
-            _ => spec.need_for(None, slot.as_deref()).kind,
-        });
+        let need = spec.map(|spec| need_of(spec, &request.argument).kind);
         // An edit an effect submits for its caller is decided as the caller's, reaching no
         // further than the call it continues; once that call ended it continues nothing.
         let continued = match request.on_behalf_of {
-            Some(running) => match self.running_caller(running) {
+            Some(running) => match self.running_caller(running, usize::MAX) {
                 Some(caller) if need.is_none_or(|need| need <= caller.reach) => Some(caller),
                 _ => {
                     self.answer(tilo_actions::remote::refuse(
@@ -429,14 +426,39 @@ impl Peer {
         any
     }
 
-    /// Who the call `invocation` this peer delivered was admitted for, while it runs.
-    fn running_caller(&self, invocation: tilo_actions::InvocationId) -> Option<Caller> {
+    /// Who the call `invocation` this peer delivered was admitted for, while it runs: as the
+    /// broker reads the app's connection in order, until the app answered the call's end among
+    /// the first `before` things it sent.
+    fn running_caller(
+        &self,
+        invocation: tilo_actions::InvocationId,
+        before: usize,
+    ) -> Option<Caller> {
         let (wire_id, caller) = self.running.get(&invocation)?;
-        let ended = self.exchange.borrow().sent.iter().any(|request| {
-            matches!(request, CollabRequest::UpdateInvocation { id, update }
+        let ended = self
+            .exchange
+            .borrow()
+            .sent
+            .iter()
+            .take(before)
+            .any(|request| {
+                matches!(request, CollabRequest::UpdateInvocation { id, update }
                 if id == wire_id && update.is_terminal())
-        });
+            });
         (!ended).then(|| caller.clone())
+    }
+}
+
+/// What running `spec` with `argument` needs.
+fn need_of(
+    spec: &tilo_actions::ActionSpec,
+    argument: &tilo_actions::remote::InvokeArgument,
+) -> tilo_actions::ActionNeed {
+    match argument {
+        tilo_actions::remote::InvokeArgument::Json(arguments) => {
+            spec.need_for(Some(arguments), None)
+        }
+        argument => spec.need_for(None, argument.to_slot().as_deref()),
     }
 }
 
@@ -851,7 +873,8 @@ impl Driver {
                 .get(peer.served..)
                 .unwrap_or_default()
                 .iter()
-                .filter(|request| {
+                .enumerate()
+                .filter(|(_, request)| {
                     matches!(
                         request,
                         CollabRequest::RemoteAction {
@@ -861,7 +884,9 @@ impl Driver {
                         } | CollabRequest::DecideShownActions { .. }
                     )
                 })
-                .cloned()
+                // Where each stands among what the app sent: what it continues must still
+                // run there.
+                .map(|(at, request)| (peer.served + at, request.clone()))
                 .collect::<Vec<_>>();
             peer.served = exchange.sent.len();
             asked
@@ -879,7 +904,7 @@ impl Driver {
         // leaves out) is the app's to offer too: the broker asks the window for the one address a
         // call names, as the app's own API resolves it, never withholding it for not being listed.
         let mut resources = self.app.publication_resources();
-        for request in &asked {
+        for (_, request) in &asked {
             let CollabRequest::RemoteAction {
                 message: RemoteActionMessage::Invoke(request),
                 ..
@@ -945,7 +970,7 @@ impl Driver {
         let actor = tilo_actions::Actor::Member(self.app.local_author.clone());
         let grants = self.app.permission_ctx.clone();
         let peer = self.peer_mut();
-        for request in asked {
+        for (at, request) in asked {
             let request = match request {
                 CollabRequest::RemoteAction {
                     message: RemoteActionMessage::Invoke(request),
@@ -989,8 +1014,38 @@ impl Driver {
                 peer.admit_own(&resources, request, actor.clone(), Some(&grants));
                 continue;
             }
-            if let Some(receipt) = peer.served_by_caller.invoke(&request, &actor) {
-                peer.provide(receipt);
+            if peer.served_by_caller.serves(&request) {
+                // A call the app makes while it runs one delivered to it is decided as that
+                // one's caller, reaching no further than it, as the broker admits it; once that
+                // call ended it continues nothing. Any other is the window's own person's.
+                let caller = match request.on_behalf_of {
+                    Some(running) => match peer.running_caller(running, at) {
+                        Some(caller)
+                            if tilo_actions::api::resolve(&resources, &request.target.address)
+                                .is_none_or(|spec| {
+                                    need_of(spec, &request.argument).kind <= caller.reach
+                                }) =>
+                        {
+                            caller
+                                .context
+                                .as_ref()
+                                .and_then(tilo_actions::ActionContext::acting)
+                                .cloned()
+                                .unwrap_or_else(|| tilo_actions::Acting::from(caller.actor))
+                        }
+                        _ => {
+                            peer.answer(tilo_actions::remote::refuse(
+                                &RemoteActionMessage::Invoke(request),
+                                ActionCallError::NotPermitted,
+                            ));
+                            continue;
+                        }
+                    },
+                    None => tilo_actions::Acting::from(actor.clone()),
+                };
+                if let Some(receipt) = peer.served_by_caller.invoke(&request, &caller) {
+                    peer.provide(receipt);
+                }
                 continue;
             }
             match &peer.session {

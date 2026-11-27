@@ -89,6 +89,9 @@ impl App {
                 return;
             }
         }
+        // What the calls asked of other providers while they ran goes first, as they asked it:
+        // a request a call makes for its caller is admitted only while that call still runs.
+        self.send_collab_requests();
         for (id, update) in std::mem::take(&mut self.actions.held_answers) {
             self.collaboration
                 .manager
