@@ -45,6 +45,7 @@ collab-admission = { package = "tilo-collab-admission", path = "../collab-admiss
 tilo-app-id = { path = "../tilo-app-id" }
 tilo-desktop-model = { path = "../../desktop/desktop-model" }
 tilo-action-policy = { path = "../action-policy" }
+tilo-workspace-keys = { version = "0.1.0", path = "../workspace-keys" }
 # The shared neighbour wire vocabulary (`NeighbourMsg`, colorimetry, HDR metadata).
 neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
 tilo-user-identity = { path = "../tilo-user-identity" }

@@ -23,6 +23,8 @@ pub mod join_transport;
 mod kept_states;
 /// Who a key is when it acts in a workspace that holds its certificate.
 pub mod key_caller;
+/// The access policy of the workspaces a device holds, as their state stands.
+pub mod key_directory;
 #[cfg(not(target_arch = "wasm32"))]
 mod link_proof;
 #[cfg(all(not(target_arch = "wasm32"), any(test, feature = "test-support")))]

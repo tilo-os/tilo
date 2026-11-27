@@ -16,19 +16,18 @@ use std::{
     io,
     path::Path,
     sync::{Arc, Mutex},
-    time::UNIX_EPOCH,
 };
 
-use collab_types::Ed25519PublicKey;
 use collab_types::signer::DeviceSigner;
 use key_group::VaultKey;
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::StatePeer;
+use tilo_peer_state::key_directory::{Follower, KeyStates, Readers, StateDirectory};
 use tilo_workspace_keys::{
-    GovernancePark, GovernancePump, GovernanceTransport, InboundGovernance, KeyDir, KeyDirectory,
-    KeyProvider, KeysConfig, SealCheckRegistry, SharedKeys, WorkspaceKeys,
+    GovernancePark, GovernancePump, GovernanceTransport, InboundGovernance, KeyDir, KeyProvider,
+    KeysConfig, SealCheckRegistry, SharedKeys, WorkspaceKeys,
 };
 use tokio::task::JoinHandle;
 
@@ -68,7 +67,9 @@ impl KeyService {
                 signer,
                 role: tilo_workspace_keys::KeyRole::Committer,
             },
-            Box::new(directory.clone()),
+            Box::new(StateDirectory {
+                states: directory.clone(),
+            }),
             seal_checks,
         )?;
         let park = GovernancePark::new();
@@ -269,71 +270,16 @@ impl Directory {
     }
 }
 
-impl KeyDirectory for Directory {
-    fn requires_document_keys(
+impl KeyStates for Directory {
+    fn with_key_state<R>(
         &self,
         workspace: WorkspaceId,
-        app: &str,
-        document: &str,
-    ) -> Option<bool> {
+        read: impl FnOnce(&StatePeer, Option<Follower>, Readers<'_>) -> R,
+    ) -> Option<R> {
         self.state(workspace, |state| {
-            state
-                .requires_document_keys(app, document, tilo_clock::wall())
-                .ok()
-        })?
-    }
-
-    fn document_devices(
-        &self,
-        workspace: WorkspaceId,
-        app: &str,
-        document: &str,
-        now: u64,
-    ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        let at = UNIX_EPOCH.checked_add(tilo_workspace_keys::policy_instant(now))?;
-        let readers = self.state(workspace, |state| {
-            state.document_key_holders(app, document, at).ok()
-        })??;
-        Some(
-            readers
-                .into_iter()
-                .map(Ed25519PublicKey::from_bytes)
-                .collect(),
-        )
-    }
-
-    fn allowed_devices(
-        &self,
-        workspace: WorkspaceId,
-        now: u64,
-    ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        let at = UNIX_EPOCH.checked_add(tilo_workspace_keys::policy_instant(now))?;
-        // Governance that cannot be read says nothing of who reads it.
-        let readers = self.state(workspace, |state| state.governance().key_holders(at).ok())??;
-        Some(
-            readers
-                .into_iter()
-                .map(Ed25519PublicKey::from_bytes)
-                .collect(),
-        )
-    }
-
-    fn reader_devices(
-        &self,
-        workspace: WorkspaceId,
-        named: &collab_types::NamedReaders,
-        now: u64,
-    ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        let at = UNIX_EPOCH.checked_add(tilo_workspace_keys::policy_instant(now))?;
-        let readers = self.state(workspace, |state| {
-            state.governance().reader_key_holders(named, at).ok()
-        })??;
-        Some(
-            readers
-                .into_iter()
-                .map(Ed25519PublicKey::from_bytes)
-                .collect(),
-        )
+            let readers = |at| state.governance().key_holders(at);
+            read(state, None, &readers)
+        })
     }
 
     /// A workspace the service hosts whose founding device is this device or its service: a

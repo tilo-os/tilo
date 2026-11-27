@@ -3,7 +3,7 @@
 //! and the devices each workspace admits, which its window streams carry between.
 //! A sealed record is opened on no one's machine but a member's: the workspace's
 //! devices agree, group by group, that exactly the devices its access policy admits
-//! take part ([`KeyDirectory`]), and each sealed write travels with the key
+//! take part ([`tilo_workspace_keys::KeyDirectory`]), and each sealed write travels with the key
 //! material of its group. The keys live here, never in the document, which is what
 //! lets a person invited today read what the workspace said a year ago while its
 //! membership moves on.
@@ -25,7 +25,6 @@ use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tilo_clock::time::UNIX_EPOCH;
 
 use crate::network::{Cmd, RosterDevice, Topic, topic_of};
 
@@ -36,13 +35,13 @@ use tilo_broker_core::collab_core::{BrokerChannels, BrokerSealChecks};
 use tilo_desktop_model::WorkspaceId as ModelWorkspaceId;
 use tilo_identity::policy_change;
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_keys::{
-    GovernancePark, GovernanceTransport, InboundGovernance, KeyDirectory, SharedKeys,
-};
+use tilo_workspace_keys::{GovernancePark, GovernanceTransport, InboundGovernance, SharedKeys};
 #[cfg(target_os = "linux")]
 use tilo_workspace_keys::{GovernancePump, KeysConfig, SealCheckRegistry, WorkspaceKeys};
 
 use crate::engine::Engine;
+use tilo_peer_state::StatePeer;
+use tilo_peer_state::key_directory::{Follower, KeyStates, Readers, StateDirectory};
 use tilo_peer_state::owner::DeviceWorkspaces;
 
 pub mod vault;
@@ -98,7 +97,7 @@ impl KeyService {
         broker: Arc<Mutex<BrokerChannels>>,
         mut settled: impl FnMut() + Send + 'static,
     ) -> std::io::Result<Self> {
-        let directory = Box::new(OwnerDirectory::member(engine.owner().clone()));
+        let directory = Box::new(OwnerDirectory::new(engine.owner().clone(), false));
         let checks: Arc<dyn SealCheckRegistry> = Arc::new(BrokerSealChecks(broker));
         let service = match MlsVault::open_for_session() {
             Ok(vault) => WorkspaceKeys::open(
@@ -592,123 +591,34 @@ pub struct OwnerDirectory {
 }
 
 impl OwnerDirectory {
-    /// The directory of a device that settles its groups.
+    /// The directory of a device that settles its groups, or follows them as `reader`.
     #[must_use]
-    pub const fn member(owner: DeviceWorkspaces) -> Self {
-        Self {
-            owner,
-            reader: false,
-        }
-    }
-
-    /// The directory of a [`tilo_workspace_keys::KeyRole::Follower`] device.
-    #[must_use]
-    pub const fn reader(owner: DeviceWorkspaces) -> Self {
-        Self {
-            owner,
-            reader: true,
+    pub const fn new(owner: DeviceWorkspaces, reader: bool) -> StateDirectory<Self> {
+        StateDirectory {
+            states: Self { owner, reader },
         }
     }
 }
 
-impl KeyDirectory for OwnerDirectory {
-    fn requires_document_keys(
+impl KeyStates for OwnerDirectory {
+    fn with_key_state<R>(
         &self,
         workspace: ModelWorkspaceId,
-        app: &str,
-        document: &str,
-    ) -> Option<bool> {
+        read: impl FnOnce(&StatePeer, Option<Follower>, Readers<'_>) -> R,
+    ) -> Option<R> {
         self.owner
             .with_current(workspace, |view| {
-                view.peer()
-                    .requires_document_keys(app, document, tilo_clock::wall())
+                let follower = self.reader.then(|| {
+                    (
+                        view.workspace_host().device_public_key,
+                        view.device().device_public_key,
+                        view.device().user_public_key,
+                    )
+                });
+                let readers = |at| view.key_holders(at);
+                Ok(read(view.peer(), follower, &readers))
             })
             .ok()
-    }
-
-    fn document_devices(
-        &self,
-        workspace: ModelWorkspaceId,
-        app: &str,
-        document: &str,
-        now: u64,
-    ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        let at = UNIX_EPOCH.checked_add(tilo_workspace_keys::policy_instant(now))?;
-        self.owner
-            .with_current(workspace, |view| {
-                view.peer().document_key_holders(app, document, at)
-            })
-            .ok()
-            .map(|readers| {
-                readers
-                    .into_iter()
-                    .map(Ed25519PublicKey::from_bytes)
-                    .collect()
-            })
-    }
-
-    /// The devices that hold the workspace's keys at `now` (Unix seconds): every device of its
-    /// members.
-    fn allowed_devices(
-        &self,
-        workspace: ModelWorkspaceId,
-        now: u64,
-    ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        let at = UNIX_EPOCH.checked_add(tilo_workspace_keys::policy_instant(now))?;
-        let reader = self.reader;
-        let readers = self
-            .owner
-            .with_current(workspace, |view| {
-                let mut readers = view.key_holders(at)?;
-                if reader {
-                    readers.insert(view.workspace_host().device_public_key);
-                    readers.insert(view.device().device_public_key);
-                }
-                Ok(readers)
-            })
-            // A workspace whose governance cannot be read says nothing of who reads it.
-            .ok()?;
-        Some(
-            readers
-                .into_iter()
-                .map(Ed25519PublicKey::from_bytes)
-                .collect(),
-        )
-    }
-
-    /// The devices of the people `named` lists, and of the members holding the role it names,
-    /// among those that hold the workspace's keys at `now`; and this device when it follows its
-    /// groups as one of theirs, read by name or by its person's role.
-    fn reader_devices(
-        &self,
-        workspace: ModelWorkspaceId,
-        named: &collab_types::NamedReaders,
-        now: u64,
-    ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        let at = UNIX_EPOCH.checked_add(tilo_workspace_keys::policy_instant(now))?;
-        let reader = self.reader;
-        let readers = self
-            .owner
-            .with_current(workspace, |view| {
-                let mut readers = view.reader_key_holders(named, at)?;
-                let device = view.device();
-                if reader
-                    && view
-                        .peer()
-                        .governance()
-                        .reads_named(named, &device.user_public_key, at)
-                {
-                    readers.insert(device.device_public_key);
-                }
-                Ok(readers)
-            })
-            .ok()?;
-        Some(
-            readers
-                .into_iter()
-                .map(Ed25519PublicKey::from_bytes)
-                .collect(),
-        )
     }
 
     fn founds(&self, workspace: ModelWorkspaceId) -> bool {

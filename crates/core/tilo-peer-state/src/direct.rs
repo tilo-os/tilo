@@ -307,6 +307,22 @@ fn reads_named(peer: &StatePeer, readers: &str, device: [u8; 32]) -> bool {
     })
 }
 
+impl StatePeer {
+    /// Whether `device` reads `app`/`document`, as its `readers` and the workspace's policy say.
+    fn device_reads(
+        &self,
+        device: [u8; 32],
+        app: &str,
+        document: &str,
+        readers: Option<&str>,
+        keeping: bool,
+        now: SystemTime,
+    ) -> bool {
+        readers.is_none_or(|readers| reads_named(self, readers, device))
+            && (keeping || self.check_document_read(device, app, document, now).is_ok())
+    }
+}
+
 /// The certificate `device` takes part in `peer`'s workspace under: its own
 /// in the member list, or, for a device the workspace names among those
 /// keeping it, the one its signed address carries. A device keeping the
@@ -435,6 +451,16 @@ pub struct LinkScope {
     pub lists_itself: bool,
 }
 
+/// The scope of a link from a device placed for `records`.
+fn placed_scope(records: &tilo_user_identity::PlacedRecords) -> LinkScope {
+    LinkScope {
+        reads: Some(records.channels().to_vec()),
+        own_frames_only: true,
+        key_access: false,
+        lists_itself: false,
+    }
+}
+
 impl LinkScope {
     /// The scope of a link from the device `certificate` certifies when it
     /// was placed for records of `workspace` alone
@@ -450,12 +476,7 @@ impl LinkScope {
         certificate
             .capabilities
             .placed_in(workspace)
-            .map(|records| Self {
-                reads: Some(records.channels().to_vec()),
-                own_frames_only: true,
-                key_access: false,
-                lists_itself: false,
-            })
+            .map(placed_scope)
     }
 
     /// Whether the link's device reaches the record told by `channel`.
@@ -542,12 +563,7 @@ impl LinkAdmit {
         let scope = {
             let replica = link.0.replica.lock();
             match replica.placed_device(&remote, tilo_clock::wall()) {
-                Some(Ok(placed)) => LinkScope {
-                    reads: Some(placed.records.channels().to_vec()),
-                    own_frames_only: true,
-                    key_access: false,
-                    lists_itself: false,
-                },
+                Some(Ok(placed)) => placed_scope(&placed.records),
                 // One whose certificate ran out or was revoked, or whose person left, reaches no
                 // record at all.
                 Some(Err(_)) => LinkScope {
@@ -3738,9 +3754,6 @@ impl DirectSync {
                     ..
                 } => {
                     let replica = link.0.replica.lock();
-                    let named_matches = readers
-                        .as_deref()
-                        .is_none_or(|readers| reads_named(&replica, readers, device));
                     // A device the workspace names among those keeping it is
                     // sent what it keeps: the workspace's policy answers a
                     // member's access, and such a device is no member, so what
@@ -3750,17 +3763,14 @@ impl DirectSync {
                         .keeping_devices()
                         .iter()
                         .any(|hint| hint.host.device_public_key == device);
-                    named_matches
-                        && (keeping
-                            || !replica.has_governance()
-                            || replica
-                                .check_document_read(
-                                    device,
-                                    app_id,
-                                    document_id,
-                                    tilo_clock::wall(),
-                                )
-                                .is_ok())
+                    replica.device_reads(
+                        device,
+                        app_id,
+                        document_id,
+                        readers.as_deref(),
+                        keeping || !replica.has_governance(),
+                        tilo_clock::wall(),
+                    )
                 }
                 NeighbourMsg::MlsGovernance { workspace, .. }
                 | NeighbourMsg::MlsAccessRequest { workspace, .. } => {
@@ -3772,13 +3782,14 @@ impl DirectSync {
                             ..
                         }) => {
                             let replica = link.0.replica.lock();
-                            let now = tilo_clock::wall();
-                            readers
-                                .as_deref()
-                                .is_none_or(|readers| reads_named(&replica, readers, device))
-                                && replica
-                                    .check_document_read(device, &app, &document, now)
-                                    .is_ok()
+                            replica.device_reads(
+                                device,
+                                &app,
+                                &document,
+                                readers.as_deref(),
+                                false,
+                                tilo_clock::wall(),
+                            )
                         }
                         // The workspace's own channels are the keys of every record: a
                         // device confined to some records is sent none of their groups.

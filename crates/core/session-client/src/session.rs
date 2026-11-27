@@ -45,6 +45,7 @@ use tokio::sync::mpsc;
 
 use crate::link::Held;
 use crate::membership_check::PeerStore;
+use crate::workspace_keys::OwnerDirectory;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::direct::{self, Answered, DirectSync, Kept as Answer};
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -2628,11 +2629,7 @@ fn open_keys(
     signer: &Arc<dyn tilo_server_client::DeviceSigner>,
     checks: &Arc<tilo_workspace_keys::SealChecks>,
 ) -> tilo_workspace_keys::WorkspaceKeys {
-    let directory = || {
-        Box::new(crate::workspace_keys::OwnerDirectory::reader(
-            owner.to_owned(),
-        ))
-    };
+    let directory = || Box::new(OwnerDirectory::new(owner.to_owned(), true));
     tilo_workspace_keys::WorkspaceKeys::open(
         tilo_workspace_keys::KeysConfig {
             state: Arc::new(state.clone()),
@@ -2655,9 +2652,7 @@ fn keyless_keys(
     checks: &Arc<tilo_workspace_keys::SealChecks>,
 ) -> tilo_workspace_keys::WorkspaceKeys {
     tilo_workspace_keys::WorkspaceKeys::without_store(
-        Box::new(crate::workspace_keys::OwnerDirectory::reader(
-            owner.to_owned(),
-        )),
+        Box::new(OwnerDirectory::new(owner.to_owned(), true)),
         Arc::clone(checks) as Arc<dyn tilo_workspace_keys::SealCheckRegistry>,
     )
 }
@@ -4693,7 +4688,7 @@ impl Task {
     ) -> Option<BTreeSet<collab_types::Ed25519PublicKey>> {
         use tilo_workspace_keys::KeyDirectory as _;
         let workspace = WorkspaceId::parse(&route.cluster_id)?;
-        crate::workspace_keys::OwnerDirectory::reader(self.engine.owner().to_owned())
+        OwnerDirectory::new(self.engine.owner().to_owned(), true)
             .allowed_devices(workspace, tilo_clock::unix_now())
     }
 
