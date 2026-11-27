@@ -57,7 +57,7 @@ async fn person_keeps_a_folder(host: &Host) -> u64 {
 /// An empty workspace is the empty folder a person with no files sees, not a tree on its way.
 #[test]
 fn an_agents_view_of_files_is_the_empty_folder_a_person_with_no_files_sees() {
-    host::run(|host| async move {
+    host::run_with(&["files"], |host| async move {
         let workspace = host.workspace().to_owned();
         let agent = host.agent();
         let session = Session::Agent(&agent);
@@ -73,7 +73,7 @@ fn an_agents_view_of_files_is_the_empty_folder_a_person_with_no_files_sees() {
 /// The agent's view of Files lists the folder the person's Files hold, never a skeleton.
 #[test]
 fn an_agents_view_of_files_lists_the_folder_the_persons_files_hold() {
-    host::run(|host| async move {
+    host::run_with(&["files"], |host| async move {
         let workspace = host.workspace().to_owned();
         let agent = host.agent();
         let session = Session::Agent(&agent);
@@ -129,7 +129,7 @@ fn an_agents_view_of_files_reads_times_on_the_persons_clock_in_their_zone() {
         // A system without a zone database renders every zone as UTC.
         return;
     };
-    host::run(|host| async move {
+    host::run_with(&["files"], |host| async move {
         let workspace = host.workspace().to_owned();
         let agent = host.agent();
         let session = Session::Agent(&agent);
@@ -208,7 +208,7 @@ fn a_zone_the_person_chooses_is_the_one_their_page_and_their_agent_read() {
         // A system without a zone database renders every zone as UTC.
         return;
     };
-    host::run(|host| async move {
+    host::run_with(&["files"], |host| async move {
         let workspace = host.workspace().to_owned();
         let agent = host.agent();
         let session = Session::Agent(&agent);
