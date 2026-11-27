@@ -337,6 +337,51 @@ mod tests {
         }
     }
 
+    /// An image names each app's tree by its payload (`trees/<payload root hash>`), not by its id;
+    /// the image's store read where it stands, or a copy of it, finds that tree, never a
+    /// `pkgs/<id>` the image no longer has.
+    #[test]
+    fn a_tree_named_by_its_payload_is_found_where_the_row_put_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = crate::layout::Layout::new(dir.path().join("image/tilo-apps"));
+        let id = PackageId::from_bytes([9; 32]);
+        let hex = id.to_hex();
+        let tree = image.root().join("trees").join("ab".repeat(32));
+        std::fs::create_dir_all(&tree).unwrap();
+        std::fs::create_dir_all(image.meta_dir(id)).unwrap();
+        std::fs::write(
+            image.registry(),
+            format!(
+                "[[entry]]\nid = 'so.tilo.notes'\npackage_id_hex = {hex:?}\n\
+                 payload_root = {:?}\nmanifest_path = {:?}\n",
+                tree.display().to_string(),
+                image.manifest(id).display().to_string(),
+            ),
+        )
+        .unwrap();
+        let row = Registry::load_in(&image)
+            .unwrap()
+            .find("so.tilo.notes")
+            .cloned()
+            .expect("the row");
+        assert_eq!(row.payload_root, tree);
+        assert_eq!(row.manifest_path, image.manifest(id));
+
+        let copy = crate::layout::Layout::new(dir.path().join("device/tilo-apps"));
+        std::fs::create_dir_all(copy.root()).unwrap();
+        std::fs::copy(image.registry(), copy.registry()).unwrap();
+        let row = Registry::load_in(&copy)
+            .unwrap()
+            .find("so.tilo.notes")
+            .cloned()
+            .expect("the row");
+        assert_eq!(
+            row.payload_root,
+            copy.root().join("trees").join("ab".repeat(32))
+        );
+        assert_eq!(row.manifest_path, copy.manifest(id));
+    }
+
     /// A registry read where its store stands names that store's payloads, not the store the rows
     /// were installed with: a store copied whole (a device's daemon reading what an installer
     /// staged, a walk's device reading a session's store) launches from where it is read, and from

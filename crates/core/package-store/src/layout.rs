@@ -96,22 +96,32 @@ impl Layout {
     }
 
     /// Resolve `row`'s payload and manifest in this store: a registry describes the packages this
-    /// store holds, so what it names is here, by the id the row carries.
+    /// store holds, so what it names is here, at the place in the store the row records.
     ///
     /// A store is installed once and read from wherever it stands: a device's daemon reads the
     /// copy an installer staged, and a walk's device reads the copy of a session's store. The rows
     /// keep the paths they were installed with, which name the store the copy came from — outside
     /// this one, and, where that was one person's private tree, unreadable to the sandbox that
     /// serves it. A row is resolved here instead, never by a path recorded elsewhere.
+    ///
+    /// The row's place in its store is kept: an image names each app's tree by its payload
+    /// (`trees/<payload root hash>`), not by its id, so only the store's own root is replaced. The
+    /// store a row was installed in is the one its manifest sits in (`<root>/pkgs/<id>.pkg/`).
     pub fn resolve(&self, row: &mut crate::registry::InstalledPackage) {
-        let Some(id) = self
-            .materialised_id(&row.payload_root)
-            .or_else(|| parse_id_hex(&row.package_id_hex))
-        else {
+        let Some(installed) = row.manifest_path.ancestors().nth(3) else {
             return;
         };
-        row.payload_root = self.payload(id);
-        row.manifest_path = self.manifest(id);
+        if installed == self.root {
+            return;
+        }
+        let (Ok(payload), Ok(manifest)) = (
+            row.payload_root.strip_prefix(installed),
+            row.manifest_path.strip_prefix(installed),
+        ) else {
+            return;
+        };
+        row.payload_root = self.root.join(payload);
+        row.manifest_path = self.root.join(manifest);
     }
 }
 
