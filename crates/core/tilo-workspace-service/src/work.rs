@@ -969,6 +969,15 @@ pub trait AgentEngine: Send + Sync {
         agent: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>>;
 
+    /// The public key this device makes for `agent` of `workspace`, where it runs the agent
+    /// ([`Self::acts_as`]), whether or not its person's root has certified it here. The device
+    /// that made an agent's key takes the firings its shortcuts start at once; every other
+    /// device waits the grace for when that device is away. `None` where this device makes no
+    /// key for it.
+    fn key_here(&self, _workspace: &str, _agent: &str) -> Option<[u8; 32]> {
+        None
+    }
+
     /// The agents whose answer this engine takes, by id with their names, in every workspace
     /// it runs agents of.
     fn answering(&self) -> Vec<(String, String)> {

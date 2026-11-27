@@ -729,6 +729,10 @@ impl tilo_workspace_service::work::AgentEngine for EngineKeys {
         self.answering.lock_recover().clone()
     }
 
+    fn key_here(&self, workspace: &str, agent: &str) -> Option<[u8; 32]> {
+        self.roster.key_here(WorkspaceId::parse(workspace)?, agent)
+    }
+
     fn answer(
         &self,
         workspace: String,

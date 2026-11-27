@@ -120,10 +120,13 @@ pub struct Armed {
     /// Who saved it, by their device's proof: its triggers fire on their behalf only, bounded by
     /// its grant.
     pub saver: String,
-    /// The agent of theirs that saved it with its own key, and that key: its runs act as that
-    /// agent, held to the agent's grants as well as its own.
+    /// The agent of theirs that saved it with its own key, and that key: its runs act as its
+    /// person, the shortcut's maker, held to the agent's grants as well as the shortcut's own.
     pub agent: Option<(String, [u8; 32])>,
-    /// The device that saved it: the one its firings start on.
+    /// The device that saved it: the one its firings start on. On the device that made an
+    /// agent's key ([`tilo_workspace_service::work::AgentEngine::key_here`]) this is that device,
+    /// which runs the agent, so the firings start there at once; every other device waits the
+    /// grace, for when it is away.
     pub starter: [u8; 32],
     /// The workspace as its own document describes it.
     pub described: tilo_desktop_model::Workspace,
@@ -710,6 +713,10 @@ pub struct Runner {
     presence: BTreeMap<String, String>,
     /// The apps' long-lived connections this device holds ([`Turn::Connection`]).
     connections: connections::Connections,
+    /// Whether the last arming found this device's agent engine: an engine that starts after
+    /// the runner arms its shortcuts again, so an agent's firings start on the device that made
+    /// its key ([`AgentEngine::key_here`](tilo_workspace_service::work::AgentEngine::key_here)).
+    agent_engine: bool,
 }
 
 impl Runner {
@@ -742,6 +749,7 @@ impl Runner {
             seen_invocations: BTreeMap::new(),
             presence: BTreeMap::new(),
             connections: connections::Connections::default(),
+            agent_engine: false,
         }
     }
 
@@ -800,6 +808,10 @@ impl Runner {
             }
             if std::mem::take(&mut changed) {
                 self.arm().await;
+            } else if !self.agent_engine && self.workspaces.agent_keys().is_some() {
+                // The agent engine came up after the last arming: an agent's shortcuts fire
+                // from the device that made its key, so they are armed again.
+                self.arm().await;
             }
             self.pass(std::mem::take(&mut written)).await;
             // A webhook is woken by the invocation recorded for it and by who is here moving,
@@ -844,6 +856,23 @@ impl Runner {
             hosts,
             tilo_clock::unix_now_ns(),
         );
+        // An agent's key is made by the device that runs the agent, and a shortcut it saved
+        // fires at once there: its proof names the agent's key, which no device holds, so every
+        // other device would wait out the grace for a turn nobody takes. The one that made it
+        // starts its own, and the others keep the grace only for when it is away. An engine
+        // that starts after the arming arms again ([`Self::run`]).
+        let device = self.workspaces.device_cert().device_public_key;
+        let engine = self.workspaces.agent_keys();
+        self.agent_engine = engine.is_some();
+        if let Some(engine) = engine {
+            for armed in &mut self.armed {
+                if let Some((agent, key)) = &armed.agent
+                    && engine.key_here(&armed.workspace, agent) == Some(*key)
+                {
+                    armed.starter = device;
+                }
+            }
+        }
         // A record's first look reports the changes made from when its workspace started being
         // watched. A change's time is a whole second, and what was written right after the save
         // that armed it may carry the second before this one.

@@ -98,8 +98,9 @@ struct AgentProof {
 pub struct Saver {
     /// The person, by their root, hex.
     pub person: String,
-    /// The agent of theirs that saved it with its own key: the shortcut acts as that agent.
-    /// `None` where a device of the person's saved it.
+    /// The agent of theirs that saved it with its own key: its runs act as that agent's person,
+    /// the shortcut's maker, and record the shortcut as how they came. `None` where a device of
+    /// the person's saved it.
     pub agent: Option<String>,
     /// The key that signed it: the device's, or the agent's grant's.
     pub key: [u8; 32],

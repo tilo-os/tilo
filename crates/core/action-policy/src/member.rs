@@ -403,7 +403,8 @@ impl std::fmt::Display for Actor {
 
 /// Who made a change, and who they acted for, as a tree: an automation a person
 /// set up, run by an agent, for two people, is
-/// `Automation(1) for [Agent(1) for [Person(Q), Person(X)]]`.
+/// `Automation(1) for [Agent(1) for [Person(Q), Person(X)]]`. The unattended run of a Shortcut
+/// is its maker acting (`by`), with the Shortcut in the tree of whom it acts through.
 ///
 /// Every format writes every field. A signed claim keeps the text its signer wrote, so an entry
 /// written by a build that left unnamed fields out still checks against its own bytes.
@@ -691,9 +692,22 @@ impl Acting {
         self.by.member_id().is_some_and(MemberId::is_bot)
     }
 
+    /// Whether this acting is an automation's, not a person's own: an automation acting by
+    /// itself, or the unattended run of a Shortcut, which acts as the person who saved it and
+    /// names the Shortcut as how it came ([`Self::shortcut`]).
     #[must_use]
     pub fn is_automation(&self) -> bool {
-        matches!(self.by, Actor::Automation(_))
+        matches!(self.by, Actor::Automation(_)) || self.shortcut().is_some()
+    }
+
+    /// The Shortcut whose run this acting is, when one is: nobody is at a screen, and the
+    /// Shortcut is how the maker's change came ([`Self::is_automation`]).
+    #[must_use]
+    pub fn shortcut(&self) -> Option<&AutomationId> {
+        self.acted_for.iter().find_map(|node| match &node.by {
+            Actor::Automation(id) => Some(id),
+            Actor::Member(_) | Actor::App(_) | Actor::Visitor(_) => None,
+        })
     }
 
     #[must_use]

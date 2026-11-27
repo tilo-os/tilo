@@ -72,6 +72,14 @@ pub trait AgentKeys: Send + Sync {
         request: &mut InvokeRequest,
     ) -> Result<(), String>;
 
+    /// The public key this device makes for `agent` in `workspace`, whether or not its person's
+    /// root has certified it here: the device that made an agent's key is the one that runs the
+    /// agent, so the shortcuts it saved fire at once there and only after the grace elsewhere.
+    /// `None` where this device makes no key for it.
+    fn key_here(&self, _workspace: WorkspaceId, _agent: &str) -> Option<[u8; 32]> {
+        None
+    }
+
     /// The certificate of `key`, a key [`Self::grant`] gave, and the key itself: what signs, as
     /// the agent, the invocations a connection carries to another device. `None` once its person
     /// revoked it.
@@ -297,6 +305,12 @@ impl DeviceMadeKeys {
 }
 
 impl AgentKeys for DeviceMadeKeys {
+    fn key_here(&self, workspace: WorkspaceId, agent: &str) -> Option<[u8; 32]> {
+        Self::key(workspace, agent)
+            .ok()
+            .map(|key| key.verifying_key().to_bytes())
+    }
+
     fn grant(
         &self,
         workspace: WorkspaceId,

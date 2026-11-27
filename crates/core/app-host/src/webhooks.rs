@@ -33,7 +33,6 @@ use std::time::Duration;
 
 use collab_types::signer::DeviceSigner;
 use serde_json::{Value, json};
-use tilo_action_policy::Actor;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
@@ -529,9 +528,15 @@ async fn governs(
 /// agent or app of theirs is neither, and reaches no URL through the webhook.
 fn may_post(caller: &Caller, person: [u8; 32], webhook: &SavedWebhook) -> bool {
     let person = hex::encode(person);
-    let shortcut_this_webhook = matches!(&caller.acting().by, Actor::Automation(id) if id.as_str() == webhook.id.as_str())
-        && caller.acting().acted_for_person() == Some(person.as_str());
-    caller.acting().person_id() == Some(person.as_str()) || shortcut_this_webhook
+    let acting = caller.acting();
+    let theirs = acting.person_id() == Some(person.as_str());
+    match acting.shortcut() {
+        // The run of the shortcut the webhook was saved as posts its deliveries; another
+        // shortcut's run reaches no URL through it.
+        Some(shortcut) => theirs && shortcut.as_str() == webhook.id.as_str(),
+        // The person's own test of a receiver, at a screen.
+        None => theirs,
+    }
 }
 
 #[cfg(test)]

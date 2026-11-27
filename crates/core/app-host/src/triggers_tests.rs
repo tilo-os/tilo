@@ -1432,6 +1432,112 @@ async fn a_shortcut_saved_by_an_agent_acts_as_that_agent_and_one_saved_by_a_pers
     host.shutdown().await;
 }
 
+/// A device that runs agent `agent` with `key`, as its own: what the runner asks which agent
+/// key was made here.
+#[cfg(feature = "agents")]
+struct MadeHere {
+    agent: &'static str,
+    key: [u8; 32],
+}
+
+#[cfg(feature = "agents")]
+impl tilo_workspace_service::work::AgentEngine for MadeHere {
+    fn acts_as<'a>(
+        &'a self,
+        _workspace: &'a str,
+        _agent: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+        Box::pin(async { true })
+    }
+
+    fn key_here(&self, _workspace: &str, agent: &str) -> Option<[u8; 32]> {
+        (agent == self.agent).then_some(self.key)
+    }
+}
+
+/// A shortcut an assistant saved with its own key fires at once on the device that made that
+/// key, the one that runs the assistant: a reminder it set up itself comes at its moment, not
+/// the grace later. Another device still waits the grace, for when that one is away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agents_shortcut_fires_at_once_on_the_device_that_made_its_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = hosting_device();
+    let host = test_host(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces();
+    let workspace = workspaces.create("Reminders").await.unwrap().workspace;
+    let now = tilo_clock::unix_now_ms();
+    let clock = Pinned::at(now);
+    let at_ms = i64::try_from(now.saturating_sub(1_000)).unwrap();
+    let issued_ns = now.saturating_mul(1_000_000).saturating_sub(1);
+    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+
+    // `here` is the key this device made for the assistant; `elsewhere` is one another device
+    // of theirs made, which this one cannot start at once.
+    let (here_grant, here_key) = agent_grant(&root, 41, "scout", &workspace, issued_ns);
+    let (elsewhere_grant, elsewhere_key) = agent_grant(&root, 42, "helper", &workspace, issued_ns);
+    for (id, agent, grant, grant_key) in [
+        ("here", "scout", &here_grant, &here_key),
+        ("elsewhere", "helper", &elsewhere_grant, &elsewhere_key),
+    ] {
+        let mut saved = shortcut(id, at_a_moment(at_ms), Vec::new());
+        tilo_peer_state::workspace::sign_saved_shortcut_as_agent(
+            &workspace, &mut saved, agent, grant, grant_key,
+        )
+        .unwrap();
+        workspaces
+            .commit_own_membership(
+                &workspace,
+                WorkspaceMembershipCommand::Settings(SettingsChange::Shortcuts(
+                    tilo_automation::ShortcutChange::Save(Box::new(saved)),
+                )),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    workspaces.run_agents(Arc::new(MadeHere {
+        agent: "scout",
+        key: here_grant.device_public_key,
+    }));
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    runner.arm().await;
+    runner.pass(Vec::new()).await;
+    let firings = started.0.lock().unwrap().clone();
+    assert_eq!(
+        firings
+            .iter()
+            .map(|firing| firing.shortcut.as_str())
+            .collect::<Vec<_>>(),
+        ["here"],
+        "the device that made the assistant's key starts its shortcut at once, and the other \
+         waits its grace: {firings:?}"
+    );
+    assert_eq!(
+        firings[0].agent,
+        Some(("scout".to_owned(), here_grant.device_public_key))
+    );
+
+    // The other device's key is not this one's: it starts only after the grace.
+    clock.set(now + 31_000);
+    runner.pass(Vec::new()).await;
+    let firings = started.0.lock().unwrap().clone();
+    assert_eq!(
+        firings
+            .iter()
+            .map(|firing| firing.shortcut.as_str())
+            .collect::<Vec<_>>(),
+        ["here", "elsewhere"],
+        "another device's agent's shortcut starts after the grace: {firings:?}"
+    );
+    host.shutdown().await;
+}
+
 /// Set the pinned clock to `at_ms` and let the runner look once.
 #[cfg(feature = "agents")]
 async fn pass_at_ms(clock: &Pinned, runner: &mut Runner, at_ms: u64) {

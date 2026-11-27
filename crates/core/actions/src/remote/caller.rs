@@ -857,10 +857,10 @@ impl Caller {
         })
     }
 
-    /// The caller's invocations are the steps of Shortcut `id`'s run: still
-    /// the person's authority (bounded by the Shortcut's own grants, which
-    /// the runner applies), but the Shortcut is who acts, for the person.
-    /// Set only by the provider's Shortcut runner.
+    /// The caller's invocations are the steps of Shortcut `id`'s run: the person who saved it
+    /// acts, so what the run writes is theirs, and the Shortcut is recorded as how it came.
+    /// The run's authority is that person's, bounded by the Shortcut's own grants, which the
+    /// runner applies. Set only by the provider's Shortcut runner.
     #[must_use]
     pub fn running_shortcut(mut self, id: impl Into<String>) -> Self {
         let person = self
@@ -869,7 +869,10 @@ impl Caller {
             .or_else(|| self.acting.acted_for_person())
             .unwrap_or_default()
             .to_owned();
-        let mut acting = Acting::automation(id).acting_for(Acting::person(person));
+        // The maker acts, and the Shortcut its run is rides in the tree of whom it acts
+        // through: nobody is at a screen for the run, and every app tells its writes from the
+        // person's own by it.
+        let mut acting = Acting::person(person).acting_for(Acting::automation(id));
         acting.app.clone_from(&self.acting.app);
         acting.foreign_device = self.acting.foreign_device;
         self.acting = acting;
@@ -882,7 +885,7 @@ impl Caller {
     /// very action; a caller that runs no Shortcut is left as it was.
     #[must_use]
     pub fn consented_in_advance(mut self) -> Self {
-        self.consented = matches!(self.acting.by, tilo_action_policy::Actor::Automation(_));
+        self.consented = self.acting.shortcut().is_some();
         self
     }
 

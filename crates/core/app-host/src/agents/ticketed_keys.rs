@@ -218,6 +218,15 @@ impl TicketedAgentKeys {
 }
 
 impl AgentKeys for TicketedAgentKeys {
+    fn key_here(&self, workspace: WorkspaceId, agent: &str) -> Option<[u8; 32]> {
+        let workspaces = self.workspaces.upgrade()?;
+        Some(
+            Self::key(&workspaces, workspace, agent)
+                .verifying_key()
+                .to_bytes(),
+        )
+    }
+
     fn grant(&self, _: WorkspaceId, _: &str, _: &str, _: [u8; 32]) -> Result<[u8; 32], String> {
         Err("this device signs as an agent only with a key its person approved here".to_owned())
     }
@@ -332,6 +341,13 @@ impl AgentKeys for DeviceAgentKeys {
             .as_ref()
             .ok_or("this device holds no identity store, so it makes no agent key from a root")?
             .grant(workspace, agent, name, person)
+    }
+
+    fn key_here(&self, workspace: WorkspaceId, agent: &str) -> Option<[u8; 32]> {
+        self.roots
+            .as_ref()
+            .and_then(|roots| roots.key_here(workspace, agent))
+            .or_else(|| self.ticketed.key_here(workspace, agent))
     }
 
     fn grant_for(&self, workspace: WorkspaceId, agent: &Agent) -> Result<[u8; 32], String> {

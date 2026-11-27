@@ -548,6 +548,21 @@ async fn events_of(host: &Host) -> Vec<tilo_action_services::workspace_events::E
     .events
 }
 
+/// The direct conversation with `label` in `read`, Chat's conversations root read as one of its
+/// people, as the item it lists: its item address, and the actor that opened it.
+fn direct_in(read: &Value, label: &str) -> Option<(String, Value)> {
+    read["fields"]["channels"]["items"]
+        .as_array()?
+        .iter()
+        .filter(|item| item["type"] == "Direct" && item["label"] == label)
+        .find_map(|item| {
+            Some((
+                item["item"].as_str()?.to_owned(),
+                item["created"]["who"]["actor"].clone(),
+            ))
+        })
+}
+
 /// A reminder the person's assistant set up itself, from the asking to the answer. The person
 /// writes to their assistant and nothing of theirs stays on: the assistant's own tool call sets
 /// the reminder up on the host; the moment comes; the host asks the assistant itself, as the
@@ -563,7 +578,9 @@ fn a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_person_closed
         let channel =
             crate::language::chat::made_channel(&host.agent(), crate::language::chat::CHANNEL)
                 .await;
-        let at_ms = tilo_clock::unix_now_ms_i64() + 2_000;
+        // Far enough out that setting it up, and reading that it has not run, come first: the
+        // run starts at its moment, which is the point.
+        let at_ms = tilo_clock::unix_now_ms_i64() + 10_000;
         let when = format!(
             "once at {}",
             tilo_ui_base::format::Timestamp::from_millisecond(at_ms).expect("a moment")
@@ -642,6 +659,36 @@ fn a_reminder_the_assistant_set_up_itself_starts_its_turn_with_its_person_closed
             );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
+
+        // Both are in her own conversation with her assistant: the reminder's run writes as the
+        // person who saved it, so Chat opens the direct between the two of them, never one with
+        // the shortcut's run, and the assistant answers where it was written.
+        let read = read_root(host, host.workspace(), host.person()).await;
+        let (conversation, opened_by) = direct_in(&read, SCOUT).unwrap_or_else(|| {
+            panic!("her reminder opens a conversation with her assistant: {read}")
+        });
+        assert!(
+            opened_by.get("member").is_some_and(|member| {
+                member
+                    .get("person")
+                    .is_some_and(|person| person.as_str() == Some(host.person()))
+            }),
+            "her reminder is her own write, not the shortcut's run's: {opened_by}"
+        );
+        let held = read_item(host, host.workspace(), host.person(), conversation).await;
+        for said in [
+            "Say that it is time to call home.",
+            "It is time to call home.",
+        ] {
+            assert!(
+                held.to_string().contains(said),
+                "the reminder and its answer are in her conversation with her assistant: {held}"
+            );
+        }
+        assert!(
+            !held.to_string().contains("automation"),
+            "the conversation is hers with her assistant, not the shortcut's run: {held}"
+        );
 
         // It reads as having run once, at its moment, and asks nothing more.
         let ran = events_of(host).await;
