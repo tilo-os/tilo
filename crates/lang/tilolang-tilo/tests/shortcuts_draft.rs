@@ -43,10 +43,10 @@ fn labelled(tree: &tilolang_runtime::UiNode, kind: &str, label: &str) -> String 
     tree.of_kind(kind)
         .into_iter()
         .find(|node| {
-            node.props.get("label").map(|value| match value {
-                tilolang_runtime::Value::Text(text) => text == label,
-                _ => false,
-            }) == Some(true)
+            matches!(
+                node.props.get("label"),
+                Some(tilolang_runtime::Value::Text(text)) if text == label
+            )
         })
         .unwrap_or_else(|| panic!("a {kind} labelled {label}"))
         .key
