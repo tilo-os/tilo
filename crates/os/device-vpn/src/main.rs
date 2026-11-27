@@ -2,6 +2,10 @@
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {
+    // Settings this process's host installed none of are what the profile's session left
+    // for processes outside it.
+    #[cfg(feature = "session")]
+    settings_store::register_outside();
     linux::main()
 }
 

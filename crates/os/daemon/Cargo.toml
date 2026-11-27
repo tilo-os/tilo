@@ -52,6 +52,9 @@ name = "system_records"
 path = "tests/system_records.rs"
 
 [dependencies]
+# What the profile's session left for processes outside it, which this process reads
+# where no host installed its settings.
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 tilo-member-types.workspace = true
 # The host keychain its secrets and device proofs live in: a process with no app connection.
 tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets", features = ["host-keyring"] }

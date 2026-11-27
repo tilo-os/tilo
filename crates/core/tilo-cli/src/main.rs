@@ -913,6 +913,9 @@ pub(crate) fn log_to_stderr(default: tracing_subscriber::filter::LevelFilter) {
 }
 
 fn main() -> ExitCode {
+    // Settings this process's host installed none of are what the profile's session left
+    // for processes outside it.
+    settings_store::register_outside();
     // Started again as the worker that applies documents (`tilo login`'s
     // and `tilo mcp`'s peer): that, before anything else runs.
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {

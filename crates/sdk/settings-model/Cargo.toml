@@ -36,6 +36,8 @@ serde_json.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
 tilo-formats = { version = "0.1.0", path = "../../ui/tilo-formats" }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
+# The device's locale, the interface language's default.
+tilo-process = { version = "0.1.0", path = "../../platform/tilo-process" }
 unicode-normalization = "0.1.25"
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
 

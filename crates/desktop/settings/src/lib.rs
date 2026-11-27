@@ -104,7 +104,7 @@ pub use settings_model::source::{
     ChangeOrigin, ChangeSignal, ConditionalUpdate, DeferredFailure, HostDocument, Listener,
     SectionChange, SettingsSource, SettingsStamp, SourceScope, compare_update_section,
     install_source, installed_source, installed_version, keep_profile, load_section_in,
-    merge_section, parse, profile, profile_source, scoped_source,
+    merge_section, parse, profile, profile_source, scoped_source, source,
 };
 pub use source::{
     deferred_failure_pending, flush_pending_writes, note_deferred_failure, take_deferred_failures,
@@ -123,13 +123,11 @@ pub fn config_path(relative: &Path) -> Option<PathBuf> {
     Some(config_root()?.join(relative))
 }
 
-/// The settings of this process: the source its host installed; in a native process that
-/// installed none, what the profile's session left for processes outside it
-/// ([`outside::Outside`]); `None` on a page that installed none, where every setting reads as its
-/// default.
-#[must_use]
-pub fn source() -> Option<Arc<dyn SettingsSource>> {
-    installed_source().or_else(outside_source)
+/// Read what the profile's session left for processes outside it ([`outside::Outside`]) where
+/// this process's host installed no settings: the starter of a process outside the session calls
+/// it, first thing in its `main`. A page has no such document and reads its defaults.
+pub fn register_outside() {
+    settings_model::source::register_fallback(outside_source);
 }
 
 #[cfg(not(target_arch = "wasm32"))]

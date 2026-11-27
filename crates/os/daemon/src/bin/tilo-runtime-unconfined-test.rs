@@ -5,6 +5,9 @@
 //! itself. Built only with `test-support`.
 
 fn main() -> std::process::ExitCode {
+    // Settings this process's host installed none of are what the profile's session left
+    // for processes outside it.
+    settings_store::register_outside();
     #[cfg(windows)]
     tilo_runtime::device::capabilities::allow_unconfined_test_launch();
     tilo_runtime::device::capabilities::mount(tilo_daemon::capabilities());

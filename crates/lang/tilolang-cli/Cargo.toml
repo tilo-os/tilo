@@ -26,6 +26,9 @@ name = "it"
 path = "tests/it.rs"
 
 [dependencies]
+# What the profile's session left for processes outside it, which this process reads
+# where no host installed its settings.
+settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings" }
 # The commands of an app written in Rust, and the ones every app shares (`src/cli.rs`).
 tilo-app-builder = { version = "0.1.0", path = "../tilo-app-builder" }
 anyhow.workspace = true

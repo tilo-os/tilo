@@ -280,6 +280,28 @@ impl ChangeSignal {
 
 static SOURCE: RwLock<Option<Arc<dyn SettingsSource>>> = RwLock::new(None);
 
+/// What gives the settings a process reads when its host installed none.
+pub type Fallback = fn() -> Option<Arc<dyn SettingsSource>>;
+
+/// Where this process reads its settings when its host installed none ([`register_fallback`]).
+static FALLBACK: RwLock<Option<Fallback>> = RwLock::new(None);
+
+/// Where this process reads its settings when its host installed none: what the profile's
+/// session left for processes outside it, for a process started outside the session. The
+/// process's starter registers it (its `main`, or the app runner as it starts an app), never a
+/// library: a process that registered none reads every setting's default.
+pub fn register_fallback(fallback: Fallback) {
+    *FALLBACK.write_recover() = Some(fallback);
+}
+
+/// The settings of this process: the source its host installed, else the fallback its starter
+/// registered ([`register_fallback`]); `None` where there is neither, and every setting reads as
+/// its default.
+#[must_use]
+pub fn source() -> Option<Arc<dyn SettingsSource>> {
+    installed_source().or_else(|| (*FALLBACK.read_recover())?())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeferredFailure {
     pub sections: Vec<String>,

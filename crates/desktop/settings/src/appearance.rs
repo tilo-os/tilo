@@ -9,6 +9,7 @@ use crate::day_schedule::{MODE_KEY, SECTION};
 
 pub use settings_model::appearance::{
     DEVICE_SECTION, TEXT_SCALE_MAX, TEXT_SCALE_MIN, TRANSLUCENCY_MAX, TRANSLUCENCY_MIN,
+    preferred_language,
 };
 
 pub const MODE: Key<Option<String>> = Key::new(SECTION, MODE_KEY, || None);
@@ -20,34 +21,9 @@ pub const HIGH_CONTRAST: Key<bool> = Key::new(SECTION, "high_contrast", || false
 /// which the compositor keeps per device. Unset shows the default picture.
 pub const WALLPAPER: Key<Option<String>> = Key::new(SECTION, "wallpaper", || None);
 
-/// The interface language, named as its language pack is (`de`; see
-/// [`tilo_paths::language_of`]). Unset follows the device's locale.
-pub const LANGUAGE: Key<Option<String>> = Key::new(SECTION, "language", || None);
-
-/// The interface language: the one the person chose ([`LANGUAGE`]), else the
-/// locale the device runs in (`LC_ALL`, `LC_MESSAGES`, `LANGUAGE`, `LANG`, read
-/// as POSIX).
-///
-/// Every surface resolves its language — and the language of the dates it
-/// formats — from this one answer, so a person who chose English on a German
-/// machine reads English throughout: the system locale is only the default,
-/// never a second source.
-#[must_use]
-pub fn preferred_language() -> Option<String> {
-    let chosen = LANGUAGE.get();
-    let system = tilo_process::environment::environment().locale.clone();
-    preferred_language_from(chosen.as_deref(), system.as_deref())
-}
-
-/// [`preferred_language`] over an explicit choice and system locale. A value
-/// that names no language (`C`, `POSIX`, malformed) falls back to the next
-/// source; `None` means neither named one.
-#[must_use]
-pub fn preferred_language_from(chosen: Option<&str>, system: Option<&str>) -> Option<String> {
-    [chosen, system].into_iter().flatten().find_map(|value| {
-        tilo_process::environment::parse_posix_locale(value).map(|locale| locale.to_string())
-    })
-}
+/// The interface language ([`settings_model::appearance::LANGUAGE`]).
+pub const LANGUAGE: Key<Option<String>> =
+    Key::new(SECTION, settings_model::appearance::LANGUAGE, || None);
 
 /// The interface face the person chose, by any family name a theme's type
 /// role may name (`Default`, `Hyperlegible`, `Noto Sans`). Unset follows the
@@ -64,33 +40,3 @@ pub const ACCENT: Key<Option<String>> = Key::new(SECTION, "accent", || None);
 /// accessibility switch that makes every panel opaque (`reduce_transparency`)
 /// still wins over this.
 pub const TRANSLUCENCY: Key<Option<f32>> = Key::new(SECTION, "translucency", || None);
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_chosen_language_wins_and_the_system_locale_is_only_the_default() {
-        assert_eq!(
-            preferred_language_from(Some("en-US"), Some("de_DE.UTF-8")).as_deref(),
-            Some("en-US")
-        );
-        assert_eq!(
-            preferred_language_from(Some("de_DE.UTF-8"), None).as_deref(),
-            Some("de-DE")
-        );
-        assert_eq!(
-            preferred_language_from(None, Some("de_DE.UTF-8")).as_deref(),
-            Some("de-DE"),
-            "with no choice the device's locale is the default"
-        );
-        assert_eq!(
-            preferred_language_from(Some("C"), Some("fr_FR.UTF-8")).as_deref(),
-            Some("fr-FR"),
-            "an explicit C names no language, so the default decides"
-        );
-        assert_eq!(preferred_language_from(Some("C"), Some("C.UTF-8")), None);
-        assert_eq!(preferred_language_from(Some("not a locale!"), None), None);
-        assert_eq!(preferred_language_from(None, None), None);
-    }
-}

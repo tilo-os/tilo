@@ -8,6 +8,9 @@
 fn main() -> std::process::ExitCode {
     use std::process::ExitCode;
 
+    // Settings this process's host installed none of are what the profile's session left
+    // for processes outside it.
+    settings_store::register_outside();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (ours, command) = match args.iter().position(|arg| arg == "--") {
         Some(split) => (

@@ -160,13 +160,6 @@ pub mod png;
 pub mod presence;
 pub mod press;
 pub mod query_text;
-/// Where each settings section is kept, and so published: `settings/<section>` for the person's,
-/// `devices/<device>/settings/<section>` for the device's.
-#[cfg(feature = "model")]
-pub use settings_store::placement as settings_placement;
-/// The verb a setting is set by, `set-<field>`: each field of a settings section has its own.
-#[cfg(feature = "model")]
-pub use settings_store::workspace::verb as setting_verb;
 pub use tilo_ui_paint::raster;
 
 pub mod settings_source;

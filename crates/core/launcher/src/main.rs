@@ -505,6 +505,9 @@ fn presize_descriptor_table() {
 }
 
 fn main() -> ExitCode {
+    // Settings this process's host installed none of are what the profile's session left
+    // for processes outside it.
+    settings_store::register_outside();
     presize_descriptor_table();
     tilo_startup_metrics::handoff_mark("launcher-start");
     if let Err(error) = wait_for_shell_registration() {

@@ -206,6 +206,9 @@ enum RepoCmd {
 }
 
 fn main() -> ExitCode {
+    // Settings this process's host installed none of are what the profile's session left
+    // for processes outside it.
+    settings_store::register_outside();
     let cli = parse_cli();
     #[cfg(any(unix, windows))]
     app_cli::device::act_in(cli.workspace);

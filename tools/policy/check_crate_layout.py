@@ -26,6 +26,10 @@ The dependencies that break this today are listed in
 tools/policy/crate_layout.toml, each one a dependency to cut. The list only
 shrinks: a dependency missing from it fails, and so does a listed one that no
 longer exists, so cutting one means deleting its line.
+
+The model's pure evaluation, which every group links, promises more: a crate
+tools/policy/io_free.py names does no I/O, and neither does what it ships with
+(its `[io-free]` list in the same file names the I/O it still links, to cut).
 """
 
 from __future__ import annotations
@@ -34,6 +38,9 @@ import argparse
 import sys
 import tomllib
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import io_free  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 EXCEPTIONS = "tools/policy/crate_layout.toml"
@@ -156,6 +163,8 @@ def check(root: Path = ROOT) -> list[str]:
     for key, entries in allowed.items():
         for edge in sorted(entries - bad):
             problems.append(f"{EXCEPTIONS}: `{edge}` under [{key}] no longer exists: delete the line")
+    io_listed = set(tomllib.loads((root / EXCEPTIONS).read_text()).get("io-free", []))
+    problems += io_free.check(root, io_listed)
     return problems
 
 

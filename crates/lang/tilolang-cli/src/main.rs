@@ -192,6 +192,9 @@ const GROUPS: &[(&str, &[(&str, &str)])] = &[
 ];
 
 fn main() -> ExitCode {
+    // Settings this process's host installed none of are what the profile's session left
+    // for processes outside it.
+    settings_store::register_outside();
     // `dev` runs this binary again as the compiler's wrapper and as the linker (a Rust app's hot
     // reload): those runs are not command lines.
     tilo_app_builder::run_as_build_tool_if_requested();

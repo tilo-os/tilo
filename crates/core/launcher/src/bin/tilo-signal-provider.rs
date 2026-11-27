@@ -155,6 +155,9 @@ fn supervise(mut java: Java, wake: &bounded_command::WakeFd, grace: Duration) ->
     }
 }
 fn main() -> std::process::ExitCode {
+    // Settings this process's host installed none of are what the profile's session left
+    // for processes outside it.
+    settings_store::register_outside();
     match run() {
         Ok(true) => std::process::ExitCode::SUCCESS,
         Ok(false) => std::process::ExitCode::FAILURE,

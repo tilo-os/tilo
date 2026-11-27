@@ -34,6 +34,9 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// Returns an error for a malformed command line or an unknown `--scenario`;
 /// the live event-loop path does not return.
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Settings this process's host installed none of are what the profile's session left
+    // for processes outside it.
+    settings_store::register_outside();
     tilo_startup_metrics::init();
     let _startup_metrics = tilo_startup_metrics::ScopedDumper;
     tilo_startup_metrics::mark("greeter-main-start");

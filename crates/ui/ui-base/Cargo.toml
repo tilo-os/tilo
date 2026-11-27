@@ -23,12 +23,11 @@ ignored = ["wgpu-hal", "getrandom02", "serde_bytes"]
 default = ["native", "broker-transport"]
 # Tilo's model: its records and actions over them (tilo-resource), the synced
 # documents' types and the permission context over them (tilo-collab-types,
-# tilo-permissions), the workspace's
-# settings store, and the app layer built on them: the app runner's sync,
+# tilo-permissions), and the app layer built on them: the app runner's sync,
 # history and undo, presence, search and the resource-backed views. Without
 # it the crate is a UI toolkit that knows nothing about Tilo. `tilo-app` turns
 # it on.
-model = ["dep:tilo-permissions", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-reference", "settings-model/model", "tilo-actions/document-read"]
+model = ["dep:tilo-permissions", "dep:collab-types", "dep:tilo-resource", "dep:tilo-reference", "settings-model/model", "tilo-actions/document-read"]
 # The native runner and its services: the winit event loop with its
 # AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
 # warmup, the system appearance a standalone app follows, and the
@@ -36,7 +35,7 @@ model = ["dep:tilo-permissions", "dep:settings-store", "dep:collab-types", "dep:
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own clipboard and speech (`tilo_clipboard::install_resolver`,
 # `tts::install_speaker_resolver`).
-native = ["local-daemons", "tilo-process/native", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full", "settings-store?/watch"]
+native = ["local-daemons", "tilo-process/native", "dep:tilo-appearance", "tilo-appearance/host-portals", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:windows", "dep:accesskit_android", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full"]
 # X11 windows (winit's X11 backend), for development builds on an X11 host:
 # `cargo run -p <app> --features ui/x11` (through `tilo-app`'s `x11`). Every
 # Tilo app runs as a Wayland client in its sandbox, so the shared runtime
@@ -63,8 +62,8 @@ lazy-painter = []
 # Clients of the local session daemons: the runtime portal's inherited
 # service descriptors and the runtime identity service with its on-disk
 # identity. Without it the host installs a `local_identity::LocalIdentitySource`
-# (default: none). Settings are not guarded here: `settings-store` reads
-# `settings.json` unless the host installs a `settings_store::SettingsSource`.
+# (default: none). Settings are not guarded here: the toolkit reads the
+# source its host installed, else the fallback its starter registered.
 local-daemons = []
 # The collaboration manager's built-in transport, which the toolkit's host
 # (`tilo-ui`) runs; the toolkit base only keeps its runtime.
@@ -143,7 +142,6 @@ tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
 tilo-ui-graph = { version = "0.1.0", path = "../ui-graph" }
 tilo-ui-macros = { version = "0.1.0", path = "../ui-macros" }
 tilo-font-catalog = { version = "0.1.0", path = "../../platform/font-catalog" }
-settings-store = { package = "tilo-settings-store", version = "0.1.0", path = "../../desktop/settings", optional = true }
 settings-model = { package = "tilo-settings-model", version = "0.1.0", path = "../../sdk/settings-model", default-features = false }
 # Dates, clocks and numbers as the person set them, without the toolkit, so a host
 # that has no toolkit answers the same as a window (tilo-formats).

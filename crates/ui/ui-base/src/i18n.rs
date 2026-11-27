@@ -439,10 +439,10 @@ pub fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
 }
 
 /// The language this shell speaks, as a BCP 47 tag: the one the person chose in Settings, or else the
-/// locale the device runs in ([`crate::settings_source::preferred_language`]).
+/// locale the device runs in ([`settings_model::appearance::preferred_language`]).
 #[must_use]
 pub fn preferred_language() -> Option<String> {
-    crate::settings_source::preferred_language()
+    settings_model::appearance::preferred_language()
 }
 
 fn preferred_locale() -> Option<LanguageIdentifier> {

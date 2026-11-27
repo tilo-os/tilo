@@ -16,6 +16,9 @@ use collaboration::{CollaborationManager, CollaborationState};
 const CONNECT_BOUND: Duration = Duration::from_secs(60);
 
 fn main() -> std::process::ExitCode {
+    // Settings this process's host installed none of are what the profile's session left
+    // for processes outside it.
+    settings_store::register_outside();
     let Ok(app) = std::env::var("TILO_PACKAGE_ID") else {
         eprintln!("tilo-sdk-app: this program is an app: it is started by the launcher for one");
         return std::process::ExitCode::FAILURE;

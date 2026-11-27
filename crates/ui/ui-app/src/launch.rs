@@ -579,6 +579,9 @@ pub fn run(spec: &LaunchSpec) -> Result<(), LaunchError> {
     tilo_startup_metrics::mark("app-launch-start");
     tilo_process::raise_open_file_limit();
     init_app_log();
+    // An app started outside the session, with no channel to its settings, reads what the
+    // profile's session left.
+    settings_store::register_outside();
     collaboration::install_channel_settings();
     tilo_ui::own_photo::lend();
     let args: Vec<String> = std::env::args().collect();

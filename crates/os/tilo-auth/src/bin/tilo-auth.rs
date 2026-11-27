@@ -426,6 +426,9 @@ fn run(cli: &Cli) -> Result<()> {
 }
 
 fn main() -> ExitCode {
+    // Settings this process's host installed none of are what the profile's session left
+    // for processes outside it.
+    settings_store::register_outside();
     let cli = Cli::parse();
     if let Cmd::BootUnlock {
         device,

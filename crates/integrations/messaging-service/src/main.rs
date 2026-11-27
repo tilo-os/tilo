@@ -27,6 +27,9 @@ fn arguments() -> Option<(String, String, PathBuf)> {
 }
 
 fn main() {
+    // Settings this process's host installed none of are what the profile's session left
+    // for processes outside it.
+    settings_store::register_outside();
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

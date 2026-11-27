@@ -48,6 +48,9 @@ host-backend = ["server", "tilo-net/proxy-host"]
 local-models = ["server", "dep:tilo-segment", "dep:local-model-service", "dep:image"]
 
 [dependencies]
+# What the profile's session left for processes outside it, which this process reads
+# where no host installed its settings.
+settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 tilo-model-client = { version = "0.1.0", path = "../../sdk/model-client", default-features = false }
 tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
@@ -95,8 +98,6 @@ local-model-service = { optional = true, path = "../../engines/local-model-servi
 image = { optional = true, workspace = true, features = ["png", "jpeg", "webp"] }
 
 [dev-dependencies]
-# Tests keep their provider settings in memory.
-settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 tempfile.workspace = true
 test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 tilo-test-env = { path = "../../../tools/test-env" }

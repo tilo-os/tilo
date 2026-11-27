@@ -42,6 +42,9 @@ fn run() -> Result<()> {
 }
 
 fn main() -> ExitCode {
+    // Settings this process's host installed none of are what the profile's session left
+    // for processes outside it.
+    settings_store::register_outside();
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
