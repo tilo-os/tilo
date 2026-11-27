@@ -309,14 +309,16 @@ view rows_of_the_shell(a: Layout, held: LayoutRow, lists: Bool) {
             // person's wheel or fingers ask of it goes out as the `pan` action, and the pan that
             // comes back draws the row there. One state, whichever moved it.
             scroll(axis: .horizontal, offset: held.pan, fill) {
-                row_of_windows(a, held, strips, lists)
+                // The row fills the scroll's room, so its windows stand the height between the
+                // bar and the dock, whatever the place in front draws.
+                row_of_windows(a, held, strips, lists, fill)
             }
         } else {
             // The front strip is kept in view: a person who moves between windows (a press on a
             // window, a key that brings another forward) is shown the strip they moved to, at
             // the pace the motion sets from their recent input, rather than left to pan for it.
             scroll(axis: .horizontal, keep: "front", fill) {
-                row_of_windows(a, held, strips, lists)
+                row_of_windows(a, held, strips, lists, fill)
             }
         }
     }
