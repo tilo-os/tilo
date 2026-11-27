@@ -480,7 +480,7 @@ mod cases {
         /// Another window's session, as the system opens one: a document of its own.
         fn new_session(&self) -> ResourceRef {
             let mut opened = self.windows.borrow_mut();
-            *opened += 1;
+            *opened = opened.saturating_add(1);
             let ty = type_id(&self.app, "Session");
             let id = format!("windows/{}/session-{opened}", self.app.meta().app);
             self.rt.create_root_at(&id, &ty).expect("a second session")
@@ -1175,7 +1175,7 @@ mod cases {
             t.call(
                 "add_secret",
                 &[
-                    ("m", m.clone()),
+                    ("m", m),
                     ("variable", Value::text("GITHUB_TOKEN")),
                     ("item", Value::text("vault.item:three")),
                 ],
@@ -1719,7 +1719,7 @@ mod cases {
             assert_eq!(t.text(&commands[0], "command"), "cargo build");
             assert_eq!(
                 t.read(&commands[0], "actor"),
-                Value::some(Value::Actor(one.clone())),
+                Value::some(Value::Actor(one)),
                 "the run it reads is its own"
             );
         }
