@@ -1153,10 +1153,10 @@ const BUSY_CLEANUP: Duration = Duration::from_secs(120);
 /// already had before the port was named.
 const START_AGAIN_WITHIN: Duration = Duration::from_secs(90);
 
-/// The person's part ends and starts again through their server in the same process, while the
-/// work closing behind it is still busy. The endpoint outlives the part that served on it: the
-/// part that starts takes the port the part that ended served on, rather than binding it again
-/// after that cleanup let go of it.
+/// Another person's computer logs in here with a ticket, which makes this computer theirs: the
+/// part that served ends, while the work closing behind it is still busy, and starts again as
+/// them. The endpoint outlives the part that served on it: the part that starts takes the port
+/// the part that ended served on, rather than binding it again after that cleanup let go of it.
 #[test]
 fn a_part_that_starts_again_takes_the_port_the_part_that_ended_bound() {
     let Some(profile) = isolated_root(KEEPS_THE_PORT_TEST) else {
@@ -1201,13 +1201,14 @@ fn a_part_that_starts_again_takes_the_port_the_part_that_ended_bound() {
         (Arc::downgrade(&services), endpoint)
     };
 
-    // The person logs this computer in at their server: their own workspace names it from now
-    // on, and the part starts again through it.
-    let home = person_server();
+    // Another person's computer issues a ticket, and this computer logs in with it as `tilo
+    // login <ticket>` does: this computer is their device now, so the part that serves ends and
+    // starts again while what that part still has to let go of is busy.
+    let other = other_computer();
     let logged_in = device_call(
         &socket,
         tilo_device_identity::login::LOG_IN,
-        json!({ "server": home.line }),
+        json!({ "ticket": other.ticket, "agent": "tilo", "label": "this computer" }),
     );
     assert!(
         matches!(
@@ -1215,7 +1216,7 @@ fn a_part_that_starts_again_takes_the_port_the_part_that_ended_bound() {
             tilo_actions::remote::ReceiptStatus::Accepted
                 | tilo_actions::remote::ReceiptStatus::Completed { .. }
         ),
-        "the person's computer logs in at their server: {logged_in:?}"
+        "this computer logs in with the ticket: {logged_in:?}"
     );
 
     // The part that starts takes the endpoint the part that ended served on, while what that
@@ -1229,7 +1230,7 @@ fn a_part_that_starts_again_takes_the_port_the_part_that_ended_bound() {
         }
         assert!(
             started.elapsed() < START_AGAIN_WITHIN,
-            "the person's part did not start again while the part that ended was still closing"
+            "this computer's part did not start again while the part that ended was still closing"
         );
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -1254,11 +1255,75 @@ fn a_part_that_starts_again_takes_the_port_the_part_that_ended_bound() {
     );
     wait_for_the_person_serving(&socket);
     running.stop().unwrap();
-    let PersonServer {
-        server, serving, ..
-    } = home;
-    serving.block_on(server.shutdown());
     drop(environment);
+}
+
+/// Another person's computer, run by this process: the workspace it hosts, the device actions
+/// that certify a computer its ticket lets in, and the runtime both run on. Its ticket is the one
+/// this computer logs in with, as a computer of theirs.
+struct OtherComputer {
+    _workspaces: Arc<crate::device::workspaces::ServiceWorkspaces>,
+    _state: tempfile::TempDir,
+    _keys: tilo_device_identity::persist::DeviceKeyLock,
+    _router: iroh::protocol::Router,
+    _runtime: tokio::runtime::Runtime,
+    ticket: String,
+}
+
+/// [`OtherComputer`], with its ticket issued: what a second computer of a person's serves.
+fn other_computer() -> OtherComputer {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let (workspaces, state, keys, router, ticket) = runtime.block_on(async {
+        let (workspaces, state, key, cert, keys) =
+            crate::device::workspaces::ServiceWorkspaces::test_of_person().await;
+        // The workspace a computer of theirs enters is their own, at the id their key names.
+        let workspace = tilo_desktop_model::WorkspaceId::from(collab_types::person_workspace(
+            &cert.user_public_key,
+        ));
+        workspaces.found(workspace, "Home").await.unwrap();
+        let tickets = crate::device::ticket::Tickets::new(
+            (key, cert),
+            workspaces.endpoint(),
+            None,
+            crate::device::ticket_tests::root_in(state.path().to_path_buf()),
+            Some(crate::device::first_workspace::FirstWorkspace::founded(
+                Arc::clone(&workspaces),
+                workspace,
+            )),
+            Some(Arc::clone(&workspaces)),
+            tilo_device_identity::login::Place::at(
+                state.path().join("issuer"),
+                tilo_device_identity::IdentityPaths::under(state.path().join("issuer-keys")),
+            ),
+            workspaces.copies().action_service(),
+        );
+        let router =
+            crate::device::ticket_tests::serve(&workspaces, workspaces.copies().action_service());
+        let printed = crate::device::ticket_tests::ask_device(
+            &tickets,
+            tilo_device_identity::login::ISSUE,
+            json!({ "capability": "member" }),
+        )
+        .await
+        .expect("the other computer issues a ticket");
+        let ticket = printed["ticket"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the ticket it issued: {printed}"))
+            .to_owned();
+        (workspaces, state, keys, router, ticket)
+    });
+    OtherComputer {
+        _workspaces: workspaces,
+        _state: state,
+        _keys: keys,
+        _router: router,
+        _runtime: runtime,
+        ticket,
+    }
 }
 
 const ROOT_ONLY_AT_ONCE_TEST: &str = "device::founding_tests::a_person_names_their_servers_from_the_computer_they_were_just_founded_on";
