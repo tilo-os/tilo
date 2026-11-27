@@ -565,8 +565,19 @@ fn described(
             tilo_action_services::approved_checks::RUN,
         ));
     }
-    spec.type_mut().contract.settle_confirmation();
+    confirmation(&mut spec.type_mut().contract, action);
     spec
+}
+
+/// What `action`'s calls confirm: what leaves the system confirms every call, as it does every
+/// press of it ([`ActionMeta::confirms`]). A destructive one confirms where undo cannot take it
+/// back, as a native verb does; a press of it confirms all the same unless Shift is held.
+fn confirmation(contract: &mut tilo_actions::ActionContract, action: &ActionMeta) {
+    if action.confirms() == tilolang::meta::Confirms::Always {
+        contract.confirmation = tilo_actions::ConfirmationPolicy::Confirm;
+    } else {
+        contract.settle_confirmation();
+    }
 }
 
 /// One entry of an action's `shows:` as its contract publishes it.

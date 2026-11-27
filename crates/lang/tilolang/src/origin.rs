@@ -1316,6 +1316,19 @@ pub fn is_capability(capability: &str) -> bool {
     CAPABILITIES.iter().any(|(name, _)| *name == capability)
 }
 
+/// The capabilities whose effect leaves the system for good: what they post, send or answer
+/// reaches other people or services, and what they delete from a server is gone, so nothing in
+/// the workspace takes it back. An action calling one, or an own action that does, always
+/// confirms on a person's own press ([`crate::meta::ActionMeta::confirms`]). The others only
+/// read or keep in step what an outside service holds.
+pub const LEAVING: &[&str] = &["post", "smtp.send", "caldav.answer", "imap.purge"];
+
+/// Whether `capability` leaves the system ([`LEAVING`]).
+#[must_use]
+pub fn leaves(capability: &str) -> bool {
+    LEAVING.contains(&capability)
+}
+
 impl OriginKind {
     /// The field of the kind named `name`.
     #[must_use]

@@ -1545,6 +1545,7 @@ impl Checker<'_> {
         }
         let p = self.expr(&payload.value, None);
         self.st.facts.outside = true;
+        self.st.facts.leaves |= crate::origin::leaves(name);
         self.st.facts.outside_caps.insert(name.clone());
         match held {
             Some(third) => {
@@ -3238,16 +3239,28 @@ impl Checker<'_> {
                 // `outside: true`: the op reaches a service outside Tilo (a message to someone
                 // on Signal), so the action that asks it is an outside effect, as one calling
                 // `outside(...)` is, and a caller other than the person is asked first.
-                if matches!(name.name.as_str(), "start" | "call") && named.name == "outside" {
+                // `leaves: true`: what the op does leaves the system for good (that message,
+                // sent): it reaches outside too, and a person's own press of the action that asks
+                // it always confirms first.
+                if matches!(name.name.as_str(), "start" | "call")
+                    && matches!(named.name.as_str(), "outside" | "leaves")
+                {
                     if matches!(a.value.kind, ExprKind::Bool(true)) {
                         self.st.facts.outside = true;
+                        self.st.facts.leaves |= named.name == "leaves";
                     } else {
                         self.err(
                             "E022",
                             a.value.span,
                             format!(
-                                "{what} says `outside: true` where its op reaches outside Tilo, \
-                                 and nothing where it does not"
+                                "{what} says `{}: true` where its op {}, and nothing where it \
+                                 does not",
+                                named.name,
+                                if named.name == "leaves" {
+                                    "leaves the system for good"
+                                } else {
+                                    "reaches outside Tilo"
+                                }
                             ),
                         );
                     }

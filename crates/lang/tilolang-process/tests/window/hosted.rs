@@ -361,6 +361,29 @@ impl Window {
         }
     }
 
+    /// The named key `key` pressed and released with Shift held: what a person holds to skip
+    /// the confirmation of what undo takes back.
+    fn press_key_shifted(&mut self, key: ui::winit::keyboard::NamedKey) {
+        use ui::winit::event::ElementState;
+        use ui::winit::keyboard::{Key, ModifiersState};
+        match self {
+            Self::Harness(window) => {
+                window.set_modifiers(&["shift".to_owned()]);
+                window.key(&format!("{key:?}"));
+                window.set_modifiers(&[]);
+            }
+            Self::Live(app) => {
+                app.set_surface_modifiers(ModifiersState::SHIFT.into());
+                Self::live_input(app, ui::synthetic_input::named_key(key));
+                Self::live_input(
+                    app,
+                    ui::synthetic_input::key_input(&Key::Named(key), ElementState::Released),
+                );
+                app.set_surface_modifiers(ModifiersState::empty().into());
+            }
+        }
+    }
+
     /// The key chord `spec` pressed and released: `"ctrl+Enter"`, or a character such as `"r"`.
     fn key(&mut self, spec: &str) {
         use ui::winit::event::ElementState;

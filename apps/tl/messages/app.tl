@@ -931,7 +931,7 @@ action send(m: Messages, d: Draft) uses random, notify (
         s.operation = random.id()
         s.refused = ""
         match engine.start(
-            outside: true,
+            leaves: true,
             "send",
             json.encode(SendAsk(route: route, operation: s.operation, text: d.body.text)),
             done: j -> sent(m, d, j),
@@ -1605,7 +1605,7 @@ action send_to_group(m: Messages, d: Draft) uses random (
     let s = if let held = session_of(m) { held } else { start_session(m) }
     if let g = open_membership(m) {
         match engine.start(
-            outside: true,
+            leaves: true,
             "group_send",
             json.encode(
                 GroupSendAsk(
@@ -1658,7 +1658,7 @@ action change_group(m: Messages, change: Text, member: Text = "", choice: Text =
     } else { .none }
     if let g = open_membership(m) {
         match engine.start(
-            outside: true,
+            leaves: true,
             "group_change",
             json.encode(
                 GroupChangeAsk(

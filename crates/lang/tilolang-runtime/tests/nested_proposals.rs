@@ -1,10 +1,10 @@
 //! An action another action calls that reaches outside. Called by someone other than the person
 //! (an agent), or delivered as the person's call by the dispatch with no yes of theirs behind
 //! it, the person is asked once, and the call they allow runs inside the caller; a call
-//! they decline ends the caller and takes back what it wrote. A person's own press answers what
-//! its code asks only when undo takes it back: what leaves the system confirms first, the owner's
-//! press included, and nothing leaves before the yes. A rule of theirs that asks them first still
-//! asks too: Shift skips it for what can be undone, never for what leaves.
+//! they decline ends the caller and takes back what it wrote. A person's own press acts at once,
+//! unless the action leaves the system, which always confirms first, the owner's press included
+//! and nothing leaving before the yes, or its app marks it destructive, which confirms unless
+//! Shift is held. A rule of theirs that asks them first still asks too, unless Shift is held.
 
 #[cfg(test)]
 mod cases {
@@ -59,6 +59,17 @@ action mark(l: Letter) {
     l.answered = true
 }
 
+/// Copies whom the letter goes to: the device's clipboard is outside the workspace, and nothing
+/// leaves the system.
+action copy_address(l: Letter) uses clipboard {
+    clipboard.copy(l.to)
+}
+
+/// Throws the letter away: undo brings it back.
+destructive action discard(b: Box, l: Letter) {
+    b.letters.remove(l)
+}
+
 view compose(l: Letter) {
     ui.Text(l.to)
 }
@@ -76,6 +87,22 @@ view letter(l: Letter) {
 view sending(l: Letter) {
     ui.Button("Send") {
         on press: send(l)
+    }
+}
+
+/// Whom a letter goes to, copied with one press.
+view copying(l: Letter) {
+    ui.Button("Copy") {
+        on press: copy_address(l)
+    }
+}
+
+/// The letters, each thrown away with one press.
+view discarding(b: Box) {
+    for l in b.letters {
+        ui.Button("Discard") {
+            on press: discard(b, l)
+        }
     }
 }
 
@@ -360,6 +387,38 @@ default view letters for Box
             assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(true));
         }
 
+        phase send_asks_where_the_workspace_grants_outside_reach;
+        {
+            let p = post();
+            p.auth.grant_outside(&p.app.action("send"));
+            let view = view_of(&p, "sending");
+            let InvokeOutcome::Asked(_) = press(&view, false) else {
+                panic!("the policy lets them send; the press still confirms it");
+            };
+            assert_eq!(p.dispatch.asked().0, p.app.action("send"), "the send is asked");
+            assert!(p.rt.pending_effects().is_empty(), "nothing leaves before the yes");
+            assert_eq!(field(&p.rt, &p.letter, "sent"), Value::Bool(false));
+            let out = approved(&p, "send");
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(p.rt.pending_effects().len(), 1, "the letter goes once, on the yes");
+        }
+
+        phase an_agents_granted_send_runs_by_its_grant;
+        {
+            let p = post();
+            p.auth.grant_outside(&p.app.action("send"));
+            let out = p
+                .rt
+                .invoke_action(
+                    &helper(),
+                    (p.app.action("send").as_str(), vec![p.letter.clone()]),
+                )
+                .unwrap();
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(p.dispatch.len(), 0, "an agent's grant decides its call alone");
+            assert_eq!(p.rt.pending_effects().len(), 1);
+        }
+
         phase shift_on_send_still_asks;
         {
             let p = post();
@@ -425,6 +484,41 @@ default view letters for Box
             assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
             assert_eq!(p.dispatch.len(), 0);
             assert_eq!(field(&p.rt, &p.letter, "answered"), Value::Bool(true));
+        }
+
+        phase a_copy_acts_on_the_press_though_it_reaches_outside;
+        {
+            let p = post();
+            let view = view_of(&p, "copying");
+            let out = press(&view, false);
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(p.dispatch.len(), 0, "a copy leaves nothing to confirm");
+        }
+
+        phase a_destructive_press_confirms_and_shift_skips_it;
+        {
+            let p = post();
+            let letters = || {
+                let Value::Ref(root) = &p.root else {
+                    panic!("the box is a resource")
+                };
+                let Value::List(held) = p.rt.read(&root.target, "letters").unwrap() else {
+                    panic!("the box holds its letters")
+                };
+                held.len()
+            };
+            let view = p
+                .rt
+                .open_view(&me(), &p.app.view("discarding"), vec![p.root.clone()])
+                .unwrap();
+            let InvokeOutcome::Asked(_) = press(&view, false) else {
+                panic!("a plain press of a delete confirms it, though the policy allows it");
+            };
+            assert_eq!(p.dispatch.asked().0, p.app.action("discard"));
+            assert_eq!(letters(), 1, "nothing is thrown away before the yes");
+            let out = press(&view, true);
+            assert!(matches!(out, InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(letters(), 0, "Shift is the yes to a delete undo takes back");
         }
 
         phase shift_is_the_yes_to_what_can_be_undone;

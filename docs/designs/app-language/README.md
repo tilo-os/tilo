@@ -504,7 +504,12 @@ too and is drawn again as the job moves, so a progress bar asks nothing. `engine
 stops it, and `done:` runs with the job cancelled. An op that reaches a service outside Tilo (a
 message sent to someone on Signal) says `outside: true` on its `engine.call` or `engine.start`:
 the action is then an outside effect, as one calling `outside(...)` is, and a caller other than
-the person is asked before it runs.
+the person is asked before it runs. An op whose effect leaves the system for good, which nothing
+in the workspace takes back (that message, sent), says `leaves: true` instead, as `post`,
+`smtp.send`, `caldav.answer` and `imap.purge` do of themselves: a person's own press of an action
+that leaves, itself or through an action of its own it calls, always confirms first, Shift held
+or not. A `destructive` action confirms a press too, unless Shift is held; every other action
+acts on the press.
 
 `engine.stream(op, input)` starts a job that keeps sending frames, which a view shows by
 `tilo-live://<job>`, and says of itself what `engine.state(job)` reads: whether it is connecting,

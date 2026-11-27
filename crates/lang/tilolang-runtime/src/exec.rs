@@ -507,14 +507,6 @@ impl Core {
         Ok(self.authority.decide(&ctx.invoker, &ctx.chain, &info))
     }
 
-    /// What `aref`'s action does, as its package declares it: `None` for one no package here
-    /// declares.
-    fn class_of(&self, aref: &ActionRef) -> Option<EffectClass> {
-        let registry = self.registry.borrow();
-        let pkg = registry.action_package(&aref.action)?;
-        pkg.action(&aref.action).map(|meta| meta.class)
-    }
-
     /// Whether a rule of the invoker's or the workspace's asks first before `aref` runs, apart
     /// from the code that led to it ([`crate::Authority::asks_first`]).
     fn rule_asks(&self, invoker: &Actor, aref: &ActionRef) -> Result<bool, RuntimeError> {
@@ -538,13 +530,9 @@ impl Core {
     }
 
     /// Whether `admission` answers the ask the authority made of `invoker`'s call `aref`: the
-    /// dispatch's always. A person's press answers what the code that led there asks only when
-    /// undo takes the action back: what leaves the system, which nothing takes back, confirms
-    /// at the control first, the owner's own press included. A rule that asks them first waits
-    /// for their yes too, unless they held Shift; Shift is never the yes to what leaves.
-    ///
-    /// This is the one place a press's confirmation is decided, from the action's own contract
-    /// (its effect class), for every app alike.
+    /// dispatch's always. A person's press answers it unless the action confirms on that press
+    /// ([`Self::press_confirms`]); a rule that asks them first waits for their yes too, unless
+    /// they held Shift.
     fn press_answers(
         &self,
         admission: Admission,
@@ -555,11 +543,24 @@ impl Core {
             Admission::Not => false,
             Admission::Answered | Admission::Approved => true,
             Admission::Pressed { shift } => {
-                let undoable = self
-                    .class_of(aref)
-                    .is_some_and(|class| class != EffectClass::Outside);
-                undoable && (shift || !self.rule_asks(invoker, aref)?)
+                !self.press_confirms(aref, shift) && (shift || !self.rule_asks(invoker, aref)?)
             }
+        })
+    }
+
+    /// Whether a person's own press of `aref`, with Shift held when `shift`, waits for their yes
+    /// whatever the policy decides: what leaves the system always does, and what its app marks
+    /// destructive does unless they held Shift ([`ActionMeta::confirms`], which
+    /// its contract and its catalogue offer publish). The policy decides whether they may; this
+    /// is that they mean to. Only a person's press: an agent's or an automation's call is
+    /// decided by its grants alone.
+    ///
+    /// This is the one place a press's confirmation is decided, for every app alike.
+    fn press_confirms(&self, aref: &ActionRef, shift: bool) -> bool {
+        let pkg = self.registry.borrow().action_package(&aref.action);
+        pkg.is_some_and(|pkg| {
+            pkg.action(&aref.action)
+                .is_some_and(|meta| meta.confirms().on_press(shift))
         })
     }
 
@@ -1478,6 +1479,13 @@ impl Core {
             _ => None,
         };
         match decision {
+            // What confirms on a person's own press does so even where the policy allows it:
+            // the policy says they may, the yes says they mean to.
+            Decision::Allow
+                if pressed.is_some_and(|press| self.press_confirms(aref, press.shift)) =>
+            {
+                self.wait_on_person(aref)
+            }
             Decision::Allow => ran(self.run_as(&ctx, aref, (person, pressed))?),
             Decision::Deny => Ok(InvokeOutcome::Denied),
             // It was admitted before it got here, on whoever had to say yes, or the person
@@ -2200,6 +2208,12 @@ impl Core {
                         && !ruled
                         && self.asked_about(journal, &ctx.chain, &aref.action)
                 });
+            // A call that confirms, made in a run the person pressed, waits for their yes even
+            // where the policy allows it, as it would pressed alone.
+            let confirms = !step.seed
+                && journal
+                    .pressed
+                    .is_some_and(|press| self.press_confirms(&aref, press.shift));
             match d {
                 Decision::Ask if allowed.is_some() => {
                     let ctx = ExecCtx {
@@ -2208,6 +2222,7 @@ impl Core {
                     };
                     self.run_step(run, journal, &ctx, &aref)
                 }
+                Decision::Allow if confirms => self.sent_step(run, journal, &aref, true),
                 Decision::Allow => self.run_step(run, journal, &ctx, &aref),
                 Decision::Deny => {
                     journal.entries.push(JournalEntry::Denied {

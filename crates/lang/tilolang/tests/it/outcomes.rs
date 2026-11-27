@@ -332,6 +332,7 @@ fn published() -> tilolang::PackageMeta {
             ],
             result: None,
             class: tilolang::types::EffectClass::Undoable,
+            leaves: false,
             reaches: Vec::new(),
             label: String::new(),
             icon: None,

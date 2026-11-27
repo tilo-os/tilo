@@ -809,6 +809,12 @@ pub struct ActionMeta {
     /// what the platform tags the action with.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outside: Vec<String>,
+    /// Whether what it does leaves the system for good, itself or through an own action it
+    /// invokes: it posts, sends or answers to someone outside the workspace, or deletes from a
+    /// server what nothing brings back ([`crate::origin::LEAVING`], an op asked `leaves: true`).
+    /// A person's own press of it always confirms ([`Self::confirms`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub leaves: bool,
     /// Whether the body calls `notify(...)`, which writes a record of the host's `Notice` for a
     /// person: what a change writing one is admitted by.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -884,7 +890,52 @@ pub struct ShownCall {
 /// secret, which the person never reads.
 pub const SHOWN_AS: [&str; 4] = ["text", "addresses", "long", "secret"];
 
+/// What a person's own press of an action waits for before it runs ([`ActionMeta::confirms`]).
+/// A call an agent, an automation or another app makes is decided by its grants alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Confirms {
+    /// It acts on the press: copying, opening, playing, refreshing, making a new thing.
+    Never,
+    /// It confirms first, and Shift held on the press skips that: an action its app marks
+    /// `destructive` that undo takes back (a delete).
+    UnlessShift,
+    /// It confirms first, Shift held or not: it leaves the system ([`ActionMeta::leaves`]),
+    /// which nothing takes back.
+    Always,
+}
+
+impl Confirms {
+    /// Whether a press, with Shift held when `shift`, waits for the person's yes.
+    #[must_use]
+    pub const fn on_press(self, shift: bool) -> bool {
+        match self {
+            Self::Never => false,
+            Self::UnlessShift => !shift,
+            Self::Always => true,
+        }
+    }
+
+    /// Whether a plain press confirms: what the action's contract and the catalogue publish.
+    #[must_use]
+    pub const fn by_default(self) -> bool {
+        self.on_press(false)
+    }
+}
+
 impl ActionMeta {
+    /// What a person's own press of it waits for: the one reading of its declaration that the
+    /// runtime decides a press by, and its published contract and catalogue offer say.
+    #[must_use]
+    pub fn confirms(&self) -> Confirms {
+        if self.leaves {
+            Confirms::Always
+        } else if self.role.as_deref() == Some("destructive") {
+            Confirms::UnlessShift
+        } else {
+            Confirms::Never
+        }
+    }
+
     /// Whether it is a `migration action`: never offered, run once by the platform on each resource
     /// an earlier version wrote.
     #[must_use]

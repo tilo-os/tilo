@@ -1,5 +1,6 @@
 //! What the keyboard does in a card grid: the arrows and the ends move the selection, Enter
-//! opens the card it is on, and the edit key and Delete run the actions the app declares on it.
+//! opens the card it is on, and the edit key and Delete run the actions the app declares on it,
+//! Delete once the person says yes or with Shift held.
 //! A reader is told which card the keyboard is on, and what the app made of each key.
 
 use super::*;
@@ -105,11 +106,28 @@ fn the_edit_key_and_delete_run_the_actions_the_app_declares_on_the_card() {
         says(&mut session, "Edited Bravo"),
         "the edit key ran the app's edit action on the selected card"
     );
+    // Delete runs the app's destructive action on the selected card once the person says yes:
+    // a delete confirms first.
     press(&mut session, NamedKey::Delete);
+    assert!(
+        !says(&mut session, "Deleted Bravo"),
+        "nothing is deleted before the yes"
+    );
+    assert_eq!(session.allow_asked(), 1, "the delete is asked");
+    settle(&mut session);
     assert!(
         says(&mut session, "Deleted Bravo"),
         "Delete ran the app's destructive action on the selected card"
     );
     // The selection stays where the person put it through both.
     assert_eq!(selected(&mut session).as_deref(), Some("Bravo"));
+    // Shift held, Delete deletes at once: undo takes it back.
+    press(&mut session, NamedKey::ArrowRight);
+    session.window.press_key_shifted(NamedKey::Delete);
+    settle(&mut session);
+    assert!(
+        says(&mut session, "Deleted Charlie"),
+        "Shift+Delete ran the destructive action without asking"
+    );
+    assert!(session.asked().is_empty(), "nothing waits for a yes");
 }

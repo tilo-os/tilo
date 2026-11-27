@@ -276,7 +276,7 @@ fn offers(meta: &PackageMeta) -> Vec<FleetOffer> {
                 .to_owned(),
             kind: action_kind.to_owned(),
             operation: operation.to_owned(),
-            confirm: action.role.as_deref() == Some("destructive"),
+            confirm: action.confirms().by_default(),
             asks: asked.iter().map(|param| asked_of(param)).collect(),
             keywords: Vec::new(),
             icon: action.icon.clone().unwrap_or_default(),
@@ -993,6 +993,128 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("app.tl"), text).unwrap();
         dir
+    }
+
+    /// Every action of every tilolang app in the fleet publishes, in its committed catalogue
+    /// offer, whether a person's plain press of it waits for their yes in the runtime
+    /// ([`tilolang::meta::ActionMeta::confirms`]): what leaves the system always confirms, a
+    /// delete its app marks destructive confirms unless Shift is held, and the rest acts on a
+    /// click. Its contract confirms every call of what leaves, and nothing of what acts on a
+    /// click.
+    #[test]
+    fn every_fleet_actions_published_confirmation_is_what_its_press_waits_for() {
+        use std::sync::Arc;
+        use tilo_actions::ConfirmationPolicy;
+        use tilolang::meta::Confirms;
+        use tilolang_tilo::publish::{PlanRequest, Planner};
+
+        struct Unplanned;
+        impl Planner for Unplanned {
+            fn plan(
+                &self,
+                _: &PlanRequest<'_>,
+            ) -> Result<tilolang_tilo::action::DynAction, String> {
+                Err("nothing runs while this test publishes".into())
+            }
+        }
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let planner: Arc<dyn Planner> = Arc::new(Unplanned);
+        let words = tilolang_tilo::runtime::SourceWords;
+        let (mut contracts, mut offered) = (0, 0);
+        for dir in sorted_dirs(&root.join("apps/tl")) {
+            if !dir.join("app.tl").is_file() {
+                continue;
+            }
+            let meta =
+                published(&dir, &[]).unwrap_or_else(|error| panic!("{}: {error}", dir.display()));
+            let app = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            for action in meta.actions.iter().filter(|action| !action.scenario) {
+                let kind = meta
+                    .target_of(&action.params)
+                    .map_or_else(|| meta.resource_type(), |target| meta.kind_of(&target.name));
+                let published =
+                    tilolang_tilo::publish::action_type(&meta, &kind, action, &planner, &words);
+                let confirms = action.confirms();
+                let expected = match confirms {
+                    Confirms::Always => Some(ConfirmationPolicy::Confirm),
+                    Confirms::Never => Some(ConfirmationPolicy::None),
+                    // A destructive one confirms its calls as a native verb does.
+                    Confirms::UnlessShift => None,
+                };
+                if let Some(expected) = expected {
+                    assert_eq!(
+                        published.contract.confirmation, expected,
+                        "{app}: `{}` is {confirms:?}",
+                        action.name,
+                    );
+                }
+                contracts += 1;
+            }
+            let Ok(committed) = std::fs::read_to_string(dir.join("fleet.json")) else {
+                continue;
+            };
+            let committed: serde_json::Value =
+                serde_json::from_str(&committed).expect("the committed catalogue entry reads");
+            for offer in committed["offers"].as_array().into_iter().flatten() {
+                let name = offer["action"].as_str().unwrap_or_default();
+                let Some(action) = meta.actions.iter().find(|a| a.name == name) else {
+                    continue;
+                };
+                assert_eq!(
+                    offer["confirm"].as_bool(),
+                    Some(action.confirms().on_press(false)),
+                    "{app}: the catalogue offers `{name}`, which is {:?}",
+                    action.confirms()
+                );
+                offered += 1;
+            }
+        }
+        assert!(
+            contracts > 0 && offered > 0,
+            "the fleet's actions were read: {contracts} contracts, {offered} offers"
+        );
+    }
+
+    /// A copy, a pause and a new event act on a click; a send, and a purge from the server,
+    /// always confirm; deleting a branch confirms unless Shift is held, and undo takes it back.
+    #[test]
+    fn a_press_confirms_by_what_the_action_does() {
+        use tilolang::meta::Confirms;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl");
+        let of = |name: &str| {
+            let (app, action) = name.split_once('.').expect("app.action");
+            let meta =
+                published(&root.join(app), &[]).unwrap_or_else(|error| panic!("{app}: {error}"));
+            meta.actions.iter().find(|a| a.name == action).map_or_else(
+                || panic!("{app} has `{action}`"),
+                |a| (a.confirms(), a.class),
+            )
+        };
+        for just_acts in [
+            "calculator.copy_text",
+            "chat.copy_text",
+            "music.remote_pause",
+            "calendar.new_event",
+        ] {
+            assert_eq!(
+                of(just_acts).0,
+                Confirms::Never,
+                "{just_acts} acts on a click"
+            );
+        }
+        for leaves in ["mail.send", "mail.purge", "messages.send"] {
+            assert_eq!(of(leaves).0, Confirms::Always, "{leaves} always confirms");
+        }
+        assert_eq!(
+            of("git-client.delete_branch"),
+            (
+                Confirms::UnlessShift,
+                tilolang::types::EffectClass::Undoable
+            ),
+            "deleting a branch confirms unless Shift is held, and undo takes it back"
+        );
     }
 
     #[test]

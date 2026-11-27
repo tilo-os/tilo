@@ -128,6 +128,9 @@ pub fn reached(funcs: &[crate::ir::Func]) -> Vec<BTreeSet<Effect>> {
 
 pub struct Effects {
     pub class: Vec<EffectClass>,
+    /// Whether each action leaves the system for good, itself or through an own action it
+    /// invokes ([`crate::meta::ActionMeta::leaves`]).
+    pub leaves: Vec<bool>,
     pub reaches: Vec<Vec<Reach>>,
     /// Whether each action's body invokes another action, itself included: what a run journals for,
     /// because a call can wait for a person and the run then runs again from its start.
@@ -143,6 +146,7 @@ fn func_id(export: &str) -> &str {
 pub fn analyze(m: &Module, app: &str) -> Effects {
     let n = m.funcs.len();
     let mut class = vec![EffectClass::Read; n];
+    let mut leaves: Vec<bool> = m.funcs.iter().map(|f| f.facts.leaves).collect();
     loop {
         let mut changed = false;
         for (i, f) in m.funcs.iter().enumerate() {
@@ -164,6 +168,21 @@ pub fn analyze(m: &Module, app: &str) -> Effects {
             if class.get(i).copied() != Some(c) {
                 if let Some(slot) = class.get_mut(i) {
                     *slot = c;
+                }
+                changed = true;
+            }
+            // An own action it invokes that leaves the system leaves it through this one too: a
+            // press of it confirms the whole. A foreign one confirms at its own step.
+            let through = f
+                .facts
+                .invokes
+                .iter()
+                .filter(|a| a.own)
+                .filter_map(|a| a.func)
+                .any(|g| leaves.get(g).copied().unwrap_or(false));
+            if through && leaves.get(i) == Some(&false) {
+                if let Some(slot) = leaves.get_mut(i) {
+                    *slot = true;
                 }
                 changed = true;
             }
@@ -228,6 +247,7 @@ pub fn analyze(m: &Module, app: &str) -> Effects {
         .collect();
     Effects {
         class,
+        leaves,
         reaches: reaches
             .into_iter()
             .map(|m| m.into_values().collect())

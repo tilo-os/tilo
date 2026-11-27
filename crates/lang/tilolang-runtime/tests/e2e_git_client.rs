@@ -843,6 +843,46 @@ mod cases {
             assert_eq!(s.engine.asked_with("delete_branch").len(), 1);
         }
 
+        phase a_branchs_delete_button_confirms_unless_shift_is_held;
+        {
+            let s = Site::new();
+            let dispatch = Dispatch::new();
+            s.rt.set_foreign_invoker(dispatch.clone());
+            s.open(REPO);
+            s.call(
+                "create_branch",
+                vec![Value::resource(&s.root), Value::text("topic")],
+            );
+            s.call("checkout_branch", vec![Value::resource(&s.root), Value::text("main")]);
+            s.call("switch_carrying", vec![Value::resource(&s.root)]);
+            let branches = s.view_window("branches");
+            let delete = of_kind(branches.tree(), "ui.Button")
+                .into_iter()
+                .find(|b| b.props.get("label") == Some(&Value::text("Delete")))
+                .expect("the branch that is not checked out has a Delete button")
+                .key
+                .clone();
+            let press = |shift| {
+                let held = tilolang_runtime::Held {
+                    shift,
+                    ..tilolang_runtime::Held::default()
+                };
+                branches.fire_held(&delete, "press", None, None, held).unwrap()
+            };
+            let tilolang_runtime::InvokeOutcome::Asked(_) = press(false) else {
+                panic!("a plain press of Delete confirms it first");
+            };
+            assert_eq!(dispatch.asked().0, s.app.action("delete_branch"));
+            assert!(s.engine.asked_with("delete_branch").is_empty(), "nothing is deleted yet");
+            let out = press(true);
+            assert!(matches!(out, tilolang_runtime::InvokeOutcome::Done(_)), "{out:?}");
+            assert_eq!(
+                s.engine.asked_with("delete_branch").len(),
+                1,
+                "Shift held, the press deletes it at once"
+            );
+        }
+
         phase a_switch_over_uncommitted_work_asks_and_parks_it;
         {
             let s = Site::new();
