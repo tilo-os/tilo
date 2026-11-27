@@ -47,27 +47,32 @@ template view shell_around(front: Option<Layout>, traditional: Bool, content: Vi
         // picture the person chose, or the shell's own gradient where it shows none.
         ui.Backdrop()
         stack(gap: .tight, fill) {
-            if bar_shows(s) {
-                bar_on_edge(s, traditional)
-            }
-            if side_takes_room {
-                // The dock takes its own column beside the band, so nothing of the page stands
-                // under it. Its body keeps the band it rests in, so an item that magnifies grows
-                // over the page without moving it.
-                row(fill) {
-                    if s.dock_edge == .left {
-                        side_dock(s, .left)
+            // The bar and the band stand apart as far as the band stands from a dock's band:
+            // the dock's body keeps its `related` inset from the edge it rides plus the stack's
+            // `tight`, so the page keeps that same room under the bar.
+            stack(gap: .sibling, fill) {
+                if bar_shows(s) {
+                    bar_on_edge(s, traditional)
+                }
+                if side_takes_room {
+                    // The dock takes its own column beside the band, so nothing of the page
+                    // stands under it. Its body keeps the band it rests in, so an item that
+                    // magnifies grows over the page without moving it.
+                    row(fill) {
+                        if s.dock_edge == .left {
+                            side_dock(s, .left)
+                        }
+                        band {
+                            content
+                        }
+                        if s.dock_edge == .right {
+                            side_dock(s, .right)
+                        }
                     }
+                } else {
                     band {
                         content
                     }
-                    if s.dock_edge == .right {
-                        side_dock(s, .right)
-                    }
-                }
-            } else {
-                band {
-                    content
                 }
             }
             if dock_takes_room {
