@@ -895,6 +895,7 @@ fn run_apps(_marks: &Marks, json_path: Option<String>, device: &str, tabs: usize
 
     focus_note(&mut session, TITLES[0]);
     let typed = "the wheels turn while the office sleeps and the lights stay on";
+    let worked_before = session.shell_work();
     let typing = measure(&mut session, typed.chars().count(), |session, frame| {
         if let Some(letter) = typed.chars().nth(frame) {
             session
@@ -903,6 +904,21 @@ fn run_apps(_marks: &Marks, json_path: Option<String>, device: &str, tabs: usize
                 .expect("a key of the person's layout");
         }
     });
+    if let Some((before, after)) = worked_before.zip(session.shell_work()) {
+        let took = |of: fn(&tilo_session::platform::surfaces::ShellWork) -> Duration| {
+            of(&after).saturating_sub(of(&before))
+        };
+        println!(
+            "  shell work   turning {:.1} ms (updating {:.1}, committing {:.1}, receiving {:.1}, laying out {:.1}), drawing {:.1} ms over {} turns",
+            took(|work| work.turning).as_secs_f64() * 1000.0,
+            took(|work| work.updating).as_secs_f64() * 1000.0,
+            took(|work| work.committing).as_secs_f64() * 1000.0,
+            took(|work| work.receiving).as_secs_f64() * 1000.0,
+            took(|work| work.laying_out).as_secs_f64() * 1000.0,
+            took(|work| work.drawing).as_secs_f64() * 1000.0,
+            after.turns.saturating_sub(before.turns),
+        );
+    }
     // The person leaves the field: no caret blinks in the frames they no longer type in, so an
     // idle frame finds no work at all.
     for pressed in [true, false] {
