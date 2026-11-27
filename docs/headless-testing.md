@@ -389,7 +389,7 @@ They run a single `sync → build_layout → compute_layout → apply_layout →
   "dump":"/tmp/after.json"}'
 ```
 
-Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, `key`, `type`, `modifiers`, `perform` (an accessibility verb on a named target: `activate`, `set_value`, `expand`, …), `invoke`, `wait_for_named`, `expect`. Options: `viewport` (`[w, h]`), `dump`, `targets`, `results`, `capture`, `window_bar`, `scenario`, `resources`, `workspace` (run over the workspace the device serves, so a call reaches another app). The whole grammar is `crates/platform/headless-schema/src/lib.rs`. Exit codes: `0` all steps ran, `1` a step failed (the reason is on stderr — a missing target is an error, not a silent no-op), `3` persistence was unavailable.
+Steps: `click_named`, `click_at` (`[x, y]`), `tap_named`, `tap_at`, `swipe_at`, `key`, `type`, `modifiers`, `perform` (an accessibility verb on a named target: `activate`, `set_value`, `expand`, …), `press` (one control, by what a person finds it by), `invoke`, `wait_for_named`, `expect`. Options: `viewport` (`[w, h]`), `dump`, `targets`, `results`, `capture`, `window_bar`, `scenario`, `resources`, `workspace` (run over the workspace the device serves, so a call reaches another app). The whole grammar is `crates/platform/headless-schema/src/lib.rs`. Exit codes: `0` all steps ran, `1` a step failed (the reason is on stderr — a missing target is an error, not a silent no-op), `3` persistence was unavailable.
 
 `invoke` performs one action the app publishes, by address, through the same resolution, availability, confirmation and strict argument binding the live host applies:
 
@@ -407,6 +407,17 @@ An argument that takes a resource names it by its published address, which the s
 ```
 
 The address is the one `bind` hands back (`{{project.resources.0}}`), so a plan writes no identity it cannot know: a development build's app id is the run's.
+
+`press` presses one control, as a person's pointer and an assistive technology press it, by the address a walk uses: the name the control answers to (or a list row's title), what it does (`identity`, the stable identity an action's control carries), or the published address of the resource a row presents:
+
+```json
+{"press": "Bookmarks"}
+{"press": {"name": "Presenter"}}
+{"press": {"resource": "{{document.resources.0}}"}}
+{"press": {"name": "Tag…", "verb": "show-context-menu"}}
+```
+
+A row pressed this way opens its own item, and a button runs what its press runs: a control a plan could only name by a widget id before.
 
 The same driver runs in Rust, which is how app tests are written: `HeadlessApp` (`tilo_app::framework::testing`) mounts a component in one `Driver`, and `drive(&[Step])` runs the same steps `--headless-drive` runs — one language for the driver, the CLI and a shipped scenario. `TestEnv` (`tilo_test_env`) is the machine around it: a home in a temporary directory, a clock fixed at `CAPTURE_LOCAL_TIME`, a network closed to external hosts until `allow_external`, and `with_files` for fixtures.
 
@@ -479,7 +490,7 @@ t outputs layout-check --run <run> --to ~/layout-shots
 
 ## Screenshots of every app
 
-`tools/screenshots/run.py` photographs every app of the default collection in realistic situations, set up only through each app's actions. A plan per app, `tools/screenshots/<app>.toml`, lists situations; each is a name, a one-line title and the steps that reach it (`invoke`, `wait_for_named`, `expect`, `perform`; no clicks or keys):
+`tools/screenshots/run.py` photographs every app of the default collection in realistic situations, set up only through each app's actions and the controls its window offers by name. A plan per app, `tools/screenshots/<app>.toml`, lists situations; each is a name, a one-line title and the steps that reach it (`invoke`, `press`, `wait_for_named`, `expect`, `perform`; no clicks or keys):
 
 ```toml
 [[situation]]
@@ -493,7 +504,7 @@ invoke = { resource = "calendar.calendar", action = "new-event", args = { event 
 invoke = { resource = "calendar.calendar", action = "show-week" }
 ```
 
-Dates are written relative to the day of the run (`${TODAY}`, `${TODAY+3}`, `${MON+2}`, this week's Wednesday), so a week or an agenda has content whenever the shots are taken. A resource an action takes as an argument is named by its address, which the step answers with the reference the action's parameter asks for: `args = { p = { resource = "{{project.resources.0}}" } }`.
+Dates are written relative to the day of the run (`${TODAY}`, `${TODAY+3}`, `${MON+2}`, this week's Wednesday), so a week or an agenda has content whenever the shots are taken. A resource an action takes as an argument is named by its address, which the step answers with the reference the action's parameter asks for: `args = { p = { resource = "{{project.resources.0}}" } }`. A control is pressed by the name a person reads it by, or by the resource a list row presents, as the walks press it: `press = "All slides"`, or `press = { resource = "{{document.resources.0}}" }`.
 
 Each app runs headless in a fresh profile (its own HOME, XDG directories and runtime directory, no display, no session bus), founded, built and installed once; situations built from a scenario share it and run side by side, and one whose steps write into the workspace gets a profile of its own. Each situation takes four pictures: dark and light, wide (1280x800) and compact (420x800). A daemon in that profile installs the build as the device's own development build and starts the app on the capture (`tilo-runtime --run-app … --headless-drive`), with the connectors the device runs for the app's origins: no app binary is started by the runner, so a picture shows what a person's app reaches. The app runs in its own sandbox: the daemon binds writable only the directories the spec's pictures and reports go to, for that one launch, and only when the device's own person starts a development build this device made, into existing directories they own that hold neither their home nor the workspace's files. A situation with `workspace = true` runs over the workspace the device serves: its instance joins over connections the daemon made for it, attested as that instance, so what it calls (a video's playback) goes through the device's dispatch; the daemon allows it only on the same terms as the directories. An app without a plan is photographed as it opens.
 

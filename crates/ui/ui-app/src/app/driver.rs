@@ -2469,14 +2469,21 @@ impl Driver {
                 .map(|(id, _)| id)
                 .ok_or_else(|| format!("no control does {identity:?} in this window"))?
         } else if let Some(resource) = &press.resource {
-            let shown = self.control_node_of_resource(resource)?;
-            let id = accesskit::NodeId(u64::from(shown).saturating_add(1));
+            // The address is one this window publishes, read the way an action's resource
+            // argument is ([`Self::reference_arguments`]): the published resource names the app
+            // the run installed, and the row that presents it is the one a person opens.
+            let resources = self.resources();
+            let published = find_resource(&resources, resource)
+                .ok_or_else(|| format!("this window publishes nothing at {resource:?}"))?;
+            let shown = published.id.as_str().to_owned();
+            let node = self.control_node_of_resource(&shown)?;
+            let id = accesskit::NodeId(u64::from(node).saturating_add(1));
             if !self
                 .a11y_nodes()
                 .iter()
                 .any(|(exported, _)| *exported == id)
             {
-                return Err(format!("no control shows {resource:?} in this window"));
+                return Err(format!("no control shows {shown:?} in this window"));
             }
             id
         } else {

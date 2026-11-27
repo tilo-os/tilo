@@ -113,8 +113,8 @@ pub struct Press {
     pub name: Option<String>,
     /// What the control does, as the stable identity an action's control carries.
     pub identity: Option<String>,
-    /// The resource a list row presents, as the app publishes it (`tl:<app>:<id>`) or as the app
-    /// names it (`<id>`).
+    /// The resource a list row presents, by the address the window publishes it at — the same
+    /// address an action's resource argument names.
     pub resource: Option<String>,
     pub verb: PressVerb,
 }
