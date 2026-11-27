@@ -346,6 +346,12 @@ impl Surface {
         out.extend(trees.into_iter().map(|tree| (*tree).clone()));
         let words = self.host.runtime().words();
         for package in self.host.packages() {
+            // A window shows its own app: its row is the one a person reads there, and the rows
+            // of the packages its code uses are their own windows' (or the directory's), where
+            // a caller names their document-less actions.
+            if shown.is_some() && package.meta.app != self.app {
+                continue;
+            }
             let mut resource = publish_package(&package.meta, &self.planner, &*words);
             if package.meta.app == self.app {
                 resource = with_app_actions(resource, &self.window);
@@ -1547,7 +1553,8 @@ impl HostPlatform {
     }
 }
 
-/// What an instance is handed beside its store: the files the session opened for it.
+/// What an instance is handed beside its store: the device's services the session opened for it,
+/// and, for a test, the lane its presence travels on in place of the daemon's line.
 #[derive(Default)]
 pub struct Kept {
     /// The device content store of the app in its workspace, when the session opened one for
@@ -1564,6 +1571,10 @@ pub struct Kept {
     /// The session's tools service, over the connection it made for this instance: what
     /// `File.open` asks which app opens a file and starts it.
     pub tools: Option<std::sync::Arc<runtime_interface::tools::Service>>,
+    /// The lane the instance says its person's presence on and hears the workspace's, when its
+    /// embedder hands one instead of the process's daemon line: a test that plays the device's
+    /// live presence for the windows it runs.
+    pub presence: Option<std::rc::Rc<dyn crate::presence::Line>>,
 }
 
 /// What the actions of the rows a window shows answered, by resource and action: a window asks
@@ -1855,6 +1866,10 @@ pub struct Hosted {
     /// Who else is where in the document, as the connection hears it, and what the instance last
     /// said of its own person there.
     presence: Presence,
+    /// The lane the instance says and hears that presence on, when its embedder hands one: a test
+    /// that plays the device's live presence for the windows it runs. A session's app process
+    /// says it on the daemon's line.
+    presence_line: Option<std::rc::Rc<dyn crate::presence::Line>>,
     /// Who is in the system's calls the views show, and the steps the person takes in them.
     calls: Calls,
     /// The app's calls of its own page actions raised for what the window's page waits on the
@@ -2235,6 +2250,7 @@ impl Hosted {
             &connection,
         );
         let presence = Presence::new(&spec.app, &spec.person);
+        let presence_line = kept.presence.clone();
         let calls = Calls::new(&spec.person);
         let invocations = Invocations::new(&spec.workspace);
         // The shell, shown where no session runs it (a web page of the workspace's desktop),
@@ -2289,6 +2305,7 @@ impl Hosted {
             access,
             content: workspace_content,
             presence,
+            presence_line,
             calls,
             page_prompts: crate::page_prompts::PagePrompts::default(),
             invocations,
@@ -2737,8 +2754,13 @@ impl Hosted {
             changed |= shell.turn(&mut self.instance);
             shell.say(|request| connection.manager().send(request));
         }
+        let presence_line = self.presence_line.clone();
         self.presence.say(&self.instance, |said| {
-            if let Err(error) = crate::daemon_line::say_presence(&said) {
+            let sent = match &presence_line {
+                Some(line) => line.say(&said),
+                None => crate::daemon_line::say_presence(&said),
+            };
+            if let Err(error) = sent {
                 tracing::debug!(%error, "the person's presence was not said");
             }
         });
@@ -2788,7 +2810,11 @@ impl Hosted {
         let mut took = events.len() != before;
         // The live presence and the call service answer on the line's own lanes, not this
         // connection's events.
-        took |= self.presence.heard(crate::daemon_line::presence_heard());
+        let heard = match &self.presence_line {
+            Some(line) => line.heard(),
+            None => crate::daemon_line::presence_heard(),
+        };
+        took |= self.presence.heard(heard);
         took |= self.calls.answers(crate::daemon_line::call_media_answers());
         self.presence.show(&mut self.instance);
         self.calls.show(&mut self.instance);

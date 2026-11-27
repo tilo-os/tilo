@@ -15,6 +15,7 @@ impl Session {
     fn another_window(&mut self, bus: &Rc<Bus>, route: &RouteSpec) -> Window {
         let spec = spec_of(route, &self.person);
         let broker = Broker::on(bus, route.clone(), &spec.person);
+        let presence = broker.presence_line();
         let mut manager = CollaborationManager::with_peer_transport(broker);
         assert!(manager.send(CollabRequest::Hello {
             app_id: route.app_id.clone(),
@@ -37,7 +38,10 @@ impl Session {
             connection,
             (store, tilolang_process::hosted::memory_content()),
             bundle,
-            &tilolang_process::hosted::Kept::default(),
+            &tilolang_process::hosted::Kept {
+                presence: Some(presence),
+                ..tilolang_process::hosted::Kept::default()
+            },
             Box::new(ChannelTransport::new(ours).expect("the window's transport")),
             (&Rc::new(Phrases::new("en-US")), self.host.formats()),
             self.woken.waker(),

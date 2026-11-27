@@ -1,7 +1,8 @@
 //! The broker's end of an instance's connections, for the host's tests and examples: a fake in
 //! place of the session's broker that admits the routes a connection joins, keeps what it sends
-//! where the test reads it, answers its resource commands from the workspace's store, relays a
-//! presence frame to the connections joined on its route, hands each connection the
+//! where the test reads it, answers its resource commands from the workspace's store, plays the
+//! device's live presence for it (a word one connection's person says is heard by the others,
+//! as the device hands the workspace's words to its other apps), hands each connection the
 //! workspace's member list, and answers reads of a device's records (its engine jobs) as the
 //! record API does, a held read once the record moves, as the broker does.
 
@@ -334,6 +335,9 @@ pub struct Bus {
     /// What a reader's loop is woken by once its read of a device record is answered, as a
     /// connection wakes it when an answer arrives.
     answered: RefCell<Option<tilolang_tilo::background::Waker>>,
+    /// What the device's live presence heard for the connections joined here: the words the
+    /// other connections' people said, each with the connection it waits for.
+    presence: RefCell<Vec<(Inbox, collab_types::presence::Heard)>>,
 }
 
 /// One member of a test's workspace: who, what they are called, and the picture they set.
@@ -637,6 +641,19 @@ impl Broker {
         self.bus.workspace()
     }
 
+    /// The device's live presence as this connection says and hears it, when its embedder hands
+    /// the instance a lane instead of the process's daemon line: a word this connection's person
+    /// says is heard by the bus's other connections, as the device hands the workspace's words to
+    /// its other apps, and what they said waits for this connection's next look.
+    #[must_use]
+    pub fn presence_line(&self) -> Rc<dyn crate::presence::Line> {
+        Rc::new(PresenceLine {
+            bus: Rc::clone(&self.bus),
+            inbox: Rc::clone(&self.inbox),
+            person: self.person.clone(),
+        })
+    }
+
     /// What the connection sends, as the test reads it.
     #[must_use]
     pub fn sent(&self) -> Sent {
@@ -660,6 +677,53 @@ impl Broker {
     #[must_use]
     pub fn routes(&self) -> Rc<RefCell<Vec<RouteSpec>>> {
         Rc::clone(&self.routes)
+    }
+}
+
+/// One connection's end of the device's live presence, as the fake broker plays it: what its
+/// person says is heard by the workspace's other connections, stamped with their person, and what
+/// they said waits to be handed back here.
+struct PresenceLine {
+    bus: Rc<Bus>,
+    inbox: Inbox,
+    person: String,
+}
+
+impl crate::presence::Line for PresenceLine {
+    fn say(&self, said: &collab_types::presence::Said) -> Result<(), String> {
+        let heard = collab_types::presence::Heard {
+            member: collaboration::MemberId::person(self.person.clone()),
+            key: said.key.clone(),
+            payload: said.payload.clone(),
+        };
+        let joined: Vec<Inbox> = self
+            .bus
+            .joined
+            .borrow()
+            .iter()
+            .map(|(_, _, inbox)| Rc::clone(inbox))
+            .collect();
+        let mut waiting = self.bus.presence.borrow_mut();
+        let mut told: Vec<Inbox> = Vec::new();
+        for inbox in joined {
+            if Rc::ptr_eq(&inbox, &self.inbox) || told.iter().any(|told| Rc::ptr_eq(told, &inbox)) {
+                continue;
+            }
+            waiting.push((Rc::clone(&inbox), heard.clone()));
+            told.push(inbox);
+        }
+        Ok(())
+    }
+
+    fn heard(&self) -> Vec<collab_types::presence::Heard> {
+        let (mine, others) = {
+            let mut waiting = self.bus.presence.borrow_mut();
+            std::mem::take(&mut *waiting)
+                .into_iter()
+                .partition(|(inbox, _)| Rc::ptr_eq(inbox, &self.inbox))
+        };
+        *self.bus.presence.borrow_mut() = others;
+        mine.into_iter().map(|(_, heard)| heard).collect()
     }
 }
 

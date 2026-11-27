@@ -451,12 +451,14 @@ fn a_terminal_window_runs_a_real_shell_its_refusals_are_offered_again_and_exit_c
     );
 
     // The person moves the session to their own shell on this device, which they have not
-    // allowed yet: refused in the supervisor's words, and offered again.
+    // allowed yet: refused in the supervisor's words, and offered again. Moving a live shell is
+    // destructive, so the person's call asks first and their yes runs it.
     let session = session_address(&mut app);
     let open_in = action_id(&mut app, &session, "Open in…");
     let mut target = Map::new();
     target.insert("target".to_owned(), Json::String("host".to_owned()));
-    let _ = app.invoke(None, None, &session, &open_in, &target);
+    app.invoke_allowing(None, None, &session, &open_in, &target)
+        .expect("the person's yes runs the move to their own shell");
     wait_for(&mut app, "the device's own shell is refused", |app| {
         standing(app).starts_with("failed") && said(app, "target") == "host"
     });

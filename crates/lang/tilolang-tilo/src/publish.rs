@@ -847,6 +847,11 @@ fn views_of(
     };
     let primary = meta.default_view(&declared.id);
     let placed = meta.place_view(&declared.id);
+    let row = meta.row_view(type_name);
+    // A root's views are the window's own: the bar switches between them, and the switch is
+    // system functionality, never a command the app's palette or a row's menu lists beside it.
+    // An item's view shows the item, and is a command of its own ("Task summary").
+    let root = meta.roots.contains(&declared.id);
     meta.views_showing(type_name)
         .into_iter()
         .map(|view| {
@@ -864,8 +869,17 @@ fn views_of(
                 .map(|line| said_of(words, &view.id, "doc", None, line));
             let is_primary = primary == Some(view.id.as_str());
             let is_place = placed == Some(view.id.as_str());
-            let opens = (!is_primary)
-                .then(|| open_with_type(&view.id, &name, &label, description.as_deref(), is_place));
+            let window_switch = root && !is_place && row != Some(view.id.as_str());
+            let opens = (!is_primary).then(|| {
+                open_with_type(
+                    &view.id,
+                    &name,
+                    &label,
+                    description.as_deref(),
+                    is_place,
+                    window_switch,
+                )
+            });
             let open_action = opens.as_ref().map_or("open", |opens| opens.id.as_str());
             let mut spec = ResourceViewSpec::new(view.id.clone(), label, open_action);
             if let Some(line) = description {
@@ -926,12 +940,17 @@ pub fn open_with_id(view: &str) -> String {
 /// never what a person turns the app's window into: the canvas and an agent's `place` stand it,
 /// so its open action is offered to agents and kept out of people's palette and menus, where it
 /// would replace the window's sidebar and bar with the bare view.
+///
+/// A root's other view is the window's own as well: the bar's switch turns the window into it,
+/// so it is no row of a palette or a menu the way an item's view is — its own row stands for it
+/// ([`tilo_actions::OPENS_HIT_TAG`]).
 fn open_with_type(
     view: &str,
     name: &str,
     label: &str,
     description: Option<&str>,
     place: bool,
+    window_switch: bool,
 ) -> Arc<ActionType> {
     let mut spec = crate::effects::OpenEffect::OpenWith {
         anchor: String::new(),
@@ -945,6 +964,11 @@ fn open_with_type(
     ty.description = description.map(str::to_owned);
     if place {
         ty.contract.set_audience(tilo_actions::Audience::Agents);
+    }
+    if window_switch {
+        ty.contract
+            .tags
+            .push(tilo_actions::OPENS_HIT_TAG.to_owned());
     }
     Arc::clone(spec.action_type())
 }

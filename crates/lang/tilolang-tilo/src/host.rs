@@ -226,6 +226,10 @@ pub(crate) struct HostInner {
     /// Whether the workspace's members' resource is read again at the next follow: a change of
     /// the policy or a member action of this host's may have moved it.
     pub(crate) members_stale: Cell<bool>,
+    /// Whether the reading of the workspace's members' resource moved since an embedder last
+    /// took it: what tells a view that reads a name that the person it names moved, whoever
+    /// followed the reading in between ([`Host::follow_members`]).
+    pub(crate) members_named_moved: Cell<bool>,
     /// The members its last read of the workspace's members' resource named, by id, with what
     /// the workspace says of each: what a view calls people and wears their colours by.
     pub(crate) member_rows:
@@ -1425,6 +1429,7 @@ impl Host {
             members_from: RefCell::new(None),
             members_watch,
             members_stale: Cell::new(true),
+            members_named_moved: Cell::new(false),
             member_rows: RefCell::new(Rc::new(std::collections::HashMap::new())),
             members_known: Cell::new(false),
             members_asked: Cell::new(false),

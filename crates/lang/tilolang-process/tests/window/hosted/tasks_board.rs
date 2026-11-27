@@ -697,13 +697,29 @@ fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
             "the window wakes when the history's moment reads anew, before midnight: \
              {wait:?}, not {expected:?}"
         );
-        // Closed again, the window shows the day's list, and wakes at the person's midnight.
+        // Closed again, the window shows the day's list again. Its rows are read again as it
+        // comes back, and the placeholders it shows for them are drawn before the rows stand:
+        // the window wakes for those first, no longer than the toolkit holds one, and then for
+        // the person's midnight.
         assert!(
             !crate::history_window::press_history(&mut app),
             "the window's History closes"
         );
-        let wait = crate::history_window::sleeps_for(&mut app)
+        let mut wait = crate::history_window::sleeps_for(&mut app)
             .expect("a window showing today waits for midnight");
+        for _ in 0..4 {
+            if wait >= ui::time::Duration::from_secs(1) {
+                break;
+            }
+            assert!(
+                wait <= ui::arriving::GRACE + ui::arriving::MIN_SHOWN,
+                "the list's rows arrive before the day ends: {wait:?}"
+            );
+            let woke_at = ui::time::now() + wait;
+            ui::time::testing::with_monotonic_time(woke_at, || app.settle());
+            wait = crate::history_window::sleeps_for(&mut app)
+                .expect("a window showing today waits for midnight");
+        }
         let midnight = local(7, 1, (0, 0, 0)).duration_since(before).unwrap();
         assert!(
             wait.abs_diff(midnight) < ui::time::Duration::from_secs(1),

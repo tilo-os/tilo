@@ -194,6 +194,15 @@ fn every_command_of_a_tasks_menu_acts_by_its_name() {
         let tasks_before = session.titles().len();
         session.window.press_named(command);
         session.settle();
+        // A destructive command asks the person first, as every destructive press does: their
+        // yes runs it.
+        if command == "Delete" {
+            assert_eq!(
+                session.allow_asked(),
+                1,
+                "Delete asks the person before it deletes the task"
+            );
+        }
         let after = controls_of(session.window.app());
         assert!(
             after.iter().all(|name| name != command),

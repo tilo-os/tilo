@@ -735,13 +735,26 @@ pub struct OpenResourceSearch {
     resources: Arc<BTreeMap<String, tilo_actions::ResourceSpec>>,
 }
 
-fn resource_rank(resource: &tilo_actions::ResourceSpec) -> (bool, usize) {
+fn resource_rank(resource: &tilo_actions::ResourceSpec) -> (bool, bool, usize) {
     (
+        // The app a person opens is its document, never the address its document-less
+        // actions are called at: of two rows with one title, the document leads.
+        !is_app_address(resource),
         resource
             .open_action()
             .is_some_and(|action| action.kind == tilo_actions::OperationKind::View),
         resource.person_action_count(),
     )
+}
+
+/// Whether `resource` is an app's own address (`tl:<app>`), not a document of it
+/// (`tl:<app>:<id>`).
+fn is_app_address(resource: &tilo_actions::ResourceSpec) -> bool {
+    resource
+        .id
+        .as_str()
+        .strip_prefix("tl:")
+        .is_some_and(|rest| !rest.is_empty() && !rest.contains(':'))
 }
 
 impl OpenResourceSearch {

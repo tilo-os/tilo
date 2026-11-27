@@ -2799,6 +2799,7 @@ fn a_window_opened_with_a_markdown_file_imports_it_into_notes() {
         clipboard: None,
         thumbnails: None,
         tools: None,
+        presence: None,
     };
     let connection = Connection::new(manager).expect("the connection joined its route");
     let store = ResourceStore::new(Rc::new(connection.port(None)));
@@ -3031,6 +3032,7 @@ fn opening_with(stub: &ToolsStub, bytes: &[u8], name: &str) -> (TilolangProcess,
         clipboard: None,
         thumbnails: None,
         tools: Some(std::sync::Arc::new(tools)),
+        presence: None,
     };
     let connection = Connection::new(manager).expect("the connection joined its route");
     let store = ResourceStore::new(Rc::new(connection.port(None)));

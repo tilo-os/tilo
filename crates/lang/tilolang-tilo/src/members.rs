@@ -260,7 +260,9 @@ impl Host {
     /// Whether either moved.
     pub fn follow_members(&self) -> bool {
         let policy = self.follow_member_policy();
-        self.read_workspace_members() || policy
+        let read = self.read_workspace_members();
+        let named = self.inner.members_named_moved.replace(false);
+        read || named || policy
     }
 
     /// Give the runtime the policy the host decides by, when it changed. Whether it did.
@@ -451,6 +453,11 @@ impl Host {
             });
         self.inner.members_known.set(true);
         self.inner.members_asked.set(false);
+        if took {
+            // A view that read a name runs again even where a read followed the members first:
+            // the move is kept until an embedder takes it.
+            self.inner.members_named_moved.set(true);
+        }
         took
     }
 

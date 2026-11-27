@@ -689,10 +689,11 @@ impl Session {
         }
         let bus = Rc::new(tilolang_process::testing::Bus::default());
         let broker = Broker::on(&bus, route.clone(), &spec.person);
+        let presence = Some(broker.presence_line());
         let (sent, inbox, routed) = (broker.sent(), broker.inbox(), broker.routed());
         let manager = CollaborationManager::with_peer_transport(broker);
         let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
-        let mut session = Self::launch(manager, &route, spec, wire, window);
+        let mut session = Self::launch(manager, &route, spec, wire, presence, window);
         for app in [TASKS, NOTES] {
             session.serve(&bus, &RouteSpec::app(app, route.cluster_id));
         }
@@ -877,10 +878,11 @@ impl Session {
         spec: Spec,
     ) -> Self {
         let broker = Broker::on(bus, route.clone(), &spec.person);
+        let presence = Some(broker.presence_line());
         let (sent, inbox, routed) = (broker.sent(), broker.inbox(), broker.routed());
         let manager = CollaborationManager::with_peer_transport(broker);
         let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
-        Self::launch(manager, route, spec, wire, Window::in_harness)
+        Self::launch(manager, route, spec, wire, presence, Window::in_harness)
     }
 
     /// A person at a harness window of the instance `spec` names, of the app of `route`, on a
@@ -902,10 +904,11 @@ impl Session {
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
         let broker = Broker::on(bus, route.clone(), &spec.person);
+        let presence = Some(broker.presence_line());
         let (sent, inbox, routed) = (broker.sent(), broker.inbox(), broker.routed());
         let manager = CollaborationManager::with_peer_transport(broker);
         let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
-        let mut session = Self::launch(manager, route, spec, wire, window);
+        let mut session = Self::launch(manager, route, spec, wire, presence, window);
         session.settle();
         session
     }
@@ -924,11 +927,19 @@ impl Session {
         let spec = Spec::new(app, route.cluster_id.to_string(), 1, person).in_language("en-US");
         let bus = Rc::new(tilolang_process::testing::Bus::default());
         let broker = Broker::on(&bus, route.clone(), &spec.person);
+        let presence = Some(broker.presence_line());
         let (sent, inbox, routed) = (broker.sent(), broker.inbox(), broker.routed());
         let manager = CollaborationManager::with_peer_transport(broker);
         let wire = (Box::new((inbox, routed)) as Box<dyn std::any::Any>, sent);
-        let mut session =
-            Self::launch_over(manager, &route, spec, wire, Some(stored_store(dir)), window);
+        let mut session = Self::launch_over(
+            manager,
+            &route,
+            spec,
+            wire,
+            Some(stored_store(dir)),
+            presence,
+            window,
+        );
         session.settle();
         session
     }
@@ -943,9 +954,10 @@ impl Session {
         route: &RouteSpec,
         spec: Spec,
         wire: (Box<dyn std::any::Any>, Sent),
+        presence: Option<Rc<dyn tilolang_process::presence::Line>>,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
-        Self::launch_over(manager, route, spec, wire, None, window)
+        Self::launch_over(manager, route, spec, wire, None, presence, window)
     }
 
     /// [`Self::launch`], the instance's resources in `store` when given, else in the workspace
@@ -956,6 +968,7 @@ impl Session {
         spec: Spec,
         wire: (Box<dyn std::any::Any>, Sent),
         store: Option<tilolang_tilo::resources::ResourceStore>,
+        presence: Option<Rc<dyn tilolang_process::presence::Line>>,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
         assert!(manager.send(CollabRequest::Hello {
@@ -973,7 +986,7 @@ impl Session {
         let store = store.unwrap_or_else(|| {
             tilolang_tilo::resources::ResourceStore::new(Rc::new(connection.port(None)))
         });
-        Self::assemble(connection, early, spec, wire, Some(store), window)
+        Self::assemble(connection, early, spec, wire, Some(store), presence, window)
     }
 
     /// The window `window` makes of the instance `spec` of `route` over `connection`, its
@@ -984,6 +997,7 @@ impl Session {
         spec: Spec,
         (broker, sent): (Box<dyn std::any::Any>, Sent),
         store: Option<tilolang_tilo::resources::ResourceStore>,
+        presence: Option<Rc<dyn tilolang_process::presence::Line>>,
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
         let store = store.unwrap_or_else(|| {
@@ -1003,6 +1017,7 @@ impl Session {
             content: Some(content.clone()),
             chooser: DEVICE_CHOOSER.with(|chooser| chooser.borrow().clone()),
             tools: DEVICE_TOOLS.with(|tools| tools.borrow().clone()),
+            presence,
             ..tilolang_process::hosted::Kept::default()
         };
         let mut host = TilolangProcess::new(woken.waker());
@@ -3003,11 +3018,11 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
     // person can take now, drawn from what the action declares. An action that
     // asks for more than a row collects (Open, Remove, Place in board, Move to,
     // Delete project outside a project) is not a row, but every action is
-    // offered: the app keeps none back from the lists. The app's document offers
-    // the history verbs its store answers — undo and redo of a change, and the
-    // versions history lists — and no checkpoint, which its store does not keep.
-    // The app's root offers the system's copy link to it, as every root with a
-    // view does.
+    // offered: the app keeps none back from the lists. The app's own row offers
+    // the history verbs its store answers — undo and redo of a change, the
+    // versions history lists, and a checkpoint, a version that is no change of
+    // its own. The app's root offers the system's copy link to it, as every root
+    // with a view does.
     let undo = Some(
         ui::HostShortcut::Undo
             .shortcut(conventions)
@@ -3041,6 +3056,11 @@ fn an_empty_windows_palette_lists_what_a_person_can_do_now(
             ),
             ("Undo".to_owned(), Some(ui::icons::Icon::Undo2), undo),
             ("Redo".to_owned(), Some(ui::icons::Icon::Redo2), redo),
+            (
+                "Checkpoint".to_owned(),
+                Some(ui::icons::Icon::Bookmark),
+                None,
+            ),
         ],
         "the empty window's palette"
     );

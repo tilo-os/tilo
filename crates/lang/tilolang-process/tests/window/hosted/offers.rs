@@ -103,9 +103,16 @@ fn a_task_checked_off_offers_reopen_and_the_finished_ones_can_be_cleared() {
         "the finished task is no longer offered finished: {now:?}"
     );
     assert_eq!(clearing(&mut session), Availability::Available);
-    // And what was offered runs: choosing it clears the task the app says is finished.
+    // And what was offered runs: choosing it clears the task the app says is finished. A
+    // destructive offer asks the person first, as every destructive press does; their yes runs
+    // it.
     choose(&mut session, "Delete finished tasks");
     session.settle();
+    assert_eq!(
+        session.allow_asked(),
+        1,
+        "clearing the finished tasks asks the person first"
+    );
     assert!(session.titles().is_empty(), "{:?}", session.titles());
 }
 

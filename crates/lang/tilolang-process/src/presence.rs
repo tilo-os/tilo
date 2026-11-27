@@ -23,6 +23,23 @@ use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::value::ResourceRef;
 use ui_core::component_lifecycle::Heard as Shown;
 
+/// The lane an instance says its person's presence words on and hears the workspace's: the
+/// daemon's line a session hands its app process, or, in a test that plays the device's live
+/// presence, the test's own relay between the windows it runs. What a word is said for is the
+/// lane's: the app, the workspace and the member are the connection's, never the word's.
+///
+/// A lane is the host's own, used on the thread its window runs on, so it need not cross threads.
+pub trait Line {
+    /// Say `said`, one word of this instance's person in its workspace.
+    ///
+    /// # Errors
+    /// Why the device refused it, or did not answer.
+    fn say(&self, said: &Said) -> Result<(), String>;
+
+    /// What the lane heard in this instance's workspace since it was last asked, oldest first.
+    fn heard(&self) -> Vec<Heard>;
+}
+
 /// What an instance heard of the document's members, and what it last said of its own.
 pub struct Presence {
     app: String,

@@ -64,8 +64,9 @@ pub enum HostEffect {
 pub enum OpenEffect {
     /// Open.
     ///
-    /// Show this resource in the window: its app, with it selected.
-    #[effect(view, row, presence)]
+    /// Show this resource in the window: its app, with it selected. It is how a resource's own
+    /// row opens it, never a row of its own beside it.
+    #[effect(view, row, presence, tag = tilo_actions::OPENS_HIT_TAG)]
     Open {
         #[param("The resource's id")]
         anchor: String,

@@ -1054,6 +1054,7 @@ impl TilolangProcess {
             clipboard: opening.clipboard.take(),
             thumbnails: Some(Arc::clone(&self.thumbnails)),
             tools: opening.tools.take(),
+            presence: None,
         };
         let _scope = self.scope.enter();
         let connection = connection::Connection::new(manager).map_err(AdmitError::Open)?;
@@ -1075,7 +1076,6 @@ impl TilolangProcess {
             }
             Shows::Nothing => (Box::new(hosted::NoView), None),
         };
-        let shows = spec.shows;
         // What the instance's actions keep as content lives in the device's content store, as a
         // native window's does: it outlives the instance.
         let content = kept
@@ -1105,7 +1105,7 @@ impl TilolangProcess {
             None => hosted,
         };
         // What a window was asked to show: an instance that shows nothing opens on nothing.
-        if shows == Shows::View {
+        if hosted.spec().shows == Shows::View {
             // The item its window was asked to open on, shown as its `open` shows one.
             if let Some(anchor) = opening.reveal.take() {
                 hosted.reveal(anchor);

@@ -3115,6 +3115,10 @@ impl Instance {
         let changed = host.follow_members();
         if changed {
             self.member_names_moved = true;
+            // What a name is called is part of what only the window knows: a view that read one
+            // runs again when the member list names someone differently, and no other boundary
+            // moves with it.
+            self.person_changed = true;
         }
         changed
     }
