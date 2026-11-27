@@ -433,3 +433,46 @@ fn a_seed_taken_wholly_as_the_person_lands_whole() {
         "every step of the person's own landed"
     );
 }
+
+/// [`Store`], counting the commands it is asked.
+struct Counting(Store, std::cell::Cell<usize>);
+
+impl tilo_service::WorkspaceStore for Counting {
+    fn command(&self, app: &str, command: &[u8]) -> Result<Vec<u8>, String> {
+        self.1.set(self.1.get().saturating_add(1));
+        self.0.command(app, command)
+    }
+
+    fn access(&self) -> Option<tilo_action_policy::MemberAccess> {
+        self.0.access()
+    }
+}
+
+/// A service kept in the workspace asks the workspace nothing on a poll while nothing moved:
+/// what it read stands until the session tells it which records moved, and then it reads those
+/// again.
+#[test]
+fn an_idle_service_asks_the_workspace_nothing_until_a_record_moves() {
+    let (ada, _) = Replica::new("ada", Workspace::new(), &[SOURCE]);
+    let mut service = ResourceService::of_app(APP, ada.host, "ada");
+    let counting = std::rc::Rc::new(Counting(Store::ada_alone(), std::cell::Cell::new(0)));
+    let store: std::rc::Rc<dyn tilo_service::WorkspaceStore> = counting.clone();
+    service
+        .keep_in_workspace(&store)
+        .expect("the workspace takes the app's resources");
+    // The first looks read what the service follows.
+    let _ = service.poll();
+    let _ = service.poll();
+    let settled = counting.1.get();
+    for _ in 0..5 {
+        let _ = service.poll();
+    }
+    assert_eq!(
+        counting.1.get(),
+        settled,
+        "idle polls ask the workspace nothing"
+    );
+    service.records_moved(&std::collections::BTreeSet::from([String::new()]));
+    let _ = service.poll();
+    assert!(counting.1.get() > settled, "a moved record is read again");
+}

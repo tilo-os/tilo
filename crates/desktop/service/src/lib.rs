@@ -212,6 +212,12 @@ pub trait Service {
     /// in: what a headless run does before it reads.
     fn settle(&mut self) {}
 
+    /// The records `records` of the workspace it keeps resources in ([`Self::keep_in_workspace`])
+    /// moved, written by an app, another device or the session, each by its route (empty for an
+    /// app's own record, which lists its records): what it read of them it reads again at its
+    /// next poll, and nothing else. A service that reads no workspace ignores it.
+    fn records_moved(&mut self, _records: &std::collections::BTreeSet<String>) {}
+
     /// The resources whose readings moved since the last call, by id: what
     /// a reader following a few of them reads again, and only those. `None`
     /// when it cannot say which, so any of its readings may have moved.
@@ -570,6 +576,17 @@ impl Services {
             .iter()
             .flat_map(|service| service.apps())
             .collect()
+    }
+
+    /// Tell every service the records `records` of the workspace they keep resources in moved
+    /// ([`Service::records_moved`]).
+    pub fn records_moved(&mut self, records: &std::collections::BTreeSet<String>) {
+        if records.is_empty() {
+            return;
+        }
+        for service in &mut self.started {
+            service.records_moved(records);
+        }
     }
 
     /// Keep the apps' resources the services run over in the workspace the person is in, from

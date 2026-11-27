@@ -389,6 +389,11 @@ pub(crate) struct Shared {
     /// Where moving the apps' resources into the workspace stands.
     #[cfg(target_os = "linux")]
     pub(crate) app_stores: RefCell<crate::app_stores::AppStores>,
+    /// The records that moved since the apps the session runs itself last heard, from the one
+    /// stream of record changes: each pass tells them before they poll, so they read again what
+    /// moved and ask the workspace nothing while nothing did.
+    #[cfg(target_os = "linux")]
+    pub(crate) records_moved: std::sync::mpsc::Receiver<crate::platform::records::Changed>,
     /// The workspaces' shared desktops, as their records hold them: what each
     /// device that shows a workspace puts on its own session, and what this one
     /// writes back.

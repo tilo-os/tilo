@@ -77,6 +77,18 @@ impl Session {
         if let Err(error) = services.follow_shared() {
             tracing::error!(%error, "a package's records are not followed");
         }
+        // What moved in the records since the last pass, as the services read them again: a
+        // replay of what this device already held is no news.
+        #[cfg(target_os = "linux")]
+        services.records_moved(
+            &self
+                .shared
+                .records_moved
+                .try_iter()
+                .filter(|changed| !changed.replayed)
+                .map(|changed| changed.record)
+                .collect(),
+        );
         services.poll();
         // What the device's dispatch asked of the services since the last pass: a press of one
         // of their actions, and the person's answer to the question it asked.

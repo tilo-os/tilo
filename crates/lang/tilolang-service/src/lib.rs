@@ -1469,6 +1469,21 @@ impl Service for ResourceService {
         ResourceService::wakes_in(self)
     }
 
+    /// What it read of `records` it reads again, and what it publishes of them moves: the
+    /// notices, effects and readings it keeps follow the workspace's records as they change
+    /// rather than being asked of the workspace on every poll.
+    fn records_moved(&mut self, records: &BTreeSet<String>) {
+        if !self.in_workspace {
+            return;
+        }
+        // An app's own record, which lists its records, moved: what lists them is read again.
+        if records.contains("") {
+            self.host.store().moved();
+        } else {
+            self.host.store().moved_docs(records);
+        }
+    }
+
     fn moved(&mut self) -> Option<Vec<String>> {
         self.watched();
         let moved = std::mem::take(&mut self.moved);

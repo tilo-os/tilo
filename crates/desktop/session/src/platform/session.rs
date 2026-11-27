@@ -1938,6 +1938,7 @@ impl Session {
             held_stores,
             device_workspaces: RefCell::new(device_workspaces),
             app_stores: RefCell::default(),
+            records_moved: changes.reader(),
             desktops,
             notes: std::sync::Arc::clone(&notes),
             window_routes,
