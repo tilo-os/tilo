@@ -504,6 +504,15 @@ impl WidgetSurface {
         self.owe();
     }
 
+    /// Lay out and draw what the tree's own updates changed, now: the widgets a patch reached say
+    /// they are dirty, and only those are laid out and drawn again. Unlike [`Self::relayout`] it
+    /// syncs no widget and runs no component pass that nothing asked for.
+    pub fn draw_changes(&mut self) {
+        if self.with_reports(|host| host.poll_frame().unwrap_or(false)) {
+            self.owe();
+        }
+    }
+
     /// A rectangle of the tree's own logical pixels, as the desktop's
     /// logical `(x, y, w, h)`: the tree lays itself out in logical pixels
     /// whatever scale it is drawn at, so only where the surface stands is

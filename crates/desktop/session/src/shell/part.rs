@@ -1490,7 +1490,7 @@ impl ShellPart {
         }
         if shown {
             let at = std::time::Instant::now();
-            self.widgets.relayout();
+            self.widgets.draw_changes();
             self.work.laying_out = self.work.laying_out.saturating_add(at.elapsed());
         }
         // A change another display's part of this shell wrote reaches this one: the store it
@@ -1508,7 +1508,7 @@ impl ShellPart {
             shown |= self.change_window(AppWindow::receive);
             self.work.receiving = self.work.receiving.saturating_add(at.elapsed());
             if shown {
-                self.widgets.relayout();
+                self.widgets.draw_changes();
                 self.work.laying_out = self.work.laying_out.saturating_add(at.elapsed());
             }
         }
