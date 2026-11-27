@@ -35,10 +35,20 @@ optimize=size
 BUILD_PHASE="${BUILD_PHASE:-all}"
 case "$BUILD_PHASE" in all|build|verify) ;; *) echo "invalid thin build phase" >&2; exit 1 ;; esac
 TARGET_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$REPO/target}}"
-# The caller's Cargo configuration, given to every cargo invocation this script makes: Cargo
-# selects a compiler from configuration and probes it while it resolves the graph, so a compiler
-# named only on the build line would be bypassed by the metadata scans that come first.
+# The caller's Cargo configuration. Cargo selects a compiler from configuration and probes it while
+# it resolves the graph, so the metadata scans below take the `--config` arguments too; a compiler
+# named only on the build line would be bypassed by them. Only `--config` travels there: the
+# caller's other arguments may be build-only (`--timings`), which `cargo metadata` refuses.
 read -r -a extra_cargo_args <<< "${EXTRA_CARGO_ARGS:-}"
+metadata_cargo_args=()
+index=0
+while [ "$index" -lt "${#extra_cargo_args[@]}" ]; do
+    if [ "${extra_cargo_args[$index]}" = --config ]; then
+        metadata_cargo_args+=(--config "${extra_cargo_args[$((index + 1))]:-}")
+        index=$((index + 1))
+    fi
+    index=$((index + 1))
+done
 THIN_APP_WRAPPER=/proc/self/cwd/tools/ci/rustc-thin-app-wrapper.sh
 # Whether this runs in a t job, which gives every compile its own wrapper and the compiler cache
 # (RUSTC_WRAPPER, with T_CACHE_SOCKET). The job's cargo is plain cargo behind that wrapper, and
@@ -192,7 +202,7 @@ done
 if [ "$optimize" = size ]; then
     app_only=$(cd "$REPO" && "${CARGO:-cargo}" metadata --format-version 1 --offline --locked \
         --features "$(IFS=,; echo "${features[*]}")" \
-        ${extra_cargo_args[@]+"${extra_cargo_args[@]}"} \
+        ${metadata_cargo_args[@]+"${metadata_cargo_args[@]}"} \
         | APPS="${app_packages[*]}" ENGINES="${engines[*]}" python3 -c '
 import json, os, sys
 meta = json.load(sys.stdin)
@@ -236,7 +246,7 @@ fi
 # points: the wrapper links it exporting only those, so the code they do not
 # reach goes too.
 entry_engines=$(cd "$REPO" && "${CARGO:-cargo}" metadata --no-deps --format-version 1 --offline --locked \
-    ${extra_cargo_args[@]+"${extra_cargo_args[@]}"} \
+    ${metadata_cargo_args[@]+"${metadata_cargo_args[@]}"} \
     | python3 -c '
 import json, sys
 packages = json.load(sys.stdin)["packages"]
