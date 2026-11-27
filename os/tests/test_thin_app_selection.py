@@ -240,6 +240,12 @@ app-sdk = { path = "../../app_sdk" }
             for name, overrides, config in cases:
                 with self.subTest(compiler_source=name):
                     marker.unlink(missing_ok=True)
+                    # Cargo keeps a compiler's `-vV` answer (a failure included) in the
+                    # compiler home, keyed by the compiler, and replays it instead of
+                    # running the compiler again. A fresh home per case makes this case's
+                    # run probe the compiler this case selected.
+                    shutil.rmtree(cargo_home, ignore_errors=True)
+                    cargo_home.mkdir()
                     if config is not None:
                         config.write_text(cli_config.read_text())
                     try:

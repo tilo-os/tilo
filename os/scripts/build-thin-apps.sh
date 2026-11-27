@@ -35,6 +35,10 @@ optimize=size
 BUILD_PHASE="${BUILD_PHASE:-all}"
 case "$BUILD_PHASE" in all|build|verify) ;; *) echo "invalid thin build phase" >&2; exit 1 ;; esac
 TARGET_DIR="${TARGET_DIR:-${CARGO_TARGET_DIR:-$REPO/target}}"
+# The caller's Cargo configuration, given to every cargo invocation this script makes: Cargo
+# selects a compiler from configuration and probes it while it resolves the graph, so a compiler
+# named only on the build line would be bypassed by the metadata scans that come first.
+read -r -a extra_cargo_args <<< "${EXTRA_CARGO_ARGS:-}"
 THIN_APP_WRAPPER=/proc/self/cwd/tools/ci/rustc-thin-app-wrapper.sh
 # Whether this runs in a t job, which gives every compile its own wrapper and the compiler cache
 # (RUSTC_WRAPPER, with T_CACHE_SOCKET). The job's cargo is plain cargo behind that wrapper, and
@@ -49,23 +53,30 @@ fi
 # t runs every compile of a job through its own wrapper and resolves the build's unit graph from
 # the workspace's manifests alone, where no program of the checkout is. Only the build at the end
 # of this script would say so, after every metadata scan and after whatever the caller built
-# before it. Ask the front end first, with cargo's help, which builds nothing and finds the
-# refusal now: a t job takes the settings, a front end that forwards to `t cargo` does not. The
-# help runs in a directory of its own below the build directory, so a front end that acts on its
-# working directory leaves the build's tree alone, and one that reads the project still finds it.
-if [ "$t_job" -eq 0 ] && [ "$BUILD_PHASE" != verify ]; then
-    mkdir -p "$TARGET_DIR"
-    probe_dir=$(mktemp -d "$TARGET_DIR/.thin-app-probe.XXXXXX")
-    if ! refusal=$(cd "$probe_dir" && "${CARGO:-cargo}" build --help \
+# before it, so ask the front end first — once the request itself is known to name packages in the
+# graph (below), and before anything is built. Ask with cargo's help, which builds nothing: a t
+# job takes the settings, a front end that forwards to `t cargo` does not. The help runs in a
+# directory of its own below the build directory, so a front end that acts on its working
+# directory leaves the build's tree alone, and one that reads the project still finds it. It gets
+# a compiler home of its own as well: asking for help must not cache a compiler probe under the
+# caller's home, where the build would then replay it instead of running the compiler it chose.
+front_end_refusal() {
+    local probe_dir probe_home refusal rc
+    probe_dir=$(mktemp -d "$TARGET_DIR/.thin-app-probe.XXXXXX") || return 1
+    probe_home=$(mktemp -d "$TARGET_DIR/.thin-app-probe-home.XXXXXX") || { rm -rf "$probe_dir"; return 1; }
+    if refusal=$(cd "$probe_dir" && CARGO_HOME="$probe_home" "${CARGO:-cargo}" build --help \
             --config 'build.rustc-workspace-wrapper=""' 2>&1 >/dev/null); then
-        rm -rf "$probe_dir"
-        echo "build-thin-apps: the cargo front end (${CARGO:-cargo}) refuses the compiler wrapper this build sets:" >&2
-        printf '%s\n' "$refusal" | sed 's/^/  /' >&2
-        echo 'run the thin build as a t job, where its compiles run through t'"'"'s own wrapper ("t test tilolang-runtime" builds the runtime; the local stack'"'"'s TILO_SH_BUILD=t takes its apps from the checks), not through a front end that forwards to `t cargo`' >&2
-        exit 1
+        rc=0
+    else
+        rc=$?
     fi
-    rm -rf "$probe_dir"
-fi
+    rm -rf "$probe_dir" "$probe_home"
+    [ "$rc" -eq 0 ] && return 0
+    echo "build-thin-apps: the cargo front end (${CARGO:-cargo}) refuses the compiler wrapper this build sets:" >&2
+    printf '%s\n' "$refusal" | sed 's/^/  /' >&2
+    echo 'run the thin build as a t job, where its compiles run through t'"'"'s own wrapper ("t test tilolang-runtime" builds the runtime; the local stack'"'"'s TILO_SH_BUILD=t takes its apps from the checks), not through a front end that forwards to `t cargo`' >&2
+    return 1
+}
 
 # TILO_THIN_KEEP_SYMBOLS=1 keeps the symbol tables of the apps, the runtime and its engines, for
 # reading what makes an app large (the app-binaries check); every package is built the same way
@@ -181,6 +192,7 @@ done
 if [ "$optimize" = size ]; then
     app_only=$(cd "$REPO" && "${CARGO:-cargo}" metadata --format-version 1 --offline --locked \
         --features "$(IFS=,; echo "${features[*]}")" \
+        ${extra_cargo_args[@]+"${extra_cargo_args[@]}"} \
         | APPS="${app_packages[*]}" ENGINES="${engines[*]}" python3 -c '
 import json, os, sys
 meta = json.load(sys.stdin)
@@ -224,6 +236,7 @@ fi
 # points: the wrapper links it exporting only those, so the code they do not
 # reach goes too.
 entry_engines=$(cd "$REPO" && "${CARGO:-cargo}" metadata --no-deps --format-version 1 --offline --locked \
+    ${extra_cargo_args[@]+"${extra_cargo_args[@]}"} \
     | python3 -c '
 import json, sys
 packages = json.load(sys.stdin)["packages"]
@@ -232,10 +245,17 @@ named = {d["name"] for p in packages for d in p["dependencies"] if p["name"] != 
 print(":".join(sorted(e.replace("-", "_") for e in engines - named)))')
 [ "${#binaries[@]}" -gt 0 ] || [ "$BUILD_RUNTIME_ONLY" = 1 ] || { echo "no tapp binaries selected" >&2; exit 1; }
 for requested in $BUILD_PACKAGES; do
-    [[ " ${packages[*]} " == *" -p $requested "* ]] || {
+    [[ " ${packages[*]} " = *" -p $requested "* ]] || {
         echo "requested app is outside the runtime graph: $requested" >&2; exit 1;
     }
 done
+# The request names packages in the graph, so a build will follow: make the build directory and
+# settle the front end's refusal before anything else is written or built. An unknown package
+# fails above, before a target directory exists.
+if [ "$t_job" -eq 0 ] && [ "$BUILD_PHASE" != verify ]; then
+    mkdir -p "$TARGET_DIR"
+    front_end_refusal || exit 1
+fi
 feature_csv="$(IFS=,; echo "${features[*]}")"
 # The features name apps by package. An app this run leaves out
 # (EXCLUDE_PACKAGES, or outside INCLUDE_PACKAGES: the image without Browser)
@@ -267,7 +287,6 @@ unset CARGO_PROFILE_RELEASE_CODEGEN_UNITS CARGO_PROFILE_RELEASE_LTO \
 # front end, including one that builds on another machine and forwards only
 # its own allowlist of variables.
 cd "$REPO"
-read -r -a extra_cargo_args <<< "${EXTRA_CARGO_ARGS:-}"
 # A compiler cache must see the real compiler after the workspace wrapper adds
 # its flags. Cargo runs RUSTC_WRAPPER first and hands it the workspace wrapper
 # as the compiler, so a cache there keys a workspace crate by the arguments
