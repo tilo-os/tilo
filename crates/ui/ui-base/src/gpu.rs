@@ -44,8 +44,12 @@ impl DeviceLossMonitor {
 }
 
 impl DeviceHandle {
+    /// Save the shaders DirectX 12 compiled since this device opened into the app's private shader
+    /// cache, off the drawing thread, so its next start on this computer reuses them; with startup
+    /// metrics on, also print the cache's hits and misses. The runner calls it once its
+    /// renderer's pipelines are started.
     #[cfg(all(windows, feature = "dx12-shader-cache"))]
-    pub(crate) fn finish_shader_cache(&self) {
+    pub fn finish_shader_cache(&self) {
         crate::dx12_shader_cache::report(&self.device);
         if let Some(cache) = &self.shader_cache {
             cache.finish(&self.device);

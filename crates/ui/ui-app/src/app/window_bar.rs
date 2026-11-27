@@ -91,6 +91,7 @@ impl WindowBarRuntime {
         self.offer = None;
     }
 
+    #[cfg(feature = "native")]
     /// The shell connection went away: a new one is told afresh.
     pub(crate) fn disconnected(&mut self) {
         self.sent = None;
@@ -159,6 +160,7 @@ impl App {
         }
     }
 
+    #[cfg(any(feature = "native", test))]
     /// What the window offers the bar now.
     pub(crate) fn window_offer(&mut self) -> WindowOffer {
         let (search, find) = self.window_search_offer_and_abilities();
@@ -172,6 +174,7 @@ impl App {
         }
     }
 
+    #[cfg(any(feature = "native", test))]
     /// The offer to send the shell, when it changed since it was last told.
     pub(crate) fn take_window_offer_change(&mut self) -> Option<WindowOffer> {
         // The document changed under an open search: its matches follow; a
@@ -190,6 +193,7 @@ impl App {
         Some(offer)
     }
 
+    #[cfg(any(feature = "native", test))]
     /// What the person did in the window's bar, after the input with the serial `after_input`
     /// (the shell's): run at once when the window handled that input, else once it has, before
     /// any input after it.

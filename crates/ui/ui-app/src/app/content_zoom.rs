@@ -35,6 +35,7 @@ impl App {
         changed
     }
 
+    #[cfg(feature = "native")]
     /// The window's Zoom in, Zoom out and Actual size, when it has a window
     /// a person sees.
     pub(super) fn zoom_resource(&self) -> Option<tilo_actions::ResourceSpec> {
@@ -44,6 +45,7 @@ impl App {
             .then(crate::host_chrome::zoom::zoom_resource)
     }
 
+    #[cfg(feature = "native")]
     /// Run a `tilo.host:zoom` operation: one step, as its key does. A
     /// widget whose content zooms by itself (a web page) takes it first;
     /// otherwise the window's content zooms.

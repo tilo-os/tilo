@@ -39,6 +39,7 @@ pub(crate) struct Pointing {
 }
 
 impl Pointing {
+    #[cfg(any(feature = "native", test))]
     pub(crate) fn new(
         to: Vec<Recipient>,
         carried: Vec<tilo_reference::Attached>,

@@ -318,6 +318,7 @@ impl PartBar {
         std::mem::take(&mut self.close)
     }
 
+    #[cfg(any(feature = "native", test))]
     /// The input evidence of the window's search, beside the app's own
     /// ([`App::native_input_snapshot`]): what the field holds and where the
     /// control stands, while the row shows.

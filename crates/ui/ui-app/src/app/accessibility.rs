@@ -1067,6 +1067,7 @@ impl App {
             .flatten()
     }
 
+    #[cfg(feature = "native")]
     /// The focused field takes text only through deferred receipts, so
     /// standard text input (and with it the on-screen keyboard) stays closed
     /// until dictation admits it.
@@ -1649,6 +1650,7 @@ impl App {
         Ok(Some((c.x, c.y)))
     }
 
+    #[cfg(feature = "native")]
     /// Activate the control whose test id is `test_id`, as an assistive
     /// technology activates a hand-hit-tested control: the press a person
     /// makes on it, through the window's own input path. Whether the window

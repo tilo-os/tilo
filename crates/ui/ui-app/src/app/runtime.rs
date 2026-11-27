@@ -761,6 +761,7 @@ pub(super) struct AccessibilityRuntime {
     /// The refreshes that rebuilt [`Self::semantic_tree`] rather than
     /// finding nothing changed.
     pub(super) semantic_tree_builds: u64,
+    #[cfg(feature = "native")]
     /// Physical pixels per logical pixel, as the window reports it: the scale
     /// its tree is built at for the session's export, whose bounds an
     /// assistive client reads in physical pixels.
@@ -799,6 +800,7 @@ impl AccessibilityRuntime {
             semantic_tree_stale: true,
             semantic_tree_marks: 0,
             semantic_tree_builds: 0,
+            #[cfg(feature = "native")]
             export_scale: 1.0,
             semantic_tree_presentation: 0,
         }
@@ -944,18 +946,22 @@ impl HistoryRuntime {
 
 /// Host window identity and fullscreen reconciliation state.
 pub(super) struct WindowRuntime {
+    #[cfg(feature = "native")]
     pub(super) fullscreen_requested: bool,
     pub(super) fullscreen_active: bool,
     /// The narrowest the window's layout works at, as of the last tree
     /// build ([`tilo_ui_base::widget::minimum_window_width`]), and what the window
     /// system was last told.
     pub(super) minimum_width: Option<f64>,
+    #[cfg(feature = "native")]
     pub(super) minimum_width_stated: Option<f64>,
     /// The size the root widget asked for, and the size last stated to the
     /// window system.
     pub(super) preferred_size: Option<(f64, f64)>,
+    #[cfg(feature = "native")]
     pub(super) preferred_size_stated: Option<(f64, f64)>,
     pub(super) title: Option<String>,
+    #[cfg(feature = "native")]
     /// The title the window system was last given ([`crate::App::refresh_window_title`]): what it
     /// names the window by now.
     pub(super) shown_title: Option<String>,
@@ -965,13 +971,17 @@ pub(super) struct WindowRuntime {
 impl WindowRuntime {
     pub(super) fn new() -> Self {
         Self {
+            #[cfg(feature = "native")]
             fullscreen_requested: false,
             fullscreen_active: false,
             minimum_width: None,
+            #[cfg(feature = "native")]
             minimum_width_stated: None,
             preferred_size: None,
+            #[cfg(feature = "native")]
             preferred_size_stated: None,
             title: None,
+            #[cfg(feature = "native")]
             shown_title: None,
             app_id: None,
         }

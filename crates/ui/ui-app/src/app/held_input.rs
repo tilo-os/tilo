@@ -102,16 +102,19 @@ impl HeldInput {
         self.queue.drain(..).collect()
     }
 
+    #[cfg(feature = "native")]
     /// The window stands in for an app on its way ([`Self::stands_in`]).
     pub(crate) fn stand_in(&mut self) {
         self.stands_in = true;
     }
 
+    #[cfg(feature = "native")]
     /// What the window that stood in held, for the app that takes its place.
     pub(crate) fn hand_on(&mut self) -> VecDeque<(WindowEvent, Modifiers)> {
         std::mem::take(&mut self.queue)
     }
 
+    #[cfg(feature = "native")]
     /// Take what the window that stood in for this app held, ahead of anything typed since.
     pub(crate) fn take_over(&mut self, mut held: VecDeque<(WindowEvent, Modifiers)>) {
         held.append(&mut self.queue);
@@ -177,6 +180,7 @@ impl super::App {
         true
     }
 
+    #[cfg(feature = "native")]
     /// This window stands in for an app still on its way to it: what is typed in it waits for that
     /// app ([`Self::hand_on_held_input`]).
     pub(crate) fn stand_in_for_arriving_app(&mut self) {

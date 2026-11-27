@@ -395,6 +395,14 @@ struct DrawnFrame {
     /// The window, in logical pixels.
     window_rect: KurboRect,
     /// How long the draw pass took, for the perf log line.
+    #[cfg_attr(
+        not(feature = "native"),
+        expect(
+            dead_code,
+            reason = "only the native runner's frame log reads it; the start it is measured from is \
+                      the draw call's parameter, which every headless caller passes too"
+        )
+    )]
     draw_us: u128,
     /// What was painted over the widgets (an overlay, history chrome, a
     /// dialog, the palette), the first of them if several.
@@ -614,6 +622,7 @@ fn peer_marks(
     })
 }
 
+#[cfg(any(feature = "native", test))]
 /// Turn a frame's widget damage (`regions`, logical, as collected) into the
 /// regions it submits (physical), with the presence layer's damage
 /// (`presence`, physical, from [`draw_presence_layer`]) added. Returns
