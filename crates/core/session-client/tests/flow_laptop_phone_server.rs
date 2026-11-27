@@ -42,7 +42,8 @@ use tokio::task::block_in_place;
 mod phone;
 use crate::support::{
     DaemonHost, Device, HostSettings, TestHost, commit_change, enrol, entry_grant, record_of,
-    redeem, start_host_serving, start_peer, start_server_daemon, start_workspace_host_relaying,
+    redeem, start_host_serving, start_peer, start_server_daemon_admitting,
+    start_workspace_host_relaying, wait_for,
 };
 
 /// The laptop, the Android phone and the person's server, with no tilo.sh: every address here
@@ -95,6 +96,12 @@ impl Rig {
 }
 
 async fn rig() -> Rig {
+    rig_admitting(&[]).await
+}
+
+/// [`rig`], whose server also lets the people `guests` (their roots) connect: someone the
+/// workspace holds as a member of their own reaches it as their own devices do.
+async fn rig_admitting(guests: &[[u8; 32]]) -> Rig {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
     let phone = enrol(&root, "android-phone", DeviceCapabilities::member());
@@ -118,13 +125,14 @@ async fn rig() -> Rig {
             tilo_workspace_service::workspaces::fixtures::RootIn(root.clone()),
         ))
         .unwrap();
-    let host = start_server_daemon(
+    let host = start_server_daemon_admitting(
         &root,
         &desk_host,
         &desk,
         &person_workspace,
         "the-server",
         None,
+        guests,
     );
     let server_device = host.device();
     desk_workspaces
@@ -670,35 +678,264 @@ async fn flow_newcomer_joins_on_the_web_and_opens_an_app_as_a_page() {
 
 /// Their brother uses the Android app only to sync his files through Tilo: his device reaches
 /// the files, and nothing else of the workspace.
-///
-/// A device whose grant is limited to files is not offered yet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flow_brothers_device_syncs_only_files() {
-    let f = Box::pin(rig()).await;
-    let laptop = f.client(&f.laptop_session, &f.laptop, "laptop");
     // Their brother is a person of their own, with his own identity and phone.
     let (brother, _) = UserIdentity::generate("Bram", 1);
-    // The workspace is shared with him through the one grant rule over addresses: a member
-    // grant over `<workspace>/files/**`, so his phone holds the file tree there and opens no
-    // other app.
+    let bram_root = brother.verifying_key().to_bytes();
+    let bram = hex::encode(bram_root);
+    let f = Box::pin(rig_admitting(&[bram_root])).await;
+    let laptop = f.client(&f.laptop_session, &f.laptop, "laptop");
+    // The workspace's Files are shared with him, and nothing else of it.
     let shared = flow::ask_permissions(
         &laptop,
         f.work_id(),
         &f.work,
         "grant.set",
         json!({
-            "person": hex::encode(brother.verifying_key().to_bytes()),
+            "person": bram,
             "address": format!("{}/files/**", f.work),
             "role": "editor",
         }),
     )
     .await;
+    let shared =
+        shared.unwrap_or_else(|error| panic!("the laptop shares Files with Bram: {error:?}"));
+    assert_eq!(
+        shared["scope"],
+        json!(format!(
+            "workspace:{}/app:{}/**",
+            f.work,
+            fs_protocol::tree::FILES_APP
+        )),
+        "`<workspace>/files/**` names the workspace's Files"
+    );
+
+    // His phone, certified by his own root, takes part in the workspace as his device.
+    let phone = enrol(&brother, "bram-phone", DeviceCapabilities::member());
+    let session = flow::session_entered(
+        &f.host,
+        &brother,
+        &phone,
+        &f.server_device.cert,
+        &f.work,
+        "bram-phone",
+    )
+    .await;
+    let put = flow::put_file(&session, &f.work, "holiday.txt", b"from Bram's phone").await;
     assert!(
-        shared.is_ok(),
-        "the one grant rule over addresses grants the brother's own identity \
-         `{workspace}/files/**` (workspace/<id>/grants#set), so his phone holds the \
-         workspace's file tree and opens no other app (the phones lane lands it): {shared:?}",
-        workspace = f.work
+        put.is_ok(),
+        "Bram's phone writes in the workspace's Files: {put:?}"
+    );
+    // The owner sees what he wrote.
+    flow::folder_index(&f.laptop_session, &f.work, "the owner's folder").await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while flow::file_count(&f.laptop_session, &f.work) == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the owner's laptop sees the file Bram's phone wrote"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    // Seam: what his devices hold, the keys they are given and the frames refused to them.
+    brother_holds_only_files(&session, &f.work);
+    let index = flow::tree_route(&f.work, 0);
+    let folder_before = route_epoch(&f.laptop_session, &index)
+        .expect("the owner holds the keys the folder is sealed with");
+
+    // Notes are not his: a note his phone writes is refused.
+    let note = DocumentRoute {
+        app_id: "so.tilo.notes".into(),
+        cluster_id: f.work.clone(),
+        document: "note-1".into(),
+    };
+    let mut doc = AutoCommit::new();
+    automerge::transaction::Transactable::put(&mut doc, automerge::ROOT, "title", "Bram's")
+        .unwrap();
+    commit_change(&mut doc);
+    let written = flow::try_written(&session, &note, &DocumentMutation::Snapshot(doc.save())).await;
+    assert!(written.is_err(), "Bram's phone writes no note");
+
+    // He gives no more than he holds.
+    let device = f.client(&session, &phone, "bram-phone");
+    let beyond = flow::ask_permissions(
+        &device,
+        f.work_id(),
+        &f.work,
+        "grant.set",
+        json!({
+            "person": "everyone",
+            "address": format!("{}/files/**", f.work),
+            "role": "moderator",
+        }),
+    )
+    .await;
+    // The workspace refuses what he asks for before the host asks who signs it.
+    assert!(
+        beyond
+            .as_ref()
+            .is_err_and(|error| !format!("{error:?}").contains("from their own device")),
+        "Bram gives nobody more than his own role over Files: {beyond:?}"
+    );
+
+    // He lists who is in the workspace, himself among them, from the workspace he holds.
+    let listed = members_held(&session, &f.work);
+    assert!(
+        listed.role_of(&bram).is_some(),
+        "Bram is one of them: {:?}",
+        listed.members.keys().collect::<Vec<_>>()
+    );
+
+    // Seam: taking Files back from him, and the key epoch that ends his reach.
+    brother_is_refused_the_note(&session, &note);
+    the_owner_takes_the_share_back(&f, &bram).await;
+    let owner = f.laptop_session.clone();
+    let sealed = index.clone();
+    let folder_after = wait_for(
+        "the folder's group epoch to move when the share is taken back",
+        move || {
+            let owner = owner.clone();
+            let sealed = sealed.clone();
+            async move { route_epoch(&owner, &sealed).filter(|epoch| *epoch > folder_before) }
+        },
+    )
+    .await;
+    assert!(
+        folder_after > folder_before,
+        "the folder's group epoch moves when the share is taken back: {folder_before} -> \
+         {folder_after}"
+    );
+    a_file_written_after_it_is_out_of_his_reach(&f, &session, &f.laptop_session, folder_after)
+        .await;
+}
+
+/// The workspace's member list as `phone`'s session holds it: the governance the replica it
+/// holds keeps, which every member reads.
+fn members_held(phone: &Link, workspace: &str) -> tilo_action_policy::WorkspacePolicy {
+    let id = tilo_desktop_model::WorkspaceId::parse(workspace).expect("a workspace's id");
+    let replica = phone
+        .engine()
+        .owner()
+        .replica(id)
+        .expect("the workspace it holds");
+    replica
+        .read(|peer| peer.governance().member_policy().ok())
+        .expect("its governance reads")
+}
+
+/// The part of the workspace the Files are: `<workspace>/files/**`, named by the app's own id,
+/// as the share and its end both write it.
+fn files_share(workspace: &str) -> tilo_action_policy::TreePath {
+    tilo_action_policy::TreePath::workspace(workspace)
+        .app(fs_protocol::tree::FILES_APP)
+        .rest()
+}
+
+/// The state of `route`'s keys as `phone`'s session gives it: `ready at epoch N` once it holds
+/// the keys the record is sealed with, at the group's epoch, `waiting` while it holds none.
+fn route_keys(phone: &Link, route: &DocumentRoute) -> Option<String> {
+    let prefix = format!("route {}/{}: ", route.app_id, route.document);
+    phone.status().key_state.lines().find_map(|line| {
+        line.strip_prefix(&prefix)
+            .map(|state| state.trim_end_matches(';').to_owned())
+    })
+}
+
+/// The epoch of the group whose keys `route` is sealed with, as `phone`'s session holds them:
+/// `None` while it holds none. A group's epoch moves whenever its membership does, so a device
+/// the share left out is handed nothing of the epoch after it.
+fn route_epoch(phone: &Link, route: &DocumentRoute) -> Option<u64> {
+    route_keys(phone, route)?
+        .strip_prefix("ready at epoch ")?
+        .parse()
+        .ok()
+}
+
+/// What the brother's phone holds of the workspace: the folder and its file, whose keys it has,
+/// and no other app's record.
+fn brother_holds_only_files(phone: &Link, workspace: &str) {
+    let index = flow::tree_route(workspace, 0);
+    assert!(
+        route_epoch(phone, &index).is_some(),
+        "the brother's phone holds the keys the folder is sealed with: {}",
+        phone.status().key_state
+    );
+    assert_eq!(
+        flow::file_count(phone, workspace),
+        1,
+        "the brother's phone holds the workspace's file tree and the file written in it"
+    );
+}
+
+/// The brother's phone is handed no keys of a note and keeps none of it: the key service
+/// answers his device nothing for a record outside the part it holds.
+fn brother_is_refused_the_note(phone: &Link, note: &DocumentRoute) {
+    assert!(
+        route_epoch(phone, note).is_none(),
+        "the brother's phone is handed no keys of a note: {}",
+        phone.status().key_state
+    );
+    assert!(
+        record_of(phone, note).is_none(),
+        "the brother's phone keeps no change of a note"
+    );
+}
+
+/// The owner takes the share back, as the one who gave it: the member's last part is gone, and
+/// with it he leaves the workspace's members.
+async fn the_owner_takes_the_share_back(f: &Rig, bram: &str) {
+    let membership =
+        tilo_session_client::membership::Membership::of(f.laptop_session.engine(), f.work_id());
+    let taken = membership
+        .set_scoped_role(
+            tilo_action_policy::Grantee::person(bram.to_owned()),
+            files_share(&f.work),
+            None,
+        )
+        .await;
+    taken.unwrap_or_else(|error| {
+        panic!("the owner takes back the share they gave, and the brother leaves with it: {error}")
+    });
+    membership
+        .settled(&f.laptop_session)
+        .await
+        .expect("the host holds the share taken back");
+    // Losing the last part is leaving: the workspace's member list no longer names him.
+    let listed = members_held(&f.laptop_session, &f.work);
+    assert!(
+        !listed.members.contains_key(bram),
+        "the brother is no member of the workspace once the last part is taken back: {:?}",
+        listed.members.keys().collect::<Vec<_>>()
+    );
+}
+
+/// A file the owner writes after the share was taken back is out of the brother's reach: the
+/// folder's group moved past his device, so his phone keeps no change of it.
+async fn a_file_written_after_it_is_out_of_his_reach(
+    f: &Rig,
+    phone: &Link,
+    laptop: &Link,
+    epoch: u64,
+) {
+    let index = flow::tree_route(&f.work, 0);
+    let held = route_epoch(phone, &index);
+    let kept = flow::file_count(phone, &f.work);
+    let after = flow::put_file(laptop, &f.work, "After.md", b"what he no longer reads").await;
+    assert!(
+        after.is_ok(),
+        "the owner writes another file into the folder: {after:?}"
+    );
+    // The folder's keys are decided without his device now: the commit that follows the
+    // removal moves the group's epoch past him, and his phone never reaches the one after it.
+    assert!(
+        held.is_none_or(|held| held < epoch),
+        "the brother's phone holds the folder's keys at no epoch past his removal: {held:?} \
+         against {epoch}"
+    );
+    assert!(
+        flow::file_count(phone, &f.work) <= kept,
+        "the file written after it never reaches the brother's phone"
     );
 }
 

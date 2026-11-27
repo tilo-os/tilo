@@ -223,9 +223,10 @@ pub struct ReceiveOutcome {
     pub rejected: usize,
     pub metadata_changed: bool,
     pub incomplete: Option<String>,
-    /// Held app messages let go unapplied, each with why
-    /// ([`StatePeer`]'s prerequisite queue): never a refusal of the input
-    /// being admitted.
+    /// App messages let go unapplied, each with why
+    /// ([`StatePeer`]'s prerequisite queue, and a change to a record outside the
+    /// part of the workspace this device's own person holds): never a refusal
+    /// of the write's author.
     pub dropped: Vec<DroppedInput>,
     /// Something a message let go earlier waited for has landed: ask the
     /// workspace's host to replay what it retains, so that message is decided
@@ -657,6 +658,9 @@ mod removal_tests;
 #[cfg(test)]
 #[path = "state/roster_beside_governance_tests.rs"]
 mod roster_beside_governance_tests;
+#[cfg(test)]
+#[path = "state/scoped_member_tests.rs"]
+mod scoped_member_tests;
 #[cfg(test)]
 #[path = "state/sealed_before_reader_sets/tests.rs"]
 mod sealed_before_reader_sets_tests;

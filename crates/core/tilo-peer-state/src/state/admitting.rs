@@ -146,6 +146,26 @@ impl StatePeer {
             retained_replay,
         )
         .map_err(crate::AdmissionError::malformed)?;
+        // A device keeps what its own person reads, never what a sender offers it: a change to a
+        // record outside the part of the workspace their role covers is let go here, unkept,
+        // whatever its author may write there. The sender's own filter is no offer.
+        if !local_app && self.outside_own_part((&app_id, &document_id), now) {
+            let input = DroppedInput {
+                author: source,
+                app: app_id,
+                record: document_id,
+                sequence: envelope.seq,
+                waiting_for: None,
+                reason: crate::admission::DropReason::OutsidePart,
+            };
+            return Ok(AdmissionReport::new(
+                InputDisposition::OutsidePart,
+                ReceiveOutcome {
+                    dropped: vec![input],
+                    ..Default::default()
+                },
+            ));
+        }
         // A piece of a compaction that spans several ops changes nothing on its
         // own: it is gathered, and the compaction is admitted once it is whole.
         // The whole one is an op of its own, its signature not yet verified.

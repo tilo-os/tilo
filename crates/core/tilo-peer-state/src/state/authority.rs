@@ -1185,6 +1185,40 @@ impl StatePeer {
         }
     }
 
+    /// Whether `(app, document)` lies outside what this replica's own device's person reads: a
+    /// member given some of the workspace reads that part alone, and a device whose person the
+    /// workspace gives no role reads nothing, so neither keeps another record's changes, whatever
+    /// a sender offers. A device the workspace names a keeper or a store of it keeps it whole, a
+    /// device placed for some of its records reaches those its certificate names, and one whose
+    /// person holds the whole workspace reads all of it.
+    pub(super) fn outside_own_part(&self, (app, document): (&str, &str), now: SystemTime) -> bool {
+        if self.core.workspace_doc.is_none() {
+            return false;
+        }
+        // The device whose copy this is, once its own program said so: a replica no device of
+        // its own runs reads nothing and keeps nothing by that.
+        let Some(device) = self.own_device else {
+            return false;
+        };
+        // A device the workspace names among those keeping or storing it holds the workspace
+        // whole by that name: it is no person's device here, and retains what it is sent.
+        if self.governance().holder_role(&device).is_some() {
+            return false;
+        }
+        // A device placed for some of the workspace's records reaches those, and what its
+        // certificate names decides it ([`Self::placed_access`]): no person's part narrows it.
+        if self.core.placed_devices.contains_key(&device) {
+            return false;
+        }
+        tilo_failure::ignored!(
+            "the workspace lists the device's own person no role, so no part of the record is \
+             theirs to read or to keep",
+            !self
+                .permissions(device, now)
+                .is_ok_and(|member| self.check_read_as(&member, (app, document), now).is_ok())
+        )
+    }
+
     /// Whether `member` holds the keys of `document` of `app`: it reads the
     /// document, or may act on some part of it, which it cannot do without
     /// the content the keys seal.

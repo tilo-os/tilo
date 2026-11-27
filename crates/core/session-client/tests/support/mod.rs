@@ -339,6 +339,35 @@ pub fn start_server_daemon(
     label: &str,
     sign_in: Option<&fake_model_providers::FakeProviders>,
 ) -> DaemonHost {
+    start_server_daemon_admitting(
+        root,
+        desk_host,
+        desk,
+        person_workspace,
+        label,
+        sign_in,
+        &[],
+    )
+}
+
+/// [`start_server_daemon`], whose server also lets the people `guests` (their roots) connect:
+/// the list replaces its own-person default, so its own person's root is named in it too.
+pub fn start_server_daemon_admitting(
+    root: &SigningKey,
+    desk_host: &TestHost,
+    desk: &Device,
+    person_workspace: &str,
+    label: &str,
+    sign_in: Option<&fake_model_providers::FakeProviders>,
+    guests: &[[u8; 32]],
+) -> DaemonHost {
+    let trusted: Vec<[u8; 32]> = if guests.is_empty() {
+        Vec::new()
+    } else {
+        std::iter::once(root.verifying_key().to_bytes())
+            .chain(guests.iter().copied())
+            .collect()
+    };
     let entry = tilo_device_identity::login::Entry {
         workspace: person_workspace.to_owned(),
         workspace_name: None,
@@ -363,8 +392,13 @@ pub fn start_server_daemon(
             &runtime, root, entry, workspaces,
         )
         .expect("the person's computer prints a ticket");
-        let daemon =
-            test_server::ServerDaemon::start_with_env(&issuing.ticket(), label, &["chat"], &env);
+        let daemon = test_server::ServerDaemon::start_with_env_and_trust(
+            &issuing.ticket(),
+            label,
+            &["chat"],
+            &env,
+            &trusted,
+        );
         HOSTS
             .lock()
             .unwrap()

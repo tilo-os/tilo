@@ -280,6 +280,9 @@ pub enum DropReason {
     TooLarge,
     /// Decided again when its place was needed, the workspace refuses it now.
     Refused(String),
+    /// It writes a record outside the part of the workspace this device's own person holds, so
+    /// the device keeps none of it.
+    OutsidePart,
 }
 
 impl std::fmt::Display for DroppedInput {
@@ -295,6 +298,9 @@ impl std::fmt::Display for DroppedInput {
         match (&self.reason, &self.waiting_for) {
             (DropReason::TooLarge, _) => f.write_str("is too large to hold for its prerequisite"),
             (DropReason::Refused(why), _) => write!(f, "is refused now: {why}"),
+            (DropReason::OutsidePart, _) => {
+                f.write_str("writes a record this device's own person does not read")
+            }
             (DropReason::Superseded, Some(waiting)) => {
                 write!(f, "waited for {waiting}, which did not arrive")
             }
@@ -312,6 +318,9 @@ pub enum InputDisposition {
     RetryLater(MissingPrerequisite),
     MetadataOnly,
     UnsupportedFamily,
+    /// The change writes a record outside the part of the workspace this device's own person
+    /// holds: the device keeps none of it, whatever its sender offered and whoever wrote it.
+    OutsidePart,
 }
 /// A message that waited in the prerequisite queue and was taken in with
 /// the input a report is about: what it waited for came with that input.

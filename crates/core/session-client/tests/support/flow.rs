@@ -42,9 +42,9 @@ pub const DESKTOP_DOCUMENT: &str = tilo_desktop_model::ownership::DESKTOP_DOCUME
 pub const PLACEMENT_KEY: &str = "tilo.display_person.placement";
 
 /// A session of `device` that enters `workspace` through its entry, as a device opening the
-/// workspace does: the host certifies the device's own key for the person `root`, and the
-/// session enters on its handshake, which is what hands it the workspace's records. This is
-/// how `layout_views`' pages read and write a workspace's records.
+/// workspace does: the host certifies the device's own key for the person `root`, the session
+/// enters on its handshake, and it then joins the workspace's link, which is what hands it the
+/// workspace's records.
 pub async fn session_entered(
     host: &DaemonHost,
     root: &ed25519_dalek::SigningKey,
@@ -82,11 +82,10 @@ pub async fn session_entered(
         std::sync::Arc::new(tilo_session_client::MemoryPeerStore::default()),
         entry,
     );
-    admitted_to(
-        &peer,
-        WorkspaceId::parse(workspace).expect("a workspace's id"),
-    )
-    .await;
+    // The entry admits the device; the workspace's link is the session's own to join.
+    let id = WorkspaceId::parse(workspace).expect("a workspace's id");
+    peer.send(Cmd::Join(id)).expect("the session is open");
+    admitted_to(&peer, id).await;
     peer
 }
 

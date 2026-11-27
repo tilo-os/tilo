@@ -65,6 +65,20 @@ impl ServerDaemon {
         apps: &[&str],
         env: &[(&'static str, OsString)],
     ) -> Self {
+        Self::start_with_env_and_trust(ticket, label, apps, env, &[])
+    }
+
+    /// [`Self::start_with_env`], whose server also lets the people `trusted` (their roots)
+    /// connect: the list replaces the server's own-person default, so its own person's root is
+    /// named in it too.
+    #[must_use]
+    pub fn start_with_env_and_trust(
+        ticket: &str,
+        label: &str,
+        apps: &[&str],
+        env: &[(&'static str, OsString)],
+        trusted: &[[u8; 32]],
+    ) -> Self {
         let home = tempfile::tempdir().expect("the server's home");
         let root = home.path();
         let installed = super::apps::install(&root.join("installed"), &root.join("data"), apps);
@@ -74,13 +88,26 @@ impl ServerDaemon {
             .and_then(|listener| listener.local_addr())
             .expect("a free port for the web UI");
         let config = root.join("server.toml");
+        let trust = if trusted.is_empty() {
+            String::new()
+        } else {
+            let users: Vec<String> = trusted.iter().map(hex_of).collect();
+            format!(
+                "\n[trust_policy]\nkind = \"allow_list\"\nusers = [{}]\n",
+                users
+                    .iter()
+                    .map(|user| format!("\"{user}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
         std::fs::write(
             &config,
             format!(
                 "iroh_listen = \"127.0.0.1:0\"\n\
                  packet_relay_url = \"{}\"\n\
                  web_listen = \"{web}\"\n\
-                 app_serving = true\n",
+                 app_serving = true\n{trust}",
                 super::loopback_url(),
             ),
         )
@@ -178,6 +205,18 @@ impl ServerDaemon {
         self.addr = until(&mut child, root, "keep again", || named(&env_out));
         self.child = Some(child);
     }
+}
+
+/// `key` as hexadecimal, the way a person's root is written in a configuration.
+fn hex_of(key: &[u8; 32]) -> String {
+    use std::fmt::Write as _;
+    key.iter().fold(
+        String::with_capacity(key.len().saturating_mul(2)),
+        |mut text, byte| {
+            let _ = write!(text, "{byte:02x}");
+            text
+        },
+    )
 }
 
 /// The address the daemon named in `env_out` once it keeps.

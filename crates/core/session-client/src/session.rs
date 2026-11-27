@@ -3658,9 +3658,9 @@ impl Task {
             .join("\n");
         for (route, keys) in &self.route_keys {
             let state = match keys {
-                RouteKeys::Waiting => "waiting",
-                RouteKeys::Engine(..) => "ready",
-                RouteKeys::Handed => "handed",
+                RouteKeys::Waiting => "waiting".to_owned(),
+                RouteKeys::Engine(_, epoch) => format!("ready at epoch {epoch}"),
+                RouteKeys::Handed => "handed".to_owned(),
             };
             let _ = write!(
                 channels,
