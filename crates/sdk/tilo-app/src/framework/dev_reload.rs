@@ -24,10 +24,19 @@ pub fn linked_ui() -> *const () {
 pub fn publish_root<A: ResourceApp>() -> i32 {
     let mut reader = None;
     // A record of no workspace's, made only for the view to read its first state.
-    if let Ok(doc) = tilo_resource::founding::new_record::<A::Resource>("", "") {
-        on_doc(doc, &mut |doc| {
-            reader = Reader::<A::Resource>::read(doc).ok();
-        });
+    match tilo_resource::founding::new_record::<A::Resource>("", "") {
+        Ok(doc) => on_doc(doc, &mut |doc| {
+            reader = match Reader::<A::Resource>::read(doc) {
+                Ok(reader) => Some(reader),
+                Err(error) => {
+                    tracing::warn!(%error, "the view's first state could not be read");
+                    None
+                }
+            };
+        }),
+        Err(error) => {
+            tracing::warn!(%error, "no record could be founded for the view's first state");
+        }
     }
     let Some(reader) = reader else {
         return 0;
