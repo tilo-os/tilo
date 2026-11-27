@@ -1088,7 +1088,7 @@ impl Person {
     pub fn device(&self, label: &str) -> Device {
         let first = self.first.lock().expect("the person's first device").take();
         if let Some(mut first) = first {
-            first.label = label.to_owned();
+            label.clone_into(&mut first.label);
             first.restart_daemon();
             let key = hex::encode(first.cert.device_public_key);
             first.call_until_answered(
