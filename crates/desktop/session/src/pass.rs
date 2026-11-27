@@ -524,7 +524,8 @@ impl Session {
     fn follow_shell_over_frame(&mut self) -> Result<(), Error> {
         self.follow_shell()?;
         self.follow_part_views()?;
-        self.settle()?;
+        // Nothing settles again here: what the frame drew asked the session in the two calls
+        // above, and each settles what it asked. The pass's own settle ran before the frame.
         // The session this turn drew is the session kept: its records are written here, where a change
         // made by this turn's layout goes with it.
         self.shared.keep_layout();
