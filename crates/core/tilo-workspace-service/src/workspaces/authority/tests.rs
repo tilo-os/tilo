@@ -143,46 +143,41 @@ async fn page_role_assignments_change_the_documents_key_holders() {
         workspaces.page_workspaces(&reviewer, define.clone()).await,
         WorkspacesReply::Refused(_)
     ));
-    let WorkspacesReply::Roles(updated) = workspaces.page_workspaces(&owner, define).await else {
-        panic!("the owner can create a role from the page");
-    };
+    let reply = workspaces.page_workspaces(&owner, define).await;
+    assert!(
+        matches!(reply, WorkspacesReply::Workspace(_)),
+        "the owner can create a role from the page: {reply:?}"
+    );
     assert_eq!(
-        updated.custom_roles.get("reviewers").map(String::as_str),
-        Some("Reviewers")
+        policy(workspaces, &workspace)
+            .await
+            .custom_roles
+            .get("reviewers")
+            .map(String::as_str),
+        Some("Reviewers"),
+        "the role is defined in the workspace's governance"
     );
 
     let app = "so.tilo.notes";
     let document = "review";
-    let access = |request_id, recipient: &str, access: &str| WorkspacesRequest::SetDocumentAccess {
-        workspace: workspace.clone(),
-        request_id: [request_id; 32],
-        app: app.into(),
-        document: document.into(),
-        recipient: recipient.into(),
-        access: access.into(),
-    };
-    let private = access(3, "everyone", "no-access");
+    let private = set_access(&workspace, app, document, 3, "everyone", "no-access");
     assert!(matches!(
         workspaces.page_workspaces(&reviewer, private.clone()).await,
         WorkspacesReply::Refused(_)
     ));
-    for request in [private, access(4, "role:reviewers", "view")] {
+    for request in [
+        private,
+        set_access(&workspace, app, document, 4, "role:reviewers", "view"),
+    ] {
         let reply = workspaces.page_workspaces(&owner, request).await;
         assert!(matches!(reply, WorkspacesReply::Workspace(_)), "{reply:?}");
     }
     check_default_access_rules(workspaces, &workspace, &owner).await;
 
-    let holds_keys = || async {
-        let state = workspaces.state(&workspace).await.unwrap();
-        let chunk = neighbour_wire::document_chunk(document, 1);
-        [document, chunk.as_str(), "other-note"].map(|part| {
-            state
-                .document_key_holders(app, part, tilo_clock::wall())
-                .unwrap()
-                .contains(&reviewer.device_public_key)
-        })
-    };
-    assert_eq!(holds_keys().await, [false, false, false]);
+    assert_eq!(
+        holds_keys(workspaces, &workspace, app, document, &reviewer).await,
+        [false, false, false]
+    );
 
     for (request_id, assigned) in [(5, true), (6, false)] {
         let request = change(
@@ -193,29 +188,90 @@ async fn page_role_assignments_change_the_documents_key_holders() {
                 assigned,
             },
         );
-        let WorkspacesReply::Roles(updated) = workspaces.page_workspaces(&owner, request).await
-        else {
-            panic!("the owner can change a member's assignments from the page");
-        };
+        let reply = workspaces.page_workspaces(&owner, request).await;
+        assert!(
+            matches!(reply, WorkspacesReply::Workspace(_)),
+            "the owner can change a member's assignments from the page: {reply:?}"
+        );
         assert_eq!(
-            updated
+            policy(workspaces, &workspace)
+                .await
                 .assigned_roles
                 .get(&person)
                 .is_some_and(|roles| roles.contains("reviewers")),
             assigned
         );
-        assert_eq!(holds_keys().await, [assigned, assigned, assigned]);
+        assert_eq!(
+            holds_keys(workspaces, &workspace, app, document, &reviewer).await,
+            [assigned, assigned, assigned]
+        );
         if assigned {
             let recipient = format!("member:{person}");
             for (id, level, expected) in [(7, "no-access", false), (8, "inherit", true)] {
                 let reply = workspaces
-                    .page_workspaces(&owner, access(id, &recipient, level))
+                    .page_workspaces(
+                        &owner,
+                        set_access(&workspace, app, document, id, &recipient, level),
+                    )
                     .await;
                 assert!(matches!(reply, WorkspacesReply::Workspace(_)), "{reply:?}");
-                assert_eq!(holds_keys().await, [expected, expected, true]);
+                assert_eq!(
+                    holds_keys(workspaces, &workspace, app, document, &reviewer).await,
+                    [expected, expected, true]
+                );
             }
         }
     }
+}
+
+/// A page request giving `recipient` `access` to `workspace`'s `app` record `document`.
+fn set_access(
+    workspace: &str,
+    app: &str,
+    document: &str,
+    request_id: u8,
+    recipient: &str,
+    access: &str,
+) -> WorkspacesRequest {
+    WorkspacesRequest::SetDocumentAccess {
+        workspace: workspace.to_owned(),
+        request_id: [request_id; 32],
+        app: app.into(),
+        document: document.into(),
+        recipient: recipient.into(),
+        access: access.into(),
+    }
+}
+
+/// Whether each part of `app`'s record `document` in `workspace` holds keys for `reviewer`'s
+/// device: the record, its first chunk, and another record's.
+async fn holds_keys(
+    workspaces: &Workspaces,
+    workspace: &str,
+    app: &str,
+    document: &str,
+    reviewer: &DeviceCert,
+) -> [bool; 3] {
+    let state = workspaces.state(workspace).await.unwrap();
+    let chunk = neighbour_wire::document_chunk(document, 1);
+    [document, chunk.as_str(), "other-note"].map(|part| {
+        state
+            .document_key_holders(app, part, tilo_clock::wall())
+            .unwrap()
+            .contains(&reviewer.device_public_key)
+    })
+}
+
+/// `workspace`'s policy as its signed governance gives it now: the roles it defines and the
+/// ones each person is given.
+async fn policy(workspaces: &Workspaces, workspace: &str) -> tilo_action_policy::WorkspacePolicy {
+    workspaces
+        .state(workspace)
+        .await
+        .expect("the workspace")
+        .governance()
+        .member_policy()
+        .expect("the workspace has a policy")
 }
 
 async fn check_default_access_rules(workspaces: &Workspaces, workspace: &str, owner: &DeviceCert) {

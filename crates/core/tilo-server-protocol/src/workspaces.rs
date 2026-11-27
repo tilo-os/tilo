@@ -48,13 +48,6 @@ pub struct Workspace {
     pub holders: Vec<WorkspaceHolder>,
 }
 
-/// The roles and assignments of a workspace, requested independently of the roster.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceRoles {
-    pub custom_roles: std::collections::BTreeMap<String, String>,
-    pub assigned_roles: std::collections::BTreeMap<String, std::collections::BTreeSet<String>>,
-}
-
 /// A holder of a workspace, as its own signed address names it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceHolder {
@@ -406,10 +399,6 @@ pub enum WorkspacesRequest {
         recipient: String,
         access: String,
     },
-    /// Read this workspace's role definitions and member assignments.
-    Roles {
-        workspace: String,
-    },
     /// Read the document access settings and their current values.
     DocumentAccess {
         workspace: String,
@@ -449,8 +438,6 @@ pub enum WorkspacesReply {
     Servers(Vec<ServerEntry>),
     /// The workspace was deleted ([`WorkspacesRequest::Delete`]).
     Deleted,
-    /// The current definition and assignments after an edit or query.
-    Roles(WorkspaceRoles),
     DocumentAccess(DocumentAccess),
 }
 

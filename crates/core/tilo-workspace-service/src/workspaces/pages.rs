@@ -270,10 +270,7 @@ impl Workspaces {
             } => {
                 self.edit_roles(&workspace, device, request_id, change)
                     .await?;
-                self.page_roles(&workspace, device, now).await?
-            }
-            WorkspacesRequest::Roles { workspace } => {
-                self.page_roles(&workspace, device, now).await?
+                self.page_workspace(&workspace, device).await?
             }
             WorkspacesRequest::DocumentAccess { workspace } => WorkspacesReply::DocumentAccess(
                 self.page_document_access(&workspace, device, now).await?,
@@ -828,25 +825,6 @@ impl Workspaces {
         };
         self.written(workspace, false).await?;
         Ok(issued)
-    }
-
-    async fn page_roles(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        now: u64,
-    ) -> Result<WorkspacesReply, CollaborationError> {
-        use tilo_server_protocol::workspaces::WorkspaceRoles;
-        let workspace = self.workspace(workspace).await?;
-        let workspace = workspace.lock().await;
-        let member = workspace
-            .peer()
-            .permissions(device.device_public_key, system_time(now))?;
-        drop(workspace);
-        Ok(WorkspacesReply::Roles(WorkspaceRoles {
-            custom_roles: member.policy.custom_roles.clone(),
-            assigned_roles: member.policy.assigned_roles.clone(),
-        }))
     }
 
     async fn page_workspace(
