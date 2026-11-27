@@ -93,7 +93,7 @@ pub(crate) async fn sign_tab(
         let certified = certify_key_in(
             &copies,
             key,
-            Some((key_for.clone(), tab.fitted_label())),
+            Some((KeyAsked::For(key_for.clone()), tab.fitted_label())),
             rooted,
         )
         .await?;
@@ -124,6 +124,13 @@ pub(crate) struct KeyCertified {
     pub revoked: bool,
 }
 
+/// What a key is certified for ([`certify_key_in`]): what a key asking to be signed in names, or
+/// an agent that is the key itself in one workspace, which no agent id names.
+pub(crate) enum KeyAsked {
+    For(tilo_device_identity::login::KeyFor),
+    Itself(WorkspaceId),
+}
+
 /// Certify `key` with the person's root for what `asked` names, listed by its name
 /// ([`tilo_device_identity::login::KeyFor`]: one agent in one workspace), or, asked for nothing,
 /// as an agent's grant in every workspace of theirs.
@@ -136,7 +143,7 @@ pub(crate) struct KeyCertified {
 pub(crate) async fn certify_key_in(
     copies: &Workspaces,
     key: [u8; 32],
-    asked: Option<(tilo_device_identity::login::KeyFor, String)>,
+    asked: Option<(KeyAsked, String)>,
     rooted: Rooted,
 ) -> io::Result<KeyCertified> {
     let Rooted {
@@ -145,12 +152,17 @@ pub(crate) async fn certify_key_in(
         root,
     } = rooted;
     let (capabilities, lifetime_ns, label) = match asked {
-        Some((key_for, name)) => {
+        Some((KeyAsked::For(key_for), name)) => {
             let (capabilities, lifetime_ns) = key_for
                 .capabilities()
                 .map_err(|error| io::Error::other(error.to_string()))?;
             (capabilities, lifetime_ns, name)
         }
+        Some((KeyAsked::Itself(workspace), name)) => (
+            DeviceCapabilities::agent_grant(AgentScope::Workspace(*workspace.as_uuid().as_bytes())),
+            Some(tilo_device_identity::login::AGENT_KEY_LIFETIME_NS),
+            name,
+        ),
         None => (
             DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
             Some(AGENT_GRANT_LIFETIME_NS),
@@ -250,7 +262,7 @@ pub fn certify_key(
                 },
                 str::to_owned,
             );
-            (key_for, name)
+            (KeyAsked::For(key_for), name)
         });
     let workspaces =
         workspaces.ok_or_else(|| io::Error::other("this daemon holds no workspaces"))?;
@@ -555,11 +567,18 @@ impl tilo_app_host::agents::agent_keys::AgentGrants for GrantsOf {
         )
         .map_err(|error| error.to_string())?;
         let copies = workspaces.copies().clone();
-        let asked =
-            tilo_device_identity::login::KeyFor::Agent(tilo_device_identity::login::AgentAsked {
-                workspace: workspace.to_string(),
-                agent: agent.to_owned(),
-            });
+        // An agent that is the key itself names no agent of the person's: its key is let into
+        // the workspace as itself.
+        let asked = if tilo_member_types::key_of_agent(agent) == Some(grant) {
+            KeyAsked::Itself(workspace)
+        } else {
+            KeyAsked::For(tilo_device_identity::login::KeyFor::Agent(
+                tilo_device_identity::login::AgentAsked {
+                    workspace: workspace.to_string(),
+                    agent: agent.to_owned(),
+                },
+            ))
+        };
         let name = name.to_owned();
         let certified = block_on_owned(async move {
             certify_key_in(&copies, grant, Some((asked, name)), rooted).await

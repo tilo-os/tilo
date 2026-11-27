@@ -198,6 +198,20 @@ impl HostedWorkspace {
         (app, document): (&str, &str),
         now: web_time::SystemTime,
     ) -> Result<(), String> {
+        // A device placed for records is in no member list: its certificate alone says what it
+        // writes, and the workspace's admission decides its write by that certificate.
+        let placed = self.peer().placed_device(&author, now);
+        if let Some(placed) = placed {
+            let placed = placed.map_err(|error| error.to_string())?;
+            return if placed
+                .records
+                .reaches(&neighbour_wire::app_document_group(app, document))
+            {
+                Ok(())
+            } else {
+                Err(tilo_peer_state::MembershipError::OutsideItsRecords.to_string())
+            };
+        }
         let member = self
             .peer()
             .permissions(author, now)

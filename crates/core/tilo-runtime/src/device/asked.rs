@@ -348,11 +348,11 @@ impl DeviceAsked {
         workspaces: &Arc<super::workspaces::ServiceWorkspaces>,
         tickets: super::ticket::Tickets,
     ) {
-        let kept = Arc::new(DeviceRoot {
-            tickets,
-            workspaces: Arc::downgrade(workspaces),
-        });
-        let at_root = AtRoot::new(&self.store, workspaces.copies(), kept);
+        let at_root = AtRoot::new(
+            &self.store,
+            workspaces.copies(),
+            root_kept(workspaces, tickets),
+        );
         // A device that already serves them keeps the runner that runs: registering a second
         // one would leave the records pointing at a runner this call drops.
         if self.serving_at_root.set(Arc::clone(&at_root)).is_err() {
@@ -861,8 +861,20 @@ impl AskedDispatch for DeviceAsked {
     }
 }
 
-/// The device's own root-only actions and the agent keys its person's root certifies, as the
-/// workspace service's runner runs them on a device that keeps that root.
+/// The device's own root-only actions, run with `tickets`, and the agent keys its person's root
+/// certifies in `workspaces`, as the workspace service's runner runs them on a device that keeps
+/// that root.
+pub(crate) fn root_kept(
+    workspaces: &Arc<super::workspaces::ServiceWorkspaces>,
+    tickets: super::ticket::Tickets,
+) -> Arc<dyn RootKept> {
+    Arc::new(DeviceRoot {
+        tickets,
+        workspaces: Arc::downgrade(workspaces),
+    })
+}
+
+/// What [`root_kept`] answers.
 struct DeviceRoot {
     tickets: super::ticket::Tickets,
     workspaces: Weak<super::workspaces::ServiceWorkspaces>,

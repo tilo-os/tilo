@@ -1,33 +1,28 @@
-//! A workspace of a person's that a host keeping their workspaces, other than the device that
-//! founds them, is asked to make: their founding device founds it, whoever asks.
+//! A workspace a person's own device asks a server of theirs to make, where that server is not
+//! the device that founds their workspaces: their founding device founds it.
 //!
-//! The host hands the call to the device that founds the person's workspaces, over the action
-//! service both serve ([`Workspaces::found_through_their_device`]). A key's call (an agent's) goes
-//! as the key signed it for no workspace: that device decides it as the key's (the signature
-//! proves the key, fresh and once), asks the person there where the key's grants leave it to
-//! them, founds the workspace on their yes, places it at the host that carried the call and
-//! invites the key in at the address the host signed for it. A call of the person's own device,
-//! which carries no signature that device could check, the host asks as itself, a device of
-//! theirs: the founding device founds it, places it at their server and lists it with their
-//! others. The host founds nothing, issues nothing and takes no one's word: it keeps the
-//! workspace it was handed as the person's own and answers with what their device answered, a
-//! wait for their yes and a no among it.
+//! The server hands the call to the device that founds the person's workspaces, over the action
+//! service both serve ([`Workspaces::found_through_their_device`]). The call carries no signature
+//! that device could check, so the server asks it as itself, a device of theirs, in the person's
+//! own workspace: the founding device founds it, places it at their server and lists it with
+//! their others. The server founds nothing: it keeps the workspace it was handed as the person's
+//! own and answers with what their device answered. An agent's make goes the other way, kept
+//! for the person's root in the asked-calls record ([`crate::workspaces::at_root`]).
 
 use std::sync::Arc;
 
 use tilo_actions::InvocationUpdate;
-use tilo_actions::remote::asked::RecordRef;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvocationState, InvokeRequest, ReceiptStatus,
     RemoteActionMessage, UpdateMark,
 };
 use tilo_peer_state::actions::{CHANGE_WAIT_MS, RemoteDevice};
-use tilo_server_protocol::workspaces::{CreatedWorkspace, WorkspaceLabels};
+use tilo_server_protocol::workspaces::WorkspaceLabels;
 use tilo_user_identity::DeviceCert;
 
 use super::persons_own;
-use crate::workspaces::providers::{Answered, Live};
-use crate::workspaces::{WeakWorkspaces, Workspaces};
+use crate::workspaces::Workspaces;
+use crate::workspaces::providers::Answered;
 
 /// How long the host waits for the person's founding device to say how the make stands at all.
 const ANSWERED_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
@@ -35,10 +30,9 @@ const ANSWERED_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
 impl Workspaces {
     /// Have the device that founds `device`'s person's workspaces make the one `request` asks
     /// for, as `caller` asked it here, where this host does not found it ([`Self::found_for`]):
-    /// how that device answered, once it made it or while it waits for the person's yes there.
-    /// `None` where this host founds it itself, the call is neither signed by the key asking nor
-    /// asked by a device of this host's person, or no workspace kept here names the person's
-    /// founding device: it is then decided here as any other.
+    /// how that device answered. `None` where this host founds it itself, the call is not
+    /// asked by a device of this host's own person, or no workspace kept here names the
+    /// person's founding device: it is then decided here as any other.
     ///
     /// # Errors
     /// The founding device did not answer, refused, or the person said no there.
@@ -54,14 +48,10 @@ impl Workspaces {
         if self.theirs_already(person, args, labels).await? {
             return Ok(None);
         }
-        let signed_by_the_key = request
-            .signed
-            .as_ref()
-            .is_some_and(|signed| signed.statement().signer == device.device_public_key);
         let here = self.device_cert().device_public_key;
         let as_here = persons_own((caller, device)) && self.device_cert().user_public_key == person;
         if caller.forwarder().is_some()
-            || !(signed_by_the_key || as_here)
+            || !as_here
             || caller.is_in_process()
             || self.founding_here(&person).await.is_ok()
             || !self.let_in(&person, now).await
@@ -71,14 +61,13 @@ impl Workspaces {
         let Some((founding, addr)) = self.persons_founding_device(&person).await else {
             return Ok(None);
         };
-        // The key's signed call proves it for no workspace; this host proves itself in the
-        // person's own workspace, which both keep, as a device of theirs.
+        // This host proves itself in the person's own workspace, which both keep, as a device of
+        // theirs.
         let own_workspace = tilo_server_protocol::servers::person_workspace_id(&person);
-        let scope = if as_here { own_workspace.as_str() } else { "" };
         let remote = Arc::new(self.action_service().remote(
             &self.inner.host.endpoint,
             &addr,
-            scope,
+            own_workspace.as_str(),
         ));
         if remote.device() != founding {
             return Ok(None);
@@ -86,18 +75,12 @@ impl Workspaces {
         let mut carried = request.clone();
         carried.wait_ms = Some(CHANGE_WAIT_MS);
         let invocation = carried.invocation;
-        let asked_here;
-        let caller = if as_here {
-            carried.signed = None;
-            asked_here = Caller::authenticated(person, here).in_workspace(own_workspace.clone());
-            &asked_here
-        } else {
-            caller
-        };
+        carried.signed = None;
+        let caller = Caller::authenticated(person, here).in_workspace(own_workspace.clone());
         let unanswered = || ActionCallError::Unavailable {
             reason: "the device that makes your workspaces didn't answer".into(),
         };
-        let receipt = tokio::time::timeout(ANSWERED_WITHIN, remote.invoke(caller, carried))
+        let receipt = tokio::time::timeout(ANSWERED_WITHIN, remote.invoke(&caller, carried))
             .await
             .map_err(|_| unanswered())?
             .ok_or_else(unanswered)??;
@@ -113,19 +96,15 @@ impl Workspaces {
             ReceiptStatus::Rejected { error } => return Err(error),
             ReceiptStatus::Accepted => InvocationUpdate::Accepted { invocation },
         };
-        // Followed until it ends there, or waits there for the person's yes: the key then follows
-        // it here, for as long as they take.
+        // Followed until it ends there: a device of theirs asking founds without a question.
         loop {
             if InvocationState::new(invocation, update.clone()).is_terminal() {
-                return match self.took_in(person, labels, update).await {
+                return match self.took_in(person, request, update).await {
                     InvocationUpdate::Succeeded { output, .. } => {
                         Ok(Some(Answered::Value(output.value.unwrap_or_default())))
                     }
                     ended => Err(refusal(ended)),
                 };
-            }
-            if RecordRef::waited_in(&update).is_some() {
-                break;
             }
             update = tokio::time::timeout(
                 ANSWERED_WITHIN,
@@ -134,18 +113,6 @@ impl Workspaces {
             .await
             .map_err(|_| unanswered())??;
         }
-        let (moved, following) = tokio::sync::watch::channel(Live::There(update.clone()));
-        let workspaces = self.downgrade();
-        let labels = labels.cloned();
-        tokio::spawn(async move {
-            follow_there(
-                (&remote, invocation, update),
-                &moved,
-                (&workspaces, person, labels.as_ref()),
-            )
-            .await;
-        });
-        Ok(Some(Answered::Live(following)))
     }
 
     /// Whether what `args` asks of `person` is theirs already, and answered here: a workspace
@@ -168,94 +135,6 @@ impl Workspaces {
                 .own_labelled_for(person, (name, None), labels, own)
                 .await
                 .is_some())
-    }
-
-    /// `ended`, how the person's founding device ended a make it was handed: one that made the
-    /// workspace has it kept here as the person's own, labelled as asked, once it was placed
-    /// here.
-    async fn took_in(
-        &self,
-        person: [u8; 32],
-        labels: Option<&WorkspaceLabels>,
-        ended: InvocationUpdate,
-    ) -> InvocationUpdate {
-        let InvocationUpdate::Succeeded { invocation, output } = &ended else {
-            return ended;
-        };
-        let failed = |message: String| InvocationUpdate::Failed {
-            invocation: *invocation,
-            error: tilo_actions::ActionFailure {
-                code: "refused".into(),
-                message,
-                details: None,
-                retryable: false,
-            },
-        };
-        let made = match serde_json::from_value::<CreatedWorkspace>(
-            output.value.clone().unwrap_or_default(),
-        ) {
-            Ok(made) => made,
-            Err(error) => {
-                return failed(format!(
-                    "the device that makes your workspaces answered no workspace: {error}"
-                ));
-            }
-        };
-        let workspace = made.workspace.workspace;
-        if self.state(&workspace).await.is_none() {
-            return failed(format!(
-                "the workspace {workspace} was made, and not placed on this host"
-            ));
-        }
-        if let Some(own) = self.own()
-            && let Err(error) = own.record(&person, &workspace)
-        {
-            return failed(error);
-        }
-        if let Some(labels) = labels
-            && let Err(error) = self.label(&workspace, labels).await
-        {
-            return failed(error.to_string());
-        }
-        ended
-    }
-}
-
-/// Follow `invocation`, which the person's founding device `remote` stood at `update` for, there
-/// until it ends, telling `moved` each change: once it made the workspace, `workspaces` keeps it
-/// as `person`'s own ([`Workspaces::took_in`]). Stops when no one follows it here any more.
-async fn follow_there(
-    (remote, invocation, mut update): (
-        &Arc<RemoteDevice>,
-        tilo_actions::InvocationId,
-        InvocationUpdate,
-    ),
-    moved: &tokio::sync::watch::Sender<Live>,
-    (workspaces, person, labels): (&WeakWorkspaces, [u8; 32], Option<&WorkspaceLabels>),
-) {
-    loop {
-        let next = tokio::select! {
-            () = moved.closed() => return,
-            next = next_update(remote, invocation, UpdateMark::of(&update)) => next,
-        };
-        update = match next {
-            Ok(next) => next,
-            Err(error) => {
-                moved.send_replace(Live::Ended(Err(format!(
-                    "the device that makes your workspaces stopped answering: {error}"
-                ))));
-                return;
-            }
-        };
-        if InvocationState::new(invocation, update.clone()).is_terminal() {
-            let ended = match workspaces.upgrade() {
-                Some(workspaces) => workspaces.took_in(person, labels, update).await,
-                None => return,
-            };
-            moved.send_replace(Live::There(ended));
-            return;
-        }
-        moved.send_replace(Live::There(update.clone()));
     }
 }
 

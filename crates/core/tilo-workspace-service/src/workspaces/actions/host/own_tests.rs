@@ -6,8 +6,11 @@
 
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
+use std::sync::Arc;
 use tilo_action_services::server_account::{self, NextStepKind, Reason, ServerAccount};
 use tilo_actions::ActionAddress;
+
+use tilo_actions::remote::asked::RecordRef;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
     ReceiptStatus, RemoteActionTarget,
@@ -225,12 +228,7 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
         Some((Role::Owner, true))
     );
 
-    // Asking again without a name answers the same workspace, again with no invitation.
-    let again = create_own(&host, &guest, json!({})).await.unwrap();
-    assert_eq!(again.workspace.workspace, created.workspace.workspace);
-    assert_eq!(again.workspace.name, "Ada's workspace");
-    assert_eq!(again.invitation, None);
-    // Entering it by its id answers the same one.
+    // Entering it by its id answers the same one, with no invitation.
     let entered = create_own(
         &host,
         &guest,
@@ -239,6 +237,8 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     .await
     .unwrap();
     assert_eq!(entered.workspace.workspace, created.workspace.workspace);
+    assert_eq!(entered.workspace.name, "Ada's workspace");
+    assert_eq!(entered.invitation, None);
     assert_eq!(
         workspaces
             .list()
@@ -263,23 +263,11 @@ async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     // Someone else gets their own; the server's own workspaces are no one's.
     let (_, stranger) = guest_device();
     let_in(workspaces, &home, stranger.user_public_key).await;
-    let theirs = create_own(&host, &stranger, json!({})).await.unwrap();
-    assert_eq!(theirs.workspace.name, "My workspace");
+    let theirs = create_own(&host, &stranger, json!({"name": "Theirs"}))
+        .await
+        .unwrap();
+    assert_eq!(theirs.workspace.name, "Theirs");
     assert_ne!(theirs.workspace.workspace, created.workspace.workspace);
-
-    // One who reads German founds theirs in German, and it keeps the name it
-    // was founded under however they ask after that.
-    let (_, german) = guest_device();
-    let_in(workspaces, &home, german.user_public_key).await;
-    let ihr = create_own(&host, &german, json!({"language": "de-DE"}))
-        .await
-        .unwrap();
-    assert_eq!(ihr.workspace.name, "Mein Arbeitsbereich");
-    let wieder = create_own(&host, &german, json!({"language": "en-US"}))
-        .await
-        .unwrap();
-    assert_eq!(wieder.workspace.workspace, ihr.workspace.workspace);
-    assert_eq!(wieder.workspace.name, "Mein Arbeitsbereich");
     server.shutdown().await;
 }
 
@@ -370,11 +358,10 @@ async fn a_person_may_keep_many_workspaces_of_their_own_and_they_stay_quick() {
     server.shutdown().await;
 }
 
-/// Two of a person's devices asking for a workspace of their own in the same
-/// moment are answered one workspace: the first makes it, and the second
-/// waits for what the first made rather than making another.
+/// A plain ask for the person's own workspace, from two of their devices in the same moment,
+/// answers both the one at the id their key names, kept here: nothing is made for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn two_of_a_persons_devices_asking_at_once_are_answered_one_workspace() {
+async fn a_plain_ask_answers_the_person_workspace_kept_here() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -384,6 +371,11 @@ async fn two_of_a_persons_devices_asking_at_once_are_answered_one_workspace() {
     let root = SigningKey::from_bytes(&rand::random());
     let person = root.verifying_key().to_bytes();
     let_in(&workspaces, &home, person).await;
+    let own = tilo_action_policy::roles::person_workspace_id(&person);
+    workspaces
+        .create_for("Ada", Some(&own), person)
+        .await
+        .expect("their own workspace is kept here");
     let phone = certified(
         &root,
         &SigningKey::from_bytes(&rand::random()),
@@ -399,25 +391,11 @@ async fn two_of_a_persons_devices_asking_at_once_are_answered_one_workspace() {
         create_own(&actions, &laptop, json!({})),
     );
     let (one, two) = (one.unwrap(), two.unwrap());
-    assert_eq!(
-        one.workspace.workspace, two.workspace.workspace,
-        "both of their devices are answered the same workspace"
-    );
-    assert_eq!(
-        workspaces.own_workspaces_of(&person),
-        std::slice::from_ref(&one.workspace.workspace),
-        "they keep one workspace of their own"
-    );
-    assert_eq!(
-        workspaces
-            .own_account(&person)
-            .unwrap()
-            .subscription
-            .unwrap()
-            .usage
-            .workspaces
-            .len(),
-        1
+    assert_eq!(one.workspace.workspace, own, "their own workspace answers");
+    assert_eq!(two.workspace.workspace, own, "to both of their devices");
+    assert!(
+        workspaces.own_workspaces_of(&person).is_empty(),
+        "nothing was made for the ask"
     );
     server.shutdown().await;
 }
@@ -652,7 +630,9 @@ async fn their_workspaces_of_their_own_share_the_storage_the_server_gives_them()
     // Another person's own workspace keeps its own budget whole.
     let (_, stranger) = guest_device();
     let_in(&workspaces, &home, stranger.user_public_key).await;
-    let other = create_own(&host, &stranger, json!({})).await.unwrap();
+    let other = create_own(&host, &stranger, json!({"name": "Home"}))
+        .await
+        .unwrap();
     assert_eq!(workspaces.storage_refusal(&other.workspace.workspace), None);
     server.shutdown().await;
 }
@@ -694,7 +674,9 @@ impl Site {
     async fn own_workspace(&self) -> (String, SigningKey, DeviceCert) {
         let signing = SigningKey::from_bytes(&rand::random());
         let key = certified(&self.root, &signing, DeviceCapabilities::server_key_grant());
-        let created = create_own(&self.host, &key, json!({})).await.unwrap();
+        let created = create_own(&self.host, &key, json!({"name": "Home"}))
+            .await
+            .unwrap();
         join(self.server.workspaces(), &created, (&signing, &key)).await;
         (created.workspace.workspace, signing, key)
     }
@@ -775,7 +757,7 @@ async fn a_persons_own_key_founds_their_own_workspace_at_a_server() {
     let all = grant(DeviceCapabilities::server_key_grant());
     // The key asks as its session makes it: its person's program.
     let agent = as_key(&all);
-    let receipt = on_host(&host, &all, &agent, own_request(json!({})))
+    let receipt = on_host(&host, &all, &agent, own_request(json!({"name": "Home"})))
         .await
         .unwrap();
     let ReceiptStatus::Completed { output } = receipt.status else {
@@ -796,9 +778,14 @@ async fn a_persons_own_key_founds_their_own_workspace_at_a_server() {
     );
     // A key the grant mints for that workspace alone redeems the person's
     // invitation the grant asks for, as the grant did.
-    let again = on_host(&host, &all, &agent, own_request(json!({})))
-        .await
-        .unwrap();
+    let again = on_host(
+        &host,
+        &all,
+        &agent,
+        own_request(json!({"workspace": created.workspace.workspace.clone()})),
+    )
+    .await
+    .unwrap();
     let ReceiptStatus::Completed { output } = again.status else {
         panic!("the grant asks again: {again:?}");
     };
@@ -831,101 +818,626 @@ async fn a_persons_own_key_founds_their_own_workspace_at_a_server() {
     server.shutdown().await;
 }
 
-/// An agent's grant founds no workspace of its person's at a server: their own device does. One
-/// their consent gave for all their workspaces is refused there, and one for a single workspace is
-/// refused before they are asked, as their yes could not be carried out there; each is told what
-/// works instead, and nothing is made or waits. On the device that founds their workspaces, the
-/// grant for one workspace asks, and their yes founds the one it asked for there, once: the next
-/// asks again.
+/// What `request`, asked by `cert`'s key on `host`, answers at once: refused, or how it stands
+/// once it is asked.
+async fn asked_by(
+    host: &ServiceWorkspaceActions,
+    cert: &DeviceCert,
+    request: InvokeRequest,
+) -> Result<tilo_actions::InvocationUpdate, ActionCallError> {
+    let invocation = request.invocation;
+    let request = signed_by_its_agent(request, cert);
+    settled(host.as_host(cert).invoke(&as_key(cert), request)).await?;
+    Ok(host
+        .as_host(cert)
+        .observe(&as_key(cert), &invocation)
+        .expect("the host follows the call")
+        .update)
+}
+
+/// The record `update` says its call waits in for a device that keeps its person's root, as
+/// `workspaces` keeps it there.
+async fn kept_at_root(
+    workspaces: &Workspaces,
+    update: &tilo_actions::InvocationUpdate,
+) -> tilo_actions::remote::asked::KeptAsk {
+    let at = RecordRef::waited_in(update).unwrap_or_else(|| panic!("it waits: {update:?}"));
+    // Written into the workspace's record a moment after the call answered that it waits.
+    let kept = tilo_test_env::within(
+        "the record is kept in the workspace the key reaches",
+        async {
+            loop {
+                if let Some(kept) = workspaces
+                    .asked_record(&at.workspace, update.invocation())
+                    .await
+                {
+                    return kept;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await;
+    assert_eq!(kept.dispatch, tilo_actions::remote::asked::AT_ROOT);
+    kept
+}
+
+/// How `invocation`, asked by `cert`'s key on `host`, ends.
+async fn ended(
+    host: &ServiceWorkspaceActions,
+    cert: &DeviceCert,
+    invocation: tilo_actions::InvocationId,
+) -> tilo_actions::InvocationUpdate {
+    tilo_test_env::within("the call ends", async {
+        loop {
+            let state = host
+                .as_host(cert)
+                .observe(&as_key(cert), &invocation)
+                .expect("the host follows the call");
+            if state.is_terminal() {
+                return state.update;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+}
+
+/// The question the device that keeps the person's root took in for `at`, once it has.
+async fn taken_in(workspaces: &Workspaces, at: &RecordRef) -> tilo_actions::remote::asked::KeptAsk {
+    let store = workspaces.asked_store().unwrap();
+    tilo_test_env::within(
+        "the device that keeps the root takes the question in",
+        async {
+            loop {
+                if let Some(kept) = store.kept_ask(at) {
+                    return kept;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        },
+    )
+    .await
+}
+
+/// The person `person` answers the question at `at` on `device` with `resolution`, picking
+/// `chosen`.
+async fn answer_at_root(
+    workspaces: &Workspaces,
+    (person, device): ([u8; 32], [u8; 32]),
+    at: &RecordRef,
+    (resolution, chosen): (tilo_actions::remote::asked::Offer, Vec<usize>),
+) -> Result<(), ActionCallError> {
+    let store = workspaces.asked_store().unwrap();
+    settled(store.resolve(
+        at,
+        &Caller::authenticated(person, device),
+        &tilo_actions::remote::asked::Resolve {
+            resolution,
+            chosen,
+            ..tilo_actions::remote::asked::Resolve::default()
+        },
+    ))
+    .await
+}
+
+/// The keys of the grants [`held_to`] made, by their certificate's key: what an agent signs its
+/// calls with.
+static HELD_KEYS: std::sync::Mutex<std::collections::BTreeMap<[u8; 32], SigningKey>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// A grant of `root`'s person for one workspace, `workspace`.
+fn held_to(root: &SigningKey, workspace: &str) -> DeviceCert {
+    let key = SigningKey::from_bytes(&rand::random());
+    let cert = certified(
+        root,
+        &key,
+        DeviceCapabilities::agent_grant(AgentScope::parse(workspace).unwrap()),
+    );
+    HELD_KEYS
+        .lock()
+        .unwrap()
+        .insert(cert.device_public_key, key);
+    cert
+}
+
+/// `request`, signed by the key of `cert` where [`held_to`] made it, as an agent signs its call.
+fn signed_by_its_agent(request: InvokeRequest, cert: &DeviceCert) -> InvokeRequest {
+    let key = HELD_KEYS
+        .lock()
+        .unwrap()
+        .get(&cert.device_public_key)
+        .cloned();
+    match key {
+        Some(key) => signed(request, cert, &key),
+        None => request,
+    }
+}
+
+/// What a site shows the person of where a workspace it keeps for their root will live.
+fn site_facts(asked: &tilo_actions::remote::asked::AskedFacts) -> Vec<String> {
+    asked
+        .facts
+        .iter()
+        .filter(|fact| fact.label == "Kept at" || fact.label == "Address")
+        .map(|fact| format!("{}: {}", fact.label, fact.value))
+        .collect()
+}
+
+/// A key whose grant reaches one workspace asks a site for more than that: a new workspace,
+/// named and labelled, or another workspace of its person's to enter. The site founds nothing:
+/// it keeps each for a device that keeps the person's root, in the workspace the key reaches,
+/// asking what the key asked, labels and entry among it, and naming itself, its operator and
+/// its address as where a new workspace will live.
 #[tokio::test]
-async fn an_agents_grant_founds_nothing_at_a_server_and_is_sent_to_its_persons_device() {
+async fn an_agents_make_beyond_its_grant_waits_at_a_site_for_its_persons_root() {
     let site = Site::new().await;
     let (workspaces, host, root, person) = site.parts();
-    let ask = |cert: &DeviceCert, asked: &Value| {
-        let (cert, request) = (cert.clone(), own_request(asked.clone()));
-        async move { on_host(host, &cert, &as_key(&cert), request).await }
-    };
-    let grant = |root, scope| certified(root, &SigningKey::from_bytes(&rand::random()), scope);
-    let records = workspaces.asked_records().unwrap();
-    let (all, one) = (AgentScope::AllWorkspaces, AgentScope::Workspace([7; 16]));
-    let more = json!({"name": "More", "labels": {"customer": "c-1"}});
-    for (cert, asked) in [
-        (grant(root, DeviceCapabilities::agent_grant(all)), json!({})),
-        (
-            grant(root, DeviceCapabilities::agent_grant(one.clone())),
-            more.clone(),
-        ),
-    ] {
-        let refused = ask(&cert, &asked).await;
-        let Err(ActionCallError::Refused { reason }) = &refused else {
-            panic!("{refused:?}");
-        };
-        let typed = server_account::Refusal::from_reason(reason).expect("a typed refusal");
-        assert!(
-            matches!(typed.reason, Reason::FoundOnYourDevice { .. }),
-            "{typed:?}"
-        );
-        for remedy in [
-            NextStepKind::MakeOnYourDevice,
-            NextStepKind::AskThroughYourDevice,
-        ] {
-            assert!(typed.step(remedy).is_some(), "{remedy:?} in {typed:?}");
-        }
-    }
-    assert!(
-        workspaces.own_workspaces_of(&person).is_empty(),
-        "nothing is founded"
-    );
-    assert!(records.asked_of(&person).is_empty(), "nothing waits");
+    let (kept, own_key, own) = site.own_workspace().await;
+    let narrow = held_to(root, &kept);
 
-    // This host is the device that founds its own person's workspaces.
-    let (here, owner) = (site.owner.user_public_key, &site.owner);
-    create_own(host, owner, json!({})).await.unwrap();
-    let narrow = grant(
-        &SigningKey::from_bytes(&[1; 32]),
-        DeviceCapabilities::agent_grant(one),
+    let more = json!({"name": "More", "labels": {"customer": "c-1"}});
+    let waits = asked_by(host, &narrow, own_request(more)).await.unwrap();
+    let asked = kept_at_root(workspaces, &waits).await;
+    assert_eq!(
+        asked.at.workspace, kept,
+        "kept in the workspace the key reaches"
     );
-    let approving = Answering::approving();
-    let made = ask(&narrow, &more).await.unwrap();
-    let ReceiptStatus::Completed { output } = made.status else {
-        panic!("their yes makes it: {made:?}");
-    };
-    let created: CreatedWorkspace = serde_json::from_value(output.value.unwrap()).unwrap();
-    let asked = approving.asked();
-    assert_eq!(asked.len(), 1, "one question, one answer");
     for (label, value) in [("name", "More"), ("labels: customer", "c-1")] {
         let fact = tilo_actions::remote::asked::Fact::new(label, value);
-        assert!(asked[0].facts.contains(&fact), "{asked:?}");
+        assert!(asked.facts.facts.contains(&fact), "{:?}", asked.facts);
     }
-    let workspace = created.workspace.workspace;
-    let founded = workspaces
-        .state(&workspace)
+    let shown = site_facts(&asked.facts);
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    assert_eq!(shown[0], "Kept at: home, run by tilo.test");
+    assert!(
+        shown[1].starts_with(&format!(
+            "Address: {}",
+            hex::encode(site.owner.device_public_key)
+        )),
+        "{shown:?}"
+    );
+    assert_eq!(
+        asked.facts.choices,
+        vec![crate::workspaces::at_root::let_work("key")],
+        "the person may let the key work in it"
+    );
+    assert_eq!(
+        workspaces.own_workspaces_of(&person),
+        vec![kept.clone()],
+        "nothing is founded at the site"
+    );
+
+    // Another workspace of the person's, which the key does not reach: entering it is the yes
+    // itself, with no choice beside it.
+    let second = create_own(host, &own, json!({"name": "Second"}))
         .await
         .unwrap()
-        .governance()
-        .founder();
+        .workspace
+        .workspace;
+    let _ = own_key;
+    let enters = asked_by(host, &narrow, own_request(json!({"workspace": second})))
+        .await
+        .unwrap();
+    let entry = kept_at_root(workspaces, &enters).await;
+    assert!(
+        entry
+            .facts
+            .facts
+            .iter()
+            .any(|fact| fact.label == "workspace" && fact.value.contains(&second)),
+        "the entry is shown: {:?}",
+        entry.facts
+    );
+    assert!(entry.facts.choices.is_empty(), "{:?}", entry.facts);
+    site.server.shutdown().await;
+}
+
+/// On the device that founds its person's workspaces, a key whose grant reaches one asks the
+/// same way, and waits there for the person's root this device keeps. Their yes founds it
+/// there once, owned by them and labelled as asked, and lets the key in only where they picked
+/// that; a second yes finds it answered, a no makes nothing, and the next ask asks again.
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one ask read top to bottom: the question, the yes that makes it, a second yes, a no"
+)]
+async fn an_agents_make_on_its_persons_device_is_made_once_on_their_yes() {
+    let site = Site::new().await;
+    let (workspaces, host, _, _) = site.parts();
+    workspaces
+        .serve_at_root(Arc::new(crate::workspaces::fixtures::RootIn(
+            SigningKey::from_bytes(&[1; 32]),
+        )))
+        .unwrap();
+    let (owner, here) = (&site.owner, site.owner.user_public_key);
+    let reached = create_own(host, owner, json!({"name": "Home"}))
+        .await
+        .unwrap();
+    let narrow = held_to(
+        &SigningKey::from_bytes(&[1; 32]),
+        &reached.workspace.workspace,
+    );
+    let at_root = (here, owner.device_public_key);
+
+    let more = json!({"name": "More", "labels": {"customer": "c-1"}});
+    let waits = asked_by(host, &narrow, own_request(more.clone()))
+        .await
+        .unwrap();
+    let invocation = waits.invocation();
+    let asked = kept_at_root(workspaces, &waits).await;
+    let question = taken_in(workspaces, &asked.at).await;
     assert_eq!(
-        founded,
+        site_facts(&question.facts)[0],
+        "Kept at: home, run by tilo.test"
+    );
+    answer_at_root(
+        workspaces,
+        at_root,
+        &asked.at,
+        (
+            tilo_actions::remote::asked::Offer::Approve,
+            vec![crate::workspaces::at_root::LET_WORK],
+        ),
+    )
+    .await
+    .unwrap();
+    let made = ended(host, &narrow, invocation).await;
+    let tilo_actions::InvocationUpdate::Succeeded { output, .. } = made else {
+        panic!("their yes makes it: {made:?}");
+    };
+    let answered = output.value.unwrap();
+    let created: CreatedWorkspace = serde_json::from_value(answered.clone()).unwrap();
+    let workspace = created.workspace.workspace;
+    assert_eq!(created.workspace.name, "More");
+    assert_eq!(
+        workspaces
+            .state(&workspace)
+            .await
+            .unwrap()
+            .governance()
+            .founder(),
         Some(owner.device_public_key),
         "founded on the person's device"
     );
     assert!(workspaces.owns(&here, &workspace));
-    // The yes was for that one request: the next asks again, and the grant reaches what it did.
-    let declining = Answering::declining();
-    let again = ask(&narrow, &more).await;
-    assert!(
-        matches!(again, Err(ActionCallError::ConfirmationRequired(_))),
-        "{again:?}"
+    assert_eq!(
+        workspaces
+            .labels_of(&workspace)
+            .get("customer")
+            .map(String::as_str),
+        Some("c-1")
     );
-    assert_eq!(declining.asked().len(), 1);
+    assert!(created.invitation.is_some(), "the key is let in, as picked");
+    let grant: DeviceCert = serde_json::from_value(answered["grant"].clone()).unwrap();
+    assert_eq!(grant.device_public_key, narrow.device_public_key);
+    assert!(
+        grant
+            .capabilities
+            .agent
+            .as_ref()
+            .is_some_and(|scope| scope.reaches(&workspace))
+    );
+    assert!(
+        answer_at_root(
+            workspaces,
+            at_root,
+            &asked.at,
+            (tilo_actions::remote::asked::Offer::Approve, Vec::new())
+        )
+        .await
+        .is_err(),
+        "a second yes finds it answered"
+    );
     assert_eq!(
         narrow.capabilities.agent,
-        Some(AgentScope::Workspace([7; 16]))
+        AgentScope::parse(&reached.workspace.workspace),
+        "the key's own grant is as it was"
+    );
+
+    // The next asks again; a yes that picks nothing makes it and lets the key in nowhere.
+    let again = asked_by(host, &narrow, own_request(json!({"name": "Plain"})))
+        .await
+        .unwrap();
+    let asked = kept_at_root(workspaces, &again).await;
+    taken_in(workspaces, &asked.at).await;
+    answer_at_root(
+        workspaces,
+        at_root,
+        &asked.at,
+        (tilo_actions::remote::asked::Offer::Approve, Vec::new()),
+    )
+    .await
+    .unwrap();
+    let made = ended(host, &narrow, again.invocation()).await;
+    let tilo_actions::InvocationUpdate::Succeeded { output, .. } = made else {
+        panic!("their yes makes it: {made:?}");
+    };
+    let answered = output.value.unwrap();
+    let created: CreatedWorkspace = serde_json::from_value(answered.clone()).unwrap();
+    assert!(created.invitation.is_none() && answered.get("grant").is_none());
+
+    // A no makes nothing.
+    let before = workspaces.own_workspaces_of(&here).len();
+    let declined = asked_by(host, &narrow, own_request(json!({"name": "Not this one"})))
+        .await
+        .unwrap();
+    let asked = kept_at_root(workspaces, &declined).await;
+    taken_in(workspaces, &asked.at).await;
+    answer_at_root(
+        workspaces,
+        at_root,
+        &asked.at,
+        (tilo_actions::remote::asked::Offer::Decline, Vec::new()),
+    )
+    .await
+    .unwrap();
+    let no = ended(host, &narrow, declined.invocation()).await;
+    assert!(
+        matches!(&no, tilo_actions::InvocationUpdate::Cancelled { message, .. }
+            if message.as_deref() == Some(tilo_actions::remote::asked::DECLINED)),
+        "{no:?}"
+    );
+    assert_eq!(workspaces.own_workspaces_of(&here).len(), before);
+    site.server.shutdown().await;
+}
+
+/// What the device that keeps the person's root makes is only what the agent signed itself: a
+/// question whose call carries no signature of the agent's, as a site that made one up would
+/// keep it, or one whose signature is of another call, makes nothing on a yes.
+#[tokio::test]
+async fn an_ask_the_agent_did_not_sign_makes_nothing() {
+    let site = Site::new().await;
+    let (workspaces, host, _, _) = site.parts();
+    workspaces
+        .serve_at_root(Arc::new(crate::workspaces::fixtures::RootIn(
+            SigningKey::from_bytes(&[1; 32]),
+        )))
+        .unwrap();
+    let (owner, here) = (&site.owner, site.owner.user_public_key);
+    let reached = create_own(host, owner, json!({"name": "Home"}))
+        .await
+        .unwrap();
+    let narrow = held_to(
+        &SigningKey::from_bytes(&[1; 32]),
+        &reached.workspace.workspace,
+    );
+    let waits = asked_by(host, &narrow, own_request(json!({"name": "Signed"})))
+        .await
+        .unwrap();
+    let asked = kept_at_root(workspaces, &waits).await;
+    let taken = taken_in(workspaces, &asked.at).await;
+    let store = workspaces.asked_store().unwrap();
+    let before = workspaces.own_workspaces_of(&here).len();
+    for (forge, why) in [
+        (
+            (|request: &mut InvokeRequest| request.signed = None) as fn(&mut InvokeRequest),
+            "no signature of the agent",
+        ),
+        (
+            |request: &mut InvokeRequest| {
+                request.argument = InvokeArgument::Json(
+                    json!({"name": "Not what it asked"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                );
+            },
+            "not the call the agent signed",
+        ),
+    ] {
+        let mut forged = taken.clone();
+        forged.request.invocation = tilo_actions::InvocationId::new();
+        forged.request = signed_by_its_agent(forged.request, &narrow);
+        forge(&mut forged.request);
+        forged.at.record = forged.request.invocation.0.to_string();
+        store.take_in(vec![forged.clone()]);
+        let refused = answer_at_root(
+            workspaces,
+            (here, owner.device_public_key),
+            &forged.at,
+            (tilo_actions::remote::asked::Offer::Approve, Vec::new()),
+        )
+        .await;
+        assert!(
+            matches!(&refused, Err(ActionCallError::Refused { reason }) if reason.contains(why)),
+            "{refused:?}"
+        );
+    }
+    assert_eq!(
+        workspaces.own_workspaces_of(&here).len(),
+        before,
+        "nothing is made"
+    );
+    site.server.shutdown().await;
+}
+
+/// The device that keeps the person's root places a new workspace only at the host the
+/// question they answered named: a record naming one place to them and keeping another for
+/// the placing makes nothing.
+#[tokio::test]
+async fn a_make_is_placed_only_where_the_question_named() {
+    let site = Site::new().await;
+    let (workspaces, host, _, _) = site.parts();
+    workspaces
+        .serve_at_root(Arc::new(crate::workspaces::fixtures::RootIn(
+            SigningKey::from_bytes(&[1; 32]),
+        )))
+        .unwrap();
+    let (owner, here) = (&site.owner, site.owner.user_public_key);
+    let reached = create_own(host, owner, json!({"name": "Home"}))
+        .await
+        .unwrap();
+    let narrow = held_to(
+        &SigningKey::from_bytes(&[1; 32]),
+        &reached.workspace.workspace,
+    );
+    let waits = asked_by(host, &narrow, own_request(json!({"name": "Elsewhere"})))
+        .await
+        .unwrap();
+    let asked = kept_at_root(workspaces, &waits).await;
+    let mut forged = taken_in(workspaces, &asked.at).await;
+    // The same question, as the agent asked it once more, its place kept for another device
+    // than the one it names.
+    forged.request.invocation = tilo_actions::InvocationId::new();
+    forged.request = signed_by_its_agent(forged.request, &narrow);
+    forged.at.record = forged.request.invocation.0.to_string();
+    forged.context["place"]["device"] = json!(hex::encode([9; 32]));
+    let store = workspaces.asked_store().unwrap();
+    store.take_in(vec![forged.clone()]);
+    let before = workspaces.own_workspaces_of(&here).len();
+    let refused = answer_at_root(
+        workspaces,
+        (here, owner.device_public_key),
+        &forged.at,
+        (tilo_actions::remote::asked::Offer::Approve, Vec::new()),
+    )
+    .await;
+    assert!(
+        matches!(&refused, Err(ActionCallError::Refused { reason })
+            if reason.contains("placed only where the question named")),
+        "{refused:?}"
     );
     assert_eq!(
         workspaces.own_workspaces_of(&here).len(),
-        2,
-        "a no made nothing"
+        before,
+        "nothing is made"
+    );
+    site.server.shutdown().await;
+}
+
+/// `refusal`, a typed refusal saying the workspace is made on the person's own device, with
+/// what works instead.
+fn found_on_their_device(refusal: &Result<tilo_actions::InvocationUpdate, ActionCallError>) {
+    let Err(ActionCallError::Refused { reason }) = refusal else {
+        panic!("{refusal:?}");
+    };
+    let typed = server_account::Refusal::from_reason(reason)
+        .unwrap_or_else(|| panic!("a typed refusal: {reason}"));
+    assert!(
+        matches!(typed.reason, Reason::FoundOnYourDevice { .. }),
+        "{typed:?}"
+    );
+    for remedy in [
+        NextStepKind::MakeOnYourDevice,
+        NextStepKind::AskThroughYourDevice,
+    ] {
+        assert!(typed.step(remedy).is_some(), "{remedy:?} in {typed:?}");
+    }
+}
+
+/// A grant their consent gave for all their workspaces needs no yes to make one, and a server
+/// founds none for an agent: it is refused there with what works instead, and nothing waits.
+#[tokio::test]
+async fn a_consent_grant_for_all_workspaces_makes_none_at_a_server() {
+    let site = Site::new().await;
+    let (workspaces, host, root, person) = site.parts();
+    let all = certified(
+        root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+    );
+    found_on_their_device(&asked_by(host, &all, own_request(json!({"name": "Home"}))).await);
+    assert!(workspaces.own_workspaces_of(&person).is_empty());
+    site.server.shutdown().await;
+}
+
+/// A host that keeps no workspaces of people's own, and is not the person's device, could keep
+/// nothing their yes made: it refuses before anyone is asked, as it refuses every such ask.
+#[tokio::test]
+async fn a_host_keeping_no_ones_workspaces_asks_no_one_to_make_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let host = super::super::tests::host_dispatch(workspaces);
+    let theirs = workspaces.create("Theirs").await.unwrap().workspace;
+    let narrow = held_to(&SigningKey::from_bytes(&rand::random()), &theirs);
+    let refused = asked_by(&host, &narrow, own_request(json!({"name": "More"}))).await;
+    assert!(
+        matches!(&refused, Err(ActionCallError::Refused { reason })
+            if reason.starts_with("hosts_none_for_people")),
+        "{refused:?}"
+    );
+    server.shutdown().await;
+}
+
+/// A site keeps a person's workspaces only once its entry let them in: a key of someone it has
+/// not is told the entry's own refusal, and nothing waits.
+#[tokio::test]
+async fn a_site_asks_nothing_for_a_person_it_has_not_let_in() {
+    let site = Site::new().await;
+    let (workspaces, host, _, _) = site.parts();
+    let (kept, ..) = site.own_workspace().await;
+    let stranger = SigningKey::from_bytes(&rand::random());
+    let narrow = held_to(&stranger, &kept);
+    let refused = asked_by(host, &narrow, own_request(json!({"name": "More"}))).await;
+    let expected = workspaces.not_let_in().await.to_reason();
+    assert!(
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if *reason == expected),
+        "{refused:?}"
+    );
+    site.server.shutdown().await;
+}
+
+/// Entering a workspace by an id that is neither the person's nor one they are in could not be
+/// carried out by any yes: it is refused before anyone is asked.
+#[tokio::test]
+async fn an_agent_asks_no_one_to_enter_a_workspace_its_person_is_not_in() {
+    let site = Site::new().await;
+    let (workspaces, host, root, _) = site.parts();
+    let (kept, ..) = site.own_workspace().await;
+    let narrow = held_to(root, &kept);
+    let elsewhere = workspaces.create("Someone else's").await.unwrap().workspace;
+    for workspace in [elsewhere, uuid::Uuid::new_v4().to_string()] {
+        let refused = asked_by(host, &narrow, own_request(json!({"workspace": workspace}))).await;
+        assert!(
+            matches!(&refused, Err(ActionCallError::Refused { reason })
+                if *reason == AdminRefusal::NotYourOwn.to_reason()),
+            "{refused:?}"
+        );
+    }
+    site.server.shutdown().await;
+}
+
+/// A key the workspace it names keeps as revoked is told so, and asks no one for anything there.
+#[tokio::test]
+async fn a_revoked_key_asks_no_one_for_more() {
+    let site = Site::new().await;
+    let (workspaces, host, root, person) = site.parts();
+    let (kept, ..) = site.own_workspace().await;
+    let key = SigningKey::from_bytes(&rand::random());
+    let narrow = certified(
+        root,
+        &key,
+        DeviceCapabilities::agent_grant(AgentScope::parse(&kept).unwrap()),
+    );
+    let entered = create_own(host, &narrow, json!({"workspace": kept}))
+        .await
+        .unwrap();
+    join(workspaces, &entered, (&key, &narrow)).await;
+    let grant = workspaces
+        .grants_of(&kept, &person)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|grant| grant.device == hex::encode(narrow.device_public_key))
+        .expect("the workspace records the key");
+    assert!(
+        workspaces
+            .revoke_grant(&kept, &grant.id, tilo_clock::unix_now_ns() / 1_000_000)
+            .await
+            .unwrap()
+    );
+    let refused = asked_by(
+        host,
+        &narrow,
+        own_request(json!({"name": "More", "workspace": kept})),
+    )
+    .await;
+    assert!(
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if reason.contains("revoked")),
+        "{refused:?}"
     );
     site.server.shutdown().await;
 }
@@ -945,9 +1457,14 @@ async fn an_agent_asks_before_a_host_operation_its_certificate_does_not_grant() 
         &SigningKey::from_bytes(&rand::random()),
         DeviceCapabilities::server_key_grant(),
     );
-    let made = on_host(host, &own_key, &as_key(&own_key), own_request(json!({})))
-        .await
-        .unwrap();
+    let made = on_host(
+        host,
+        &own_key,
+        &as_key(&own_key),
+        own_request(json!({"name": "Home"})),
+    )
+    .await
+    .unwrap();
     let ReceiptStatus::Completed { output } = made.status else {
         panic!("their key makes their own workspace at once: {made:?}");
     };
@@ -1398,7 +1915,9 @@ async fn an_agent_asks_before_changing_a_members_role_and_changes_it_only_on_yes
     let (workspaces, host, root, _) = site.parts();
     let own_signing = SigningKey::from_bytes(&rand::random());
     let own_key = certified(root, &own_signing, DeviceCapabilities::server_key_grant());
-    let created = create_own(host, &own_key, json!({})).await.unwrap();
+    let created = create_own(host, &own_key, json!({"name": "Home"}))
+        .await
+        .unwrap();
     let workspace = created.workspace.workspace.clone();
     // One of their own devices redeems the invitation the workspace gives them: an agent acts
     // through a device of its person's, and the workspace holds that one.
@@ -1530,7 +2049,9 @@ async fn an_agents_key_changes_no_members_role_through_the_hosts_administration(
     let (workspaces, host, root, _) = site.parts();
     let own_signing = SigningKey::from_bytes(&rand::random());
     let own_key = certified(root, &own_signing, DeviceCapabilities::server_key_grant());
-    let created = create_own(host, &own_key, json!({})).await.unwrap();
+    let created = create_own(host, &own_key, json!({"name": "Home"}))
+        .await
+        .unwrap();
     let workspace = created.workspace.workspace.clone();
     let (_, member) = guest_device();
     let agent = certified(
@@ -1579,7 +2100,9 @@ async fn a_full_workspace_of_ones_own_is_refused_and_the_account_says_so() {
     assert!(workspaces.admit_own_through(&other.workspace));
     let (_, guest) = guest_device();
     let_in(workspaces, &other.workspace, guest.user_public_key).await;
-    let created = create_own(&host, &guest, json!({})).await.unwrap();
+    let created = create_own(&host, &guest, json!({"name": "Home"}))
+        .await
+        .unwrap();
     let own = &created.workspace;
 
     let refusal = workspaces
@@ -2821,7 +3344,9 @@ async fn a_persons_first_device_joins_their_own_workspace_before_any_entry() {
 
     // The person's key makes the workspace: no device of theirs has entered it.
     let (_, first) = tab_of(&root, "Firefox on Linux");
-    let created = create_own(&host, &first, json!({})).await.unwrap();
+    let created = create_own(&host, &first, json!({"name": "Home"}))
+        .await
+        .unwrap();
     let workspace = created.workspace.workspace.clone();
     let (computer_key, computer) = tab_of(&root, "Ada's laptop");
     assert_eq!(
@@ -2868,7 +3393,9 @@ async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_sta
     let_in(workspaces, &home, root.verifying_key().to_bytes()).await;
 
     let (first_key, first) = tab_of(&root, "Firefox on Linux");
-    let created = create_own(&host, &first, json!({})).await.unwrap();
+    let created = create_own(&host, &first, json!({"name": "Home"}))
+        .await
+        .unwrap();
     join(workspaces, &created, (&first_key, &first)).await;
     let workspace = created.workspace.workspace.clone();
     assert_eq!(subscribe(workspaces, &workspace, &first).await, Ok(()));
@@ -2905,13 +3432,13 @@ async fn a_further_tab_of_the_person_joins_their_own_workspace_and_the_first_sta
     server.shutdown().await;
 }
 
-/// A browser asks for the person's own workspace by no id: the host makes it
-/// once, under an id of its own, and answers that one to every later ask, from
-/// a browser that forgot the site as from the person's agent. An id the host
-/// never made is refused, never read as the workspace the person has: with a
-/// workspace per customer, a wrong id must fail, not land in another one.
+/// A browser asks for the person's own workspace by no id where none is kept: it is refused in
+/// the words that say where it comes from, and nothing is made, since only the device that makes
+/// their root founds it. An id the host never made is refused too, never read as the workspace
+/// the person has: with a workspace per customer, a wrong id must fail, not land in another one.
 #[tokio::test]
-async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
+async fn a_person_workspace_asked_for_by_no_id_where_none_is_kept_is_refused_and_an_unknown_id_too()
+{
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -2923,14 +3450,22 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
     let_in(workspaces, &home, person).await;
 
     let (first_key, first) = tab_of(&root, "Firefox on Linux");
-    let made = create_own(&host, &first, json!({})).await.unwrap();
+    let refused = create_own(&host, &first, json!({})).await;
+    assert!(
+        matches!(&refused, Err(ActionCallError::Refused { reason }) if reason == super::NO_PERSON_WORKSPACE_HERE),
+        "{refused:?}"
+    );
+    assert!(
+        workspaces.own_workspaces_of(&person).is_empty(),
+        "nothing is made for a plain ask"
+    );
+
+    let made = create_own(&host, &first, json!({"name": "Home"}))
+        .await
+        .unwrap();
     join(workspaces, &made, (&first_key, &first)).await;
     let own = made.workspace.workspace;
-
     let (_, later) = tab_of(&root, "Firefox on Linux");
-    let entered = create_own(&host, &later, json!({})).await.unwrap();
-    assert_eq!(entered.workspace.workspace, own, "the workspace they have");
-
     let unknown = uuid::Uuid::new_v4().to_string();
     let refused = create_own(&host, &later, json!({"workspace": unknown})).await;
     assert!(
@@ -2943,8 +3478,7 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
         "and no second one"
     );
 
-    // A person with no workspace yet is refused an id the host never made too:
-    // the host makes theirs under an id of its own.
+    // A person with no workspace yet is refused an id the host never made too.
     let newcomer = SigningKey::from_bytes(&rand::random());
     let_in(workspaces, &home, newcomer.verifying_key().to_bytes()).await;
     let refused = create_own(
@@ -2964,11 +3498,15 @@ async fn own_workspace_is_asked_for_by_no_id_and_an_unknown_id_is_refused() {
     );
 
     // Another person's workspace is not theirs either.
-    let theirs = Box::pin(create_own(&host, &tab_of(&newcomer, "Chrome").1, json!({})))
-        .await
-        .unwrap()
-        .workspace
-        .workspace;
+    let theirs = Box::pin(create_own(
+        &host,
+        &tab_of(&newcomer, "Chrome").1,
+        json!({"name": "Theirs"}),
+    ))
+    .await
+    .unwrap()
+    .workspace
+    .workspace;
     let refused = create_own(&host, &later, json!({"workspace": theirs})).await;
     assert!(
         matches!(&refused, Err(ActionCallError::Refused { reason }) if AdminRefusal::from_reason(reason) == Some(AdminRefusal::NotYourOwn)),

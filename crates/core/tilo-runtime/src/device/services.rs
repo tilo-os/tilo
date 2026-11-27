@@ -1032,6 +1032,18 @@ pub(crate) fn device_person() -> Option<[u8; 32]> {
     {
         return Some(held.person);
     }
+    // A test's, where its guard says ([`root_record_for_test`]).
+    #[cfg(test)]
+    let kept = ROOT_RECORD_FOR_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    #[cfg(test)]
+    if let Some(record) = kept {
+        return tilo_identity::store::load_metadata_from_path(&record)
+            .ok()
+            .map(|metadata| metadata.group_public_key);
+    }
     // A person's own service keeps their root under the account it runs as.
     let record = root_record(crate::seats::own_account()).ok()?;
     tilo_identity::store::load_metadata_from_path(&record)

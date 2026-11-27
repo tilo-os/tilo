@@ -242,3 +242,115 @@ fn what_the_workspace_keeps_is_there_after_the_daemon_restarts() {
         assert_eq!(status, 200, "{read}");
     });
 }
+
+/// What only the person's root signs, asked of the daemon while it keeps no root of theirs, is
+/// kept as its record at root and runs nowhere. Once the root is back the person says yes to the
+/// record there, and the workspace service's runner, the one the daemon serves, runs it as the
+/// device ticket under that root: the call shows how it ended.
+#[test]
+fn a_device_ticket_asked_without_the_root_runs_through_the_runner_once_the_person_says_yes() {
+    use std::time::{Duration, Instant};
+
+    use tilo_action_services::workspace_invocations;
+    use tilo_actions::remote::asked::{AskedRecords as _, RESOLVE};
+    use tilo_actions::remote::{InvokeRequest, RemoteActionTarget};
+
+    host::run(|host| async move {
+        const WITHIN: Duration = Duration::from_secs(30);
+        // The root this daemon keeps for its person goes away for a while, as a computer the
+        // root moved off of keeps none.
+        let account = tilo_runtime::device::services::account_identity_dir(
+            tilo_runtime::device::services::this_account_uid(),
+        )
+        .unwrap();
+        let root = tilo_identity::store::held_root(&account).expect("the daemon keeps the root");
+        let away = root.with_extension("away");
+        std::fs::rename(&root, &away).unwrap();
+
+        let person: [u8; 32] = hex::decode(host.person()).unwrap().try_into().unwrap();
+        let revoke = InvokeRequest {
+            argument: device_tickets::Revoke::retired(&hex::encode([9; 32])).argument(),
+            ..InvokeRequest::plain(
+                device_tickets::target(device_tickets::REVOKE),
+                serde_json::Map::new(),
+            )
+        };
+        let invocation = revoke.invocation;
+        let dispatch = host.dispatch();
+        let caller = host.caller();
+        let receipt = dispatch
+            .invoke(&caller, revoke)
+            .await
+            .expect("the dispatch answers")
+            .expect("the person's call is taken");
+        assert!(
+            !matches!(
+                receipt.status,
+                tilo_actions::remote::ReceiptStatus::Completed { .. }
+            ),
+            "nothing runs without the root: {receipt:?}"
+        );
+        let store = host
+            .daemon()
+            .workspaces()
+            .asked_store()
+            .expect("the daemon keeps the calls that wait for its person");
+        let started = Instant::now();
+        let asked = loop {
+            if let Some(asked) = store
+                .asked_of(&person)
+                .into_iter()
+                .find(|asked| asked.record.record == invocation.0.to_string())
+            {
+                break asked;
+            }
+            assert!(
+                started.elapsed() < WITHIN,
+                "the call waits for the person at root: {:?}",
+                store.asked_of(&person)
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+
+        // The root is back, and the person says yes where they are asked.
+        std::fs::rename(&away, &root).unwrap();
+        let request = InvokeRequest::plain(
+            RemoteActionTarget {
+                provider: workspace_invocations::PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(&asked.record.record, RESOLVE),
+            },
+            json!({"resolution": "approve"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        host.daemon()
+            .workspaces()
+            .resolve_asked(&caller, &request)
+            .await
+            .expect("the daemon answers the resolve")
+            .expect("the person's yes is taken");
+
+        let started = Instant::now();
+        let ended = loop {
+            if let Some(state) = dispatch.observe(&caller, &invocation)
+                && state.update.is_terminal()
+            {
+                break state.update;
+            }
+            assert!(
+                started.elapsed() < WITHIN,
+                "the call ends once they said yes"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let tilo_actions::InvocationUpdate::Failed { error, .. } = &ended else {
+            panic!("the revoke of a key that is no device ends failed: {ended:?}");
+        };
+        assert!(
+            error.message.contains("no device of yours"),
+            "it ran under the root, which found no such device: {}",
+            error.message
+        );
+    });
+}

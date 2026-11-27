@@ -72,19 +72,10 @@ pub(super) async fn ended(
     ran: Result<Result<Answered, ActionCallError>, tokio::task::JoinError>,
 ) -> Result<InvocationReceipt, ActionCallError> {
     let invocation = call.request.invocation;
-    // A make of a workspace of the person's own that their agent's grant does not reach waits
-    // for a device that keeps their root, where their yes founds it: unless this is the device
-    // that founds their workspaces, which asks them and founds it itself.
+    // What an agent's grant for one workspace asks beyond it waits for a device that keeps its
+    // person's root, where their yes carries it out: on every host, theirs among them.
     let at_root = call.request.approval().is_none()
-        && crate::workspaces::at_root::kept_for_root(call.certificate.as_ref(), &call.request)
-        && match call.certificate.as_ref() {
-            Some(certificate) => call
-                .workspaces
-                .founding_here(&certificate.user_public_key)
-                .await
-                .is_err(),
-            None => false,
-        };
+        && crate::workspaces::at_root::kept_for_root(call.certificate.as_ref(), &call.request);
     match ran {
         Ok(Ok(Answered::Live(moves))) => Ok(follow(actions, call, moves)),
         Ok(Ok(Answered::Value(value))) => {
@@ -183,7 +174,6 @@ async fn keep_for_root(
     facts: tilo_actions::remote::asked::AskedFacts,
 ) -> Result<InvocationReceipt, ActionCallError> {
     let invocation = call.request.invocation;
-    let facts = crate::workspaces::at_root::asked_at_root(facts, call.certificate.as_ref());
     // Followed before its record is written, so how it ends is never missed.
     actions.follow_root(&call.workspaces, invocation);
     let kept = call
@@ -192,11 +182,11 @@ async fn keep_for_root(
             call.workspace_id,
             (&call.caller, call.certificate.as_ref()),
             &call.request,
-            &facts,
+            facts.clone(),
         )
         .await;
     match kept {
-        Some(Ok(record)) => {
+        Some(Ok((record, _))) => {
             let mut log = actions.log();
             if actions.follows_root(invocation) {
                 let state = InvocationState::new(invocation, record.waiting(invocation));
@@ -291,13 +281,7 @@ pub(super) fn follow(
         while moves.changed().await.is_ok() {
             sequence = sequence.saturating_add(1);
             let now = moves.borrow_and_update().clone();
-            let ended = match &now {
-                Live::Item(_) => false,
-                Live::Ended(_) => true,
-                Live::There(update) => {
-                    InvocationState::new(invocation, update.clone()).is_terminal()
-                }
-            };
+            let ended = matches!(now, Live::Ended(_));
             kept.log()
                 .complete(&invocation, live_state(invocation, sequence, now));
             if ended {
@@ -327,6 +311,5 @@ fn live_state(invocation: InvocationId, sequence: u64, live: Live) -> Invocation
         ),
         Live::Ended(Ok(value)) => succeeded(invocation, value),
         Live::Ended(Err(why)) => failed(invocation, &why),
-        Live::There(update) => InvocationState::new(invocation, update),
     }
 }

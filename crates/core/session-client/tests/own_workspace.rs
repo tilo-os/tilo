@@ -198,13 +198,32 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         None
     );
 
-    // The first time, the host makes it, and this device redeems the invitation: the workspace
-    // admits this very key, and it is Bob's, not the Lounge.
+    // A plain ask for his own workspace, which only the device that makes his root founds, is
+    // answered here, where it is not kept, in words that say where it lives rather than that
+    // something failed: nothing is made for it.
+    let plain = device
+        .enter_own_workspace("en-US", None, "Bob", |_| false, None)
+        .await
+        .unwrap_err();
+    assert_eq!(plain.code, "refused", "{plain:?}");
+    assert_eq!(
+        plain.message,
+        "This site doesn't keep your own workspace: it lives on your devices. Name a new \
+         workspace to make one here, or open yours from a device of yours that has it.",
+        "the page reads where the workspace is, not that something failed: {plain:?}"
+    );
+    assert_eq!(
+        workspaces.own_workspace_of(&bob.verifying_key().to_bytes()),
+        None
+    );
+
+    // One he names the host makes, and this device enters it: the workspace admits this very
+    // key, and it is Bob's, not the Lounge.
     let asked = Cell::new(0);
     let own = device
         .enter_own_workspace(
             "en-US",
-            None,
+            Some("Bob's workspace"),
             "Bob",
             |_| {
                 asked.set(asked.get() + 1);
@@ -335,10 +354,12 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     in_workspace(&switcher, own.workspace_id).await;
     switcher.close();
 
-    // Asked again, it answers the same workspace; one this device is in already is not redeemed
-    // again.
-    let again = device
-        .enter_own_workspace("en-US", None, "Bob", |id| id == own.workspace, None)
+    // Asked again by its id, it answers the same workspace.
+    let (again, _) = device
+        .own_workspace(
+            Map::from_iter([("workspace".into(), json!(own.workspace))]),
+            tilo_actions::InvocationId::new(),
+        )
         .await
         .unwrap();
     assert_eq!(again.workspace, own.workspace);
@@ -399,8 +420,11 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         host_device.cert.clone(),
         "Laptop",
     );
-    let theirs = laptop
-        .enter_own_workspace("en-US", None, "Bob", |_| false, None)
+    let (theirs, _) = laptop
+        .own_workspace(
+            Map::from_iter([("workspace".into(), json!(own.workspace))]),
+            tilo_actions::InvocationId::new(),
+        )
         .await
         .unwrap();
     assert_eq!(theirs.workspace, own.workspace);
@@ -544,51 +568,6 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     bob_host.server.shutdown().await;
 }
 
-/// Bob's root, as his own computer keeps it: what certifies a key of his agents for a workspace.
-struct BobsRoot(ed25519_dalek::SigningKey);
-
-impl tilo_workspace_service::workspaces::at_root::RootKept for BobsRoot {
-    fn runs(&self, _: &tilo_actions::remote::InvokeRequest) -> bool {
-        false
-    }
-
-    fn run(
-        &self,
-        _: tilo_actions::remote::InvokeRequest,
-        _: tilo_actions::remote::Caller,
-    ) -> tilo_workspace_service::workspaces::at_root::RootRun {
-        panic!("Bob's computer runs no root-only operation of its own here")
-    }
-
-    fn certify_agent(
-        &self,
-        person: [u8; 32],
-        key: [u8; 32],
-        workspace: &str,
-        _agent: &str,
-        name: &str,
-    ) -> tilo_workspace_service::workspaces::at_root::Certifying {
-        let (root, workspace, name) = (self.0.clone(), workspace.to_owned(), name.to_owned());
-        Box::pin(async move {
-            assert_eq!(
-                person,
-                root.verifying_key().to_bytes(),
-                "only Bob's root is kept here"
-            );
-            tilo_server_client::certification::issue_agent_grant(
-                &root,
-                key,
-                &name,
-                DeviceCapabilities::agent_grant(AgentScope::parse(&workspace).unwrap()),
-                Some(tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000)),
-            )
-            .await
-            .map(Some)
-            .map_err(|error| error.to_string())
-        })
-    }
-}
-
 /// The make `script` asks for a workspace called `name`, which waits for its person.
 async fn asks_to_make(script: &Device, name: &str) -> Awaiting {
     let made = script
@@ -693,7 +672,9 @@ async fn an_agent_held_to_one_workspace_makes_another_only_at_its_persons_root()
         .await
         .unwrap();
     bob_workspaces
-        .serve_at_root(Arc::new(BobsRoot(bob.clone())))
+        .serve_at_root(Arc::new(
+            tilo_workspace_service::workspaces::fixtures::RootIn(bob.clone()),
+        ))
         .unwrap();
 
     // Bob's tab in the Lounge has the site make his own workspace, which his computer takes in.
@@ -722,7 +703,7 @@ async fn an_agent_held_to_one_workspace_makes_another_only_at_its_persons_root()
         "Firefox on Linux",
     );
     let own = device
-        .enter_own_workspace("en-US", None, "Bob", |_| false, None)
+        .enter_own_workspace("en-US", Some("Bob's workspace"), "Bob", |_| false, None)
         .await
         .unwrap();
     assert_eq!(device.join(&own.workspace).await.unwrap(), own.workspace_id);
@@ -799,6 +780,22 @@ async fn an_agent_held_to_one_workspace_makes_another_only_at_its_persons_root()
     // His yes founds it on his computer, once, as him: a second yes finds it answered.
     let plans = asks_to_make(&script, "Plans").await;
     taken_in(bob_workspaces, &plans).await;
+    let question = bob_workspaces
+        .asked_store()
+        .unwrap()
+        .kept_ask(&plans.ask)
+        .expect("Bob's computer asks him");
+    assert!(
+        question
+            .facts
+            .facts
+            .contains(&tilo_actions::remote::asked::Fact::new(
+                "Kept at",
+                "alice-home, run by tilo.test"
+            )),
+        "the question names where it will live: {:?}",
+        question.facts
+    );
     answer_with(bob_workspaces, at_root, &plans, approve())
         .await
         .expect("Bob says yes on his computer");
@@ -832,8 +829,10 @@ async fn an_agent_held_to_one_workspace_makes_another_only_at_its_persons_root()
         summary.members
     );
     assert!(
-        workspaces.summary(&made_workspace).await.is_err(),
-        "the site holds nothing of it"
+        workspaces
+            .own_workspaces_of(&bob_person)
+            .contains(&made_workspace),
+        "it lives at the site the question named, kept there as Bob's own"
     );
     assert_eq!(
         bob_workspaces.ids().await.len(),

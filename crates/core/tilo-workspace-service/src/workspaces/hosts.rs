@@ -1099,6 +1099,17 @@ impl Workspaces {
             Value::String(hex_postcard(&holder_hint)?),
         );
         arguments.insert("bootstrap".into(), Value::String(hex_postcard(&bootstrap)?));
+        // A site of another operator's that keeps the workspace is no member of it: it is
+        // granted the workspace's record of asked calls alone, where it keeps what an agent asks
+        // there for the person's root.
+        #[cfg(not(target_arch = "wasm32"))]
+        if role == CopyRole::KeyHolder
+            && member.user_public_key != self.device_cert().user_public_key
+            && let Some(grant) =
+                Box::pin(self.grant_asks(workspace, workspace_id, member.device_public_key)).await?
+        {
+            arguments.insert("asks_grant".into(), Value::String(hex_postcard(&grant)?));
+        }
         if !keys.is_empty() {
             arguments.insert("keys".into(), Value::String(hex_postcard(&keys)?));
         }

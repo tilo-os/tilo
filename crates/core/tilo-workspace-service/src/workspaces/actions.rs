@@ -4038,15 +4038,17 @@ impl ServiceWorkspaceActions {
 
     /// `asks`, the calls kept for a device that keeps the person's root, as they stand: each
     /// this host kept that the device wrote how it ended ends so here, for whoever follows it,
-    /// and its record is forgotten.
+    /// once a workspace it made is kept here as the person's own ([`Workspaces::took_in`]), and
+    /// its record is forgotten.
     fn root_settled(&self, asks: &[tilo_actions::remote::asked::KeptAsk]) {
-        let store = self
+        let Some(workspaces) = self
             .shared
             .workspaces
             .get()
             .and_then(WeakWorkspaces::upgrade)
-            .and_then(|workspaces| workspaces.asked_store());
-        let mut ended = false;
+        else {
+            return;
+        };
         for ask in asks {
             let invocation = ask.request.invocation;
             let Some(outcome) = ask.outcome.clone().filter(InvocationUpdate::is_terminal) else {
@@ -4055,15 +4057,33 @@ impl ServiceWorkspaceActions {
             if !self.unfollow_root(invocation) {
                 continue;
             }
-            self.log()
-                .complete(&invocation, InvocationState::new(invocation, outcome));
-            if let Some(store) = &store {
-                store.settled(&ask.at);
-            }
-            ended = true;
-        }
-        if ended {
-            self.moved();
+            let (actions, workspaces, ask) = (self.clone(), workspaces.clone(), ask.clone());
+            self.shared.runtime.spawn(async move {
+                let person = hex::decode(&ask.person)
+                    .map_err(|error| error.to_string())
+                    .and_then(|person| {
+                        <[u8; 32]>::try_from(person).map_err(|_| "not 32 bytes".to_owned())
+                    });
+                let outcome = match person {
+                    Ok(person) => workspaces.took_in(person, &ask.request, outcome).await,
+                    Err(why) => {
+                        tracing::warn!(
+                            ?invocation,
+                            person = %ask.person,
+                            "an asked call names no person this host can read ({why}); \
+                             it ends as its root wrote it, and nothing it made is taken in"
+                        );
+                        outcome
+                    }
+                };
+                actions
+                    .log()
+                    .complete(&invocation, InvocationState::new(invocation, outcome));
+                if let Some(store) = workspaces.asked_store() {
+                    store.settled(&ask.at);
+                }
+                actions.moved();
+            });
         }
     }
 

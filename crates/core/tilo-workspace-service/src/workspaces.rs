@@ -39,6 +39,9 @@ mod asked_grants;
 // The asked calls that wait, kept in their workspaces' records across the host's restarts.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod asked_kept;
+// The record of asked calls a site of another operator is placed for in a workspace it keeps.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod asks_placed;
 mod authored;
 mod authority;
 pub(crate) mod blocked;
@@ -1237,6 +1240,15 @@ struct WorkspacesInner {
     /// keeps it ([`Workspaces::serve_at_root`]).
     #[cfg(not(target_arch = "wasm32"))]
     at_root: std::sync::OnceLock<Arc<at_root::AtRoot>>,
+    /// The record of asked calls this site is placed for in each workspace it keeps for another
+    /// operator's person ([`asks_placed`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    asks_placed: asks_placed::AsksPlaced,
+    /// The calls this host kept for a device that keeps the person's root whose record could
+    /// not be written, each ended with why, until whoever follows them reads that
+    /// ([`asked_kept`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    unkept_asks: std::sync::Mutex<Vec<tilo_actions::remote::asked::KeptAsk>>,
     /// What runs the workspaces' Linux machines, as a branch takes its
     /// source's and a deletion takes the workspace's ([`Workspaces::machines`]).
     machines: std::sync::RwLock<Option<Arc<dyn WorkspaceMachines>>>,
@@ -1776,6 +1788,10 @@ impl Workspaces {
                 asked_dispatch: std::sync::OnceLock::new(),
                 #[cfg(not(target_arch = "wasm32"))]
                 at_root: std::sync::OnceLock::new(),
+                #[cfg(not(target_arch = "wasm32"))]
+                asks_placed: asks_placed::AsksPlaced::default(),
+                #[cfg(not(target_arch = "wasm32"))]
+                unkept_asks: std::sync::Mutex::default(),
                 machines: std::sync::RwLock::default(),
                 own_readings: std::sync::RwLock::default(),
                 person_names: std::sync::RwLock::default(),

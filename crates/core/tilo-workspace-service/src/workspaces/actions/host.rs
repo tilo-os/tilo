@@ -71,6 +71,12 @@ const LABEL: &str = "Workspaces";
 /// own, redeems stays redeemable when it does not say.
 const OWN_INVITATION_SECONDS: u64 = 600;
 
+/// What a plain ask for the person's own workspace is told where it is not kept: nothing went
+/// wrong, it lives on their devices, and only the device that makes their root founds it.
+pub(crate) const NO_PERSON_WORKSPACE_HERE: &str = "This site doesn't keep your own workspace: \
+     it lives on your devices. Name a new workspace to make one here, or open yours from a device \
+     of yours that has it.";
+
 /// The part a person takes in a workspace of their own, as a listing names
 /// it: they made it and administer it.
 const OWNER_ROLE: &str = "owner";
@@ -490,6 +496,12 @@ fn host_workspace_params() -> Vec<ActionParam> {
              hex. Without it, the host answers the address it signs for the workspace and takes \
              nothing in.",
         ),
+        ActionParam::optional(
+            "asks_grant",
+            ParamType::Text,
+            "The person's grant of the workspace's record of asked calls to this host, which is \
+             none of theirs, postcard in hex: where it keeps what an agent asks for their root.",
+        ),
     ]
 }
 
@@ -748,9 +760,8 @@ impl Workspaces {
         let now = tilo_clock::unix_now_ns();
         let args = Args::of(&request.argument)?;
         let request_id = request_id(&device.user_public_key, request.invocation);
-        // A new workspace of theirs that this host does not found is their founding device's to
-        // found, whoever asks: that device decides it, asks the person there what an agent's
-        // grants leave to them, places it and lists it with their others.
+        // A new workspace a device of theirs asks of this server, which does not found theirs, is
+        // their founding device's to found: it places it here and lists it with their others.
         if matches!(
             operation,
             ServiceOperation::CreateWorkspace | ServiceOperation::CreateOwnWorkspace
@@ -776,9 +787,7 @@ impl Workspaces {
             ServiceOperation::CreateOwnWorkspace => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| ActionCallError::refused(error.to_string()))?;
-                let approved = request.approval().is_some();
-                self.create_own_invoke((caller, device), &args, (now, approved))
-                    .await
+                self.create_own_invoke((caller, device), &args, now).await
             }
             ServiceOperation::ListWorkspaces => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
@@ -953,8 +962,9 @@ impl Workspaces {
                 false
             }
             // A new workspace of a person's own is made for a person the site
-            // let in: what is theirs already they enter as they are. A grant for one workspace
-            // asks its person only where their yes can be carried out: on their founding device.
+            // let in: what is theirs already they enter as they are. What a grant for one
+            // workspace asks beyond it waits for a device that keeps its person's root, unless a
+            // yes there could not carry it out ([`Self::refused_at_root`]).
             ServiceOperation::CreateOwnWorkspace => {
                 let makes = device
                     .capabilities
@@ -962,20 +972,21 @@ impl Workspaces {
                     .as_ref()
                     .is_none_or(tilo_user_identity::AgentScope::makes_workspaces);
                 let moving = args.text("workspace")?;
-                let named = args.text("name")?.is_some();
-                let founds = self.own().is_some_and(|own| {
-                    if named {
-                        !moving.is_some_and(|moving| own.is_of(&person, moving))
-                    } else {
-                        moving.is_none() && !own.any_of(&person)
-                    }
-                });
-                // Elsewhere it is refused before anything waits, unless its yes is carried out
-                // at a device that keeps the person's root ([`crate::workspaces::at_root`]).
-                if founds && !makes && !crate::workspaces::at_root::waits_at_root(device, &args.0) {
-                    self.founding_here(&person).await?;
+                let name = args.text("name")?;
+                let labels: Option<WorkspaceLabels> = args.object("labels")?;
+                if !makes && Self::a_grant_asks_for_more(device, (name, moving), labels.as_ref()) {
+                    self.refused_at_root(device, (name, moving), now).await?;
+                    false
+                } else {
+                    makes
+                        && self.own().is_some_and(|own| {
+                            if name.is_some() {
+                                !moving.is_some_and(|moving| own.is_of(&person, moving))
+                            } else {
+                                moving.is_none() && !own.any_of(&person)
+                            }
+                        })
                 }
-                makes && founds
             }
             _ => false,
         };
@@ -1008,7 +1019,14 @@ impl Workspaces {
             .and_then(Value::as_str)
             .and_then(WorkspaceId::parse);
         let entering = match named {
-            Some(id) if verb.id == CREATE_OWN_WORKSPACE => self.held(id).await.is_some(),
+            // What a grant for one workspace asks beyond it is asked of its person, wherever the
+            // workspace it names is held.
+            Some(id)
+                if verb.id == CREATE_OWN_WORKSPACE
+                    && !crate::workspaces::at_root::kept_for_root(Some(device), request) =>
+            {
+                self.held(id).await.is_some()
+            }
             _ => false,
         };
         if entering {
@@ -1257,7 +1275,7 @@ impl Workspaces {
         &self,
         (caller, device): (&Caller, &DeviceCert),
         args: &Args,
-        (now, approved): (u64, bool),
+        now: u64,
     ) -> Result<Value, ActionCallError> {
         let person = device.user_public_key;
         let name = args.text("name")?;
@@ -1271,13 +1289,13 @@ impl Workspaces {
             return self.enter_host_persons(device, name, moving).await;
         };
         // A grant for one workspace enters that one, already made: it makes no other, and labels
-        // none, labels being its person's for their programs, unless they said yes to it.
-        let makes = approved
-            || device
-                .capabilities
-                .agent
-                .as_ref()
-                .is_none_or(tilo_user_identity::AgentScope::makes_workspaces);
+        // none, labels being its person's for their programs: what it asks beyond that waits for
+        // a device that keeps its person's root ([`crate::workspaces::at_root`]).
+        let makes = device
+            .capabilities
+            .agent
+            .as_ref()
+            .is_none_or(tilo_user_identity::AgentScope::makes_workspaces);
         if !makes && Self::a_grant_asks_for_more(device, (name, moving), labels.as_ref()) {
             return Err(ActionCallError::refused(
                 AdminRefusal::NotYourOwn.to_reason(),
@@ -1346,13 +1364,13 @@ impl Workspaces {
             return Err(ActionCallError::refused(
                 AdminRefusal::NotYourOwn.to_reason(),
             ));
-        } else if name.is_none()
-            && let Some(first) = own.first_of(&person)
-        {
-            // A plain ask for "my workspace" answers the first they made.
-            self.summary(&first)
+        } else if name.is_none() && labels.is_none() {
+            // A plain ask for "my workspace" answers the person's own, at the id their key names,
+            // where it is kept here: only `devices#found` founds it, on the device that makes
+            // their root.
+            self.summary(&tilo_action_policy::roles::person_workspace_id(&person))
                 .await
-                .map_err(|error| ActionCallError::refused(error.to_string()))?
+                .map_err(|_| ActionCallError::refused(NO_PERSON_WORKSPACE_HERE))?
         } else {
             // Another one, for a person the site let in ([`Self::check_account`]): one they did
             // not name is named in their language. The person's own workspace and the entry in
@@ -1422,9 +1440,7 @@ impl Workspaces {
     /// server and lists it ([`Workspaces::found`]). Any other host founds one for this device's
     /// own code, asked in process, for a device of the person's asking itself and for a key they
     /// made for their own programs; an agent their consent let in is refused: their person's
-    /// device founds theirs. A call another device carried here for the key that signed it (a
-    /// site that keeps the person's workspaces, handing over an agent's make) places the
-    /// workspace at that device, and answers the address it signed for it.
+    /// device founds theirs.
     async fn found_for(
         &self,
         (caller, device): (&Caller, &DeviceCert),
@@ -1433,18 +1449,10 @@ impl Workspaces {
     ) -> Result<(WorkspaceSummary, Option<TransportHint>), ActionCallError> {
         let person = device.user_public_key;
         match self.founding_here(&person).await {
-            Ok(()) => match caller.forwarder() {
-                Some(site) => {
-                    let addr = crate::workspaces::servers::reached(&self.inner.host.endpoint, site)
-                        .await
-                        .map_err(ActionCallError::refused)?;
-                    self.found_at(name, workspace, Some((*site, addr))).await
-                }
-                None => self
-                    .found(name, workspace)
-                    .await
-                    .map(|summary| (summary, None)),
-            },
+            Ok(()) => self
+                .found(name, workspace)
+                .await
+                .map(|summary| (summary, None)),
             // Pages and hosted agents can't found on their own device yet; this path goes once
             // they can.
             Err(_) if caller.is_in_process() || persons_own((caller, device)) => self
@@ -1458,7 +1466,7 @@ impl Workspaces {
 
     /// Whether this host founds `person`'s workspaces, being theirs and the device that founded
     /// their own workspace (or theirs where they have none yet); else the refusal naming it.
-    pub(crate) async fn founding_here(&self, person: &[u8; 32]) -> Result<(), ActionCallError> {
+    async fn founding_here(&self, person: &[u8; 32]) -> Result<(), ActionCallError> {
         let here = self.device_cert();
         let founder = self
             .state(&tilo_server_protocol::servers::person_workspace_id(person))
@@ -1474,6 +1482,55 @@ impl Workspaces {
             tilo_action_services::server_account::Refusal::found_on_your_device(devices)
                 .to_reason(),
         ))
+    }
+
+    /// Why a make `device`'s grant for one workspace asks beyond it, naming `name` and
+    /// `moving`, is refused here before its person is asked, as no yes could carry it out (a
+    /// host that keeps no workspaces of people's own refused it before, as it refuses every
+    /// such ask):
+    /// - this host is not the person's founding device, and keeps workspaces only for people
+    ///   its entry let in, and has not let them in: its entry's own refusal;
+    /// - it enters a workspace by id that is neither theirs nor one they are a member of;
+    /// - the workspace it names keeps the key as revoked.
+    async fn refused_at_root(
+        &self,
+        device: &DeviceCert,
+        (name, moving): (Option<&str>, Option<&str>),
+        now: u64,
+    ) -> Result<(), ActionCallError> {
+        let person = device.user_public_key;
+        if self.founding_here(&person).await.is_err() && !self.let_in(&person, now).await {
+            return Err(ActionCallError::refused(
+                self.not_let_in().await.to_reason(),
+            ));
+        }
+        if name.is_none()
+            && let Some(moving) = moving
+            && !self.owns(&person, moving)
+            && self.role_of(moving, person, now).await.is_none()
+        {
+            return Err(ActionCallError::refused(
+                AdminRefusal::NotYourOwn.to_reason(),
+            ));
+        }
+        self.refuse_revoked_agent_key(device, moving).await
+    }
+
+    /// What a make the device that keeps the person's root carried out answers the agent that
+    /// asked: `summary`, and where `entry` names the agent's certificate and where the workspace
+    /// was placed, the agent's entry into it there ([`Self::own_person_enters_at`]).
+    pub(crate) async fn made_at_root(
+        &self,
+        summary: WorkspaceSummary,
+        entry: Option<(&DeviceCert, Option<TransportHint>)>,
+    ) -> Result<Value, ActionCallError> {
+        match entry {
+            Some((device, placed)) => self.own_person_enters_at(summary, device, placed).await,
+            None => answer(&CreatedWorkspace {
+                workspace: listing(&summary),
+                invitation: None,
+            }),
+        }
     }
 
     /// The workspace `person` already has under exactly `labels`, which an ask naming no
@@ -1532,7 +1589,7 @@ impl Workspaces {
 
     /// Whether `device`'s grant, which reaches one workspace already made, is asked for more
     /// than that: a name, a label, or a workspace it does not reach.
-    fn a_grant_asks_for_more(
+    pub(crate) fn a_grant_asks_for_more(
         device: &DeviceCert,
         (name, moving): (Option<&str>, Option<&str>),
         labels: Option<&WorkspaceLabels>,
@@ -1794,12 +1851,14 @@ impl Workspaces {
                         None => Vec::new(),
                     },
                 };
+                let asks_grant = asks_grant(args)?;
                 Box::pin(self.kept_for(device, &request, now))
                     .await
                     .map_err(ActionCallError::refused)?;
                 let (hint, kept, row) = Box::pin(self.hold(device, &request))
                     .await
                     .map_err(ActionCallError::refused)?;
+                self.keep_granted_asks(&request.workspace, workspace_id, asks_grant)?;
                 answer(&WorkspaceHosted {
                     host_hint: hex_postcard(&hint)?,
                     kept,
@@ -1835,6 +1894,39 @@ impl Workspaces {
 }
 
 mod branch;
+
+/// The grant of the workspace's record of asked calls a hand-over carries
+/// (`asks_grant`), when it carries one.
+fn asks_grant(args: &Args) -> Result<Option<DeviceCert>, ActionCallError> {
+    args.text("asks_grant")?
+        .map(|grant| {
+            super::super::decode_hex(grant)
+                .map_err(|error| ActionCallError::invalid_request(format!("`asks_grant`: {error}")))
+        })
+        .transpose()
+}
+
+impl Workspaces {
+    /// Keep `grant`, the person's grant of `workspace`'s record of asked calls to this host,
+    /// which is none of theirs ([`super::super::asks_placed`]). A browser keeps no workspace for
+    /// another operator's person.
+    fn keep_granted_asks(
+        &self,
+        workspace: &str,
+        workspace_id: WorkspaceId,
+        grant: Option<DeviceCert>,
+    ) -> Result<(), ActionCallError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(grant) = grant {
+            self.keep_asks_grant(workspace, workspace_id, grant)
+                .map_err(ActionCallError::refused)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = (workspace, workspace_id, grant);
+        Ok(())
+    }
+}
+
 #[cfg(all(test, feature = "agents"))]
 mod mail_turn_tests;
 #[cfg(test)]

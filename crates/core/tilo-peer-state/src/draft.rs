@@ -154,7 +154,7 @@ pub fn draft_local_write(
             )));
         }
     }
-    let author = peer.permissions(*device, now)?;
+    let author = peer.write_access(device, (app, document), now)?;
     let artifact = document_artifact_id(app, workspace, document);
     let mutation = if snapshot {
         DocumentMutation::Snapshot(changes.to_vec())

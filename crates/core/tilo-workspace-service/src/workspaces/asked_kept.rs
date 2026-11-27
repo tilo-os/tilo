@@ -15,14 +15,15 @@ use automerge::transaction::Transactable as _;
 use automerge::{ObjType, ROOT, ReadDoc as _, Value};
 use tilo_action_services::workspace_invocations::PROVIDER;
 use tilo_actions::remote::asked::{AT_ROOT, AskedKeeping, KeptAsk, RecordRef};
+use tilo_lock::MutexRecover as _;
 
 use super::{WeakWorkspaces, Workspaces};
 
 /// The record of a workspace's invocations that keeps those waiting for their person's yes:
 /// a map from each one's id to the call as it was asked ([`KeptAsk`]).
-const RECORD: &str = "asked";
+pub(crate) const RECORD: &str = "asked";
 /// The kind the record is, as [`surface`] declares it.
-const KIND: &str = "tilo.invocations.asked";
+pub(crate) const KIND: &str = "tilo.invocations.asked";
 /// Where the record keeps the calls: each one's id to the call as it was asked, as JSON.
 const CALLS: &str = "calls";
 /// What [`PROVIDER`] declares its records are, so every holder's store keeps them: the
@@ -39,6 +40,13 @@ pub(crate) fn surface() -> String {
         }],
     }))
 }
+
+/// The code a call ends with whose question could not be kept ([`UNKEPT`]).
+pub const UNKEPT_CODE: &str = "unkept";
+
+/// What a call whose question could not be kept for the person ends with.
+pub(crate) const UNKEPT: &str = "The question could not be kept where the person's device that \
+     keeps their identity reads it, so nothing waits for their answer";
 
 /// One change to a workspace's record of the calls that wait.
 enum Change {
@@ -79,18 +87,93 @@ impl AskedKeeping for KeptInRecords {
     }
 }
 
-/// Write `change` into its workspace's record, as this host.
+/// The document that holds a workspace's record of the calls that wait: the one record a site
+/// that keeps the workspace for another operator's person is placed for
+/// ([`crate::workspaces::asks_placed`]).
+pub(crate) fn asked_document() -> String {
+    tilo_resource_store::content_id(collab_types::EVERY_MEMBER, KIND, RECORD)
+}
+
+/// Found `workspace`'s record of the calls that wait, empty, where it has none: written by a
+/// device of the person's, so a site placed for that record alone has a record to write into.
+///
+/// # Errors
+/// The workspace is not held here, or its store refused the record.
+pub(crate) async fn found_record(workspaces: &Workspaces, workspace: &str) -> Result<(), String> {
+    workspaces
+        .author_record(workspace, (PROVIDER, KIND, RECORD), |doc| {
+            if doc
+                .get(ROOT, CALLS)
+                .map_err(|error| error.to_string())?
+                .is_none()
+            {
+                doc.put_object(ROOT, CALLS, ObjType::Map)
+                    .map_err(|error| error.to_string())?;
+            }
+            Ok(())
+        })
+        .await
+}
+
+/// Write `change` into its workspace's record, as this host, or as the device it was placed
+/// for that record with where the workspace is another operator's person's.
 async fn write(workspaces: &Workspaces, change: Change) -> Result<(), String> {
     let workspace = change.workspace().to_owned();
+    let Some(placed) = workspaces.asks_device(&workspace).await else {
+        return write_as(workspaces, workspaces.signing_device(), &change).await;
+    };
+    let device = placed?;
+    // The person's device founds the record as it hands the workspace over, and its content comes
+    // here with the workspace's first sync: an ask that comes before it waits for it, as long as
+    // a sync takes, and no longer.
+    let mut writes = workspaces.document_writes();
+    let mut within = std::pin::pin!(tokio::time::sleep(CONTENT_WITHIN));
+    loop {
+        match write_as(workspaces, Arc::clone(&device), &change).await {
+            Err(why) if why.ends_with(super::resources::NOT_HELD_YET) => {
+                let arrived = async {
+                    loop {
+                        match writes.recv().await {
+                            Ok(write) if write.workspace != workspace => {}
+                            Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                                return true;
+                            }
+                            Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
+                        }
+                    }
+                };
+                let arrived = tokio::select! {
+                    arrived = arrived => arrived,
+                    () = within.as_mut() => false,
+                };
+                if !arrived {
+                    return Err(why);
+                }
+            }
+            written => return written,
+        }
+    }
+}
+
+/// How long a site waits for the record of asked calls the person's device founded to reach it.
+const CONTENT_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// [`write`] as `device`.
+async fn write_as(
+    workspaces: &Workspaces,
+    device: Arc<super::MemberDevice>,
+    change: &Change,
+) -> Result<(), String> {
+    let workspace = change.workspace().to_owned();
     workspaces
-        .author_record(&workspace, (PROVIDER, KIND, RECORD), |doc| {
+        .author_record_as(device, &workspace, (PROVIDER, KIND, RECORD), |doc| {
             let calls = match doc.get(ROOT, CALLS).map_err(|error| error.to_string())? {
                 Some((Value::Object(ObjType::Map), calls)) => calls,
                 _ => doc
                     .put_object(ROOT, CALLS, ObjType::Map)
                     .map_err(|error| error.to_string())?,
             };
-            match &change {
+            match change {
                 Change::Keep(ask) => {
                     let text = serde_json::to_string(ask).map_err(|error| error.to_string())?;
                     doc.put(&calls, ask.at.record.as_str(), text)
@@ -142,8 +225,17 @@ impl Workspaces {
                     Change::Keep(ask) => ask.at.record.clone(),
                     Change::Forget(at) => at.record.clone(),
                 };
+                let kept = match &change {
+                    Change::Keep(ask) => Some(ask.clone()),
+                    Change::Forget(_) => None,
+                };
                 if let Err(why) = write(&workspaces, change).await {
                     tracing::error!(%why, %record, "a workspace's record of its asked calls was not written");
+                    // A call nobody can be asked about ends now, telling whoever follows it
+                    // why, rather than waiting for an answer that cannot come.
+                    if let Some(ask) = kept {
+                        workspaces.unkept(*ask, &format!("{UNKEPT}: {why}"));
+                    }
                 }
             }
         });
@@ -248,8 +340,34 @@ impl Workspaces {
 
     /// The calls kept to be answered at a device that keeps the person's root, in the records
     /// of every workspace kept here.
+    /// End `ask`, a call this host kept for a device that keeps the person's root whose record
+    /// could not be written, with `why`: it waits no more here, and whoever follows it reads it
+    /// ended so ([`Self::follow_asked_at_root`]).
+    fn unkept(&self, mut ask: KeptAsk, why: &str) {
+        if let Some(store) = self.asked_store() {
+            store.withdraw(&ask.at, why);
+        }
+        ask.outcome = Some(tilo_actions::InvocationUpdate::Failed {
+            invocation: ask.request.invocation,
+            error: tilo_actions::ActionFailure {
+                code: UNKEPT_CODE.to_owned(),
+                message: why.to_owned(),
+                details: None,
+                retryable: false,
+            },
+        });
+        let workspace = ask.at.workspace.clone();
+        self.inner.unkept_asks.lock_recover().push(ask);
+        let _ = self.inner.document_writes.send(super::ResourceWrite {
+            workspace,
+            app: PROVIDER.to_owned(),
+            record: RECORD.to_owned(),
+            together: Arc::default(),
+        });
+    }
+
     async fn asked_at_root(&self) -> Vec<KeptAsk> {
-        let mut kept = Vec::new();
+        let mut kept = std::mem::take(&mut *self.inner.unkept_asks.lock_recover());
         for workspace in self.ids().await {
             if let Ok(Some(bytes)) = self
                 .resource_document(&workspace.to_string(), PROVIDER, RECORD)

@@ -3804,6 +3804,7 @@ pub(super) fn may_read_in(
 #[cfg(any(feature = "apps", feature = "agents"))]
 mod app_records;
 mod record_changes;
+pub(super) use record_changes::NOT_HELD_YET;
 mod verb_grants;
 
 /// The kinds of the records `write` makes or writes that this device declares for none of

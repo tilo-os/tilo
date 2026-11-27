@@ -2773,3 +2773,114 @@ pub fn workspaces_served(host: &super::actions::ServiceWorkspaceActions) -> Work
         .and_then(crate::workspaces::WeakWorkspaces::upgrade)
         .expect("the dispatch serves the workspaces it was attached to")
 }
+
+/// A person's root as the device that keeps it runs what waits for it
+/// ([`super::at_root`]): it certifies an agent's key for one workspace, and runs none of a
+/// host's own root-only operations.
+#[cfg(not(target_arch = "wasm32"))]
+pub struct RootIn(pub SigningKey);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl super::at_root::RootKept for RootIn {
+    fn runs(&self, _: &tilo_actions::remote::InvokeRequest) -> bool {
+        false
+    }
+
+    fn run(
+        &self,
+        request: tilo_actions::remote::InvokeRequest,
+        _: tilo_actions::remote::Caller,
+    ) -> super::at_root::RootRun {
+        panic!("this root runs no operation of a host's own: {request:?}")
+    }
+
+    fn certify_agent(
+        &self,
+        person: [u8; 32],
+        key: [u8; 32],
+        workspace: &str,
+        _: &str,
+        name: &str,
+    ) -> super::at_root::Certifying {
+        assert_eq!(
+            person,
+            self.0.verifying_key().to_bytes(),
+            "only its own person's root is kept here"
+        );
+        let scope = tilo_user_identity::AgentScope::parse(workspace);
+        let now = tilo_clock::unix_now_ns();
+        let mut cert = scope.map(|scope| DeviceCert {
+            user_public_key: person,
+            device_public_key: key,
+            device_label: name.to_owned(),
+            capabilities: DeviceCapabilities::agent_grant(scope),
+            issued_at_ns: now,
+            expires_at_ns: Some(now.saturating_add(3_600_000_000_000)),
+            signature: [0; 64],
+            issuer: None,
+        });
+        let signed = cert
+            .as_mut()
+            .ok_or_else(|| format!("{workspace} is no workspace's id"))
+            .and_then(|cert| sign_device_cert(cert, &self.0).map_err(|error| error.to_string()))
+            .map(|()| cert);
+        Box::pin(async move { signed })
+    }
+}
+
+/// Write `record` of `app`'s `kind` in `workspace` as the device `workspaces`, a site, writes
+/// the person's asked calls there as: what a site that went beyond its grant would write.
+///
+/// # Errors
+/// The site was granted no asked calls there, or the write is refused.
+pub async fn write_as_asked_calls(
+    workspaces: &Workspaces,
+    workspace: &str,
+    (app, kind, record): (&str, &str, &str),
+) -> Result<(), String> {
+    let device = workspaces
+        .asks_device(workspace)
+        .await
+        .ok_or("this site was granted no asked calls there")??;
+    workspaces
+        .author_record_as(device, workspace, (app, kind, record), |doc| {
+            automerge::transaction::Transactable::put(
+                doc,
+                automerge::ROOT,
+                "written by the site",
+                true,
+            )
+            .map_err(|error| error.to_string())
+        })
+        .await
+}
+
+/// `workspaces`' copy of `workspace` hears from `device`, one of the person's, of `revocations`.
+pub async fn hear_revocations(
+    workspaces: &Workspaces,
+    workspace: &str,
+    device: &DeviceCert,
+    revocations: Vec<tilo_user_identity::RevocationEntry>,
+) {
+    let state = workspaces
+        .workspace(workspace)
+        .await
+        .expect("the copy is kept here")
+        .lock()
+        .await
+        .peer
+        .clone();
+    state
+        .write(|replica| {
+            replica.receive_from(
+                tilo_peer_state::TransportOrigin::UntrustedPresence(device.device_public_key),
+                neighbour_wire::NeighbourMsg::IdentityHello {
+                    protocol: neighbour_wire::PEER_PROTOCOL_VERSION,
+                    cert: Box::new(device.clone()),
+                    revocations,
+                },
+                tilo_clock::wall(),
+            )
+        })
+        .expect("the copy takes the revocations in");
+}

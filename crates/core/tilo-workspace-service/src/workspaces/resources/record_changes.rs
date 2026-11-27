@@ -731,12 +731,29 @@ impl Workspaces {
     /// # Errors
     /// The workspace is not held here, `change` failed (and nothing was written), or the store
     /// refuses the change.
+    pub async fn author_record<R>(
+        &self,
+        workspace: &str,
+        names: (&str, &str, &str),
+        change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
+    ) -> Result<R, String> {
+        self.author_record_as(self.signing_device(), workspace, names, change)
+            .await
+    }
+
+    /// [`Self::author_record`], written as `device`: this device's own, or a device it was
+    /// placed for records of the workspace with ([`crate::workspaces::asks_placed`]), whose
+    /// certificate alone decides what it may write there.
+    ///
+    /// # Errors
+    /// As [`Self::author_record`].
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the hold is the point: it lasts until the change built on the read is kept"
     )]
-    pub async fn author_record<R>(
+    pub(crate) async fn author_record_as<R>(
         &self,
+        device: std::sync::Arc<super::super::MemberDevice>,
         workspace: &str,
         (app, kind, record): (&str, &str, &str),
         change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String>,
@@ -751,23 +768,43 @@ impl Workspaces {
         // from the read on too, and only a wait for keys this device does not hold yet lets that
         // hold go before the changes are kept: the record's turn lasts through it, so a second
         // write never reads the record from before a first one founded it.
-        let turn = record_turn(
-            &self.signing_device().cert.device_public_key,
-            workspace,
-            kind,
-            record,
-        )
-        .await;
+        let turn = record_turn(&device.cert.device_public_key, workspace, kind, record).await;
         let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
-        let (mut doc, heads) = self.record_copy(&mut hosted, kind, record)?;
+        let (mut doc, heads) = self.record_copy(&mut hosted, &device, kind, record)?;
+        // A device placed for a record writes it once the person's device founded it, and founds
+        // none: one that is not here yet comes with the workspace's next sync.
+        let placed_for = device
+            .cert
+            .capabilities
+            .records
+            .as_ref()
+            .is_some_and(|records| {
+                records.reaches(&neighbour_wire::app_document_group(
+                    app,
+                    &tilo_resource_store::content_id(collab_types::EVERY_MEMBER, kind, record),
+                ))
+            });
+        if heads.is_empty() && placed_for {
+            return Err(format!(
+                "{kind} {record}, which this device was placed for, {NOT_HELD_YET}"
+            ));
+        }
         let result = change(&mut doc)?;
-        self.commit_authored(&mut doc);
+        Self::commit_authored(&device, &mut doc);
         if doc.get_heads() == heads {
             return Ok(result);
         }
         let changes = doc.get_changes(&heads);
-        self.keep_authored(state, hosted, turn, workspace, (app, kind, record), changes)
-            .await?;
+        self.keep_authored(
+            &device,
+            state,
+            hosted,
+            turn,
+            workspace,
+            (app, kind, record),
+            changes,
+        )
+        .await?;
         Ok(result)
     }
 
@@ -802,8 +839,9 @@ impl Workspaces {
         )
         .await;
         let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
-        let (doc, heads) = self.record_copy(&mut hosted, kind, record)?;
-        let acting = crate::workspaces::authored::own_acting(&self.signing_device().cert);
+        let device = self.signing_device();
+        let (doc, heads) = self.record_copy(&mut hosted, &device, kind, record)?;
+        let acting = crate::workspaces::authored::own_acting(&device.cert);
         let keeps = format!("{workspace}/{app}/{record}");
         let applied = super::super::record_workers::run(
             &keeps,
@@ -828,8 +866,16 @@ impl Workspaces {
         if changes.is_empty() {
             return Ok(result);
         }
-        self.keep_authored(state, hosted, turn, workspace, (app, kind, record), changes)
-            .await?;
+        self.keep_authored(
+            &device,
+            state,
+            hosted,
+            turn,
+            workspace,
+            (app, kind, record),
+            changes,
+        )
+        .await?;
         Ok(result)
     }
 
@@ -840,6 +886,7 @@ impl Workspaces {
     fn record_copy(
         &self,
         hosted: &mut HostedWorkspace,
+        device: &super::super::MemberDevice,
         kind: &str,
         record: &str,
     ) -> Result<(automerge::AutoCommit, Vec<ChangeHash>), String> {
@@ -854,14 +901,14 @@ impl Workspaces {
                     .content_document(kind, record)
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| {
-                        format!("the store lists {kind} {record} but holds no document of it")
+                        format!("the store lists {kind} {record}, and its content {NOT_HELD_YET}")
                     })?
                     .clone(),
             ),
             None => None,
         };
         let begun = if let Some(held) = held {
-            let device = self.signing_device().cert.device_public_key;
+            let device = device.cert.device_public_key;
             let mut doc = automerge::AutoCommit::from(held)
                 .with_actor(automerge::ActorId::from(device.as_slice()));
             let heads = doc.get_heads();
@@ -882,12 +929,11 @@ impl Workspaces {
     }
 
     /// This device's own edit of the record, naming the person it acts for.
-    fn commit_authored(&self, doc: &mut automerge::AutoCommit) {
+    fn commit_authored(device: &super::super::MemberDevice, doc: &mut automerge::AutoCommit) {
         if automerge::transaction::Transactable::pending_ops(doc) != 0 {
             doc.commit_with(
-                automerge::transaction::CommitOptions::default().with_message(
-                    crate::workspaces::authored::own_edit(&self.signing_device().cert, &*doc),
-                ),
+                automerge::transaction::CommitOptions::default()
+                    .with_message(crate::workspaces::authored::own_edit(&device.cert, &*doc)),
             );
         }
     }
@@ -896,6 +942,7 @@ impl Workspaces {
     /// `workspace`, under `hosted`'s hold: as [`Self::author_record`] ends.
     async fn keep_authored(
         &self,
+        device: &std::sync::Arc<super::super::MemberDevice>,
         state: std::sync::Arc<tokio::sync::Mutex<HostedWorkspace>>,
         mut hosted: tokio::sync::OwnedMutexGuard<HostedWorkspace>,
         turn: tokio::sync::OwnedMutexGuard<()>,
@@ -913,7 +960,7 @@ impl Workspaces {
         while let Err(unkept) = self
             .keep_record_change_locked(
                 hosted,
-                (workspace, self.signing_device()),
+                (workspace, std::sync::Arc::clone(device)),
                 (app, Some(kind), record),
                 (changes.clone(), None),
                 None,
@@ -2598,3 +2645,7 @@ async fn record_turn(
     };
     turn.lock_owned().await
 }
+
+/// How a write of a record ends where the record, or its content, has not reached this device
+/// yet ([`Workspaces::author_record_as`]): it comes with the workspace's next sync.
+pub(crate) const NOT_HELD_YET: &str = "has not reached this device yet";

@@ -489,6 +489,24 @@ impl StatePeer {
             && self.revocations() == other.revocations()
     }
 
+    /// What `device` writes `app`'s `document` with: a member device's permissions, or, for a
+    /// device placed for records, what its certificate gives it there ([`Self::placed_access`]),
+    /// so a write it drafts itself is decided as every copy that takes it in decides it.
+    ///
+    /// # Errors
+    /// As [`Self::permissions`], or as [`Self::placed_access`] for a placed device.
+    pub(crate) fn write_access(
+        &self,
+        device: &[u8; 32],
+        (app, document): (&str, &str),
+        now: SystemTime,
+    ) -> Result<MemberAccess, MembershipError> {
+        if self.core.placed_devices.contains_key(device) {
+            return self.placed_access(device, app, document, now);
+        }
+        self.permissions(*device, now)
+    }
+
     pub fn revocations(&self) -> Vec<tilo_user_identity::RevocationEntry> {
         let mut entries = self.core.revocations.iter().cloned().collect::<Vec<_>>();
         entries.sort_by_key(|entry| entry.revoked_device_public_key);

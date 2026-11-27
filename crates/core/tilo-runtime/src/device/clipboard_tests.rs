@@ -39,6 +39,8 @@ pub(in crate::device) struct TwoDevices {
     pub(in crate::device) workspace: String,
     pub(in crate::device) first: Arc<ServiceWorkspaces>,
     pub(in crate::device) first_cert: DeviceCert,
+    /// The first device's own actions, its root-only ones among them.
+    pub(in crate::device) first_tickets: Tickets,
     pub(in crate::device) second: Arc<ServiceWorkspaces>,
     pub(in crate::device) second_cert: DeviceCert,
     /// The first device's action service, served by the daemon that issued the ticket.
@@ -134,6 +136,7 @@ pub(in crate::device) async fn two_devices() -> TwoDevices {
         workspace: workspace.to_string(),
         first: issuer,
         first_cert,
+        first_tickets: tickets,
         second,
         second_cert,
         first_router: router,
