@@ -915,7 +915,7 @@ impl SystemService {
         mut storage: tilo_system_resources::storage::Storage,
     ) {
         let old = &mut self.readings.storage;
-        old.pending.retain(|id| id != action);
+        old.pending.retain(|id| id.as_str() != action);
         if !storage.scanned {
             storage.disk = old.disk.take();
             storage.categories = std::mem::take(&mut old.categories);
