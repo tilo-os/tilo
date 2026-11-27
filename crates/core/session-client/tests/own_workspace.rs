@@ -326,11 +326,11 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         .await
         .unwrap();
     let second = device.own_workspace(asked_twice, once).await.unwrap();
-    assert_eq!(first.workspace, second.workspace);
-    assert_eq!(first.name, "Twice");
+    assert_eq!(first.0.workspace, second.0.workspace);
+    assert_eq!(first.0.name, "Twice");
     // His computer takes it in, and the second ask made no second workspace: one entry in the
     // list has that name.
-    take_in(bob_workspaces, workspaces, &first.workspace).await;
+    take_in(bob_workspaces, workspaces, &first.0.workspace).await;
     let twice = listed_names(bob_workspaces)
         .await
         .iter()

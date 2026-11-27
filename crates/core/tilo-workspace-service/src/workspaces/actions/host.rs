@@ -1498,16 +1498,43 @@ impl Workspaces {
             .and_then(|member| member.role)
     }
 
-    /// Answer `summary`, a workspace `device`'s person is in, for `device` to enter: it comes in
-    /// through the workspace's entry by a row it signs itself as one of its person's devices
-    /// ([`Self::member_device`]), at the place the member list gives its person. No host invites
-    /// a person into what is theirs.
+    /// Answer `summary`, a workspace `device`'s person is in, for `device` to enter: a device of
+    /// the person's comes in through the workspace's entry by a row it signs itself
+    /// ([`Self::member_device`]), at the place the member list gives its person, so no host
+    /// invites a person into what is theirs. A key that is no device of theirs (an agent's, a
+    /// program's) comes in by an invitation instead, which records it within its certificate's
+    /// scope: the host invites it as an Editor.
     async fn own_person_enters(
         &self,
         summary: WorkspaceSummary,
         device: &DeviceCert,
     ) -> Result<Value, ActionCallError> {
         let person = device.user_public_key;
+        let invitation = if crate::workspace_access::person_device(device) {
+            None
+        } else {
+            let terms = IssueInvitationRequest {
+                request_id: rand::random(),
+                role: Role::Editor,
+                recipient_user_public_key: Some(person),
+                invitee_name: None,
+                expires_at_ns: expiry(tilo_clock::unix_now_ns(), OWN_INVITATION_SECONDS),
+                inviter_name: None,
+            };
+            let address = self.invitation_addr_for(device).await;
+            let issued = self
+                .issue_from(
+                    &summary.workspace,
+                    &self.inner.host.cert,
+                    terms,
+                    false,
+                    None,
+                    address,
+                )
+                .await
+                .map_err(|error| ActionCallError::refused(error.to_string()))?;
+            Some(ActionInvitation::of(&issued))
+        };
         let mut workspace = listing(&summary);
         if let Some(own) = self.own()
             && own.is_of(&person, &summary.workspace)
@@ -1518,7 +1545,7 @@ impl Workspaces {
         }
         answer(&CreatedWorkspace {
             workspace,
-            invitation: None,
+            invitation,
         })
     }
 

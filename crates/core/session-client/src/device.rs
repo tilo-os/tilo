@@ -326,6 +326,24 @@ impl Device {
         self.let_in_as(workspace, "").await
     }
 
+    /// This device into `workspace`: by `invitation`, the one a key that is no device of its
+    /// person's enters by, where the host answered one; else by a row it signs itself
+    /// ([`Self::let_in_as`]).
+    ///
+    /// # Errors
+    /// As [`Self::redeem`] or [`Self::let_in_as`].
+    async fn enter_as(
+        &self,
+        workspace: &str,
+        invitation: Option<&[u8]>,
+        shown_as: &str,
+    ) -> Result<(), CertifyError> {
+        match invitation {
+            Some(invitation) => self.redeem(invitation, shown_as).await.map(drop),
+            None => self.let_in_as(workspace, shown_as).await.map(drop),
+        }
+    }
+
     /// [`Self::let_in`], shown to the workspace's people as `name` where its person has none
     /// there yet.
     ///
@@ -476,8 +494,9 @@ impl Device {
             .own_workspace(named, tilo_actions::InvocationId::new())
             .await
         {
-            Ok(listing) if listing.workspace == workspace => {
-                self.let_in_as(workspace, shown_as).await?;
+            Ok((listing, invitation)) if listing.workspace == workspace => {
+                self.enter_as(workspace, invitation.as_deref(), shown_as)
+                    .await?;
                 None
             }
             Ok(_) => Some(DeviceRefusal::malformed(
@@ -520,7 +539,8 @@ impl Device {
     /// The person's own workspace on the host: its `name` makes another, or the `workspace` it
     /// must be. Asked under `invocation`: the same one answers the workspace an earlier ask made,
     /// so asking again after no answer makes no second workspace. A device of theirs enters it by
-    /// a row it signs itself ([`Self::let_in`]): no host invites a person into what is theirs.
+    /// a row it signs itself ([`Self::let_in`]): no host invites a person into what is theirs. A
+    /// key that is no device of theirs (an agent's) is answered the invitation it enters by.
     ///
     /// # Errors
     /// The host did not answer or refused.
@@ -528,17 +548,23 @@ impl Device {
         &self,
         arguments: Map<String, Value>,
         invocation: tilo_actions::InvocationId,
-    ) -> Result<WorkspaceListing, DeviceRefusal> {
+    ) -> Result<(WorkspaceListing, Option<Vec<u8>>), DeviceRefusal> {
         let output = self
             .server_action_as(CREATE_OWN_WORKSPACE, arguments, invocation)
             .await?;
-        let made: CreatedWorkspace = serde_json::from_value(output).map_err(|error| {
+        let malformed = |why: String| {
             DeviceRefusal::malformed(format!(
-                "The host made no workspace of the person's own: it answered something else: \
-                 {error}"
+                "The host made no workspace of the person's own: {why}"
             ))
-        })?;
-        Ok(made.workspace)
+        };
+        let made: CreatedWorkspace = serde_json::from_value(output)
+            .map_err(|error| malformed(format!("it answered something else: {error}")))?;
+        let invitation = made
+            .invitation
+            .map(|invitation| hex::decode(invitation.invitation))
+            .transpose()
+            .map_err(|error| malformed(error.to_string()))?;
+        Ok((made.workspace, invitation))
     }
 
     /// Have this device in the person's own workspace on the host: the host makes it the first
@@ -567,11 +593,11 @@ impl Device {
         }
         // The host names a workspace the person did not, so it is told the language they read.
         arguments.insert("language".to_owned(), Value::String(language.to_owned()));
-        let listing = self
+        let (listing, invitation) = self
             .own_workspace(arguments, invocation.unwrap_or_default())
             .await?;
         if !entered(&listing.workspace) {
-            self.let_in_as(&listing.workspace, shown_as)
+            self.enter_as(&listing.workspace, invitation.as_deref(), shown_as)
                 .await
                 .map_err(DeviceRefusal::from)?;
         }

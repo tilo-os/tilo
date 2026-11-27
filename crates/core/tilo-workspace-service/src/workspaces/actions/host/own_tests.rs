@@ -53,21 +53,26 @@ async fn offered(
         .collect()
 }
 
-/// `device`, one of the person's own, enters `created` by a row it signs itself, as a page
-/// entering its person's workspace does: the host answers no invitation for it.
+/// `device` enters `created` as the host answered it: by the invitation the host answered a key
+/// that is no device of the person's (an agent's), within its certificate's scope, else by a row
+/// it signs itself, as a page entering its person's workspace does.
 async fn join(
     workspaces: &Workspaces,
     created: &CreatedWorkspace,
     (key, device): (&SigningKey, &DeviceCert),
 ) {
-    assert!(
-        created.invitation.is_none(),
-        "a person's own workspace is answered with no invitation"
-    );
-    workspaces
-        .enter(&created.workspace.workspace, (device, key))
-        .await
-        .expect("the person's device enters what is theirs by its own row");
+    match &created.invitation {
+        Some(invitation) => {
+            let issued = invitation.decode().unwrap();
+            join_with(workspaces, issued.signed_invitation, (key, device)).await;
+        }
+        None => {
+            workspaces
+                .enter(&created.workspace.workspace, (device, key))
+                .await
+                .expect("the person's device enters what is theirs by its own row");
+        }
+    }
 }
 
 /// `device` redeems `invitation`, the signed bytes of one.
@@ -111,10 +116,6 @@ async fn access(
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "a person's own workspace from the offer through asking again"
-)]
 async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
