@@ -2051,7 +2051,7 @@ impl Layouts {
         if stepped.is_none() {
             return false;
         }
-        self.show_step(workspace_id, handle, key, doc, revision, &before);
+        self.show_step(workspace_id, handle, &key, doc, revision, &before);
         true
     }
 
@@ -2104,7 +2104,7 @@ impl Layouts {
                 );
                 // The person's own undo reads the record afresh.
                 self.held(&key, |layout| layout.undo = None);
-                self.show_step(workspace_id, handle, key, doc, revision, &before);
+                self.show_step(workspace_id, handle, &key, doc, revision, &before);
                 taken = true;
             }
         }
@@ -2117,8 +2117,8 @@ impl Layouts {
         &self,
         workspace_id: WorkspaceId,
         handle: &DesktopHandle,
-        key: Key,
-        mut doc: automerge::AutoCommit,
+        key: &Key,
+        doc: automerge::AutoCommit,
         revision: Option<[u8; 32]>,
         before: &[ChangeHash],
     ) {
@@ -2137,7 +2137,7 @@ impl Layouts {
             handle.replace_tree(tree);
             let own = handle.read(|tree| tree.external_revision);
             let heads = doc.committed_heads();
-            self.held(&key, |held| held.folded = Some(heads));
+            self.held(key, |held| held.folded = Some(heads));
             Written::Layout(own, self.notes.of_workspace(workspace_id))
         } else {
             let view = PersonView::read(&doc);
@@ -2145,8 +2145,8 @@ impl Layouts {
             handle.replace_tree(tree);
             Written::View(view)
         };
-        self.keep(&key, doc.clone(), revision);
-        self.publish(&key, doc, Some(written), before, revision);
+        self.keep(key, doc.clone(), revision);
+        self.publish(key, doc, Some(written), before, revision);
     }
 
     /// Make `asked`'s arranging `action` of `tree`'s workspace in front one change of that
