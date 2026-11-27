@@ -563,7 +563,7 @@ mod tests {
             "the webhook's own shortcut run acts for its person"
         );
         assert!(
-            !may_post(&theirs.clone().running_shortcut("wh_2"), person, &webhook),
+            !may_post(&theirs.running_shortcut("wh_2"), person, &webhook),
             "another shortcut's run posts no delivery of this webhook"
         );
         let agent = Caller::delegated_agent("an agent", person, [9_u8; 32]);

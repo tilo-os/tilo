@@ -185,7 +185,9 @@ fn answered_content(value: &serde_json::Value, hashes: &mut Vec<String>) {
                 .for_each(|field| answered_content(field, hashes));
         }
         serde_json::Value::Array(items) => {
-            items.iter().for_each(|item| answered_content(item, hashes));
+            for item in items {
+                answered_content(item, hashes);
+            }
         }
         _ => {}
     }
