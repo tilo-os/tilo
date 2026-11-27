@@ -3737,6 +3737,22 @@ fn a_shell_link_answers_why_the_persons_part_did_not_start() {
         !why.contains("ask again in a moment"),
         "the link is not told to ask again: {why}"
     );
+    // What waits for the person's services in this process (a phone's view of its device) is
+    // told the same failure at once, never left to wait out its time.
+    let waited = std::time::Instant::now();
+    let Err(refused) = second.services(Duration::from_secs(600)) else {
+        panic!("the person's services that did not start are not handed out");
+    };
+    assert!(
+        waited.elapsed() < Duration::from_secs(60),
+        "the wait ended with the failure, not its time: {refused}"
+    );
+    assert!(
+        refused
+            .to_string()
+            .contains("this device's workspace service"),
+        "the wait is told the failure's own words: {refused}"
+    );
     let ended = second
         .stop()
         .expect_err("the daemon ends when its person's part cannot start");

@@ -397,14 +397,34 @@ pub struct Running {
 /// The person's services, while they run, for whoever waits for them to.
 #[derive(Default)]
 struct Person {
-    services: Mutex<std::sync::Weak<Daemon>>,
+    services: Mutex<Starting>,
     started: Condvar,
+}
+
+/// The person's services while they run, or why they will not.
+#[derive(Default)]
+struct Starting {
+    services: std::sync::Weak<Daemon>,
+    failed: Option<String>,
 }
 
 impl Person {
     /// `services` run from now on, or (`None`) no longer.
     fn set(&self, services: Option<&Arc<Daemon>>) {
-        *self.services.lock_recover() = services.map_or_else(std::sync::Weak::new, Arc::downgrade);
+        *self.services.lock_recover() = Starting {
+            services: services.map_or_else(std::sync::Weak::new, Arc::downgrade),
+            failed: None,
+        };
+        self.started.notify_all();
+    }
+
+    /// The person's services did not start, as `why` says: whoever waits for them is told so
+    /// now, rather than when its wait runs out.
+    fn failed(&self, why: String) {
+        *self.services.lock_recover() = Starting {
+            services: std::sync::Weak::new(),
+            failed: Some(why),
+        };
         self.started.notify_all();
     }
 
@@ -415,8 +435,11 @@ impl Person {
             .unwrap_or_else(Instant::now);
         let mut services = self.services.lock_recover();
         loop {
-            if let Some(services) = services.upgrade() {
+            if let Some(services) = services.services.upgrade() {
                 return Ok(services);
+            }
+            if let Some(why) = &services.failed {
+                return Err(io::Error::other(why.clone()));
             }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -535,7 +558,16 @@ impl Running {
             let (profile, stop, person) = (profile.to_owned(), stop.clone(), Arc::clone(&person));
             std::thread::Builder::new()
                 .name("tilo-daemon".into())
-                .spawn(move || serve_device(&profile, dev, &device, &native, &stop, &person))?
+                .spawn(move || {
+                    let served = serve_device(&profile, dev, &device, &native, &stop, &person);
+                    // A daemon that ended this way serves no person: whoever waits for their
+                    // services is told why at once.
+                    if let Err(error) = &served {
+                        tracing::error!(%error, "this computer's daemon ended");
+                        person.failed(error.to_string());
+                    }
+                    served
+                })?
         };
         Ok(Self {
             native: path,
