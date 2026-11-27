@@ -730,6 +730,60 @@ fn declared_catalogue(
     held
 }
 
+/// Name every resource and action this process publishes through this thread's catalogues
+/// ([`resource_label`]), and read one answer's words in the language its caller declares
+/// ([`reading`]): what a window does when it loads its words, and a daemon when it starts.
+#[cfg(feature = "model")]
+pub fn install_resource_words() {
+    tilo_resource::label::install(resource_label, I18nManager::revision);
+    tilo_resource::label::install_noun(resource_noun);
+    tilo_resource::label::install_reading(reading);
+}
+
+/// This thread reading its words in `language` until the answer drops, its own words back then: a
+/// thread that keeps a window's words reads them as they are where `language` is `None`, any
+/// other the person's language ([`preferred_language`]). A language no catalogue has reads the
+/// source.
+#[cfg(feature = "model")]
+fn reading(language: Option<&str>) -> Box<dyn std::any::Any> {
+    struct Restored(Option<I18nManager>);
+    impl Drop for Restored {
+        fn drop(&mut self) {
+            let own = self.0.take();
+            MANAGER.with(|slot| *slot.borrow_mut() = own);
+        }
+    }
+    let windowed = manager_id().is_some();
+    let Some(language) = language
+        .map(str::to_owned)
+        .or_else(|| if windowed { None } else { preferred_language() })
+    else {
+        return Box::new(());
+    };
+    let locale = parse_locale_or_default(&language);
+    let own = Restored(MANAGER.with(|slot| slot.borrow_mut().take()));
+    I18nManager::replace(
+        parse_locale_or_default("en-US"),
+        locale.clone(),
+        vec![(locale.clone(), Vec::new())],
+        vec![locale.clone()],
+    );
+    // What is kept of the words read at a revision is kept for its language: one answer's
+    // words are never another language's.
+    let revision = {
+        use std::hash::{Hash as _, Hasher as _};
+        let mut hasher = std::hash::DefaultHasher::new();
+        locale.to_string().hash(&mut hasher);
+        hasher.finish() | (1 << 63)
+    };
+    MANAGER.with(|slot| {
+        if let Some(manager) = slot.borrow_mut().as_mut() {
+            manager.revision = revision;
+        }
+    });
+    Box::new(own)
+}
+
 /// [`resource_label`] of a kind's noun, formatted with the count `1` (one of it) or `2` (several): the
 /// catalogue's Fluent selector picks the singular or the plural in the reader's language.
 fn resource_noun(key: &str, count: u32) -> Option<String> {
@@ -792,10 +846,7 @@ impl I18nManager {
         // language it just selected, and named again when that moves; so are
         // the nouns search names it by.
         #[cfg(feature = "model")]
-        {
-            tilo_resource::label::install(resource_label, Self::revision);
-            tilo_resource::label::install_noun(resource_noun);
-        }
+        install_resource_words();
     }
 
     /// Whether the thread holds words of a window — a package's, or chrome a host draws around it —

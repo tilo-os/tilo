@@ -235,6 +235,41 @@ fn an_app_makes_changes_and_lists_environments() {
     );
 }
 
+/// A listing of the environments' verbs names each in the language its caller reads, whichever
+/// language the daemon's own process speaks: the same listing asked in German reads the German
+/// words of the declaring crate's catalogue, asked in English the English, and asked in a
+/// language no catalogue has the English source.
+#[test]
+fn a_listing_names_its_actions_in_the_callers_language() {
+    let Some(root) = isolated_root(
+        "device::environment_directory_tests::a_listing_names_its_actions_in_the_callers_language",
+    ) else {
+        return;
+    };
+    let daemon = Arc::new(Daemon::start_reporting(&root, &mut |_| {}).expect("the daemon starts"));
+    let (tree, caller) = daemon
+        .connection_tree_in(None)
+        .expect("the person's own connection");
+    let rename = |language: &str| {
+        let query = tilo_actions::remote::CatalogueQuery {
+            provider: Some(environment_directory::PROVIDER.to_owned()),
+            language: Some(language.to_owned()),
+            ..tilo_actions::remote::CatalogueQuery::default()
+        };
+        answered(tree.query(&caller, query))
+            .expect("the listing is answered")
+            .rows
+            .into_iter()
+            .filter_map(|row| row.action)
+            .find(|action| action.address.action == "rename")
+            .expect("the environments offer their rename")
+            .action_label
+    };
+    assert_eq!(rename("de-DE"), "Umbenennen");
+    assert_eq!(rename("en-US"), "Rename");
+    assert_eq!(rename("tlh-QO"), "Rename");
+}
+
 /// This device and its person's connection: the daemon whose shell runtime is the supervisor at
 /// `root`'s socket, over a store of this test's. Its records are kept where they are kept here:
 /// in the daemon's own workspace service, answered at the socket the runtime asks, as its daemon

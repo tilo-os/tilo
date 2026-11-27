@@ -156,6 +156,10 @@ pub struct CatalogueQuery {
     /// since what a window shows reaches into a record's items.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unavailable_only: bool,
+    /// The language the caller reads (`de-DE`), as its request declares it: the registry reads
+    /// each row's declared words in it, and in the person's own where none is declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 impl Default for CatalogueQuery {
@@ -177,6 +181,7 @@ impl Default for CatalogueQuery {
             by_resource: false,
             max_resources: None,
             unavailable_only: false,
+            language: None,
         }
     }
 }

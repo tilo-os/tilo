@@ -530,7 +530,7 @@ impl Providers {
             .collect();
         let mut publishers = Vec::new();
         for answers in answers {
-            let mut answer = answers.query(caller, query.clone());
+            let mut answer = asked(&*answers, caller, query.clone());
             if let PendingPoll::Ready(Ok(page)) = answer.poll_ready() {
                 publishers.extend(page.providers);
             }
@@ -585,7 +585,7 @@ impl Providers {
             };
             loop {
                 let PendingPoll::Ready(Ok(listed)) =
-                    answers.query(caller, asked.clone()).poll_ready()
+                    self::asked(&*answers, caller, asked.clone()).poll_ready()
                 else {
                     break;
                 };
@@ -976,7 +976,7 @@ impl Providers {
         query: CatalogueQuery,
     ) -> Option<Pending<Result<CataloguePage, ActionCallError>>> {
         let registered = self.for_devices(query.provider.as_deref()?)?;
-        Some(registered.answers.query(caller, query))
+        Some(asked(&*registered.answers, caller, query))
     }
 
     /// [`Self::query`] for another device's `caller`, as the workspace's grants decide each of its
@@ -989,7 +989,7 @@ impl Providers {
         work: &Arc<super::device_actions::DeviceWork>,
     ) -> Option<Pending<Result<CataloguePage, ActionCallError>>> {
         let registered = self.for_devices(query.provider.as_deref()?)?;
-        let listed = registered.answers.query(caller, query);
+        let listed = asked(&*registered.answers, caller, query);
         // Only a call the workspace's grants decide is decided here, as `device_call` does.
         let (Some(device), Some(workspace)) = (
             caller.device_public_key().copied(),
@@ -1204,7 +1204,7 @@ impl Providers {
             ..CatalogueQuery::default()
         };
         let tilo_actions::remote::PendingPoll::Ready(Ok(page)) =
-            registered.answers.query(caller, query).poll_ready()
+            asked(&*registered.answers, caller, query).poll_ready()
         else {
             return None;
         };
@@ -1228,7 +1228,7 @@ impl Providers {
             ..CatalogueQuery::default()
         };
         loop {
-            let mut listed = registered.answers.query(caller, query.clone());
+            let mut listed = asked(&*registered.answers, caller, query.clone());
             let tilo_actions::remote::PendingPoll::Ready(Ok(page)) = listed.poll_ready() else {
                 return rows;
             };
@@ -1265,6 +1265,17 @@ impl Providers {
     ) -> Option<Pending<Result<(), ActionCallError>>> {
         Some(self.taker(id)?.cancel(caller, id))
     }
+}
+
+/// What `answers` offers `caller`, each row's declared words read in the language `query` declares
+/// ([`CatalogueQuery::language`]), and in the person's own where it declares none.
+fn asked(
+    answers: &dyn ActionProvider,
+    caller: &Caller,
+    query: CatalogueQuery,
+) -> Pending<Result<CataloguePage, ActionCallError>> {
+    let language = query.language.clone();
+    tilo_resource::label::reading_in(language.as_deref(), || answers.query(caller, query))
 }
 
 /// The child of a workspace's own tree `resource` names (`vault` for

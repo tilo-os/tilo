@@ -276,8 +276,35 @@ pub type NounResolver = fn(&str, u32) -> Option<String>;
 /// language, or a catalogue of theirs, does.
 pub type Revision = fn() -> u64;
 
+/// How a host reads the words of one answer in the language a caller declares (a BCP 47 tag),
+/// or in the person's own where it declares none: on this thread until what it hands back is
+/// dropped.
+pub type Reading = fn(Option<&str>) -> Box<dyn std::any::Any>;
+
 static RESOLVER: RwLock<Option<(Resolver, Revision)>> = RwLock::new(None);
 static NOUN_RESOLVER: RwLock<Option<NounResolver>> = RwLock::new(None);
+static READING: RwLock<Option<Reading>> = RwLock::new(None);
+
+/// Let the words of every answer from now on be read through `reading` ([`reading_in`]).
+///
+/// # Panics
+/// Only if the lock was poisoned by a panic while installing.
+pub fn install_reading(reading: Reading) {
+    *READING
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reading);
+}
+
+/// `read`, every word it reads ([`Word::read`], [`localized`]) read in `language`, or in the
+/// person's own where it is `None`: what a registry answers one caller's listing in. Read as
+/// this thread reads them where no host installed a [`Reading`].
+pub fn reading_in<T>(language: Option<&str>, read: impl FnOnce() -> T) -> T {
+    let reading = *READING
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _reading = reading.map(|reading| reading(language));
+    read()
+}
 
 /// Let every kind published from now on be named through `resolver`.
 ///

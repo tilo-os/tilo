@@ -2326,6 +2326,8 @@ impl Daemon {
         founding: Option<&Arc<super::unclaimed::Founding>>,
         reused: Option<iroh::Endpoint>,
     ) -> io::Result<Self> {
+        // Every listing it answers names its actions in the language its caller reads.
+        ui::i18n::install_resource_words();
         // The calls the device took before this person's services ran: they answer them too, so
         // a founding call followed after they start reads its state where it was kept.
         let inherited = founding
