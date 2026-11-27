@@ -145,6 +145,102 @@ pub fn sign_invocation_now(
     Ok(SignedInvocation::new(statement, signature, encoded_cert))
 }
 
+/// Sign `request`'s argument's parts besides the request itself, as `signer` signed the request
+/// ([`sign_invocation`]): the same statement over the root of the argument's parts under a fresh
+/// salt ([`InvocationStatement::over_parts`]), carried in the request's context
+/// ([`tilo_actions::remote::SignedCall::signed_over_parts`]). A host that reads it keeps, in each
+/// change the call writes, only the parts of the argument that change holds, and the proof that
+/// they are the ones signed; one that does not keeps the call as the request's own signature
+/// signs it. Replaces any such signature the request carried before.
+///
+/// # Errors
+///
+/// [`InvocationError::Unsigned`] for a request not signed yet, and as [`sign_invocation`].
+pub async fn sign_parts(
+    request: &mut InvokeRequest,
+    signer: &dyn DeviceSigner,
+) -> Result<(), InvocationError> {
+    let (statement, salt) = parts_statement(request)?;
+    let signature = signer
+        .sign(statement.signing_message())
+        .await
+        .map_err(|error| InvocationError::Signer(error.0))?;
+    carry_parts(request, statement, signature, &salt);
+    Ok(())
+}
+
+/// [`sign_parts`] in this turn, for a signer that answers at once.
+///
+/// # Errors
+///
+/// As [`sign_parts`].
+pub fn sign_parts_now(
+    request: &mut InvokeRequest,
+    signer: &dyn DeviceSigner,
+) -> Result<(), InvocationError> {
+    let (statement, salt) = parts_statement(request)?;
+    let signature = collab_types::signer::sign_now(signer, statement.signing_message())
+        .map_err(|error| InvocationError::Signer(error.0))?;
+    carry_parts(request, statement, signature, &salt);
+    Ok(())
+}
+
+fn parts_statement(
+    request: &InvokeRequest,
+) -> Result<
+    (
+        InvocationStatement,
+        tilo_actions::remote::argument_parts::Salt,
+    ),
+    InvocationError,
+> {
+    let whole = request.signed.as_deref().ok_or(InvocationError::Unsigned)?;
+    let salt = tilo_actions::remote::argument_parts::fresh_salt();
+    Ok((
+        whole
+            .statement()
+            .clone()
+            .over_parts(&request.argument, &salt),
+        salt,
+    ))
+}
+
+fn carry_parts(
+    request: &mut InvokeRequest,
+    statement: InvocationStatement,
+    signature: [u8; 64],
+    salt: &tilo_actions::remote::argument_parts::Salt,
+) {
+    let cert = request
+        .signed
+        .as_deref()
+        .map(|whole| whole.signer_cert().to_vec())
+        .unwrap_or_default();
+    let over_parts = tilo_actions::remote::SignedCall::signed_over_parts(
+        SignedInvocation::new(statement, signature, cert),
+        salt,
+    );
+    request.context.get_or_insert_with(Default::default).signed = Some(Box::new(over_parts));
+}
+
+/// The signature over `request`'s argument's parts it carries ([`sign_parts`]), checked: a
+/// request that carries one for itself whose signature does not verify is refused, as the
+/// changes it would write would be by every holder. One for another request (a request signed
+/// again after it was carried) is no one's, and the host keeps the call as the request's own
+/// signature signs it.
+fn check_parts(request: &InvokeRequest, whole: &SignedInvocation) -> Result<(), InvocationError> {
+    match request
+        .context
+        .as_ref()
+        .and_then(|context| context.signed.as_deref())
+    {
+        Some(over_parts) if over_parts.carries_parts_of(whole, &request.argument) => {
+            check_signature(&over_parts.signed)
+        }
+        _ => Ok(()),
+    }
+}
+
 fn statement_for(
     workspace: &str,
     request: &InvokeRequest,
@@ -188,6 +284,7 @@ pub fn verify_invocation(
     let signed = request.signed.as_ref().ok_or(InvocationError::Unsigned)?;
     check_signature(signed)?;
     signed.statement().covers(workspace, request)?;
+    check_parts(request, signed)?;
     if !signed.statement().fresh_at(now_ns) {
         return Err(InvocationError::Stale);
     }
@@ -1849,5 +1946,182 @@ mod tests {
             ));
             assert_eq!(check(&swapped, "notes", (7, Some("notes.block-text:b1"), &eggs)), mismatch);
         }
+    }
+
+    /// The request of a caller who signed its argument's parts beside it ([`sign_parts_now`]),
+    /// and its signer's certificate: everything fixed, so the messages its changes keep read the
+    /// same in every build.
+    fn parted() -> (InvokeRequest, DeviceCert) {
+        let root = SigningKey::from_bytes(&[3; 32]);
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let cert = cert_of(&root, &key, None);
+        let mut asking = request();
+        asking.invocation = "0b6b7bd1-8f8f-4f3b-9b37-3c5f0d6c1a01".parse().unwrap();
+        asking.argument = InvokeArgument::Json(
+            serde_json::json!({"title": "Shared plan", "note": "Ada's private note"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let mut asked = signed(&asking, &cert, &key, NOW);
+        // As [`sign_parts_now`] signs it, under a fixed salt.
+        let statement = asked
+            .signed
+            .as_deref()
+            .unwrap()
+            .statement()
+            .clone()
+            .over_parts(&asked.argument, &[5; 32]);
+        let signature = collab_types::signer::sign_now(&key, statement.signing_message()).unwrap();
+        carry_parts(&mut asked, statement, signature, &[5; 32]);
+        (asked, cert)
+    }
+
+    /// What a change made for `asked` keeps of it, once written holding `title`: a store's stamp
+    /// whose history entry names the call's resource and verb.
+    fn parted_stamp(asked: &InvokeRequest, cert: &DeviceCert) -> tilo_actions::stamp::Stamp {
+        let acting = Acting::person(hex::encode(cert.user_public_key));
+        let context = tilo_actions::ActionContext {
+            source_invocation: Some(asked.invocation),
+            invoker: Some(tilo_actions::ActionInvoker::admitted(&acting)),
+            resource: Some(tilo_actions::ActionResource {
+                id: "note:1".into(),
+                kind: "note".into(),
+                label: String::new(),
+            }),
+            what: Some(tilo_actions::Did::Verb(tilo_actions::VerbCall {
+                action: tilo_actions::ActionKey {
+                    app: "so.tilo.notes".into(),
+                    kind: "note".into(),
+                    action: "rename".into(),
+                },
+                args: std::collections::BTreeMap::new(),
+            })),
+            ..tilo_actions::ActionContext::default()
+        };
+        tilo_actions::stamp::Stamp {
+            verb: "rename".into(),
+            invoker: tilo_actions::stamp::Stamp::by(&acting.by),
+            invocation: asked.invocation.to_string(),
+            signed: tilo_actions::remote::SignedCall::of(asked).map(Box::new),
+            args: vec![
+                serde_json::json!("Shared plan"),
+                serde_json::json!("Ada's private note"),
+            ],
+            context: Some(Box::new(context)),
+            ..tilo_actions::stamp::Stamp::default()
+        }
+    }
+
+    /// A caller signs its argument's parts beside its request: the host takes the request as its
+    /// signer signed it, and a change that keeps only the parts it holds checks as that caller's
+    /// call, with nothing else of the argument in it. A carried signature that does not verify
+    /// is refused at the host; parts changed, or another change's parts, at every holder.
+    #[test]
+    fn a_call_signed_over_its_arguments_parts_checks_from_a_change_keeping_some() {
+        use tilo_actions::remote::argument_parts::Held;
+        use tilo_actions::stamp::{CallUnresolved, KeptCalls, Stamp};
+        let (asked, cert) = parted();
+        let none = RevocationList::new();
+        assert_eq!(
+            verify_invocation(WORKSPACE, &asked, &none, NOW),
+            Ok(cert.clone())
+        );
+        let call = tilo_actions::remote::SignedCall::of(&asked).unwrap();
+        assert!(call.in_flight());
+        assert_eq!(call.argument_signed(), Some(true));
+
+        // A change that holds the title keeps it, and none of the note.
+        let mut held = Held::nothing();
+        held.add_text("Shared plan");
+        let message = parted_stamp(&asked, &cert).for_change(&held).message();
+        assert!(message.contains("Shared plan"), "{message}");
+        assert!(!message.contains("private"), "{message}");
+        let mut read = Stamp::of_message(&message).unwrap();
+        assert_eq!(read.resolve(&KeptCalls::default()), Ok(()));
+        let kept = read.parts.clone().unwrap();
+        assert_eq!(kept.parts.len(), 1);
+        assert_eq!(
+            read.args,
+            [serde_json::json!("Shared plan"), serde_json::Value::Null]
+        );
+        assert_eq!(
+            verify_recorded(
+                &read.action_context(),
+                (WORKSPACE, "so.tilo.notes", None),
+                &none,
+                NOW,
+                None
+            ),
+            Ok(Some(cert.clone()))
+        );
+        // A writer that says nothing of what its change holds keeps none of the argument, and
+        // an entry keeps the call without it: both still check.
+        let bare = parted_stamp(&asked, &cert).message();
+        assert!(
+            !bare.contains("Shared plan") && !bare.contains("private"),
+            "{bare}"
+        );
+        let entry = parted_stamp(&asked, &cert)
+            .action_context()
+            .change_message()
+            .unwrap();
+        let entry = tilo_actions::ActionContext::from_change_message(&entry).unwrap();
+        assert!(
+            entry
+                .signed
+                .as_deref()
+                .is_some_and(|call| call.argument.is_none() && call.salt.is_none())
+        );
+        assert_eq!(
+            verify_recorded(&entry, (WORKSPACE, "so.tilo.notes", None), &none, NOW, None),
+            Ok(Some(cert.clone()))
+        );
+
+        // Parts changed, or the note's part with the title's proof, do not prove.
+        let mut noted = Held::nothing();
+        noted.add_text("Ada's private note");
+        let other = Stamp::of_message(&parted_stamp(&asked, &cert).for_change(&noted).message())
+            .unwrap()
+            .parts
+            .unwrap();
+        let tampered = |edit: &dyn Fn(&mut tilo_actions::remote::argument_parts::KeptParts)| {
+            let mut stamp = Stamp::of_message(&message).unwrap();
+            edit(stamp.parts.as_mut().unwrap());
+            Stamp::of_message(&stamp.message())
+                .unwrap()
+                .resolve(&KeptCalls::default())
+        };
+        let unproven = Err(CallUnresolved::Unproven);
+        assert_eq!(
+            tampered(&|parts| parts.parts[0].value = serde_json::json!("Other plan")),
+            unproven
+        );
+        assert_eq!(
+            tampered(&|parts| parts.proof[0] = hex::encode([1u8; 32])),
+            unproven
+        );
+        assert_eq!(
+            tampered(&|parts| parts.parts.clone_from(&other.parts)),
+            unproven
+        );
+        assert_eq!(tampered(&|_| {}), Ok(()));
+
+        // A carried signature another key made is refused at the host.
+        let mut forged = asked;
+        let over_parts = forged.context.as_mut().unwrap().signed.as_mut().unwrap();
+        over_parts.signed = SignedInvocation::new(
+            over_parts.signed.statement().clone(),
+            collab_types::signer::sign_now(
+                &SigningKey::from_bytes(&[8; 32]),
+                over_parts.signed.statement().signing_message(),
+            )
+            .unwrap(),
+            over_parts.signed.signer_cert().to_vec(),
+        );
+        assert_eq!(
+            verify_invocation(WORKSPACE, &forged, &none, NOW),
+            Err(InvocationError::Signature)
+        );
     }
 }

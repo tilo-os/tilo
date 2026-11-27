@@ -73,6 +73,13 @@ pub struct Stamp {
     /// not the one named.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call: Option<String>,
+    /// What the change keeps of its call's argument, where the call's statement signs the root of
+    /// the argument's parts ([`crate::remote::argument_parts`]): the parts the change holds
+    /// itself, with the proof that they are the signed argument's. The call it keeps, or names,
+    /// then keeps no argument, and its [`Self::args`] hold only what the change holds too. A
+    /// holder refuses a change whose parts do not prove against its call's statement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<crate::remote::argument_parts::KeptParts>,
     /// The device that wrote the change, its key in hex: where a resource the change made live
     /// is live (`tilo_resource_store::Store::live`). Empty where the writer named none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -190,10 +197,56 @@ impl Stamp {
         serde_json::to_string(actor).unwrap_or_default()
     }
 
-    /// The message a change carries it as.
+    /// The message a change carries it as. A call on its way to its changes is never kept as
+    /// it is: a writer that did not say what the change holds ([`Self::for_change`]) keeps none
+    /// of its argument.
     #[must_use]
     pub fn message(&self) -> String {
+        if self.in_flight() {
+            return self
+                .for_change(&crate::remote::argument_parts::Held::nothing())
+                .message();
+        }
         serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// Whether it keeps a call on its way to its changes ([`crate::remote::SignedCall::in_flight`]):
+    /// one a writer keeps only as a change that holds what it wrote does ([`Self::for_change`]).
+    #[must_use]
+    pub fn in_flight(&self) -> bool {
+        let in_flight = |call: &Option<Box<crate::remote::SignedCall>>| {
+            call.as_deref()
+                .is_some_and(crate::remote::SignedCall::in_flight)
+        };
+        in_flight(&self.signed)
+            || self
+                .context
+                .as_deref()
+                .is_some_and(|context| in_flight(&context.signed))
+    }
+
+    /// This stamp as a change that holds `held` once written keeps it, where its call signs its
+    /// argument's parts: the call without its argument, the parts of the argument the change
+    /// holds with their proof ([`Self::parts`]), and the recorded arguments with every value
+    /// the change does not hold made null; a mark keeps the arguments that say what it marks
+    /// ([`crate::remote::argument_parts::Held::mark`]). Any other stamp as it is.
+    #[must_use]
+    pub fn for_change(&self, held: &crate::remote::argument_parts::Held) -> Self {
+        let mut stamp = self.clone();
+        if let Some(context) = stamp.context.as_deref_mut()
+            && let Some(call) = context.signed.as_deref_mut()
+        {
+            *call = call.kept();
+        }
+        let Some(call) = self.signed.as_deref().filter(|call| call.in_flight()) else {
+            return stamp;
+        };
+        stamp.parts = call.kept_parts(held);
+        stamp.signed = Some(Box::new(call.kept()));
+        if !held.is_mark() {
+            stamp.args = self.args.iter().map(|arg| held.redact(arg)).collect();
+        }
+        stamp
     }
 
     /// The verb of a change that edits a record's content with no finer action naming it (a
@@ -470,6 +523,12 @@ impl Stamp {
     pub fn call_digest(&self) -> Option<String> {
         let call = self.signed.as_deref()?;
         let mut hasher = blake3::Hasher::new();
+        if self.parts.is_some() {
+            // Each change keeps its own parts and arguments: the call alone is named.
+            hasher.update(b"tilo-stamped-call-v2\0");
+            hasher.update(&call.digest());
+            return Some(hex::encode(hasher.finalize().as_bytes()));
+        }
         hasher.update(b"tilo-stamped-call-v1\0");
         hasher.update(&call.digest());
         // Read back from the change's message, the arguments write the same bytes again.
@@ -489,7 +548,9 @@ impl Stamp {
         self.call = Some(digest);
         if kept {
             self.signed = None;
-            self.args.clear();
+            if self.parts.is_none() {
+                self.args.clear();
+            }
         }
     }
 
@@ -501,23 +562,44 @@ impl Stamp {
     /// [`CallUnresolved::Mismatch`] when it keeps a call, or arguments, other than those it
     /// names.
     pub fn resolve(&mut self, calls: &KeptCalls) -> Result<(), CallUnresolved> {
-        let Some(named) = self.call.as_deref() else {
+        if let Some(named) = self.call.as_deref() {
+            if self.signed.is_some() {
+                if self.call_digest().as_deref() != Some(named) {
+                    return Err(CallUnresolved::Mismatch);
+                }
+            } else if self.parts.is_some() {
+                // Its parts and arguments are its own; the call alone is named.
+                let (call, _) = calls.0.get(named).ok_or(CallUnresolved::Missing)?;
+                self.signed = Some(Box::new(call.clone()));
+            } else {
+                // A change that names its call keeps no arguments of its own: they are the call's.
+                if !self.args.is_empty() {
+                    return Err(CallUnresolved::Mismatch);
+                }
+                let (call, args) = calls.0.get(named).ok_or(CallUnresolved::Missing)?;
+                self.signed = Some(Box::new(call.clone()));
+                self.args.clone_from(args);
+            }
+        }
+        self.proven()
+    }
+
+    /// Whether the parts of the argument it keeps are the signed argument's: the call it keeps
+    /// signs the root they climb to, and keeps no argument or salt beside them.
+    ///
+    /// # Errors
+    /// [`CallUnresolved::Unproven`] for parts that are not, or that no call signs.
+    pub fn proven(&self) -> Result<(), CallUnresolved> {
+        let Some(parts) = &self.parts else {
             return Ok(());
         };
-        if self.signed.is_some() {
-            return if self.call_digest().as_deref() == Some(named) {
-                Ok(())
-            } else {
-                Err(CallUnresolved::Mismatch)
-            };
+        let call = self.signed.as_deref().ok_or(CallUnresolved::Unproven)?;
+        if call.argument.is_some()
+            || call.salt.is_some()
+            || !parts.proves(&call.signed.statement().arguments)
+        {
+            return Err(CallUnresolved::Unproven);
         }
-        // A change that names its call keeps no arguments of its own: they are the call's.
-        if !self.args.is_empty() {
-            return Err(CallUnresolved::Mismatch);
-        }
-        let (call, args) = calls.0.get(named).ok_or(CallUnresolved::Missing)?;
-        self.signed = Some(Box::new(call.clone()));
-        self.args.clone_from(args);
         Ok(())
     }
 }
@@ -596,4 +678,6 @@ pub enum CallUnresolved {
     Missing,
     #[error("the call the change keeps is not the one it names")]
     Mismatch,
+    #[error("the parts of the argument the change keeps are not the ones its caller signed")]
+    Unproven,
 }

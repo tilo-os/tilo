@@ -52,6 +52,7 @@ use collab_types::touch::READERS;
 use crate::admit::{Admit, Proposal, Received, Refusal, Stamp};
 use crate::index::{Change, Commit, CommitHook as _, Index};
 use crate::schema::{MIGRATE_VERB, Schema};
+use tilo_actions::remote::argument_parts::Held as Kept;
 
 mod past;
 mod readers;
@@ -1207,7 +1208,7 @@ impl Store {
             }
             None => self.place(kind, resource.parent.as_deref(), &resource.readers),
         };
-        let called = self.stamp_for(&doc_id, stamp);
+        let called = self.stamp_for(&doc_id, stamp, &held_by_put(kind, id, &resource));
         let doc = self.doc(&doc_id)?;
         // A put of what the document holds already changes nothing, and writes nothing.
         let change = put_fields(doc, kind, id, &resource, &called, under.as_ref())?;
@@ -1266,8 +1267,9 @@ impl Store {
         // The hosted device supplies its own author even when the live store last
         // wrote the document locally.
         draft.set_actor(automerge::ActorId::from(author.as_slice()));
+        let stamp = stamp.for_change(&held_by_put(kind, id, resource));
         let Some(change) =
-            put_fields(&mut draft, kind, id, resource, stamp, None).map_err(|e| e.to_string())?
+            put_fields(&mut draft, kind, id, resource, &stamp, None).map_err(|e| e.to_string())?
         else {
             return Ok(None);
         };
@@ -1298,7 +1300,7 @@ impl Store {
         let doc_id = self.index.get(kind, id).ok_or_else(missing)?.doc.clone();
         let readers = self.index.readers(&doc_id).unwrap_or_default().to_owned();
         let under = self.drafting.clone();
-        let called = self.stamp_for(&doc_id, stamp);
+        let called = self.stamp_for(&doc_id, stamp, &held_record(Kept::nothing(), kind, id));
         let doc = self.doc(&doc_id)?;
         if let Some((actor, _)) = &under {
             doc.set_actor(actor.clone());
@@ -1349,7 +1351,7 @@ impl Store {
             .doc
             .clone();
         let readers = self.index.readers(&doc_id).unwrap_or_default().to_owned();
-        let called = self.stamp_for(&doc_id, stamp);
+        let called = self.stamp_for(&doc_id, stamp, &held_record(Kept::mark(), kind, id));
         self.kept_call(&doc_id, &called);
         let doc = self.doc(&doc_id)?;
         let hash = doc.empty_commit(CommitOptions::default().with_message(called.message()));
@@ -1387,7 +1389,7 @@ impl Store {
         let mut written = Vec::new();
         for doc_id in docs {
             let readers = self.index.readers(&doc_id).unwrap_or_default().to_owned();
-            let called = self.stamp_for(&doc_id, stamp);
+            let called = self.stamp_for(&doc_id, stamp, &Kept::nothing());
             let Some(doc) = self.existing(&doc_id)? else {
                 continue;
             };
@@ -1678,7 +1680,13 @@ impl Store {
         ) -> Result<R, automerge::AutomergeError>,
     ) -> Result<(R, Option<Written>), StoreError> {
         let (doc_id, readers) = self.content_of(kind, id)?;
-        let called = self.stamp_for(&doc_id, stamp);
+        // A call whose caller signed its argument's parts is stamped once the edit is made, by what
+        // the content holds then; any other before.
+        let (early, called_before) = if stamp.in_flight() {
+            (None, self.called.clone())
+        } else {
+            (Some(self.stamp_for(&doc_id, stamp, &Kept::nothing())), None)
+        };
         let doc = self.doc(&doc_id)?;
         let before = doc.get_heads();
         let mut tx = doc.transaction();
@@ -1690,6 +1698,11 @@ impl Store {
                 return Err(error.into());
             }
         };
+        let called = early.unwrap_or_else(|| {
+            let mut held = held_record(Kept::nothing(), kind, id);
+            held_in(&tx, &ROOT, &mut held);
+            named_in(called_before.as_ref(), &doc_id, stamp.for_change(&held))
+        });
         tx.commit_with(CommitOptions::default().with_message(called.message()));
         if doc.get_heads() == before {
             return Ok((answer, None));
@@ -1751,9 +1764,10 @@ impl Store {
         let old_id = content_id(from, kind, id);
         let new_id = content_id(to, kind, id);
         let under = self.drafting.clone();
+        let held = held_record(Kept::nothing(), kind, id);
         let (emptying, copying) = (
-            self.stamp_for(&old_id, stamp),
-            self.stamp_for(&new_id, stamp),
+            self.stamp_for(&old_id, stamp, &held),
+            self.stamp_for(&new_id, stamp, &held),
         );
         let Some(old) = self.existing(&old_id)? else {
             return Ok(Vec::new());
@@ -3114,16 +3128,11 @@ impl Store {
     /// its digest, and kept whole only by the first change of the call to `doc`
     /// ([`Self::kept_call`] notes it), so readers of `doc` receive the call once, with the
     /// changes that name it.
-    fn stamp_for(&self, doc: &str, stamp: &Stamp) -> Stamp {
-        let mut stamp = stamp.clone();
-        if let Some(called) = &self.called
-            && stamp.signed.is_some()
-        {
-            stamp.name_call(false);
-            let digest = stamp.call.clone().unwrap_or_default();
-            stamp.name_call(called.contains(&(doc.to_owned(), digest)));
-        }
-        stamp
+    ///
+    /// `held` is what the change holds once written: of a call whose caller signed its argument's
+    /// parts, the change keeps only the parts it holds ([`Stamp::for_change`]).
+    fn stamp_for(&self, doc: &str, stamp: &Stamp, held: &Kept) -> Stamp {
+        named_in(self.called.as_ref(), doc, stamp.for_change(held))
     }
 
     /// Note that a change of `doc` drafted under `stamp` ([`Self::stamp_for`]) keeps its call.
@@ -3503,6 +3512,79 @@ fn read_as_of(
 
 /// The options a change drafted under `under` commits with: its message, and the second it says
 /// it was made at, so the change every device drafts alike is the same change.
+/// `stamp` as a change of `doc` drafted now keeps it, where `called` holds the documents a
+/// change of the staged write keeps a call in ([`Store::stamp_for`]).
+fn named_in(called: Option<&BTreeSet<(String, String)>>, doc: &str, mut stamp: Stamp) -> Stamp {
+    if let Some(called) = called
+        && stamp.signed.is_some()
+    {
+        stamp.name_call(false);
+        let digest = stamp.call.clone().unwrap_or_default();
+        stamp.name_call(called.contains(&(doc.to_owned(), digest)));
+    }
+    stamp
+}
+
+/// `held` with the record a change writes, its kind and id: what the change addresses.
+fn held_record(mut held: Kept, kind: &str, id: &str) -> Kept {
+    held.add_text(kind);
+    held.add_text(id);
+    held
+}
+
+/// What a put of `resource` as the record `id` of `kind` holds once written: the record, and
+/// every value of its fields and place.
+fn held_by_put(kind: &str, id: &str, resource: &Resource) -> Kept {
+    let mut held = held_record(Kept::nothing(), kind, id);
+    for value in fields_json(&resource.fields).values() {
+        held.add(value);
+    }
+    for text in [&resource.parent, &resource.order].into_iter().flatten() {
+        held.add_text(text);
+    }
+    held
+}
+
+/// Every value and key the object `obj` of `doc` holds, into `held`.
+fn held_in(doc: &impl automerge::ReadDoc, obj: &ObjId, held: &mut Kept) {
+    let value_at = |value: automerge::Value<'_>, inner: ObjId, held: &mut Kept| match value {
+        automerge::Value::Object(automerge::ObjType::Text) => {
+            held.add_text(&doc.text(&inner).unwrap_or_default());
+        }
+        automerge::Value::Object(_) => held_in(doc, &inner, held),
+        automerge::Value::Scalar(scalar) => match scalar.as_ref() {
+            ScalarValue::Str(text) => held.add_text(text),
+            ScalarValue::Int(number) => held.add(&serde_json::Value::from(*number)),
+            ScalarValue::Uint(number) => held.add(&serde_json::Value::from(*number)),
+            ScalarValue::F64(number) => held.add(&serde_json::Value::from(*number)),
+            ScalarValue::Counter(counter) => {
+                held.add(&serde_json::Value::from(i64::from(counter)));
+            }
+            ScalarValue::Boolean(flag) => held.add(&serde_json::Value::Bool(*flag)),
+            _ => held.add(&serde_json::Value::Null),
+        },
+    };
+    match doc.object_type(obj) {
+        Ok(automerge::ObjType::Map | automerge::ObjType::Table) => {
+            for key in doc.keys(obj).collect::<Vec<_>>() {
+                held.add_text(&key);
+                if let Ok(Some((value, inner))) = doc.get(obj, key.as_str()) {
+                    value_at(value, inner, held);
+                }
+            }
+        }
+        Ok(automerge::ObjType::List) => {
+            for at in 0..doc.length(obj) {
+                if let Ok(Some((value, inner))) = doc.get(obj, at) {
+                    value_at(value, inner, held);
+                }
+            }
+        }
+        Ok(automerge::ObjType::Text) => held.add_text(&doc.text(obj).unwrap_or_default()),
+        Err(_) => {}
+    }
+}
+
 fn commit_options(under: Option<&(automerge::ActorId, i64)>, stamp: &Stamp) -> CommitOptions {
     let options = CommitOptions::default().with_message(stamp.message());
     match under {

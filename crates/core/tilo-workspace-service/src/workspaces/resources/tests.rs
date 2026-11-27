@@ -239,6 +239,7 @@ fn signed_call(person: [u8; 32]) -> Box<tilo_actions::remote::SignedCall> {
         ),
         argument: None,
         allowed: None,
+        salt: None,
     })
 }
 

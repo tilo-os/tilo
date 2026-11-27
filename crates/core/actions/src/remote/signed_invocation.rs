@@ -113,6 +113,20 @@ impl InvocationStatement {
         Ok(())
     }
 
+    /// This statement over `argument`'s parts hashed under `salt` rather than over the argument
+    /// whole: its argument hash the root of the parts ([`super::argument_parts::root`]),
+    /// everything else alike. What a caller signs besides its request, so each change the call
+    /// writes keeps only the parts it holds and still checks against the caller's signature.
+    #[must_use]
+    pub fn over_parts(
+        mut self,
+        argument: &InvokeArgument,
+        salt: &super::argument_parts::Salt,
+    ) -> Self {
+        self.arguments = super::argument_parts::root(argument, salt);
+        self
+    }
+
     /// The bytes the signer's key signs: the domain separator and the BLAKE3
     /// hash of the statement's exact encoding.
     #[must_use]
@@ -271,6 +285,13 @@ pub struct SignedCall {
     /// took is one the called action declares. `None` for a call a person made themselves.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed: Option<CallAllowed>,
+    /// The salt the argument's parts are hashed under, in hex, where the statement signs the
+    /// root of the argument's parts ([`super::argument_parts`]) rather than one hash of it whole:
+    /// a call on its way to the changes it writes, which keeps the whole argument to split.
+    /// A change never keeps it: it keeps the call without its argument ([`Self::kept`]) and the
+    /// parts it holds itself ([`crate::stamp::Stamp::parts`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub salt: Option<String>,
 }
 
 /// How a call an agent made was allowed, as the host that carried it out kept it beside the
@@ -296,10 +317,12 @@ impl CallAllowed {
 
 impl SignedCall {
     /// What a change made for `request` keeps of it: `None` for a request
-    /// nobody signed.
+    /// nobody signed. Where its caller signed its argument's parts too, the call in that form
+    /// ([`Self::of_parts`]), which each change keeps only the parts of that it holds.
     #[must_use]
     pub fn of(request: &InvokeRequest) -> Option<Self> {
-        Some(Self::with(request, request.signed.as_deref()?.clone()))
+        Self::of_parts(request)
+            .or_else(|| Some(Self::with(request, request.signed.as_deref()?.clone())))
     }
 
     /// What a change made for `request` keeps of it, as `signed` signed it: what [`Self::of`]
@@ -314,7 +337,101 @@ impl SignedCall {
             signed,
             argument,
             allowed: None,
+            salt: None,
         }
+    }
+
+    /// What the changes a host writes for `request` keep of it, where its caller also signed its
+    /// argument's parts ([`Self::signed_over_parts`]): the call in that form, its whole argument and
+    /// salt kept to split by what each change holds ([`Self::kept_parts`]). `None` for a request
+    /// that carries no such signature, or one that does not cover it.
+    #[must_use]
+    pub fn of_parts(request: &InvokeRequest) -> Option<Self> {
+        let over_parts = request.context.as_ref()?.signed.as_deref()?;
+        let whole = request.signed.as_deref()?;
+        over_parts
+            .carries_parts_of(whole, &request.argument)
+            .then(|| Self {
+                signed: over_parts.signed.clone(),
+                argument: Some(request.argument.clone()),
+                allowed: None,
+                salt: over_parts.salt.clone(),
+            })
+    }
+
+    /// The call a caller hands the host beside its request, where it signs its argument's parts
+    /// too: `signed`, the statement of its request with the root of the argument's parts hashed
+    /// under `salt` ([`InvocationStatement::over_parts`]) and the caller's signature over it.
+    /// It rides in the request's context ([`InvokeRequest::context`]), which grants nothing: a
+    /// host reads it only as the form the changes it writes keep the call in.
+    #[must_use]
+    pub fn signed_over_parts(signed: SignedInvocation, salt: &super::argument_parts::Salt) -> Self {
+        Self {
+            signed,
+            argument: None,
+            allowed: None,
+            salt: Some(hex::encode(salt)),
+        }
+    }
+
+    /// Whether this is the call over its parts ([`Self::signed_over_parts`]) of `whole`, the request's own
+    /// signed invocation, over `argument`: the same statement but for its argument hash, which
+    /// is the root of `argument`'s parts under its salt, made under the same certificate. The
+    /// signature itself is the identity layer's to check.
+    #[must_use]
+    pub fn carries_parts_of(&self, whole: &SignedInvocation, argument: &InvokeArgument) -> bool {
+        let Some(salt) = self.salt_bytes() else {
+            return false;
+        };
+        let parts = &self.signed.statement;
+        self.argument.is_none()
+            && self.signed.signer_cert == whole.signer_cert
+            && *parts == whole.statement.clone().over_parts(argument, &salt)
+    }
+
+    /// The salt the argument's parts are hashed under, where this call carries one.
+    fn salt_bytes(&self) -> Option<super::argument_parts::Salt> {
+        let mut salt = [0; 32];
+        hex::decode_to_slice(self.salt.as_deref()?, &mut salt).ok()?;
+        Some(salt)
+    }
+
+    /// Whether this is a call on its way to the changes it writes, in the form whose statement
+    /// signs its argument's parts: one a change never keeps as it is ([`Self::kept`]).
+    #[must_use]
+    pub const fn in_flight(&self) -> bool {
+        self.salt.is_some()
+    }
+
+    /// This call as a change keeps it: in the form whose statement signs the argument's parts,
+    /// without its argument or salt; any other as it is.
+    #[must_use]
+    pub fn kept(&self) -> Self {
+        if !self.in_flight() {
+            return self.clone();
+        }
+        Self {
+            signed: self.signed.clone(),
+            argument: None,
+            allowed: self.allowed.clone(),
+            salt: None,
+        }
+    }
+
+    /// The parts of this call's argument a change that holds `held` keeps, with their proof:
+    /// `None` for a call whose statement signs its argument whole.
+    #[must_use]
+    pub fn kept_parts(
+        &self,
+        held: &super::argument_parts::Held,
+    ) -> Option<super::argument_parts::KeptParts> {
+        let salt = self.salt_bytes()?;
+        let argument = self.argument.as_ref()?;
+        Some(super::argument_parts::KeptParts::of(
+            argument,
+            &salt,
+            |value| held.holds(value),
+        ))
     }
 
     /// What a change names this call by when another change of its document's write keeps the
@@ -344,6 +461,10 @@ impl SignedCall {
         // Enums and strings only: its JSON reads the same however often it is written.
         let allowed = serde_json::to_vec(&self.allowed).unwrap_or_default();
         bytes(&mut hasher, &allowed);
+        // A call kept in a change carries no salt: only one on its way there adds it.
+        if let Some(salt) = &self.salt {
+            bytes(&mut hasher, salt.as_bytes());
+        }
         *hasher.finalize().as_bytes()
     }
 
@@ -351,9 +472,14 @@ impl SignedCall {
     /// keeps none to compare.
     #[must_use]
     pub fn argument_signed(&self) -> Option<bool> {
-        self.argument
-            .as_ref()
-            .map(|argument| argument_hash(argument) == self.signed.statement.arguments)
+        let argument = self.argument.as_ref()?;
+        Some(match self.salt_bytes() {
+            Some(salt) => {
+                super::argument_parts::root(argument, &salt) == self.signed.statement.arguments
+            }
+            None if self.salt.is_some() => false,
+            None => argument_hash(argument) == self.signed.statement.arguments,
+        })
     }
 }
 

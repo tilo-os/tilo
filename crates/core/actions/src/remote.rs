@@ -46,6 +46,7 @@ pub mod native_media;
 /// A shell the device's shell runtime runs, carried on an app's connection.
 pub mod shell;
 pub use caller::{Caller, Invited, KeptCaller, KeyCall, PlacedCaller, device_agent_id};
+pub mod argument_parts;
 pub mod signed_invocation;
 pub use signed_invocation::{CallAllowed, SignedCall, SignedInvocation};
 mod catalogue;

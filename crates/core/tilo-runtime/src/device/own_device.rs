@@ -86,6 +86,13 @@ impl OwnDeviceActions for AnotherDevice {
             reason: format!("the call could not be signed for its person: {error}"),
         })?;
         forwarded.signed = Some(Box::new(signed));
+        tilo_server_protocol::invocation::sign_parts_now(
+            &mut forwarded,
+            self.workspaces.signer().as_ref(),
+        )
+        .map_err(|error| ActionCallError::Unavailable {
+            reason: format!("the call could not be signed for its person: {error}"),
+        })?;
         let (complete, outcome) = pending();
         device
             .invoke_until_settled(forwarded, FOLLOW_DEADLINE)

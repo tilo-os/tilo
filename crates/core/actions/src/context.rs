@@ -1243,7 +1243,9 @@ mod wire {
                 facets: context.facets.clone(),
                 invoker: context.invoker.clone(),
                 source_invocation: context.source_invocation,
-                signed: context.signed.clone(),
+                // A call on its way to its changes keeps its argument whole to split it: an entry
+                // keeps the call without it.
+                signed: context.signed.as_deref().map(|call| Box::new(call.kept())),
                 caused_by: context.caused_by.clone(),
                 action: context.action.as_ref().map(Action::of),
                 compensation: context.compensation.as_ref().map(Action::of),

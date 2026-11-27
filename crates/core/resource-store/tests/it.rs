@@ -1650,6 +1650,7 @@ mod store {
                 signed: signed.clone(),
                 argument: Some(titles.clone()),
                 allowed: None,
+                salt: None,
             })),
             ..Stamp::default()
         };
@@ -2056,6 +2057,181 @@ mod store {
                 tilo_actions::stamp::CallUnresolved::Mismatch
             )]
         );
+    }
+
+    /// `stamp`, keeping the call a caller signed with `argument`, its parts signed too
+    /// ([`tilo_actions::remote::SignedCall::of_parts`]), as the request brings it to the host.
+    fn parted_stamp(
+        verb: &str,
+        argument: &serde_json::Value,
+        args: Vec<serde_json::Value>,
+    ) -> Stamp {
+        use tilo_actions::remote::signed_invocation::InvocationStatement;
+        use tilo_actions::remote::{InvokeRequest, SignedCall, SignedInvocation};
+        let mut request: InvokeRequest = serde_json::from_value(serde_json::json!({
+            "invocation": tilo_actions::InvocationId::new(),
+            "target": {"provider": "so.tilo.tasks", "address": {"resource": "so.tilo.tasks", "action": verb}},
+            "argument": {"Json": argument},
+        }))
+        .unwrap();
+        let statement = InvocationStatement::of(crate::WORKSPACE, &request, 9, [5; 32]);
+        let salt = [3; 32];
+        let parts = statement.clone().over_parts(&request.argument, &salt);
+        request.signed = Some(Box::new(SignedInvocation::new(
+            statement,
+            [6; 64],
+            vec![1; 64],
+        )));
+        request.context = Some(tilo_actions::ActionContext {
+            signed: Some(Box::new(SignedCall::signed_over_parts(
+                SignedInvocation::new(parts, [7; 64], vec![1; 64]),
+                &salt,
+            ))),
+            ..tilo_actions::ActionContext::default()
+        });
+        let call = SignedCall::of(&request).unwrap();
+        assert!(call.in_flight());
+        Stamp {
+            signed: Some(Box::new(call)),
+            args,
+            ..stamp(verb, "i1")
+        }
+    }
+
+    /// One call writes a record its whole workspace reads and one only its caller reads, its
+    /// caller having signed its argument's parts: each document keeps the call without its
+    /// argument, and of the argument only the parts its own changes hold, with their proof. The
+    /// shared document's readers never receive the private part, in any byte of it; every
+    /// holder admits both documents' changes, and refuses a part changed, a proof changed, or
+    /// the other document's part under this one's proof.
+    #[test]
+    fn a_call_writing_a_shared_and_a_private_record_keeps_in_each_only_its_own_part() {
+        use collab_types::store::wire::Command;
+        let (shared, private) = ("Plan the offsite SHARED-7f3", "Ada's diagnosis PRIVATE-91c");
+        let call = parted_stamp(
+            "make",
+            &serde_json::json!({"shared": shared, "private": private, "count": 2}),
+            vec![serde_json::json!(shared), serde_json::json!(private)],
+        );
+        let mut store = issues();
+        let written = tilo_resource_store::wire::draft(
+            &mut store,
+            Command::Batch(vec![
+                Command::Put {
+                    kind: ISSUE.to_owned(),
+                    id: "s".to_owned(),
+                    resource: resource("board", "a0", shared, "open"),
+                    stamp: call.clone(),
+                },
+                Command::Put {
+                    kind: ISSUE.to_owned(),
+                    id: "p".to_owned(),
+                    resource: read_by("ada-only", "board", "a1", private, "open"),
+                    stamp: call,
+                },
+            ]),
+        )
+        .unwrap();
+        // What each document's readers receive: its changes, uncompressed.
+        let received = |readers: &str| {
+            let mut doc = automerge::Automerge::new();
+            doc.apply_changes(
+                written
+                    .iter()
+                    .filter(|write| write.readers == readers)
+                    .map(|write| write.change.clone()),
+            )
+            .unwrap();
+            doc.save_nocompress()
+        };
+        let holds = |bytes: &[u8], text: &str| {
+            bytes
+                .windows(text.len())
+                .any(|window| window == text.as_bytes())
+        };
+        let (everyone, ada) = (received(MEMBERS), received("ada-only"));
+        assert!(holds(&everyone, shared) && !holds(&everyone, private));
+        assert!(holds(&ada, private) && !holds(&ada, shared));
+        for write in &written {
+            let stamp = Stamp::of(&write.change).unwrap();
+            let parts = stamp.parts.as_ref().expect("each change keeps its parts");
+            let paths: Vec<&str> = parts.parts.iter().map(|part| part.path.as_str()).collect();
+            let call = stamp.signed.as_deref().unwrap();
+            assert!(call.argument.is_none() && call.salt.is_none());
+            assert!(parts.proves(&call.signed.statement().arguments));
+            if write.readers == MEMBERS {
+                assert_eq!(paths, ["/shared"]);
+                assert_eq!(
+                    stamp.args,
+                    [serde_json::json!(shared), serde_json::Value::Null]
+                );
+            } else {
+                assert_eq!(paths, ["/private"]);
+                assert_eq!(
+                    stamp.args,
+                    [serde_json::Value::Null, serde_json::json!(private)]
+                );
+            }
+        }
+
+        // Every holder admits both, each with parts that prove against its call.
+        let proven = |proposal: &Proposal<'_>| {
+            proposal.stamp.is_some_and(|stamp| {
+                stamp
+                    .signed
+                    .as_deref()
+                    .zip(stamp.parts.as_ref())
+                    .is_some_and(|(call, parts)| parts.proves(&call.signed.statement().arguments))
+            })
+        };
+        let mut there = issues();
+        assert!(deliver(&written, &mut there, &proven).is_empty());
+        assert_eq!(there.index().ids_of(ISSUE).count(), 2);
+
+        forgeries_are_refused(&written, shared);
+    }
+
+    /// A part changed, a proof changed, or the private part under the shared one's proof, of the
+    /// call [`a_call_writing_a_shared_and_a_private_record_keeps_in_each_only_its_own_part`]
+    /// wrote, are refused; the change as written is not.
+    fn forgeries_are_refused(written: &[Written], shared: &str) {
+        use tilo_actions::stamp::CallUnresolved;
+        let of = |readers: &str| {
+            let write = written
+                .iter()
+                .find(|write| write.readers == readers)
+                .unwrap();
+            Stamp::of(&write.change).unwrap()
+        };
+        let (kept, other) = (of(MEMBERS), of("ada-only"));
+        let forged = |edit: &dyn Fn(&mut Stamp)| {
+            let mut stamp = kept.clone();
+            edit(&mut stamp);
+            let mut forger = issues();
+            let written = forger
+                .put(ISSUE, "f", resource("board", "f0", shared, "open"), &stamp)
+                .unwrap();
+            deliver(&written, &mut issues(), &|_: &Proposal<'_>| true)
+        };
+        let unproven = [Refusal::Uncalled(CallUnresolved::Unproven)];
+        assert_eq!(
+            forged(&|stamp| stamp.parts.as_mut().unwrap().parts[0].value = serde_json::json!("x")),
+            unproven
+        );
+        assert_eq!(
+            forged(&|stamp| stamp.parts.as_mut().unwrap().proof[0] = "01".repeat(32)),
+            unproven
+        );
+        assert_eq!(
+            forged(&|stamp| stamp
+                .parts
+                .as_mut()
+                .unwrap()
+                .parts
+                .clone_from(&other.parts.as_ref().unwrap().parts)),
+            unproven
+        );
+        assert!(forged(&|_| {}).is_empty());
     }
 
     fn stamp(verb: &str, invocation: &str) -> Stamp {

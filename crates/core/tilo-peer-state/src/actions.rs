@@ -2233,6 +2233,14 @@ impl Device {
             ))
         })?;
         request.signed = Some(Box::new(signed));
+        // Its argument's parts too: each change the call writes keeps only the parts it holds.
+        tilo_server_protocol::invocation::sign_parts_now(&mut request, self.key.as_ref()).map_err(
+            |error| {
+                unavailable(&format!(
+                    "the call could not be signed for its person: {error}"
+                ))
+            },
+        )?;
         Ok(request)
     }
 
