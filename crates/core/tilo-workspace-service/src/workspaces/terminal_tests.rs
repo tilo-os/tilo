@@ -196,7 +196,7 @@ fn call(provider: &str) -> InvokeRequest {
         invocation: InvocationId::new(),
         target: RemoteActionTarget {
             provider: provider.to_owned(),
-            address: ActionAddress::new("tl.so.tilo.terminal.MachineSecrets", "add-secret"),
+            address: ActionAddress::new("tl.so.tilo.terminal.MachineSecrets", "add_secret"),
         },
         argument: InvokeArgument::Json(arguments),
         context: None,

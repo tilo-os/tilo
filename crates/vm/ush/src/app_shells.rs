@@ -2,6 +2,11 @@
 //! the shell runtime runs them: the daemon opens each on its one connection to the runtime
 //! ([`crate::control_line`]) in the workspace the app was started in, and keeps the terminal and
 //! the session lease the runtime hands back.
+//!
+//! A shell on the workspace's own target ([`tilo_environment::Target::Workspace`]) is the
+//! daemon's ([`WithOwn`]): it runs in the workspace's shell here
+//! ([`WorkspaceShells::interactive`]), where no environment is built, and the runtime is never
+//! asked for it.
 
 use std::io::Read;
 use std::os::fd::{AsRawFd as _, OwnedFd};
@@ -15,6 +20,7 @@ use tilo_actions::remote::ActionCallError;
 use tilo_actions::remote::shell::ShellOpen;
 
 use crate::control_line::ControlLine;
+use crate::workspace_shell::WorkspaceShells;
 
 /// How long a terminal whose shell has not started yet is waited on before it is read again: a
 /// workspace a server hosts hands its shell over after the terminal opened.
@@ -104,6 +110,64 @@ impl ShellSource for Runtime {
                 .and_then(Value::as_str)
                 .map(str::to_owned),
             commands: said.get("commands").and_then(Value::as_bool) == Some(true),
+        })
+    }
+}
+
+/// This device's shells with the workspaces' own: a shell on the workspace's own target runs in
+/// `own`, the workspaces' shells this device runs, and every other target is `rest`'s.
+pub struct WithOwn {
+    /// The workspaces' shells this device runs.
+    pub own: Arc<WorkspaceShells>,
+    /// Where every other target opens.
+    pub rest: Arc<dyn ShellSource>,
+}
+
+impl ShellSource for WithOwn {
+    fn open(&self, workspace: &str, open: &ShellOpen) -> Result<OpenedShell, ActionCallError> {
+        if open.target.get("kind").and_then(Value::as_str) != Some("workspace") {
+            return self.rest.open(workspace, open);
+        }
+        let (master, slave) = crate::environment_terminals::pty(linux_vm_protocol::TerminalSize {
+            cols: open.cols.max(1),
+            rows: open.rows.max(1),
+        })
+        .map_err(|error| unavailable(&error))?;
+        // The session the app's record names, a new one when it names none.
+        let session = match &open.record {
+            Some(record) => record.clone(),
+            None => uuid::Uuid::new_v4().simple().to_string(),
+        };
+        let running = self
+            .own
+            .interactive(
+                workspace,
+                &session,
+                None,
+                None,
+                slave,
+                ush_shell::Session {
+                    runs_key: open.commands.clone(),
+                    runs: None,
+                },
+                Vec::new(),
+            )
+            .map_err(|error| ActionCallError::Refused {
+                reason: format!("The workspace's shell couldn't start: {error}"),
+            })?;
+        let terminal = std::fs::File::from(master);
+        let output = terminal.try_clone().map_err(|error| unavailable(&error))?;
+        let window = terminal.try_clone().map_err(|error| unavailable(&error))?;
+        Ok(OpenedShell {
+            input: Box::new(terminal),
+            // Its terminal closing, as the shell exits, ends it.
+            output: Box::new(output),
+            resize: Box::new(move |cols, rows| resize(&window, cols, rows)),
+            report: Box::new(String::new),
+            keep: Box::new(running),
+            name: "ush".into(),
+            relay_session: None,
+            commands: open.commands.is_some(),
         })
     }
 }

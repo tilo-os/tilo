@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum SessionTarget {
     Host,
+    /// The workspace's own shell, as the device's daemon runs it: where an agent's command goes
+    /// when its session names no environment.
+    Workspace,
     Environment {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         record: Option<String>,
@@ -53,7 +56,7 @@ impl SessionTarget {
 
     pub fn is_valid(&self) -> bool {
         match self {
-            Self::Host => true,
+            Self::Host | Self::Workspace => true,
             Self::Environment { record } => record
                 .as_deref()
                 .is_none_or(tilo_environment::is_record_key),
@@ -64,6 +67,7 @@ impl SessionTarget {
     pub fn to_supervisor(&self) -> Option<tilo_environment::Target> {
         match self {
             Self::Host => Some(tilo_environment::Target::Host),
+            Self::Workspace => Some(tilo_environment::Target::Workspace),
             Self::Environment { record } => Some(tilo_environment::Target::Environment {
                 record: record.clone(),
             }),
@@ -139,6 +143,7 @@ pub fn parse_target_argument(raw: &str) -> Option<SessionTarget> {
     let raw = raw.trim();
     let target = match raw.split_once(':') {
         None if raw == "host" => SessionTarget::Host,
+        None if raw == "workspace" => SessionTarget::Workspace,
         None if raw == "environment" => SessionTarget::default_environment(),
         Some(("environment", record)) => SessionTarget::environment(record),
         Some(("linux-vm", vm)) => SessionTarget::LinuxVm { vm: vm.to_owned() },

@@ -41,6 +41,7 @@ impl Host {
         .unwrap();
         drop(taken);
         let daemon = Arc::new(Daemon::start_reporting(profile, &mut |_| {}).unwrap());
+        daemon.hand_apps_their_lines();
         Self {
             // The person's workspace is founded as the daemon starts, in the step that made
             // their root here.

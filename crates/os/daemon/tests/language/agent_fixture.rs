@@ -139,3 +139,71 @@ pub fn mcp_agent(person: &str) -> String {
     let root: [u8; 32] = hex::decode(person).unwrap().try_into().unwrap();
     tilo_actions::remote::device_agent_id(&root, "mcp")
 }
+
+/// The commands recorded on the workspace's Terminal session, each its own record as an agent
+/// of the person's reads it: listed on the session, then read at the path the session lists it
+/// by.
+pub async fn terminal_commands(agent: &host::Agent) -> Vec<Value> {
+    let listed = agent
+        .tool_structured(
+            "tilo_ls",
+            &json!({"path": "terminal/Terminal", "kind": "resources"}),
+        )
+        .await;
+    assert_ne!(listed["isError"], true, "the session lists: {listed}");
+    let mut commands = Vec::new();
+    for row in listed["structuredContent"]["rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let Some(path) = row["path"].as_str() else {
+            continue;
+        };
+        commands.push(read_json(agent, path).await);
+    }
+    commands
+}
+
+/// What `tilo_read` of `path` reads, as JSON: the structured answer, which a long read shrinks
+/// and keeps whole JSON, where its text is cut where it runs long.
+pub async fn read_json(agent: &host::Agent, path: &str) -> Value {
+    let read = agent
+        .tool_structured("tilo_read", &json!({"path": path}))
+        .await;
+    assert_ne!(read["isError"], true, "{path} reads: {read}");
+    let structured = &read["structuredContent"];
+    assert!(structured.is_object(), "{path} reads as JSON: {read}");
+    structured.clone()
+}
+
+/// Whether a command recorded on the workspace's Terminal session holds `needle`: in its
+/// command line, or in what it printed, as an agent of the person's reads the record.
+pub async fn terminal_holds(host: &host::Host, needle: &str) -> bool {
+    terminal_commands(&host.agent())
+        .await
+        .iter()
+        .any(|command| {
+            let mut texts = Vec::new();
+            texts_of(command, &mut texts);
+            texts.iter().any(|text| text.contains(needle))
+        })
+}
+
+/// Every text `value` holds.
+fn texts_of(value: &Value, texts: &mut Vec<String>) {
+    match value {
+        Value::String(text) => texts.push(text.clone()),
+        Value::Object(fields) => {
+            for value in fields.values() {
+                texts_of(value, texts);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                texts_of(value, texts);
+            }
+        }
+        _ => {}
+    }
+}

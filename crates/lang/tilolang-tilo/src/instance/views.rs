@@ -300,9 +300,10 @@ impl Instance {
     /// (a search hit, an agent, a script) what it reaches outside waits for the person, as any
     /// call of theirs does. A person who may not change it opens it all the same, without the
     /// change. A past version or a scenario's capture is nobody opening anything, and changes
-    /// nothing. The caller commits what it planned.
+    /// nothing; nor is an instance no window shows, which lays out what a call names (its root,
+    /// the record it was started on) for its callers alone. The caller commits what it planned.
     fn run_opened(&self, target: &ResourceRef, press: u64) {
-        if self.mode != Mode::Live {
+        if self.mode != Mode::Live || self.windowless {
             return;
         }
         let Some(host) = self.host() else {

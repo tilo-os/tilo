@@ -614,21 +614,22 @@ fn a_handed_workspace_runs_its_keys_commands_after_a_restart() {
     host::run_with(&["terminal"], |host| async move {
         let workspace = host.workspace().to_owned();
         let agent = host.key("Ada's agent");
-        terminal_runs(&agent, &workspace, "before-restart").await;
+        terminal_runs(&host, &agent, &workspace, "before-restart").await;
         // The key keeps the daemon it asks alive, so it goes before the computer stops it.
         drop(agent);
         host.restart().await;
         // A key made on the computer that started again reaches the workspace it kept, and
         // its Terminal runs there.
         let agent = host.key("Ada's agent, again");
-        terminal_runs(&agent, &workspace, "after-restart").await;
+        terminal_runs(&host, &agent, &workspace, "after-restart").await;
     });
 }
 
-/// `agent` runs `echo <word>` in `workspace`'s Terminal, through its API, and the command's
-/// output comes back.
-async fn terminal_runs(agent: &host::Key, workspace: &str, word: &str) {
-    let (status, ran) = in_run(
+/// `agent` runs `echo <word>` in `workspace`'s Terminal, through its API: the command waits
+/// for the person's yes among their open asks, and once they approve it its output comes back
+/// to the key that asked.
+async fn terminal_runs(host: &host::Host, agent: &host::Key, workspace: &str, word: &str) {
+    let (status, asked) = in_run(
         agent,
         workspace,
         ("terminal", "run"),
@@ -636,7 +637,29 @@ async fn terminal_runs(agent: &host::Key, workspace: &str, word: &str) {
         "Run a command",
     )
     .await;
-    assert_eq!(status, 200, "{ran}");
+    assert_eq!(status, 202, "a key's command waits for its person: {asked}");
+    assert_eq!(asked["status"], "pending", "{asked}");
+    let invocation = asked["invocation"]
+        .as_str()
+        .expect("the run's id")
+        .to_owned();
+    let followed = format!("/v1/workspaces/{workspace}/invocations/{invocation}");
+    host.approve_asked("so.tilo.terminal#run").await;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let ran = loop {
+        // `202` while it runs, `200` once it is done.
+        let (status, ran) = agent.get(&followed).await;
+        if status == 200 {
+            break ran;
+        }
+        assert_eq!(status, 202, "{ran}");
+        assert_eq!(ran["status"], "pending", "{ran}");
+        assert!(
+            Instant::now() < deadline,
+            "the approved command never ends: {ran}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
     assert_eq!(ran["status"], "ok", "{ran}");
     assert!(ran.to_string().contains(word), "the command printed: {ran}");
 }

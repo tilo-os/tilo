@@ -376,11 +376,14 @@ action open_shell(s: Session) uses shell {
     s.state = .opening
     s.trouble = ""
     s.held = ""
+    // An agent's session that names no environment runs in the workspace's own shell, as the
+    // device runs it: no environment is built for a command line.
+    let target = if s.target == "" and invoker.kind() == .agent { "workspace" } else { s.target }
     match engine.call(
         "open",
         json.encode(
             OpenAsk(
-                target: s.target,
+                target: target,
                 columns: first_columns(),
                 rows: first_rows(),
                 context: tool.context(),
@@ -472,6 +475,8 @@ destructive action open_in(s: Session, target: Text) (
 fn target_name(target: Text, all: environment.Environments) -> Text {
     if target == "host" {
         "Your shell on this device"
+    } else if target == "workspace" {
+        "This workspace's shell"
     } else if target.starts_with("linux-vm:") {
         let vm = target.slice(9, target.len())
         "{vm} virtual machine"
@@ -542,7 +547,14 @@ action run(s: Session, command: Text) uses shell (
     require command.trim() != "" and command.len() <= max_command_bytes() "a command line of 1 to 4096 bytes"
     require not command.contains("\n") and not command.contains("\r") "one command line"
     require s.target != "host" or invoker.kind() != .agent "commands are not run in the device's own shell for anyone"
-    if s.shell == "" { open_shell(s) }
+    if s.shell == "" {
+        // Run with no shell open and no environment named, a command line runs in the
+        // workspace's own shell, as the device runs one: no environment is built for it.
+        if s.target == "" {
+            s.target = "workspace"
+        }
+        open_shell(s)
+    }
     run_in_shell(s, command)
 }
 
@@ -854,12 +866,13 @@ action finished(s: Session, said: Text) uses time {
     }
 }
 
-/// Records a run on the session, and in the workspace's history when a person typed it.
-action record(s: Session, run: Finished, id: Text) uses time {
+/// Records a run on the session, and in the workspace's history when a person typed it. What it
+/// printed is `run`'s output, or `printed` when it was kept on this device in its place.
+action record(s: Session, run: Finished, id: Text, printed: Option<File> = .none) uses time {
     if run.command.trim() == "" {
         return
     }
-    let made = command_of(run, s.target, .some(invoker))
+    let made = command_of(run, printed, s.target, .some(invoker))
     if id == "" {
         s.commands.insert(made)
     } else {
@@ -884,7 +897,12 @@ action record(s: Session, run: Finished, id: Text) uses time {
     }
 }
 
-fn command_of(run: Finished, environment: Text, actor: Option<Actor>) -> Command {
+fn command_of(
+    run: Finished,
+    printed: Option<File>,
+    environment: Text,
+    actor: Option<Actor>,
+) -> Command {
     Command(
         command: run.command,
         cwd: run.cwd,
@@ -893,7 +911,13 @@ fn command_of(run: Finished, environment: Text, actor: Option<Actor>) -> Command
         started_ms: run.started_ms,
         ended_ms: run.ended_ms,
         exit: run.exit,
-        output: Bytes.from_text(run.output),
+        output: match printed {
+            .some(f) => match f.bytes() {
+                .ok(bytes) => bytes,
+                .err(_) => Bytes.from_text(run.output),
+            },
+            .none => Bytes.from_text(run.output),
+        },
         truncated: run.truncated,
         tool: run.tool,
         undoable: run.undoable,
@@ -927,7 +951,9 @@ fn item_kind(kind: Text) -> ItemKind {
 }
 
 /// Records a command that ended on the session where its shell runs for someone who asked with
-/// `run` (an agent, a script, another device), under the id its caller gave it.
+/// `run` (an agent, a script, another device), under the id its caller gave it. What it printed
+/// comes as `output`, or, when it is too long to travel in the call, as `output_file`: kept on
+/// this device, and named in its place.
 action record_command(
     s: Session,
     command: Text,
@@ -942,9 +968,14 @@ action record_command(
     items: List<FinishedItem> = [],
     request: Option<Text> = .none,
     id: Text = "",
+    output_file: Option<File> = .none,
 ) uses time {
     require command.trim() != "" "a command line"
     require id != "" and not s.commands.any(c -> c.run == id) "a command takes an id of its own"
+    require match output_file {
+        .some(f) => f.here(),
+        .none => true,
+    } "the output it printed, kept on this device"
     record(
         s,
         Finished(
@@ -960,6 +991,7 @@ action record_command(
             items: items,
         ),
         id,
+        printed: output_file,
     )
 }
 

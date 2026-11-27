@@ -604,6 +604,9 @@ pub fn decide_serve(req: &ServeRequest) -> Result<Option<String>, String> {
              is decided by the host check"
                 .into(),
         ),
+        Target::Workspace => {
+            Err("not available as an environment: the workspace's own shell is the daemon's".into())
+        }
         Target::Environment { record: None, .. } => Ok(None),
         Target::Environment {
             record: Some(record),

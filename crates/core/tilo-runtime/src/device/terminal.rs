@@ -27,9 +27,9 @@ pub(crate) struct HostShells {
 impl HostShells {
     /// The shells `shells` runs, reading the workspaces' machine secrets through `copies`.
     #[must_use]
-    pub(crate) fn new(shells: WorkspaceShells, copies: Workspaces) -> Self {
+    pub(crate) fn new(shells: Arc<WorkspaceShells>, copies: Workspaces) -> Self {
         Self {
-            terminals: EnvironmentTerminals::new(Arc::new(shells)),
+            terminals: EnvironmentTerminals::new(shells),
             copies,
         }
     }

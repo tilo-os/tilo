@@ -953,7 +953,7 @@ fn forget(table: &Weak<Table>, kept: &Arc<Kept>) {
 }
 
 /// A pseudo-terminal of `size`, its master and slave, neither inherited by programs.
-fn pty(size: TerminalSize) -> io::Result<(OwnedFd, OwnedFd)> {
+pub(crate) fn pty(size: TerminalSize) -> io::Result<(OwnedFd, OwnedFd)> {
     let (mut master, mut slave) = (-1, -1);
     let size = libc::winsize {
         ws_row: size.rows,

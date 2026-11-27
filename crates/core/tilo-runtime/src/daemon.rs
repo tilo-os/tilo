@@ -1083,7 +1083,7 @@ fn serve_the_started(
         .follow_shells(record_shell(session), shell_lines(session));
     native.serve_apps(app_take(session));
     #[cfg(unix)]
-    session.apps().serve_own_lines(own_lines(session));
+    session.hand_apps_their_lines();
     native
         .seats
         .serve(Arc::new(PersonShells(Arc::downgrade(session))));
@@ -1473,6 +1473,36 @@ pub(crate) fn own_lines(session: &Arc<Daemon>) -> crate::device::processes::OwnL
         serve_as_app(ours, Frames::of_an_app(&session, &at), None, held)?;
         Ok(runtime_portal::packet::descriptor_of(theirs))
     })
+}
+
+#[cfg(unix)]
+impl Daemon {
+    /// Hand each app's own tilolang process started from now on its line to this daemon: the
+    /// one path its Rust host has here, which carries the shells it opens, the secrets it keeps
+    /// and the key the device holds for it. Every daemon that starts the person's apps does this
+    /// once, as soon as it is shared.
+    pub fn hand_apps_their_lines(self: &Arc<Self>) {
+        self.apps().serve_own_lines(own_lines(self));
+        let daemon = Arc::downgrade(self);
+        self.workspaces()
+            .start_apps_with(Arc::new(move |app, workspace, record| {
+                use tilo_app_host::services::LauncherServices as _;
+                let started = daemon
+                    .upgrade()
+                    .map(|daemon| daemon.apps().windowless(app, workspace, Some(record)));
+                let app = app.to_owned();
+                Box::pin(async move {
+                    match started {
+                        None => Err("this computer's daemon is stopping".to_owned()),
+                        Some(Err(error)) => Err(error),
+                        Some(Ok(None)) => Err(format!("{app} does not start with no window here")),
+                        Some(Ok(Some(started))) => started
+                            .await
+                            .map_err(|_| format!("{app} stopped before it started"))?,
+                    }
+                })
+            }));
+    }
 }
 
 /// Serve `session`'s native endpoint at `socket`, as the daemon does once the person's services

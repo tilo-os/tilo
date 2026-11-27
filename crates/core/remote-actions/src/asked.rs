@@ -1098,8 +1098,20 @@ fn readmit(
         .and_then(|dispatch| dispatch.readmit(caller, request, context))
 }
 
-/// The app a call's target names: a record's app, an app's own provider, or the provider.
-fn app_of(provider: &str) -> &str {
+/// The app a call's target names: a record's app, an app's own provider, the app whose
+/// tilolang record (`tl:<app>:<id>`) the call is on wherever that app's process runs, or the
+/// provider.
+fn app_of(target: &tilo_actions::remote::RemoteActionTarget) -> &str {
+    let provider = target.provider.as_str();
+    if let Some(app) = target
+        .address
+        .resource
+        .strip_prefix("tl:")
+        .map(|rest| rest.split_once(':').map_or(rest, |(app, _)| app))
+        .filter(|app| !app.is_empty())
+    {
+        return app;
+    }
     if let Some(rest) = provider
         .strip_prefix(tilo_actions::remote::RESOURCE_PROVIDER)
         .and_then(|rest| rest.strip_prefix(':'))
@@ -1150,7 +1162,7 @@ pub fn asked_grant(
         return Err(refused("This action is on no resource type to grant"));
     }
     let (app, kind, action) = (
-        app_of(&request.target.provider),
+        app_of(&request.target),
         facts.kind.clone(),
         request.target.address.action.clone(),
     );
@@ -1175,7 +1187,7 @@ impl Record {
     /// The record as its person reads it.
     fn row(&self) -> Asked {
         let target = &self.request.target;
-        let app = app_of(&target.provider).to_owned();
+        let app = app_of(target).to_owned();
         Asked {
             record: self.at.clone(),
             workspace: self.at.workspace.clone(),

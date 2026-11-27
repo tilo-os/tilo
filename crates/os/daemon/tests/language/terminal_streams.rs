@@ -12,7 +12,6 @@ use std::time::{Duration, Instant};
 use iroh::{Endpoint, EndpointAddr};
 use serde_json::json;
 use tilo_actions::{ActionAddress, InvocationUpdate, remote::RESOURCE_PROVIDER};
-use ui::resource::DocumentId;
 use ush::environment_terminals::{
     FromTerminal, NOT_HANDED, ToTerminal,
     quic::{Receiving, Sending, dial},
@@ -136,26 +135,12 @@ fn opened(
     (stream, session)
 }
 
-/// Whether the workspace's Terminal records hold `needle`, asked again until they do.
+/// Whether the workspace's Terminal session records `needle`, asked again until it does.
 async fn terminal_holds(host: &host::Host, needle: &str) -> bool {
     let deadline = Instant::now().checked_add(PATIENCE).unwrap();
     loop {
-        let daemon = host.daemon();
-        let workspaces = daemon.workspaces();
-        let workspace = host.workspace();
-        let routes = workspaces.document_routes(workspace).await.unwrap();
-        for (app, record) in routes
-            .into_iter()
-            .filter(|(app, _)| app == ui::apps::TERMINAL)
-        {
-            if workspaces
-                .resource_document(workspace, &app, &record)
-                .await
-                .unwrap()
-                .is_some_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle.as_bytes()))
-            {
-                return true;
-            }
+        if crate::language::agent_fixture::terminal_holds(host, needle).await {
+            return true;
         }
         assert!(
             Instant::now() < deadline,
@@ -167,16 +152,13 @@ async fn terminal_holds(host: &host::Host, needle: &str) -> bool {
 
 #[test]
 fn a_members_terminal_stream_is_its_own_and_every_line_typed_is_recorded_once() {
-    host::run(|host| async move {
+    host::run_with(&["terminal"], |host| async move {
         let workspace = host.workspace().to_owned();
         let laptop = host.member("laptop", &workspace).await;
         let phone = host.member("phone", &workspace).await;
-        let record = DocumentId::window_default(0x927e_0000_0000_0004);
-        let provider = format!(
-            "{RESOURCE_PROVIDER}:{}:{}",
-            ui::apps::TERMINAL,
-            record.route()
-        );
+        // The workspace's own session, the one every Terminal window shows: the Terminal's root
+        // `session`, whose id its package's ids lock fixes.
+        let provider = format!("{RESOURCE_PROVIDER}:{}:root-vgkud5dv", ui::apps::TERMINAL);
         let open = ActionAddress::new("tl.so.tilo.terminal.Session", "open-terminal");
         let (stream, session) = opened(
             laptop

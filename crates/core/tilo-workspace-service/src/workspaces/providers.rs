@@ -913,6 +913,12 @@ impl Providers {
             .or_else(|| moves(&self.0.provided.read_recover(), &request.target))
             .or_else(|| self.published(&request.target, Reach::ThisDevice))
             .or_else(|| self.get(provider))?;
+        // Whoever follows the call afterwards (its caller, a resend the person approved) reads
+        // it where it runs, as a host's call is.
+        self.take(
+            request.invocation,
+            Taker::Registered(Arc::clone(&registered.provider)),
+        );
         Some(registered.answers.invoke(caller, request))
     }
 

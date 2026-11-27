@@ -135,7 +135,21 @@ pub(crate) struct DeviceAsked {
     /// How each call this dispatch keeps stands while nothing of it runs: waiting, declined,
     /// withdrawn, or refused when it was sent again; with who it runs as, who alone reads it.
     standing: Arc<Mutex<Standing>>,
+    /// The calls sent on that the provider took rather than answered, while they run: one that
+    /// then stops for its person's yes is kept as their question once it is read here, as one
+    /// refused for it at once is.
+    followed: Mutex<HashMap<InvocationId, Followed>>,
     admits: Admits,
+}
+
+/// A call this dispatch sent on and follows while it runs: what keeps it, should it stop for its
+/// person's yes, and where it is read once it ends.
+struct Followed {
+    run: Run,
+    caller: Caller,
+    route: Route,
+    /// The call, as it was sent and as its asked record would keep it.
+    call: InvokeRequest,
 }
 
 #[derive(Default)]
@@ -202,6 +216,7 @@ impl DeviceAsked {
                 waiting: Mutex::default(),
                 handed_on: Mutex::default(),
                 standing: Arc::default(),
+                followed: Mutex::default(),
                 admits,
             }
         })
@@ -397,21 +412,107 @@ impl DeviceAsked {
         let me = Arc::clone(self);
         let (call, caller) = (request.clone(), caller.clone());
         provider
-            .invoke(&acting, request.clone())
+            .invoke(&acting, request)
             .map(move |answered| match refused_for_a_yes(&answered) {
                 Some(facts) if call.approval().is_none() => me.keep(
                     Waiting {
                         run,
                         caller,
                         route,
-                        at: request.target.provider,
+                        at: call.target.provider.clone(),
                         read: None,
                     },
                     &call,
                     facts,
                 ),
-                _ => answered,
+                // Taken, it may yet stop for its person's yes: an app's action finds that it
+                // needs it as it runs. It is read here while it runs, so that it is asked.
+                _ => {
+                    if call.approval().is_none()
+                        && matches!(
+                            &answered,
+                            Ok(InvocationReceipt {
+                                status: ReceiptStatus::Accepted,
+                                ..
+                            })
+                        )
+                    {
+                        me.follow_taken(Followed {
+                            run,
+                            caller,
+                            route,
+                            call,
+                        });
+                    }
+                    answered
+                }
             })
+    }
+
+    /// Read `followed`, a call sent on and taken, here while it runs.
+    fn follow_taken(&self, followed: Followed) {
+        let invocation = followed.call.invocation;
+        let acting = followed.route.1.clone();
+        self.invocations.record(
+            &followed.caller,
+            &acting,
+            &followed.call,
+            Some(followed.run.workspace()),
+            self.route(&acting),
+        );
+        self.followed.lock_recover().insert(invocation, followed);
+    }
+
+    /// `id`, a call followed here, as it stands where it runs: kept as its person's question when
+    /// it stopped for their yes, and read where it ran from now on once it ended otherwise.
+    fn followed_state(&self, acting: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        let route = self
+            .followed
+            .lock_recover()
+            .get(id)
+            .map(|f| f.route.clone())?;
+        if !same_asker(&route.1, acting) {
+            return None;
+        }
+        let state = route.0.observe(&route.1, id)?;
+        let receipt = state.receipt();
+        if let Some(facts) = refused_for_a_yes(&Ok(receipt.clone())) {
+            // Whoever reads it first keeps it; a read after that finds it standing.
+            let taken = self.followed.lock_recover().remove(id);
+            if let Some(followed) = taken {
+                let Followed {
+                    run,
+                    caller,
+                    route,
+                    call,
+                } = followed;
+                let at = call.target.provider.clone();
+                let waiting = Waiting {
+                    run,
+                    caller,
+                    route,
+                    at,
+                    read: None,
+                };
+                if let Err(error) = self.keep(waiting, &call, facts) {
+                    Standing::stand(&self.standing, acting, failed(*id, &error));
+                }
+            }
+            return self.observe(acting, id);
+        }
+        if receipt.status != ReceiptStatus::Accepted
+            && let Some(followed) = self.followed.lock_recover().remove(id)
+        {
+            // Ended: it is read where it ran.
+            self.invocations.record(
+                &followed.caller,
+                &followed.route.1,
+                &followed.call,
+                Some(followed.run.workspace()),
+                followed.route.clone(),
+            );
+        }
+        Some(state)
     }
 
     fn keep(
@@ -526,49 +627,79 @@ impl DeviceAsked {
             read.complete(Ok(()));
             return;
         }
-        // It runs where it is sent from now on, and is read there.
+        // Under way here until where it is sent takes it: whoever follows it meanwhile reads
+        // that it runs, never that it is unknown.
+        let invocation = request.invocation;
+        Standing::stand(
+            &self.standing,
+            &route.1,
+            InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }),
+        );
         self.invocations.record(
             &caller,
             &route.1,
             &request,
             Some(run.workspace()),
-            route.clone(),
+            self.route(&route.1),
         );
-        Standing::leave(&self.standing, request.invocation);
         let (provider, acting) = route;
-        let (invocation, standing) = (request.invocation, Arc::downgrade(&self.standing));
+        // The person's yes admits it again as whoever asked, after the turn or session it was
+        // asked in ended too: it no longer runs under that run's end.
+        let acting = if acting.execution_id().is_some() && !acting.execution_is_live() {
+            acting.kept().restored()
+        } else {
+            acting
+        };
+        let standing = Arc::downgrade(&self.standing);
         let (invocations, me) = (Arc::clone(&self.invocations), self.me.clone());
-        provider.invoke(&acting, request).then(move |answered| {
-            // Refused at its admission (the grants no longer reach it): it ran nothing, and its
-            // caller reads why, here.
-            let error = match answered {
-                Some(
-                    Ok(InvocationReceipt {
-                        status: ReceiptStatus::Rejected { error },
-                        ..
-                    })
-                    | Err(error),
-                ) => error,
-                None => ActionCallError::Unavailable {
-                    reason: "the workspace stopped before it answered".into(),
-                },
-                Some(Ok(_)) => return,
-            };
-            let state = failed(invocation, &error);
-            let (Some(standing), Some(me)) = (standing.upgrade(), me.upgrade()) else {
-                return;
-            };
-            Standing::stand(&standing, &acting, state);
-            if let Some(recorded) = invocations.get(&caller, &invocation) {
-                invocations.record(
-                    &caller,
-                    &acting,
-                    &recorded.request,
-                    recorded.workspace.as_deref(),
-                    me.route(&acting),
-                );
-            }
-        });
+        let (sent, workspace) = (request.clone(), run.workspace().to_owned());
+        provider
+            .clone()
+            .invoke(&acting, request)
+            .then(move |answered| {
+                // Refused at its admission (the grants no longer reach it): it ran nothing, and its
+                // caller reads why, here.
+                let error = match answered {
+                    Some(
+                        Ok(InvocationReceipt {
+                            status: ReceiptStatus::Rejected { error },
+                            ..
+                        })
+                        | Err(error),
+                    ) => error,
+                    None => ActionCallError::Unavailable {
+                        reason: "the workspace stopped before it answered".into(),
+                    },
+                    // Taken: it runs where it was sent from now on, and is read there.
+                    Some(Ok(_)) => {
+                        invocations.record(
+                            &caller,
+                            &acting,
+                            &sent,
+                            Some(&workspace),
+                            (provider, acting.clone()),
+                        );
+                        if let Some(standing) = standing.upgrade() {
+                            Standing::leave(&standing, invocation);
+                        }
+                        return;
+                    }
+                };
+                let state = failed(invocation, &error);
+                let (Some(standing), Some(me)) = (standing.upgrade(), me.upgrade()) else {
+                    return;
+                };
+                Standing::stand(&standing, &acting, state);
+                if let Some(recorded) = invocations.get(&caller, &invocation) {
+                    invocations.record(
+                        &caller,
+                        &acting,
+                        &recorded.request,
+                        recorded.workspace.as_deref(),
+                        me.route(&acting),
+                    );
+                }
+            });
     }
 }
 
@@ -845,13 +976,25 @@ impl ActionProvider for DeviceAsked {
 
     fn observe(&self, acting: &Caller, id: &InvocationId) -> Option<InvocationState> {
         let standing = self.standing.lock_recover();
-        let (runs_as, state) = standing.by_id.get(id)?;
+        let Some((runs_as, state)) = standing.by_id.get(id) else {
+            drop(standing);
+            return self.followed_state(acting, id);
+        };
         let state = same_asker(runs_as, acting).then(|| state.clone());
         drop(standing);
         state
     }
 
     fn next_change(&self, acting: &Caller, id: &InvocationId) -> Option<Pending<()>> {
+        let followed = self
+            .followed
+            .lock_recover()
+            .get(id)
+            .filter(|followed| same_asker(&followed.route.1, acting))
+            .map(|followed| followed.route.clone());
+        if let Some((provider, runs_as)) = followed {
+            return provider.next_change(&runs_as, id);
+        }
         let mut standing = self.standing.lock_recover();
         let (runs_as, _) = standing.by_id.get(id)?;
         if !same_asker(runs_as, acting) {
@@ -865,6 +1008,15 @@ impl ActionProvider for DeviceAsked {
 
     /// Stopping a call that waits withdraws its question: its person is asked no more.
     fn cancel(&self, caller: &Caller, id: &InvocationId) -> Pending<Result<(), ActionCallError>> {
+        // A call that runs where it was sent is stopped there.
+        let followed = self
+            .followed
+            .lock_recover()
+            .get(id)
+            .map(|followed| followed.route.clone());
+        if let Some((provider, runs_as)) = followed {
+            return provider.cancel(&runs_as, id);
+        }
         if !self.waiting.lock_recover().contains_key(id) {
             // A call this device handed on waits at a device that keeps the person's root:
             // stopping it withdraws the question there, and its caller reads that it ended.

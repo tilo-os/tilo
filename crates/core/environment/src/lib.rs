@@ -936,6 +936,10 @@ pub fn is_record_key(key: &str) -> bool {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Target {
     Host,
+    /// The workspace's own shell, which the device's daemon runs itself: ush's own commands on
+    /// the workspace's folder, any other program where the workspace runs its programs. No
+    /// environment is built for it, and the shell runtime is never asked to open one.
+    Workspace,
     Environment {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         record: Option<String>,

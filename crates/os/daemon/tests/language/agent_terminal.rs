@@ -7,7 +7,7 @@
 use serde_json::{Value, json};
 use tilo_workspace_service::workspaces::terminal::RECORDED_OUTPUT;
 
-use crate::language::agent_fixture::{act, open_terminal_allowed, said};
+use crate::language::agent_fixture::{act, open_terminal_allowed, read_json, said};
 use crate::language::host;
 
 /// The agent names a command: the host opens its session, runs it in the workspace's shell, and
@@ -92,14 +92,11 @@ fn an_agents_command_lands_after_another_devices_terminal_closed() {
             "the command runs on the workspace's shell after the other device's Terminal closed: \
              {ran}"
         );
-        let (session, failed) = said(
-            &agent
-                .tool("tilo_read", &json!({"path": "terminal/Terminal"}))
-                .await,
-        );
-        assert!(
-            !failed && session.contains("echo ran on the workspace's shell"),
-            "the command is recorded on the session: {session}"
+        let recorded = recorded_command(&agent, "echo \"ran on the workspace's shell\"").await;
+        assert_eq!(
+            recorded["exit"],
+            json!(0),
+            "the command is recorded on the session: {recorded}"
         );
     });
 }
@@ -179,19 +176,27 @@ fn a_command_typed_on_a_terminal_the_agent_opened_is_recorded_on_the_session() {
         .await;
         // The command its shell ran reaches the workspace's shell, and the host records it on
         // the session once, as the agent's.
-        let (session, failed) = said(
-            &agent
-                .tool("tilo_read", &json!({"path": "terminal/Terminal"}))
-                .await,
-        );
+        let recorded = recorded_command(&agent, "echo typed-42").await;
         assert!(
-            !failed && session.contains("\"actor\":{\"agent\""),
-            "the session is read as the agent's: {session}"
+            names_an_agent(&recorded["actor"]),
+            "the session records the command as the agent's: {recorded}"
         );
+        let rows = command_rows(&agent, "echo typed-42").await;
+        assert_eq!(rows.len(), 1, "the command is recorded once: {rows:?}");
     });
 }
 
-/// The value of the command recorded as `command` in `read`, the session as `tilo_read` answers
+/// Whether `actor`, an actor as a record names it, is an agent's.
+fn names_an_agent(actor: &Value) -> bool {
+    match actor {
+        Value::Object(fields) => {
+            fields.contains_key("agent") || fields.values().any(names_an_agent)
+        }
+        _ => false,
+    }
+}
+
+/// The value of the command recorded as `command` in `read`, a record as `tilo_read` answers
 /// it: the first object anywhere in it whose `command` is that line.
 fn recorded<'a>(read: &'a Value, command: &str) -> Option<&'a Value> {
     match read {
@@ -204,31 +209,42 @@ fn recorded<'a>(read: &'a Value, command: &str) -> Option<&'a Value> {
     }
 }
 
-/// The command recorded as `command` on the workspace's Terminal session, once it is.
+/// The rows of the workspace's Terminal session that ran `command`, as `tilo_ls` lists them.
+async fn command_rows(agent: &host::Agent, command: &str) -> Vec<Value> {
+    let listed = agent
+        .tool_structured(
+            "tilo_ls",
+            &json!({"path": "terminal/Terminal", "kind": "resources"}),
+        )
+        .await;
+    assert_ne!(
+        listed["isError"], true,
+        "the agent lists the session: {listed}"
+    );
+    listed["structuredContent"]["rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|row| row["label"] == command)
+        .cloned()
+        .collect()
+}
+
+/// The command recorded as `command` on the workspace's Terminal session, once it is: its own
+/// record, read where the session lists it.
 async fn recorded_command(agent: &host::Agent, command: &str) -> Value {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let (session, failed) = said(
-            &agent
-                .tool("tilo_read", &json!({"path": "terminal/Terminal"}))
-                .await,
-        );
-        assert!(!failed, "the agent reads the session: {session}");
-        // A record's read says first that what it carries is content from outside the
-        // workspace, and the record follows it as JSON.
-        let json = session
-            .lines()
-            .skip_while(|line| !line.starts_with('{'))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let read: Value = serde_json::from_str(&json)
-            .unwrap_or_else(|error| panic!("the session reads as JSON ({error}): {session}"));
-        if let Some(found) = recorded(&read, command) {
-            return found.clone();
+        let rows = command_rows(agent, command).await;
+        if let Some(path) = rows.first().and_then(|row| row["path"].as_str()) {
+            let read = read_json(agent, path).await;
+            return recorded(&read, command)
+                .unwrap_or_else(|| panic!("the record is of {command}: {read}"))
+                .clone();
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "{command} is never recorded on the session: {session}"
+            "{command} is never recorded on the session"
         );
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
@@ -249,9 +265,10 @@ fn a_commands_output_is_kept_on_its_record() {
             "the command runs: {ran}"
         );
         let command = recorded_command(&agent, short).await;
-        let inline: Vec<u8> = serde_json::from_value(command["output"]["inline"].clone())
-            .unwrap_or_else(|error| panic!("a short output is in the record ({error}): {command}"));
-        assert_eq!(inline, b"test result: ok. 1 passed\n", "{command}");
+        assert_eq!(
+            command["output"]["text"], "test result: ok. 1 passed\n",
+            "a short output is in the record: {command}"
+        );
         assert_eq!(command["truncated"], json!(false), "{command}");
 
         // A run that prints past what is kept of it: its record keeps the end, where the
@@ -267,27 +284,29 @@ fn a_commands_output_is_kept_on_its_record() {
         );
         let command = recorded_command(&agent, &long).await;
         assert_eq!(command["truncated"], json!(true), "{command}");
-        let stored = command["output"]
-            .as_str()
-            .unwrap_or_else(|| panic!("a long output is named by the record: {command}"));
-        let (hash, len) = stored
-            .strip_prefix("blake3:")
-            .and_then(|rest| rest.split_once(':'))
-            .unwrap_or_else(|| panic!("the record names the output's content: {stored}"));
+        let len = command["output"]["bytes"]
+            .as_u64()
+            .and_then(|len| usize::try_from(len).ok())
+            .unwrap_or_else(|| {
+                panic!("the record says how much of the output it keeps: {command}")
+            });
+        assert!(
+            len > 64 * 1024 && len <= RECORDED_OUTPUT,
+            "the record keeps a bounded end of the run: {len} bytes"
+        );
+        // What it keeps is the end of what the run printed, kept by the host the record names
+        // it on, which the workspace's members are answered with.
+        let mut printed = vec![b'y'; RECORDED_OUTPUT + 4096];
+        printed.extend_from_slice(b"\nthe summary at the end\n");
+        let end = &printed[printed.len() - len..];
         let workspace =
             tilo_desktop_model::WorkspaceId::parse(host.workspace()).expect("a workspace id");
         let kept = host
             .daemon()
             .workspaces()
-            .kept_record_content(workspace, ui::apps::TERMINAL, hash)
+            .kept_record_content(workspace, ui::apps::TERMINAL, &blake3::hash(end).to_hex())
             .await
-            .unwrap_or_else(|| panic!("the host keeps the output the record names: {stored}"));
-        assert_eq!(len, kept.len().to_string(), "{stored}");
-        assert!(
-            kept.len() > 64 * 1024 && kept.len() <= RECORDED_OUTPUT,
-            "the record keeps a bounded end of the run: {} bytes",
-            kept.len()
-        );
+            .unwrap_or_else(|| panic!("the host keeps the end of the output: {command}"));
         let (ys, summary) = kept.split_at(kept.len() - "\nthe summary at the end\n".len());
         assert_eq!(summary, b"\nthe summary at the end\n");
         assert!(
@@ -317,7 +336,7 @@ fn an_agents_call_to_the_terminal_app_with_no_window_keeps_what_it_wrote() {
             "the session keeps the command the app wrote: {recorded}"
         );
         assert!(
-            recorded["actor"].get("agent").is_some(),
+            names_an_agent(&recorded["actor"]),
             "the session records the agent that asked: {recorded}"
         );
     });

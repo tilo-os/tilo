@@ -41,6 +41,8 @@ mod boot_unlock;
 mod boot_unlock_tests;
 mod call_media;
 mod carry;
+/// The dispatch the turns of the workspaces' agents run here call through.
+mod turn_dispatch;
 // What the daemon's program mounts beside the core: services, and the machine's own hooks.
 pub mod capabilities;
 /// What the person copies on one device continuing on their others: the daemon carries it.

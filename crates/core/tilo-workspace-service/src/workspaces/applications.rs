@@ -1,9 +1,8 @@
 //! An app's records, and the actions a host runs on them.
 //!
-//! A record is the app's primary (`""`, for an app that keeps one record per workspace) or a
-//! named record of the workspace: any app's, under an id the caller chooses, such as the
-//! workspace's default record every member's first window of the app opens. The app's own
-//! process opens a record or founds it at the id a call names.
+//! A record is one of the resources a tilolang app's workspace document holds, by its id there,
+//! such as the root its windows open on: published as `tl:<app>:<id>`. The app's own process
+//! takes a call on it, started with no window where none runs, and founds a root the call names.
 
 use super::{CollaborationError, Workspaces};
 
@@ -13,8 +12,6 @@ pub(crate) struct RecordAction<'a> {
     pub app: &'a str,
     /// The record, by its id.
     pub record: &'a str,
-    /// The resource the action is published on.
-    pub resource: &'a str,
     /// The action's id.
     pub action: &'a str,
     /// What it takes.
@@ -67,15 +64,20 @@ impl Workspaces {
         let RecordAction {
             app,
             record,
-            resource,
             action,
             arguments,
         } = asked;
+        // A tilolang app's record is one of the resources its workspace document holds, by the
+        // id it publishes it under: the app's process takes the call wherever it runs, and
+        // founds a root the call names.
         let request = InvokeRequest {
             asks: false,
             invocation: tilo_actions::InvocationId::new(),
-            target: tilo_actions::remote::application_resource_target(
-                workspace, app, record, resource, action,
+            target: tilo_actions::remote::application_action_target(
+                workspace,
+                app,
+                format!("tl:{app}:{record}"),
+                action,
             ),
             argument: InvokeArgument::Json(arguments),
             context: None,
@@ -88,11 +90,34 @@ impl Workspaces {
         };
         let invocation = request.invocation;
         let providers = self.providers();
-        let answer = providers
-            .invoke(caller, request)
-            .ok_or_else(|| ActionCallError::Refused {
+        let answer = if let Some(answer) = providers.invoke(caller, request.clone()) {
+            answer
+        } else {
+            // No process holds the record: its app starts with no window on it, and takes the
+            // call once it does.
+            let starts = self.app_starts().ok_or_else(|| ActionCallError::Refused {
                 reason: format!("no app process runs {app}'s {record} here"),
             })?;
+            starts(app, workspace, record).await.map_err(|reason| {
+                ActionCallError::Unavailable {
+                    reason: format!("{app} did not start for {record}: {reason}"),
+                }
+            })?;
+            let deadline = tilo_clock::now()
+                .checked_add(APP_ACTION_WAIT)
+                .unwrap_or_else(tilo_clock::now);
+            loop {
+                if let Some(answer) = providers.invoke(caller, request.clone()) {
+                    break answer;
+                }
+                if tilo_clock::now() >= deadline {
+                    return Err(ActionCallError::Unavailable {
+                        reason: format!("{app} started and never took the call on {record}"),
+                    });
+                }
+                tokio::time::sleep(APP_ACTION_POLL).await;
+            }
+        };
         let receipt = tokio::task::spawn_blocking(move || answer.wait_timeout(APP_ACTION_WAIT))
             .await
             .map_err(|error| ActionCallError::Unavailable {

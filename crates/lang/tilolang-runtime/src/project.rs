@@ -95,7 +95,12 @@ pub fn project(core: &Core, v: &Value, opts: ProjectOptions) -> Json {
             },
         }),
         Value::Picture(src) => json!({ "picture": src }),
-        Value::Bytes(bytes) => json!({ "bytes": bytes.len() }),
+        // How long they are, and what they say when they are text, such as what a command
+        // printed: cut as any text is.
+        Value::Bytes(bytes) => match std::str::from_utf8(bytes) {
+            Ok(text) => json!({ "bytes": bytes.len(), "text": project_text(text, opts) }),
+            Err(_) => json!({ "bytes": bytes.len() }),
+        },
         Value::Response(response) => json!({
             "status": response.status,
             "status_text": response.status_text,

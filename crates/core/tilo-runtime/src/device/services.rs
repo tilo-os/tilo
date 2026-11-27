@@ -109,6 +109,10 @@ pub struct Daemon {
     broker: BrokerHandle,
     /// The links of the shells this daemon starts ([`Self::start_shell`]).
     shell_links: Arc<tilo_app_host::shell::ShellLinks>,
+    /// The workspaces' own shells this device runs, where it runs any: an app's shell on the
+    /// workspace's own target opens there ([`Self::own_shells`]).
+    #[cfg(target_os = "linux")]
+    own_shells: Option<Arc<ush::workspace_shell::WorkspaceShells>>,
     workspaces: Arc<ServiceWorkspaces>,
     /// The device's live session: the one place this device is in each workspace's call and
     /// presence, which an app's call lane joins through ([`Self::app_call_setup`]).
@@ -1535,6 +1539,13 @@ impl Daemon {
             .map(|broker| broker.state().subscribe_execution_activity())
     }
 
+    /// The workspaces' own shells this device runs, where it runs any: what an app's shell on
+    /// the workspace's own target opens.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn own_shells(&self) -> Option<Arc<ush::workspace_shell::WorkspaceShells>> {
+        self.own_shells.clone()
+    }
+
     /// The links this daemon made, for a test that shows a secret admits one connection and no
     /// second: [`Self::shell_link`] takes its own secret as it connects.
     #[cfg(test)]
@@ -2583,6 +2594,10 @@ impl Daemon {
         // dispatch answers the records' `run` and `open-terminal` with ush's shells, and the
         // endpoint takes the streams it hands out. A member that takes its server's work runs
         // them for its server instead, and answers none itself.
+        // The workspaces' own shells this device runs: what an app's shell on the workspace's own
+        // target opens, beside the sessions the dispatch runs.
+        #[cfg(target_os = "linux")]
+        let mut own_shells = None;
         #[cfg(target_os = "linux")]
         let terminals: TerminalProtocols = {
             let mut terminals: TerminalProtocols = Vec::new();
@@ -2597,6 +2612,8 @@ impl Daemon {
                     None,
                 )
                 .on_machine(true);
+                let shells = Arc::new(shells);
+                own_shells = Some(Arc::clone(&shells));
                 let host = Arc::new(super::terminal::HostShells::new(
                     shells,
                     workspaces.copies().clone(),
@@ -2614,30 +2631,13 @@ impl Daemon {
                         },
                     )),
                 ));
-                // A command's output too long for its record is kept on the shelf its record's
-                // content is read from, once the device's content store is open.
-                let shelf = Arc::clone(&workspaces);
+                let shelves = Arc::clone(&workspaces);
                 let terminal = tilo_workspace_service::workspaces::terminal::TerminalService::new(
                     workspaces.copies().clone(),
                     host,
                     tilo_rt::app().handle().clone(),
                 )
-                .keeping_output(Arc::new(
-                    move |workspace: &str, hash: &str, bytes: &[u8]| {
-                        let shelf = shelf
-                            .content_shelf()
-                            .ok_or("this device's content store is not open")?;
-                        shelf.keep(
-                            &tilo_workspace_service::content::ContentScope {
-                                workspace: workspace.to_owned(),
-                                app: tilo_workspace_service::workspaces::terminal::TERMINAL_APP
-                                    .to_owned(),
-                            },
-                            hash,
-                            bytes,
-                        )
-                    },
-                ));
+                .keeping_output_on(Arc::new(move || shelves.content_shelf()));
                 workspaces.copies().provide(
                     tilo_workspace_service::workspaces::terminal::PROVIDER,
                     Arc::new(terminal),
@@ -3099,7 +3099,7 @@ impl Daemon {
         // through this daemon, whose fan-out holds the apps' connections.
         Arc::new(super::window_follow::WindowFollow::new(Arc::clone(&fanout)))
             .register(&workspaces.copies().providers());
-        start_agents(&broker, &workspaces, &tickets);
+        start_agents(&broker, &workspaces, &tickets, (&asked, &invocations));
         // The apps installed here that keep a long-lived connection: the trigger runner takes
         // each one's turn where this device has what it needs, and runs it while it holds it.
         #[cfg(unix)]
@@ -3228,6 +3228,8 @@ impl Daemon {
             policy_origin,
             broker,
             shell_links,
+            #[cfg(target_os = "linux")]
+            own_shells,
             other_devices: other_devices(&workspaces),
             apps,
             workspaces,
@@ -6745,9 +6747,15 @@ impl RuntimeActionProvider {
             return asked.send(run, caller, route, request);
         }
         // The person's own call waits for them as its asked record too: where a program
-        // outside Tilo asks them through the shell, or a press needs their yes.
+        // outside Tilo asks them through the shell, or a press needs their yes. A key of
+        // theirs that is no agent of theirs calls as them, and its call waits for them the
+        // same; what it asks of the workspace's own tree is decided by its grant below.
         if let Some(asked) = &self.asked
-            && session.agent.is_none()
+            && session.agent.as_ref().is_none_or(|key| {
+                key.acting().agent_id().is_none()
+                    && request.target.provider
+                        != tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER
+            })
         {
             let run = self.own_run(session, &request);
             let route = (Arc::clone(&session.provider), session.acting().clone());
@@ -8073,7 +8081,12 @@ fn serve_agent_steps(workspaces: &ServiceWorkspaces, fanout: &Arc<FanoutState>) 
 /// a workspace's host runs, each turn's calls decided by `broker` as the person's own calls are.
 /// An agent whose person's root is not here is asked for with a ticket `tickets` serves, which
 /// its person redeems to approve this device's key for it.
-fn start_agents(broker: &BrokerHandle, workspaces: &ServiceWorkspaces, tickets: &Arc<Tickets>) {
+fn start_agents(
+    broker: &BrokerHandle,
+    workspaces: &ServiceWorkspaces,
+    tickets: &Arc<Tickets>,
+    (asked, invocations): (&Arc<super::asked::DeviceAsked>, &Arc<Invocations>),
+) {
     let Some(broker) = broker.app_action_broker() else {
         tracing::warn!("this device's broker is not up, so it runs no agents of its workspaces");
         return;
@@ -8082,7 +8095,11 @@ fn start_agents(broker: &BrokerHandle, workspaces: &ServiceWorkspaces, tickets: 
         .handle()
         .spawn(tilo_app_host::agents::run_on_device(
             workspaces.copies().clone(),
-            broker.device_host(),
+            Arc::new(super::turn_dispatch::TurnDispatch::new(
+                broker,
+                Arc::clone(asked),
+                Arc::clone(invocations),
+            )),
             Some(Arc::clone(tickets) as _),
         ));
 }

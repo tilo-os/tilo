@@ -154,6 +154,7 @@ impl Keeping {
         tilo_device_identity::login::file_certificate(&place, &cert).unwrap();
         tilo_api::daemon::enter::adopt(&place, &cert).unwrap();
         let daemon = Arc::new(Daemon::start_reporting(profile, &mut |_| {}).unwrap());
+        daemon.hand_apps_their_lines();
         Self {
             person: daemon.actor().to_owned(),
             daemon,

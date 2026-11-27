@@ -1018,6 +1018,19 @@ pub enum OwnReaders {
     OwnRecords,
 }
 
+/// Starts an app (its id) with no window on a record of a workspace (`app`, `workspace`,
+/// `record`), answering once its process holds the record or why it could not start.
+pub type AppStarts = Arc<
+    dyn Fn(
+            &str,
+            &str,
+            &str,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// The workspaces this server hosts.
 #[derive(Clone)]
 pub struct Workspaces {
@@ -1139,6 +1152,9 @@ struct WorkspacesInner {
     /// apps built into the build.
     #[cfg(not(target_arch = "wasm32"))]
     tilolang: std::sync::OnceLock<crate::tl_records::Tilolang>,
+    /// How this host starts an app with no window on one of its records, where its program can
+    /// ([`Workspaces::start_apps_with`]): what runs an action on a record no app process holds.
+    app_starts: std::sync::OnceLock<AppStarts>,
     /// The action service the workspaces answer their members' devices on, as this
     /// host's own device ([`device_actions`]).
     action_service: tilo_peer_state::actions::ActionService,
@@ -1706,6 +1722,7 @@ impl Workspaces {
                 own_opened: reads::OwnOpened::default(),
                 #[cfg(not(target_arch = "wasm32"))]
                 tilolang: std::sync::OnceLock::new(),
+                app_starts: std::sync::OnceLock::new(),
                 creating: creating::Creating::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
                 handing: std::sync::Mutex::default(),
@@ -2245,6 +2262,17 @@ impl Workspaces {
         }
         let _ = self.inner.tilolang.set(tilolang);
         Ok(())
+    }
+
+    /// Start apps with no window through `starts` from now on: the app's process opens the
+    /// record a call names, so an action on a record no window shows still runs in its app.
+    pub fn start_apps_with(&self, starts: AppStarts) {
+        let _ = self.inner.app_starts.set(starts);
+    }
+
+    /// How this host starts an app with no window on a record, where its program can.
+    pub(crate) fn app_starts(&self) -> Option<&AppStarts> {
+        self.inner.app_starts.get()
     }
 
     /// The language runtime this service's program mounted, where one did.

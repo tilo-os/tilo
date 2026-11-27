@@ -714,16 +714,19 @@ d-52n4fgbt = Beendet
 d-52n4fgbt-said = Gemeldet
 
 d-oxoopdwb = Aufzeichnen
-    .doc = Zeichnet einen Lauf in der Sitzung auf und im Verlauf des Arbeitsbereichs, wenn eine Person ihn getippt hat.
+    .doc = Zeichnet einen Lauf in der Sitzung auf und im Verlauf des Arbeitsbereichs, wenn eine Person ihn getippt hat. Was er ausgab, ist die Ausgabe des Laufs, oder `printed`, wenn sie an ihrer Stelle auf diesem Gerät aufbewahrt wurde.
 
 d-oxoopdwb-run = Lauf
+
+d-oxoopdwb-printed = Ausgegeben
 
 d-oxoopdwb-id = ID
 
 d-i7oueaex = Befehl aufzeichnen
-    .doc = Zeichnet einen Befehl auf, der in der Sitzung endete, wo ihre Shell für jemanden läuft, der ihn mit `run` angefragt hat (einen Agenten, ein Skript, ein anderes Gerät), unter der ID, die sein Aufrufer ihm gab.
+    .doc = Zeichnet einen Befehl auf, der in der Sitzung endete, wo ihre Shell für jemanden läuft, der ihn mit `run` angefragt hat (einen Agenten, ein Skript, ein anderes Gerät), unter der ID, die sein Aufrufer ihm gab. Was er ausgab, kommt als `output`, oder, wenn es zu lang für den Aufruf ist, als `output_file`: auf diesem Gerät aufbewahrt und an seiner Stelle genannt.
     .w-a-command-line = eine Befehlszeile
     .w-a-command-takes-an-id-of = ein Befehl bekommt eine eigene ID
+    .w-the-output-it-printed-kept-on = die Ausgabe des Befehls, auf diesem Gerät aufbewahrt
 
 d-i7oueaex-command = Befehl
 
@@ -748,6 +751,8 @@ d-i7oueaex-items = Einträge
 d-i7oueaex-request = Anfrage
 
 d-i7oueaex-id = ID
+
+d-i7oueaex-output_file = Ausgabedatei
 
 d-4pfe6ato = Titel gesetzt
     .doc = Das Programm hat den Titel des Fensters gesetzt.
@@ -870,6 +875,7 @@ d-55uvowt4 = Befehl kopieren
 
 d-mmuhjvj5 = Zielname
     .w-your-shell-on-this-device = Deine Shell auf diesem Gerät
+    .w-this-workspace-s-shell = Die Shell dieses Arbeitsbereichs
     .w-virtual-machine = Virtuelle Maschine { $vm }
     .w-default-environment = Standardumgebung
 

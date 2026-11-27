@@ -369,3 +369,98 @@ fn bea_reads_none_of_adas_chat_draft() {
         "Bea's device has none of it"
     );
 }
+
+/// The Terminal as it ships keeps each command line a person typed as theirs alone
+/// (`Remembered`, `readers: author`): it reaches every device of theirs, and another member of
+/// the workspace lists, counts and reads none of it, nor finds it in the history their own
+/// device shows.
+#[test]
+fn a_persons_shell_history_reaches_their_devices_and_no_other_member() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/terminal");
+    let source = std::fs::read_to_string(dir.join("app.tl")).expect("the Terminal's source");
+    let ids = std::fs::read_to_string(dir.join("app.ids")).expect("the Terminal's ids");
+    let terminal = [(source.as_str(), ids.as_str())];
+    let (ada, packages) = Replica::new("ada", Workspace::new(), &terminal);
+    let meta = packages[0].meta.clone();
+    let [laptop, ben] = ["ada", "ben"].map(|name| {
+        let replica = Replica::new(name, Workspace::new(), &terminal).0;
+        ada.send_to(&replica);
+        replica
+    });
+    let root_type = meta
+        .types
+        .iter()
+        .find(|declared| declared.name == "Terminal")
+        .expect("the Terminal keeps its history in a Terminal")
+        .id
+        .clone();
+    let history = ada
+        .host
+        .root_resource(&meta.app, &root_type)
+        .expect("the workspace's Terminal history");
+    ada.host
+        .runtime()
+        .invoke_action(
+            &person("ada"),
+            (
+                action_id(&meta, "remember").as_str(),
+                vec![
+                    Value::resource(&history),
+                    Value::text("export TOKEN=ada-only"),
+                    Value::text("/home/ada"),
+                    Value::Int(0),
+                    Value::Int(1),
+                    Value::text("session"),
+                    Value::text("run"),
+                ],
+            ),
+        )
+        .expect("Ada's command line is remembered");
+    ada.commit();
+    for other in [&laptop, &ben] {
+        ada.send_to(other);
+    }
+
+    let kind = meta.kind_of("Remembered");
+    let listed = |replica: &Replica| {
+        let page = match replica.doc.command(Command::Query(Query::of(&kind, 10))) {
+            Reply::Page(page) => page.resources,
+            other => panic!("a query answered {other:?}"),
+        };
+        let counted = match replica.doc.command(Command::Count {
+            kind: kind.clone(),
+            filters: Vec::new(),
+        }) {
+            Reply::Count(count) => count,
+            other => panic!("a count answered {other:?}"),
+        };
+        let Value::List(shown) = replica.read(&history, "history") else {
+            panic!("a Terminal's history is a list");
+        };
+        (page, counted, shown.len())
+    };
+    let (page, counted, shown) = listed(&laptop);
+    assert_eq!(
+        (page.len(), counted, shown),
+        (1, 1, 1),
+        "Ada's other device has her command line"
+    );
+    let remembered = page[0].0.clone();
+    let (page, counted, shown) = listed(&ben);
+    assert_eq!(
+        (page.len(), counted, shown),
+        (0, 0, 0),
+        "another member lists, counts and shows none of Ada's history"
+    );
+    let read = match ben.doc.command(Command::Get {
+        kind: kind.clone(),
+        id: remembered.clone(),
+    }) {
+        Reply::Resource(found) => found.is_some(),
+        other => panic!("a read answered {other:?}"),
+    };
+    assert!(
+        !read,
+        "another member reads none of Ada's command line {remembered}"
+    );
+}

@@ -236,6 +236,11 @@ where
     }
     tilo_runtime::device::capabilities::mount(tilo_daemon::capabilities());
     let host = Arc::new(Host::start(&profile));
+    // Terminal's shells run in the login's shell runtime, which a computer's user manager starts
+    // on its socket in the runtime directory once the computer is a device of its person's: for
+    // a test that installs Terminal, started here once the daemon founded the device.
+    #[cfg(target_os = "linux")]
+    let shell_runtime = apps.contains(&"terminal").then(|| shell_runtime(&profile));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .enable_all()
@@ -246,6 +251,11 @@ where
     // outside any runtime, as a computer stops it.
     drop(runtime);
     drop(host);
+    #[cfg(target_os = "linux")]
+    if let Some(mut shell_runtime) = shell_runtime {
+        let _ = shell_runtime.kill();
+        let _ = shell_runtime.wait();
+    }
 }
 
 /// Write the daemon's errors, and every line the apps it starts write to their standard streams,
@@ -401,6 +411,35 @@ fn own_process(test: &str, apps: &[&str], rust: &[(&str, &str)]) {
     );
 }
 
+/// The login's shell runtime, started as the user manager's `tilo-ush.service` starts it, in
+/// this test's own environment: serving at the socket in its runtime directory that the daemon's
+/// one connection to it reaches, and reaching the daemon serving `profile` as every program
+/// started beside a daemon named apart reaches it. Answered once it listens.
+#[cfg(target_os = "linux")]
+fn shell_runtime(profile: &std::path::Path) -> std::process::Child {
+    let bin = tilo_test_env::sibling_binary("ush", "tilo-ush");
+    let socket = launcher::services::socket_for(launcher::services::USH_SERVICE);
+    std::fs::create_dir_all(socket.parent().expect("the services directory")).unwrap();
+    let child = std::process::Command::new(&bin)
+        .args(["serve", "--socket"])
+        .arg(&socket)
+        .args(["--host-root", "/"])
+        .env("TILO_USH_BIN", &bin)
+        .env(tilo_machine::DAEMON_PROFILE_VAR, profile)
+        .spawn()
+        .expect("the shell runtime starts");
+    let deadline = tilo_test_env::hang_deadline();
+    while !socket.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the shell runtime never listens at {}",
+            socket.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    child
+}
+
 /// A headless compositor for the test's runtime directory `runtime`, listening on a
 /// `wayland-N` socket there and publishing its name in the login the daemon reads
 /// ([`tilo_paths::login::WAYLAND_DISPLAY_FILE`]), as a nested session's compositor publishes
@@ -466,6 +505,9 @@ impl Host {
         // The origin connectors the apps here start reach this daemon's one dispatch, as the
         // daemon serving a person's part hands it to them.
         daemon.hand_actions_to_connectors();
+        // As the computer's daemon does once its person's part runs: each app's own process is
+        // handed its line, which carries the shells it opens.
+        daemon.hand_apps_their_lines();
         let root = tilo_identity::store::load_from_path(
             tilo_runtime::device::services::device_root_record().expect("the person founded here"),
         )
@@ -547,7 +589,9 @@ impl Host {
             self.workspace,
             "the same workspace"
         );
-        *self.daemon.lock().unwrap() = Some(Arc::new(started));
+        let started = Arc::new(started);
+        started.hand_apps_their_lines();
+        *self.daemon.lock().unwrap() = Some(started);
     }
 
     /// Link a model on this computer and answer the workspace's calls through `replies`, one
@@ -614,6 +658,54 @@ impl Host {
     #[must_use]
     pub fn caller(&self) -> Caller {
         Caller::local_person(self.person()).in_workspace(self.workspace())
+    }
+
+    /// Approve, as the person, the question `action` (`<app>#<action>`) put to them once it is
+    /// among their open asks, as they answer it from wherever it reaches them.
+    ///
+    /// # Panics
+    ///
+    /// When no such question reaches the person in time, or their answer is refused.
+    pub async fn approve_asked(&self, action: &str) {
+        use tilo_actions::remote::asked::AskedRecords as _;
+        let person: [u8; 32] = hex::decode(self.person())
+            .expect("the person is their root key")
+            .try_into()
+            .expect("a root key is 32 bytes");
+        let daemon = self.daemon();
+        let workspaces = daemon.workspaces();
+        let store = workspaces
+            .asked_store()
+            .expect("the daemon keeps the calls that wait for its person");
+        let deadline = tilo_test_env::hang_deadline();
+        let asked = loop {
+            let open = store.asked_of(&person);
+            if let Some(asked) = open.iter().find(|asked| asked.action == action) {
+                break asked.clone();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{action} never reaches {}'s open asks: {:?}; waiting in the workspace: {:?}",
+                self.person(),
+                open.iter().map(|asked| &asked.action).collect::<Vec<_>>(),
+                store
+                    .waiting_in(self.workspace())
+                    .iter()
+                    .map(|waiting| (&waiting.person, &waiting.asked.action))
+                    .collect::<Vec<_>>()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let request = call(
+            tilo_action_services::workspace_invocations::PROVIDER,
+            ActionAddress::new(&asked.record.record, tilo_actions::remote::asked::RESOLVE),
+            &json!({"resolution": "approve"}),
+        );
+        workspaces
+            .resolve_asked(&self.caller(), &request)
+            .await
+            .expect("the daemon answers the resolve")
+            .expect("the person's answer is admitted");
     }
 
     /// A new key of the person's, `label`, certified by their root with `capabilities`.

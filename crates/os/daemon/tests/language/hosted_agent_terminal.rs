@@ -23,6 +23,7 @@ use tilo_actions::remote::{
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
 use tilo_person_services::model_answers::scripted::Reply;
 
+use crate::language::agent_fixture::terminal_holds;
 use crate::language::chat::{CHANNEL, chat_holds, chat_holds_soon, made_channel, opens};
 use crate::language::host;
 use crate::language::hosted_turns::{asked, make_scout, scripted, tool_answers, write_to_scout};
@@ -181,39 +182,12 @@ async fn allow(host: &host::Host) -> String {
     record
 }
 
-/// Whether one of the workspace's Terminal records holds `needle`: what the workspace's machine
-/// showed, as the session's screen keeps it.
-async fn terminal_holds(host: &host::Host, needle: &str) -> Result<bool, String> {
-    let daemon = host.daemon();
-    let workspaces = daemon.workspaces();
-    let workspace = host.workspace();
-    let routes = workspaces
-        .document_routes(workspace)
-        .await
-        .map_err(|error| error.to_string())?;
-    for (app, record) in routes
-        .into_iter()
-        .filter(|(app, _)| app == ui::apps::TERMINAL)
-    {
-        let held = workspaces
-            .resource_document(workspace, &app, &record)
-            .await
-            .map_err(|error| error.to_string())?;
-        if held.is_some_and(|bytes| bytes.windows(needle.len()).any(|w| w == needle.as_bytes())) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
 /// [`terminal_holds`] asked again until the workspace's Terminal holds `needle`.
 async fn terminal_holds_soon(host: &host::Host, needle: &str) -> bool {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        match terminal_holds(host, needle).await {
-            Ok(true) => return true,
-            Ok(false) => {}
-            Err(error) => panic!("{error}"),
+        if terminal_holds(host, needle).await {
+            return true;
         }
         if Instant::now() >= deadline {
             return false;
@@ -231,9 +205,7 @@ async fn nothing_ran(host: &host::Host, output: &str) {
         "nothing was said into the conversation: {output}"
     );
     assert!(
-        !terminal_holds(host, output)
-            .await
-            .unwrap_or_else(|error| panic!("{error}")),
+        !terminal_holds(host, output).await,
         "nothing ran in the Terminal: {output}"
     );
 }

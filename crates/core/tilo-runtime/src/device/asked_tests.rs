@@ -43,6 +43,9 @@ struct Workspace {
     revoked: Mutex<bool>,
     /// What it asks, when not the agent's default: a program's question that takes a secret.
     asks: Mutex<Option<AskedFacts>>,
+    /// It takes a call first and finds it needs the person's yes as it runs, as an app's action
+    /// does: the calls it took that stopped for it.
+    takes_first: Mutex<Option<Vec<InvocationId>>>,
 }
 
 impl ActionProvider for Workspace {
@@ -56,11 +59,26 @@ impl ActionProvider for Workspace {
 
     fn invoke(
         &self,
-        _: &Caller,
+        caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if *self.revoked.lock().unwrap() {
             return Pending::ready(Err(ActionCallError::NotPermitted));
+        }
+        // A call made in a run that ended is refused, as the broker refuses it.
+        if caller.execution_id().is_some() && !caller.execution_is_live() {
+            return Pending::ready(Err(ActionCallError::Unavailable {
+                reason: "execution session ended".into(),
+            }));
+        }
+        if request.approval().is_none()
+            && let Some(taken) = self.takes_first.lock().unwrap().as_mut()
+        {
+            taken.push(request.invocation);
+            return Pending::ready(Ok(InvocationReceipt {
+                invocation: request.invocation,
+                status: ReceiptStatus::Accepted,
+            }));
         }
         if request.approval().is_none() {
             let asks = self.asks.lock().unwrap().clone();
@@ -86,6 +104,26 @@ impl ActionProvider for Workspace {
     }
 
     fn observe(&self, _: &Caller, id: &InvocationId) -> Option<InvocationState> {
+        if self
+            .takes_first
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|taken| taken.contains(id))
+            && !self.ran().iter().any(|ran| ran.invocation == *id)
+        {
+            let facts = AskedFacts {
+                verb: "run".into(),
+                ..AskedFacts::default()
+            };
+            return Some(InvocationState::new(
+                *id,
+                InvocationUpdate::Failed {
+                    invocation: *id,
+                    error: tilo_actions::ActionFailure::asks("it needs the person's yes", &facts),
+                },
+            ));
+        }
         self.ran
             .lock()
             .unwrap()
@@ -265,6 +303,47 @@ fn refusal(result: Result<(), ActionCallError>) -> String {
     }
 }
 
+/// A call the workspace took and that then stopped for Ada's yes, as an app's action finds it
+/// needs it as it runs, is kept as her question once Scout reads it, as one refused for it at
+/// once is; her approve runs it, once.
+#[test]
+fn a_call_that_stops_for_the_persons_yes_after_it_was_taken_asks_them() {
+    let workspace: Arc<Workspace> = Arc::default();
+    *workspace.takes_first.lock().unwrap() = Some(Vec::new());
+    let device = Device::start(&Arc::default(), &workspace);
+    let call = send_mail();
+    let receipt = device.send(&call).expect("taken");
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Accepted),
+        "{receipt:?}"
+    );
+    assert!(
+        matches!(
+            device.standing(&call),
+            Some(InvocationUpdate::Progress { phase, .. }) if phase == asked::ASKED_PHASE
+        ),
+        "Scout reads that it is asked, not that it failed"
+    );
+    assert_eq!(device.store.asked_of(&ADA).len(), 1, "Ada is asked");
+    assert!(
+        device
+            .invocations
+            .get(&scout(), &call.invocation)
+            .unwrap()
+            .waiting,
+        "listed as waiting for its person"
+    );
+    device.resolve(&call, &ada(), Offer::Approve).unwrap();
+    assert_eq!(workspace.ran().len(), 1, "her approve runs it once");
+    assert!(
+        matches!(
+            device.standing(&call),
+            Some(InvocationUpdate::Succeeded { .. })
+        ),
+        "Scout reads it ran"
+    );
+}
+
 /// Scout's call that needs Ada's yes is kept: it waits under way, listed as waiting for her,
 /// and asks her, named as Scout's. Her approve sends it once more, byte for byte and under its
 /// id, carrying her approve of that record; a second approve finds nothing to answer.
@@ -329,6 +408,34 @@ fn an_agents_call_waits_and_runs_once_on_the_persons_approve() {
         1,
         "a second approve runs nothing"
     );
+}
+
+/// Scout asked in a turn that ended before Ada answered: her approve still runs the call once,
+/// as Scout's.
+#[test]
+fn an_approve_after_the_turn_that_asked_ended_runs_the_call() {
+    let device = Device::start(&Arc::default(), &Arc::default());
+    let call = send_mail();
+    let turn = scout().in_new_execution();
+    let provider: Arc<dyn ActionProvider + Send + Sync> = device.workspace.clone();
+    let receipt = device
+        .asked
+        .send(run(), &turn, (provider, turn.clone()), call.clone())
+        .wait_timeout(WAIT)
+        .ok()
+        .flatten()
+        .expect("the dispatch answers at once")
+        .expect("kept, not refused");
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Accepted),
+        "{receipt:?}"
+    );
+    turn.retire_execution();
+
+    device.resolve(&call, &ada(), Offer::Approve).unwrap();
+    let ran = device.workspace.ran();
+    assert_eq!(ran.len(), 1, "her approve ran it once");
+    assert_eq!(ran[0].invocation, call.invocation, "under its id");
 }
 
 /// Ada declines: the call ends declined and nothing of it runs.

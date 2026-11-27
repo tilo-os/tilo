@@ -895,10 +895,16 @@ fn range_of(value: &str) -> Option<(u64, Option<u64>)> {
 }
 
 fn action_answer(mut answer: Value, workspace: &str) -> Result<Answer, ApiError> {
-    if let Some(fields) = answer.as_object_mut()
-        && let Some(invocation) = fields.remove("invocation_id")
-    {
-        fields.insert("invocation".into(), invocation);
+    if let Some(fields) = answer.as_object_mut() {
+        if let Some(invocation) = fields.remove("invocation_id") {
+            fields.insert("invocation".into(), invocation);
+        }
+        // A call kept for its person's yes has not run yet: it is pending, and says what they
+        // are asked, as every call that waits for them does here.
+        if fields.get("status").and_then(Value::as_str) == Some("asked") {
+            fields.insert("status".into(), "pending".into());
+            fields.entry("ask").or_insert_with(|| json!({}));
+        }
     }
     let pending = answer.get("status").and_then(Value::as_str) == Some("pending");
     let invocation = answer

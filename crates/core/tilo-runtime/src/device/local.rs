@@ -37,6 +37,15 @@ type Trees = dyn Fn(Option<&str>) -> io::Result<(Tree, Caller)> + Send + Sync;
 /// opens there.
 type RunsHere = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
+/// What an app's connection carries shells by: the workspace it was started in, its grant or
+/// why its package has none, where it runs, and where this device's shells come from.
+type ShellsCarried = (
+    String,
+    Result<(), String>,
+    RunsHere,
+    Arc<dyn tilo_action_line_serve::shells::ShellSource>,
+);
+
 /// What a connection's frames are answered by: the tree they reach in each workspace and the
 /// caller they are there, and the uploads begun on any connection, so one a lost connection cut
 /// is taken up on the next.
@@ -60,8 +69,9 @@ pub(crate) struct Frames {
     /// views say where their person is, and hear where everyone else is.
     app_presence: Option<super::app_presence::Setup>,
     /// Whether an app's connection carries shells, when the connection is an app's: the
-    /// workspace it was started in, and its grant, or why its package has none.
-    shells: Option<(String, Result<(), String>, RunsHere)>,
+    /// workspace it was started in, its grant, or why its package has none, and where this
+    /// device's shells come from.
+    shells: Option<ShellsCarried>,
     /// Whether a connection may be carried to another of the person's devices
     /// ([`super::carry`]): the person's own alone.
     carrying: super::carry::Carrying,
@@ -175,6 +185,7 @@ impl Frames {
                 at.app
             ))
         };
+        let source = super::host_shells::source(daemon);
         // A workspace other people are members of runs its programs in a VM on a host, never
         // on this computer: asked on each open, as its people change.
         let held = Arc::downgrade(daemon);
@@ -208,7 +219,7 @@ impl Frames {
         frames.audio = audio;
         frames.media = media;
         frames.app_presence = app_presence;
-        frames.shells = Some((at.workspace.clone(), shells, runs_here));
+        frames.shells = Some((at.workspace.clone(), shells, runs_here, source));
         frames
     }
 
@@ -340,11 +351,11 @@ impl Frames {
             _ => None,
         };
         let shells = match (&self.shells, &out) {
-            (Some((workspace, granted, runs_here)), Some(out)) => Some(AppShells::new(
+            (Some((workspace, granted, runs_here, source)), Some(out)) => Some(AppShells::new(
                 workspace,
                 granted.clone(),
                 Arc::clone(runs_here),
-                super::host_shells::source(),
+                Arc::clone(source),
                 Arc::clone(out),
             )),
             _ => None,

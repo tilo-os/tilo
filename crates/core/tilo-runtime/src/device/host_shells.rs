@@ -7,15 +7,20 @@ use std::sync::Arc;
 
 use tilo_action_line_serve::shells::ShellSource;
 
-/// This device's shells.
+/// This device's shells: a shell on the workspace's own target runs in the workspaces' shells
+/// `daemon` runs, where it runs any, and no environment is built for it.
 #[cfg(target_os = "linux")]
-pub(crate) fn source() -> Arc<dyn ShellSource> {
-    Arc::new(ush::app_shells::Runtime(super::ush_line::here()))
+pub(crate) fn source(daemon: &super::services::Daemon) -> Arc<dyn ShellSource> {
+    let runtime: Arc<dyn ShellSource> = Arc::new(ush::app_shells::Runtime(super::ush_line::here()));
+    match daemon.own_shells() {
+        Some(own) => Arc::new(ush::app_shells::WithOwn { own, rest: runtime }),
+        None => runtime,
+    }
 }
 
 /// This device's shells.
 #[cfg(not(target_os = "linux"))]
-pub(crate) fn source() -> Arc<dyn ShellSource> {
+pub(crate) fn source(_daemon: &super::services::Daemon) -> Arc<dyn ShellSource> {
     Arc::new(platform::OwnShell)
 }
 
