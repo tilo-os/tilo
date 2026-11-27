@@ -1580,5 +1580,5 @@ async fn a_closed_iphone_app_is_told_through_the_key_the_configuration_names() {
     assert_eq!(header["kid"], "MADEUP0001");
     assert_eq!(claims["iss"], "MADEUPTEAM");
 
-    crate::device::keep::server::Server::shutdown(server).await;
+    server.shutdown().await;
 }
