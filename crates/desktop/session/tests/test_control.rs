@@ -737,6 +737,54 @@ fn each_windows_tab_is_named_by_the_group_that_holds_it() {
     }
 }
 
+/// A listing narrowed to the controls a caller names answers those alone: waiting for one
+/// control does not carry every control the desktop shows.
+#[test]
+fn list_targets_answers_only_the_controls_named() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("test-control.sock");
+    let mut session = session_showing(shell(&[(20, "Alpha"), (21, "Beta")]), &socket);
+    let all = ask(&mut session, &socket, &json!({"op": "list_targets"}));
+    let named = all["targets"]
+        .as_array()
+        .expect("the targets are a list")
+        .iter()
+        .filter_map(|target| target["name"].as_str())
+        .find(|name| !name.is_empty())
+        .expect("the shell names a control")
+        .to_owned();
+    let one = ask(
+        &mut session,
+        &socket,
+        &json!({"op": "list_targets", "names": [named]}),
+    );
+    let rows = one["targets"].as_array().expect("the targets are a list");
+    assert!(!rows.is_empty(), "the named control is listed: {rows:?}");
+    assert!(
+        rows.iter().all(|row| row["name"] == json!(named)),
+        "only the control named is listed: {rows:?}"
+    );
+    let prefixed = ask(
+        &mut session,
+        &socket,
+        &json!({"op": "list_targets", "prefixes": ["tab:"]}),
+    );
+    let rows = prefixed["targets"]
+        .as_array()
+        .expect("the targets are a list");
+    assert!(
+        rows.iter().all(|row| row["name"]
+            .as_str()
+            .is_some_and(|name| name.starts_with("tab:"))),
+        "only the prefix named is listed: {rows:?}"
+    );
+    assert!(
+        rows.len() >= groups(&session).len(),
+        "every window's tab is named: {rows:?}"
+    );
+}
+
 /// The open search, as the shell publishes it.
 fn search(session: &Session) -> Option<tilo_actions::ResourceSpec> {
     fn find(

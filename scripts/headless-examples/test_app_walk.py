@@ -234,6 +234,51 @@ class TheListTheMachinesDaemonEnforces(unittest.TestCase):
         self.assertEqual(shipped.read_bytes(), before, "a walk never writes into the tree it walks")
 
 
+class TheCataloguesAListing(unittest.TestCase):
+    """A session's own catalogue is read once and reused: a later read asks the revision
+    without its rows, and answers the rows already read while that revision holds. A step's
+    time is then the app's, not a whole catalogue read per lookup."""
+
+    class Session(walk.real_apps.Session):
+        def __init__(self, rows, revision):
+            super().__init__(Path("/nonexistent"))
+            self.rows = rows
+            self.revision = revision
+            self.readings = 0
+            self.probes = 0
+            self.last_query = None
+
+        def control(self, request, timeout=30.0):
+            query = request["message"]["CatalogueRequest"]["query"]
+            self.last_query = query
+            if query.get("max_results") == 0:
+                self.probes += 1
+                page = {"revision": self.revision}
+            else:
+                self.readings += 1
+                page = {"revision": self.revision, "rows": self.rows, "exhausted": True}
+            return {"message": {"CatalogueResponse": {"result": {"Ok": page}}}}
+
+    def test_the_catalogue_is_read_once_while_its_revision_holds(self):
+        session = self.Session([{"provider": "p"}], "r1")
+        self.assertEqual(session.actions(""), [{"provider": "p"}])
+        self.assertEqual(session.actions(""), [{"provider": "p"}])
+        self.assertEqual(session.readings, 1)
+        self.assertEqual(session.probes, 1)
+
+    def test_a_listing_whose_revision_moved_is_read_again(self):
+        session = self.Session([{"provider": "p"}], "r1")
+        session.actions("")
+        session.revision, session.rows = "r2", [{"provider": "q"}]
+        self.assertEqual(session.actions(""), [{"provider": "q"}])
+        self.assertEqual(session.readings, 2)
+
+    def test_one_application_is_asked_for_as_such(self):
+        session = self.Session([{"provider": "p"}], "r1")
+        session.actions(app="so.tilo.notes")
+        self.assertEqual(session.last_query.get("app_id"), "so.tilo.notes")
+
+
 class ThePageItWrites(unittest.TestCase):
     def test_a_step_shows_both_versions_snapshots_and_what_each_found(self):
         import tempfile
@@ -452,8 +497,15 @@ class NamingAControl(unittest.TestCase):
         def __init__(self, targets):
             self.found = targets
 
-        def targets(self):
-            return self.found
+        def targets(self, names=(), identities=(), prefixes=(), doing=None):
+            if not (names or identities or prefixes or doing is not None):
+                return self.found
+            return [t for t in self.found
+                    if t.get("name") in names
+                    or t.get("identity") in identities
+                    or any(str(t.get("name") or "").startswith(p) for p in prefixes)
+                    or (doing is not None
+                        and (t.get("identity") or "").rsplit("\x1f", 1)[-1] == doing)]
 
     def test_a_name_finds_the_control_that_answers_to_it(self):
         found = walk.control(self.Session(self.TARGETS), "new-note")
@@ -474,6 +526,84 @@ class NamingAControl(unittest.TestCase):
         self.assertEqual(found["name"], "note-7f3a")
 
 
+class AskingOnlyForTheControlsAStepNames(unittest.TestCase):
+    """A step asks the session for the controls it names, not for every control the desktop
+    shows: one ask per look, and an ask narrowed to the names, identities or prefixes named."""
+
+    class Session:
+        def __init__(self, found):
+            self.found = found
+            self.asks = []
+
+        def targets(self, names=(), identities=(), prefixes=(), doing=None):
+            self.asks.append({"names": list(names), "identities": list(identities),
+                              "prefixes": list(prefixes), "doing": doing})
+            return [t for t in self.found
+                    if t.get("name") in names
+                    or t.get("identity") in identities
+                    or any(str(t.get("name") or "").startswith(p) for p in prefixes)
+                    or (doing is not None
+                        and (t.get("identity") or "").rsplit("\x1f", 1)[-1] == doing)]
+
+    def walked(self, session):
+        return walk.Walk({"tl": {"id": "so.tilo.notes"}, "steps": []}, "tl",
+                         Path("/nonexistent"), Path("/nonexistent"), session=session)
+
+    def test_a_press_asks_for_the_control_it_names(self):
+        session = self.Session([{"name": "Save", "rect": [0, 0, 10, 10]}])
+        self.walked(session).op({"must": ["Save"]})
+        self.assertEqual(session.asks, [{"names": ["Save"], "identities": [],
+                                         "prefixes": [], "doing": None}])
+
+    def test_a_must_of_many_controls_asks_once(self):
+        session = self.Session([{"name": "Save", "rect": [0, 0, 10, 10]},
+                                {"name": "Close", "rect": [0, 20, 10, 10]}])
+        found = self.walked(session).op({"must": ["Save", "Close"]})
+        self.assertEqual(found, {"saw": ["Save", "Close"]})
+        self.assertEqual(len(session.asks), 1)
+        self.assertEqual(sorted(session.asks[0]["names"]), ["Close", "Save"])
+
+    def test_an_identity_asks_for_that_identity(self):
+        session = self.Session([{"name": "Typed", "identity": "root\x1fedit",
+                                 "rect": [0, 0, 10, 10]}])
+        self.walked(session).op({"must": ["root\x1fedit"]})
+        self.assertEqual(session.asks[0]["identities"], ["root\x1fedit"])
+
+
+class AThemeThatIsAlreadySet(unittest.TestCase):
+    """A theme op is the person looking at what they had: asking for the theme already shown
+    changes nothing, and only the other one switches the desktop."""
+
+    class Session:
+        def __init__(self, mode):
+            self.mode = mode
+            self.invoked = []
+
+        def control(self, request):
+            return {"answer": {"appearance": {"mode": self.mode}}}
+
+        def invoke(self, provider, resource, action, arguments=None):
+            self.invoked.append({"provider": provider, "resource": resource,
+                                 "action": action, "arguments": arguments})
+
+    def walked(self, session):
+        return walk.Walk({"tl": {"id": "so.tilo.notes"}, "steps": []}, "tl",
+                         Path("/nonexistent"), Path("/nonexistent"), session=session)
+
+    def test_asking_for_the_theme_already_shown_switches_nothing(self):
+        session = self.Session("light")
+        self.walked(session).set_dark(False)
+        self.assertEqual(session.invoked, [])
+
+    def test_asking_for_the_other_theme_switches_it(self):
+        session = self.Session("light")
+        self.walked(session).set_dark(True)
+        self.assertEqual(session.invoked, [{"provider": "tilo.settings",
+                                            "resource": "settings/appearance",
+                                            "action": "set-dark-mode",
+                                            "arguments": {"on": True}}])
+
+
 class AWindowThatShowsNothing(unittest.TestCase):
     """A step leaves the app's window open: it has to show the app. A window that draws only
     its bar is a blank window, which no wait on a word of the app catches where the step's
@@ -483,12 +613,21 @@ class AWindowThatShowsNothing(unittest.TestCase):
         def __init__(self, windows, targets):
             self.found = targets
             self.listed = windows
+            self.asks = 0
 
-        def windows(self):
+        def windows(self, app=None):
             return self.listed
 
-        def targets(self):
-            return self.found
+        def targets(self, names=(), identities=(), prefixes=(), doing=None):
+            self.asks += 1
+            if not (names or identities or prefixes or doing is not None):
+                return self.found
+            return [t for t in self.found
+                    if t.get("name") in names
+                    or t.get("identity") in identities
+                    or any(str(t.get("name") or "").startswith(p) for p in prefixes)
+                    or (doing is not None
+                        and (t.get("identity") or "").rsplit("\x1f", 1)[-1] == doing)]
 
     def walked(self, targets):
         session = self.Session(
@@ -508,6 +647,11 @@ class AWindowThatShowsNothing(unittest.TestCase):
         walked = self.walked([])
         walked.session.listed = []
         walked.require_shown()
+
+    def test_a_step_that_read_the_surface_does_not_read_it_again(self):
+        walked = self.walked([{"name": "Add place", "rect": [16, 140, 90, 32]}])
+        walked.require_shown(walked.session.found)
+        self.assertEqual(walked.session.asks, 0)
 
 
 class CountingNotes(unittest.TestCase):
@@ -554,8 +698,15 @@ class OpsOnAnotherDevice(unittest.TestCase):
             self.found = [{"name": n, "rect": [0, 0, 10, 10]} for n in targets]
             self.state = Path("/nonexistent") / name
 
-        def targets(self):
-            return self.found
+        def targets(self, names=(), identities=(), prefixes=(), doing=None):
+            if not (names or identities or prefixes or doing is not None):
+                return self.found
+            return [t for t in self.found
+                    if t.get("name") in names
+                    or t.get("identity") in identities
+                    or any(str(t.get("name") or "").startswith(p) for p in prefixes)
+                    or (doing is not None
+                        and (t.get("identity") or "").rsplit("\x1f", 1)[-1] == doing)]
 
     def walk_of(self, spec=None):
         laptop = self.Session("laptop", ["Files"])
@@ -589,18 +740,17 @@ class OpsOnAnotherDevice(unittest.TestCase):
         self.assertEqual(walked.op({"on": "laptop", "must": ["Files"]}), {"saw": ["Files"]})
         self.assertIs(walked.session, laptop)
 
-    def test_each_device_keeps_its_own_appearance_action(self):
+    def test_each_device_keeps_its_own_theme(self):
         walked, _laptop, _phone = self.walk_of()
-        walked.appearance = {"provider": "laptop's"}
+        walked.dark = False
 
-        def finds():
-            self.assertIsNone(walked.appearance)
-            walked.appearance = {"provider": "phone's"}
+        def turns():
+            self.assertIsNone(walked.dark)
+            walked.dark = True
 
-        walked.on_device("phone", finds)
-        self.assertEqual(walked.appearance, {"provider": "laptop's"})
-        walked.on_device("phone", lambda: self.assertEqual(walked.appearance,
-                                                           {"provider": "phone's"}))
+        walked.on_device("phone", turns)
+        self.assertIs(walked.dark, False)
+        walked.on_device("phone", lambda: self.assertIs(walked.dark, True))
 
     def test_a_device_the_walk_has_not_is_refused_by_name(self):
         walked, laptop, _phone = self.walk_of()
@@ -633,7 +783,7 @@ class WaitingForAnotherAppsActions(unittest.TestCase):
         def __init__(self, rows):
             self.rows = rows
 
-        def actions(self, _query=""):
+        def actions(self, query="", app=None):
             return self.rows
 
     @staticmethod

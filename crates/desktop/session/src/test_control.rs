@@ -1073,7 +1073,16 @@ fn loop_answer(
 /// The answer to what `op` asks of the session and its hosted surfaces, when it asks of them.
 /// The windows a tool reads: where each is drawn, how many frames it drew, and the resource it
 /// shows. Nothing shows a window while the screen is locked, to anyone but the developer.
-fn windows_answer(ctx: &Context, compositor: &Compositor, session: &Session<'_>) -> Json {
+fn windows_answer(
+    request: &Json,
+    ctx: &Context,
+    compositor: &Compositor,
+    session: &Session<'_>,
+) -> Json {
+    // What a caller asks of one application's windows, which it names: the rows of every other
+    // application are not built, nor read of, so waiting for one window's map does not cost every
+    // window on the desktop.
+    let app = request.get("app_id").and_then(Json::as_str);
     let rows = if ctx.who != Audience::Dev && session.locked.yes() {
         Vec::new()
     } else {
@@ -1097,10 +1106,10 @@ fn windows_answer(ctx: &Context, compositor: &Compositor, session: &Session<'_>)
         let item_of = |tab: u64| items.get(&tab).cloned();
         let shown = (rect_of, frames_of, resource_of, item_of);
         match &ctx.scope {
-            None => session.handle.read(|tree| window_rows(tree, shown)),
+            None => session.handle.read(|tree| window_rows(tree, shown, app)),
             Some(scope) => session
                 .handle
-                .read(|tree| window_rows(&within(tree, scope), shown)),
+                .read(|tree| window_rows(&within(tree, scope), shown, app)),
         }
     };
     json!({"answer": {"windows": rows}})
@@ -1171,7 +1180,7 @@ fn asked_of_shell(
             let says = session.shell.is_some_and(|shell| shell.says(text));
             json!({"answer": {"says": says}})
         }
-        Op::ListTargets => json!({"targets": listed_targets(session)}),
+        Op::ListTargets => json!({"targets": listed_targets(request, session)}),
         Op::ClickNamed => return Some(clicked_named(request, session)),
         Op::Type if request.get("clipboard").and_then(Json::as_bool) == Some(true) => {
             let Some(text) = request.get("text").and_then(Json::as_str) else {
@@ -1225,7 +1234,7 @@ fn asked_of_shell(
             .handle
             .read(|tree| state::keeping_devices(tree, session, ctx)),
         Op::DaemonLink => daemon_link_answer(session),
-        Op::Windows => windows_answer(ctx, compositor, session),
+        Op::Windows => windows_answer(request, ctx, compositor, session),
         _ => return None,
     })
 }
@@ -1596,12 +1605,51 @@ fn frame_answer(line: &str, actions: &Actions, ctx: &Context) -> String {
 }
 
 /// The controls the session shows now, as the tools read them: each one's name, what it does where it
-/// does something the app publishes, and where it stands.
-fn listed_targets(session: &Session<'_>) -> Vec<Json> {
+/// does something the app publishes, and where it stands. `request` narrows the list to what it names:
+/// a control by `name` (or `names`), by `identity` (or `identities`), by the start of its name
+/// (`prefix`, or `prefixes`), or by the operation its identity ends with (`doing`). A request that
+/// names none lists every control.
+fn listed_targets(request: &Json, session: &Session<'_>) -> Vec<Json> {
+    /// What `request` names under a field of one and a field of many name.
+    fn asked<'a>(request: &'a Json, one: &str, many: &str) -> Vec<&'a str> {
+        let mut found: Vec<&str> = Vec::new();
+        found.extend(request.get(one).and_then(Json::as_str));
+        found.extend(
+            request
+                .get(many)
+                .and_then(Json::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Json::as_str),
+        );
+        found
+    }
+    let names = asked(request, "name", "names");
+    let identities = asked(request, "identity", "identities");
+    let prefixes = asked(request, "prefix", "prefixes");
+    let doing = request.get("doing").and_then(Json::as_str);
+    let every = names.is_empty() && identities.is_empty() && prefixes.is_empty() && doing.is_none();
     session
         .published
         .controls()
         .into_iter()
+        .filter(|control| {
+            every
+                || names.iter().any(|name| control.name == *name)
+                || identities
+                    .iter()
+                    .any(|identity| control.identity.as_deref() == Some(*identity))
+                || prefixes
+                    .iter()
+                    .any(|prefix| control.name.starts_with(*prefix))
+                || doing.is_some_and(|doing| {
+                    control
+                        .identity
+                        .as_deref()
+                        .and_then(|identity| identity.rsplit('\u{1f}').next())
+                        == Some(doing)
+                })
+        })
         .map(|control| {
             let (x, y, w, h) = control.rect;
             let level = control.level;

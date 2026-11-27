@@ -373,6 +373,7 @@ pub(super) fn window_rows(
         impl Fn(u64) -> Option<String>,
         impl Fn(u64) -> Option<String>,
     ),
+    app: Option<&str>,
 ) -> Vec<Json> {
     fn named(name: &str, id: Json) -> Json {
         if name.is_empty() { id } else { name.into() }
@@ -401,6 +402,15 @@ pub(super) fn window_rows(
                         tab.tile,
                         TileContent::AppPlaceholder { .. } | TileContent::Stub { .. }
                     ) {
+                        continue;
+                    }
+                    // One application's windows alone, where the caller named one: whether the
+                    // tile is of that app is read off the tile itself, before the row is named
+                    // and the place it shows looked up.
+                    if let Some(app) = app
+                        && !tilo_desktop_model::apps::canonical_app_id(&tab.tile)
+                            .is_some_and(|id| tilo_desktop_model::apps::app_ids_match(&id, app))
+                    {
                         continue;
                     }
                     let (kind, app_id) = tile_kind(&tab.tile);

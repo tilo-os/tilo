@@ -292,12 +292,16 @@ def frame(message: dict) -> dict:
     return {"version": FRAME_VERSION, "message": message}
 
 
-def catalogue(ask, needle: str = "") -> list:
-    """Every row a session lists that mentions `needle`, page by page: each a catalogue row
-    (`provider`, `app_id`, `resource`, and the `action` with its `address`). `ask` sends one
-    frame and answers the frame that came back."""
+def listing(ask, needle: str = "", app: str | None = None) -> tuple[list, str]:
+    """Every row a session lists that mentions `needle` — only `app`'s where one is named — page
+    by page: each a catalogue row (`provider`, `app_id`, `resource`, and the `action` with its
+    `address`), and the revision the rows belong to. `ask` sends one frame and answers the frame
+    that came back. Rows of one application are asked for as such: a provider builds the rows a
+    caller names and not every row there is."""
     start = {"needle": needle, "max_results": 64}
-    rows, query = [], start
+    if app:
+        start["app_id"] = app
+    rows, query, revision = [], start, ""
     # What the listing did, for the failure that says it never ended: a listing restarted on
     # every stale cursor names how often, and how many revisions it saw, so a catalogue that
     # keeps changing under it is told from one that pages without end.
@@ -309,6 +313,7 @@ def catalogue(ask, needle: str = "") -> list:
             raise Refused("listing", refusal(result.get("Err", result)))
         page = result["Ok"]
         revisions.add(page.get("revision"))
+        revision = page.get("revision") or revision
         if page.get("stale_cursor"):
             restarts += 1
             rows, query = [], start
@@ -317,13 +322,30 @@ def catalogue(ask, needle: str = "") -> list:
             raise Failed(f"the listing for {needle!r} stopped at a work limit after {len(rows)} rows")
         rows += page.get("rows", [])
         if page.get("exhausted"):
-            return rows
+            return rows, revision
         if not page.get("next_cursor"):
             raise Failed(f"the listing for {needle!r} ended with no cursor and not exhausted")
         query = {**start, "cursor": page["next_cursor"], "revision": page["revision"]}
     raise Failed(f"the listing for {needle!r} ran past 256 pages: restarted {restarts} times on "
                  f"a stale cursor, {len(revisions)} revisions seen, {len(rows)} rows since the "
                  f"last restart")
+
+
+def catalogue(ask, needle: str = "", app: str | None = None) -> list:
+    """Every row a session lists that mentions `needle`, or only `app`'s (see [`listing`])."""
+    return listing(ask, needle, app)[0]
+
+
+def catalogue_revision(ask) -> str | None:
+    """The revision the rows a session lists now belong to, asked without rows: a listing read
+    before is the session's own while the revision holds, and is read again when it moved. `ask`
+    sends one frame and answers the frame that came back; a page that names no revision answers
+    `None`, and the caller reads the rows rather than trust a listing it cannot place."""
+    answer = ask(frame({"CatalogueRequest": {"correlation": 1, "query": {"max_results": 0}}}))
+    result = answer["message"]["CatalogueResponse"]["result"]
+    if "Ok" not in result:
+        raise Refused("listing", refusal(result.get("Err", result)))
+    return result["Ok"].get("revision") or None
 
 
 def record(ask, workspace: str, app: str, record_id: str, wait_ms: int | None = None) -> dict:
@@ -774,6 +796,9 @@ class Session:
         # What the last `open` cost: the catalogue listing that found the app's row, and the
         # invocation that started it (`opened_took`).
         self.opened_took: dict[str, int] = {}
+        # The session's own catalogue as last read: the revision it was read at and the rows.
+        # What a step lists is read once and reused while that revision holds (`actions`).
+        self.catalogue: tuple[str, list[dict]] | None = None
 
     # -- lifecycle --
 
@@ -864,6 +889,8 @@ class Session:
                 raise Failed(f"the session ended ({code}); see "
                              f"{self._launch_out / self.launcher_log.name}")
             self.ready = json.loads(ready.read_text())
+            # A listing read on the session that just ended says nothing of this one.
+            self.catalogue = None
             # A viewer is looking: headless frames are rasterized, and a snapshot
             # then covers what the session painted instead of an empty texture.
             self.control({"op": "watch", "watching": True})
@@ -987,17 +1014,46 @@ class Session:
     def control_json(self, *args: str):
         return json.loads(self.control_cmd(*args))
 
-    def actions(self, query: str = "") -> list:
+    def actions(self, query: str = "", app: str | None = None) -> list:
         """The rows the desktop lists for `query` (see `catalogue`), those listed for agents
-        alone included ("Show this window"), which a person's palette leaves out. A listing
-        that moved on under the walk is walked again from its start."""
+        alone included ("Show this window"), which a person's palette leaves out; only `app`'s
+        where one is named, which a provider builds without every other application's rows. A
+        listing that moved on under the walk is walked again from its start.
+
+        The session's own listing is read once and reused: a later read asks the catalogue's
+        revision without its rows, and answers the rows it already has while that revision
+        holds. A step's time is then the app's, not a catalogue read per lookup."""
+        if app is not None or query:
+            for _ in range(10):
+                try:
+                    return catalogue(self.control, query, app)
+                except Refused as error:
+                    if error.code != "stale_revision":
+                        raise
+            raise Failed(f"the actions for {query!r} kept moving on")
+        if self.catalogue is None:
+            self.catalogue = self.read_catalogue()
+            return self.catalogue[1]
+        try:
+            revision = catalogue_revision(self.control)
+        except Refused:
+            revision = None
+        if revision is not None and revision == self.catalogue[0]:
+            return self.catalogue[1]
+        self.catalogue = self.read_catalogue()
+        return self.catalogue[1]
+
+    def read_catalogue(self) -> tuple[str, list[dict]]:
+        """The session's own catalogue, read again: the revision the rows belong to, and every
+        row it lists now."""
         for _ in range(10):
             try:
-                return catalogue(self.control, query)
+                rows, revision = listing(self.control)
+                return revision, rows
             except Refused as error:
                 if error.code != "stale_revision":
                     raise
-        raise Failed(f"the actions for {query!r} kept moving on")
+        raise Failed("the actions kept moving on")
 
     def search_rows(self) -> dict:
         """The open search's query, the rows it shows and whether it is still
@@ -1033,11 +1089,14 @@ class Session:
     def open(self, app: str, deadline: float = 120.0) -> dict | str:
         """Open the installed app `app` (its application id) as the workspace offers it. What the
         ask cost is kept in `opened_took`, in milliseconds: the catalogue listing that found the
-        app's `open` row (`listing_ms`), and the invocation that started it (`invoke_ms`)."""
+        app's `open` row (`listing_ms`), and the invocation that started it (`invoke_ms`).
+
+        The row is asked for among that application's rows alone: a provider builds one app's
+        rows for it rather than the whole catalogue's."""
         began = time.monotonic()
         resource = f"app.{app}"
         row = until(f"the session to offer {app}", lambda: next(
-            (row for row in self.actions(app) if address(row) == (resource, "open")), None),
+            (row for row in self.actions(app=app) if address(row) == (resource, "open")), None),
             deadline)
         listed = time.monotonic()
         receipt = self.invoke_row(row)
@@ -1045,8 +1104,13 @@ class Session:
                             "invoke_ms": round((time.monotonic() - listed) * 1000)}
         return receipt
 
-    def windows(self) -> list:
-        return self.control({"op": "windows"})["answer"]["windows"]
+    def windows(self, app: str | None = None) -> list:
+        """The windows the shell holds: every one, or only `app`'s, which is what a wait for
+        one app's window reads — the rows of every other window are not built for it."""
+        request = {"op": "windows"}
+        if app is not None:
+            request["app_id"] = app
+        return self.control(request)["answer"]["windows"]
 
     def state_dump(self) -> dict:
         return self.control({"op": "state_dump"})["state"]
@@ -1065,12 +1129,12 @@ class Session:
         open."""
         ident = app if "." in app else app_id(app)
         began = time.monotonic()
-        found = next((w for w in self.windows() if w.get("app_id") == ident), None)
+        found = next((w for w in self.windows(ident) if w.get("app_id") == ident), None)
         if found is None:
             self.open(ident, deadline)
             asked = time.monotonic()
             found = until(f"the window of {ident}", lambda: next(
-                (w for w in self.windows() if w.get("app_id") == ident), None), deadline)
+                (w for w in self.windows(ident) if w.get("app_id") == ident), None), deadline)
             return {**found, "title": found.get("title"),
                     "asked_ms": round((asked - began) * 1000),
                     "window_ms": round((time.monotonic() - asked) * 1000)}
@@ -1111,14 +1175,14 @@ class Session:
 
         def up() -> bool:
             return bool(self.processes(ident)) and any(
-                w.get("app_id") == ident for w in self.windows())
+                w.get("app_id") == ident for w in self.windows(ident))
 
         return until(f"{ident} to run with its window on the shell", up, deadline)
 
     def wait_target(self, name: str, deadline: float = 60.0) -> dict:
         """The control `name` once the surface showing it offers it."""
         return until(f"the control {name!r}", lambda: next(
-            (t for t in self.targets() if t["name"] == name), None), deadline)
+            (t for t in self.targets(names=(name,)) if t["name"] == name), None), deadline)
 
     def click_at(self, x: float, y: float) -> dict:
         return self.control({"op": "click_at", "x": x, "y": y})
@@ -1137,8 +1201,20 @@ class Session:
         """Press the control `name`; `verb` is `activate` or `show-context-menu`."""
         return self.control({"op": "click_named", "name": name, "verb": verb})
 
-    def targets(self) -> list:
-        return self.control({"op": "list_targets"})["targets"]
+    def targets(self, names=(), identities=(), prefixes=(), doing: str | None = None) -> list:
+        """The controls the session shows now, narrowed to those `names`, `identities` or
+        `prefixes` name, and to identities doing `doing`; none of them lists every control.
+        A step asks for the controls it names, not the whole surface twice."""
+        request: dict = {"op": "list_targets"}
+        if names:
+            request["names"] = list(names)
+        if identities:
+            request["identities"] = list(identities)
+        if prefixes:
+            request["prefixes"] = list(prefixes)
+        if doing is not None:
+            request["doing"] = doing
+        return self.control(request)["targets"]
 
     def type(self, text: str) -> dict:
         return self.control({"op": "type", "text": text})

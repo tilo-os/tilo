@@ -252,6 +252,7 @@ tilo_test_env::scenario! {
                 resources,
                 items,
             ),
+            None,
         );
         assert_eq!(rows.len(), 2, "one row per tab: {rows:?}");
         assert_eq!(rows[0]["window"], json!(7));
@@ -265,9 +266,23 @@ tilo_test_env::scenario! {
         assert_eq!(rows[1]["frames"], json!(0));
         assert_eq!(rows[1]["resource"], Json::Null);
         assert_eq!(rows[1]["item"], Json::Null);
+        // One application's windows alone, where a caller names one: the other application's tab
+        // is not a row, and its place is not read of.
+        let notes = window_rows(
+            &tree,
+            (
+                |id| (id == 7).then_some((14, 96, 946, 984)),
+                frames,
+                resources,
+                items,
+            ),
+            Some("so.tilo.notes"),
+        );
+        assert_eq!(notes.len(), 1, "one row for one app: {notes:?}");
+        assert_eq!(notes[0]["app_id"], json!("so.tilo.notes"));
         // A frame that no longer maps the window leaves the row without a rectangle rather than one
         // that is no longer where it is drawn.
-        let closed = window_rows(&tree, (|_| None, frames, resources, items));
+        let closed = window_rows(&tree, (|_| None, frames, resources, items), None);
         assert_eq!(closed[0]["window"], json!(7));
         assert_eq!(closed[0]["rect"], Json::Null);
     }

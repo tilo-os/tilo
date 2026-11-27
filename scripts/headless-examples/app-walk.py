@@ -87,6 +87,10 @@ VARIANTS = ("rust", "tl")
 # its app (`Walk.opens`), read from the session's own launch timings; the `app-walk/open` check
 # holds them to the bar (`--opens`), apart from the walks, which are red for their flows alone.
 OPEN_BAR_MS = 100
+# The person's settings, kept by the session's settings provider whether the app that shows
+# them is open or not: the appearance every app draws, and the action that changes it.
+SETTINGS = "tilo.settings"
+APPEARANCE = "settings/appearance"
 # The shell's own verbs: a window is focused and closed by the tab it holds.
 SHELL = "so.tilo.session"
 SHELL_RESOURCE = "desktop:shell"
@@ -803,8 +807,9 @@ class MachineDaemon:
 def app_action(session: Session, app: str, operation: str, resource: str | None = None):
     """The action `operation` the window of `app` publishes: found by the name
     the app gives it, never by the words its title reads in. Its application is
-    `app` exactly (`so.tilo.notes` never matches `so.tilo.notes`)."""
-    for row in session.actions(""):
+    `app` exactly (`so.tilo.notes` never matches `so.tilo.notes`). Only that
+    application's rows are listed."""
+    for row in session.actions(app=app):
         at = address(row)
         if (row.get("app_id") == app and at is not None and at[1] == operation
                 and resource in (None, at[0])):
@@ -954,6 +959,48 @@ def alternative(value, variant: str):
     return pick(value, variant)
 
 
+def targets_of(session: Session, selectors=()) -> list[dict]:
+    """The controls the session shows, narrowed to those `selectors` name: a name, an identity
+    or the start of a name is asked of the session, which returns those controls alone. A
+    selector that picks among the controls of one name (`menuitem`) asks for that name's, and
+    one that names what an identity does (`doing`) for those identities. No selectors lists
+    every control: a step accounts for the whole surface only where it says so."""
+    names, identities, prefixes = [], [], []
+    doing = None
+    whole = False
+    for selector in selectors:
+        if isinstance(selector, dict):
+            if set(selector) == {"prefix"}:
+                prefixes.append(selector["prefix"])
+            elif set(selector) == {"menuitem"}:
+                names.append(selector["menuitem"])
+            elif set(selector) == {"doing"}:
+                doing = selector["doing"]
+            else:
+                whole = True
+        elif ID_SEP in str(selector):
+            identities.append(selector)
+        else:
+            names.append(selector)
+    if not selectors or whole:
+        return session.targets()
+    return session.targets(names=names, identities=identities, prefixes=prefixes, doing=doing)
+
+
+def named_in(targets: list[dict], selector) -> dict | None:
+    """The control `selector` names among `targets`, as `control` names one: an identity, a
+    name, the first control whose name starts as `{"prefix": ..}` says, the one an identity
+    does (`{"doing": ..}`), or the widest drawn one of a `{"menuitem": ..}` name."""
+    if isinstance(selector, dict) and "menuitem" in selector:
+        found = [
+            target
+            for target in targets
+            if target.get("name") == selector["menuitem"] and drawn(target)
+        ]
+        return max(found, key=lambda target: target["rect"][2]) if found else None
+    return next((target for target in targets if matches(target, selector)), None)
+
+
 def control(session: Session, selector) -> dict | None:
     """The control `selector` names: an identity (a record kind and its
     operation), a name the widget answers to, `{"prefix": "note-"}` for the
@@ -963,16 +1010,8 @@ def control(session: Session, selector) -> dict | None:
     of an identity is stable where the record it stands on is not — or
     `{"menuitem": "Tag…"}` for the widest drawn control of that name: the row a
     menu draws for its command, not a button of the window that says the same
-    words."""
-    targets = session.targets()
-    if isinstance(selector, dict) and "menuitem" in selector:
-        found = [
-            target
-            for target in targets
-            if target.get("name") == selector["menuitem"] and drawn(target)
-        ]
-        return max(found, key=lambda target: target["rect"][2]) if found else None
-    return next((target for target in targets if matches(target, selector)), None)
+    words. The session is asked for those controls alone, not every one it shows."""
+    return named_in(targets_of(session, [selector]), selector)
 
 
 def matches(target: dict, selector) -> bool:
@@ -1067,7 +1106,7 @@ def row_of(session: Session, window: dict | None, name: str) -> dict | None:
     if window is None or window.get("rect") is None:
         return None
     x, y, w, _h = window["rect"]
-    for target in session.targets():
+    for target in targets_of(session, [name]):
         if target.get("name") != name or not drawn(target):
             continue
         tx, ty, _tw, _th = target["rect"]
@@ -1086,7 +1125,7 @@ def show_sidebar(session: Session, window: dict | None, name: str) -> None:
     if window is None or window.get("rect") is None:
         return
     x, y, w, h = window["rect"]
-    for target in session.targets():
+    for target in targets_of(session, ["Show sidebar"]):
         if target.get("name") != "Show sidebar" or not drawn(target):
             continue
         tx, ty, tw, th = target["rect"]
@@ -1446,7 +1485,6 @@ class Walk:
         self.session = session or Session(state)
         self.steps: list[dict] = []
         self.window: dict | None = None
-        self.appearance: dict | None = None
         # The stand-in mail server a step started, stopped when the walk ends.
         self.mail: LocalMailServer | None = None
         # The frames a step's window drew when its `window_frames` first ran.
@@ -1467,11 +1505,13 @@ class Walk:
         # The person's further devices, where the walk names them (`"devices"`): a family's
         # are started once with its session, a walk of its own starts them after its own.
         self.devices = devices
-        # The device the op being run is on (None: the first), and each device's appearance
-        # action, which is that device's own.
+        # The device the op being run is on (None: the first), and the theme it shows.
         self.device: str | None = None
         self.step_on: str | None = None
-        self.appearances: dict[str, dict | None] = {}
+        # The theme the walk last left each device in, once it has set one: what a theme
+        # op is held against, so asking for the theme already shown changes nothing.
+        self.dark: bool | None = None
+        self.darks: dict[str, bool | None] = {}
         # What an op kept of an answer (`op_use`'s `keep`), for the ops after it.
         self.kept: dict = {}
         # When the walk's first step began, by the session log's clock: its opens are the
@@ -1535,12 +1575,14 @@ class Walk:
     def actions(self, only_app: bool = False) -> list[dict]:
         """The actions the desktop lists now, in the words a person's palette
         reads: what a verb with no control still is. Every application's, unless
-        `only_app` keeps this app's, so a step that could not be walked says
-        what was published beside what it wanted."""
+        `only_app` keeps this app's — listed as that application's alone — so a
+        step that could not be walked says what was published beside what it
+        wanted."""
+        rows = self.session.actions(app=self.v.get("id") if only_app else None)
         return [{"title": (a.get("action") or {}).get("action_label"),
                  "operation": (address(a) or ("", ""))[1],
                  "application": a.get("app_id"), "resource": (address(a) or ("", ""))[0]}
-                for a in self.session.actions("")
+                for a in rows
                 if address(a) and (not only_app or a.get("app_id") == self.v.get("id"))]
 
     def shot(self, name: str) -> str:
@@ -1548,18 +1590,22 @@ class Walk:
         self.session.snapshot(path)
         return str(path)
 
-    def require_shown(self) -> None:
+    def require_shown(self, targets: list[dict] | None = None) -> None:
         """The app's window shows the app: under the window's own bar it draws at least one
         named control. A window with only its bar is what a person meets when the app's view
         failed — a blank window — and no step waiting on this or that control catches it when
         the step's state is one the app still renders something of. Every step the walk leaves
         a window open in reads this, so a blank window fails wherever it appears, in an app the
-        walk had a step for and in one it did not."""
+        walk had a step for and in one it did not. `targets` is the step's one listing of the
+        controls, where it has read one already: a step looks at the surface once and both
+        checks read that look."""
         window = self.window_of()
         if window is None or window.get("rect") is None:
             return
         x, y, w, h = window["rect"]
-        for target in self.session.targets():
+        if targets is None:
+            targets = self.session.targets()
+        for target in targets:
             name = (target.get("name") or "").strip()
             if not name or not drawn(target):
                 continue
@@ -1579,7 +1625,7 @@ class Walk:
         ident = self.v.get("id")
         if ident is None:
             return None
-        found = next((w for w in self.session.windows() if w.get("app_id") == ident), None)
+        found = next((w for w in self.session.windows(ident) if w.get("app_id") == ident), None)
         if found is not None:
             self.window = found
         return found
@@ -1638,34 +1684,46 @@ class Walk:
             until_value(f"the app {self.v['id']} to end",
                         lambda: not self.session.processes(self.v["id"]), 30)
 
-    def set_dark(self, dark: bool) -> None:
-        """Switch the desktop's appearance, through the action the person's
-        Settings use: its provider and id as the desktop lists them."""
-        if self.appearance is None:
-            self.appearance = until_value(
-                "the appearance action",
-                lambda: next((a for a in self.session.actions("set-dark-mode")
-                              if (address(a) or ("", ""))[1] == "set-dark-mode"), None), 30)
-        self.session.invoke_row(self.appearance, {"on": dark})
+    def dark_now(self) -> bool:
+        """Whether the desktop draws dark now, as the settings the session keeps say: the
+        appearance the walk's theme ops are held against."""
+        settings = self.session.control({"op": "settings"}).get("answer") or {}
+        return ((settings.get("appearance") or {}).get("mode")) == "dark"
+
+    def set_dark(self, dark: bool) -> bool:
+        """Switch the desktop's appearance through the action the person's Settings use,
+        addressed where the settings provider keeps it: finding it by listing every action on
+        the desktop waits on a catalogue that grows with what the person keeps, and the action
+        has one address. A theme that is the one asked for is left as it is: the walk does not
+        wait on colours it already has, and answers whether it switched anything."""
+        if self.dark is None:
+            self.dark = self.dark_now()
+        if self.dark == dark:
+            return False
+        self.session.invoke(SETTINGS, APPEARANCE, "set-dark-mode", {"on": dark})
+        self.dark = dark
+        return True
 
     def theme_shot(self, name: str, dark: bool) -> str:
         """The state `name` again, in the theme named: the person switches it and
         looks at what they had."""
         before = (self.window_of() or {}).get("frames") or 0
-        self.set_dark(dark)
+        switched = self.set_dark(dark)
         if self.v.get("id") is None:
             # A walk of the shell has no app window to count frames of: the
             # shell restyles on its next frame, which a snapshot waits for.
             time.sleep(0.3)
             return self.shot(f"{name}-{'dark' if dark else 'light'}")
         # A new theme reaches a window on the next frame it draws: wait for the
-        # app's own frame count to move, then shoot what it drew.
-        try:
-            until_value(f"the app to draw again in the {'dark' if dark else 'light'} theme",
-                        lambda: ((self.window_of() or {}).get("frames") or 0) > before,
-                        20, 0.05)
-        except Failed:
-            pass
+        # app's own frame count to move, then shoot what it drew. A theme that was
+        # already shown draws nothing again for it.
+        if switched:
+            try:
+                until_value(f"the app to draw again in the {'dark' if dark else 'light'} theme",
+                            lambda: ((self.window_of() or {}).get("frames") or 0) > before,
+                            20, 0.05)
+            except Failed:
+                pass
         return self.shot(f"{name}-{'dark' if dark else 'light'}")
 
     # -- the ops a step file may name ------------------------------------------------------
@@ -1704,17 +1762,18 @@ class Walk:
 
     def on_device(self, device: str, run):
         """`run()` with `device`'s session as the walk's: what it presses, reads and shoots is
-        that device's. The first device's session and appearance action are back after."""
-        own, own_appearance = self.session, self.appearance
-        self.appearances[self.devices.first] = own_appearance
+        that device's. The first device's session and theme are back after."""
+        own, own_dark = self.session, self.dark
+        self.darks[self.devices.first] = own_dark
         self.session = self.devices.session(device)
-        self.appearance = self.appearances.get(device)
+        self.dark = self.darks.get(device)
         self.device = device
         try:
             return run()
         finally:
-            self.appearances[device] = self.appearance
-            self.session, self.appearance, self.device = own, own_appearance, None
+            self.darks[device] = self.dark
+            self.session, self.dark = own, own_dark
+            self.device = None
 
     def op_launch(self, value) -> dict:
         """Open the app, waiting for its window unless the value says not to."""
@@ -1751,8 +1810,9 @@ class Walk:
         def shown():
             if self.window_of() is None:
                 return None
+            listed = targets_of(self.session, offered)
             for selector in offered:
-                found = control(self.session, selector)
+                found = named_in(listed, selector)
                 if found is not None:
                     return found
             return None
@@ -1775,8 +1835,9 @@ class Walk:
         step whose control one version draws and the other does not. Finding
         none is the finding, and the walk goes on."""
         offered = [s for s in map(lambda o: alternative(o, self.variant), value) if s]
+        listed = targets_of(self.session, offered)
         for selector in offered:
-            if control(self.session, selector) is not None:
+            if named_in(listed, selector) is not None:
                 press(self.session, selector)
                 return {"pressed": selector}
         return {"pressed": None, "offered_none": offered}
@@ -1784,8 +1845,9 @@ class Walk:
     def op_offered(self, value) -> dict:
         """Which of `selectors` the version offers now, without pressing one."""
         offered = [s for s in map(lambda o: alternative(o, self.variant), value) if s]
+        listed = targets_of(self.session, offered)
         for selector in offered:
-            if control(self.session, selector) is not None:
+            if named_in(listed, selector) is not None:
                 return {"offered": selector}
         return {"offered": None, "offered_none": offered}
 
@@ -1818,8 +1880,9 @@ class Walk:
         control a window holds but does not show — a menu's items while its menu
         is closed — stands nowhere, and is not one to click."""
         offered = [s for s in map(lambda o: alternative(o, self.variant), value) if s]
+        listed = targets_of(self.session, offered)
         for selector in offered:
-            target = control(self.session, selector)
+            target = named_in(listed, selector)
             if target is not None and drawn(target):
                 x, y, w, h = target["rect"]
                 self.session.click_at(x + w / 2, y + h / 2)
@@ -1975,7 +2038,7 @@ class Walk:
         a tracker's issues beside its record — so every read it offers is
         tried, and the one that held them is kept."""
         wanted = [pick(word, self.variant) for word in value]
-        reads = [row for row in self.session.actions("")
+        reads = [row for row in self.session.actions(app=self.v["id"])
                  if row.get("app_id") == self.v["id"]
                  and address(row) is not None and address(row)[1] == "read"]
         if not reads:
@@ -2033,7 +2096,7 @@ class Walk:
             # The app is ready when it publishes what it can do: a window that
             # is drawn for a client still connecting publishes nothing.
             def listed():
-                return [a for a in self.session.actions("")
+                return [a for a in self.session.actions(app=app)
                         if a.get("app_id") == app and address(a)]
 
             return {"actions": len(until_value(
@@ -2104,7 +2167,7 @@ class Walk:
 
                 drawn_under = [
                     target
-                    for target in self.session.targets()
+                    for target in targets_of(self.session, [child_name])
                     if target.get("name") == child_name
                     and drawn(target)
                     and below(target)
@@ -2139,7 +2202,8 @@ class Walk:
         if "submit" in value:
             name = value["submit"]
             def button():
-                found = [t for t in self.session.targets() if t.get("name") == name]
+                found = [t for t in targets_of(self.session, [name])
+                         if t.get("name") == name]
                 return max(found, key=lambda t: t["rect"][1]) if found else None
 
             target = until_value(f"the form's submit {name!r}", button, 30)
@@ -2202,18 +2266,22 @@ class Walk:
         entries = [alternative(entry, self.variant) for entry in wanted]
         entries = [entry for entry in entries if entry is not None]
 
-        def seen(entry) -> bool:
-            choices = entry if isinstance(entry, list) else [entry]
-            for selector in choices:
-                target = control(self.session, alternative(selector, self.variant) or "")
-                if target is not None and drawn(target):
-                    return True
-            return False
+        def choices_of(entry) -> list:
+            return [s for s in (alternative(selector, self.variant)
+                                for selector in (entry if isinstance(entry, list) else [entry]))
+                    if s is not None]
+
+        def missed(entry, listed) -> bool:
+            choices = choices_of(entry)
+            return not any((found := named_in(listed, selector)) is not None
+                           and drawn(found) for selector in choices)
 
         missing: list = []
         end = time.monotonic() + deadline
         while True:
-            missing = [entry for entry in entries if not seen(entry)]
+            listed = targets_of(self.session,
+                                [s for entry in entries for s in choices_of(entry)])
+            missing = [entry for entry in entries if missed(entry, listed)]
             if not missing or time.monotonic() > end:
                 break
             time.sleep(0.05)
@@ -2232,7 +2300,7 @@ class Walk:
         deadline = float(value.get("within", 10))
 
         def held() -> int:
-            return sum(1 for target in self.session.targets()
+            return sum(1 for target in targets_of(self.session, [selector])
                        if drawn(target) and matches(target, selector))
 
         def differs() -> int | None:
@@ -2256,8 +2324,9 @@ class Walk:
         entries = [e for e in (alternative(entry, self.variant) for entry in wanted) if e]
 
         def still() -> list:
+            listed = targets_of(self.session, entries)
             return [e for e in entries
-                    if (lambda t: t is not None and drawn(t))(control(self.session, e))]
+                    if (lambda t: t is not None and drawn(t))(named_in(listed, e))]
 
         end = time.monotonic() + deadline
         while still() and time.monotonic() < end:
@@ -2458,7 +2527,7 @@ class Walk:
         label its resource reads exactly (`label`, the row a person sees: `trip-plan.txt`). A row
         stands on an instance a person cannot name in advance (an entry, a transfer, a device),
         so it is found by what it is, never by its id."""
-        for row in self.session.actions(value.get("about") or ""):
+        for row in self.session.actions(value.get("about") or "", app=value.get("app")):
             at = address(row)
             if at is None or at[1] != value["action"]:
                 continue
@@ -2693,7 +2762,7 @@ class Walk:
             raise Failed(f"no window of {ident} to close")
         self.session.invoke(SHELL, SHELL_RESOURCE, "close-tab", {"tab": str(window["tab"])})
         until_value(f"the window of {ident} to close",
-                    lambda: all(w.get("app_id") != ident for w in self.session.windows()), 10)
+                    lambda: all(w.get("app_id") != ident for w in self.session.windows(ident)), 10)
         return {"closed": ident}
 
     def op_catalogue(self, value) -> dict:
@@ -2762,8 +2831,9 @@ class Walk:
             self.quit_app()
             self.launch()
         else:
-            self.appearance = None
             self.session.restart()
+            # The theme the restarted session comes back in is read again, not assumed.
+            self.dark = None
         return {"restarted": value, "took_ms": round((time.monotonic() - began) * 1000)}
 
     def op_restart_app(self, value) -> dict:
@@ -2893,7 +2963,7 @@ class Walk:
                     # Several rows of one operation (a pane's `open-pane`): the one
                     # whose parameters take the arguments named.
                     names = set(args)
-                    row = next((a for a in self.session.actions(operation)
+                    row = next((a for a in self.session.actions(operation, app=app)
                                 if a.get("app_id") == app and address(a)
                                 and address(a)[1] == operation
                                 and names <= {p.get("name") for p in
@@ -2943,7 +3013,7 @@ class Walk:
         app, operation = value["app"], value["operation"]
         args = value.get("args")
         names = set(args or ())
-        rows = [a for a in self.session.actions(operation)
+        rows = [a for a in self.session.actions(operation, app=app)
                 if a.get("app_id") == app and address(a) and address(a)[1] == operation]
         if names:
             rows = [a for a in rows if names <= {p.get("name") for p in
@@ -2981,7 +3051,7 @@ class Walk:
         ident = ident if "." in ident else real_apps.app_id(ident)
         deadline = float(value.get("within", 60)) if isinstance(value, dict) else 60.0
         until_value(f"the window of {ident}",
-                    lambda: next((w for w in self.session.windows()
+                    lambda: next((w for w in self.session.windows(ident)
                                   if w.get("app_id") == ident), None), deadline)
         return {"window": ident}
 
@@ -3307,8 +3377,10 @@ class Walk:
                                       "took_ms": round((time.monotonic() - op_began) * 1000)})
             # Whatever this step waited for, the window it leaves open says the app: a window
             # that drew nothing of the app is a blank window, and no wait on a word catches one
-            # whose words the shell draws itself.
-            self.require_shown()
+            # whose words the shell draws itself. The step looks at the surface once: the blank
+            # check and the controls it records read that same look.
+            targets = self.session.targets()
+            self.require_shown(targets)
             if self.catalogued is not None:
                 record["catalogue"] = self.catalogued
             shots_began = time.monotonic()
@@ -3334,9 +3406,9 @@ class Walk:
             if self.discover:
                 record["targets"] = [
                     {k: t[k] for k in ("name", "identity", "rect") if k in t}
-                    for t in self.session.targets()]
+                    for t in targets]
             record["took_ms"] = round((time.monotonic() - began) * 1000)
-            record["controls"] = sorted({t["name"] for t in self.session.targets()
+            record["controls"] = sorted({t["name"] for t in targets
                                          if t.get("name") and drawn(t)
                                          and "/" not in t["name"] and "~" not in t["name"]})
         except Failed as error:
