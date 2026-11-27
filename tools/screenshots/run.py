@@ -443,6 +443,16 @@ class Session:
             "TILO_LAUNCHER_BIN": str(args.bin_dir / "tilo-launcher"),
             "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE": str(runtime / "runtime-publishers.txt"),
         })
+        # The device looks for a runtime in its own store (`tilo-apps/runtimes/<version>`), which
+        # its services reach without the environment this script starts it with: the bundles this
+        # build baked are linked there too, so an install finds the runtime an app pins (Browser's
+        # Chromium engine) and the launcher starts that app on it.
+        store = Path(env["XDG_DATA_HOME"]) / "tilo-apps" / "runtimes"
+        store.mkdir(parents=True, exist_ok=True)
+        for bundle in sorted((runtime / "runtime").iterdir()):
+            linked = store / bundle.name
+            if (bundle / "bundle.toml").is_file() and not linked.exists():
+                linked.symlink_to(bundle, target_is_directory=True)
         started = time.monotonic()
         with self.log.open("wb") as out:
             self.daemon = subprocess.Popen(
@@ -521,12 +531,8 @@ class Session:
         deadline = time.monotonic() + 180
         for package in staged:
             named = tmp / f"id-{package.name}"
-            # The profile mounts the runtimes this build baked (`TILO_RUNTIME_BUNDLE_DIR`, above)
-            # rather than installing them, as a device installs its image's: the install's check of
-            # the package cache would refuse an app that needs one of them (Browser's Chromium
-            # engine), and the launcher resolves the mounted bundle when it starts the app.
             install = [str(args.bin_dir / "tilo-install"), "install", "--dev", str(package),
-                       "--id-file", str(named), "--ignore-missing-runtime"]
+                       "--id-file", str(named)]
             done = subprocess.run(install, env=env, cwd=tmp, capture_output=True, text=True, timeout=300)
             while (
                 "has no person signed in yet" in done.stdout + done.stderr

@@ -1,7 +1,7 @@
-# Feeds: a library of subscriptions from the app's own scenario, the unread
-# place, and an empty library. Fetching needs the network; the fixtures are the
-# articles the app stages. An article's page, where the reading settings live,
-# is a detail a capture cannot press a row to open.
+# Feeds: a library of subscriptions from the app's own scenario, a reading page
+# set in sepia and a size larger, and an empty library. Fetching needs the
+# network; the fixtures are the articles the app stages. An article's row is
+# found by what it says: its title over the feed it came from.
 
 [[situation]]
 name = "subscriptions"
@@ -9,12 +9,21 @@ title = "Subscriptions filed into folders"
 scenario = "a library of feeds"
 
 [[situation]]
-name = "unread"
-title = "The unread articles"
+name = "reader-settings"
+title = "Reading set in sepia, a size larger"
 scenario = "a library of feeds"
 
 [[situation.steps]]
-perform = { target = "key:item:unread", action = "activate" }
+invoke = { resource = "tl:so.tilo.feeds:root-u5mhrzrx", action = "begin_reading", bind = "reader" }
+
+[[situation.steps]]
+invoke = { resource = "{{reader.resources.0}}", action = "larger_text" }
+
+[[situation.steps]]
+invoke = { resource = "{{reader.resources.0}}", action = "set_paper", args = { paper = "sepia" } }
+
+[[situation.steps]]
+perform = { target = "A quiet morning in the city, The Guardian: World", action = "activate" }
 
 [[situation]]
 name = "empty"
