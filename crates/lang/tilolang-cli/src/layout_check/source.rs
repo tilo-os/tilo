@@ -53,6 +53,7 @@ pub struct SourceMap {
     views: HashMap<String, View>,
     packages: HashMap<String, Package>,
     called: BTreeSet<(String, String)>,
+    body_calls: BTreeSet<(String, String)>,
 }
 
 /// A source's files laid out as the compiler lays them out (`package::placed`): in path order, each
@@ -221,12 +222,29 @@ fn collect(
     }
 }
 
+/// The views `stmts` calls where a view's body always runs, outside a branch or a loop.
+fn collect_always(stmts: &[UiStmt], placed: &Placed, always: &mut Vec<String>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            UiKind::Call(call) => {
+                always.push(callee(placed.text(call.call.span)));
+                if let Some(block) = &call.block {
+                    collect_always(block, placed, always);
+                }
+            }
+            UiKind::Part { body, .. } => collect_always(body, placed, always),
+            _ => {}
+        }
+    }
+}
+
 impl SourceMap {
     /// The views of the packages built from `dirs` (each with its compiled metadata).
     pub fn new(packages: &[tilolang::source::BuiltPackage]) -> Self {
         let mut views = HashMap::new();
         let mut maps = HashMap::new();
         let mut called = BTreeSet::new();
+        let mut body_calls = BTreeSet::new();
         for built in packages {
             let app = built.compiled.meta.app.clone();
             let placed = Placed::new(&built.source, &built.dir);
@@ -235,6 +253,7 @@ impl SourceMap {
             };
             let mut calls = HashMap::new();
             let mut argument_views = Vec::new();
+            let mut always = Vec::new();
             let mut spans = HashMap::new();
             let mut aliases: HashMap<String, String> = HashMap::new();
             for item in &module.items {
@@ -249,6 +268,7 @@ impl SourceMap {
                     ast::Item::View(view) => {
                         spans.insert(view.name.name.clone(), placed.span(view.span.start));
                         collect(&view.body, &placed, &mut calls, &mut argument_views);
+                        collect_always(&view.body, &placed, &mut always);
                     }
                     _ => {}
                 }
@@ -271,6 +291,10 @@ impl SourceMap {
                 }
             }
             called.extend(callers.iter().cloned());
+            let found = always
+                .iter()
+                .filter_map(|what| callee_view(what, &app, &aliases, &names));
+            body_calls.extend(found);
             for view in &built.compiled.meta.views {
                 let span = spans
                     .get(&view.name)
@@ -291,7 +315,13 @@ impl SourceMap {
             views,
             packages: maps,
             called,
+            body_calls,
         }
+    }
+
+    /// Whether a view's body always calls `(app, view)`: reached even when it draws nothing.
+    pub fn called_from_body(&self, app: &str, view: &str) -> bool {
+        self.body_calls.contains(&(app.to_owned(), view.to_owned()))
     }
 
     /// Every view a package's source calls, as `(app, view name)`, over the packages read: what no

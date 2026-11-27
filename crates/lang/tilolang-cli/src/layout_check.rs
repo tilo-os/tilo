@@ -459,7 +459,7 @@ fn unreached_views(apps: &[App], shown: &[Shown]) -> Vec<Unreached> {
                 continue;
             }
             let key = (held.meta.app.clone(), view.name.clone());
-            if drawn.contains(&key) {
+            if drawn.contains(&key) || held.sources.called_from_body(&held.meta.app, &view.name) {
                 continue;
             }
             out.push(Unreached {
