@@ -80,6 +80,11 @@ impl HeaderTitle {
             || has + 0.5 >= self.least_width
     }
 
+    /// Whether `width` holds the title as words: its first letter and an ellipsis at least.
+    pub(super) fn reads_within(&self, width: f64) -> bool {
+        self.title.is_none() || self.least_width <= 0.0 || width + 0.5 >= self.least_width
+    }
+
     pub(super) fn is_shown(&self) -> bool {
         self.title.is_some()
     }

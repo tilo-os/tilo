@@ -212,6 +212,39 @@ fn dividers_of(staged: &stage::Staged) -> Vec<(String, Rect)> {
     out
 }
 
+/// The day bands of the conversation in `staged` that its list shows: those inside the box of the
+/// list that holds them (and any clip around it), not the rows it keeps mounted above or below
+/// its view.
+fn shown_dividers(staged: &stage::Staged) -> Vec<(String, Rect)> {
+    fn all(node: &ui::headless::InspectionNode, clip: Option<Rect>, out: &mut Vec<(String, Rect)>) {
+        let [x, y, width, height] = node.rect;
+        let rect = Rect::new(x, y, x + width, y + height);
+        if node.widget == "SectionDivider"
+            && clip.is_none_or(|clip| clip.y0 < rect.y1 && rect.y0 < clip.y1)
+        {
+            let words = node
+                .semantics
+                .as_ref()
+                .and_then(|semantics| semantics.name.clone())
+                .unwrap_or_default();
+            out.push((words, rect));
+        }
+        let own = node
+            .child_clip
+            .map(|[x, y, width, height]| Rect::new(x, y, x + width, y + height))
+            .or_else(|| (node.widget == "DescribedList").then_some(rect));
+        let clip = own.map_or(clip, |own| {
+            Some(clip.map_or(own, |outer| outer.intersect(own)))
+        });
+        for child in &node.children {
+            all(child, clip, out);
+        }
+    }
+    let mut out = Vec::new();
+    all(&staged.harness().inspection().root, None, &mut out);
+    out
+}
+
 /// The shell layout of the window `staged` shows, as the shell says it held its header rows.
 fn shell_at(staged: &stage::Staged) -> Option<tilo_ui_base::widget::ShellLayout> {
     fn find(node: &ui::headless::InspectionNode) -> Option<tilo_ui_base::widget::ShellLayout> {
@@ -340,8 +373,8 @@ fn frame(staged: &stage::Staged, viewport: (usize, usize)) -> (Vec<u8>, usize) {
     (rgba, scale)
 }
 
-/// Where a divider's rule falls short: for every divider of `staged`'s window, the rule that runs
-/// from its words out to each of the column's edges, as the frame paints it.
+/// Where a divider's rule falls short: for every divider `staged`'s window shows, the rule that
+/// runs from its words out to each of the column's edges, as the frame paints it.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
@@ -372,7 +405,7 @@ fn divider_rules(staged: &stage::Staged, viewport: (usize, usize)) -> Vec<String
     // starts again is held; and that band's own rule, when the frame shows one.
     let mut quiet_rule = 0.0f64;
     let mut accent_rule: Option<(String, f64)> = None;
-    for (words, divider) in dividers_of(staged) {
+    for (words, divider) in shown_dividers(staged) {
         // A band too narrow to rule moves no column a person reads, and its label may take the
         // whole of it: only a band with room on either side of its words is held to its rules.
         if divider.width() < 200.0 {
@@ -996,8 +1029,9 @@ fn bar_and_content_in(frame: &dyn Widget, window: Rect) {
     }
 }
 
-/// A strip of several places shows them as one window's tabs, the place in front under them; the
-/// strip of one shows its app from the window's own edge.
+/// A strip's places are its window's tabs, the place in front under them: a strip of several
+/// places shows each as a tab, and a strip of one wears its one tab too, the app's glyph and name
+/// saying what the window shows, so another place opens from the same bar.
 fn the_places_of_a_strip_are_its_tabs(group: &[&dyn Widget]) {
     for frame in group {
         let window = frame.get_rect();
@@ -1018,31 +1052,40 @@ fn the_places_of_a_strip_are_its_tabs(group: &[&dyn Widget]) {
                     tabs.width() > window.width() / 2.0,
                     "the tabs are the window's bar, not a chip in it: {tabs:?} in {window:?}"
                 );
-                let items = tabs_of(*bar);
                 assert!(
-                    items >= 3,
-                    "every place of the strip is a tab: {items} tabs"
+                    tabs_of(*bar) >= 1,
+                    "the window's place is a tab of its bar: {tabs:?}"
                 );
+                // The place in front is one app under the bar, filling the window; a place of a
+                // kind this build has no app for (the terminal) draws no app's shell at all.
                 let shells = named(*frame, "NavShell");
-                let [shell] = shells[..] else {
-                    panic!("one app in front of the tabs, not {}", shells.len());
-                };
-                let content = shell.get_rect();
                 assert!(
-                    content.y0 >= tabs.y1 - 1.0 && window.y1 - content.y1 < 1.0,
-                    "the place in front fills the window under its bar: {content:?} in {window:?}"
+                    shells.len() <= 1,
+                    "one app in front of the tabs, not {}",
+                    shells.len()
                 );
+                for shell in shells {
+                    let content = shell.get_rect();
+                    assert!(
+                        content.y0 >= tabs.y1 - 1.0 && window.y1 - content.y1 < 1.0,
+                        "the place in front fills the window under its bar: {content:?} in {window:?}"
+                    );
+                }
             }
             _ => panic!("one tab bar to a window, not {}", strips.len()),
         }
     }
+    // The strip of three notes shows each as a tab; the terminal's strip, its one.
+    let mut counts: Vec<usize> = group
+        .iter()
+        .flat_map(|frame| tab_strips(*frame))
+        .map(tabs_of)
+        .collect();
+    counts.sort_unstable();
     assert_eq!(
-        group
-            .iter()
-            .filter(|frame| !tab_strips(**frame).is_empty())
-            .count(),
-        1,
-        "the strip of several places shows its tabs"
+        counts,
+        [1, 3],
+        "every place of a strip is a tab of its window's bar, each strip's its own"
     );
 }
 
@@ -1992,11 +2035,20 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own(
         dividers.len() > 1,
         "the days around it are the same component: {dividers:?}"
     );
-    for (words, rect) in &dividers {
+    // The channel opens on its newest messages, so a band above them is mounted, scrolled out of
+    // the list's view; each band the list shows stands in its column, under the header.
+    let shown = shown_dividers(channels);
+    assert!(
+        !shown.is_empty(),
+        "the conversation shows a band of its days: {dividers:?}"
+    );
+    for (words, rect) in &shown {
         assert!(
             rect.x0 > 300.0 && rect.y1 > 100.0,
             "the divider {words:?} stands in the conversation's column, under its header: {rect:?}"
         );
+    }
+    for (words, rect) in &dividers {
         assert_eq!(
             (rect.x0, rect.x1),
             (dividers[0].1.x0, dividers[0].1.x1),
@@ -2225,8 +2277,8 @@ fn the_window_bar_at(
 }
 
 /// The Tasks app at the sizes a person holds a window in the hand shows one bar each time: the
-/// week's list at phone width with the page it opens in front of it, and a project in a tablet's
-/// window.
+/// week's task page at phone width, the list behind it and the page a row opens in front of it,
+/// and a project in a tablet's window.
 #[test]
 fn the_tasks_window_shows_one_bar_and_keeps_its_title_at_every_hand_held_size() {
     tilo_app_window::i18n::ensure();
@@ -2267,6 +2319,15 @@ fn the_tasks_window_shows_one_bar_and_keeps_its_title_at_every_hand_held_size() 
         };
         for layout in &of_size {
             lay_out(&mut staged, layout, scenario);
+        }
+        // A window opened on a task shows its page in front, the list behind the shell's Back:
+        // the list is a screen of the window too.
+        if super::back_chip(&staged, size) {
+            back_to_the_list(&mut staged, size);
+            let listed = format!("{scenario}, back on its list");
+            for layout in &of_size {
+                lay_out(&mut staged, layout, &listed);
+            }
         }
         // What the window opens in front of its list, as a finger opens it.
         if let Some(tapped) = super::tappable_row(&staged, size) {

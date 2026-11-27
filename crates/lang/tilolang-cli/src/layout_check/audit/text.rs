@@ -59,7 +59,7 @@ pub(super) fn header_row_problem(row: &tilo_ui_base::widget::HeaderRowLayout) ->
     if needs <= has + EPSILON {
         return None;
     }
-    if title_cut_with_room(needs, has, free) {
+    if title_cut_with_room(needs, has, free) && row.room_reads {
         return Some(format!(
             "the {} column's title says {needs:.0} wide, has {has:.0}, with {free:.0} free beside it",
             row.column

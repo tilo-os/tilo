@@ -105,6 +105,10 @@ pub struct HeaderRowLayout {
     /// The row gave the title width for its first letter and an ellipsis: less than that and the
     /// column reads as an ellipsis alone, naming nothing the person can tell apart from another.
     pub title_opens: bool,
+    /// The room left empty beside the title would let it read as words if it took it: a title
+    /// given none because even its first letter and an ellipsis do not fit there leaves no room
+    /// it could use.
+    pub room_reads: bool,
     pub labelled_action: bool,
     pub primary_shown: bool,
 }

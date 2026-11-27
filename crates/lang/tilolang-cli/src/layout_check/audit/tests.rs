@@ -61,6 +61,15 @@ tilo_test_env::scenario! {
         let room = header_row_problem(&header_row(180.0, 99.0, 77.0, false, true))
             .expect("a title cut with room left empty beside it");
         assert!(room.contains("free beside it"), "{room}");
+        let too_little = tilo_ui_base::widget::HeaderRowLayout {
+            room_reads: false,
+            ..header_row(103.0, 0.0, 34.0, false, true)
+        };
+        assert!(
+            header_row_problem(&too_little).is_none(),
+            "room beside a title too narrow for its first letter and an ellipsis is no room it \
+             could take"
+        );
         let dropped = header_row_problem(&header_row(180.0, 180.0, 0.0, false, false))
             .expect("a row that keeps its menu and not its primary action");
         assert!(dropped.contains("primary"), "{dropped}");
@@ -304,6 +313,7 @@ fn row_that_opens(
         title_has: has,
         free_beside_title: free,
         title_opens: opens,
+        room_reads: true,
         labelled_action: labelled,
         primary_shown: primary,
     }

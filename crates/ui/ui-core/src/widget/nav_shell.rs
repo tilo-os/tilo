@@ -3399,6 +3399,11 @@ impl Widget for NavShell {
                         .headers
                         .get(index)
                         .is_none_or(|header| header.title.opens_within(facts.title_has)),
+                    room_reads: self.headers.get(index).is_none_or(|header| {
+                        header
+                            .title
+                            .reads_within(facts.title_has + facts.free_beside_title)
+                    }),
                     labelled_action: facts.labelled_action,
                     primary_shown: facts.primary_shown,
                 });
