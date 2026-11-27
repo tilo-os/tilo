@@ -121,7 +121,7 @@ pub(crate) const STOPPED: &str = "this device stopped before it held your own wo
 /// Another device of the person keeps the workspace, or it could not be made.
 pub async fn found(workspaces: &Workspaces) -> Result<String, String> {
     let person = workspaces.device_cert().user_public_key;
-    let id = person_workspace_id(&person);
+    let id = tilo_action_policy::roles::person_workspace_id(&person);
     if holds_person_workspace_of(workspaces, &person).await {
         return Ok(id);
     }
@@ -137,7 +137,7 @@ pub async fn found(workspaces: &Workspaces) -> Result<String, String> {
 /// # Errors
 /// Another device of the person keeps the workspace.
 pub async fn may_found(workspaces: &Workspaces, person: &[u8; 32]) -> Result<(), String> {
-    let id = person_workspace_id(person);
+    let id = tilo_action_policy::roles::person_workspace_id(person);
     if workspaces
         .kept_elsewhere(person)
         .await

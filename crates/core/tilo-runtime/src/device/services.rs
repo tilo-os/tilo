@@ -597,16 +597,6 @@ const PERSONS_WORKSPACE_LONGEST_PAUSE: std::time::Duration = std::time::Duration
 /// and no device that was handed a root founds a second workspace beside the one it made.
 static ROOTS_MADE_HERE: Mutex<Vec<[u8; 32]>> = Mutex::new(Vec::new());
 
-/// Whether this process made `person`'s root and has not founded their workspace yet.
-fn root_made_here(person: &[u8; 32]) -> bool {
-    ROOTS_MADE_HERE.lock_recover().contains(person)
-}
-
-/// `person`'s workspace is founded: their root's making is done.
-fn founded_with_root(person: &[u8; 32]) {
-    ROOTS_MADE_HERE.lock_recover().retain(|made| made != person);
-}
-
 /// Found the person of the account `uid` on this computer, the one way a person is made
 /// ([`tilo_identity::provisioning::create_person`]): their root is kept for that account alone,
 /// and certifies this device's key in `keys` with its authority. Their own workspace is founded
@@ -2591,11 +2581,13 @@ impl Daemon {
             // step that made it, before anyone is told the person is here: the founding call
             // answers once their services run. Any other start founds nothing.
             let person = identity.cert.user_public_key;
-            if root_made_here(&person) {
+            if ROOTS_MADE_HERE.lock_recover().contains(&person) {
                 stage("founding the person's workspace");
                 let founding = Arc::clone(&first);
                 block_on_owned(async move { founding.found().await }).map_err(io::Error::other)?;
-                founded_with_root(&person);
+                ROOTS_MADE_HERE
+                    .lock_recover()
+                    .retain(|made| *made != person);
             }
         }
         // What the person granted apps in a workspace, as the service that holds its governance

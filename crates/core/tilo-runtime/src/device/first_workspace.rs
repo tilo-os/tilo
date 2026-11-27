@@ -150,16 +150,13 @@ impl FirstWorkspace {
     }
 
     /// Found the person's workspace, at the id their key names, on the computer that just made
-    /// their root: the one step that founds it ([`super::services::found_account_person`]). A
-    /// workspace already held there is theirs as it is.
+    /// their root, which no login names: the one step that founds it
+    /// ([`super::services::found_account_person`]). A workspace already held there is theirs as
+    /// it is.
     ///
     /// # Errors
-    /// This computer logged in, the service did not found it, or this device could not be listed
-    /// with its person's.
+    /// The service did not found it, or this device could not be listed with its person's.
     pub(crate) async fn found(&self) -> Result<String, String> {
-        if self.login {
-            return Err("a computer that logged in founds no workspace of its person's".to_owned());
-        }
         let workspace = own_workspace(&self.workspaces.device_cert().user_public_key);
         if self.get().is_none() {
             self.workspaces.found(workspace, FOUNDED_NAME).await?;
@@ -258,8 +255,13 @@ impl FirstWorkspace {
 }
 
 /// `person`'s own workspace, at the id their key names.
+#[expect(
+    clippy::expect_used,
+    reason = "the person's workspace id is a UUID by its derivation"
+)]
 pub(super) fn own_workspace(person: &[u8; 32]) -> WorkspaceId {
-    WorkspaceId::from(collab_types::person_workspace(person))
+    WorkspaceId::parse(&tilo_action_policy::roles::person_workspace_id(person))
+        .expect("a person's workspace id is a workspace id")
 }
 
 /// Why a computer holding the person's root but not their workspace does nothing in it: only the

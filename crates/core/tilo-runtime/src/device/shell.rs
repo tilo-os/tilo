@@ -648,10 +648,11 @@ fn named(argument: InvokeArgument) -> Result<Map<String, Value>, String> {
     }
 }
 
-/// The person's workspace list's `action` with `arguments`: [`CREATE`] founds a workspace this
-/// device keeps, [`JOIN`] joins the workspace an invitation is to, [`BRANCH`] copies one of the
-/// person's own into a new one, and [`DELETE`] deletes one where this device keeps it. Answers
-/// the workspace the action made, when it makes one.
+/// The person's workspace list's `action` with `arguments`: [`CREATE`] founds a workspace where
+/// the person's are founded ([`super::founding_create::found`]), [`JOIN`] joins the workspace an
+/// invitation is to, [`BRANCH`] copies one of the person's own into a new one, and [`DELETE`]
+/// deletes one where this device keeps it. Answers the workspace the action made, when it makes
+/// one.
 async fn listed(
     workspaces: &ServiceWorkspaces,
     action: &str,
@@ -666,7 +667,7 @@ async fn listed(
     match action {
         CREATE => {
             let workspace = WorkspaceId::parse(text("id")?).ok_or("that is not a workspace")?;
-            workspaces.found(workspace, text("name")?).await?;
+            super::founding_create::found(workspaces, workspace, text("name")?).await?;
             Ok(Value::String(workspace.to_string()))
         }
         JOIN => Ok(Value::String(

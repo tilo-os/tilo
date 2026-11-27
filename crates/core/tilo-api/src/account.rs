@@ -2168,40 +2168,29 @@ async fn create_where_founded(
         labels,
         id,
     };
-    match here.create_where_founded(creating).await {
-        Ok(answer) => Outcome::Ok(answer),
-        Err(crate::session::NotFounded::NoFoundingDevice) => failed(
+    let why = match here.create_where_founded(creating).await {
+        Ok(answer) => return Outcome::Ok(answer),
+        Err(why) => why,
+    };
+    let (code, hint) = match &why {
+        crate::session::NotFounded::NoFoundingDevice => (
             NO_FOUNDING_DEVICE,
-            "none of your devices makes your workspaces",
             "make the workspace on the computer you first set Tilo up on",
         ),
-        Err(crate::session::NotFounded::Unreached { waited }) => failed(
+        crate::session::NotFounded::Unreached { .. } => (
             FOUNDING_DEVICE_UNREACHED,
-            format!(
-                "the device that makes your workspaces didn't answer within {} seconds",
-                waited.as_secs()
-            ),
             "turn that device on and connect it to a network, then try again",
         ),
-        Err(crate::session::NotFounded::Declined) => failed(
-            FOUNDING_DECLINED,
-            "you said no to making it on the device that makes your workspaces",
-            "make it again and say yes there",
-        ),
-        Err(crate::session::NotFounded::Unanswered { waited }) => failed(
+        crate::session::NotFounded::Declined => {
+            (FOUNDING_DECLINED, "make it again and say yes there")
+        }
+        crate::session::NotFounded::Unanswered { .. } => (
             FOUNDING_UNANSWERED,
-            format!(
-                "nobody answered on the device that makes your workspaces within {} minutes",
-                waited.as_secs().div_ceil(60)
-            ),
             "make it again and answer the question on that device",
         ),
-        Err(crate::session::NotFounded::Refused(why)) => failed(
-            "refused",
-            format!("the device that makes your workspaces didn't make this one: {why}"),
-            "fix what it names and try again",
-        ),
-    }
+        crate::session::NotFounded::Refused(_) => ("refused", "fix what it names and try again"),
+    };
+    failed(code, why.to_string(), hint)
 }
 
 /// What a desktop answers `op` with `args`: the workspaces it keeps, kept or left at the

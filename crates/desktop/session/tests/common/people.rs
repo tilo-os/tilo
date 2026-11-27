@@ -58,7 +58,9 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use tilo_device_identity::IdentityPaths;
-use tilo_identity::provisioning::FILE_SECRETS_ENV;
+use tilo_device_identity::login::daemon::{DeviceActions, DeviceRefusal};
+use tilo_device_identity::login::{ALREADY_A_PERSONS, FOUND};
+use tilo_identity::provisioning::{FILE_SECRETS_ENV, TEST_PLATFORM_ENV, TILO_OS_PLATFORM};
 use tilo_server_protocol::directory::{EntryJoin, Listing, entry_path};
 use tilo_server_protocol::workspaces::Role;
 use tilo_test_env::DiesWithTheTest as _;
@@ -682,13 +684,6 @@ pub fn two_people_at_a_site() -> (Site, Person, Person, Device, Device) {
     two_people_at_a_site_carrying(&[], |_| {})
 }
 
-/// [`two_people_at_a_site`] for people whose devices carry the Files app: a session reads the apps
-/// it has when it starts, so each device has them before its session does, and the workspace
-/// lets them author its records, as a host lets the first-party apps author theirs.
-pub fn two_people_at_a_site_with_files() -> (Site, Person, Person, Device, Device) {
-    two_people_at_a_site_carrying(&[FILES_APP], Device::install_files)
-}
-
 /// The app whose record a workspace's tree is.
 pub const FILES_APP: &str = "so.tilo.file-explorer";
 
@@ -722,8 +717,8 @@ pub fn two_people_at_a_site_carrying(
     (site, ada, bob, ada_laptop, bob_laptop)
 }
 
-/// [`two_people_at_a_site_with_files`] before the second person joins: Ada's laptop holds the
-/// workspace, and what brings Bob in is the invitation her session hands out for it.
+/// [`two_people_at_a_site`] with the Files app, before the second person joins: Ada's laptop holds
+/// the workspace, and what brings Bob in is the invitation her session hands out for it.
 pub fn a_site_with_files_for_one_laptop() -> (Site, Person, Person, Device) {
     let (site, ada, bob, mut ada_laptop) = site_carrying(&[FILES_APP], &Device::install_files);
     let hers = site.invite(ada.public, Role::Editor);
@@ -782,34 +777,6 @@ pub fn shell_answer(device: &Device, args: &serde_json::Value) -> serde_json::Va
 /// two sessions a person's laptop and their phone run, sharing what they record there.
 pub fn two_devices_of_one_person() -> (Site, Person, Device, Device) {
     two_devices_of_one_person_carrying(|_| {})
-}
-
-/// A device of `person`'s, joined to the workspace `site` serves and holding it: what the owner's
-/// invitation admits, as a device redeems it.
-fn joined(site: &Site, person: &Person, label: &str) -> Device {
-    joined_carrying(site, person, label, &|_| {})
-}
-
-/// [`joined`] for a device carrying what `install` puts in its store, which it has before its
-/// session starts.
-pub fn joined_carrying(
-    site: &Site,
-    person: &Person,
-    label: &str,
-    install: &impl Fn(&Device),
-) -> Device {
-    let mut device = person.device(label);
-    install(&device);
-    let invitation = site.invite(person.public, Role::Editor);
-    device.join(&invitation);
-    device.wait_holding(&site.workspace);
-    device
-}
-
-/// [`two_devices_of_one_person`] for two devices that carry the Files app: a session reads the apps
-/// it has when it starts, so each device has them before its session does.
-pub fn two_devices_of_one_person_with_files() -> (Site, Person, Device, Device) {
-    two_devices_of_one_person_carrying(|device| device.install_files())
 }
 
 /// [`two_devices_of_one_person`] for two devices that carry the development session's tilolang
@@ -994,13 +961,18 @@ impl Person {
             unsigned_cert([0; 32]),
         );
         first.restart_daemon();
-        let founded =
-            first.device_action(tilo_device_identity::login::FOUND, json!({ "name": name }));
-        assert!(
-            matches!(founded, ReceiptStatus::Completed { .. }),
-            "{name}'s first device made them: {founded:?}\n{}",
-            first.warnings()
-        );
+        // Followed past its end, a founding is read where the person's part answers, which says
+        // the device is theirs already: the founding is done once that part answers.
+        let made = first.device_action(FOUND, json!({ "name": name }));
+        if let Err(refused) = made
+            && !refused.message.contains(ALREADY_A_PERSONS)
+        {
+            panic!(
+                "{name}'s first device made them: {refused}\n{}",
+                first.warnings()
+            );
+        }
+        first.call_until_answered("info", &json!({}));
         first.stop();
         first.cert = tilo_device_identity::persist::read_device_cert(&first.identity().device_cert)
             .expect("the certificate the founding filed");
@@ -1081,30 +1053,50 @@ impl Person {
         cert
     }
 
-    /// One of this person's devices, called `label`. The first is the one that made them, named
-    /// as the person names a device (`devices#rename`); every later one is a computer of its own
-    /// that enters with a ticket their first device issues ([`Device::redeem_ticket`]). Each is
-    /// left stopped.
+    /// One of this person's devices, called `label`, left stopped. The first is the one that made
+    /// them; every later one is a computer of its own that enters with a ticket their first device
+    /// issues ([`Device::redeem`]). Their first device names each as the person names a device
+    /// (`devices#rename`), which only a device their record of their devices lists takes: that
+    /// device's daemon as it is, running for a test that started it, else started until then.
     pub fn device(&self, label: &str) -> Device {
-        let first = self.first.lock().expect("the person's first device").take();
-        if let Some(mut first) = first {
-            label.clone_into(&mut first.label);
-            first.restart_daemon();
-            let key = hex::encode(first.cert.device_public_key);
-            first.call_until_answered(
-                tilo_device_identity::login::RENAME,
-                &json!({ "device": key, "name": label }),
-            );
-            first.stop();
-            return first;
+        let mut founder = Device::at(
+            &self.name,
+            "their first device",
+            Arc::clone(&self.founder),
+            unsigned_cert(self.public),
+        );
+        let founder_was_off = UnixStream::connect(founder.native_socket()).is_err();
+        if founder_was_off {
+            founder.restart_daemon();
         }
+        let first = self.first.lock().expect("the person's first device").take();
+        let device = first.map_or_else(
+            || self.let_in(&mut founder, label),
+            |mut first| {
+                label.clone_into(&mut first.label);
+                first
+            },
+        );
+        founder.call_until_answered(
+            tilo_device_identity::login::RENAME,
+            &json!({ "device": hex::encode(device.cert.device_public_key), "name": label }),
+        );
+        if founder_was_off {
+            founder.stop();
+        }
+        device
+    }
+
+    /// A computer of the person's own called `label`, let in with a ticket `founder`, their first
+    /// device, issues, as `tilo device add` asks it there.
+    fn let_in(&self, founder: &mut Device, label: &str) -> Device {
         let mut device = Device::at(
             &self.name,
             label,
             Arc::new(device_home()),
             unsigned_cert(self.public),
         );
-        self.let_in(&mut device);
+        device.redeem(founder);
         // The device names the person as they go by, from the record its login took up: a device
         // that took up an unnamed person says so on everyone's bar until their record arrives.
         let identity_dir = tilo_identity::store::account_identity_dir(
@@ -1119,34 +1111,6 @@ impl Person {
         .expect("the device takes up its person");
         assert!(took_up, "the device's certificate names its person");
         device
-    }
-
-    /// Let `device` in with a ticket the person's first device issues, as `tilo device add` asks
-    /// it there: that device's daemon as it is, running for a test that started it, else started
-    /// until the person's record of their devices lists the computer, since the device that
-    /// issued a ticket certifies the computer redeeming it and lists it there, and the computer
-    /// enters the person's workspace as a device that record lists.
-    fn let_in(&self, device: &mut Device) {
-        let mut issuer = Device::at(
-            &self.name,
-            "their first device",
-            Arc::clone(&self.founder),
-            unsigned_cert(self.public),
-        );
-        if UnixStream::connect(issuer.native_socket()).is_err() {
-            issuer.restart_daemon();
-        }
-        let ticket = issuer.issue_ticket();
-        device.redeem_ticket(&ticket, "their first device");
-        // Named as the person names it, which only a device the record lists takes.
-        issuer.call_until_answered(
-            tilo_device_identity::login::RENAME,
-            &json!({
-                "device": hex::encode(device.cert.device_public_key),
-                "name": device.label,
-            }),
-        );
-        issuer.stop();
     }
 }
 
@@ -1281,14 +1245,10 @@ impl Person {
         // Signed by nobody: it names the key the copy is to be certified for, and admits
         // nothing. Redeeming a ticket replaces it with the one the person's root signed.
         let cert = DeviceCert {
-            user_public_key: self.public,
             device_public_key: branched.device,
             device_label: branched.label.clone(),
             capabilities: source.cert.capabilities.clone(),
-            issued_at_ns: 0,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
+            ..unsigned_cert(self.public)
         };
         let copy = Device::at(&self.name, &branched.label, Arc::new(home), cert);
         copy.seeds.set(source.seeds.get());
@@ -1346,107 +1306,10 @@ impl Device {
             .join(tilo_machine::DAEMON_NATIVE)
     }
 
-    /// Call the device action `action` of `devices` on this device's daemon, as `tilo login`
-    /// does on a computer no person's certificate names yet: its receipt.
-    fn device_action(&self, action: &str, args: Value) -> ReceiptStatus {
-        let Value::Object(argument) = args else {
-            panic!("a device action is called with its arguments");
-        };
-        let invocation = tilo_actions::InvocationId::new();
-        let request = RemoteActionMessage::Invoke(tilo_actions::remote::InvokeRequest {
-            asks: false,
-            invocation,
-            target: RemoteActionTarget {
-                provider: tilo_device_identity::login::PROVIDER.to_owned(),
-                address: tilo_actions::ActionAddress::new(
-                    tilo_device_identity::login::RESOURCE,
-                    action,
-                ),
-            },
-            argument: tilo_actions::remote::InvokeArgument::Json(argument),
-            context: None,
-            confirmation: None,
-            revision: None,
-            on_behalf_of: None,
-            wait_ms: Some(55_000),
-            appearance: None,
-            signed: None,
-        });
-        let stream = UnixStream::connect(self.native_socket()).expect("the daemon answers");
-        stream
-            .set_read_timeout(Some(tilo_test_env::hang_bound()))
-            .expect("a read bound");
-        let mut writer = stream.try_clone().expect("the stream's own handle");
-        writer
-            .write_all(&RemoteActionFrame::new(request).encode().expect("a frame"))
-            .expect("the call is sent");
-        writer.write_all(b"\n").expect("the call is sent");
-        let mut reader = BufReader::new(stream);
-        let mut answer = || {
-            let mut line = String::new();
-            reader.read_line(&mut line).expect("the daemon answers");
-            RemoteActionFrame::decode(line.trim_end().as_bytes())
-                .expect("the answer is a frame")
-                .message
-        };
-        let status = match answer() {
-            RemoteActionMessage::Receipt(receipt) => receipt.status,
-            other => panic!("a call is answered with a receipt, not {other:?}"),
-        };
-        if !matches!(status, ReceiptStatus::Accepted) {
-            return status;
-        }
-        // A call answered at once, as a computer no person's certificate names yet answers its
-        // login, is followed until it ends, as `tilo login` follows it.
-        let until = tilo_test_env::hang_deadline();
-        for correlation in 1_u64.. {
-            let observe = RemoteActionMessage::Observe {
-                correlation,
-                invocation,
-                wait_ms: Some(55_000),
-                seen: None,
-            };
-            writer
-                .write_all(&RemoteActionFrame::new(observe).encode().expect("a frame"))
-                .expect("the ask is sent");
-            writer.write_all(b"\n").expect("the ask is sent");
-            let state = loop {
-                match answer() {
-                    RemoteActionMessage::Update {
-                        state,
-                        correlation: Some(answered),
-                        ..
-                    } if answered == correlation => break state,
-                    // An update the daemon pushes as the call goes on answers no ask.
-                    RemoteActionMessage::Update { .. } => {}
-                    other => panic!("an ask is answered with an update, not {other:?}"),
-                }
-            };
-            let state = state.unwrap_or_else(|| panic!("{} lost the call {action}", self.label));
-            if state.is_terminal() {
-                return state.receipt().status;
-            }
-            std::thread::sleep(Duration::from_millis(100));
-            assert!(
-                Instant::now() < until,
-                "{}'s call {action} did not end: {state:?}\n{}",
-                self.label,
-                self.warnings()
-            );
-        }
-        unreachable!("the asks of one call run out")
-    }
-
-    /// A ticket this device's daemon issues for one more computer of its person's, as `tilo
-    /// device add` asks it on the person's own connection: what that computer logs in with.
-    fn issue_ticket(&self) -> String {
-        let issued =
-            self.call_until_answered(tilo_device_identity::login::ISSUE, &json!({"wait": false}));
-        issued["result"]["ticket"]
-            .as_str()
-            .filter(|ticket| !ticket.is_empty())
-            .unwrap_or_else(|| panic!("{} issued no ticket: {issued}", self.label))
-            .to_owned()
+    /// Call the device action `action` of `devices` on this device's daemon, followed until it
+    /// settles, as `tilo login` does on a computer no person's certificate names yet: its answer.
+    fn device_action(&self, action: &str, args: Value) -> Result<Value, DeviceRefusal> {
+        DeviceActions::at(self.native_socket()).ask_followed(action, args)
     }
 
     /// The person's device action `action` with `args`, asked on their own connection to this
@@ -1488,38 +1351,37 @@ impl Device {
     /// device's own key. What this device is let into from then on is sealed to that key, as on
     /// any device newly added. Each daemon is left as it was: stopped, or running.
     pub fn redeem(&mut self, issuer: &mut Device) {
-        let issuer_was_off = issuer.daemon.is_none();
+        let issuer_was_off = UnixStream::connect(issuer.native_socket()).is_err();
         if issuer_was_off {
             issuer.restart_daemon();
         }
-        let ticket = issuer.issue_ticket();
+        let answer =
+            issuer.call_until_answered(tilo_device_identity::login::ISSUE, &json!({"wait": false}));
+        let ticket = answer["result"]["ticket"]
+            .as_str()
+            .filter(|ticket| !ticket.is_empty())
+            .unwrap_or_else(|| panic!("{} issued no ticket: {answer}", issuer.label));
         // The issuer certifies the computer that redeems its ticket: it runs until then.
-        self.redeem_ticket(&ticket, &issuer.label);
-        if issuer_was_off {
-            issuer.stop();
-        }
-    }
-
-    /// Log this device in with `ticket`, which the device `issued_by` names issued: its daemon
-    /// redeems it (`devices#logIn`, as `tilo login` does), which has the person's root certify
-    /// this device's own key. The daemon is left as it was: stopped, or running.
-    pub fn redeem_ticket(&mut self, ticket: &str, issued_by: &str) {
         let was_off = self.daemon.is_none();
         if was_off {
             self.restart_daemon();
         }
-        let logged_in = self.device_action(
+        if let Err(refused) = self.device_action(
             tilo_device_identity::login::LOG_IN,
             json!({"ticket": ticket, "agent": "tilo", "label": self.label}),
-        );
-        assert!(
-            matches!(logged_in, ReceiptStatus::Completed { .. }),
-            "{} logged in with {issued_by}'s ticket: {logged_in:?}\n{}",
-            self.label,
-            self.warnings()
-        );
+        ) {
+            panic!(
+                "{} logged in with {}'s ticket: {refused}\n{}",
+                self.label,
+                issuer.label,
+                self.warnings()
+            );
+        }
         if was_off {
             self.stop();
+        }
+        if issuer_was_off {
+            issuer.stop();
         }
         self.cert = tilo_device_identity::persist::read_device_cert(&self.identity().device_cert)
             .expect("the certificate the ticket's redemption filed");
@@ -1528,14 +1390,10 @@ impl Device {
     /// The people whose certificates name this device's key, as its daemon says what it is
     /// (`devices#info`): none on a computer no person let in yet.
     pub fn people(&self) -> Vec<String> {
-        match self.device_action("info", json!({})) {
-            ReceiptStatus::Completed { output } => output
-                .value
-                .and_then(|value| value.get("people").cloned())
-                .and_then(|people| serde_json::from_value(people).ok())
-                .unwrap_or_default(),
-            other => panic!("{} says what it is: {other:?}", self.label),
-        }
+        let info = self
+            .device_action("info", json!({}))
+            .unwrap_or_else(|refused| panic!("{} says what it is: {refused}", self.label));
+        serde_json::from_value(info["people"].clone()).unwrap_or_default()
     }
 }
 
@@ -1667,50 +1525,100 @@ impl Device {
     /// Start this device's daemon again over the state it kept, as a service restarting does. The
     /// shell it started before is still running and asks it for a new link by itself.
     pub fn restart_daemon(&mut self) {
+        self.start_daemon("this device's daemon restarts", None);
+    }
+
+    /// Start this device's daemon over its own home, identity root, state and loopback endpoints,
+    /// as the person's own service starts it, with what it logs headed `heading`, and wait until
+    /// its native endpoint answers: the device's log, which the session the daemon starts writes
+    /// to as well. `listening` is the line the daemon's output says once the session listens, and
+    /// what to tell then.
+    fn start_daemon(
+        &mut self,
+        heading: &str,
+        listening: Option<(String, mpsc::Sender<bool>)>,
+    ) -> std::fs::File {
         let root = self.home.path().to_path_buf();
         let logs = self.logs_dir();
         std::fs::create_dir_all(&logs).expect("a directory for what the device logs");
-        let program = self
-            .session
-            .clone()
-            .unwrap_or_else(|| tilo_test_env::package_binary!("tilo-session"));
+        // The machine's boot makes its runtime directory, as a login's manager does: a copied
+        // disk never carries one, and without it the daemon would bind its sockets elsewhere.
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(root.join("runtime"))
+            .expect("the device's runtime directory");
+        // A device started again keeps what it said when it stopped: what it answered last, a
+        // crash included, is what a step that fails after the restart reads. The daemon and the
+        // session the daemon starts write here, as a device's journal holds both.
         let mut log = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(logs.join("session.log"))
             .expect("a log for the session");
-        let _ = writeln!(log, "\n--- this device's daemon restarts ---");
+        let _ = writeln!(log, "\n--- {heading} ---");
         let mut daemon = Command::new(tilo_test_env::sibling_binary("tilo-daemon", "tilo-runtime"));
         self.device_env(&mut daemon, &logs);
         daemon
-            .env(tilo_runtime::daemon::TEST_SHELL_ENV, &program)
+            // The daemon starts this test's build of the session as the person's shell.
+            .env(tilo_runtime::daemon::TEST_SHELL_ENV, self.program())
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(if listening.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stderr(Stdio::from(log.try_clone().expect("the log's own handle")));
         let mut daemon = spawn_group(daemon, "tilo-runtime");
-        let native = root.join("runtime/tilo").join(tilo_machine::DAEMON_NATIVE);
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            if let Ok(Some(ended)) = daemon.try_wait() {
-                panic!(
-                    "{}'s daemon ended as it restarted ({ended}):\n{}",
-                    self.label,
-                    std::fs::read_to_string(logs.join("session.log")).unwrap_or_default()
-                );
-            }
-            if UnixStream::connect(&native).is_ok() {
-                break;
-            }
-            assert!(
-                Instant::now() < deadline,
-                "{}'s daemon did not answer again at {}:\n{}",
-                self.label,
-                native.display(),
-                std::fs::read_to_string(logs.join("session.log")).unwrap_or_default()
-            );
-            std::thread::sleep(Duration::from_millis(50));
+        if let Some((listening, tell)) = listening {
+            let out = daemon.stdout.take().expect("the daemon's output");
+            told_at_end(out, Some(listening), tell, &log);
         }
         self.daemon = Some(daemon);
+        // The daemon holds the device once its native endpoint answers, before the person's
+        // services start: from then on the session finds it there and asks it for its shell.
+        let native = root.join("runtime/tilo").join(tilo_machine::DAEMON_NATIVE);
+        let label = self.label.clone();
+        let logged = logs.join("session.log");
+        // A daemon that never answers is read where it waits: what it logged, and each of its
+        // threads' stacks. This wait's bound ends just before the one around it.
+        let deadline = tilo_test_env::hang_deadline();
+        let answered = tilo_test_env::wait_for(
+            format!("{label}'s daemon to answer at {}", native.display()),
+            || {
+                if let Some(daemon) = self.daemon.as_mut()
+                    && let Ok(Some(ended)) = daemon.try_wait()
+                {
+                    panic!(
+                        "{label}'s daemon ended as it started ({ended}):\n{}",
+                        std::fs::read_to_string(&logged).unwrap_or_default()
+                    );
+                }
+                if UnixStream::connect(&native).is_ok() {
+                    return Some(true);
+                }
+                (Instant::now() >= deadline).then_some(false)
+            },
+        );
+        if !answered {
+            let pid = self.daemon.as_ref().map(Child::id);
+            panic!(
+                "{label}'s daemon did not answer at {} within {:?}; it looks hung.\n\
+                 its threads:\n{}\nwhat it logged:\n{}",
+                native.display(),
+                tilo_test_env::hang_bound(),
+                pid.map(stacks).unwrap_or_default(),
+                std::fs::read_to_string(&logged).unwrap_or_default()
+            );
+        }
+        log
+    }
+
+    /// The session program this device runs ([`Self::run_session`]).
+    fn program(&self) -> PathBuf {
+        self.session
+            .clone()
+            .unwrap_or_else(|| tilo_test_env::package_binary!("tilo-session"))
     }
 
     /// Stop this device, as the person closing their laptop does: its session, then its daemon.
@@ -1854,81 +1762,12 @@ impl Device {
         let root = self.home.path().to_path_buf();
         let control = self.control.clone();
         let logs = self.logs_dir();
-        std::fs::create_dir_all(&logs).expect("a directory for what the device logs");
-        // The machine's boot makes its runtime directory, as a login's manager does: a copied
-        // disk never carries one, and without it the daemon would bind its sockets elsewhere.
-        std::fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(root.join("runtime"))
-            .expect("the device's runtime directory");
-        // A device started again keeps what it said when it stopped: what it answered last, a
-        // crash included, is what a step that fails after the restart reads. The daemon and the
-        // session the daemon starts write here, as a device's journal holds both.
-        let mut log = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(logs.join("session.log"))
-            .expect("a log for the session");
-        let _ = writeln!(log, "\n--- this device starts ---");
-        let program = self
-            .session
-            .clone()
-            .unwrap_or_else(|| tilo_test_env::package_binary!("tilo-session"));
+        let program = self.program();
         // What the session prints once it listens, the last thing it prints: on the daemon's
         // output, which the shell it starts writes to.
         let listening = format!("TILO_TEST_CONTROL={}", control.display());
         let (tell, told) = mpsc::channel();
-
-        let mut daemon = Command::new(tilo_test_env::sibling_binary("tilo-daemon", "tilo-runtime"));
-        self.device_env(&mut daemon, &logs);
-        daemon
-            // The daemon starts this test's build of the session as the person's shell.
-            .env(tilo_runtime::daemon::TEST_SHELL_ENV, &program)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::from(log.try_clone().expect("the log's own handle")));
-        let mut daemon = spawn_group(daemon, "tilo-runtime");
-        let out = daemon.stdout.take().expect("the daemon's output");
-        told_at_end(out, Some(listening), tell.clone(), &log);
-        self.daemon = Some(daemon);
-        // The daemon holds the device once its native endpoint answers, before the person's
-        // services start: from then on the session finds it there and asks it for its shell.
-        let native = root.join("runtime/tilo").join(tilo_machine::DAEMON_NATIVE);
-        let label = self.label.clone();
-        let logged = logs.join("session.log");
-        // A daemon that never answers is read where it waits: what it logged, and each of its
-        // threads' stacks. This wait's bound ends just before the one around it.
-        let deadline = tilo_test_env::hang_deadline();
-        let answered = tilo_test_env::wait_for(
-            format!("{label}'s daemon to answer at {}", native.display()),
-            || {
-                if let Some(daemon) = self.daemon.as_mut()
-                    && let Ok(Some(ended)) = daemon.try_wait()
-                {
-                    panic!(
-                        "{label}'s daemon ended as it started ({ended}):\n{}",
-                        std::fs::read_to_string(&logged).unwrap_or_default()
-                    );
-                }
-                if UnixStream::connect(&native).is_ok() {
-                    return Some(true);
-                }
-                (Instant::now() >= deadline).then_some(false)
-            },
-        );
-        if !answered {
-            let pid = self.daemon.as_ref().map(Child::id);
-            panic!(
-                "{label}'s daemon did not answer at {} within {:?}; it looks hung.\n\
-                 its threads:\n{}\nwhat it logged:\n{}",
-                native.display(),
-                tilo_test_env::hang_bound(),
-                pid.map(stacks).unwrap_or_default(),
-                std::fs::read_to_string(&logged).unwrap_or_default()
-            );
-        }
-
+        let log = self.start_daemon("this device starts", Some((listening, tell.clone())));
         let mut command = Command::new(&program);
         if self.seeds.get() {
             // It serves the development session's apps, and its launcher starts their windows on
@@ -2010,6 +1849,9 @@ impl Device {
             // people through.
             .env(tilo_secrets::SECRETS_DIR_ENV, root.join("secrets"))
             .env(FILE_SECRETS_ENV, "1")
+            // Each device runs Tilo OS, so the person's root certifies the ones it lets in as
+            // native: what one asks another of theirs to do waits for no yes there.
+            .env(TEST_PLATFORM_ENV, TILO_OS_PLATFORM)
             // The session says at info why a join did not land, and its direct links say at debug
             // what they carried: what a failed step reads. A test that needs more of it asked
             // first ([`log_sessions_at`]). The shell the daemon starts keeps the daemon's.

@@ -26,6 +26,7 @@ use std::time::Duration;
 
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use serde_json::{Value, json};
+use tilo_action_policy::roles::person_workspace_id;
 use tilo_action_policy::{ActionKind, Answer, Context, TreePath};
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::asked::AskedFacts;
@@ -36,7 +37,6 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionParam, InvocationId, InvocationUpdate};
 use tilo_api::session::{Creating, NotFounded};
-use tilo_server_protocol::servers::person_workspace_id;
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::workspaces::asking::approved_or_asks;
 use tilo_workspace_service::workspaces::person_workspace::devices;
@@ -276,6 +276,35 @@ impl WorkspaceAnswers for FoundingCreate {
                 .map(Answered::Value)
         })
     }
+}
+
+/// Make `workspace`, called `name`, as the person's shell asks it here: here on a device that
+/// keeps their root (or where their record names none that does), and at the device keeping it
+/// otherwise ([`ask`]), which lists it with their others so every device of theirs takes it in.
+///
+/// # Errors
+/// This device did not make it, or the founding device did not.
+pub(crate) async fn found(
+    workspaces: &ServiceWorkspaces,
+    workspace: tilo_desktop_model::WorkspaceId,
+    name: &str,
+) -> Result<(), String> {
+    let own = workspaces.device_cert();
+    let holders = devices::of(workspaces.copies(), &own.user_public_key)
+        .await
+        .root_holders(&own.user_public_key);
+    if holders.is_empty() || holders.contains(&own.device_public_key) {
+        return workspaces.found(workspace, name).await.map(drop);
+    }
+    let creating = Creating {
+        name: name.to_owned(),
+        labels: tilo_server_protocol::workspaces::WorkspaceLabels::new(),
+        id: Some(workspace.into()),
+    };
+    ask(workspaces, creating)
+        .await
+        .map(drop)
+        .map_err(|refused| refused.to_string())
 }
 
 /// Make the workspace `creating` names on the person's device that founds their workspaces,

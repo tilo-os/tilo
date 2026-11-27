@@ -486,9 +486,9 @@ fn keys_at_rest(workspace: &str, one: &Device, other: &Device) {
     );
 }
 
-/// A workspace `maker` makes and hosts, which `other`, a further device of the same person, takes
-/// from the person's list and holds: its id.
-fn made_on(maker: &Device, other: &Device) -> String {
+/// A workspace `maker`, a device the person let in with a ticket, makes: `host`, their first
+/// device, which founds their workspaces, makes and hosts it, and both hold it: its id.
+fn made_on(maker: &Device, host: &Device) -> String {
     let before = maker.on_shell();
     let made = maker.act_wait(&new_workspace(), &json!({}));
     assert_eq!(
@@ -498,14 +498,14 @@ fn made_on(maker: &Device, other: &Device) -> String {
         maker.label,
         maker.diagnostic()
     );
-    // The shell takes in the person's other workspaces too, as their list brings them from their
-    // other devices, and one of those may land beside the one just made: the one made here is the
-    // new one this device hosts.
+    // The shell takes in the person's own workspace too, as their list brings it from their other
+    // devices, and it may land beside the one just made: the one made here is the other new one.
+    let own = tilo_server_protocol::servers::person_workspace_id(&maker.cert.user_public_key);
     let made_here = || {
-        maker.on_shell().into_iter().find(|workspace| {
-            !before.contains(workspace)
-                && hosting_of(maker, workspace)["hosted_here"] == json!(true)
-        })
+        maker
+            .on_shell()
+            .into_iter()
+            .find(|workspace| !before.contains(workspace) && *workspace != own)
     };
     tilo_test_env::wait_until(
         format!("{}'s shell holds the workspace it made", maker.label),
@@ -513,11 +513,15 @@ fn made_on(maker: &Device, other: &Device) -> String {
     );
     let made = made_here().expect("the workspace the device made");
     eventually(
-        &format!("{} holds {made}, made on {}", other.label, maker.label),
+        &format!("{} hosts {made}, made on {}", host.label, maker.label),
         Duration::from_secs(90),
         &made,
-        &[maker, other],
-        || other.held().contains(&made),
+        &[maker, host],
+        || {
+            host.held().contains(&made)
+                && hosting_of(host, &made)["hosted_here"] == json!(true)
+                && maker.held().contains(&made)
+        },
     );
     made
 }
@@ -740,8 +744,8 @@ fn the_share_arrives(
     );
 }
 
-/// The person's other device shares a window in a workspace it took from their list: the device
-/// that made the workspace, and hosts it, pictures it. This is the direction two machines on one
+/// The person's other device shares a window in a workspace it asked for: the device that made the
+/// workspace for it, and hosts it, pictures it. This is the direction two machines on one
 /// network failed in.
 #[test]
 fn a_window_the_persons_other_device_shares_is_pictured_on_the_hosting_device() {
@@ -749,7 +753,7 @@ fn a_window_the_persons_other_device_shares_is_pictured_on_the_hosting_device() 
     log_sessions_at(LOGGED);
     let (_site, _ada, laptop, phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
-    the_shared_window_arrives(&made, &laptop, &phone, "Shared with the host");
+    the_shared_window_arrives(&made, &phone, &laptop, "Shared with the host");
 }
 
 /// Both devices were off and came back, the hosting device first: the other device finds the
@@ -761,13 +765,13 @@ fn a_window_shared_after_both_devices_came_back_the_host_first_is_pictured() {
     log_sessions_at(LOGGED);
     let (_site, _ada, mut laptop, mut phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
-    laptop.stop();
     phone.stop();
-    phone.start();
-    phone.wait_holding(&made);
+    laptop.stop();
     laptop.start();
     laptop.wait_holding(&made);
-    the_shared_window_arrives(&made, &laptop, &phone, "Shared after the host came back");
+    phone.start();
+    phone.wait_holding(&made);
+    the_shared_window_arrives(&made, &phone, &laptop, "Shared after the host came back");
 }
 
 /// Both devices were off and the hosting device came back last: when the other device's session
@@ -780,24 +784,24 @@ fn a_window_shared_after_the_host_came_back_last_is_pictured() {
     let (_site, _ada, mut laptop, mut phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
     // Neither device is behind on the workspace's keys when it goes off: a change of them that
-    // reached the laptop only after the phone came back would have its live session settled again, and
+    // reached the phone only after the laptop came back would have its live session settled again, and
     // hide that nothing else does.
-    keys_at_rest(&made, &laptop, &phone);
-    laptop.stop();
+    keys_at_rest(&made, &phone, &laptop);
     phone.stop();
-    let missed = missed_relays(&laptop, &made);
-    laptop.start();
-    laptop.wait_holding(&made);
-    eventually(
-        "the laptop asked the phone, which is off, for the workspace's live session",
-        Duration::from_secs(60),
-        &made,
-        &[&laptop],
-        || missed_relays(&laptop, &made) > missed,
-    );
+    laptop.stop();
+    let missed = missed_relays(&phone, &made);
     phone.start();
     phone.wait_holding(&made);
-    the_shared_window_arrives(&made, &laptop, &phone, "Shared before the host was back");
+    eventually(
+        "the phone asked the laptop, which is off, for the workspace's live session",
+        Duration::from_secs(60),
+        &made,
+        &[&phone],
+        || missed_relays(&phone, &made) > missed,
+    );
+    laptop.start();
+    laptop.wait_holding(&made);
+    the_shared_window_arrives(&made, &phone, &laptop, "Shared before the host was back");
 }
 
 /// A desktop that hosts the workspace its shell made, and a machine copied from it while it was
@@ -1091,12 +1095,12 @@ fn a_shared_window_stays_live_through_its_end_and_a_second_share() {
     log_sessions_at(LOGGED);
     let (_site, _ada, laptop, phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
-    let (mut window, tab) = the_window_shared(&made, &laptop, &phone, "Shared for a while");
+    let (mut window, tab) = the_window_shared(&made, &phone, &laptop, "Shared for a while");
     let share = Running {
         workspace: &made,
         tab: &tab,
-        sharer: &laptop,
-        viewer: &phone,
+        sharer: &phone,
+        viewer: &laptop,
     };
     the_share_stays_live(
         "the window was received",
@@ -1110,13 +1114,13 @@ fn a_shared_window_stays_live_through_its_end_and_a_second_share() {
         "the share was stopped",
         Duration::from_secs(1),
         &made,
-        &[&laptop, &phone],
+        &[&phone, &laptop],
     );
-    share_tab(&laptop, &tab, "the window shared before");
+    share_tab(&phone, &tab, "the window shared before");
     the_share_arrives(
         &made,
-        &laptop,
         &phone,
+        &laptop,
         &tab,
         "the window shared before",
         None,
@@ -1160,12 +1164,12 @@ fn a_shared_window_stays_live_while_a_third_device_of_the_person_comes_and_goes(
     log_sessions_at(LOGGED);
     let (site, ada, laptop, phone, mut tablet) = three_devices_of_one_person();
     let made = made_on(&phone, &laptop);
-    let (mut window, tab) = the_window_shared(&made, &laptop, &phone, "Shared while one joins");
+    let (mut window, tab) = the_window_shared(&made, &phone, &laptop, "Shared while one joins");
     let share = Running {
         workspace: &made,
         tab: &tab,
-        sharer: &laptop,
-        viewer: &phone,
+        sharer: &phone,
+        viewer: &laptop,
     };
     the_share_stays_live(
         "the window was received",
@@ -1177,7 +1181,7 @@ fn a_shared_window_stays_live_while_a_third_device_of_the_person_comes_and_goes(
     let invitation = site.invite(ada.public, Role::Editor);
     tablet.join(&invitation);
     tablet.wait_holding(&site.workspace);
-    let all = [&laptop, &phone, &tablet];
+    let all = [&phone, &laptop, &tablet];
     eventually(
         &format!("{} holds {made} and its host took it in", tablet.label),
         Duration::from_secs(120),
@@ -1212,7 +1216,7 @@ fn a_shared_window_stays_live_while_a_third_device_of_the_person_comes_and_goes(
     );
     // Each device is one member of the key group of the workspace their site hosts: its keys
     // moved as the three came into it, and not on and on while they ran.
-    for device in [&laptop, &phone] {
+    for device in [&phone, &laptop] {
         let epoch = sealing_epoch(device, &site.workspace);
         assert!(
             epoch.is_some_and(|epoch| epoch <= KEYS_MOVED_AT_MOST),
@@ -1220,7 +1224,7 @@ fn a_shared_window_stays_live_while_a_third_device_of_the_person_comes_and_goes(
              epoch {epoch:?}: they moved more than {KEYS_MOVED_AT_MOST} times\n{}",
             device.label,
             site.workspace,
-            report(&site.workspace, &[&laptop, &phone])
+            report(&site.workspace, &[&phone, &laptop])
         );
     }
 }
@@ -1443,7 +1447,7 @@ fn a_window_shared_after_the_host_was_copied_again_stays_live() {
 }
 
 /// `device`, a further device of the person, comes into `workspace`, which one of their devices
-/// made and hosts: it joins their site, takes the workspace from their list, the workspace's host
+/// hosts: it joins their site, takes the workspace from their list, the workspace's host
 /// takes it in, and its live session of the workspace opens. `beside` are the workspace's devices
 /// already there.
 fn comes_into(
@@ -1482,7 +1486,7 @@ fn comes_into(
 }
 
 /// The device that made the workspace, and hosts it, shares a window in it: the person's other
-/// device, which took the workspace from their list, pictures it. The share is written into the
+/// device, which asked for the workspace, pictures it. The share is written into the
 /// governance the hosting device keeps itself, so no host carries it on: it has to leave that
 /// device for the ones linked to it.
 #[test]
@@ -1491,7 +1495,7 @@ fn a_window_the_hosting_device_shares_is_pictured_on_the_persons_other_device() 
     log_sessions_at(LOGGED);
     let (_site, _ada, laptop, phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
-    the_shared_window_arrives(&made, &phone, &laptop, "Shared by the host");
+    the_shared_window_arrives(&made, &laptop, &phone, "Shared by the host");
 }
 
 /// The hosting device shares a window with two other devices of the person in the workspace: each
@@ -1502,24 +1506,24 @@ fn a_window_the_hosting_device_shares_is_pictured_on_each_of_two_other_devices()
     log_sessions_at(LOGGED);
     let (site, ada, laptop, phone, mut tablet) = three_devices_of_one_person();
     let made = made_on(&phone, &laptop);
-    comes_into(&site, &ada, &mut tablet, &made, &[&phone, &laptop]);
+    comes_into(&site, &ada, &mut tablet, &made, &[&laptop, &phone]);
     bring_to_front(&tablet, &made);
-    let (_window, tab) = the_window_shared(&made, &phone, &laptop, "Shared by the host with two");
+    let (_window, tab) = the_window_shared(&made, &laptop, &phone, "Shared by the host with two");
     the_share_arrives(
         &made,
-        &phone,
+        &laptop,
         &tablet,
         &tab,
-        "the window the laptop pictures",
+        "the window the phone pictures",
         None,
     );
     eventually(
-        &format!("{} names two devices as viewing tab {tab}", phone.label),
+        &format!("{} names two devices as viewing tab {tab}", laptop.label),
         Duration::from_secs(20),
         &made,
-        &[&phone, &laptop, &tablet],
+        &[&laptop, &phone, &tablet],
         || {
-            row_of(&shares(&phone), "sharing", &tab).is_some_and(|row| {
+            row_of(&shares(&laptop), "sharing", &tab).is_some_and(|row| {
                 row["viewers"]
                     .as_array()
                     .is_some_and(|viewers| viewers.len() == 2)
@@ -1539,27 +1543,27 @@ fn a_window_the_hosting_device_shares_after_it_came_back_last_is_pictured() {
     let (_site, _ada, mut laptop, mut phone) = two_devices_of_one_person();
     let made = made_on(&phone, &laptop);
     // Neither device is behind on the workspace's keys when it goes off: a change of them that
-    // reached the laptop only after the phone came back would have its live session settled again, and
+    // reached the phone only after the laptop came back would have its live session settled again, and
     // hide that nothing else does.
-    keys_at_rest(&made, &laptop, &phone);
-    laptop.stop();
+    keys_at_rest(&made, &phone, &laptop);
     phone.stop();
-    let missed = missed_relays(&laptop, &made);
-    laptop.start();
-    laptop.wait_holding(&made);
-    eventually(
-        "the laptop asked the phone, which is off, for the workspace's live session",
-        Duration::from_secs(60),
-        &made,
-        &[&laptop],
-        || missed_relays(&laptop, &made) > missed,
-    );
+    laptop.stop();
+    let missed = missed_relays(&phone, &made);
     phone.start();
     phone.wait_holding(&made);
+    eventually(
+        "the phone asked the laptop, which is off, for the workspace's live session",
+        Duration::from_secs(60),
+        &made,
+        &[&phone],
+        || missed_relays(&phone, &made) > missed,
+    );
+    laptop.start();
+    laptop.wait_holding(&made);
     the_shared_window_arrives(
         &made,
-        &phone,
         &laptop,
+        &phone,
         "Shared by the host once it was back",
     );
 }
@@ -1574,22 +1578,22 @@ fn a_share_the_hosting_device_stops_is_shown_on_no_other_device() {
     log_sessions_at(LOGGED);
     let (site, ada, laptop, phone, mut tablet) = three_devices_of_one_person();
     let made = made_on(&phone, &laptop);
-    let (mut window, tab) = the_window_shared(&made, &phone, &laptop, "Shared by the host a while");
-    comes_into(&site, &ada, &mut tablet, &made, &[&phone, &laptop]);
+    let (mut window, tab) = the_window_shared(&made, &laptop, &phone, "Shared by the host a while");
+    comes_into(&site, &ada, &mut tablet, &made, &[&laptop, &phone]);
     bring_to_front(&tablet, &made);
     the_share_arrives(
         &made,
-        &phone,
+        &laptop,
         &tablet,
         &tab,
-        "the window the laptop pictures",
+        "the window the phone pictures",
         None,
     );
     let share = Running {
         workspace: &made,
         tab: &tab,
-        sharer: &phone,
-        viewer: &laptop,
+        sharer: &laptop,
+        viewer: &phone,
     };
     the_share_stays_live(
         "a third device of the person came to picture the window",
@@ -1599,7 +1603,7 @@ fn a_share_the_hosting_device_stops_is_shown_on_no_other_device() {
         &[&tablet],
     );
     let pictured = [
-        (&laptop, shown_in(&laptop, &tab)),
+        (&phone, shown_in(&phone, &tab)),
         (&tablet, shown_in(&tablet, &tab)),
     ];
     the_share_stops(&share);
@@ -1612,7 +1616,7 @@ fn a_share_the_hosting_device_stops_is_shown_on_no_other_device() {
             ),
             Duration::from_secs(20),
             &made,
-            &[&phone, viewer],
+            &[&laptop, viewer],
             || !governance_shares(viewer, &made, &tab),
         );
         the_shared_windows_tab_is_gone_from(&share, viewer, &place);
@@ -1621,6 +1625,6 @@ fn a_share_the_hosting_device_stops_is_shown_on_no_other_device() {
         "the share was stopped",
         Duration::from_secs(1),
         &made,
-        &[&phone, &laptop, &tablet],
+        &[&laptop, &phone, &tablet],
     );
 }

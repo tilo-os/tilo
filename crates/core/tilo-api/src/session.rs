@@ -347,6 +347,31 @@ pub enum NotFounded {
     Refused(String),
 }
 
+impl std::fmt::Display for NotFounded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoFoundingDevice => f.write_str("none of your devices makes your workspaces"),
+            Self::Unreached { waited } => write!(
+                f,
+                "the device that makes your workspaces didn't answer within {} seconds",
+                waited.as_secs()
+            ),
+            Self::Declined => {
+                f.write_str("you said no to making it on the device that makes your workspaces")
+            }
+            Self::Unanswered { waited } => write!(
+                f,
+                "nobody answered on the device that makes your workspaces within {} minutes",
+                waited.as_secs().div_ceil(60)
+            ),
+            Self::Refused(why) => write!(
+                f,
+                "the device that makes your workspaces didn't make this one: {why}"
+            ),
+        }
+    }
+}
+
 /// What [`Here::create_where_founded`] answers, once the founding device did.
 pub type FoundingAnswer<'a> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, NotFounded>> + Send + 'a>>;
