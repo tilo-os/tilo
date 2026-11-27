@@ -97,6 +97,7 @@ pub enum StoreError {
 /// A store can be shared by more than one account (a device's daemon and a person's session),
 /// and then a failure is one account meeting a file the other made. A bare `Permission denied`
 /// cannot say which file or which operation, so every store I/O failure names both.
+#[cfg(feature = "store")]
 pub(crate) fn io_at(
     operation: &'static str,
     path: impl Into<std::path::PathBuf>,
