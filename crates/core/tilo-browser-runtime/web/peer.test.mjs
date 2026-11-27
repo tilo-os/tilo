@@ -356,7 +356,8 @@ test('a session after an entry dials the host the entry asked, without asking it
 /** What a site hands its page about the host at `https://host.example:8443` (`entry.json`
  * `home.host.info`), the host's device key `device`. */
 const siteNamed = (device = 1) => `{"hostCert":{"user_public_key":[9],"device_public_key":[${device}],"issued_at_ns":${NANOS}},`
-  + `"address":{"endpointAddr":{"id":"e${device}","addrs":[]},"relayUrl":"https://live.host.example/"}}`;
+  + `"address":{"endpointAddr":{"id":"e${device}","addrs":[]},"relayUrl":"https://live.host.example/",`
+  + `"web":{"origin":"https://host.example:4433"}}}`;
 const home = (info = siteNamed()) => ({name: 'Lounge', host: {origin: 'https://host.example:8443', info}});
 /** A runtime whose host certifies this page's device as the host the site names. */
 const certifiedBySite = runtime => {
@@ -394,6 +395,23 @@ test('a page its site told of the host connects to it again without asking it', 
   await connect(options(runtime, memoryStore()));
   assert.equal(asked, 0);
   assert.deepEqual(runtime.peer.config.address, JSON.parse(siteNamed()).address);
+});
+
+test('a page dials the link the host presents now when its site names none to pin', async t => {
+  t.after(forgetSiteServers);
+  const unpinned = JSON.parse(siteNamed());
+  delete unpinned.address.web;
+  nameSiteServer(home(JSON.stringify(unpinned)));
+  const runtime = certifiedBySite(fakeRuntime());
+  const presented = {origin: 'https://host.example:4433', certificate_sha256: [7, 7]};
+  runtime.hostInfo = async () => JSON.stringify({...unpinned, address: {...unpinned.address, web: presented}});
+  await connect(options(runtime, memoryStore()));
+  assert.deepEqual(runtime.peer.config.address.web, presented);
+  // A link answered for another endpoint than the one the site named is not dialled.
+  const other = JSON.parse(siteNamed(2)).address;
+  runtime.hostInfo = async () => JSON.stringify({...unpinned, address: {...other, web: presented}});
+  await connect(options(runtime, memoryStore()));
+  assert.equal(runtime.peer.config.address.web, undefined);
 });
 
 test('a site that names its host as it was before it was set up again stops the entry, and says why', async t => {

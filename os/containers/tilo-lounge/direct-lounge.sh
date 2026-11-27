@@ -135,7 +135,10 @@ result = answer.get("result", {})
 structured = result.get("structuredContent") or {}
 if not structured:
     structured = json.loads(result["content"][0]["text"])
-print(" ".join((structured.get("result") or {}).get("people") or []))
+people = (structured.get("result") or {}).get("people")
+if people is None:
+    print(f"devices#info answered no people: {json.dumps(answer)}", file=sys.stderr)
+print(" ".join(people or []))
 PYTHON
 )
   [[ " $people " == *" $owner_root_public "* ]] \

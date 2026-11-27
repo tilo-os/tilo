@@ -33,7 +33,7 @@ import {AdmissionError} from './admission.mjs';
 import {adoptDeviceKey, idbStorage, openDeviceKey, rememberBrowserDevice} from './device-key.mjs';
 import {identityProfile} from './identity-profile.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
-import {siteServer, STALE_SITE_SERVER, staleSiteServer, staleSiteServerReport} from './site-host.mjs';
+import {isInvitedServer, siteServer, STALE_SITE_SERVER, staleSiteServer, staleSiteServerReport} from './site-host.mjs';
 import {deviceLabel, deviceCodeOf} from './pairing.mjs';
 
 export {
@@ -478,6 +478,16 @@ async function connect({
     host = {...answered, address: {...answered.address, web: named.address.web}};
   }
   if (!host.address) throw new Error('the host named no iroh endpoint to reach it at');
+  // A host whose local CA renews its certificate leaves its link out of the file its site
+  // serves (the pin would go stale), and a page takes a workspace in only over WebTransport:
+  // the host answers the link it presents now. One that does not answer is left as named: the
+  // session says it is unreached.
+  if (named && !host.address.web && !isInvitedServer(origin)) {
+    const current = await runtime.hostInfo(post).then(JSON.parse, () => null).then(info => info?.address);
+    if (current?.web && current.endpointAddr?.id === host.address.endpointAddr?.id) {
+      host = {...host, address: {...host.address, web: current.web}};
+    }
+  }
   const listeners = new Set();
   /** Called after each published status, so a surface follows the session
    * (the transport, the admission, the store) and not only its mount. */
