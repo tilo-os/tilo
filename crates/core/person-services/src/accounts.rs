@@ -97,8 +97,7 @@ fn view_of(
     if account.type_id.as_str() == accounts::person::TILO_IDENTITY_TYPE {
         return None;
     }
-    let kind = kind_of(account.type_id.as_str());
-    let address = address_of(account);
+    let (kind, address) = (kind_of(account.type_id.as_str()), address_of(account));
     let name = if account.display_name.trim().is_empty() {
         address.clone()
     } else {

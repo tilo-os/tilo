@@ -19,6 +19,8 @@ use tilo_actions::remote::ReceiptStatus;
 use tilo_api::calls::{Calls, Reach};
 use tilo_device_identity::login::Place;
 use tilo_person_services::person_telling;
+use tilo_person_services::person_telling::ToldAction;
+use tilo_resource::Effect as _;
 
 /// How long a view waits for the person's services to start in the daemon before their apps read
 /// as none: the daemon starts them on its own thread, and the view asks again.
@@ -291,17 +293,17 @@ impl Device {
         wait_ms: u64,
         device: &str,
     ) -> Result<person_telling::ToldList> {
-        let asking = serde_json::json!({
-            "after": after,
-            "waitMs": wait_ms,
-            "device": device,
-        });
+        let asking = ToldAction::List {
+            after: Some(after),
+            wait_ms: Some(wait_ms),
+            device: Some(device.to_owned()),
+        };
         let answer = self.person_action(
             workspace,
             person_telling::PROVIDER,
             person_telling::TOLD,
-            person_telling::LIST,
-            arguments_of(&asking)?,
+            asking.id(),
+            asking.arguments(),
         )?;
         serde_json::from_value(answer).context("what the person was told does not read")
     }
@@ -351,17 +353,17 @@ impl Device {
         device: &str,
         by: &str,
     ) -> Result<person_telling::Told> {
-        let acknowledged = serde_json::json!({
-            "told": told,
-            "device": device,
-            "by": by,
-        });
+        let acknowledged = ToldAction::Acknowledge {
+            told: told.to_owned(),
+            device: Some(device.to_owned()),
+            by: Some(by.to_owned()),
+        };
         let answer = self.person_action(
             workspace,
             person_telling::PROVIDER,
             person_telling::TOLD,
-            person_telling::ACKNOWLEDGE,
-            arguments_of(&acknowledged)?,
+            acknowledged.id(),
+            acknowledged.arguments(),
         )?;
         serde_json::from_value(answer).context("what was acknowledged does not read")
     }

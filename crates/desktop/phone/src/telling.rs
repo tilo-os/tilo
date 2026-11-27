@@ -1,7 +1,8 @@
 //! What the person is told, shown on the phone while its app runs.
 //!
 //! Everything the person's assistant tells them joins one log on the host of their workspace, and
-//! a device of theirs that runs reads it live ([`tilo_person_services::person_telling::LIST`],
+//! a device of theirs that runs reads it live
+//! ([`tilo_person_services::person_telling::ToldAction::List`],
 //! asked through the device daemon as every one of their own actions is). This is the phone's
 //! reader: each thing that still waits becomes a notification on the phone, under a name its own
 //! device's push key makes ([`tilo_person_services::person_telling::known_as`]) — the same name

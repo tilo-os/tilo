@@ -32,7 +32,7 @@ pub mod declared;
 pub mod records;
 mod told;
 
-pub use declared::{ACKNOWLEDGE, INSIST, LIST, SINCE_YOU_LEFT, TELL, ToldAction, target};
+pub use declared::{ToldAction, offered_to_agent, target};
 pub use records::*;
 
 pub use told::ToTell;
@@ -110,11 +110,6 @@ impl Asking {
             Self::Person(person) | Self::Agent { person, .. } => person,
         }
     }
-}
-
-/// Whether an agent of a person's is offered the action `action` of the log.
-pub(super) fn offered_to_agent(action: &str) -> bool {
-    matches!(action, TELL | INSIST)
 }
 
 /// The call `request` makes, read as its action declares it.

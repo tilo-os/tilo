@@ -13,17 +13,12 @@ use tilo_actions::surface::Surface;
 
 use super::records::{About, Cause, Offered, Stretch, TaskRef, Told, ToldList};
 
-/// Each action's id, as its declaration names it.
-macro_rules! ids {
-    ($($id:ident),* $(,)?) => {
-        $(
-            #[doc = concat!("The id of [`ToldAction::", stringify!($id), "`].")]
-            pub const $id: &str = ToldAction::$id.id();
-        )*
-    };
+/// Whether an agent of a person's is offered the action `action` of the log:
+/// telling its person, and marking what it told as not to be missed.
+#[must_use]
+pub fn offered_to_agent(action: &str) -> bool {
+    action == ToldAction::TELL.id() || action == ToldAction::INSIST.id()
 }
-
-ids! { TELL, LIST, ACKNOWLEDGE, INSIST, SINCE_YOU_LEFT }
 
 /// What a person's assistant tells them, and what they read of it: the actions
 /// of the log, each thing marked by what kind of thing it is.
@@ -133,8 +128,6 @@ mod tests {
         reason = "in a test these are the assertion, not a hazard"
     )]
 
-    use tilo_resource::Effect as _;
-
     use super::*;
 
     /// The file a tilolang view compiles what a person's log offers against,
@@ -157,19 +150,12 @@ mod tests {
     }
 
     /// What the action registry knows of the provider without this crate names
-    /// its actions as they are declared here.
+    /// the same provider this service answers under.
     #[test]
-    fn the_registry_names_the_declared_actions() {
+    fn the_registry_names_the_provider() {
         assert_eq!(
             super::super::records::PROVIDER,
             tilo_actions::remote::TELLING_PROVIDER
         );
-        let declared: Vec<&str> = ToldAction::declarations()
-            .into_iter()
-            .map(|decl| decl.id)
-            .collect();
-        for action in [TELL, LIST, ACKNOWLEDGE, INSIST, SINCE_YOU_LEFT] {
-            assert!(declared.contains(&action), "{action} is declared nowhere");
-        }
     }
 }

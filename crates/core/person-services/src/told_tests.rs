@@ -15,11 +15,14 @@
 
 use std::time::Duration;
 
-use crate::person_telling::{self, Cause, Kind, Offered, OfferedTarget, Teller, Told, ToldList};
+use crate::person_telling::{
+    self, Cause, Kind, Offered, OfferedTarget, Teller, Told, ToldAction, ToldList,
+};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, ReceiptStatus, WORKSPACE_GOVERNANCE_PROVIDER,
 };
+use tilo_resource::Effect as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
 
@@ -100,18 +103,70 @@ pub(super) fn nobody(what: &str, answer: Result<Value, ActionCallError>) {
 /// A mail as the assistant tells it.
 const MAIL: &str = "Kim at Harbor asks whether we take new customers.";
 
-/// What `caller` is answered about what was told, over the page `device`
-/// holds in `workspace`.
+/// A cause of `kind`, in `label`, by the starter's own `key`.
+fn cause(kind: &str, label: &str, key: &str) -> Cause {
+    Cause {
+        kind: kind.to_owned(),
+        label: label.to_owned(),
+        key: key.to_owned(),
+    }
+}
+
+/// The cause of the event that hands the assistant a mail, by its key.
+fn mail(key: &str) -> Cause {
+    cause("event", "Mail arrives", key)
+}
+
+/// The call telling `words`, of `cause`, not to be missed when `insists`.
+fn telling(words: &str, cause: Option<Cause>, insists: Option<bool>) -> ToldAction {
+    ToldAction::Tell {
+        words: words.to_owned(),
+        title: None,
+        cause,
+        about: None,
+        task: None,
+        actions: None,
+        insists,
+    }
+}
+
+/// The call reading the log after `after`, waiting up to `wait_ms` for it to move.
+fn listing(after: Option<u64>, wait_ms: Option<u64>) -> ToldAction {
+    ToldAction::List {
+        after,
+        wait_ms,
+        device: None,
+    }
+}
+
+/// The call acknowledging the thing `told`, on `device`, by `by`.
+fn acknowledging(told: &str, device: Option<&str>, by: Option<&str>) -> ToldAction {
+    ToldAction::Acknowledge {
+        told: told.to_owned(),
+        device: device.map(str::to_owned),
+        by: by.map(str::to_owned),
+    }
+}
+
+/// The call marking the thing `told` as not to be missed, or no longer.
+fn insisting(told: &str, insists: bool) -> ToldAction {
+    ToldAction::Insist {
+        told: told.to_owned(),
+        insists,
+    }
+}
+
+/// What `caller` is answered making the call `action` about what was told,
+/// over the page `device` holds in `workspace`.
 async fn ask_told(
     setup: &Setup,
     (workspace, device): (WorkspaceId, &DeviceCert),
     caller: &Caller,
-    action: &str,
-    argument: Value,
+    action: ToldAction,
 ) -> Result<Value, ActionCallError> {
     let page = setup.host.device_page(workspace, device);
-    let mut request = crate::fixtures::asking(action, argument);
-    request.target = person_telling::target(person_telling::TOLD, action);
+    let mut request = crate::fixtures::asking(action.id(), Value::Object(action.arguments()));
+    request.target = person_telling::target(person_telling::TOLD, action.id());
     let receipt = settled(page.invoke(caller, request)).await?;
     match receipt.status {
         ReceiptStatus::Completed { output } => Ok(output.value.unwrap_or(Value::Null)),
@@ -119,25 +174,35 @@ async fn ask_told(
     }
 }
 
-/// Ada's agent tells her `words`, caused by `cause`, from her own
-/// workspace.
-async fn told_by_agent(setup: &Setup, words: &str, cause: Value) -> Told {
-    let answer = ask_told(
-        setup,
-        (setup.own, &setup.ada),
-        &agent_of(&setup.ada),
-        person_telling::TELL,
-        json!({"words": words, "cause": cause}),
-    )
-    .await;
-    serde_json::from_value(answer.expect("the host tells")).expect("a thing told")
+/// What `answer` carries, read as a thing told.
+fn a_told(answer: Result<Value, ActionCallError>) -> Told {
+    serde_json::from_value(answer.expect("the host answers")).expect("a thing told")
+}
+
+/// What `caller` is answered telling `words`, of `cause`, as not to be
+/// missed when `insists`.
+async fn asking(
+    setup: &Setup,
+    page: (WorkspaceId, &DeviceCert),
+    caller: &Caller,
+    words: &str,
+    cause: Option<Cause>,
+    insists: Option<bool>,
+) -> Told {
+    a_told(ask_told(setup, page, caller, telling(words, cause, insists)).await)
+}
+
+/// Ada's agent tells her `words`, caused by `cause`, from her own workspace.
+async fn told_by_agent(setup: &Setup, words: &str, cause: Cause) -> Told {
+    let own = (setup.own, &setup.ada);
+    let agent = agent_of(&setup.ada);
+    a_told(ask_told(setup, own, &agent, telling(words, Some(cause), None)).await)
 }
 
 /// What this server itself tells Ada as it carries out an event of her
 /// own, a reminder she set up or a brief she asked for: of the kind that
 /// event's own `cause` says, with her assistant named as its teller.
-fn told_by_her_event(setup: &Setup, words: &str, cause: Value, insists: bool) -> Told {
-    let cause: Cause = serde_json::from_value(cause).expect("a cause");
+fn told_by_her_event(setup: &Setup, words: &str, cause: Cause, insists: bool) -> Told {
     let telling = ToTell {
         kind: Kind::of_cause(Some(&cause)),
         words: words.to_owned(),
@@ -157,20 +222,10 @@ fn told_by_her_event(setup: &Setup, words: &str, cause: Value, insists: bool) ->
 
 /// What Ada reads of her log after place `after`, on her device.
 async fn listed(setup: &Setup, after: u64) -> ToldList {
-    let answer = ask_told(
-        setup,
-        (setup.own, &setup.ada),
-        &caller(&setup.ada),
-        person_telling::LIST,
-        json!({"after": after}),
-    )
-    .await;
+    let own = (setup.own, &setup.ada);
+    let her = caller(&setup.ada);
+    let answer = ask_told(setup, own, &her, listing(Some(after), None)).await;
     serde_json::from_value(answer.expect("the host lists")).expect("a list")
-}
-
-/// An event that hands the assistant a mail, by the event's own key for it.
-fn event(key: &str) -> Value {
-    json!({"kind": "event", "label": "Mail arrives", "key": key})
 }
 
 #[tokio::test]
@@ -180,74 +235,47 @@ fn event(key: &str) -> Value {
 )]
 async fn what_a_person_was_told_is_theirs_alone() {
     let setup = Setup::new().await;
-    let told = told_by_agent(&setup, MAIL, event("mail-1")).await;
+    let told = told_by_agent(&setup, MAIL, mail("mail-1")).await;
     assert_eq!(listed(&setup, 0).await.told, [told]);
+    let own = (setup.own, &setup.ada);
+    let her = caller(&setup.ada);
+    let agent = agent_of(&setup.ada);
+    let nothing_read = listing(None, None);
 
     // Her agent tells her, from a workspace she shares as well. It does
     // not read what she was told, and she tells herself nothing through
     // it.
     for workspace in [setup.own, setup.shared] {
+        let asked = (workspace, &setup.ada);
         nobody(
             "an agent reading what its person was told",
-            ask_told(
-                &setup,
-                (workspace, &setup.ada),
-                &agent_of(&setup.ada),
-                person_telling::LIST,
-                json!({}),
-            )
-            .await,
+            ask_told(&setup, asked, &agent, nothing_read.clone()).await,
         );
     }
-    ask_told(
-        &setup,
-        (setup.shared, &setup.ada),
-        &agent_of(&setup.ada),
-        person_telling::TELL,
-        json!({"words": "The team's plan changed."}),
-    )
-    .await
-    .expect("her agent tells her from a shared workspace");
+    let plan = telling("The team's plan changed.", None, None);
+    ask_told(&setup, (setup.shared, &setup.ada), &agent, plan)
+        .await
+        .expect("her agent tells her from a shared workspace");
     nobody(
         "a person telling themselves",
-        ask_told(
-            &setup,
-            (setup.own, &setup.ada),
-            &caller(&setup.ada),
-            person_telling::TELL,
-            json!({"words": "A note to myself."}),
-        )
-        .await,
+        ask_told(&setup, own, &her, telling("A note to myself.", None, None)).await,
     );
     assert_eq!(listed(&setup, 0).await.told.len(), 2);
 
     // Another member reads their own log, which holds nothing of hers, and
     // what their agent tells is told to them.
     let (_, bo) = guest_device();
+    let bo_caller = caller(&bo);
     for workspace in [setup.shared, setup.own] {
-        let theirs: ToldList = serde_json::from_value(
-            ask_told(
-                &setup,
-                (workspace, &bo),
-                &caller(&bo),
-                person_telling::LIST,
-                json!({}),
-            )
-            .await
-            .unwrap(),
-        )
-        .unwrap();
-        assert!(theirs.told.is_empty(), "{theirs:?}");
+        let read = ask_told(&setup, (workspace, &bo), &bo_caller, listing(None, None)).await;
+        let read: ToldList = serde_json::from_value(read.unwrap()).unwrap();
+        assert!(read.told.is_empty(), "{read:?}");
     }
-    ask_told(
-        &setup,
-        (setup.shared, &bo),
-        &agent_of(&bo),
-        person_telling::TELL,
-        json!({"words": "For Bo."}),
-    )
-    .await
-    .expect("another member's agent tells that member");
+    let bo_page = (setup.shared, &bo);
+    let for_bo = telling("For Bo.", None, None);
+    ask_told(&setup, bo_page, &agent_of(&bo), for_bo)
+        .await
+        .expect("another member's agent tells that member");
     assert_eq!(listed(&setup, 0).await.told.len(), 2);
 
     // An agent that says it acts for Ada over a device that is not hers
@@ -257,7 +285,6 @@ async fn what_a_person_was_told_is_theirs_alone() {
         (setup.shared, &bo),
         Caller::delegated_agent(ASSISTANT, setup.ada.user_public_key, bo.device_public_key),
     );
-    let ada = (setup.own, &setup.ada);
     let strangers = [
         (
             "an agent over a device that is not its person's",
@@ -265,13 +292,13 @@ async fn what_a_person_was_told_is_theirs_alone() {
         ),
         (
             "an agent no device stands behind",
-            (ada, Caller::local_agent(ASSISTANT, "ada")),
+            (own, Caller::local_agent(ASSISTANT, "ada")),
         ),
-        ("an app", (ada, Caller::local_app("so.tilo.chat"))),
+        ("an app", (own, Caller::local_app("so.tilo.chat"))),
         (
             "a bot installed for her",
             (
-                ada,
+                own,
                 Caller::bot(
                     "a-bot",
                     setup.ada.user_public_key,
@@ -281,20 +308,11 @@ async fn what_a_person_was_told_is_theirs_alone() {
         ),
     ];
     for (what, (page, stranger)) in &strangers {
+        let told = telling("From someone else.", None, None);
+        nobody(what, ask_told(&setup, *page, stranger, told).await);
         nobody(
             what,
-            ask_told(
-                &setup,
-                *page,
-                stranger,
-                person_telling::TELL,
-                json!({"words": "From someone else."}),
-            )
-            .await,
-        );
-        nobody(
-            what,
-            ask_told(&setup, *page, stranger, person_telling::LIST, json!({})).await,
+            ask_told(&setup, *page, stranger, listing(None, None)).await,
         );
     }
     assert_eq!(listed(&setup, 0).await.told.len(), 2);
@@ -304,23 +322,17 @@ async fn what_a_person_was_told_is_theirs_alone() {
 async fn a_device_that_waits_is_answered_when_something_is_told() {
     let setup = Setup::new().await;
     let ada = (setup.own, &setup.ada);
+    let her = caller(&setup.ada);
 
     // Her device asks with a wait, and is answered the moment her agent
     // tells her something.
     let started = tilo_clock::now();
-    let her = caller(&setup.ada);
-    let waiting = ask_told(
-        &setup,
-        ada,
-        &her,
-        person_telling::LIST,
-        json!({"after": 0, "waitMs": 8000}),
-    );
-    let telling = async {
+    let waiting = ask_told(&setup, ada, &her, listing(Some(0), Some(8000)));
+    let told_soon = async {
         tokio::time::sleep(Duration::from_millis(100)).await;
-        told_by_agent(&setup, MAIL, event("mail-1")).await
+        told_by_agent(&setup, MAIL, mail("mail-1")).await
     };
-    let (heard, told) = tokio::join!(waiting, telling);
+    let (heard, told) = tokio::join!(waiting, told_soon);
     let heard: ToldList = serde_json::from_value(heard.unwrap()).unwrap();
     assert_eq!(heard.told, [told]);
     assert!(
@@ -330,18 +342,9 @@ async fn a_device_that_waits_is_answered_when_something_is_told() {
 
     // With nothing newer the wait runs out, and the answer says so.
     let started = tilo_clock::now();
-    let nothing: ToldList = serde_json::from_value(
-        ask_told(
-            &setup,
-            ada,
-            &caller(&setup.ada),
-            person_telling::LIST,
-            json!({"after": heard.newest, "waitMs": 200}),
-        )
-        .await
-        .unwrap(),
-    )
-    .unwrap();
+    let waited = listing(Some(heard.newest), Some(200));
+    let nothing: ToldList =
+        serde_json::from_value(ask_told(&setup, ada, &her, waited).await.unwrap()).unwrap();
     assert!(nothing.told.is_empty());
     assert_eq!(nothing.newest, heard.newest);
     assert!(started.elapsed() >= Duration::from_millis(150));
@@ -353,7 +356,7 @@ fn reminded(setup: &Setup) -> Told {
     told_by_her_event(
         setup,
         "Call Jo.",
-        json!({"kind": "reminder", "label": "Call Jo", "key": "r-1"}),
+        cause("reminder", "Call Jo", "r-1"),
         false,
     )
 }
@@ -362,35 +365,25 @@ fn reminded(setup: &Setup) -> Told {
 async fn only_the_person_acknowledges_and_the_first_time_stands() {
     let setup = Setup::new().await;
     let ada = (setup.own, &setup.ada);
+    let her = caller(&setup.ada);
+    let agent = agent_of(&setup.ada);
     let reminder = reminded(&setup);
     assert!(reminder.waits());
 
     // Her agent told it. Whether she saw it is not her agent's to say,
     // wherever it asks from.
+    let seen_it = acknowledging(&reminder.id, None, None);
     for workspace in [setup.own, setup.shared] {
+        let asked = (workspace, &setup.ada);
         nobody(
             "an agent acknowledging for its person",
-            ask_told(
-                &setup,
-                (workspace, &setup.ada),
-                &agent_of(&setup.ada),
-                person_telling::ACKNOWLEDGE,
-                json!({"told": reminder.id}),
-            )
-            .await,
+            ask_told(&setup, asked, &agent, seen_it.clone()).await,
         );
     }
     // Another member who names her thing reaches nothing: their own log
     // holds nothing of that id.
     let (_, bo) = guest_device();
-    let theirs = ask_told(
-        &setup,
-        (setup.shared, &bo),
-        &caller(&bo),
-        person_telling::ACKNOWLEDGE,
-        json!({"told": reminder.id}),
-    )
-    .await;
+    let theirs = ask_told(&setup, (setup.shared, &bo), &caller(&bo), seen_it).await;
     assert!(
         matches!(theirs, Err(ActionCallError::Refused { .. })),
         "{theirs:?}"
@@ -399,18 +392,9 @@ async fn only_the_person_acknowledges_and_the_first_time_stands() {
 
     // She puts it away on her phone: it waits no more, says where and how,
     // and takes a new place so each device of hers hears of it.
-    let seen: Told = serde_json::from_value(
-        ask_told(
-            &setup,
-            ada,
-            &caller(&setup.ada),
-            person_telling::ACKNOWLEDGE,
-            json!({"told": reminder.id, "device": "Ada's phone", "by": "dismissed"}),
-        )
-        .await
-        .unwrap(),
-    )
-    .unwrap();
+    let away = acknowledging(&reminder.id, Some("Ada's phone"), Some("dismissed"));
+    let seen: Told =
+        serde_json::from_value(ask_told(&setup, ada, &her, away).await.unwrap()).unwrap();
     assert!(!seen.waits());
     let acknowledged = seen.acknowledged.clone().unwrap();
     assert_eq!(
@@ -424,28 +408,12 @@ async fn only_the_person_acknowledges_and_the_first_time_stands() {
     );
 
     // Opening it later on another device changes nothing: the first stands.
-    let again: Told = serde_json::from_value(
-        ask_told(
-            &setup,
-            ada,
-            &caller(&setup.ada),
-            person_telling::ACKNOWLEDGE,
-            json!({"told": reminder.id, "device": "Ada's laptop"}),
-        )
-        .await
-        .unwrap(),
-    )
-    .unwrap();
+    let later = acknowledging(&reminder.id, Some("Ada's laptop"), None);
+    let again: Told =
+        serde_json::from_value(ask_told(&setup, ada, &her, later).await.unwrap()).unwrap();
     assert_eq!(again, seen);
     // And a thing nobody told her is not acknowledged into being.
-    let nothing = ask_told(
-        &setup,
-        ada,
-        &caller(&setup.ada),
-        person_telling::ACKNOWLEDGE,
-        json!({"told": "nothing"}),
-    )
-    .await;
+    let nothing = ask_told(&setup, ada, &her, acknowledging("nothing", None, None)).await;
     assert!(
         matches!(nothing, Err(ActionCallError::Refused { .. })),
         "{nothing:?}"
@@ -471,14 +439,9 @@ async fn a_device_that_asks_is_looking_for_as_long_as_it_waits() {
 
     // A device that waits for the log to move looks until its wait is
     // over, however lately that began.
+    let own = (setup.own, &setup.ada);
     let her = caller(&setup.ada);
-    let waiting = ask_told(
-        &setup,
-        (setup.own, &setup.ada),
-        &her,
-        person_telling::LIST,
-        json!({"after": 99, "waitMs": 400}),
-    );
+    let waiting = ask_told(&setup, own, &her, listing(Some(99), Some(400)));
     let during = async {
         tokio::time::sleep(Duration::from_millis(200)).await;
         setup.workspaces.looking(&ada, just_now)
@@ -546,17 +509,9 @@ async fn a_person_who_comes_back_reads_what_happened_while_they_were_away() {
 
     // Meanwhile: an event's turn told what it did alone, something came
     // in, a reminder fell due, and a question waits for her.
-    let did = told_by_agent(&setup, "I answered Kim in the usual way.", event("mail-1")).await;
-    let came = a_told(
-        ask_told(
-            &setup,
-            own,
-            &agent_of(&setup.ada),
-            person_telling::TELL,
-            json!({"words": "Harbor posted new prices.", "cause": {"kind": "competitors", "key": "c-1"}}),
-        )
-        .await,
-    );
+    let did = told_by_agent(&setup, "I answered Kim in the usual way.", mail("mail-1")).await;
+    let prices = cause("competitors", "", "c-1");
+    let came = told_by_agent(&setup, "Harbor posted new prices.", prices).await;
     let reminder = reminded(&setup);
     let question = setup
         .workspaces
@@ -573,14 +528,7 @@ async fn a_person_who_comes_back_reads_what_happened_while_they_were_away() {
 
     // Her device asks, which is her coming back.
     let ask = || async {
-        let answer = ask_told(
-            &setup,
-            own,
-            &caller(&setup.ada),
-            person_telling::SINCE_YOU_LEFT,
-            json!({}),
-        )
-        .await;
+        let answer = ask_told(&setup, own, &caller(&setup.ada), ToldAction::SinceYouLeft).await;
         serde_json::from_value::<person_telling::Stretch>(answer.unwrap()).unwrap()
     };
     let stretch = ask().await;
@@ -605,36 +553,16 @@ async fn a_person_who_comes_back_reads_what_happened_while_they_were_away() {
 
     // It is hers alone: her agent is not answered, and another member
     // reads their own, which holds nothing.
+    let agent = agent_of(&setup.ada);
     nobody(
         "an agent reading what happened while its person was away",
-        ask_told(
-            &setup,
-            own,
-            &agent_of(&setup.ada),
-            person_telling::SINCE_YOU_LEFT,
-            json!({}),
-        )
-        .await,
+        ask_told(&setup, own, &agent, ToldAction::SinceYouLeft).await,
     );
     let (_, bo) = guest_device();
-    let theirs: person_telling::Stretch = serde_json::from_value(
-        ask_told(
-            &setup,
-            (setup.shared, &bo),
-            &caller(&bo),
-            person_telling::SINCE_YOU_LEFT,
-            json!({}),
-        )
-        .await
-        .unwrap(),
-    )
-    .unwrap();
+    let asking = ToldAction::SinceYouLeft;
+    let theirs = ask_told(&setup, (setup.shared, &bo), &caller(&bo), asking).await;
+    let theirs: person_telling::Stretch = serde_json::from_value(theirs.unwrap()).unwrap();
     assert_eq!(theirs, person_telling::Stretch::default());
-}
-
-/// What `answer` carries, read as a thing told.
-fn a_told(answer: Result<Value, ActionCallError>) -> Told {
-    serde_json::from_value(answer.expect("the host answers")).expect("a thing told")
 }
 
 #[tokio::test]
@@ -650,25 +578,9 @@ async fn only_its_person_makes_a_quiet_thing_insist() {
 
     // News is not made loud by whoever tells it: neither told as not to be
     // missed, nor marked so afterwards.
-    let quiet = a_told(
-        ask_told(
-            &setup,
-            own,
-            &agent,
-            person_telling::TELL,
-            json!({"words": MAIL, "cause": event("mail-1"), "insists": true}),
-        )
-        .await,
-    );
+    let quiet = asking(&setup, own, &agent, MAIL, Some(mail("mail-1")), Some(true)).await;
     assert!(!quiet.reaches && quiet.insists.is_none());
-    let refused = ask_told(
-        &setup,
-        own,
-        &agent,
-        person_telling::INSIST,
-        json!({"told": quiet.id, "insists": true}),
-    )
-    .await;
+    let refused = ask_told(&setup, own, &agent, insisting(&quiet.id, true)).await;
     assert!(
         matches!(refused, Err(ActionCallError::Refused { .. })),
         "{refused:?}"
@@ -680,7 +592,7 @@ async fn only_its_person_makes_a_quiet_thing_insist() {
     let must = told_by_her_event(
         &setup,
         "File the tax return.",
-        json!({"kind": "reminder", "label": "Tax return", "key": "tax-1"}),
+        cause("reminder", "Tax return", "tax-1"),
         true,
     );
     let insists = must.insists.unwrap();
@@ -695,55 +607,20 @@ async fn only_its_person_makes_a_quiet_thing_insist() {
     // Her agent marks a thing that reaches her as not to be missed, when
     // she says so of it later.
     let reminder = reminded(&setup);
-    let marked = a_told(
-        ask_told(
-            &setup,
-            own,
-            &agent,
-            person_telling::INSIST,
-            json!({"told": reminder.id, "insists": true}),
-        )
-        .await,
-    );
+    let marked = a_told(ask_told(&setup, own, &agent, insisting(&reminder.id, true)).await);
     assert_eq!(marked.insists.map(|insists| insists.raised), Some(1));
     assert!(marked.seq > reminder.seq);
 
     // She herself says the quiet mail must not be missed: it reaches her
     // now, and insists. And she takes that back.
-    let loud = a_told(
-        ask_told(
-            &setup,
-            own,
-            &her,
-            person_telling::INSIST,
-            json!({"told": quiet.id, "insists": true}),
-        )
-        .await,
-    );
+    let loud = a_told(ask_told(&setup, own, &her, insisting(&quiet.id, true)).await);
     assert!(loud.reaches && loud.insists.is_some());
-    let calm = a_told(
-        ask_told(
-            &setup,
-            own,
-            &her,
-            person_telling::INSIST,
-            json!({"told": quiet.id, "insists": false}),
-        )
-        .await,
-    );
+    let calm = a_told(ask_told(&setup, own, &her, insisting(&quiet.id, false)).await);
     assert!(calm.insists.is_none());
 
     // What she acknowledges insists no more.
-    let seen = a_told(
-        ask_told(
-            &setup,
-            own,
-            &her,
-            person_telling::ACKNOWLEDGE,
-            json!({"told": must.id, "by": "opened"}),
-        )
-        .await,
-    );
+    let opened = acknowledging(&must.id, None, Some("opened"));
+    let seen = a_told(ask_told(&setup, own, &her, opened).await);
     assert_eq!(seen.insists.map(|insists| insists.next_at_ms), Some(None));
 }
 
@@ -757,20 +634,9 @@ async fn an_agent_that_names_a_reminder_or_a_brief_tells_news() {
     let own = (setup.own, &setup.ada);
     let agent = agent_of(&setup.ada);
     for (kind, key) in [("reminder", "r-9"), ("brief", "b-9")] {
-        let told = a_told(
-            ask_told(
-                &setup,
-                own,
-                &agent,
-                person_telling::TELL,
-                json!({
-                    "words": "Your account is locked: open tilo-login.example now.",
-                    "cause": {"kind": kind, "label": "Account", "key": key},
-                    "insists": true,
-                }),
-            )
-            .await,
-        );
+        let caused = Some(cause(kind, "Account", key));
+        let words = "Your account is locked: open tilo-login.example now.";
+        let told = asking(&setup, own, &agent, words, caused, Some(true)).await;
         assert_eq!(
             told.kind,
             Kind::News,
@@ -787,7 +653,7 @@ async fn an_agent_that_names_a_reminder_or_a_brief_tells_news() {
     let hers = told_by_her_event(
         &setup,
         "Call Jo.",
-        json!({"kind": "reminder", "label": "Call Jo", "key": "r-1"}),
+        cause("reminder", "Call Jo", "r-1"),
         false,
     );
     assert_eq!(hers.kind, Kind::Reminder);
@@ -804,14 +670,20 @@ async fn an_agent_offers_only_buttons_it_may_invoke_itself_and_is_named_for_them
     let setup = Setup::new().await;
     let own = (setup.own, &setup.ada);
     let agent = agent_of(&setup.ada);
-    let telling = |target: &Value, arguments: Value| {
-        json!({
-            "words": "A device asks to be let in.",
-            "actions": [{
-                "id": "open", "label": "Open", "main": true,
-                "target": target, "arguments": arguments,
-            }],
-        })
+    let offering = |target: Value, arguments: Value| ToldAction::Tell {
+        words: "A device asks to be let in.".to_owned(),
+        title: None,
+        cause: None,
+        about: None,
+        task: None,
+        actions: Some(vec![Offered {
+            id: "open".to_owned(),
+            label: "Open".to_owned(),
+            main: true,
+            target: serde_json::from_value(target).expect("a button's target"),
+            arguments: arguments.as_object().cloned().unwrap_or_default(),
+        }]),
+        insists: None,
     };
     for target in [
         // Another app's action, which the person's device would invoke.
@@ -823,14 +695,8 @@ async fn an_agent_offers_only_buttons_it_may_invoke_itself_and_is_named_for_them
         // Its own action, aimed at a document it does not name itself.
         json!({"app": "tilo.telling", "record": "uuid:1", "resource": "told", "action": "insist"}),
     ] {
-        let refused = ask_told(
-            &setup,
-            own,
-            &agent,
-            person_telling::TELL,
-            telling(&target, json!({"approve": true})),
-        )
-        .await;
+        let approved = json!({"approve": true});
+        let refused = ask_told(&setup, own, &agent, offering(target.clone(), approved)).await;
         assert!(
             matches!(refused, Err(ActionCallError::Refused { .. })),
             "a button aimed at {target} was taken: {refused:?}"
@@ -844,15 +710,10 @@ async fn an_agent_offers_only_buttons_it_may_invoke_itself_and_is_named_for_them
     // What the agent may invoke itself, it may offer, and it is named for
     // it: marking a thing as not to be missed.
     let its_own = json!({"app": "tilo.telling", "resource": "told", "action": "insist"});
-    let offered = ask_told(
-        &setup,
-        own,
-        &agent,
-        person_telling::TELL,
-        telling(&its_own, json!({"told": "told-1", "insists": true})),
-    )
-    .await
-    .expect("the server tells");
+    let offered = offering(its_own, json!({"told": "told-1", "insists": true}));
+    let offered = ask_told(&setup, own, &agent, offered)
+        .await
+        .expect("the server tells");
     assert_eq!(offered["actions"][0]["id"], "open", "{offered}");
     assert_eq!(offered["offeredBy"]["name"], ASSISTANT, "{offered}");
 
