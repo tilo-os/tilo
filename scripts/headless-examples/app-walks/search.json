@@ -5,6 +5,7 @@
   "live": "tl",
   "apps": "",
   "packages": [
+    "terminal",
     "files",
     "chat",
     "settings"
