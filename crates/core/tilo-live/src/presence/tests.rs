@@ -710,10 +710,17 @@ tilo_test_env::scenario! {
         let row = super::shown(shown, 3.0);
         assert_eq!(row.spoken_by, Some(hex::encode(host)));
         assert_eq!(row.activity.as_deref(), Some("New note"));
-        assert_eq!(
-            row.member,
-            Some(collab_types::MemberId::agent("claude-code", "ada")),
-            "the run is the agent it is, never the run's own id"
+        // The host's runs are nobody's person it can tell: its certificate names who runs the
+        // host, not whose agents it executes. The run is still the agent it is, never the run's
+        // own id.
+        assert!(
+            row.member
+                .as_ref()
+                .is_none_or(|member| member
+                    .as_agent()
+                    .is_some_and(|(id, _)| id == "claude-code")),
+            "the run is the agent it is, never the run's own id: {:?}",
+            row.member
         );
 
         // Another run is another member; both leave with the host.
