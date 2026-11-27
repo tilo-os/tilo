@@ -5,8 +5,8 @@
     reason = "one scenario in order, on a fixture that is not sent between tasks"
 )]
 //! What a device of the person's does in the workspace their daemon keeps: it invites people and
-//! reads who is in, adds and moves members, installs a version of an app and asks for a bot. A key
-//! the workspace does not know is refused all of it.
+//! reads who is in, adds and moves members, and installs a version of an app. A key the workspace
+//! does not know is refused all of it.
 
 use serde_json::{Value, json};
 use tilo_actions::remote::{
@@ -243,9 +243,9 @@ fn a_devices_key_moves_a_member_and_a_stranger_removes_nobody() {
 const PIECE: usize = 256 * 1024;
 
 /// A device hands the workspace an app version in pieces, makes it the one the workspace uses,
-/// asks for a bot, and takes the version back: the same path `tilolang push` takes.
+/// and takes the version back: the same path `tilolang push` takes.
 #[test]
-fn a_device_installs_an_app_version_and_asks_for_a_bot() {
+fn a_device_installs_an_app_version_and_takes_it_back() {
     host::run(|host| async move {
         let workspace = host.workspace().to_owned();
         let laptop = host.member("Ada's builds", &workspace).await;
@@ -290,22 +290,10 @@ fn a_device_installs_an_app_version_and_asks_for_a_bot() {
             "{installed}"
         );
 
-        let (ran, asked) = workspace_action(
-            &laptop,
-            &workspace,
-            "request-bot",
-            &json!({"entry": "so.tilo.bots.standup", "version": "1.2.0"}),
-        )
-        .await;
-        assert!(ran, "{asked}");
-
-        let (ran, removed) = workspace_action(
-            &laptop,
-            &workspace,
-            "uninstall-app",
-            &json!({"app": "so.tilo.notes"}),
-        )
-        .await;
+        // The version is taken back where the workspace publishes that app: its own resource.
+        let app = tilo_actions::remote::workspace_app(&workspace, "so.tilo.notes");
+        let at = tilo_actions::ActionAddress::new(app, "uninstall");
+        let (ran, removed) = settled(&laptop, at, &json!({"app": "so.tilo.notes"})).await;
         assert!(ran, "{removed}");
     });
 }
