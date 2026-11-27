@@ -13,6 +13,7 @@ tilo-account-workspaces-unattended = Let keys made for one workspace alone run c
 tilo-account-workspaces-import = Take in, once, the workspaces and keys this computer's desktop kept itself
 tilo-account-keys-create = Ask the person for a new key; it waits for them
 tilo-account-keys-mint = A key for one workspace, for an agent there
+tilo-account-keys-key-revoke = Revoke this key and every key it minted
 tilo-account-usage-read = What your workspaces keep and ran, and your plan
 tilo-account-models-ask = Ask your own model one turn; the invocation's newest item keeps its answer so far
 tilo-account-webhooks-list = This key's webhooks, with the key their deliveries are signed with; with workspace, that workspace's

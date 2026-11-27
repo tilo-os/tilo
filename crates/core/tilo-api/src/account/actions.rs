@@ -142,6 +142,22 @@ pub enum KeyAction {
     },
 }
 
+/// One of the account's keys, as the resource `account/keys/<grant>` it is: what its revocation
+/// is called on. No page lists the keys: each workspace's listing names its own
+/// ([`tilo_actions::remote::KEY_GRANTS`]).
+#[derive(tilo_resource::Row)]
+#[row(kind = "account.keys.key", label = "Key")]
+pub struct KeyRow;
+
+/// What one of the account's keys offers.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "tilo.account.keys.key")]
+pub enum GrantAction {
+    /// Revoke this key and every key it minted
+    #[effect(kind = "outside", privileged)]
+    Revoke,
+}
+
 /// What your workspaces keep and ran, and your plan.
 #[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
 #[effect(operation = "tilo.account.usage")]
@@ -263,6 +279,8 @@ pub(crate) enum Asked {
     Usage(UsageAction),
     Models(ModelAction),
     Webhooks(WebhookAction),
+    /// A key's revocation, asked on the key's own resource (`account/keys/<grant>#revoke`).
+    Revoke(String),
 }
 
 impl Asked {
@@ -279,7 +297,11 @@ impl Asked {
             USAGE => UsageAction::decode(action, arguments).map(Self::Usage),
             MODELS => ModelAction::decode(action, arguments).map(Self::Models),
             WEBHOOKS => WebhookAction::decode(action, arguments).map(Self::Webhooks),
-            _ => return None,
+            _ => {
+                let grant = super::key_of(resource)?;
+                GrantAction::decode(action, arguments)
+                    .map(|GrantAction::Revoke| Self::Revoke(grant.to_owned()))
+            }
         };
         Some(asked.map_err(|error| {
             ActionCallError::invalid_request(format!("the call's arguments: {error}"))
@@ -323,9 +345,21 @@ pub(crate) fn declarations() -> impl Iterator<Item = (&'static str, &'static str
     })
 }
 
+/// The row of the key `grant`, under `account/keys`: its revocation.
+pub(crate) fn key_row(grant: &str) -> Option<CatalogueRow> {
+    let declaration = GrantAction::declaration("revoke")?;
+    let mut row = row(&format!("{KEYS}/{grant}"), grant, &declaration);
+    row.parent_resource = KEYS.into();
+    Some(row)
+}
+
 /// The catalogue row of `declaration`, published on `resource`, a resource labelled `label`.
 pub(crate) fn row(resource: &str, label: &str, declaration: &EffectDecl) -> CatalogueRow {
-    let kind = resource.replace('/', ".");
+    let kind = if resource.starts_with(&format!("{KEYS}/")) {
+        <KeyRow as tilo_resource::words::RowType>::KIND.to_owned()
+    } else {
+        resource.replace('/', ".")
+    };
     let mut tags = Vec::new();
     // Reading the resource (`tilo_read account/workspaces`) lists it.
     if declaration.action_kind == ActionKind::Read {
@@ -390,6 +424,7 @@ pub(crate) fn surface() -> Value {
     json!({"resources": [
         reading_surface::<WorkspacesReading, WorkspaceAction>("account.workspaces", "Workspaces"),
         reading_surface::<Value, KeyAction>("account.keys", "Keys"),
+        tilo_resource::surface::row_surface::<KeyRow, GrantAction>(),
         reading_surface::<Value, UsageAction>("account.usage", "Usage"),
         reading_surface::<Value, ModelAction>("account.models", "Models"),
         reading_surface::<Value, WebhookAction>("account.webhooks", "Webhooks"),
@@ -433,6 +468,10 @@ mod tests {
         assert!(!matches!(
             Asked::decode(WORKSPACES, "revoke", &Map::new()),
             Some(Ok(_))
+        ));
+        assert!(matches!(
+            Asked::decode(&format!("{KEYS}/g1"), "revoke", &Map::new()),
+            Some(Ok(Asked::Revoke(grant))) if grant == "g1"
         ));
     }
 }

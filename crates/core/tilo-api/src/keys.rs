@@ -185,16 +185,18 @@ pub struct KeyAsked {
 }
 
 impl KeyAsked {
-    /// The key `args` (`{name, workspace?, expires_in?, browser_pages?}`) asks for, `key` its
-    /// public half.
+    /// The key `account/keys#create` asks for, `key` its public half.
     ///
     /// # Errors
     /// The arguments name no key a person may be asked for.
-    pub fn of(args: &Value, key: [u8; 32]) -> Result<Self, &'static str> {
-        let expires_in = expires_in_of(args.get("expires_in"))?;
-        let browser_pages = browser_pages_of(args.get("browser_pages"))?;
-        let name = name_of(args.get("name").and_then(Value::as_str))?;
-        let workspace = args.get("workspace").and_then(Value::as_str);
+    pub(crate) fn of(
+        name: &str,
+        workspace: Option<&str>,
+        expires_in: Option<u64>,
+        browser_pages: bool,
+        key: [u8; 32],
+    ) -> Result<Self, &'static str> {
+        let name = name_of(Some(name))?;
         let grant = key_grant(scope_of(workspace)?, expires_in, browser_pages, now_ms())?;
         Ok(Self {
             name,

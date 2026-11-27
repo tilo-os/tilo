@@ -13,6 +13,7 @@ tilo-account-workspaces-unattended = Schlüssel, die nur für einen Arbeitsberei
 tilo-account-workspaces-import = Einmal die Arbeitsbereiche und Schlüssel übernehmen, die der Desktop dieses Computers selbst behalten hat
 tilo-account-keys-create = Die Person um einen neuen Schlüssel bitten; er wartet auf sie
 tilo-account-keys-mint = Ein Schlüssel für einen Arbeitsbereich, für einen Agenten dort
+tilo-account-keys-key-revoke = Diesen Schlüssel und jeden Schlüssel widerrufen, den er ausgestellt hat
 tilo-account-usage-read = Was deine Arbeitsbereiche behalten und ausgeführt haben, und dein Tarif
 tilo-account-models-ask = Dein eigenes Modell um eine Runde bitten; der neueste Eintrag der Ausführung zeigt seine bisherige Antwort
 tilo-account-webhooks-list = Die Webhooks dieses Schlüssels, mit dem Schlüssel, mit dem ihre Zustellungen signiert werden; mit workspace nur die eines Arbeitsbereichs
