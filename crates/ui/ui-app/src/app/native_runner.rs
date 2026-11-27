@@ -3769,6 +3769,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
     }
 
+    /// Android says `resumed` only when the activity's native window arrives: a loop run again
+    /// for the window a previous one gave its place to (a workspace's join arrived, or the
+    /// process joined its window to another workspace) finds that window already there, and
+    /// takes it up as it starts.
+    fn new_events(&mut self, event_loop: &ActiveEventLoop, cause: winit::event::StartCause) {
+        #[cfg(target_os = "android")]
+        if matches!(cause, winit::event::StartCause::Init)
+            && self.window.is_none()
+            && tilo_ui_base::platform::android::app()
+                .is_some_and(|app| app.native_window().is_some())
+        {
+            self.resumed(event_loop);
+        }
+        #[cfg(not(target_os = "android"))]
+        let _ = (event_loop, cause);
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let _entry = self.app.enter_wake_scope();
         // Fires again after `suspended` on mobile, where the window survives
