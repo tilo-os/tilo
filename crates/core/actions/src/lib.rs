@@ -425,7 +425,7 @@ pub use key::{ActionKey, CREATE_ACTION};
 pub use label::{message_key, noun_key};
 pub use outcome::{
     ActionFailure, ActionOutput, CONTENT_RESOURCE_KIND, EffectReceiptStatus, InvocationId,
-    InvocationUpdate, content_hash, content_resource, named_reference,
+    InvocationUpdate, content_hash, content_resource, named_content, named_reference,
 };
 pub use params::{
     ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ArgError, ArgValue, ArgViolation,

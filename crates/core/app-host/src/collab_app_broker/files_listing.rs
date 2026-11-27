@@ -21,7 +21,7 @@ use fs_protocol::tree::{
     FILES_APP, FOLDER_KIND, LIST, READ_TEXT, file_of_resource, file_resource, folder_of_resource,
     folder_resource,
 };
-use tilo_action_policy::{ActionKind, Answer, TreePath};
+use tilo_action_policy::{ActionKind, Answer};
 use tilo_actions::remote::{
     APPLICATION_RESOURCE_KIND, APPLICATION_RESOURCE_PREFIX, ActionCallError, Caller, CataloguePage,
     CatalogueQuery, CatalogueRow, InvokeArgument, InvokeRequest, Pending, pending,
@@ -52,12 +52,6 @@ pub(super) fn may_read_tree(workspace: &Workspace, actor: &BrokerActor, now: u64
         &fs_protocol::tree::document_id(),
     );
     actor.answer_in(workspace, &records, ActionKind::Read, now) == Answer::Allow
-}
-
-/// Whether `actor` may read the content `workspace` keeps by its address now: what a read of
-/// the whole workspace lets it, as the content a message names is no file of the folder.
-fn may_read_content(workspace: &Workspace, actor: &BrokerActor, now: u64) -> bool {
-    actor.answer_in(workspace, &TreePath::root(), ActionKind::Read, now) == Answer::Allow
 }
 
 /// A read of the workspace's tree, as a row offers it: `action` on `resource`.
@@ -296,6 +290,48 @@ fn read_arguments(
 }
 
 impl AppBrokerState {
+    /// Whether `caller`, decided as `actor`, may read the content `arguments` names by its address
+    /// in `workspace` now: only where they may read a resource of this workspace that names it,
+    /// decided as their read of that resource is, its readers and then its app's rules. The
+    /// workspace's index of what its resources name answers which those are; nothing reads every
+    /// content. Content no resource they may read names and content nothing names are refused by
+    /// the same lookup, so a refusal says nothing of whether the workspace keeps it.
+    fn may_read_content(
+        &self,
+        caller: &Caller,
+        (workspace, actor, now): (&Workspace, &BrokerActor, u64),
+        arguments: &Map<String, Value>,
+    ) -> bool {
+        let Some(address) = arguments
+            .get("content")
+            .and_then(Value::as_str)
+            .and_then(tilo_actions::named_content)
+        else {
+            return false;
+        };
+        let (Some(puts), Some(id)) = (
+            self.services.files_open.clone(),
+            WorkspaceId::parse(&workspace.id().to_string()),
+        ) else {
+            return false;
+        };
+        let reader = tilo_workspace_service::workspaces::person_reading(caller);
+        // The index is read on a thread of its own, as the folder's reads are: it waits for the
+        // workspace's records, which this device's runtime serves meanwhile.
+        let naming = std::thread::spawn(move || puts.naming_content(id, &reader, &address))
+            .join()
+            .unwrap_or_default();
+        naming.iter().any(|named| {
+            let node = tilo_actions::resource_node(
+                &workspace.policy.node(),
+                &named.app,
+                &named.kind,
+                &named.id,
+            );
+            actor.answer_in(workspace, &node, ActionKind::Read, now) == Answer::Allow
+        })
+    }
+
     /// Whether the message `caller`'s turn answers carries the content `arguments` names, as a
     /// file its sender could read when they sent it. Sending a file to an agent shares it: the
     /// one version the message names, by its content hash, never the path it was at or what
@@ -374,8 +410,9 @@ impl AppBrokerState {
     ///
     /// # Errors
     /// A caller naming no workspace, one the workspace does not let read its files (or, for
-    /// content named by its address, the workspace, unless the message its turn answers carries
-    /// that content), an admission that fails, or a host that serves no folder.
+    /// content named by its address, any resource of it that names that content, unless the
+    /// message its turn answers carries it), an admission that fails, or a host that serves no
+    /// folder.
     pub(super) fn start_files_read(
         self: &Arc<Self>,
         caller: &Caller,
@@ -410,10 +447,10 @@ impl AppBrokerState {
             named,
             if action == LIST { "folder" } else { "file" },
         );
-        // Content a message names is read by its address, by whoever may read the workspace;
-        // a file or folder of the tree by whoever may read what Files keeps in it.
+        // Content is read by its address by whoever may read a resource of the workspace that
+        // names it; a file or folder of the tree by whoever may read what Files keeps in it.
         let allowed = if action == READ_TEXT && arguments.contains_key("content") {
-            may_read_content(workspace, policy, now)
+            self.may_read_content(caller, (workspace, policy, now), &arguments)
                 || self.turn_carries(caller, workspace, &arguments, now)
         } else {
             may_read_tree(workspace, policy, now)

@@ -58,11 +58,26 @@ fn put(
     fields: &[(&str, &str)],
     invoker: &str,
 ) -> Command {
+    put_for(
+        collab_types::EVERY_MEMBER,
+        (kind, id, parent),
+        fields,
+        invoker,
+    )
+}
+
+/// [`put`], read by `readers` alone.
+fn put_for(
+    readers: &str,
+    (kind, id, parent): (&str, &str, Option<&str>),
+    fields: &[(&str, &str)],
+    invoker: &str,
+) -> Command {
     Command::Put {
         kind: kind.to_owned(),
         id: id.to_owned(),
         resource: Resource {
-            readers: collab_types::EVERY_MEMBER.to_owned(),
+            readers: readers.to_owned(),
             parent: parent.map(str::to_owned),
             order: None,
             fields: fields
@@ -169,5 +184,170 @@ async fn a_message_names_its_sender_and_the_content_it_carries() {
         workspaces.store_sent(&workspace, "general", "gone").await,
         None,
         "a message the workspace does not hold is none"
+    );
+}
+
+/// A file kept for its sender alone.
+const KEPT: &str = "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2";
+
+/// A file another workspace's message carries.
+const ELSEWHERE: &str = "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3";
+
+/// The resource `id` of [`ATTACHED`], as the workspace's index finds it by what it names.
+fn attached(id: &str) -> Vec<NamingResource> {
+    vec![NamingResource {
+        app: APP.to_owned(),
+        kind: ATTACHED.to_owned(),
+        id: id.to_owned(),
+    }]
+}
+
+/// `content` as an attachment names it.
+fn blob(content: &str) -> String {
+    format!("{}{content}", tilo_content::BLOB_SCHEME)
+}
+
+/// `person`'s message in `workspace` carrying [`SENT`], their file [`KEPT`] sealed to them alone,
+/// and a message in `other` carrying [`ELSEWHERE`].
+async fn sent_kept_and_elsewhere(
+    workspaces: &Workspaces,
+    (workspace, other): (&str, &str),
+    person: &str,
+) {
+    write(workspaces, workspace, send(person))
+        .await
+        .expect("the message is sent");
+    write(
+        workspaces,
+        workspace,
+        put_for(
+            person,
+            (ATTACHED, "kept-1", Some("says")),
+            &[("name", "mine.md"), ("blob", &blob(KEPT))],
+            person,
+        ),
+    )
+    .await
+    .expect("the sealed file is kept");
+    write(
+        workspaces,
+        other,
+        Command::Batch(vec![
+            put((CHANNEL, "general", None), &[("name", "General")], person),
+            put(
+                (MESSAGE, "there", Some("general")),
+                &[("body", "Over here.")],
+                person,
+            ),
+            put(
+                (ATTACHED, "there-1", Some("there")),
+                &[("name", "there.md"), ("blob", &blob(ELSEWHERE))],
+                person,
+            ),
+        ]),
+    )
+    .await
+    .expect("the other workspace's message is sent");
+}
+
+/// The resources that name a content are found by the index of what each names, as each of their
+/// readers reads them: a file a message carries by every member, one sealed to its sender by them
+/// alone, one only another workspace names by none of this one. Once the last resource that named
+/// it names other content or is gone, nothing names it.
+#[tokio::test]
+async fn content_is_named_by_the_resources_its_reader_reads_as_writes_leave_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = hosting_device();
+    let server = test_host(dir.path(), &key, &cert).await;
+    let workspaces = server.workspaces().clone();
+    crate::workspaces::fixtures::declare_app(&server, APP, &surface());
+    let workspace = workspaces.create("Chat").await.unwrap().workspace;
+    let other = workspaces.create("Elsewhere").await.unwrap().workspace;
+    let person = hex::encode(workspaces.signing_device().cert.user_public_key);
+    let stranger = "d4".repeat(32);
+    sent_kept_and_elsewhere(&workspaces, (&workspace, &other), &person).await;
+    let naming = |workspace: &str, reader: &str, address: &str| {
+        let (workspaces, workspace, reader, address) = (
+            workspaces.clone(),
+            workspace.to_owned(),
+            reader.to_owned(),
+            address.to_owned(),
+        );
+        async move {
+            workspaces
+                .store_naming_content(&workspace, &reader, &address)
+                .await
+        }
+    };
+
+    assert_eq!(
+        naming(&workspace, &person, SENT).await,
+        attached("file-1"),
+        "the file a message carries is named by its attachment"
+    );
+    assert_eq!(
+        naming(&workspace, &person, KEPT).await,
+        attached("kept-1"),
+        "its sender reads the file sealed to them"
+    );
+    assert!(
+        naming(&workspace, &stranger, KEPT).await.is_empty(),
+        "nobody else reads the sealed file's attachment"
+    );
+    assert!(
+        naming(&workspace, &person, ELSEWHERE).await.is_empty(),
+        "what only another workspace names is named by nothing of this one"
+    );
+    assert_eq!(
+        naming(&other, &person, ELSEWHERE).await,
+        attached("there-1")
+    );
+    assert!(
+        naming(&workspace, &person, &"e5".repeat(32))
+            .await
+            .is_empty(),
+        "content nothing names is named by nothing"
+    );
+
+    // The attachment names other content, and the sealed one is removed: nothing names either.
+    let mut edit = put(
+        (ATTACHED, "file-1", Some("sends")),
+        &[("name", "from Bo.md"), ("blob", &blob(ELSEWHERE))],
+        &person,
+    );
+    if let Command::Put { stamp, .. } = &mut edit {
+        "edit-file-1".clone_into(&mut stamp.invocation);
+    }
+    write(&workspaces, &workspace, edit)
+        .await
+        .expect("the attachment is changed");
+    write(
+        &workspaces,
+        &workspace,
+        Command::Remove {
+            kind: ATTACHED.to_owned(),
+            id: "kept-1".to_owned(),
+            stamp: tilo_resource_store::Stamp {
+                verb: "send".to_owned(),
+                invoker: person.clone(),
+                invocation: "remove-kept-1".to_owned(),
+                at: SENT_AT.to_owned(),
+                ..tilo_resource_store::Stamp::default()
+            },
+        },
+    )
+    .await
+    .expect("the sealed file is removed");
+    assert!(
+        naming(&workspace, &person, SENT).await.is_empty(),
+        "the attachment that named the file names other content now"
+    );
+    assert!(
+        naming(&workspace, &person, KEPT).await.is_empty(),
+        "the removed attachment names nothing"
+    );
+    assert_eq!(
+        naming(&workspace, &person, ELSEWHERE).await,
+        attached("file-1")
     );
 }

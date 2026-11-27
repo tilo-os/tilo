@@ -726,6 +726,22 @@ impl Store {
             .then_some(held)
     }
 
+    /// Every resource whose fields name the content at `address` and whose readers `may_read`
+    /// admits, by its kind and id ([`Index::naming_content`]): whoever reads one of them reads that
+    /// content by its address, and nobody else does.
+    #[must_use]
+    pub fn naming_content(
+        &self,
+        address: &str,
+        may_read: &dyn Fn(&str) -> bool,
+    ) -> Vec<(String, String)> {
+        self.index
+            .naming_content(address)
+            .filter(|(_, _, readers)| may_read(readers))
+            .map(|(kind, id, _)| (kind.to_owned(), id.to_owned()))
+            .collect()
+    }
+
     /// Every resource nested directly in the resource `id` of `kind`, each by its kind, its id and
     /// what the index holds of it: a message's attachments, under each collection its type declares.
     /// Whoever reads them is the caller's to decide; none for a kind this store declares no type

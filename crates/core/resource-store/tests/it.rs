@@ -5365,3 +5365,114 @@ mod outside_effects {
         assert!(why.contains("may not change a queued effect"), "{why}");
     }
 }
+
+/// The content a resource's fields name is found by its address, as every commit leaves it: a
+/// put names it, an edit that drops the reference and a removal take it back, a move to other
+/// readers files it under them, and a document the store forgets names nothing.
+#[test]
+fn the_content_a_resource_names_is_found_by_its_address_as_commits_leave_it() {
+    const ATTACHED: &str = "Attached";
+    let (sent, other) = ("a1".repeat(32), "b2".repeat(32));
+    let attached = |id: &str, field: &str, value: String| {
+        let mut fields = BTreeMap::new();
+        fields.insert(field.to_owned(), Cell::One(Value::Text(value)));
+        Change::Put {
+            kind: ATTACHED.to_owned(),
+            id: id.to_owned(),
+            parent: Some("message".to_owned()),
+            order: None,
+            fields,
+        }
+    };
+    let naming = |index: &Index, address: &str| -> Vec<(String, String, String)> {
+        let mut found: Vec<_> = index
+            .naming_content(address)
+            .map(|(kind, id, readers)| (kind.to_owned(), id.to_owned(), readers.to_owned()))
+            .collect();
+        found.sort();
+        found
+    };
+    let named = |id: &str, readers: &str| (ATTACHED.to_owned(), id.to_owned(), readers.to_owned());
+    let mut index = Index::new();
+    let put = |index: &mut Index, doc: &str, readers: &str, changes: &[Change]| {
+        index.committed(&Commit {
+            doc,
+            readers,
+            heads: &[],
+            changes,
+        });
+    };
+
+    // A link and an address name the content; its key, upper case and a text that only looks
+    // like one do not change what they name, or name nothing.
+    put(
+        &mut index,
+        "doc-a",
+        "everyone",
+        &[
+            attached("by-link", "blob", format!("tilo-blob://{sent}")),
+            attached(
+                "by-address",
+                "file",
+                format!("tilo.content:{}", sent.to_uppercase()),
+            ),
+            attached("just-text", "note", sent.clone()),
+        ],
+    );
+    assert_eq!(
+        naming(&index, &sent),
+        vec![
+            named("by-address", "everyone"),
+            named("by-link", "everyone")
+        ],
+    );
+    assert!(
+        naming(&index, &other).is_empty(),
+        "nothing names other content"
+    );
+
+    // An edit that names other content drops the first.
+    put(
+        &mut index,
+        "doc-a",
+        "everyone",
+        &[attached("by-link", "blob", format!("tilo-blob://{other}"))],
+    );
+    assert_eq!(naming(&index, &sent), vec![named("by-address", "everyone")]);
+    assert_eq!(naming(&index, &other), vec![named("by-link", "everyone")]);
+
+    // Moved to a document of other readers, it is filed under them.
+    put(
+        &mut index,
+        "doc-b",
+        "ada",
+        &[attached(
+            "by-address",
+            "file",
+            format!("tilo.content:{sent}"),
+        )],
+    );
+    assert_eq!(naming(&index, &sent), vec![named("by-address", "ada")]);
+
+    // Removed, nothing names it.
+    put(
+        &mut index,
+        "doc-b",
+        "ada",
+        &[Change::Remove {
+            kind: ATTACHED.to_owned(),
+            id: "by-address".to_owned(),
+        }],
+    );
+    assert!(
+        naming(&index, &sent).is_empty(),
+        "the removed resource names nothing"
+    );
+
+    // A document the store forgets names nothing it held.
+    index.forget("doc-a");
+    assert!(
+        naming(&index, &other).is_empty(),
+        "a forgotten document names nothing"
+    );
+}

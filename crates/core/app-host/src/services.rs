@@ -474,6 +474,20 @@ pub trait FilesTreePuts: Send + Sync {
     ) -> Option<tilo_workspace_service::workspaces::SentMessage> {
         None
     }
+
+    /// The resources of `workspace` that name the content at `address` (its lowercase hash) and
+    /// that `reader` (a person's key, hex) is among the readers of, each by its app, kind and id,
+    /// read from the workspace's index of what its resources name: who may read that content by
+    /// its address is whoever may read one of them. None where a host holds no records to read
+    /// them from.
+    fn naming_content(
+        &self,
+        _workspace: tilo_server_protocol::WorkspaceId,
+        _reader: &str,
+        _address: &str,
+    ) -> Vec<tilo_workspace_service::workspaces::NamingResource> {
+        Vec::new()
+    }
 }
 
 #[cfg(all(feature = "files", not(target_arch = "wasm32")))]
@@ -526,6 +540,15 @@ impl FilesTreePuts for tilo_workspace_service::files::OpenedFiles {
         hash: &str,
     ) -> Option<tilo_workspace_service::workspaces::SentMessage> {
         tilo_workspace_service::files::OpenedFiles::sent_carrying(self, workspace, turn, hash)
+    }
+
+    fn naming_content(
+        &self,
+        workspace: tilo_server_protocol::WorkspaceId,
+        reader: &str,
+        address: &str,
+    ) -> Vec<tilo_workspace_service::workspaces::NamingResource> {
+        tilo_workspace_service::files::OpenedFiles::naming_content(self, workspace, reader, address)
     }
 }
 

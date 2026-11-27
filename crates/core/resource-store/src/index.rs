@@ -160,6 +160,10 @@ struct Table {
     /// Per field, how many resources hold each value: what a query reads to choose its path, and
     /// a count of one value answers from.
     counts: HashMap<String, HashMap<Value, usize>>,
+    /// Per content address a resource's fields name ([`tilo_actions::named_content`]), the
+    /// resources naming it: who may read that content by its address is whoever may read one of
+    /// them, answered from here as every write leaves it.
+    content: HashMap<String, BTreeSet<String>>,
     /// The listings it keeps, by their filters and order ([`Kept`]).
     kept: RefCell<HashMap<String, Kept>>,
     /// How many times a kept listing was asked for: the clock [`Kept::asked`] reads.
@@ -273,6 +277,12 @@ impl Table {
                 listing.keys.insert(key);
             }
         }
+        for address in named_content(&stored) {
+            self.content
+                .entry(address)
+                .or_default()
+                .insert(id.to_owned());
+        }
         self.rows.insert(id.to_owned(), stored);
     }
 
@@ -281,6 +291,14 @@ impl Table {
         let Some(stored) = self.rows.get(id) else {
             return false;
         };
+        for address in named_content(stored) {
+            if let Some(naming) = self.content.get_mut(&address) {
+                naming.remove(id);
+                if naming.is_empty() {
+                    self.content.remove(&address);
+                }
+            }
+        }
         for listing in self.kept.get_mut().values_mut() {
             if let Some(key) = listing.key(id, stored) {
                 listing.keys.remove(&key);
@@ -991,6 +1009,22 @@ fn cuts(windows: &[Window<'_>], mut k: usize) -> Vec<usize> {
     }
 }
 
+/// Each content address the fields of `stored` name ([`tilo_actions::named_content`]).
+fn named_content(stored: &Indexed) -> BTreeSet<String> {
+    stored
+        .fields
+        .values()
+        .flat_map(|cell| match cell {
+            Cell::One(value) => vec![value],
+            Cell::Set(members) => members.iter().collect(),
+        })
+        .filter_map(|value| match value {
+            Value::Text(text) => tilo_actions::named_content(text),
+            _ => None,
+        })
+        .collect()
+}
+
 /// What the index knows of one document.
 #[derive(Clone, Debug, Default)]
 struct Held {
@@ -1104,6 +1138,23 @@ impl Index {
             .iter()
             .find(|(_, tables)| tables.values().any(|table| table.rows.contains_key(id)))
             .map(|(kind, _)| kind.clone())
+    }
+
+    /// Every resource whose fields name the content at `address` ([`tilo_actions::named_content`]),
+    /// by its kind, its id and the readers it is filed under: a lookup in each kind's table per
+    /// reader set, never a walk of the resources.
+    pub fn naming_content<'a>(
+        &'a self,
+        address: &'a str,
+    ) -> impl Iterator<Item = (&'a str, &'a str, &'a str)> + 'a {
+        self.kinds.iter().flat_map(move |(kind, tables)| {
+            tables.iter().flat_map(move |(readers, table)| {
+                table.content.get(address).into_iter().flat_map(move |ids| {
+                    ids.iter()
+                        .map(move |id| (kind.as_str(), id.as_str(), readers.as_str()))
+                })
+            })
+        })
     }
 
     /// The resources `doc` holds, by kind and id.

@@ -14,7 +14,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{InvocationId, InvocationUpdate};
 
-use tilo_workspace_service::workspaces::SentMessage;
+use tilo_workspace_service::workspaces::{NamingResource, SentMessage};
 
 use crate::services::{FilesEntry, FilesTreePuts};
 use crate::test_support::{WorkspaceId, WorkspaceTree};
@@ -32,12 +32,24 @@ fn owner_id() -> String {
 
 /// What reached the workspace's folder: the reads, each its action and arguments. The writer is
 /// refused: no call here puts a file or changes the folder. Beside them, the messages the
-/// workspace's records hold, each by its conversation and id.
+/// workspace's records hold, each by its conversation and id, and the resources that name a
+/// content ([`Named`]).
 #[derive(Default)]
 struct Recorder(
     Mutex<Vec<(String, Map<String, Value>)>>,
     Vec<(tilo_action_policy::turn::Turn, SentMessage)>,
+    Mutex<Vec<Named>>,
 );
+
+/// A resource that names a content, as a workspace's index of what its resources name holds it:
+/// the workspace, the content's address, the resource, and the people its readers are (`*` for
+/// every member).
+struct Named {
+    workspace: String,
+    address: String,
+    resource: NamingResource,
+    readers: Vec<String>,
+}
 
 /// What the recorder's workspace folder holds: a folder `Inbox` with one file in it.
 const HELD: [(&str, bool); 2] = [("Inbox", true), ("Inbox/plan.md", false)];
@@ -107,6 +119,22 @@ impl FilesTreePuts for Recorder {
             .find(|(sent, _)| sent == turn)
             .map(|(_, message)| message.clone())
             .filter(|message| message.carries.iter().any(|carried| carried == hash))
+    }
+
+    fn naming_content(
+        &self,
+        workspace: WorkspaceId,
+        reader: &str,
+        address: &str,
+    ) -> Vec<NamingResource> {
+        self.2
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|named| named.workspace == workspace.to_string() && named.address == address)
+            .filter(|named| named.readers.iter().any(|one| one == "*" || one == reader))
+            .map(|named| named.resource.clone())
+            .collect()
     }
 }
 
@@ -382,6 +410,7 @@ fn messages() -> Recorder {
                 },
             ),
         ],
+        Mutex::default(),
     )
 }
 
@@ -641,4 +670,206 @@ async fn a_file_is_shared_as_its_sender_stood_when_they_sent_it() {
         finished(&fixture.state, &before, &request),
     )
     .await;
+}
+
+/// A member who reads the workspace, and whom a rule refuses its secrets app.
+const BO: &str = "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5";
+/// A person with no part in the workspace.
+const CY: &str = "f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6";
+
+/// The app whose message attachments name the content, and the one Bo is refused.
+const CHAT: &str = "test.chat";
+const SECRETS: &str = "test.secrets";
+
+/// Contents the workspace's resources name: a file a message carries, read by every member; one
+/// sealed to the owner; one sealed to Bo; one kept by the secrets app, read by every member; one
+/// only another workspace names; and one nothing names.
+const SHARED: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+const OWNERS: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+const BOS: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+const SECRET: &str = "4444444444444444444444444444444444444444444444444444444444444444";
+const ELSEWHERE: &str = "5555555555555555555555555555555555555555555555555555555555555555";
+const UNKNOWN: &str = "6666666666666666666666666666666666666666666666666666666666666666";
+
+/// The resources of the workspace `workspace` (and one of another) that name content.
+fn naming(workspace: &str) -> Vec<Named> {
+    let named = |address: &str, (app, id): (&str, &str), readers: &[&str]| Named {
+        workspace: workspace.to_owned(),
+        address: address.to_owned(),
+        resource: NamingResource {
+            app: app.to_owned(),
+            kind: format!("tl.{app}.Attached"),
+            id: id.to_owned(),
+        },
+        readers: readers.iter().map(|one| (*one).to_owned()).collect(),
+    };
+    let mut elsewhere = named(ELSEWHERE, (CHAT, "there"), &["*"]);
+    elsewhere.workspace = WorkspaceId::from_u128(72).to_string();
+    vec![
+        named(SHARED, (CHAT, "shared"), &["*"]),
+        named(OWNERS, (CHAT, "owners"), &[&owner_id()]),
+        named(BOS, (CHAT, "bos"), &[BO]),
+        named(SECRET, (SECRETS, "secret"), &["*"]),
+        elsewhere,
+    ]
+}
+
+/// The workspace's rules: Bo reads the workspace, and is refused its secrets app.
+fn bo_reads(workspace: &mut Workspace) {
+    use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
+    let id = workspace.id().to_string();
+    workspace.policy.grant(Grant::new(
+        "bo-reads",
+        Grantee::person(BO),
+        TreePath::workspace(&id),
+        KindSet::READ,
+        Answer::Allow,
+        Grantee::person(owner_id()),
+    ));
+    workspace.policy.grant(Grant::new(
+        "bo-reads-no-secrets",
+        Grantee::person(BO),
+        TreePath::workspace(&id).app(SECRETS),
+        KindSet::READ,
+        Answer::Deny,
+        Grantee::person(owner_id()),
+    ));
+}
+
+/// `person`, acting as themselves in `workspace`.
+fn person_in(person: &str, workspace: &str) -> Caller {
+    Caller::local_person(person.to_owned())
+        .in_workspace(workspace)
+        .in_new_execution()
+}
+
+/// `caller` reads the content at `address` by it, and the read reaches the folder.
+async fn reads(fixture: &Fixture, caller: &Caller, address: &str, why: &str) {
+    let request = read_text(&fixture.workspace, self::address(address));
+    tilo_test_env::within(
+        "the broker answers the read",
+        settled(fixture.state.action_invoke(caller, None, None, &request)),
+    )
+    .await
+    .unwrap_or_else(|error| panic!("{why}: {error:?}"));
+    tilo_test_env::within(
+        "the read completes",
+        finished(&fixture.state, caller, &request),
+    )
+    .await;
+    let reads = fixture.recorder.0.lock().unwrap();
+    assert_eq!(
+        reads
+            .last()
+            .map(|(_, arguments)| Value::Object(arguments.clone())),
+        Some(self::address(address)),
+        "{why}: the read reached the folder"
+    );
+}
+
+/// `caller`'s read of the content at `address` is refused exactly as their read of content
+/// nothing names, and nothing reaches the folder.
+async fn refused_as_unknown(fixture: &Fixture, caller: &Caller, address: &str, why: &str) {
+    let before = fixture.recorder.0.lock().unwrap().len();
+    let mut answers = Vec::new();
+    for asked in [UNKNOWN, address] {
+        let request = read_text(&fixture.workspace, self::address(asked));
+        answers.push(
+            tilo_test_env::within(
+                "the broker answers the read",
+                settled(fixture.state.action_invoke(caller, None, None, &request)),
+            )
+            .await,
+        );
+    }
+    assert!(
+        matches!(answers[0], Err(ActionCallError::NotPermitted)),
+        "content nothing names is refused: {:?}",
+        answers[0]
+    );
+    assert_eq!(
+        answers[1], answers[0],
+        "{why}: refused as content nothing names"
+    );
+    assert_eq!(
+        fixture.recorder.0.lock().unwrap().len(),
+        before,
+        "{why}: nothing reached the folder"
+    );
+}
+
+/// Content is read by its address by whoever may read a resource of this workspace that names
+/// it, as they read that resource: the owner, and a member who reads it. Anyone else is refused
+/// exactly as for content nothing names, which says nothing of whether the workspace keeps it: a
+/// person with no part in the workspace, a member the content's only resource is sealed from or
+/// whose rules refuse its app, an agent whose person may not read it, and anyone asking for what
+/// only another workspace names. Once nothing names it any more, its former reader is refused.
+#[tokio::test]
+async fn content_is_read_by_its_address_only_through_a_resource_its_reader_reads() {
+    let workspace = WorkspaceId::from_u128(71).to_string();
+    let fixture = fixture_with(
+        Recorder(Mutex::default(), Vec::new(), Mutex::new(naming(&workspace))),
+        bo_reads,
+    );
+    assert_eq!(fixture.workspace, workspace);
+    let (owner, bo, cy) = (
+        owner(&workspace),
+        person_in(BO, &workspace),
+        person_in(CY, &workspace),
+    );
+
+    // The owner reads what a resource they read names, their sealed one too; nothing reads
+    // every content, so not even the owner reads what nothing here names.
+    reads(&fixture, &owner, SHARED, "the owner reads a message's file").await;
+    reads(
+        &fixture,
+        &owner,
+        OWNERS,
+        "the owner reads the file sealed to them",
+    )
+    .await;
+    refused_as_unknown(&fixture, &owner, BOS, "the owner, of a file sealed to Bo").await;
+    refused_as_unknown(
+        &fixture,
+        &owner,
+        ELSEWHERE,
+        "the owner, of a file only another workspace names",
+    )
+    .await;
+
+    // A member who reads the message reads its file.
+    reads(&fixture, &bo, SHARED, "Bo reads a message's file").await;
+    reads(&fixture, &bo, BOS, "Bo reads the file sealed to them").await;
+
+    // Who may not read the resource is refused as for content nothing names.
+    refused_as_unknown(
+        &fixture,
+        &cy,
+        SHARED,
+        "a person with no part in the workspace",
+    )
+    .await;
+    refused_as_unknown(&fixture, &bo, OWNERS, "Bo, of the file sealed to the owner").await;
+    refused_as_unknown(
+        &fixture,
+        &bo,
+        SECRET,
+        "Bo, of a file of an app refused them",
+    )
+    .await;
+
+    // The owner's agent, holding its default preset, reads what its person reads of the
+    // message, and is refused the file sealed to Bo, its only resource.
+    let agent = agent_turn(&workspace, CONVERSATION, "says").in_new_execution();
+    reads(&fixture, &agent, SHARED, "the agent reads a message's file").await;
+    refused_as_unknown(&fixture, &agent, BOS, "the agent, of a file sealed to Bo").await;
+
+    // The message drops the file: its former reader is refused it.
+    fixture
+        .recorder
+        .2
+        .lock()
+        .unwrap()
+        .retain(|named| named.address != SHARED);
+    refused_as_unknown(&fixture, &bo, SHARED, "Bo, once nothing names the file").await;
 }

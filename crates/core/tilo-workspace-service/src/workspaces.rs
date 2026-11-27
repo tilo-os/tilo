@@ -1284,6 +1284,16 @@ pub struct SentMessage {
     pub carries: Vec<String>,
 }
 
+/// A resource that names content by its address ([`Workspaces::store_naming_content`]): whoever
+/// may read it may read that content.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NamingResource {
+    /// The app that keeps it, whose rules decide who reads it.
+    pub app: String,
+    pub kind: String,
+    pub id: String,
+}
+
 /// A workspace this service left closed as it opened: the record it is kept in could not be
 /// read. Its file stays on disk exactly as it was, and every other workspace serves around it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2456,6 +2466,39 @@ impl Workspaces {
             .collect();
         drop(store);
         Some(SentMessage { by, at, carries })
+    }
+
+    /// The resources of `workspace` whose fields name the content at `address` (its lowercase
+    /// hash, [`tilo_actions::named_content`]) and whose readers include `reader` (a person's key,
+    /// hex) as the workspace's governance has them now, each by the app that keeps it, its kind
+    /// and its id. Read from the store's index of what each resource names, as every write leaves
+    /// it: whoever may read one of them may read that content by its address, and nobody else.
+    /// None where this device does not hold the workspace, or nothing `reader` reads names it.
+    pub async fn store_naming_content(
+        &self,
+        workspace: &str,
+        reader: &str,
+        address: &str,
+    ) -> Vec<NamingResource> {
+        let Ok(reading) = self.reading_now(workspace).await else {
+            return Vec::new();
+        };
+        let may_read = resources::may_read_in(&reading, reader);
+        let named = reading.store().naming_content(address, &may_read);
+        let kinds = self.inner.host.surfaces.kinds();
+        // A resource whose kind no app here declares is decided by no app's rules: it names
+        // nothing anyone reads by its address.
+        named
+            .into_iter()
+            .filter_map(|(kind, id)| {
+                let (app, _) = kinds.iter().find(|(_, known)| *known == kind)?;
+                Some(NamingResource {
+                    app: app.clone(),
+                    kind,
+                    id,
+                })
+            })
+            .collect()
     }
 
     /// The `(app, record)` of every record of `workspace` the host's copy

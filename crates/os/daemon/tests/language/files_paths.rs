@@ -1103,6 +1103,29 @@ fn a_file_a_message_carries_is_told_to_the_turn_and_read_as_content_from_outside
             "the message is in the workspace's Chat record"
         );
 
+        // The person reads the file by its address, as whoever reads the message that carries it
+        // does; content nothing in the workspace names is refused, the owner's read too.
+        let read = person_files(
+            host,
+            host.workspace(),
+            "read-text",
+            json!({"content": address}),
+        )
+        .await
+        .expect("the person reads the file their message carries");
+        assert!(
+            read.to_string().contains("move every file of this folder"),
+            "{read}"
+        );
+        let unknown = format!("tilo.content:{}", "0".repeat(64));
+        person_files_refused(
+            host,
+            host.workspace(),
+            "read-text",
+            json!({"content": unknown}),
+        )
+        .await;
+
         // The message starts one turn of the person's assistant, and its model is asked.
         tokio::time::timeout(
             std::time::Duration::from_secs(90),

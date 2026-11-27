@@ -204,6 +204,26 @@ impl OpenedFiles {
             .filter(|sent| sent.carries.iter().any(|carried| carried == hash))
     }
 
+    /// The resources of `workspace` that name the content at `address` and that `reader` (a
+    /// person's key, hex) is among the readers of, each by its app, kind and id: what decides
+    /// who reads that content by its address
+    /// ([`crate::workspaces::Workspaces::store_naming_content`]).
+    #[must_use]
+    pub fn naming_content(
+        &self,
+        workspace: WorkspaceId,
+        reader: &str,
+        address: &str,
+    ) -> Vec<crate::workspaces::NamingResource> {
+        // A runtime that cannot run the read names nothing: the content is refused.
+        tilo_rt::app()
+            .block_on(
+                self.workspaces
+                    .store_naming_content(&workspace.to_string(), reader, address),
+            )
+            .unwrap_or_default()
+    }
+
     /// What `read-text` answers for the file `file` names by its path in the workspace: what it
     /// says, a page of characters at a time (`from`, `next`, `total`).
     fn text_at(

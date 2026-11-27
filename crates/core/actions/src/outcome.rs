@@ -33,6 +33,18 @@ pub fn named_reference(value: &str) -> Option<&str> {
     tilo_content::valid_reference(reference).then_some(reference)
 }
 
+/// The content address (lowercase BLAKE3 hex) a record's value names: a `tilo.content:<reference>`
+/// address or a `tilo-blob://<reference>` link, its reference with or without the key that opens
+/// it. What a record names this way is what its readers read by the address; `None` for a value
+/// that names no content.
+pub fn named_content(value: &str) -> Option<String> {
+    let value = value.trim();
+    let reference = value
+        .strip_prefix(tilo_content::BLOB_SCHEME)
+        .or_else(|| content_hash(value))?;
+    tilo_content::content_address(reference)
+}
+
 pub use tilo_action_types::InvocationId;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
