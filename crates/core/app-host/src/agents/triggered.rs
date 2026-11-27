@@ -315,6 +315,18 @@ fn descriptor(agent: &str, name: &str) -> ActionDescriptor {
     let contract = ActionContract {
         kind: tilo_actions::ActionKind::Undoable,
         execution: tilo_actions::contract::ExecutionMode::Background { cancellable: true },
+        // Whether this device took the turn, and why not where another did: the step that starts
+        // a turn answers what became of it.
+        result: tilo_actions::ResultSpec::Json {
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "taken": {"type": "boolean"},
+                    "why": {"type": "string"},
+                },
+                "required": ["taken"],
+            }),
+        },
         ..ActionContract::default()
     };
     ActionDescriptor {

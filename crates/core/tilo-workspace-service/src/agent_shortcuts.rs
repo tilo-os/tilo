@@ -3,7 +3,7 @@
 //! The workspace's record of its agents saves and removes it where an agent is made and
 //! retired; what answers the shortcut's step is the agents' own.
 
-use serde_json::{Value, json};
+use serde_json::json;
 use tilo_actions::ActionKey;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::params::{ActionParam, ParamType};
@@ -75,12 +75,6 @@ pub fn moderation_shortcut_id(agent: &str) -> String {
 /// tilolang Discussion, whose comments an agent answers a task with.
 pub const DISCUSSION: &str = "so.tilo.lang.discussion";
 
-/// The agent `agent` of `person` as a direct conversation's `people` holds it: a value, not the
-/// JSON text a field keeps.
-fn member_of(agent: &str, person: &str) -> Value {
-    json!({"member": tilo_action_policy::MemberId::agent(agent, person)})
-}
-
 /// What names the agent `agent` of `person` wherever a resource holds it: inside a mention in
 /// rich text (the mark's value is the member's id as JSON), and inside an actor a field holds (a
 /// task's assignee, the person of a direct conversation), each kept as JSON text.
@@ -106,7 +100,8 @@ pub fn names(member: &tilo_action_policy::MemberId) -> String {
 /// the agent's turn on the change that fired it: a message that mentions it, a message in its
 /// direct conversation, a task assigned to it, and a message that arrived in the workspace's
 /// mailbox. Each leaves out the agent's own changes and a copy of one carried back from
-/// elsewhere, so its answer never starts it again.
+/// elsewhere, so its answer never starts it again; a message its person's host hands it, written
+/// as the event's own step and not as the agent, does.
 #[must_use]
 pub fn triggers(agent: &str, person: &str, name: &str) -> Shortcut {
     let who = (agent, person);
@@ -122,12 +117,14 @@ pub fn triggers(agent: &str, person: &str, name: &str) -> Shortcut {
                 "item.body",
                 Test::Has(json!(named(agent, person))),
             ),
-            // A message in its direct conversation: it is one of the conversation's people.
+            // A message in its direct conversation: it is one of the conversation's people,
+            // kept as the set's actor text. Its own answer, made by the agent, leaves it out; an
+            // event's instruction, made by the event's own run, is a message to answer.
             watch(
                 who,
                 MESSAGE,
                 "item.$in.people",
-                Test::Has(member_of(agent, person)),
+                Test::Has(json!(named(agent, person))),
             ),
             // A reply in a thread of its direct conversation: the thread is nested in the
             // conversation, whose people it is among.
@@ -135,7 +132,7 @@ pub fn triggers(agent: &str, person: &str, name: &str) -> Shortcut {
                 who,
                 MESSAGE,
                 "item.$in.$in.people",
-                Test::Has(member_of(agent, person)),
+                Test::Has(json!(named(agent, person))),
             ),
             // A task given to it.
             watch(
@@ -363,5 +360,75 @@ mod tests {
                 shortcut.id
             );
         }
+    }
+
+    /// A message in the agent's direct conversation starts its turn: another member's, and one
+    /// its person's host hands it — an event's instruction is written by the event's own run, not
+    /// by the agent. The agent's own answer, and a copy of it carried back from elsewhere, do not.
+    #[test]
+    fn a_message_in_an_agents_direct_conversation_starts_its_turn_but_not_its_own_answer() {
+        use tilo_automation::dispatch::DocumentEvent;
+
+        let shortcut = triggers("scout", "person", "Scout");
+        let TriggerSpec::ResourceChanged { filter, .. } = &shortcut.triggers[1] else {
+            panic!(
+                "the second trigger is a message in its direct conversation: {:?}",
+                shortcut.triggers[1]
+            );
+        };
+        let change = |actor: tilo_action_policy::Acting, origin: Option<String>| DocumentEvent {
+            workspace: "workspace".into(),
+            record: "root/direct".into(),
+            app: CHAT.into(),
+            kind: MESSAGE.into(),
+            change: "0".repeat(64),
+            actor,
+            did: tilo_actions::entry::Did::verb(ActionKey::new(CHAT, MESSAGE, "send"), []),
+            invoked: None,
+            arguments: serde_json::Map::new(),
+            item: None,
+            before: None,
+            // A conversation's people as its set keeps them: each the actor's JSON text.
+            after: Some(json!({"$in": {"people": [serde_json::to_string(
+                &tilo_action_policy::Actor::Member(tilo_action_policy::MemberId::agent(
+                    "scout", "person",
+                )),
+            )
+            .unwrap_or_default()]}})),
+            caused_by: None,
+            origin,
+            incoming_message: false,
+            housekeeping: false,
+            shortcut: None,
+            invocation: None,
+        };
+        let fires = |event: &DocumentEvent| filter.holds(&ChangeFilter::subject(event));
+        let host = tilo_action_policy::Acting::automation("call-home");
+        assert!(
+            fires(&change(host, None)),
+            "the run an event's instruction is written by starts its turn"
+        );
+        assert!(
+            fires(&change(tilo_action_policy::Acting::person("person"), None)),
+            "a person writing to it starts its turn as it did"
+        );
+        assert!(
+            !fires(&change(
+                tilo_action_policy::Acting::agent("scout", "person"),
+                None
+            )),
+            "its own answer is no message to answer"
+        );
+        let carried_back = String::from_utf8_lossy(
+            &tilo_action_policy::MemberId::agent("scout", "person").actor_bytes(),
+        )
+        .into_owned();
+        assert!(
+            !fires(&change(
+                tilo_action_policy::Acting::person("person"),
+                Some(carried_back)
+            )),
+            "a copy of its own change carried back from elsewhere starts nothing"
+        );
     }
 }
