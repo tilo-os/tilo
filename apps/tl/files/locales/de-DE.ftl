@@ -215,7 +215,6 @@ d-q3fr2sid = Geändert
 
 d-mrkltxcn = Gehen
     .doc = Geht zum Ort `place` und liest ihn: einen Ordner, den Papierkorb, die zuletzt geöffneten Dateien oder die Apps.
-    .w-a-place-is-named-by-its = Ein Ort wird durch seinen Pfad benannt
 
 d-mrkltxcn-place = Ort
 
@@ -429,8 +428,6 @@ d-86n0vq62-naming = Benennung
 
 d-86n0vq62-typed = Getippt
 
-d-npbyxhoy = Gehen~present
-
 d-tnjafyxk = Zurück~present
 
 d-kkf4qwdb = Vorwärts~present
@@ -452,6 +449,7 @@ d-n9jkqy4o = Dateien
     .w-move-to-2 = Verschieben nach…
     .w-copy-to = Nach „{ $name }“ kopieren
     .w-copy-to-2 = Kopieren nach…
+    .w-open-a-folder-on-this-device = Ordner auf diesem Gerät öffnen
     .w-add-the-folder-shown-to-favorites = Den gezeigten Ordner zu Favoriten hinzufügen
     .w-new-folder = Neuer Ordner
     .w-how-the-folder-shows = Wie der Ordner erscheint
@@ -485,7 +483,6 @@ d-n9jkqy4o = Dateien
     .w-back = Zurück
     .w-forward = Vorwärts
     .w-up-one-folder = Einen Ordner nach oben
-    .w-home = Heimat
     .w-dismiss = Schließen
     .w-name-of-the-new-folder = Name des neuen Ordners
     .w-name-of-the-new-file = Name der neuen Datei
@@ -509,7 +506,6 @@ d-n9jkqy4o = Dateien
 
 d-z6cheebf = Orte
     .w-places = Orte
-    .w-workspace = Arbeitsbereich
     .w-drives = Laufwerke
     .w-favorites = Favoriten
     .w-folders = Ordner
@@ -588,6 +584,11 @@ d-g3zfg53a-path = Pfad
 
 d-dpvi52wp = Auswahl komprimieren~present
 
+d-qd4wg6kh = Ordner öffnen
+    .doc = Öffnet den Ordner, den die Person auf diesem Gerät ausgewählt hat: was der System-Dialog fragt, und die Referenz, die er antwortet, ist von da an ein Ort in der Seitenleiste, gelesen dort, wo das Gerät ihn hält.
+
+d-qd4wg6kh-folder = Ordner
+
 d-gcytlgzo = App öffnen
     .doc = Öffnet die App `a`, wie ein Druck auf ihre Zeile es tut.
 
@@ -599,6 +600,7 @@ d-0k4octol = Name von
     .w-trash = Papierkorb
     .w-recent = Zuletzt
     .w-applications = Programme
+    .w-files = Dateien
 
 d-gfdx17m7 = Größe von
     .w-b = { $n } B

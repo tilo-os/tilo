@@ -177,9 +177,9 @@ struct FnState {
     /// Whether the expression is the action `file.choose` runs, whose file fills the parameter the
     /// action leaves out.
     choosing: bool,
-    /// Whether the expression is the action `file.pick_folder` runs, whose folder's reference
+    /// Whether the expression is the action `file.choose_folder` runs, whose folder's reference
     /// fills a text parameter the action leaves out.
-    picking: bool,
+    choosing_folder: bool,
     /// The resource the call of an action at the span is made from (`ask(a).made_from(m)` in an
     /// action): the call it names runs as a change of its own, made from it.
     made_from: Option<(Span, Ex)>,

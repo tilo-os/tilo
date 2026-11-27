@@ -141,8 +141,9 @@ type TransferState {
 /// what they carry, and the folders this window has read. It is the reader's own, so two people
 /// at one workspace never turn each other's pages.
 type Session (readers: author) {
-    /// The place shown: a path, `~` for the home folder, or `trash`, `recent` or `applications`.
-    here: Text = "~"
+    /// The place shown: a folder of the workspace's tree by its path (`""` for the workspace's
+    /// own folder), a folder picked on this device, or `trash`, `recent` or `applications`.
+    here: Text = ""
     sort: SortBy = .name
     ascending: Bool = true
     /// Whether names starting with a dot show.
@@ -195,20 +196,12 @@ root files: Files
 
 default view files for Files
 
-/// A new Files starts with the places its sidebar offers.
+/// A new Files starts with the places its sidebar offers: the workspace's own folder, and the
+/// places this app keeps itself.
 initial action standard_places(f: Files) {
-    f.places.insert(Place(label: "Home", path: "~"))
+    f.places.insert(Place(label: "Files", path: "", group: "Places"))
     f.places.insert(Place(label: "Recent", path: "recent"))
     f.places.insert(Place(label: "Applications", path: "applications", group: "Places"))
-    f.places.insert(Place(label: "Desktop", path: "~/Desktop", group: "Folders"))
-    f.places.insert(Place(label: "Documents", path: "~/Documents", group: "Folders"))
-    f.places.insert(Place(label: "Downloads", path: "~/Downloads", group: "Folders"))
-    f.places.insert(Place(label: "Pictures", path: "~/Pictures", group: "Folders"))
-    f.places.insert(Place(label: "Music", path: "~/Music", group: "Folders"))
-    f.places.insert(Place(label: "Videos", path: "~/Videos", group: "Folders"))
-    f.places.insert(Place(label: "Remote", path: "~/Remote", group: "This computer"))
-    f.places.insert(Place(label: "Root", path: "/", group: "This computer"))
-    f.places.insert(Place(label: "Trash", path: "trash", group: "This computer"))
 }
 
 /// Opening Files reads the folder the person is in, unless this window has read it already.
@@ -219,10 +212,14 @@ opened action arrive(f: Files) uses files, time {
 
 /// Reads the place `place` into this window's listing for it: a folder's entries, this device's
 /// trash, or nothing for the places this app keeps itself.
+///
+/// A folder of the workspace's tree is not read here: the view follows it as the reading
+/// `files/folder~<path>`, which the workspace publishes from its own tree and keeps current as
+/// the tree changes, whoever changes it.
 action read_listing(f: Files, place: Text = "") uses files, time {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     let path = if place == "" { s.here } else { place }
-    if path == "recent" or path == "applications" {
+    if path == "recent" or path == "applications" or workspace_place(path) {
         return
     }
     let listing = s.listings.find(l -> l.path == path) ?? s.listings.insert(Listing(path: path))
@@ -335,9 +332,9 @@ fn previews_waiting(s: Session) -> Bool {
     } else { false }
 }
 
-/// Goes to the place `place`, reading it: a folder, the trash, the recent files or the apps.
+/// Goes to the place `place`, reading it: a folder of the workspace's tree, one picked on this
+/// device, the trash, the recent files or the apps.
 action go(f: Files, place: Text) uses files, time {
-    require place != "" "A place is named by its path"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     if s.here != place {
         s.went = s.went + [s.here]
@@ -382,7 +379,7 @@ action forward(f: Files) uses files, time {
 action up(f: Files) uses files, time {
     require not at_top(f) "This is already the top folder"
     let s = f.sessions.first() ?? f.sessions.insert(Session())
-    go(f, if folder_place(s.here) { parent_of(s.here) } else { "~" })
+    go(f, if folder_place(s.here) { parent_of(s.here) } else { home_place() })
 }
 
 /// Shows `path` in this window: the folder itself when it is one, and the folder that holds it with
@@ -391,7 +388,7 @@ action up(f: Files) uses files, time {
 action show(f: Files, path: Text) uses files, time {
     let s = f.sessions.first() ?? f.sessions.insert(Session())
     if path == "" {
-        go(f, "~")
+        go(f, home_place())
         return
     }
     match File.stat(path) {
@@ -944,6 +941,18 @@ action open_drive(f: Files, drive_id: Text) uses files, time {
     }
 }
 
+/// Opens the folder the person picked on this device: what the system's chooser asks, and the
+/// reference it answers is a place in the sidebar from then on, read where the device keeps it.
+action open_picked_folder(f: Files, folder: Text) uses files, time {
+    if folder == "" {
+        return
+    }
+    if f.places.find(p -> p.path == folder) == .none {
+        f.places.insert(Place(label: name_of(folder), path: folder, group: "This computer"))
+    }
+    go(f, folder)
+}
+
 /// Renames the entry at `path` to `name` in its own folder.
 action rename_entry(f: Files, path: Text, name: Text) uses files, time (icon: .pencil) {
     require name.trim() != "" "A name cannot be empty"
@@ -1203,12 +1212,12 @@ fn can_go_forward(f: Files) -> Bool {
 
 /// Whether this window shows the top folder.
 fn at_top(f: Files) -> Bool {
-    if let s = f.sessions.first() { s.here == "/" } else { true }
+    if let s = f.sessions.first() { s.here == "/" or s.here == "" } else { true }
 }
 
-/// The person's home folder: where Files opens, and the top of the places the system keeps.
+/// The workspace's own folder: where Files opens, and the top of the places the workspace keeps.
 fn home_place() -> Text {
-    "~"
+    ""
 }
 
 /// Whether `place` is a folder this app can make things in.
@@ -1216,10 +1225,20 @@ fn folder_place(place: Text) -> Bool {
     place != "trash" and place != "recent" and place != "applications"
 }
 
-/// The folder above `path`, or `/` for the top, and `~` for the places directly in the home
-/// folder, which are named from it rather than from `/`.
+/// Whether `place` names a folder of the workspace's tree: a path in it, from the workspace's own
+/// folder (`""`) down. A folder on this device is named by its path from `/`, or by what the
+/// person picked, which is `/run/tilo/chosen/…`; those are read where the device keeps them.
+fn workspace_place(place: Text) -> Bool {
+    folder_place(place) and not place.starts_with("/") and not place.starts_with("~")
+}
+
+/// The folder above `path`: the folder that holds it in the workspace's tree, or the folder above
+/// a path on this device. `""` is the workspace's own folder, and `/` the top of the device.
 fn parent_of(path: Text) -> Text {
-    if path == "/" or path == "" or path == "~" {
+    if workspace_place(path) {
+        let parts = path.split("/").filter(p -> p != "")
+        if parts.len() <= 1 { "" } else { parts.take(parts.len() - 1).join("/") }
+    } else if path == "/" or path == "" or path == "~" {
         "/"
     } else {
         let home = path.starts_with("~")
@@ -1231,12 +1250,15 @@ fn parent_of(path: Text) -> Text {
     }
 }
 
-/// What `path` is called: its last part, `Root` for `/` and `Home` for `~`.
+/// What `path` is called: its last part, `Files` for the workspace's own folder, `Root` for `/`
+/// and `Home` for `~`.
 fn name_of(path: Text) -> Text {
     if path == "/" {
         "Root"
     } else if path == "~" {
         "Home"
+    } else if path == "" {
+        "Files"
     } else if path == "trash" {
         "Trash"
     } else if path == "recent" {
@@ -1250,7 +1272,9 @@ fn name_of(path: Text) -> Text {
 
 /// The path of a folder `name` inside `folder`.
 fn join(folder: Text, name: Text) -> Text {
-    if folder == "/" {
+    if folder == "" {
+        name
+    } else if folder == "/" {
         "/" + name
     } else if folder.ends_with("/") { folder + name } else { folder + "/" + name }
 }
@@ -1345,10 +1369,10 @@ fn size_of(n: Int) -> Text {
     } else if n < 1000000000 { "{n / 1000000} MB" } else { "{n / 1000000000} GB" }
 }
 
-/// The entries of `l` the person may see, named `found` where they searched, in the order the
+/// The entries `entries` the person may see, named `found` where they searched, in the order the
 /// window sorts them: folders above files.
-fn shown(l: Listing, s: Session, found: Text) -> List<Entry> {
-    let visible = l.entries.filter(e -> not e.hidden or s.hidden)
+fn shown(entries: List<Entry>, s: Session, found: Text) -> List<Entry> {
+    let visible = entries.filter(e -> not e.hidden or s.hidden)
     let asked = found.trim().lower()
     let named = if asked == "" {
         visible
@@ -1358,6 +1382,28 @@ fn shown(l: Listing, s: Session, found: Text) -> List<Entry> {
     let folders = ordered(named.filter(e -> e.folder), s.sort, s.ascending)
     let files = ordered(named.filter(e -> not e.folder), s.sort, s.ascending)
     [folders, files].flat_map(x -> x)
+}
+
+/// The folder of the workspace's tree at `path`, as the workspace publishes it: what it holds and
+/// where its next page starts, followed as the tree changes. The view reads it as it draws, so
+/// the window shows the workspace's folder, never a copy a keystroke old.
+fn workspace_folder(path: Text) -> workspace.Folder {
+    resource("files/folder~{path}", of: workspace.Folder)
+}
+
+/// What the folder of the workspace's tree at `path` holds, as this window's entries.
+fn workspace_entries(path: Text) -> List<Entry> {
+    let folder = workspace_folder(path)
+    folder.entries.map(
+        e -> Entry(
+            name: e.name,
+            path: e.path,
+            folder: e.kind == "folder",
+            size: e.size ?? 0,
+            modified: e.changed,
+            hidden: e.name.starts_with("."),
+        ),
+    )
 }
 
 /// The sort key of one entry as text, so a folder orders the way the person asked whatever it
@@ -1437,7 +1483,12 @@ view files(f: Files) {
     state name: Text = ""
     if let s = f.sessions.first() {
         let listing = place_listing(s)
-        let visible: List<Entry> = if let l = listing { shown(l, s, found) } else { [] }
+        // A folder of the workspace's tree is read from the workspace's own reading, so the
+        // window shows the workspace's folder as it stands now, whoever last changed it.
+        let tree = workspace_place(s.here)
+        let visible: List<Entry> = if tree {
+            shown(workspace_entries(s.here), s, found)
+        } else if let l = listing { shown(l.entries, s, found) } else { [] }
         // The previews of the pictures in the folder shown fill in while the window shows it.
         if previews_waiting(s) {
             every 1s: preview_step(f)
@@ -1455,6 +1506,14 @@ view files(f: Files) {
             // A file dragged in from another app lands in the folder shown, under its own name.
             on drop(files: List<File>): import_dropped(f, files)
             sidebar_actions: {
+                ui.Button(
+                    "Open a folder on this device",
+                    icon: .folder_open,
+                    icon_only: true,
+                    role: .plain,
+                ) {
+                    on press: file.choose_folder(open_picked_folder(f))
+                }
                 ui.Button(
                     "Add the folder shown to Favorites",
                     icon: .star,
@@ -1499,6 +1558,28 @@ view files(f: Files) {
                         recent_files(f, s)
                     } else if s.here == "applications" {
                         applications(f)
+                    } else if tree {
+                        if let why = unreadable(workspace_folder(s.here)) {
+                            ui.EmptyState(
+                                "Couldn’t open “{name_of(s.here)}”",
+                                icon: .folder,
+                                message: why,
+                                error: true,
+                            ) {
+                                on act: refresh(f)
+                            }
+                        } else if visible.is_empty() {
+                            ui.EmptyState(
+                                if found == "" {
+                                    "This folder is empty"
+                                } else { "Nothing here matches “{found}”" },
+                                icon: .folder,
+                            )
+                        } else if s.grid {
+                            entry_grid(f, s, visible)
+                        } else {
+                            entry_list(f, s, visible, naming, name)
+                        }
                     } else if let l = listing {
                         if l.error != "" {
                             ui.EmptyState(
@@ -1571,20 +1652,6 @@ view places(f: Files, s: Session) {
                     } else if place.path == "~/Remote" { .cloud } else { .folder },
                 ) {
                     on select: go(f, place.path)
-                }
-            }
-        }
-        let spaces = device.folders.folders.filter(w -> w.path != "")
-        if not spaces.is_empty() {
-            ui.NavSection("Workspace") {
-                for w in spaces {
-                    ui.NavItem(
-                        w.path,
-                        if w.name != "" { w.name } else { "Workspace" },
-                        icon: .cloud,
-                    ) {
-                        on select: go(f, w.path)
-                    }
                 }
             }
         }
@@ -1714,8 +1781,8 @@ view path_bar(f: Files, s: Session, typing: State<Bool>, typed: State<Text>) {
             }
             ui.Breadcrumb(root_icon: .home) {
                 on edit: set(typed, s.here).then(set(typing, true))
-                ui.BreadcrumbSegment("Home") {
-                    on activate: go(f, "~")
+                ui.BreadcrumbSegment("Files") {
+                    on activate: go(f, home_place())
                 }
                 for step in crumbs(s.here) {
                     ui.BreadcrumbSegment(step.label) {

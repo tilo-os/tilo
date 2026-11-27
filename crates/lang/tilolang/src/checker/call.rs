@@ -538,12 +538,14 @@ impl Checker<'_> {
         // An action a view applies may leave out its last parameters: running it opens its form,
         // which asks for them. A `File` parameter is no form's: a chooser fills it.
         let choosing = self.st.choosing;
+        let choosing_folder = self.st.choosing_folder;
         let trailing_none = |rest: &[Option<Ex>]| rest.iter().all(Option::is_none);
         let filled_by_a_chooser = |at: usize| {
-            choosing
+            (choosing
                 && params
                     .get(at)
                     .is_some_and(|p| p.ty == Ty::File || p.ty == Ty::List(Box::new(Ty::File)))
+                || choosing_folder && params.get(at).is_some_and(|p| p.ty == Ty::Text))
                 && slots.get(at..).is_some_and(trailing_none)
         };
         let asked = |at: usize| {
@@ -557,6 +559,7 @@ impl Checker<'_> {
                             || p.ty.asked_by_form()
                             || p.ty == Ty::File
                             || p.ty == Ty::List(Box::new(Ty::File))
+                            || choosing_folder && p.ty == Ty::Text
                     })
                 })
         };
@@ -1933,8 +1936,10 @@ impl Checker<'_> {
                     // The action the chooser runs is applied with the file it fills: its first
                     // parameter left out that is one.
                     self.st.choosing |= choosing;
+                    self.st.choosing_folder = folder;
                     let applied = self.expr_as(&a.value, &Ty::Action);
                     self.st.choosing = false;
+                    self.st.choosing_folder = false;
                     action = Some(applied);
                 }
                 None => {
