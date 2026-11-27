@@ -544,28 +544,26 @@ fn the_window_shared(
     let both = [sharer, viewer];
     bring_to_front(sharer, workspace);
     bring_to_front(viewer, workspace);
-    // The pictures travel the workspace's live session: each device is in it and says so, and both
-    // run through the one device that relays the workspace.
-    for device in both {
-        eventually(
-            &format!(
-                "{} says the live session of {workspace} is open",
-                device.label
-            ),
-            Duration::from_secs(60),
-            workspace,
-            &both,
-            || {
-                let live_session = live_session_of(device, workspace);
-                live_session["state"] == json!("open") && live_session["waiting_for"] == json!("")
-            },
-        );
-    }
-    assert_eq!(
-        live_session_of(sharer, workspace)["relay"],
-        live_session_of(viewer, workspace)["relay"],
-        "both devices' live sessions run through one relay\n{}",
-        report(workspace, &both)
+    // The pictures travel the workspace's live session: each device is in it, says so, and the two
+    // readings name one relay. A device that has just come back reads open before the relay it
+    // joined is the one the others are in, so the wait is for the reading asserted below.
+    eventually(
+        &format!(
+            "{} and {} are in {workspace}'s live session through one relay",
+            sharer.label, viewer.label
+        ),
+        Duration::from_secs(60),
+        workspace,
+        &both,
+        || {
+            let here = live_session_of(sharer, workspace);
+            let there = live_session_of(viewer, workspace);
+            here["state"] == json!("open")
+                && here["waiting_for"] == json!("")
+                && there["state"] == json!("open")
+                && there["waiting_for"] == json!("")
+                && here["relay"] == there["relay"]
+        },
     );
     let window = sharer.window(NOTES, title);
     eventually(
