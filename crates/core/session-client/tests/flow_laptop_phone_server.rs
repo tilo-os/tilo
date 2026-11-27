@@ -330,6 +330,21 @@ async fn flow_phone_joins_like_any_other_device() {
     // The phone's daemon reads its places from the process's environment: set before it starts.
     let _home = phone::Home::new();
     let f = Box::pin(rig()).await;
+    // The server the person's ticket signed in answers their devices as the person: what the
+    // workspace's host keeps for them is theirs to read, with no root of theirs on the server.
+    let providers = flow::ask(
+        &f.client(&f.laptop_session, &f.laptop, "laptop"),
+        f.work_id(),
+        tilo_workspace_records::models::PROVIDER,
+        tilo_workspace_records::models::RESOURCE,
+        "list",
+        json!({}),
+    )
+    .await;
+    assert!(
+        providers.is_ok(),
+        "the server answers the laptop's person: {providers:?}"
+    );
     let entry = tilo_device_identity::login::Entry {
         workspace: f.work.clone(),
         workspace_name: Some("Work".into()),
