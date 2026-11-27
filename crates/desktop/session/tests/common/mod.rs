@@ -1660,6 +1660,16 @@ impl Api {
         }
     }
 
+    /// The API at `socket` in `workspace`: one a program of the person's names, as it names the
+    /// first its account lists.
+    pub fn in_workspace(socket: &Path, workspace: String) -> Self {
+        Self {
+            socket: socket.to_owned(),
+            workspace,
+            program_session: None,
+        }
+    }
+
     /// Ask the workspace's `route` (`resources?path=…`,
     /// `resources/search/actions/find`), posting `body` when there
     /// is one, and answer nothing here: [`Asked::answer`] waits for it.

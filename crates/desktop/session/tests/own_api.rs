@@ -99,7 +99,9 @@ fn a_sections_setter_is_typed_by_the_sections_surface_at_the_sessions_api() {
         vec![Box::new(settings_sections::service::SettingsService::new())]
     });
     served(&mut session, &socket);
-    let api = crate::common::Api::open(&mut session, root.path());
+    // The workspace a generated SDK acts in: the first the person's account lists.
+    let workspace = held_workspace(&mut session, &socket);
+    let api = crate::common::Api::in_workspace(&socket, workspace);
     // What `tilo sdk gen` writes the sections' types for: their compiled surface.
     let kept = include_bytes!("../../../desktop/settings-sections/published.json");
     collab_types::surface::SurfaceFile::compiled(kept)
@@ -125,6 +127,14 @@ fn a_sections_setter_is_typed_by_the_sections_surface_at_the_sessions_api() {
         )
         .answer(session)
     };
+    // The sections reach the workspace once the session publishes them to its daemon: the
+    // program sets one once the session holds it.
+    for address in [&appearance, &power] {
+        crate::common::wait_for(&mut session, "the section in the session", |session| {
+            session.settle_services();
+            session.read(address)
+        });
+    }
     for (address, setter, value) in [
         (&appearance, "set-mode", json!("light")),
         (&power, "set-blank-minutes", json!(10)),
@@ -164,7 +174,7 @@ fn a_sections_setter_is_typed_by_the_sections_surface_at_the_sessions_api() {
     );
 }
 
-/// A program the person said yes to reaches what this device's settings hold, but its yes covers
+/// A program the person said yes to reaches what this device's settings keep, but its yes covers
 /// the program, never each change it makes: one that weakens the device's lock (never locking it)
 /// still raises the system's own question, named for the program. The person's no refuses the
 /// call and changes nothing, and the program answering its own question is refused: only the
@@ -182,9 +192,6 @@ fn a_change_a_confirmed_program_makes_to_the_device_still_asks_the_person() {
     let api = crate::common::Api::in_workspace(&socket, workspace);
     let power = tilo_app::framework::section_address("power", None);
     let before = crate::common::wait_for(&mut session, "the device's power section", |session| {
-        api.send(&format!("resources/{power}"), None)
-            .answer(session)
-            .ok()?;
         session.settle_services();
         session.read(&power)?.get("lock_minutes").cloned()
     });
@@ -518,19 +525,42 @@ fn a_program_nobody_confirmed_is_refused_and_acts_as_no_one() {
     served(&mut session, &api);
 
     let mut connecting = asking(&program, &api);
-    // Whatever the person is asked about it, they do not say yes.
-    until(&mut session, "the program to be answered", |_| {
-        for question in crate::common::person_asked_now() {
-            assert_eq!(question.kind, "session.api-program", "{question:?}");
-            assert_eq!(
-                question.details["program"],
-                json!(program.display().to_string()),
-                "the person is asked about the program that connected: {question:?}"
-            );
-            crate::common::person_declines(&question.handle);
-        }
-        connecting.try_wait().expect("the program runs").is_some()
-    });
+    // The person is asked about the program that connected, at the path it runs from, and does
+    // not say yes. Questions about other programs (this test's own) are not this one.
+    let asked =
+        crate::common::wait_for(&mut session, "the program's question", |_| {
+            // A program that ended was answered without its question, or never asked: what it said
+            // is why.
+            if connecting.try_wait().expect("the program runs").is_some() {
+                let ran = connecting.stdout.take().zip(connecting.stderr.take()).map(
+                    |(mut out, mut err)| {
+                        use std::io::Read as _;
+                        let mut said = String::new();
+                        let _ = out.read_to_string(&mut said);
+                        let _ = err.read_to_string(&mut said);
+                        said
+                    },
+                );
+                panic!(
+                    "the program ended before the person was asked about it: {}; asked: {:?}",
+                    ran.unwrap_or_default(),
+                    crate::common::person_asked_now()
+                        .iter()
+                        .map(|question| (&question.kind, &question.details))
+                        .collect::<Vec<_>>()
+                );
+            }
+            crate::common::person_asked_now()
+                .into_iter()
+                .find(|question| {
+                    question.kind == "session.api-program"
+                        && question.details["program"] == json!(program.display().to_string())
+                })
+        });
+    assert!(
+        crate::common::person_declines(&asked.handle),
+        "the question waits for its answer"
+    );
     let said = told(&mut session, connecting);
     assert_eq!(
         said, "refused You didn’t let this program act as you. (not_allowed)",
