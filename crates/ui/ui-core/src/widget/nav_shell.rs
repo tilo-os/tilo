@@ -403,8 +403,9 @@ struct ColumnFit {
     /// The index of the first action that belongs in the menu: the row shows its everyday actions
     /// and the menu holds the rest. `None` while they all fit.
     menu_from: Option<usize>,
-    /// The index of the action the row never gives up: the one the app marks primary, or the
-    /// first that stands in the row rather than in its menu.
+    /// The index of the action the row never gives up: the one the app marks primary, the last
+    /// action that is a control rather than a button, or the first that stands in the row rather
+    /// than in its menu.
     primary: Option<usize>,
     /// How many actions stand in the row; the rest are in the More menu.
     /// `None` until the first layout decides.
@@ -3692,6 +3693,15 @@ fn fit_of(header: &Header) -> (Vec<bool>, Vec<bool>, Option<usize>, Option<usize
                 .iter()
                 .position(|action| button_of(&**action).is_none_or(|button| !button.is_menu_only()))
         });
+    // A control — a view switcher, a stepper, anything the app hosts in the row rather than a
+    // button — has no row of its own in the menu: it fits itself to the row instead, so it keeps
+    // its place and the buttons before it give way first. The row stands its controls from the
+    // start, so keeping the last one keeps every one before it.
+    let control = header
+        .actions
+        .iter()
+        .rposition(|action| button_of(&**action).is_none());
+    let primary = [primary, control].into_iter().flatten().max();
     (capable, compact_now, menu_from, primary)
 }
 

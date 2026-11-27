@@ -362,6 +362,56 @@ tilo_test_env::scenario! {
         h.send(&tilo_ui_base::synthetic_input::cursor_moved(10.0, 300.0));
         assert!(deleted.get(), "the chosen action ran through its api");
     }
+
+    // A control the app hosts in its row — a view switcher — has no row of its own in the menu,
+    // so the row keeps it and the buttons before it give way instead. The row shrinks its
+    // buttons to their icons and keeps the switcher, where its shares stand.
+    phase a_control_in_the_row_keeps_its_place_as_the_buttons_give_way;
+    {
+        let actions = || {
+            vec![
+                labelled("add", "Add a book", Icon::FilePlus),
+                labelled("sort", "Sort", Icon::ArrowDownWideNarrow),
+                labelled("hide", "Hide finished", Icon::EyeOff),
+                Box::new(
+                    ToggleGroup::new(
+                        vec![
+                            Segment::new("Shelf"),
+                            Segment::new("Settings"),
+                            Segment::new("Found online"),
+                        ],
+                        usize::MAX,
+                    )
+                    .on_choose("showing", |_| {}),
+                ) as Element,
+            ]
+        };
+        let mut h = harness(titled_content(actions()), 1280, 700, Theme::dark());
+        settle(&mut h, 1280, 700);
+        assert!(
+            part_rect(&h, Part::Action(Column::Content, 3)).width() > 0.0,
+            "the switcher stands in the row"
+        );
+        assert!(
+            part_rect(&h, Part::More(Column::Content)).width() <= 0.0,
+            "nothing is behind the row's menu"
+        );
+
+        let mut h = harness(titled_content(actions()), 660, 700, Theme::dark());
+        settle(&mut h, 660, 700);
+        let switcher = part_rect(&h, Part::Action(Column::Content, 3));
+        assert!(
+            switcher.width() > switcher.height(),
+            "the switcher keeps its place in a narrow row ({switcher:?})"
+        );
+        let shown = h.root::<NavShell>().test_shown_actions(Column::Content);
+        assert_eq!(shown, 4, "the row gave its buttons' labels up before it gave up the switcher");
+        let add = part_rect(&h, Part::Action(Column::Content, 0));
+        assert!(
+            (add.width() - add.height()).abs() < 1.0,
+            "a button gave its label up instead ({add:?})"
+        );
+    }
 }
 
 tilo_test_env::scenario! {
