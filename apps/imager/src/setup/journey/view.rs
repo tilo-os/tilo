@@ -464,6 +464,9 @@ impl InstallerPreview {
     }
 
     pub(super) fn composition(&self, theme: &Theme) -> Box<dyn Widget> {
+        if let Some(native) = &self.native {
+            return self.native_page(native);
+        }
         if self.full_os_host && self.live {
             return self.full_os_host_view();
         }

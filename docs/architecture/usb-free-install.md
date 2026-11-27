@@ -484,7 +484,7 @@ that reads and writes firmware state is `tilo-default-start`, started as root by
   mode. The destructive round trip needs a Windows guest image on a KVM runner.
   Until that exists, Windows support stays **unverified**.
 
-The product check in `setup/view.rs` enables Full Tilo only when all of the
+The product check in `setup/journey/native.rs` enables Full Tilo only when all of the
 following hold: the probe passes, the catalog contains an internal release for
 the host architecture, and the build was produced with `TILO_IMAGER_INTERNAL_INSTALL=1`,
 which is set only by release jobs whose round trip passed. Development builds can

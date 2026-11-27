@@ -134,7 +134,6 @@ pub(super) struct InternalDownloadFlow {
     token: Option<Token>,
     presentation: DownloadPresentation,
     pending: Option<PendingCommand>,
-    revision: u64,
     staging: Option<StagingLink>,
     consumed: bool,
     #[cfg(test)]
@@ -164,7 +163,6 @@ impl InternalDownloadFlow {
             token: None,
             presentation: DownloadPresentation::default(),
             pending: None,
-            revision: 0,
             staging: Some(staging),
             consumed: false,
             #[cfg(test)]
@@ -190,7 +188,6 @@ impl InternalDownloadFlow {
             token: None,
             presentation: DownloadPresentation::default(),
             pending: None,
-            revision: 0,
             staging: None,
             consumed: false,
             catalogs: VecDeque::from([Vec::new()]),
@@ -219,7 +216,6 @@ impl InternalDownloadFlow {
             token: None,
             presentation: DownloadPresentation::default(),
             pending: None,
-            revision: 0,
             staging: None,
             consumed: false,
             catalogs: catalogs.into(),
@@ -328,7 +324,6 @@ impl InternalDownloadFlow {
 
     pub(super) fn set_capabilities(&mut self, capabilities: Capabilities) {
         self.capabilities = capabilities;
-        self.revision = self.revision.wrapping_add(1);
     }
 
     pub(super) fn is_ready(&self) -> bool {
@@ -584,7 +579,6 @@ impl InternalDownloadFlow {
         self.pending = Some(pending);
         self.presentation.pending = true;
         self.presentation.title_key = title_key;
-        self.revision = self.revision.wrapping_add(1);
     }
 
     fn sync_current_status(&mut self) -> bool {
@@ -623,7 +617,6 @@ impl InternalDownloadFlow {
             return false;
         }
         self.presentation = next;
-        self.revision = self.revision.wrapping_add(1);
         true
     }
 
@@ -633,10 +626,6 @@ impl InternalDownloadFlow {
 
     pub(super) fn presentation(&self) -> &DownloadPresentation {
         &self.presentation
-    }
-
-    pub(super) fn revision(&self) -> u64 {
-        self.revision
     }
 
     pub(super) fn has_pending_operation(&self) -> bool {

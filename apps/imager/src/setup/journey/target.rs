@@ -440,7 +440,10 @@ impl Target {
             body = body.push(Box::new(self.identity_section(commands)));
         }
         if let Some(report) = self.effective_report() {
-            for section in crate::setup::view::another_computer_report_sections(&report) {
+            for section in crate::setup::support_report_view::sections(
+                &report,
+                crate::setup::support_report_view::Placement::AnotherComputer,
+            ) {
                 body = body.push(section);
             }
         }

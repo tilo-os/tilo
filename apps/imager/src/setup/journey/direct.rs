@@ -1,20 +1,6 @@
 //! The direct route: Full Tilo installed beside the system the person is using.
-use super::{Destination, InstallerPreview, InstallerPreviewEffect, Page};
-use ui::widget::{ButtonRole, Row};
-
-pub(super) struct Direct {
-    pub active: bool,
-    pub navigation: tilo_ui_base::LocalState<bool>,
-}
-
-impl Default for Direct {
-    fn default() -> Self {
-        Self {
-            active: false,
-            navigation: tilo_ui_base::LocalState::new(false),
-        }
-    }
-}
+use super::native::NativeSetup;
+use super::{Destination, InstallerPreview, Page};
 
 impl InstallerPreview {
     /// The reviewed, secret-free installation preferences: the person's
@@ -167,33 +153,15 @@ impl InstallerPreview {
             .and_then(|plan| plan.as_ref().ok())
             .cloned()
             .ok_or("installer-preview-storage-unavailable")?;
-        let child =
-            crate::setup::view::SetupApp::from_guided_review(crate::setup::view::ReviewedFullOs {
+        let native =
+            NativeSetup::from_guided_review(crate::setup::internal_install_flow::ReviewedFullOs {
                 facts,
                 plan,
                 profile,
                 deferred: true,
             })
             .map_err(|_| "installer-preview-direct-review-unavailable")?;
-        let navigation = child.guided_navigation_guard();
-        let child = crate::setup::view::setup_window(child, self.port.child(), self.live);
-        let back = self
-            .button(
-                "installer.back",
-                "installer-preview-back",
-                InstallerPreviewEffect::BackInPreview,
-            )
-            .role(ButtonRole::Plain)
-            .enabled_from(&navigation);
-        self.composed = Some(Box::new(
-            crate::layout::stack()
-                .push(child)
-                .push(Box::new(Row::new().push(Box::new(back)))),
-        ));
-        self.direct.navigation = navigation;
-        self.direct.active = true;
-        self.composition_replaced = true;
-        self.dirty = false;
+        self.open_native(native, false);
         Ok(())
     }
 }
@@ -277,7 +245,7 @@ mod tests {
                 preview.prepare_direct(),
                 Err("installer-preview-storage-unavailable")
             );
-            assert!(!preview.direct.active);
+            assert!(preview.native.is_none());
             preview.journey.edit("storage").unwrap();
             assert_eq!(preview.journey.page, Page::Storage);
             assert!(preview.journey.saving_edit());
@@ -347,7 +315,7 @@ mod tests {
             );
             assert_eq!(preview.journey.device_name, "Chosen name");
             assert_eq!(preview.journey.password, "private chosen password");
-            assert!(!preview.direct.active);
+            assert!(preview.native.is_none());
         }
 
         phase chosen_device_name_reaches_the_media_profile;

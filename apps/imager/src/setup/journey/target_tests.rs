@@ -109,8 +109,7 @@ tilo_test_env::scenario! {
         assert_eq!(preview.journey.page, Page::Target);
         assert!(preview.journey.password.is_empty());
         assert!(preview.storage.facts.is_none());
-        assert!(!preview.compatibility.pending);
-        assert!(!preview.direct.active);
+        assert!(preview.native.is_none());
 
         for (field, value) in [
             ("manufacturer", "Prepared Vendor"),
@@ -181,7 +180,7 @@ tilo_test_env::scenario! {
             preview.apply(InstallerPreviewEffect::PrepareUsb),
             Err("installer-preview-target-incomplete")
         );
-        assert!(!preview.direct.active);
+        assert!(preview.native.is_none());
         assert!(preview.storage.facts.is_none());
     }
 
@@ -425,7 +424,7 @@ tilo_test_env::scenario! {
             .apply(InstallerPreviewEffect::RecheckTargetHardware)
             .unwrap();
         assert_eq!(preview.journey.page, Page::Target);
-        assert!(!preview.compatibility.pending);
+        assert!(preview.native.is_none());
         assert!(preview.storage.facts.is_none());
         assert!(preview.target.ready());
         assert!(preview.target.projection()["error"].is_null());

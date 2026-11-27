@@ -7,19 +7,20 @@
 #[cfg(test)]
 mod back_navigation_tests;
 mod capabilities;
-mod compatibility;
 mod demo;
 mod scenarios;
 pub use scenarios::SCENARIOS;
-mod desktop;
 mod devices;
 mod direct;
 mod draft;
+mod handoff;
 mod machine;
 #[cfg(test)]
 mod machine_tests;
 mod migrate;
 mod model;
+mod native;
+mod native_page;
 #[cfg(test)]
 mod parity_tests;
 #[cfg(test)]
@@ -173,6 +174,88 @@ pub enum InstallerPreviewEffect {
     /// Start the preview again.
     #[effect(kind = "outside", returns)]
     RestartPreview,
+    #[effect(kind = "outside")]
+    #[effect(returns)]
+    #[effect(label = "imager-setup-action-install-desktop", on = crate::setup::desktop_journey::DesktopJourney)]
+    InstallDesktop,
+    /// Cancel the current package download; no native transaction is cancelled.
+    #[effect(kind = "outside")]
+    #[effect(returns, on = crate::setup::desktop_journey::DesktopJourney)]
+    CancelDesktopDownload,
+    /// Recheck Desktop availability without installing anything.
+    #[effect(returns, kind = "read", on = crate::setup::desktop_journey::DesktopJourney)]
+    RecheckDesktop,
+    #[effect(kind = "outside")]
+    #[effect(returns)]
+    #[effect(label = "imager-setup-action-start-download", on = crate::setup::actions::InternalSetup)]
+    StartInternalDownload,
+    #[effect(kind = "outside")]
+    #[effect(returns)]
+    #[effect(label = "imager-setup-action-pause-download", on = crate::setup::actions::InternalSetup)]
+    PauseInternalDownload,
+    #[effect(kind = "outside")]
+    #[effect(returns)]
+    #[effect(label = "imager-setup-action-resume-download", on = crate::setup::actions::InternalSetup)]
+    ResumeInternalDownload,
+    #[effect(kind = "outside")]
+    #[effect(returns)]
+    #[effect(label = "imager-setup-action-cancel-download", on = crate::setup::actions::InternalSetup)]
+    CancelInternalDownload,
+    #[effect(kind = "outside")]
+    #[effect(returns)]
+    #[effect(label = "imager-setup-action-discard-download", on = crate::setup::actions::InternalSetup)]
+    DiscardInternalDownload,
+    #[effect(kind = "outside")]
+    #[effect(returns)]
+    #[effect(label = "imager-setup-action-release-download", on = crate::setup::actions::InternalSetup)]
+    ReleaseInternalDownload,
+    #[effect(kind = "outside")]
+    #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-set-target-size", on = crate::setup::actions::InternalSetup)]
+    SetInternalTargetSize {
+        #[param("Tilo size in GiB")]
+        gib: i64,
+    },
+    #[effect(kind = "outside")]
+    #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-install", on = crate::setup::actions::InternalSetup)]
+    InstallInternal {
+        #[param("Digest of the reviewed installation plan")]
+        reviewed: String,
+    },
+    #[effect(kind = "outside")]
+    #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-restart", on = crate::setup::actions::InternalSetup)]
+    RestartInternal,
+    #[effect(kind = "outside")]
+    #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-restart-later", on = crate::setup::actions::InternalSetup)]
+    RestartInternalLater,
+    #[effect(kind = "outside")]
+    #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-retry", on = crate::setup::actions::InternalSetup)]
+    RetryInternal {
+        #[param("Id of the unfinished installer operation")]
+        operation_id: String,
+    },
+    #[effect(kind = "outside")]
+    #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-remove", on = crate::setup::actions::InternalSetup)]
+    RemoveInternal {
+        #[param("Id of the unfinished installer operation")]
+        operation_id: String,
+    },
+    #[effect(kind = "outside")]
+    #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-firmware-settings", on = crate::setup::actions::InternalSetup)]
+    InternalFirmwareSettings,
+    #[effect(kind = "outside")]
+    #[effect(returns)]
+    #[effect(label = "imager-setup-action-internal-disable-fast-startup", on = crate::setup::actions::InternalSetup)]
+    InternalDisableFastStartup,
+    #[effect(returns, kind = "read")]
+    #[effect(label = "imager-setup-action-internal-recheck", on = crate::setup::actions::InternalSetup)]
+    RecheckInternal,
 }
 
 type Commands = Rc<RefCell<Vec<InstallerPreviewEffect>>>;
@@ -260,7 +343,6 @@ pub struct InstallerPreview {
     capabilities: capabilities::GuidedCapabilities,
     commands: Commands,
     composed: Option<Box<dyn Widget>>,
-    composition_replaced: bool,
     dirty: bool,
     rect: Rect,
     cursor: ui::kurbo::Point,
@@ -283,14 +365,12 @@ pub struct InstallerPreview {
     field_values: [tilo_ui_base::LocalState<String>; 4],
     storage: storage::Storage,
     install_preferences: crate::model::InstallProfile,
-    direct: direct::Direct,
-    compatibility: compatibility::Compatibility,
+    /// The setup page the review handed over to, while it is shown.
+    native: Option<native::NativeSetup>,
     target: target::Target,
     sign_in: migrate::SignIn,
     /// The choices already kept on this computer, so an unchanged page writes nothing.
     remembered: Option<draft::Choices>,
-    desktop_review_pending: bool,
-    native_full_os_review_pending: bool,
     live: bool,
     demo: bool,
     media: Option<tilo_ui_base::LocalState<bool>>,
@@ -313,13 +393,10 @@ impl Default for InstallerPreview {
             field_values: std::array::from_fn(|_| tilo_ui_base::LocalState::new(String::new())),
             storage: storage::Storage::default(),
             install_preferences: crate::model::InstallProfile::default(),
-            direct: direct::Direct::default(),
-            compatibility: compatibility::Compatibility::default(),
+            native: None,
             target: target::Target::default(),
             sign_in: migrate::SignIn::default(),
             remembered: None,
-            desktop_review_pending: false,
-            native_full_os_review_pending: false,
             live: false,
             demo: false,
             media: None,
@@ -330,7 +407,6 @@ impl Default for InstallerPreview {
             full_os_host: cfg!(windows),
             commands: Rc::default(),
             composed: None,
-            composition_replaced: false,
             dirty: true,
             rect: Rect::ZERO,
             cursor: ui::kurbo::Point::ZERO,
@@ -545,21 +621,26 @@ impl InstallerPreview {
     }
 
     fn effect_page_admitted(&self, id: &str) -> bool {
+        if let Some(native) = &self.native {
+            return native.offers(id)
+                || matches!(id, "read-preview" | "back-in-preview" | "continue-preview");
+        }
+        if native::is_native(id) {
+            return false;
+        }
         if self.full_os_host && self.live {
-            if self.direct.active {
-                return matches!(id, "read-preview" | "back-in-preview");
-            }
-            return matches!(
-                id,
+            return match id {
                 "read-preview"
-                    | "choose-preview"
-                    | "choose-and-continue-preview"
-                    | "continue-preview"
-                    | "back-in-preview"
-                    | "prepare-usb"
-            );
+                | "choose-preview"
+                | "choose-and-continue-preview"
+                | "continue-preview"
+                | "back-in-preview" => true,
+                "prepare-usb" => self.journey.destination == Some(Destination::Another),
+                _ => false,
+            };
         }
         let page = self.journey.page;
+        let destination = self.journey.destination;
         match id {
             "set-preview-password" | "set-preview-confirmation" => page == Page::Password,
             "set-migrate-ticket" => page == Page::Migrate,
@@ -574,10 +655,18 @@ impl InstallerPreview {
             "check-storage" => page == Page::Storage && self.live,
             "toggle-storage-details" => page == Page::Storage && self.direct_route_enabled(),
             "set-storage-size" => page == Page::Storage,
-            "edit-preview"
-            | "prepare-usb"
-            | "prepare-direct-installation"
-            | "prepare-desktop-installation" => page == Page::Review,
+            "edit-preview" | "prepare-direct-installation" => page == Page::Review,
+            "prepare-usb" => {
+                page == Page::Review
+                    && self.live
+                    && matches!(
+                        destination,
+                        Some(Destination::Computer | Destination::Another)
+                    )
+            }
+            "prepare-desktop-installation" => {
+                page == Page::Review && self.live && destination == Some(Destination::Desktop)
+            }
             _ => true,
         }
     }
@@ -644,7 +733,17 @@ impl InstallerPreview {
         if self.demo && !demo::admits(&effect) {
             return Err("installer-demo-unavailable");
         }
-        if self.full_os_host && self.live && !self.direct.active {
+        if let Some(native) = &self.native {
+            return match effect {
+                InstallerPreviewEffect::ReadPreview => Ok(()),
+                InstallerPreviewEffect::BackInPreview if native.navigation_allowed() => {
+                    self.close_native()
+                }
+                InstallerPreviewEffect::BackInPreview => Err("installer-preview-identity-busy"),
+                _ => Err("installer-preview-wrong-page"),
+            };
+        }
+        if self.full_os_host && self.live {
             return self.apply_full_os_host(effect);
         }
         let page = self.journey.page;
@@ -683,22 +782,6 @@ impl InstallerPreview {
             )
         {
             return Err("installer-preview-wrong-page");
-        }
-        if self.direct.active {
-            match effect {
-                InstallerPreviewEffect::ReadPreview => return Ok(()),
-                InstallerPreviewEffect::BackInPreview if self.direct.navigation.get() => {
-                    self.direct.active = false;
-                    self.compatibility = compatibility::Compatibility::default();
-                    if self.journey.destination == Some(Destination::Desktop) {
-                        self.journey.back()?;
-                    }
-                    self.composed = None;
-                    self.dirty = true;
-                    return Ok(());
-                }
-                _ => return Err("installer-preview-identity-busy"),
-            }
         }
         if self.sign_in.busy()
             && matches!(
@@ -773,16 +856,19 @@ impl InstallerPreview {
                     && self.storage.facts.is_none()
                     && self.journey.destination == Some(Destination::Computer)
                 {
-                    self.compatibility.pending = true;
-                    return Ok(());
+                    return self.prepare_compatibility();
                 }
                 if page == Page::Destination
                     && self.journey.destination == Some(Destination::Desktop)
                 {
                     self.journey.next()?;
                     self.dirty = true;
-                    self.desktop_review_pending = self.live;
                     self.error = None;
+                    if self.live
+                        && let Err(error) = self.prepare_desktop()
+                    {
+                        self.error = Some(error);
+                    }
                     return Ok(());
                 }
                 if self.live && page == Page::Review && !choices_edit {
@@ -856,10 +942,9 @@ impl InstallerPreview {
             InstallerPreviewEffect::PrepareDesktopInstallation
                 if page == Page::Review
                     && self.live
-                    && self.journey.destination == Some(Destination::Desktop)
-                    && self.live =>
+                    && self.journey.destination == Some(Destination::Desktop) =>
             {
-                self.desktop_review_pending = true;
+                return self.prepare_desktop();
             }
             InstallerPreviewEffect::PrepareDirectInstallation
                 if page == Page::Review && self.live =>
@@ -1046,28 +1131,16 @@ impl InstallerPreview {
 
     fn drain(&mut self) -> bool {
         let password_focus_changed = self.track_password_focus();
-        let compatibility_changed = self.drain_compatibility();
+        let native_changed = self.native.as_mut().is_some_and(native::NativeSetup::poll);
         let target_changed = self.target.poll();
-        let desktop_review_changed = std::mem::take(&mut self.desktop_review_pending);
-        let native_full_os_review_changed = std::mem::take(&mut self.native_full_os_review_pending);
-        if native_full_os_review_changed && let Err(error) = self.prepare_native_full_os() {
-            self.error = Some(error);
-            self.dirty = true;
-        }
-        if desktop_review_changed && let Err(error) = self.prepare_desktop() {
-            self.error = Some(error);
-            self.dirty = true;
-        }
         let plan_changed = if self.live { self.poll_plan() } else { false };
         self.dirty |= plan_changed;
         let storage_changed = self.storage.poll();
         let sign_in_changed = self.sign_in.poll();
-        self.dirty |= target_changed || storage_changed || sign_in_changed;
+        self.dirty |= native_changed || target_changed || storage_changed || sign_in_changed;
         let commands = std::mem::take(&mut *self.commands.borrow_mut());
-        let changed = compatibility_changed
+        let changed = native_changed
             || target_changed
-            || native_full_os_review_changed
-            || desktop_review_changed
             || plan_changed
             || storage_changed
             || sign_in_changed
@@ -1081,7 +1154,10 @@ impl InstallerPreview {
                 InstallerPreviewEffect::ContinuePreview
                     | InstallerPreviewEffect::ChooseAndContinuePreview { .. }
             );
-            if let Err(error) = self.apply(command) {
+            if self.native_answers(&command) {
+                // A refusal stays on the page as its notice.
+                let _ = self.apply_native(command);
+            } else if let Err(error) = self.apply(command) {
                 self.show_refusal(error, submitted);
             }
         }
@@ -1471,7 +1547,9 @@ impl InstallerPreview {
             InstallerPreviewEffect::ContinuePreview
                 | InstallerPreviewEffect::ChooseAndContinuePreview { .. }
         );
-        if let Err(error) = self.apply(effect) {
+        if self.native_answers(&effect) {
+            self.apply_native(effect)?;
+        } else if let Err(error) = self.apply(effect) {
             self.show_refusal(error, submitted);
             return Err(t(error));
         }
@@ -1482,10 +1560,10 @@ impl InstallerPreview {
         status["machine"] = self.machine_status();
         status["target"] = self.target.projection();
         status["migrate"] = self.sign_in.projection();
-        status["direct_install"] = serde_json::json!({
-            "active": self.direct.active,
-            "can_return": self.direct.active && self.direct.navigation.get(),
-        });
+        status["setup"] = self
+            .native
+            .as_ref()
+            .map_or(serde_json::Value::Null, native::NativeSetup::status);
         let direct_available = self.direct_available();
         let plan_digest = self
             .storage
@@ -1541,6 +1619,20 @@ impl crate::hosting::Window for InstallerPreview {
     }
     fn statuses(&self) -> Vec<EffectStatus> {
         self.effect_statuses()
+    }
+
+    fn rows(&self) -> Vec<tilo_resource::LiveRow> {
+        self.native
+            .iter()
+            .map(|native| crate::setup::actions::row(&native.projection()))
+            .collect()
+    }
+
+    fn row_statuses(&self) -> Vec<(String, Vec<EffectStatus>)> {
+        self.native
+            .as_ref()
+            .map(|native| crate::setup::actions::row_statuses(&native.projection()))
+            .unwrap_or_default()
     }
 }
 
@@ -1616,14 +1708,26 @@ impl InstallerPreview {
                 ));
             }
         }
-        if self.direct.active && !self.direct.navigation.get() {
-            statuses.push(EffectStatus::unavailable(
-                InstallerPreviewEffect::BACK_IN_PREVIEW,
-                "installation_busy",
-                t("installer-preview-identity-busy"),
+        if let Some(native) = &self.native {
+            if !native.navigation_allowed() {
+                statuses.push(EffectStatus::unavailable(
+                    InstallerPreviewEffect::BACK_IN_PREVIEW,
+                    "installation_busy",
+                    t("installer-preview-identity-busy"),
+                ));
+            }
+            statuses.extend(crate::setup::actions::statuses(
+                &native.projection(),
+                |id| native.offers(id),
             ));
+            return statuses;
         }
         if self.full_os_host && self.live {
+            statuses.push(EffectStatus::unavailable(
+                InstallerPreviewEffect::BACK_IN_PREVIEW,
+                "at_start",
+                t("installer-preview-at-start"),
+            ));
             return statuses;
         }
         if !self.guided_host_available()
@@ -1733,8 +1837,7 @@ impl Widget for InstallerPreview {
         }
         self.layout_metrics = Some(metrics);
         self.profile_breakpoint = f64::from(theme.tokens.metrics.content_min_width);
-        let showing_direct = self.direct.active;
-        if !showing_direct && (self.dirty || self.composed.is_none()) {
+        if self.dirty || self.composed.is_none() {
             let moved = self.validation_focus.take();
             let focus = moved.clone().or_else(|| {
                 self.composed
@@ -1944,8 +2047,6 @@ impl Widget for InstallerPreview {
     }
     fn needs_animation_frame(&self) -> bool {
         self.dirty
-            || self.compatibility.pending
-            || self.native_full_os_review_pending
             || self.pending_slide.is_some()
             || self.slide.is_some()
             || self.storage.checking()
@@ -1953,14 +2054,17 @@ impl Widget for InstallerPreview {
     }
     fn needs_idle_sync(&self) -> bool {
         self.sign_in.busy()
+            || self
+                .native
+                .as_ref()
+                .is_some_and(native::NativeSetup::needs_idle_sync)
     }
     fn take_structure_dirty(&mut self) -> bool {
         let child = self
             .composed
             .as_mut()
             .is_some_and(|child| child.take_structure_dirty());
-        let replaced = std::mem::take(&mut self.composition_replaced);
-        self.dirty || replaced || child
+        self.dirty || child
     }
 }
 

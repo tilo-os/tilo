@@ -151,12 +151,6 @@ impl<W: Window> Port<W> {
         }))
     }
 
-    /// A port for a window this one shows inside itself: the same resource and wake.
-    #[cfg(feature = "installation")]
-    pub(crate) fn child<C: Window>(&self) -> Port<C> {
-        Port::new(self.0.store.clone(), self.0.wake.clone())
-    }
-
     /// A port for a window nobody runs: a shot's, a test's.
     pub(crate) fn detached() -> Self {
         Self::new(Store::in_memory(), ui::WakeHandle::new())

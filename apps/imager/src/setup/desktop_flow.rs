@@ -96,7 +96,6 @@ pub struct DesktopFlow {
     cancel: Option<Arc<AtomicBool>>,
     cancel_requested: bool,
     approved_selection: Option<(String, String, String)>,
-    revision: u64,
     diagnostic_log: Option<PathBuf>,
 }
 
@@ -119,7 +118,6 @@ impl DesktopFlow {
             cancel: None,
             cancel_requested: false,
             approved_selection: None,
-            revision: 0,
             diagnostic_log: None,
         }
     }
@@ -141,11 +139,6 @@ impl DesktopFlow {
     #[must_use]
     pub fn state(&self) -> &DesktopFlowState {
         &self.state
-    }
-
-    #[must_use]
-    pub fn revision(&self) -> u64 {
-        self.revision
     }
 
     #[must_use]
@@ -396,7 +389,6 @@ impl DesktopFlow {
             }
             (Some(_), DesktopInstallEvent::DiagnosticLog(path)) => {
                 self.diagnostic_log = Some(path);
-                self.revision = self.revision.wrapping_add(1);
             }
             (Some(selection), DesktopInstallEvent::Complete(result)) => {
                 self.pending = None;
@@ -449,7 +441,6 @@ impl DesktopFlow {
 
     fn set_state(&mut self, state: DesktopFlowState) {
         self.state = state;
-        self.revision = self.revision.wrapping_add(1);
     }
 }
 

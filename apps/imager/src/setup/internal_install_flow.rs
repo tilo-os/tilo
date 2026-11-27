@@ -436,7 +436,6 @@ pub(super) struct InternalInstall {
     probing: bool,
     reprobe_due: bool,
     restart_deferred: bool,
-    revision: u64,
 }
 
 impl InternalInstall {
@@ -466,10 +465,10 @@ impl InternalInstall {
             probing: false,
             reprobe_due: false,
             restart_deferred: false,
-            revision: 0,
         }
     }
 
+    #[cfg(test)]
     pub(super) fn guarded(host: HostOs) -> Self {
         Self::new(StagingRuntime::live(), false, host)
     }
@@ -490,14 +489,6 @@ impl InternalInstall {
         self.host
     }
 
-    pub(super) fn revision(&self) -> u64 {
-        self.revision
-    }
-
-    fn bump(&mut self) {
-        self.revision = self.revision.wrapping_add(1);
-    }
-
     pub(super) fn probe_task(
         &mut self,
     ) -> Option<impl FnOnce() -> (HostFacts, Vec<Record>) + Send + 'static> {
@@ -512,7 +503,6 @@ impl InternalInstall {
     pub(super) fn probe_failed(&mut self) {
         self.probing = false;
         self.readiness = Readiness::Unsupported(vec![Blocker::DiskUnsupported]);
-        self.bump();
     }
 
     pub(super) fn is_probing(&self) -> bool {
@@ -545,7 +535,6 @@ impl InternalInstall {
         self.facts = Some(facts);
         self.pending = records;
         self.recompute();
-        self.bump();
     }
 
     pub(super) fn readiness(&self) -> &Readiness {
@@ -642,7 +631,6 @@ impl InternalInstall {
         if self.target_bytes != gib * GIB {
             self.target_bytes = gib * GIB;
             self.recompute();
-            self.bump();
         }
         Ok(())
     }
@@ -885,7 +873,6 @@ impl InternalInstall {
             return Err(super::strings::t("imager-setup-internal-error-no-restart"));
         }
         self.restart_deferred = true;
-        self.bump();
         Ok(())
     }
 
@@ -952,9 +939,6 @@ impl InternalInstall {
                     changed = true;
                 }
             }
-        }
-        if changed {
-            self.bump();
         }
         changed
     }

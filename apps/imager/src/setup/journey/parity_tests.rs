@@ -10,7 +10,6 @@
 use super::*;
 use crate::hosting::testing::TestHost;
 use crate::resource::ImagerEffect;
-use crate::setup::actions::SetupEffect;
 use crate::setup::desktop_catalog::{DesktopRelease, PackageFormat};
 use crate::setup::desktop_flow::{DesktopFlow, DesktopFlowState, DesktopSelection};
 use tilo_actions::{ApiError, Availability};
@@ -220,19 +219,21 @@ fn the_desktop_route_offers_the_desktop_choice_and_hands_the_review_to_its_setup
     assert_eq!(status["destination"], "desktop");
     assert_eq!(status["handoff"], "deferred");
 
-    // The desktop setup's page is now the one the person answers.
-    app.with_widget::<crate::setup::view::SetupApp, _>(|setup| {
-        *setup.desktop_flow_mut() = ready_desktop_flow();
+    // The desktop setup's page is now the one the person answers: it
+    // offers what it accepts, the install, its recheck and the way back.
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        preview.native.as_mut().unwrap().desktop_flow = ready_desktop_flow();
+        preview.dirty = true;
     })
     .unwrap();
-    assert_eq!(
-        offered(&mut app, SetupEffect::OPERATION),
-        [
+    assert_offered(
+        &mut app,
+        &[
+            "back-in-preview",
             "install-desktop",
-            "read-desktop-status",
-            "read-setup-status",
-            "recheck-desktop"
-        ]
+            "read-preview",
+            "recheck-desktop",
+        ],
     );
     assert_shows(
         &mut app,
@@ -254,51 +255,33 @@ fn the_desktop_route_offers_the_desktop_choice_and_hands_the_review_to_its_setup
     // What the desktop page cannot do yet says so in words, without a press.
     assert_refused(
         &mut app,
-        &SetupEffect::ContinueSetup,
+        &InstallerPreviewEffect::ContinuePreview,
         "setup_cannot_continue",
         "Complete the current setup choice before continuing",
     );
-    let desktop = app
-        .effect(&SetupEffect::ReadDesktopStatus)
+    let status = app
+        .effect(&InstallerPreviewEffect::ReadPreview)
         .unwrap()
         .value
         .unwrap();
+    let desktop = &status["setup"]["desktop"];
     assert_eq!(desktop["phase"], "ready");
     assert_eq!(desktop["release_id"], desktop_release().id);
     assert_eq!(desktop["actions"]["install"], true);
 
-    // The journey's own effects are advertised from its review, but the open
-    // desktop page owns the walk: everything but reading waits, and the page
-    // says so.
-    assert_offered(
-        &mut app,
-        &[
-            "back-in-preview",
-            "choose-and-continue-preview",
-            "choose-preview",
-            "continue-preview",
-            "edit-preview",
-            "prepare-desktop-installation",
-            "prepare-usb",
-            "read-preview",
-            "restart-preview",
-        ],
-    );
-    for (effect, reason) in [
-        (
-            InstallerPreviewEffect::ContinuePreview,
-            t("installer-preview-identity-busy"),
-        ),
-        (
-            InstallerPreviewEffect::PrepareDesktopInstallation,
-            t("installer-preview-identity-busy"),
-        ),
-        (
-            InstallerPreviewEffect::PrepareUsb,
-            t("installer-preview-wrong-page"),
-        ),
+    // The review's own effects are not this page's: they are not offered,
+    // and a caller who asks anyway is told so.
+    for effect in [
+        InstallerPreviewEffect::PrepareDesktopInstallation,
+        InstallerPreviewEffect::PrepareUsb,
+        InstallerPreviewEffect::RestartPreview,
     ] {
-        assert_refused(&mut app, &effect, "failed", &reason);
+        assert_refused(
+            &mut app,
+            &effect,
+            "wrong_page",
+            &t("installer-preview-wrong-page"),
+        );
     }
 
     // Back returns to the choice, and the desktop page is gone with it.
@@ -309,7 +292,7 @@ fn the_desktop_route_offers_the_desktop_choice_and_hands_the_review_to_its_setup
         .unwrap();
     assert_eq!(back["page"], "destination");
     assert_eq!(back["destination"], "desktop");
-    assert!(offered(&mut app, SetupEffect::OPERATION).is_empty());
+    assert!(back["setup"].is_null());
     assert_offered(
         &mut app,
         &[
@@ -442,7 +425,6 @@ fn the_internal_staging_route_walks_the_review_and_keeps_the_setup_when_no_relea
             "choose-preview",
             "continue-preview",
             "edit-preview",
-            "prepare-desktop-installation",
             "prepare-direct-installation",
             "prepare-usb",
             "read-preview",
@@ -611,17 +593,18 @@ fn the_windows_route_offers_native_full_tilo_and_no_guided_pages() {
     })
     .unwrap();
 
+    // Nothing is chosen yet: there is no way back, and a USB installer is
+    // written only for another computer.
     assert_offered(
         &mut app,
         &[
-            "back-in-preview",
             "choose-and-continue-preview",
             "choose-preview",
             "continue-preview",
-            "prepare-usb",
             "read-preview",
         ],
     );
+    assert_refused_with(&mut app, "back-in-preview", "at_start");
     assert_shows(
         &mut app,
         &[
@@ -636,7 +619,7 @@ fn the_windows_route_offers_native_full_tilo_and_no_guided_pages() {
         &mut app,
         &InstallerPreviewEffect::ContinuePreview,
         "failed",
-        &t("installer-preview-wrong-page"),
+        &t("installer-preview-choose-first"),
     );
 
     // A card chooses its path and continues in one press, and Continue hands
@@ -648,10 +631,6 @@ fn the_windows_route_offers_native_full_tilo_and_no_guided_pages() {
     assert_eq!(
         offered(&mut app, InstallerPreviewEffect::OPERATION),
         ["read-preview"]
-    );
-    assert_eq!(
-        offered(&mut app, SetupEffect::OPERATION),
-        ["read-desktop-status", "read-setup-status"]
     );
     assert_shows(
         &mut app,
@@ -665,23 +644,24 @@ fn the_windows_route_offers_native_full_tilo_and_no_guided_pages() {
     );
     assert_refused(
         &mut app,
-        &SetupEffect::ContinueSetup,
+        &InstallerPreviewEffect::ContinuePreview,
         "setup_cannot_continue",
         "Complete the current setup choice before continuing",
     );
     assert_refused(
         &mut app,
-        &SetupEffect::InstallInternal {
+        &InstallerPreviewEffect::InstallInternal {
             reviewed: String::new(),
         },
         "internal_unavailable",
         &t("imager-setup-internal-error-command-unavailable"),
     );
     let status = app
-        .effect(&SetupEffect::ReadSetupStatus)
+        .effect(&InstallerPreviewEffect::ReadPreview)
         .unwrap()
         .value
         .unwrap();
+    let status = &status["setup"];
     assert_eq!(status["experience"], "full_os");
     assert_eq!(status["next"], false);
     assert_eq!(status["internal"]["on_review"], true);
@@ -706,7 +686,7 @@ fn the_windows_route_offers_native_full_tilo_and_no_guided_pages() {
         .unwrap();
     assert_eq!(back["page"], "destination");
     assert_eq!(back["destination"], "computer");
-    assert!(offered(&mut app, SetupEffect::OPERATION).is_empty());
+    assert!(back["setup"].is_null());
     assert_shows(
         &mut app,
         &[

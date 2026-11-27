@@ -57,7 +57,6 @@ tilo_test_env::scenario! {
             dirty: false,
             ..InstallerPreview::default()
         };
-        preview.direct.active = true;
         let theme = Theme::default();
         preview.layout_metrics = Some((
             theme.tokens.metrics.readable_width,
@@ -106,16 +105,18 @@ tilo_test_env::scenario! {
 }
 
 #[test]
-fn native_handoff_report_is_independent_of_page_composition() {
+fn a_setup_page_handed_the_review_replaces_the_page_and_its_layout() {
     let mut app = TestHost::launched(&["--setup"]);
     app.settle();
     app.with_widget::<InstallerPreview, _>(|preview| {
-        preview
-            .show_desktop(crate::setup::view::SetupApp::for_full_os_check(
-                tilo_ui_base::LocalState::new(None),
-            ))
-            .unwrap();
-        assert!(!preview.dirty, "the native surface owns its composition");
+        preview.open_native(
+            super::native::NativeSetup::new(super::native::Handoff::Check),
+            false,
+        );
+        assert!(
+            preview.dirty,
+            "the setup page is composed as a page of the journey"
+        );
         assert!(preview.take_structure_dirty(), "the old page was replaced");
     })
     .unwrap();

@@ -1,6 +1,6 @@
 //! Device-local Desktop projection. No paths or secrets.
-use super::actions::SetupEffect;
 use super::desktop_flow::{DesktopFlow, DesktopFlowState};
+use super::journey::InstallerPreviewEffect;
 use tilo_actions::ResourcePresentation;
 use tilo_resource::{self, ActionRef, RowBindings};
 use tilo_resource::{EffectStatus, LiveRow};
@@ -8,7 +8,7 @@ use tilo_resource::{EffectStatus, LiveRow};
 /// The Desktop preparation journey, as guided setup publishes it: a row
 /// offering to install, cancel or recheck what the projection says.
 #[derive(tilo_resource::Row)]
-#[row(kind = "imager.setup.desktop", label = "Desktop", effects = SetupEffect)]
+#[row(kind = "imager.setup.desktop", label = "Desktop", effects = InstallerPreviewEffect)]
 pub(crate) struct DesktopJourney;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -60,20 +60,22 @@ pub fn project(flow: &DesktopFlow, reviewed: bool) -> DesktopProjection {
     }
 }
 
-pub fn commands(d: &DesktopProjection) -> [(ActionRef<SetupEffect, ()>, &'static str, bool); 3] {
+pub fn commands(
+    d: &DesktopProjection,
+) -> [(ActionRef<InstallerPreviewEffect, ()>, &'static str, bool); 3] {
     [
         (
-            SetupEffect::INSTALL_DESKTOP,
+            InstallerPreviewEffect::INSTALL_DESKTOP,
             "imager-setup-desktop-install",
             d.actions.install,
         ),
         (
-            SetupEffect::CANCEL_DESKTOP_DOWNLOAD,
+            InstallerPreviewEffect::CANCEL_DESKTOP_DOWNLOAD,
             "imager-setup-desktop-cancel",
             d.actions.cancel,
         ),
         (
-            SetupEffect::RECHECK_DESKTOP,
+            InstallerPreviewEffect::RECHECK_DESKTOP,
             "imager-setup-desktop-recheck",
             d.actions.recheck,
         ),

@@ -1,6 +1,7 @@
-//! What guided setup offers the palette, agents and scripts: its effects, and the
-//! rows it publishes.
+//! What a guided setup page publishes beneath the setup: its internal
+//! installation, Desktop and hardware rows, and how each of its effects stands.
 
+use super::journey::InstallerPreviewEffect;
 use tilo_actions::ResourcePresentation;
 use tilo_resource::{self, ActionRef, Effect, RowBindings};
 use tilo_resource::{EffectStatus, LiveRow};
@@ -18,7 +19,7 @@ pub(crate) struct SetupRoot;
 #[row(
     kind = "imager.setup.internal",
     label = "Internal installation",
-    effects = SetupEffect
+    effects = InstallerPreviewEffect
 )]
 pub(crate) struct InternalSetup;
 
@@ -31,103 +32,6 @@ pub(crate) struct Hardware;
 #[derive(tilo_resource::Row)]
 #[row(kind = "imager.setup.hardware.component", label = "Hardware component")]
 pub(crate) struct HardwareComponent;
-
-/// Guided setup's effects. Each answers with the setup's path-free status
-#[derive(Clone, Debug, PartialEq, Eq, Effect)]
-#[effect(operation = "imager.setup")]
-pub enum SetupEffect {
-    /// Read setup status.
-    #[effect(returns, kind = "read")]
-    ReadSetupStatus,
-    /// Read this computer's Desktop readiness and current installation phase.
-    #[effect(returns, kind = "read")]
-    ReadDesktopStatus,
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    #[effect(label = "imager-setup-action-install-desktop", on = super::desktop_journey::DesktopJourney)]
-    InstallDesktop,
-    /// Cancel the current package download; no native transaction is cancelled.
-    #[effect(kind = "outside")]
-    #[effect(returns, on = super::desktop_journey::DesktopJourney)]
-    CancelDesktopDownload,
-    /// Recheck Desktop availability without installing anything.
-    #[effect(returns, kind = "read", on = super::desktop_journey::DesktopJourney)]
-    RecheckDesktop,
-    #[effect(returns, kind = "read")]
-    #[effect(label = "imager-setup-action-next")]
-    ContinueSetup,
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    #[effect(label = "imager-setup-action-start-download", on = InternalSetup)]
-    StartInternalDownload,
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    #[effect(label = "imager-setup-action-pause-download", on = InternalSetup)]
-    PauseInternalDownload,
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    #[effect(label = "imager-setup-action-resume-download", on = InternalSetup)]
-    ResumeInternalDownload,
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    #[effect(label = "imager-setup-action-cancel-download", on = InternalSetup)]
-    CancelInternalDownload,
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    #[effect(label = "imager-setup-action-discard-download", on = InternalSetup)]
-    DiscardInternalDownload,
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    #[effect(label = "imager-setup-action-release-download", on = InternalSetup)]
-    ReleaseInternalDownload,
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-set-target-size", on = InternalSetup)]
-    SetInternalTargetSize {
-        #[param("Tilo size in GiB")]
-        gib: i64,
-    },
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-install", on = InternalSetup)]
-    InstallInternal {
-        #[param("Digest of the reviewed installation plan")]
-        reviewed: String,
-    },
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-restart", on = InternalSetup)]
-    RestartInternal,
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-restart-later", on = InternalSetup)]
-    RestartInternalLater,
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-retry", on = InternalSetup)]
-    RetryInternal {
-        #[param("Id of the unfinished installer operation")]
-        operation_id: String,
-    },
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-remove", on = InternalSetup)]
-    RemoveInternal {
-        #[param("Id of the unfinished installer operation")]
-        operation_id: String,
-    },
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-firmware-settings", on = InternalSetup)]
-    InternalFirmwareSettings,
-    #[effect(kind = "outside")]
-    #[effect(returns)]
-    #[effect(label = "imager-setup-action-internal-disable-fast-startup", on = InternalSetup)]
-    InternalDisableFastStartup,
-    #[effect(returns, kind = "read")]
-    #[effect(label = "imager-setup-action-internal-recheck", on = InternalSetup)]
-    RecheckInternal,
-}
 
 #[allow(
     clippy::struct_excessive_bools,
@@ -304,105 +208,105 @@ fn internal_commands(
     let (review_code, review_reason) = review_check(state);
     [
         (
-            SetupEffect::START_INTERNAL_DOWNLOAD.id,
+            InstallerPreviewEffect::START_INTERNAL_DOWNLOAD.id,
             "imager-setup-action-start-download",
             a.start_download,
             review_code,
             review_reason,
         ),
         (
-            SetupEffect::PAUSE_INTERNAL_DOWNLOAD.id,
+            InstallerPreviewEffect::PAUSE_INTERNAL_DOWNLOAD.id,
             "imager-setup-action-pause-download",
             a.pause_download,
             review_code,
             review_reason,
         ),
         (
-            SetupEffect::RESUME_INTERNAL_DOWNLOAD.id,
+            InstallerPreviewEffect::RESUME_INTERNAL_DOWNLOAD.id,
             "imager-setup-action-resume-download",
             a.resume_download,
             review_code,
             review_reason,
         ),
         (
-            SetupEffect::CANCEL_INTERNAL_DOWNLOAD.id,
+            InstallerPreviewEffect::CANCEL_INTERNAL_DOWNLOAD.id,
             "imager-setup-action-cancel-download",
             a.cancel_download,
             review_code,
             review_reason,
         ),
         (
-            SetupEffect::DISCARD_INTERNAL_DOWNLOAD.id,
+            InstallerPreviewEffect::DISCARD_INTERNAL_DOWNLOAD.id,
             "imager-setup-action-discard-download",
             a.discard_download,
             review_code,
             review_reason,
         ),
         (
-            SetupEffect::RELEASE_INTERNAL_DOWNLOAD.id,
+            InstallerPreviewEffect::RELEASE_INTERNAL_DOWNLOAD.id,
             "imager-setup-action-release-download",
             a.release_download,
             review_code,
             review_reason,
         ),
         (
-            SetupEffect::SET_INTERNAL_TARGET_SIZE.id,
+            InstallerPreviewEffect::SET_INTERNAL_TARGET_SIZE.id,
             "imager-setup-action-internal-set-target-size",
             a.set_target_size,
             review_code,
             review_reason,
         ),
         (
-            SetupEffect::INSTALL_INTERNAL.id,
+            InstallerPreviewEffect::INSTALL_INTERNAL.id,
             "imager-setup-action-internal-install",
             a.install,
             review_code,
             review_reason,
         ),
         (
-            SetupEffect::RESTART_INTERNAL.id,
+            InstallerPreviewEffect::RESTART_INTERNAL.id,
             "imager-setup-action-internal-restart",
             a.restart,
             "internal_not_staged",
             "imager-setup-internal-error-no-restart",
         ),
         (
-            SetupEffect::RESTART_INTERNAL_LATER.id,
+            InstallerPreviewEffect::RESTART_INTERNAL_LATER.id,
             "imager-setup-action-internal-restart-later",
             a.restart_later,
             "internal_not_staged",
             "imager-setup-internal-error-no-restart",
         ),
         (
-            SetupEffect::RETRY_INTERNAL.id,
+            InstallerPreviewEffect::RETRY_INTERNAL.id,
             "imager-setup-action-internal-retry",
             a.retry,
             "internal_no_pending",
             "imager-setup-internal-error-no-pending",
         ),
         (
-            SetupEffect::REMOVE_INTERNAL.id,
+            InstallerPreviewEffect::REMOVE_INTERNAL.id,
             "imager-setup-action-internal-remove",
             a.remove,
             "internal_no_pending",
             "imager-setup-internal-error-no-pending",
         ),
         (
-            SetupEffect::INTERNAL_FIRMWARE_SETTINGS.id,
+            InstallerPreviewEffect::INTERNAL_FIRMWARE_SETTINGS.id,
             "imager-setup-action-internal-firmware-settings",
             a.firmware_settings,
             "remedy_unavailable",
             "imager-setup-internal-error-remedy-unavailable",
         ),
         (
-            SetupEffect::INTERNAL_DISABLE_FAST_STARTUP.id,
+            InstallerPreviewEffect::INTERNAL_DISABLE_FAST_STARTUP.id,
             "imager-setup-action-internal-disable-fast-startup",
             a.disable_fast_startup,
             "remedy_unavailable",
             "imager-setup-internal-error-remedy-unavailable",
         ),
         (
-            SetupEffect::RECHECK_INTERNAL.id,
+            InstallerPreviewEffect::RECHECK_INTERNAL.id,
             "imager-setup-action-internal-recheck",
             a.recheck,
             "internal_unavailable",
@@ -417,7 +321,7 @@ pub fn blocked(state: &SetupProjection) -> Vec<Blocked> {
     block(
         &mut blocked,
         state.next,
-        SetupEffect::CONTINUE_SETUP.id,
+        InstallerPreviewEffect::CONTINUE_PREVIEW.id,
         "setup_cannot_continue",
         "Complete the current setup choice before continuing".into(),
     );
@@ -436,10 +340,15 @@ pub fn blocked(state: &SetupProjection) -> Vec<Blocked> {
     blocked
 }
 
-#[must_use]
-pub fn statuses(state: &SetupProjection) -> Vec<EffectStatus> {
+/// How each effect of a setup page stands: the ones `offers` names refused
+/// with the reason the projection gives, and the internal and Desktop
+/// commands labelled in the person's language.
+pub fn statuses(state: &SetupProjection, offers: impl Fn(&str) -> bool) -> Vec<EffectStatus> {
     blocked(state)
         .into_iter()
+        .filter(|blocked| {
+            offers(blocked.id) || blocked.id == InstallerPreviewEffect::CONTINUE_PREVIEW.id
+        })
         .map(|blocked| {
             EffectStatus::unavailable(effect_ref(blocked.id), blocked.code, blocked.reason)
         })
@@ -460,8 +369,24 @@ pub fn statuses(state: &SetupProjection) -> Vec<EffectStatus> {
         .collect()
 }
 
-fn effect_ref(id: &'static str) -> ActionRef<SetupEffect, ()> {
-    ActionRef::new(id, &[], SetupEffect::kind())
+/// How each published row's effects stand, by the row's id.
+pub fn row_statuses(state: &SetupProjection) -> Vec<(String, Vec<EffectStatus>)> {
+    let mut by_row = vec![
+        (
+            format!("{SETUP_ROW_ID}.internal"),
+            internal_row_status(&state.internal),
+        ),
+        (
+            "imager.setup.desktop".to_owned(),
+            super::desktop_journey::row_status(&state.desktop),
+        ),
+    ];
+    by_row.retain(|(_, statuses)| !statuses.is_empty());
+    by_row
+}
+
+fn effect_ref(id: &'static str) -> ActionRef<InstallerPreviewEffect, ()> {
+    ActionRef::new(id, &[], InstallerPreviewEffect::kind())
 }
 
 /// The internal installation's commands, each with what the reviewed
@@ -472,19 +397,19 @@ fn internal_bindings(state: &InternalProjection) -> RowBindings {
     let mut bindings = RowBindings::new();
     for (id, ..) in internal_commands(state) {
         bindings = match id {
-            id if id == SetupEffect::INSTALL_INTERNAL.id => bindings.bind(
-                SetupEffect::INSTALL_INTERNAL,
+            id if id == InstallerPreviewEffect::INSTALL_INTERNAL.id => bindings.bind(
+                InstallerPreviewEffect::INSTALL_INTERNAL,
                 [(
                     "reviewed",
                     serde_json::Value::from(state.reviewed.clone().unwrap_or_default()),
                 )],
             ),
-            id if id == SetupEffect::RETRY_INTERNAL.id => bindings.bind(
-                SetupEffect::RETRY_INTERNAL,
+            id if id == InstallerPreviewEffect::RETRY_INTERNAL.id => bindings.bind(
+                InstallerPreviewEffect::RETRY_INTERNAL,
                 [("operation_id", serde_json::Value::from(operation.clone()))],
             ),
-            id if id == SetupEffect::REMOVE_INTERNAL.id => bindings.bind(
-                SetupEffect::REMOVE_INTERNAL,
+            id if id == InstallerPreviewEffect::REMOVE_INTERNAL.id => bindings.bind(
+                InstallerPreviewEffect::REMOVE_INTERNAL,
                 [("operation_id", serde_json::Value::from(operation.clone()))],
             ),
             id => bindings.offer_id(id),
@@ -493,8 +418,6 @@ fn internal_bindings(state: &InternalProjection) -> RowBindings {
     bindings
 }
 
-/// What each internal command cannot do now, by the row's effects, with the
-/// reason its projection gives.
 /// Every internal command this projection cannot start now: its effect's id,
 /// the code a program reads and the reason a person reads.
 fn internal_refusals(state: &InternalProjection) -> Vec<(&'static str, &'static str, String)> {
@@ -507,20 +430,11 @@ fn internal_refusals(state: &InternalProjection) -> Vec<(&'static str, &'static 
 
 /// What each internal command cannot do now, by the row's effects, with the
 /// reason its projection gives.
-pub fn internal_row_status(state: &InternalProjection) -> Vec<EffectStatus> {
+fn internal_row_status(state: &InternalProjection) -> Vec<EffectStatus> {
     internal_refusals(state)
         .into_iter()
         .map(|(id, code, reason)| EffectStatus::unavailable(effect_ref(id), code, reason))
         .collect()
-}
-
-/// [`internal_refusals`] for a test that publishes a row without the
-/// host's row status.
-#[cfg(test)]
-pub(super) fn internal_refusals_for_test(
-    state: &InternalProjection,
-) -> Vec<(&'static str, &'static str, String)> {
-    internal_refusals(state)
 }
 
 fn internal_row(state: &InternalProjection) -> LiveRow {
@@ -530,7 +444,7 @@ fn internal_row(state: &InternalProjection) -> LiveRow {
         &internal_bindings(state),
     )
     .prefilled(
-        SetupEffect::SET_INTERNAL_TARGET_SIZE,
+        InstallerPreviewEffect::SET_INTERNAL_TARGET_SIZE,
         [("gib", serde_json::Value::from(-1))],
     )
     .presentation(ResourcePresentation {
@@ -673,10 +587,10 @@ mod tests {
     fn decoded(
         action: &ActionSpec,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> SetupEffect {
+    ) -> InstallerPreviewEffect {
         let encoded = action.build_json(arguments).unwrap();
-        assert_eq!(encoded.type_id, SetupEffect::OPERATION);
-        SetupEffect::from_payload(&encoded.payload).unwrap()
+        assert_eq!(encoded.type_id, InstallerPreviewEffect::OPERATION);
+        InstallerPreviewEffect::from_payload(&encoded.payload).unwrap()
     }
 
     #[test]
@@ -742,13 +656,13 @@ mod tests {
         let none = serde_json::Map::new();
         assert_eq!(
             decoded(action("install-internal"), &none),
-            SetupEffect::InstallInternal {
+            InstallerPreviewEffect::InstallInternal {
                 reviewed: "a".repeat(64)
             }
         );
         assert_eq!(
             decoded(action("remove-internal"), &none),
-            SetupEffect::RemoveInternal {
+            InstallerPreviewEffect::RemoveInternal {
                 operation_id: "op-7".into()
             }
         );
@@ -757,7 +671,7 @@ mod tests {
         args.insert("gib".into(), serde_json::json!(80));
         assert_eq!(
             decoded(size, &args),
-            SetupEffect::SetInternalTargetSize { gib: 80 }
+            InstallerPreviewEffect::SetInternalTargetSize { gib: 80 }
         );
         args.insert("gib".into(), serde_json::json!("eighty"));
         assert!(size.build_json(&args).is_err());
