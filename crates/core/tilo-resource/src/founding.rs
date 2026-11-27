@@ -264,9 +264,16 @@ pub fn bring_up(
     let mut changed = found((scope, app), containers, doc)?;
     // The chain follows the founding this record stands on, not the one its type derives now:
     // a newer type's founding names containers an older record never had, and applying it over
-    // the record's own would be a second change under one founding's actor and number.
-    let founding = founding_of(doc, scope).ok_or(automerge::AutomergeError::Fail)?;
-    let chain = chain_on(&founding, scope, version)?;
+    // the record's own would be a second change under one founding's actor and number. The
+    // common case is the founding its type derives now, found by one lookup: only a record an
+    // older type founded is walked for the founding it holds.
+    let current = structure(scope, containers)?;
+    let chain = if doc.get_change_by_hash(&current.hash()).is_some() {
+        chain_on(&current, scope, version)?
+    } else {
+        let founding = founding_of(doc, scope).ok_or(automerge::AutomergeError::Fail)?;
+        chain_on(&founding, scope, version)?
+    };
     let missing: Vec<automerge::Change> = chain
         .into_iter()
         .filter(|link| doc.get_change_by_hash(&link.hash()).is_none())
@@ -292,14 +299,15 @@ pub fn found(
     containers: &[(String, ObjType)],
     doc: &mut AutoCommit,
 ) -> Result<bool, automerge::AutomergeError> {
-    // A record already founded by its derived founding keeps it, whatever containers its type
-    // declared then: a later type's founding holds another container set, under the same actor
-    // and number, and applying it over the record's own is a conflicting change.
-    if founding_of(doc, scope).is_some() {
+    let founding = structure(scope, containers)?;
+    // The common case is one lookup, never a walk of the record's changes.
+    if doc.get_change_by_hash(&founding.hash()).is_some() {
         return Ok(false);
     }
-    let founding = structure(scope, containers)?;
-    if doc.get_change_by_hash(&founding.hash()).is_some() {
+    // A record already founded by an older derivation of its founding keeps it: a later type's
+    // founding holds another container set, under the same actor and number, and applying it
+    // over the record's own is a conflicting change.
+    if founding_of(doc, scope).is_some() {
         return Ok(false);
     }
     doc.apply_incoming([founding])?;
