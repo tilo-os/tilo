@@ -168,15 +168,24 @@ impl AppBrokerState {
                 Some((registered.app.to_string(), descriptor))
             });
         let Some((app, descriptor)) = offered else {
+            // Nothing the catalogue offers `caller` names the action, which is no reason for a
+            // question the person's yes lets through to say nothing of it: it says what the call
+            // is from the provider's own declaration, and what it would run with, a secret never
+            // among them (a call nothing here declares shows none of its arguments).
+            facts.verb.clone_from(&address.action);
+            facts.verb = facts.verb.replace('-', " ");
             // An application that publishes a directory names the action by its address.
-            if let Some(workspace) = caller.workspace()
-                && self
-                    .approval_directory(provider, workspace, request.revision.as_deref())
-                    .is_some()
-            {
-                facts.verb.clone_from(&address.action);
-                facts.on = Some(address.resource.clone());
-            }
+            facts.on = match caller.workspace() {
+                Some(workspace)
+                    if self
+                        .approval_directory(provider, workspace, request.revision.as_deref())
+                        .is_some() =>
+                {
+                    Some(address.resource.clone())
+                }
+                _ => resource_in_words(&address.resource),
+            };
+            facts.facts = self.declared_arguments(caller, request);
             return Ok(facts);
         };
         let declared = tilo_workspace_records::effects::declared_effects(&request.target);
@@ -189,6 +198,51 @@ impl AppBrokerState {
                 .extend(store_disclosure(caller, request)?.facts());
         }
         Ok(facts)
+    }
+
+    /// The arguments `request` would run with, as the provider answering the action declares
+    /// them: each by its name as the declaration writes it, with the value the call carries, and
+    /// a secret never (the declaration marks it, and no record of the call keeps its value).
+    /// Empty where nothing here declares the action, which then shows none of its arguments.
+    fn declared_arguments(&self, caller: &Caller, request: &InvokeRequest) -> Vec<Fact> {
+        let Some(providers) = self.services.providers.as_ref() else {
+            return Vec::new();
+        };
+        let address = &request.target.address;
+        let declared = providers
+            .in_workspace(&request.target)
+            .and_then(|answers| answers.params(&request.target))
+            .or_else(|| {
+                let registered = self.registered(&request.target.provider)?;
+                providers
+                    .descriptor(
+                        &registered,
+                        caller,
+                        address,
+                        request.argument.to_slot().as_deref(),
+                    )
+                    .map(|descriptor| descriptor.params)
+            });
+        let (Some(params), tilo_actions::remote::InvokeArgument::Json(arguments)) =
+            (declared, &request.argument)
+        else {
+            return Vec::new();
+        };
+        params
+            .into_iter()
+            .filter(|param| param.ty != tilo_actions::ParamType::Secret)
+            .filter_map(|param| {
+                if param.name.starts_with('$') {
+                    return None;
+                }
+                let value = arguments.get(param.name.as_ref())?;
+                let shown = match value {
+                    serde_json::Value::String(text) => text.clone(),
+                    other => other.to_string(),
+                };
+                Some(Fact::new(param.name.to_string(), shown))
+            })
+            .collect()
     }
 
     /// The records `effects`, a called action's declaration says it writes beside its own, as
@@ -284,6 +338,14 @@ pub(super) fn asked_of(
     )
 }
 
+/// The record `resource` names, in the words a person reads: its last part, each `-` a space
+/// (`.../mail-accounts` → "mail accounts"). The whole resource where it has no parts, and none
+/// where it is empty.
+fn resource_in_words(resource: &str) -> Option<String> {
+    let last = resource.rsplit('/').next().unwrap_or(resource);
+    (!last.is_empty()).then(|| last.replace('-', " "))
+}
+
 /// `facts`, stating what `descriptor`, the action as the person is offered it, does with
 /// `argument`: the arguments it would run with, and what a grant given with their answer allows.
 pub(super) fn described(
@@ -314,4 +376,24 @@ pub(super) fn described(
     }
     facts.effect = Some(kind);
     facts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resource_in_words;
+
+    /// A record nothing in the catalogue names is still said in words the person reads, and one
+    /// that names no part says nothing rather than a slash.
+    #[test]
+    fn a_record_is_named_by_its_last_part_in_words() {
+        assert_eq!(
+            resource_in_words("workspace.permissions:5541b1c6/mail-accounts").as_deref(),
+            Some("mail accounts")
+        );
+        assert_eq!(
+            resource_in_words("mail-accounts").as_deref(),
+            Some("mail accounts")
+        );
+        assert_eq!(resource_in_words(""), None);
+    }
 }
