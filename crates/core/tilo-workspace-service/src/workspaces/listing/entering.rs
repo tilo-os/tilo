@@ -19,6 +19,30 @@ use crate::workspaces::mode::{Mode, PAUSED_RETRY_AFTER_SECS};
 use crate::workspaces::pages::Presented;
 use crate::workspaces::{Carried, Workspaces};
 
+/// What a device whose person the workspace's member list lacks is told when it asks to
+/// write its own row there.
+pub(crate) const UNLISTED_PERSON_REFUSED: &str =
+    "this workspace's member list doesn't have this device's person: they come in by an invitation";
+
+/// Refuse `cert`'s device a row of its own in `hosted` unless the member list has its person,
+/// as the workspace's owner or in a role.
+///
+/// # Errors
+///
+/// The member list lacks the device's person, or does not read.
+pub(crate) fn refuse_unlisted_person(
+    hosted: &crate::workspaces::HostedWorkspace,
+    cert: &DeviceCert,
+) -> Result<(), String> {
+    let policy = hosted.peer().governance().member_policy()?;
+    let person = hex::encode(cert.user_public_key);
+    if policy.is_owner(&person) || policy.active_role(&person).is_some() {
+        Ok(())
+    } else {
+        Err(UNLISTED_PERSON_REFUSED.to_owned())
+    }
+}
+
 /// A refusal of the join itself, after the entry let the person in.
 const fn refused(reason: String) -> EnterRefusal {
     EnterRefusal::Workspace(reason)
@@ -343,15 +367,17 @@ impl Workspaces {
     /// would ask for this host's whole state, in which every device's row
     /// arrives at once, and each device's row reads as written by the others.
     ///
-    /// Only a host whose own person is in the workspace lets a device in: a
-    /// server that holds another person's workspace reads and serves it, and
-    /// holding it admits no one. Who comes in is the signed member list's and
-    /// its owners' to decide.
+    /// A device writes its own row only for a person the signed member list
+    /// already has: its certificate comes from that person's root, and every
+    /// receiver judges the row by the role the list gives them. A server
+    /// holding the workspace for someone else carries a member's further
+    /// device in this way, and refuses a device whose person the list lacks:
+    /// who comes in is the member list's and its owners' to decide.
     ///
     /// # Errors
     ///
-    /// This host's person is not in the workspace, the row does not let the
-    /// device in, or the workspace could not keep or carry it.
+    /// The device's person is not on the member list, the row does not let
+    /// the device in, or the workspace could not keep or carry it.
     pub(crate) async fn take_own_row(
         &self,
         hosted: &mut crate::workspaces::HostedWorkspace,
@@ -359,13 +385,7 @@ impl Workspaces {
         admission: &[Vec<u8>],
         now: u64,
     ) -> Result<(), String> {
-        let policy = hosted.peer().governance().member_policy()?;
-        let host = hex::encode(self.inner.host.cert.user_public_key);
-        if !policy.is_owner(&host) && policy.active_role(&host).is_none() {
-            return Err(
-                "this server holds the workspace for someone else and lets no one in".to_owned(),
-            );
-        }
+        refuse_unlisted_person(hosted, cert)?;
         let key = self.inner.host.key.clone();
         let mut candidate = hosted.peer().clone();
         if !candidate.admit_own(

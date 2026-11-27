@@ -498,6 +498,7 @@ impl Workspaces {
                 tilo_peer_state::REMOVED_DEVICE_REFUSED,
             ));
         }
+        super::listing::refuse_unlisted_person(&hosted, device).map_err(CollaborationError::new)?;
         // What the device signed into the workspace before this copy had it (its session's
         // redemption, sent to the host that handed the copy over) comes first.
         let _turn =

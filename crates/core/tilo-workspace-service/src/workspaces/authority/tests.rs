@@ -1278,12 +1278,12 @@ async fn what_a_workspace_lets_a_member_this_server_carries_out() {
             .unwrap()
     );
     let (stranger_key, stranger) = guest_device();
-    assert!(
-        workspaces
-            .enter(&workspace, (&stranger, &stranger_key))
-            .await
-            .is_err()
-    );
+    let refused = workspaces
+        .enter(&workspace, (&stranger, &stranger_key))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(refused, crate::workspaces::listing::UNLISTED_PERSON_REFUSED);
     // A Viewer the owner added by their root, before any device of theirs arrived, enters from
     // one and holds no more there than a Viewer does.
     let cy = SigningKey::from_bytes(&rand::random());

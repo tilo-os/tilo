@@ -27,6 +27,9 @@
 //! workspace through its entry is a [`WorkspaceNotice::Reported`].
 
 mod entering;
+#[cfg(test)]
+pub(crate) use entering::UNLISTED_PERSON_REFUSED;
+pub(crate) use entering::refuse_unlisted_person;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
