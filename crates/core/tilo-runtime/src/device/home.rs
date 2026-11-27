@@ -26,6 +26,10 @@ const SITE: &str = "https://tilo.sh/";
 /// asked for again: a server that is away is not asked on every call the daemon answers.
 const ENTER_AGAIN: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// How long a device the person's own workspace admitted waits for the copy it brings: the copy
+/// comes over the link the admission named, never from entering again.
+const KEPT_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The server this device enters its person's workspaces through, once it knows one.
 pub(crate) struct Home {
     workspaces: Arc<ServiceWorkspaces>,
@@ -35,15 +39,19 @@ pub(crate) struct Home {
     found: Mutex<Option<Device>>,
     /// Set once this device wrote the person's list from what it knows of their workspaces.
     listed: tokio::sync::OnceCell<()>,
-    /// Whether the person's own workspace is kept here, and when it was last asked for: an
-    /// entrance is asked for once at a time, and again only after [`ENTER_AGAIN`].
+    /// What this device's home knows of the person's own workspace here.
     taken: tokio::sync::Mutex<Taken>,
 }
 
-/// Whether the person's own workspace is held here, and when it was last asked for.
+/// What this device's home knows of the person's own workspace, and when it last asked for it.
 #[derive(Default)]
 struct Taken {
+    /// The copy is kept here.
     held: bool,
+    /// The server has taken this device in for the workspace: a second entry repeats what it
+    /// answered, and a host that holds no record of the device issues another invitation for it.
+    admitted: bool,
+    /// When the entry was last asked for, so an away server is not asked on every call.
     asked: Option<std::time::Instant>,
 }
 
@@ -98,6 +106,11 @@ impl Home {
     /// is not held here: the server admits a device of theirs by the certificate their root
     /// signed for its key, and answers where the workspace is kept. Whether it is held here now.
     /// A device confined to one workspace keeps none of it, and asks for none.
+    ///
+    /// A device the server admitted already is not entered again, whatever became of the copy:
+    /// what a device waits for then is the copy the admission brings, over the link it named.
+    /// A device whose session is in enters its workspaces through it, and is not entered again
+    /// beside it: one connection per key, so a second would cut the one it has.
     async fn enter_person_workspace(&self, device: &Device) -> bool {
         let mut taken = self.taken.lock().await;
         if taken.held {
@@ -114,6 +127,8 @@ impl Home {
             return true;
         }
         if self.workspaces.confined().is_some()
+            || self.workspaces.session().is_some()
+            || taken.admitted
             || taken
                 .asked
                 .is_some_and(|asked| asked.elapsed() < ENTER_AGAIN)
@@ -121,10 +136,9 @@ impl Home {
             return false;
         }
         taken.asked = Some(std::time::Instant::now());
-        let held = taken_in(&self.workspaces, device, &self.person()).await;
-        if held {
-            taken.held = true;
-        }
+        let (admitted, held) = taken_in(&self.workspaces, device, &self.person()).await;
+        taken.admitted |= admitted;
+        taken.held = held;
         held
     }
 
@@ -164,9 +178,13 @@ impl Home {
     }
 
     /// Enter through `device` from now on: the server the person's workspace names now
-    /// ([`Self::moved`]).
+    /// ([`Self::moved`]). A server this device did not enter through yet holds no record of it,
+    /// so it is entered there once more: what it asked the last one is no answer about this one.
     pub(crate) fn enter_through(&self, device: Device) {
         *self.found.lock_recover() = Some(device);
+        if let Ok(mut taken) = self.taken.try_lock() {
+            *taken = Taken::default();
+        }
     }
 
     /// The device this home knows it enters through, without reading the copy for it.
@@ -303,7 +321,7 @@ async fn list_the_persons_workspaces(
     let copies = workspaces.copies();
     let person = cert.user_public_key;
     let own = tilo_server_protocol::servers::person_workspace_id(&person);
-    if copies.state(&own).await.is_none() && !taken_in(&workspaces, &device, &own).await {
+    if copies.state(&own).await.is_none() && !taken_in(&workspaces, &device, &own).await.1 {
         return;
     }
     let name = device
@@ -320,28 +338,65 @@ async fn list_the_persons_workspaces(
 /// Take the person's own workspace `own` in from the server `device` names, where this device
 /// holds no copy of it: the one that keeps their root writes their list there, and a server that
 /// keeps the workspace without that root writes none of it itself. The copy is a member copy,
-/// synced with the server as the copy of any workspace its login entered is. Whether it is held
-/// here now.
-async fn taken_in(workspaces: &Arc<ServiceWorkspaces>, device: &Device, own: &str) -> bool {
+/// synced with the server as the copy of any workspace its login entered is.
+///
+/// Answers whether the server took this device in, and whether the copy it brings is here: a
+/// device the server admitted is not entered again for the copy, which comes over the link the
+/// admission names.
+async fn taken_in(workspaces: &Arc<ServiceWorkspaces>, device: &Device, own: &str) -> (bool, bool) {
     let entered = match entered_here(workspaces, device).await {
         Ok(entered) => entered,
         Err(why) => {
-            tracing::warn!("{why}");
-            return false;
+            tracing::warn!(
+                %why,
+                workspace = %own,
+                "the person's own workspace is not taken in from their server"
+            );
+            return (false, false);
         }
     };
     // Entered by its id at the device the login names, which admits this device as its person's:
-    // the address its host keeps it at is what the member copy is taken in by.
-    if let Err(error) = entered.join(own).await {
-        tracing::warn!(
-            %error,
-            workspace = %own,
-            "the person's own workspace did not let this device in"
-        );
-    }
+    // the address its host keeps it at is what the member copy is taken in by. Only the entry's
+    // own answer is an admission: a connection that came up without it leaves the workspace to be
+    // entered again.
+    let admitted = match entered.join(own).await {
+        Ok(_) => true,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                workspace = %own,
+                "the person's own workspace did not let this device in"
+            );
+            false
+        }
+    };
     workspaces.hold(&entered).await;
+    let held = kept_within(workspaces, own).await;
     entered.close();
-    workspaces.copies().state(own).await.is_some()
+    (admitted, held)
+}
+
+/// Wait until this device keeps `own`, at most [`KEPT_WITHIN`]: the copy its entry brings is
+/// taken in over the link the admission named, so it is here a moment after the admission and
+/// never by entering again. Whether it is here now.
+async fn kept_within(workspaces: &Arc<ServiceWorkspaces>, own: &str) -> bool {
+    let copies = workspaces.copies();
+    if copies.state(own).await.is_some() {
+        return true;
+    }
+    let entered = workspaces.entered();
+    let waited = tokio::time::timeout(KEPT_WITHIN, async {
+        loop {
+            // Taken before the copy is read: a copy taken in between is not waited for again.
+            let taken = entered.notified();
+            if copies.state(own).await.is_some() {
+                return true;
+            }
+            taken.await;
+        }
+    })
+    .await;
+    matches!(waited, Ok(true))
 }
 
 /// The device `cert` certifies as `own`'s copy of the person's workspace names its server: a
