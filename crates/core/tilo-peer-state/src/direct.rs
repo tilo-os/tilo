@@ -4271,6 +4271,21 @@ impl DirectSync {
             })
     }
 
+    /// A page keeps no store, so nothing it takes in from another device's
+    /// history is kept durably here, and none of it is answered as kept.
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::unused_self,
+        reason = "the device build answers what its store keeps; a page has none"
+    )]
+    fn answer_kept(
+        &self,
+        _: Option<&tokio::sync::mpsc::UnboundedSender<Answered>>,
+        _: [u8; 32],
+        _: &NeighbourMsg,
+    ) {
+    }
+
     /// Answer `message`, the link's device's own write this one took in from
     /// the other device's history, as a live write of its is answered: its
     /// frame's hash and sequence, kept durably here.
@@ -5617,7 +5632,7 @@ async fn answer_only_here(
     send: &mut StreamSend,
     dialing: bool,
     waiting: &[OnlyHere],
-    takes: &(impl Fn(&NeighbourMsg) -> bool + Sync),
+    takes: &(impl Fn(&NeighbourMsg) -> bool + collab_types::signer::MaybeSendSync),
     opening: &Opening,
 ) -> Result<(), String> {
     // The device that dialled reads the other one's state with its history,
