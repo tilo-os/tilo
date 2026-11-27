@@ -928,6 +928,11 @@ impl Button {
 /// neutral secondary face, far below the status tones' own.
 const DANGER_WASH_CHROMA: f32 = 0.035;
 
+/// How far past the non-text floor a plain button's hover plate is resolved: a chrome body draws
+/// a material ground that is lighter at one end than its flat tone, and a magnified tile's plate
+/// stands past the body over the page, so the plate clears the floor on those grounds too.
+const PLATE_GROUND_MARGIN: f64 = 0.5;
+
 /// What a button does: a role is its whole appearance, so an app never picks a fill, an ink, an
 /// edge or a radius for one.
 ///
@@ -1133,7 +1138,8 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> Fa
             // stands on (a chrome body hands its contents that ground); the press is one step
             // past it.
             let ground = colors.surfaces.content;
-            let hover = colors.ink_on(colors.lift_on(ground, 0.5), ground, NON_TEXT_MIN_CONTRAST);
+            let floor = NON_TEXT_MIN_CONTRAST + PLATE_GROUND_MARGIN;
+            let hover = colors.ink_on(colors.lift_on(ground, 0.5), ground, floor);
             let pressed = colors.lift_on(ground, 1.0);
             let fill = if interact.pressed {
                 pressed
@@ -1145,12 +1151,12 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> Fa
             // At rest a plain button paints nothing: it stands on the ground
             // its container handed it (`surfaces.content`, re-pointed by
             // `Theme::on_ground` inside a region), and hover and press are
-            // that ground's lift.
-            let ink = colors.ink_on_any(
-                &[ground, hover, pressed],
-                colors.text_primary,
-                ON_FILL_MIN_CONTRAST,
-            );
+            // that ground's lift. The ink is resolved against that ground
+            // alone: a plate and a press are lifts of it, so an ink that
+            // clears the ground stays legible on them, while asking one ink to
+            // clear all three at once jumps to the ground's opposite (black on
+            // a dark ground) and leaves the resting glyph unreadable.
+            let ink = colors.ink_on(ground, colors.text_primary, ON_FILL_MIN_CONTRAST);
             (fill, None, ink)
         }
     }

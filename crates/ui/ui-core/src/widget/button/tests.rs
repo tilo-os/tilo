@@ -236,6 +236,15 @@ tilo_test_env::scenario! {
                 theme.name,
                 contrast_ratio(plate, colors.surfaces.content)
             );
+            // The glyph is resolved against the resting ground and stays legible on the plate,
+            // which is a lift of it: a dark theme keeps its light glyph instead of collapsing to
+            // black on the dark ground.
+            assert!(
+                contrast_ratio(ink, plate) >= 3.0 - 0.05,
+                "{}: a plain control's glyph on its plate is {:.2}:1",
+                theme.name,
+                contrast_ratio(ink, plate)
+            );
             // Press is the neutral lift; only a selection is tinted.
             assert_eq!(
                 face_colors(&theme, ButtonRole::Plain, press).0,
