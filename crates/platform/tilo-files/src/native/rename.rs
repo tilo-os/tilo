@@ -25,11 +25,11 @@ pub enum FileRename {
 /// Equal paths (`src == dest`) are refused before any system call with
 /// `AlreadyExists` (carrying `EEXIST` on Unix).
 ///
-/// On Linux and Apple systems this tries the exclusive rename
+/// On Linux, Android and Apple systems this tries the exclusive rename
 /// (`renameat2(RENAME_NOREPLACE)` / `renameatx_np(RENAME_EXCL)`) and, when the
 /// kernel or filesystem answers `EINVAL`, `ENOSYS`, or `ENOTSUP`, falls back
 /// to hard-linking `src` to `dest` (refusing an existing `dest`) and then
-/// unlinking `src`. On every other target — Android and Windows included — it
+/// unlinking `src`. On every other target — Windows included — it
 /// takes the hard-link-then-unlink path directly.
 ///
 /// On Unix the hard link uses `linkat` with empty flags and follows no
@@ -51,7 +51,7 @@ pub fn rename_file_noreplace(src: &Path, dest: &Path) -> io::Result<FileRename> 
     if src == dest {
         return Err(already_exists_error());
     }
-    #[cfg(any(target_os = "linux", target_vendor = "apple"))]
+    #[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
     {
         rename_noreplace_inner(
             src,
@@ -62,7 +62,7 @@ pub fn rename_file_noreplace(src: &Path, dest: &Path) -> io::Result<FileRename> 
             unlink_file,
         )
     }
-    #[cfg(not(any(target_os = "linux", target_vendor = "apple")))]
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
     {
         link_then_unlink_with(
             src,
