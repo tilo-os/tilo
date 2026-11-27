@@ -17,7 +17,7 @@ use tilo_app_package::pack::SigningIdentity;
 use tilo_peer_state::workspace_membership::{AppPayload, AppRelease};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
-use super::{PackageCache, TrustLists};
+use super::{FOLLOWED_FILE, PackageCache, TrustLists};
 use crate::device::control::DeviceContent;
 
 /// The publisher's key, and the registry owner's.
@@ -505,6 +505,51 @@ fn an_app_no_workspace_names_any_more_goes_only_when_the_follower_installed_it()
         found(OTHERWISE),
         "an app installed some other way is never the follower's to remove"
     );
+}
+
+/// A device that goes back to a build reading only the workspace's map of app versions, after a
+/// build that stopped writing that map and its follower's list: the map it reads names what it
+/// named when the newer build took over, its list names what it installed then, and an app the
+/// newer build installed is on neither. Its removal rule removes nothing: not what the map still
+/// names, not the newer build's app, and nothing at all once its list is gone.
+#[test]
+fn a_device_back_on_a_build_reading_the_stale_map_removes_nothing() {
+    const FOLLOWED: &str = "so.tilo.follower-before-update";
+    const NEWER: &str = "so.tilo.follower-after-update";
+    let (dir, cache, _env) = device();
+    let followed = author(FOLLOWED, "1.0.0");
+    let registries = Registry::start(FOLLOWED, "1.0.0", &followed, followed.clone()).listed();
+    cache.fetch_offered(
+        &release_of(FOLLOWED, "1.0.0", &followed),
+        &TrustLists::default(),
+        &registries,
+    );
+    // Installed by the newer build, which keeps no list of what it installed.
+    let newer = author(NEWER, "1.0.0");
+    assert!(cache.install_package(
+        &release_of(NEWER, "1.0.0", &newer),
+        &newer,
+        &TrustLists::default(),
+        None,
+    ));
+    let found = |app: &str| {
+        package_store::Catalog::at(dir.path().join("apps"), None)
+            .find(app)
+            .unwrap()
+            .is_some()
+    };
+    assert!(found(FOLLOWED) && found(NEWER));
+
+    // The map as the newer build left it: it names what the follower installed before.
+    let stale: std::collections::BTreeSet<String> = [FOLLOWED.to_owned()].into();
+    cache.drop_followed_not_named(&stale);
+    assert!(found(FOLLOWED), "what the stale map names stays");
+    assert!(found(NEWER), "an app only the newer build installed stays");
+
+    // Without its list, the rule removes nothing, whatever the map names.
+    std::fs::remove_file(dir.path().join("apps").join(FOLLOWED_FILE)).unwrap();
+    cache.drop_followed_not_named(&std::collections::BTreeSet::new());
+    assert!(found(FOLLOWED) && found(NEWER), "no list, nothing removed");
 }
 
 /// The actions the surface `app` publishes on this device names, by resource kind and id.
