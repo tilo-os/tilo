@@ -4944,9 +4944,14 @@ fn carried_governance(message: &NeighbourMsg) -> bool {
 }
 
 /// Whether `authored` is the other end's already: the device `remote` sent it
-/// itself.
+/// itself. A change to the workspace's own state signs no author of its own:
+/// the name it travels under is the device whose link brought it, and a host
+/// that kept it names that device whenever it hands it on.
 fn already_theirs(authored: &Authored, remote: [u8; 32]) -> bool {
-    !authored.published && from_device(&authored.message, remote)
+    !authored.published
+        && (from_device(&authored.message, remote)
+            || (authored.from == remote
+                && matches!(authored.message, NeighbourMsg::SyncResp { .. })))
 }
 
 /// What one link's live stream sends besides the frames published live.
@@ -5032,7 +5037,13 @@ async fn send_authored(
     } = sending;
     let reaches = link.reach_of(remote, scope);
     let takes = |message: &NeighbourMsg| reaches(message) && opened_admits(message, opens, &opened);
-    for authored in catch_up.iter().filter(|authored| takes(&authored.message)) {
+    // What the link opens with names each frame's author as the store kept it, so a device is
+    // not handed back what it wrote itself, the workspace changes it signed among them. A device
+    // under this one's own key is the one case the name does not tell apart: it gets them all.
+    let own = link.device();
+    for authored in catch_up.iter().filter(|authored| {
+        takes(&authored.message) && (remote == own || !already_theirs(authored, remote))
+    }) {
         write_authored(&mut send, authored).await?;
     }
     link.0.catch_up_written.send_replace(true);
