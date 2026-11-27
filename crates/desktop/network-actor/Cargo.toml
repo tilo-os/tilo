@@ -16,7 +16,9 @@ getrandom.workspace = true
 hex.workspace = true
 libc.workspace = true
 iroh.workspace = true
-media = { package = "tilo-media", path = "../../engines/tilo-media", features = ["realtime"] }
+# The speaker-group model and the playout clock read only the media crate's plain types, so
+# the daemon that checks the fabric's envelopes links no GStreamer.
+media = { package = "tilo-media", path = "../../engines/tilo-media" }
 neighbour-wire = { package = "tilo-neighbour-wire", path = "../../core/neighbour-wire" }
 postcard = { workspace = true, features = ["alloc"] }
 runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab" }
