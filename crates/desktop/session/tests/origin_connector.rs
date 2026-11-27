@@ -218,7 +218,7 @@ fn session(root: &Path) -> Session {
             person_link = Some(
                 device
                     .daemon
-                    .link_shell(tilo_test_env::hang_bound())
+                    .link_person(tilo_test_env::hang_bound())
                     .expect("the daemon makes the person's link"),
             );
             Options {

@@ -149,7 +149,7 @@ impl Builder {
             .expect("the daemon makes the session's link");
         // The fixture's own link, as the person: what a program of theirs reads and runs over.
         let fixture_link = daemon
-            .link_shell(within)
+            .link_person(within)
             .expect("the daemon makes the fixture's link");
         // Where the compositor's socket names itself, as `main` resolves the display it binds.
         let runtime_dir = home.runtime().to_path_buf();

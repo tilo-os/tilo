@@ -476,7 +476,7 @@ fn session_on(device: &Daemon) -> Session {
 fn records(device: &Daemon) -> DeviceRecords {
     let link = device
         .running
-        .link_shell(tilo_test_env::hang_bound())
+        .link_person(tilo_test_env::hang_bound())
         .expect("the daemon makes a link");
     let link =
         tilo_session_client::daemon_documents::inherited_link(Some(link), tilo_rt::app().handle())

@@ -582,6 +582,25 @@ impl Running {
         ))
     }
 
+    /// A link to the daemon's dispatch as its person, on no seat, once the person's services run
+    /// (within `within`): what a test's own program reads and runs the person's calls over beside
+    /// the session's link ([`Self::link_shell`]), which holds this process's seat. It hands the
+    /// device no process, as only a seat's shell does.
+    ///
+    /// # Errors
+    /// The person's services did not start in time, or the link could not be made.
+    #[cfg(feature = "test-support")]
+    pub fn link_person(
+        &self,
+        within: Duration,
+    ) -> io::Result<runtime_portal::process_link::Descriptor> {
+        let services = self.person.within(within)?;
+        let secret = services.shell_token();
+        Ok(runtime_portal::packet::descriptor_of(
+            services.link_with(&secret)?,
+        ))
+    }
+
     /// The person the daemon serves, by their id (the hex of their root), once their services
     /// run (within `within`): who a test's session in this process is the shell of
     /// ([`Self::link_shell`]), and whose own workspace the device's resources are read in.
