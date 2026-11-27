@@ -1045,10 +1045,14 @@ impl Linked {
             .iter()
             .any(|certificate| certificate.device_public_key == device.cert.device_public_key);
         let sync = DirectSync::new(state, device.sk.clone());
+        // A device the workspace does not list yet signs its own row on the link it dials; one
+        // placed for some records alone is admitted by the certificate it was placed with.
         let sync = if listed {
             sync
-        } else {
+        } else if device.cert.capabilities.records.is_some() {
             sync.placed(device.cert.clone()).map_err(Refusal::Other)?
+        } else {
+            sync.with_certificate(device.cert.clone())
         };
         let link = dialer.link(Purpose::Records).await.map_err(refused)?;
         link.prove_member(&device.cert, &device.sk, &host_cert)
@@ -1058,6 +1062,30 @@ impl Linked {
         let reader = sync.reader();
         let running = sync.clone();
         let running = tokio::spawn(async move { running_session.run(&running).await });
+        if !listed {
+            // The device signed its own row on the member list as it placed itself, and the
+            // link carries it: it is in once the host has taken that row in, as a session waits
+            // for before it counts itself a member.
+            let device_key = device.cert.device_public_key;
+            let name = workspace.to_string();
+            tilo_test_env::within("the host takes in the row the device signed", async {
+                loop {
+                    let listed = Box::pin(workspaces.state(&name))
+                        .await
+                        .is_some_and(|state| {
+                            state
+                                .governance()
+                                .member_list_access(std::time::SystemTime::now())
+                                .is_ok_and(|access| access.member_devices.contains(&device_key))
+                        });
+                    if listed || running.is_finished() {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+            .await;
+        }
         Ok(Self {
             sync,
             actions,
