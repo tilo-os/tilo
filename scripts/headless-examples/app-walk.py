@@ -2866,20 +2866,22 @@ class Walk:
         def count() -> int:
             return len(self.session.windows())
 
-        def at_least() -> int | None:
+        # A count of none is a count: the wait takes a map, which is never falsy, so a desktop
+        # that holds no window is answered rather than waited out.
+        def at_least() -> dict | None:
             n = count()
-            return n if n >= wanted else None
+            return {"windows": n} if n >= wanted else None
 
-        def exactly() -> int | None:
+        def exactly() -> dict | None:
             n = count()
-            return n if n == int(value) else None
+            return {"windows": n} if n == int(value) else None
 
         if isinstance(value, dict):
             wanted = int(value["at_least"])
             found = until_value(f"at least {wanted} windows", at_least, 10)
         else:
             found = until_value(f"{value} windows", exactly, 10)
-        return {"windows": found}
+        return found
 
     def op_focused(self, value) -> dict:
         """The window of `value` (an app's directory name or id) has the

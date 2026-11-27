@@ -63,6 +63,11 @@
           "wait_for": "Add trigger"
         },
         {
+          "press": {
+            "prefix": "What starts it"
+          }
+        },
+        {
           "press": "App opened"
         },
         {
