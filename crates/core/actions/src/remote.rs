@@ -327,8 +327,7 @@ pub fn workspace_agent_effects(operation: &str) -> Vec<crate::ActionEffect> {
 /// is its `person`, and one listed on [`WORKSPACE_APP`] on each app the workspace runs, which
 /// is its `app`. One listed on [`WORKSPACE_PERMISSION`] is published on each of the
 /// workspace's grants.
-pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 47] = [
-    ("member.list", Some(WORKSPACE_MEMBERS), "list"),
+pub const WORKSPACE_MEMBER_LIST_PUBLISHED: [(&str, Option<&str>, &str); 46] = [
     (
         "member.add",
         Some(WORKSPACE_MEMBERS),

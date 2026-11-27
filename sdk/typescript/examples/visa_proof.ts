@@ -404,13 +404,13 @@ async function main(): Promise<number> {
     "the link lands them in Jane's workspace as an editor",
   );
   const reviewerPerson = accepted.person as string | null;
-  type Row = { actor: { member?: { person?: string } }; role?: string; name: string; removed: boolean };
-  const members = (await act<Row[]>(workspace, "workspace/members#list")).filter((member) => !member.removed);
-  const person = (member: Row) => member.actor.member?.person ?? "";
-  say("   members", members.map((member) => `${member.name || person(member).slice(0, 8)} (${member.role})`).join(", "));
+  type Member = { actor: { member: { person?: string } }; role?: string; name?: string; removed: boolean };
+  const people = (await workspace.resource("record:tilo.workspace:workspace/members").load()).fields.people as Member[];
+  const members = people.filter((member) => !member.removed);
+  say("   members", members.map((member) => `${member.name || member.actor.member.person?.slice(0, 8)} (${member.role})`).join(", "));
   check(
     reviewerPerson === null ||
-      members.some((member) => person(member) === reviewerPerson && member.role === "editor"),
+      members.some((member) => member.actor.member.person === reviewerPerson && member.role === "editor"),
     "the backend sees the reviewer among Jane's workspace's members",
   );
   check(

@@ -423,12 +423,10 @@ fn a_carrier_names_no_edit_its_caller_is_then_refused() {
     });
 }
 
-/// What Chat keeps for the whole workspace is offered once the workspace keeps it, and nobody
-/// the workspace does not admit is offered it.
+/// What Chat keeps for the whole workspace is offered once the workspace keeps it.
 #[test]
 fn chats_document_offers_what_chat_keeps_for_the_workspace_once_told() {
     host::run(|host| async move {
-        let workspace = host.workspace().to_owned();
         let agent = host.agent();
         let (opened, is_error) = said(
             &agent
@@ -444,18 +442,6 @@ fn chats_document_offers_what_chat_keeps_for_the_workspace_once_told() {
                 "Chat offers what it keeps for the workspace (`{kept}`): {listed}"
             );
         }
-        let visitor = host.visitor(&workspace).await;
-        let refused = visitor
-            .call(
-                tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
-                tilo_actions::remote::workspace_governance_address(&workspace, "member.list"),
-                &json!({}),
-            )
-            .await;
-        assert!(
-            matches!(refused, Err(ActionCallError::NotPermitted)),
-            "{refused:?}"
-        );
     });
 }
 

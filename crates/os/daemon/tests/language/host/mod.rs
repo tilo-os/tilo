@@ -70,7 +70,8 @@ use tilo_actions::remote::answered;
 use tilo_actions::remote::{
     APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION, ActionCallError, ActionProvider, Caller,
     CataloguePage, CatalogueQuery, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReadAnswer,
-    ReceiptStatus, RemoteActionTarget, ResourceReadRequest, application_action_target,
+    ReceiptStatus, RemoteActionTarget, ResourceAddress, ResourceCopy, ResourceReadRequest,
+    ResourceReads as _, WORKSPACE_GOVERNANCE_PROVIDER, application_action_target,
     workspace_provider,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
@@ -1424,6 +1425,11 @@ impl Member {
         .expect("the device link answers")
     }
 
+    /// The rows of `workspace`'s members' resource as this device reads them over its link.
+    pub async fn members(&self, workspace: &str) -> Result<Vec<Value>, ActionCallError> {
+        members_over(&self.remote, self.device(), workspace).await
+    }
+
     /// The action at `address` of `provider`, with `arguments`, followed until it settles.
     pub async fn call(
         &self,
@@ -1438,6 +1444,27 @@ impl Member {
         )
         .await
         .expect("the device link answers")
+    }
+}
+
+/// The rows of `workspace`'s members' resource (`record:tilo.workspace:workspace/members`) as
+/// the device `device` reads them over its link `remote`, or why it may not.
+pub async fn members_over(
+    remote: &RemoteDevice,
+    device: [u8; 32],
+    workspace: &str,
+) -> Result<Vec<Value>, ActionCallError> {
+    let address = ResourceAddress {
+        workspace: workspace.to_owned(),
+        app: WORKSPACE_GOVERNANCE_PROVIDER.to_owned(),
+        record: tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned(),
+    };
+    // The link says who asks, whatever caller is named here.
+    let nobody = Caller::visitor(device);
+    let read = remote.read(&nobody, &address);
+    match tilo_test_env::within("the daemon to answer over the device link", read).await? {
+        ResourceCopy::Reading { value, .. } => Ok(value["people"].as_array().unwrap().clone()),
+        other => panic!("the workspace's people read as {other:?}"),
     }
 }
 

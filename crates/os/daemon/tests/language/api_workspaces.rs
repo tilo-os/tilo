@@ -49,14 +49,10 @@ fn a_computer_and_a_key_share_the_persons_workspace_list() {
 
         // Another computer of hers reads the workspace the list names as she does.
         let tower = host.member("Ada's tower", host.workspace()).await;
-        let provider = tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER;
-        let at = |operation| {
-            tilo_actions::remote::workspace_governance_address(host.workspace(), operation)
-        };
-        let read = tower.call(provider, at("member.list"), &json!({})).await;
+        let read = tower.members(host.workspace()).await;
         assert!(
-            matches!(read, Ok(tilo_actions::InvocationUpdate::Succeeded { .. })),
-            "the tower reads the workspace the list names: {read:?}"
+            read.is_ok_and(|people| !people.is_empty()),
+            "the tower reads the workspace the list names"
         );
 
         // The person signed the key's grant for all their workspaces, and that signature is

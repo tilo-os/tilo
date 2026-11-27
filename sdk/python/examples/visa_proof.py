@@ -387,14 +387,10 @@ async def main() -> int:
     say("   accepted", str(accepted.get("joined")))
     check((accepted.get("joined") or {}).get("role") == "editor", "the link lands them in Jane's workspace as an editor")
     reviewer_person = accepted.get("person")
-    members = [member for member in await act(ws, "workspace/members#list") if not member["removed"]]
-
-    def person(member: dict) -> str:
-        return member["actor"].get("member", {}).get("person", "")
-
-    say("   members", ", ".join(f"{member['name'] or person(member)[:8]} ({member.get('role')})" for member in members))
+    members = [member for member in (await ws.resource("record:tilo.workspace:workspace/members").load()).fields["people"] if not member["removed"]]
+    say("   members", ", ".join(f"{member.get('name') or member['actor']['member'].get('person', '')[:8]} ({member.get('role')})" for member in members))
     check(
-        reviewer_person is None or any(person(member) == reviewer_person and member.get("role") == "editor" for member in members),
+        reviewer_person is None or any(member["actor"]["member"].get("person") == reviewer_person and member.get("role") == "editor" for member in members),
         "the backend sees the reviewer among Jane's workspace's members",
     )
     check(

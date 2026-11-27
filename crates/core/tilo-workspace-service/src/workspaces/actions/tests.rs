@@ -18,7 +18,7 @@ use tilo_user_identity::DeviceCert;
 
 use super::{
     ADD_ATTESTOR, ADD_REGISTRY, CANCEL_INVITATION, DISABLE_REGISTRY, ENABLE_REGISTRY,
-    HostActionServer, INVITATIONS, MAIL_INVITATION, MEMBERS, NAME, REGISTRIES, REGISTRY_CHANNEL,
+    HostActionServer, INVITATIONS, MAIL_INVITATION, NAME, REGISTRIES, REGISTRY_CHANNEL,
     REMOVE_ATTESTOR, REMOVE_REGISTRY, REVOKE_PUBLISHER, REVOKED_PUBLISHERS,
     ServiceWorkspaceActions, TRUSTED_ATTESTORS, UNLIST, VERBS, WAIT_LIST,
 };
@@ -160,11 +160,9 @@ const INVITE_FAMILY: [&str; 6] = [
     MAIL_INVITATION,
 ];
 
-/// Reading who is in it, leaving, naming themselves, and reading what their workspace trusts
-/// and where it fetches from: what every person is offered in a workspace they are in and no
-/// grant gives them.
-const OWN: [&str; 6] = [
-    MEMBERS,
+/// Leaving, naming themselves, and reading what their workspace trusts and where it fetches
+/// from: what every person is offered in a workspace they are in and no grant gives them.
+const OWN: [&str; 5] = [
     governance::REMOVE_MEMBER,
     NAME,
     TRUSTED_ATTESTORS,
@@ -251,7 +249,6 @@ async fn the_catalogue_offers_what_the_workspaces_governance_lets_each_caller_do
     assert_eq!(
         moderator,
         offered_in_catalogue([
-            MEMBERS,
             governance::REMOVE_MEMBER,
             governance::BAN,
             governance::RENAME,
@@ -924,8 +921,8 @@ fn place_request(workspace: &str, cert: &DeviceCert, place: &str) -> InvokeReque
     request
 }
 
-/// The people `member.list` answers, by person: their role, for each person still in the
-/// workspace.
+/// The people the workspace's members' resource names, by person: their role, for each person
+/// still in the workspace.
 fn roles(listed: &Value) -> Vec<(String, String)> {
     listed
         .as_array()
@@ -977,14 +974,7 @@ async fn a_role_is_changed_on_a_member_never_on_someone_the_workspace_does_not_h
     )
     .await
     .unwrap();
-    let listed = invoke(
-        &host,
-        workspace_id,
-        &caller(&owner),
-        request(&workspace, MEMBERS, json!({})),
-    )
-    .await
-    .unwrap();
+    let listed = Value::Array(workspaces.members(&workspace).await.unwrap());
     assert!(
         roles(&listed).contains(&(person(&bo), "moderator".to_owned())),
         "{listed}"
@@ -1002,14 +992,7 @@ async fn a_role_is_changed_on_a_member_never_on_someone_the_workspace_does_not_h
         .await,
         Err(ActionCallError::Refused { reason }) if reason.contains("not a member")
     ));
-    let listed = invoke(
-        &host,
-        workspace_id,
-        &caller(&owner),
-        request(&workspace, MEMBERS, json!({})),
-    )
-    .await
-    .unwrap();
+    let listed = Value::Array(workspaces.members(&workspace).await.unwrap());
     assert!(
         roles(&listed)
             .iter()
@@ -1894,14 +1877,7 @@ async fn two_devices_redeeming_one_invitation_at_once_admit_exactly_one() {
         _ => panic!("exactly one is admitted: {first:?}, {second:?}"),
     };
     assert_eq!(refused, "invitation was already redeemed");
-    let listed = invoke(
-        &host,
-        workspace_id,
-        &caller(&owner),
-        request(&workspace, MEMBERS, json!({})),
-    )
-    .await
-    .unwrap();
+    let listed = Value::Array(workspaces.members(&workspace).await.unwrap());
     let people: Vec<String> = roles(&listed).into_iter().map(|(who, _)| who).collect();
     assert!(
         people.contains(&hex::encode(winner.user_public_key)),

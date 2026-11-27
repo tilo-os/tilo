@@ -36,6 +36,12 @@ impl Guest {
         hex::encode(self.caller.user_public_key().copied().unwrap_or_default())
     }
 
+    /// The rows of `workspace`'s members' resource as this device reads them over its link.
+    pub async fn members(&self, workspace: &str) -> Result<Vec<Value>, ActionCallError> {
+        let device = self.caller.device_public_key().copied().unwrap_or_default();
+        host::members_over(&self.remote, device, workspace).await
+    }
+
     /// The action at `address` of `provider` with `arguments`, followed until it settles.
     pub async fn call(
         &self,

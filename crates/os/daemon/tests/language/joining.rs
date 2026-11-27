@@ -2,10 +2,6 @@
 //! has not admitted to the workspace yet, so a request sent in the moment between asking to join
 //! and being admitted is kept until it is answered, never refused as not admitted.
 
-use serde_json::json;
-use tilo_actions::InvocationUpdate;
-use tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER;
-
 use crate::language::guests::guest;
 use crate::language::host;
 
@@ -18,15 +14,9 @@ fn a_request_sent_as_a_device_joins_is_answered_once_it_is_admitted() {
         let owner_device = host.member("its owner's computer", &workspace).await;
         // The guest's device joins, and its first request is the workspace's people.
         let joined = guest(&host, &owner_device, "editor", "Grace").await;
-        let answered = joined
-            .call(
-                WORKSPACE_GOVERNANCE_PROVIDER,
-                tilo_actions::remote::workspace_governance_address(&workspace, "member.list"),
-                &json!({}),
-            )
-            .await;
+        let answered = joined.members(&workspace).await;
         assert!(
-            matches!(answered, Ok(InvocationUpdate::Succeeded { .. })),
+            answered.is_ok(),
             "the host answers the joining device's first request: {answered:?}"
         );
 

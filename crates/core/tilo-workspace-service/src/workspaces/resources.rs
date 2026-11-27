@@ -1292,7 +1292,8 @@ impl HostedWorkspace {
 /// its agents do on an app's resources.
 impl Workspaces {
     /// Answer the read `command` from the store of `workspace`, with only what `person` (their
-    /// root, in hex) may read: what a test of the agents' work on an app's resources stands on.
+    /// root, in hex) may read, as an app's window reads it: what a test of the agents' work on an
+    /// app's resources stands on.
     ///
     /// # Errors
     /// The workspace is not held here, or `command` writes.
@@ -1306,17 +1307,7 @@ impl Workspaces {
         if command.writes() {
             return Err("a read of the store writes nothing".to_owned());
         }
-        let state = self
-            .workspace(workspace)
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut hosted = state.lock().await;
-        let store = hosted.store_with_surfaces(&self.inner.host.surfaces);
-        let answer = tilo_resource_store::wire::read(&store, command, &may_read(person.to_owned()))
-            .unwrap_or(collab_types::store::wire::Reply::Written);
-        drop(store);
-        drop(hosted);
-        Ok(answer)
+        self.resource_read(workspace, person, command).await
     }
 
     /// Take `documents` (each whole, by its id) into the store of `workspace`, as a member's
@@ -2091,13 +2082,20 @@ fn agents_named(reading: &super::readings::Reading, workspace: &str) -> Vec<Agen
         .collect()
 }
 
+/// The kind of the resource `id` when the workspace builds it from the members and roles it keeps
+/// rather than keeping it as a record: its members' resource. Read through the store's content
+/// command, here and over a device's link alike ([`super::record_reads`]).
+pub(crate) fn built_kind(id: &str) -> Option<&'static str> {
+    (id == tilo_resource_store::WORKSPACE_MEMBERS_ID)
+        .then_some(tilo_resource_store::WORKSPACE_MEMBERS_KIND)
+}
+
 /// Whether `command` reads the workspace's members' resource, which its governance answers.
 fn is_workspace_members_read(command: &collab_types::store::wire::Command) -> bool {
     matches!(
         command,
         collab_types::store::wire::Command::Content { kind, id }
-            if kind == tilo_resource_store::WORKSPACE_MEMBERS_KIND
-                && id == tilo_resource_store::WORKSPACE_MEMBERS_ID
+            if built_kind(id) == Some(kind.as_str())
     )
 }
 

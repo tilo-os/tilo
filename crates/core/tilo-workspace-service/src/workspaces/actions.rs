@@ -104,8 +104,6 @@ use tilo_server_protocol::WorkspaceId;
 pub const INVITATIONS: &str = "invitation.list";
 /// Cancelling an unredeemed invitation: part of inviting.
 pub const CANCEL_INVITATION: &str = "invitation.cancel";
-/// Reading who is in the workspace: its members' resource, which every member reads.
-pub(crate) const MEMBERS: &str = "member.list";
 /// Revoke a key the caller holds or one it minted: the workspace records the
 /// revocation, and every holder and API server refuses the key from then on.
 pub(crate) const REVOKE_KEY: &str = "key.revoke";
@@ -250,7 +248,7 @@ pub struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 53] = [
+const VERBS: [Verb; 52] = [
     Verb {
         id: WORKSPACE_INVITE,
         label: "Invite",
@@ -271,14 +269,6 @@ const VERBS: [Verb; 53] = [
         check: governance::ADD_MEMBER,
         kind: roles::GOVERNANCE_KIND,
         params: invitation_params,
-    },
-    Verb {
-        id: MEMBERS,
-        label: "List members",
-        // Every member reads who else is in the workspace, as its members' resource answers it.
-        check: "",
-        kind: ActionKind::Read,
-        params: Vec::new,
     },
     Verb {
         id: ADD_MEMBER,
@@ -1407,7 +1397,7 @@ impl Verb {
         // updates, pins and uninstalls each.
         row.has_children = matches!(child, Some(WORKSPACE_MEMBERS | WORKSPACE_APPS));
         if let Some(action) = row.action.as_mut() {
-            // Reading what the tree holds (`tilo_read workspace/members`) lists it.
+            // Reading the tree (`tilo_read workspace/invitations`) lists it.
             if child.is_some() && address.action == "list" && self.kind == ActionKind::Read {
                 action
                     .contract
@@ -2369,11 +2359,6 @@ impl Workspaces {
                 .grant_device(workspace_id, caller)
                 .await
                 .ok_or(ActionCallError::UnknownAction)?,
-            None if action == MEMBERS => {
-                return Err(ActionCallError::refused(
-                    "Only the workspace's members read who is in it",
-                ));
-            }
             None => return Err(ActionCallError::UnknownAction),
         };
         let workspace = {
@@ -2520,7 +2505,7 @@ impl Workspaces {
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionCallError> {
         match action {
-            WORKSPACE_INVITE | INVITATIONS | CANCEL_INVITATION | MEMBERS | NAME => {
+            WORKSPACE_INVITE | INVITATIONS | CANCEL_INVITATION | NAME => {
                 self.governance_invitations(action, call).await
             }
             ADD_MEMBER => self.governance_add_member(call).await,
@@ -3236,12 +3221,6 @@ impl Workspaces {
             // Naming themselves is every person's; so is reading what their
             // workspace trusts and where it fetches from, which their Store
             // shows them.
-            // Every member reads who else is in it, and an agent as far as its grants let it.
-            if verb.id == MEMBERS {
-                return grants.is_none_or(|grants| {
-                    grants.answer(&verb.operation(GOVERNANCE), now) != Answer::Deny
-                });
-            }
             return matches!(
                 verb.id,
                 NAME | TRUSTED_ATTESTORS | REVOKED_PUBLISHERS | REGISTRIES
@@ -3427,11 +3406,6 @@ impl Workspaces {
                     })
                     .collect())
             }
-            MEMBERS => Ok(self
-                .members(workspace)
-                .await
-                .map_err(ActionCallError::refused)?
-                .into()),
             NAME => {
                 self.name_self(
                     workspace,

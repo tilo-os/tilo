@@ -45,14 +45,7 @@ fn row_of<'a>(rows: &'a [Value], person: &str) -> Option<&'a Value> {
 
 /// The people the workspace keeps now, as `device`, one of its owner's, reads them.
 async fn people_now(device: &host::Member, workspace: &str) -> Vec<Value> {
-    let listed = device
-        .call(
-            WORKSPACE_GOVERNANCE_PROVIDER,
-            at(workspace, "member.list"),
-            &json!({}),
-        )
-        .await;
-    people(&listed)
+    device.members(workspace).await.unwrap()
 }
 
 /// The person's computer makes Grace and Hal administrators of the workspace and unmakes them,
@@ -368,5 +361,47 @@ fn a_key_the_person_approved_renames_no_workspace() {
             ),
             other => panic!("the person's own computer renames it: {other:?}"),
         }
+    });
+}
+
+/// Who is in the workspace is one resource, read the one way wherever it is read: another device
+/// of its member's reads over its link the rows an app's window reads from the store, a device of
+/// someone the workspace does not know is refused just as for a workspace no device keeps.
+#[test]
+fn a_members_device_reads_the_workspaces_people_over_its_link_as_the_store_reads_them() {
+    host::run(|host| async move {
+        use collab_types::store::wire::{Command, Reply};
+        let workspace = host.workspace().to_owned();
+        let (_grace, grace) = host.other_person("Grace", &workspace).await;
+        let laptop = host.member("Ada's laptop", &workspace).await;
+
+        let content = Command::Content {
+            kind: tilo_resource_store::WORKSPACE_MEMBERS_KIND.to_owned(),
+            id: tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned(),
+        };
+        let daemon = host.daemon();
+        let read = daemon
+            .workspaces()
+            .read_store_as(&workspace, host.person(), &content);
+        let Ok(Reply::Content(Some(here))) = read.await else {
+            panic!("the store reads the workspace's people");
+        };
+        let over_link = laptop.members(&workspace).await.unwrap();
+        assert_eq!(here["people"], Value::Array(over_link.clone()));
+        let grace_row = row_of(&over_link, &hex::encode(grace)).expect("Grace is listed");
+        assert_eq!(grace_row["role"], "editor", "{over_link:?}");
+        let ada_row = row_of(&over_link, host.person()).expect("Ada is listed");
+        let owns = ada_row["owner"] == true && ada_row["administrator"] == true;
+        assert!(owns, "Ada owns and administers it: {ada_row}");
+
+        // Someone the workspace does not know reads none of it, and learns no more than of a
+        // workspace no device keeps.
+        let (key, _) = host::stranger("Mallory's phone");
+        let stranger = host.dial(key, &workspace).await;
+        let refused = stranger.members(&workspace).await;
+        let nowhere = collab_types::WorkspaceId::new().to_string();
+        let not_found = stranger.members(&nowhere).await;
+        assert!(refused.is_err(), "{refused:?}");
+        assert_eq!(format!("{refused:?}"), format!("{not_found:?}"));
     });
 }

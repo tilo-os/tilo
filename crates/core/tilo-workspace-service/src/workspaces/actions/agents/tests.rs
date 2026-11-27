@@ -148,10 +148,9 @@ async fn an_agent_governs_as_its_grants_answer_and_asks_its_person_by_default() 
     assert_eq!(declining.asked().len(), 1, "refused, nobody is asked");
     let verbs = offered(&actions, workspace_id, &agent).await;
     assert!(!verbs.iter().any(|verb| verb == ADD_MEMBER), "{verbs:?}");
-    assert!(
-        verbs.iter().any(|verb| verb == super::super::MEMBERS),
-        "it still reads who is in: {verbs:?}"
-    );
+    let grants = workspaces.agent_grants(Some(workspace_id), &agent).await;
+    let reads = grants.answer(&super::MEMBERS_READ, tilo_clock::unix_now_ns());
+    assert_ne!(reads, Answer::Deny, "it still reads who is in");
     server.shutdown().await;
 }
 

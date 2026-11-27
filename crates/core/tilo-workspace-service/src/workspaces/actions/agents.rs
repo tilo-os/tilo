@@ -359,8 +359,8 @@ const PAGE_ACTIONS: [(&str, bool, &str); 21] = [
     ("WaitList", false, super::WAIT_LIST),
     ("Unlist", false, super::UNLIST),
     ("MailInvite", false, super::MAIL_INVITATION),
-    ("Notices", false, super::MEMBERS),
-    ("Permits", false, super::MEMBERS),
+    ("Notices", false, MEMBERS_READ.action),
+    ("Permits", false, MEMBERS_READ.action),
     ("Name", false, super::NAME),
     ("Rename", false, governance::RENAME),
     ("Share", false, governance::SETTINGS),
@@ -372,6 +372,17 @@ const PAGE_ACTIONS: [(&str, bool, &str); 21] = [
     // member's role is not defining one of the workspace's own.
     ("EditRoles", false, governance::SET_ROLE),
 ];
+
+/// The read of the workspace's members (`record:tilo.workspace:workspace/members`) as an agent's
+/// grants decide it: what the workspace tells its people, and what each may do, are read under it.
+pub(crate) const MEMBERS_READ: Operation<'static> = Operation {
+    provider: tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
+    kind: tilo_resource_store::WORKSPACE_MEMBERS_KIND,
+    action: "read",
+    effect: ActionKind::Read,
+    label: "Read the workspace's members",
+    confirms: false,
+};
 
 /// The action `action` of the server itself (`own`) or of the workspaces, as the grants
 /// deciding an agent's call of it name it: as its verb is published, and
@@ -450,6 +461,7 @@ impl Workspaces {
             .map_err(|refused| ActionCallError::refused(refused.to_string()))?;
         let operation = match request {
             WorkspacesRequest::EditRoles { change, .. } => operation_of(false, change.action()),
+            WorkspacesRequest::Notices { .. } | WorkspacesRequest::Permits { .. } => MEMBERS_READ,
             _ => operation_of(own, action),
         };
         let arguments = fields

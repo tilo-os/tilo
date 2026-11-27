@@ -1856,9 +1856,7 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     assert!(by_rosa.is_err(), "{by_rosa:?}");
 
     // Ada's backend lists who is in it now.
-    let members = govern(host, workspace, &backend, super::super::MEMBERS, json!({}))
-        .await
-        .unwrap();
+    let members = Value::Array(workspaces.members(&workspace.workspace).await.unwrap());
     let rosa_row = members
         .as_array()
         .unwrap()
@@ -2079,9 +2077,7 @@ async fn an_owners_key_administers_nothing_and_a_device_of_theirs_makes_an_admin
         )
         .await
         .unwrap();
-    let listed = govern(host, workspace, &ada_key, super::super::MEMBERS, json!({}))
-        .await
-        .unwrap();
+    let listed = Value::Array(workspaces.members(&workspace.workspace).await.unwrap());
     let row = listed
         .as_array()
         .unwrap()
@@ -2266,9 +2262,7 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
     // The people in it: Ada under her own name, its owner and administrator,
     // Rosa under hers, and no row for the host's device that runs it or for
     // any key of theirs.
-    let members = govern(host, workspace, &backend, super::super::MEMBERS, json!({}))
-        .await
-        .unwrap();
+    let members = Value::Array(workspaces.members(&workspace.workspace).await.unwrap());
     let rows = members.as_array().unwrap();
     let row = |person: &[u8; 32]| {
         rows.iter()

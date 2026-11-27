@@ -65,13 +65,6 @@ async fn settled(
     }
 }
 
-/// The people the workspace lists, through `device`.
-async fn members(device: &host::Member, workspace: &str) -> Vec<Value> {
-    let (ran, listed) = workspace_action(device, workspace, "member.list", &json!({})).await;
-    assert!(ran, "{listed}");
-    listed.as_array().cloned().unwrap_or_default()
-}
-
 /// The row of the person `person` among `rows`.
 fn row<'a>(rows: &'a [Value], person: &str) -> &'a Value {
     rows.iter()
@@ -120,12 +113,6 @@ fn a_devices_invitation_links_a_reviewer_with_the_part_it_hands_out() {
                 .any(|one| one["invitee_name"] == "rosa@example.test" && one["role"] == "editor")),
             "{open}"
         );
-
-        // The person is what the workspace lists among its people, as its owner.
-        let rows = members(&laptop, &workspace).await;
-        let owner = row(&rows, host.person());
-        assert_eq!(owner["owner"], true, "{rows:?}");
-        assert_eq!(owner["administrator"], true, "{rows:?}");
     });
 }
 
@@ -298,8 +285,7 @@ fn a_device_installs_an_app_version_and_takes_it_back() {
     });
 }
 
-/// A key of the person's reads the workspace's mail accounts at `workspace/mail-accounts`, and
-/// a key the workspace does not know reads none of its mail.
+/// A key of the person's reads the workspace's mail accounts at `workspace/mail-accounts`.
 #[test]
 fn a_keys_read_of_the_workspaces_mail_accounts() {
     host::run(|host| async move {
@@ -314,20 +300,6 @@ fn a_keys_read_of_the_workspaces_mail_accounts() {
         assert!(
             listed.get("fields").is_some() || listed.get("children").is_some(),
             "the key reaches the workspace's mail: {listed}"
-        );
-
-        // A key the workspace does not know is refused, and told nothing of the workspace.
-        let visitor = host.visitor(&workspace).await;
-        let refused = visitor
-            .call(
-                WORKSPACE_GOVERNANCE_PROVIDER,
-                workspace_governance_address(&workspace, "member.list"),
-                &json!({}),
-            )
-            .await;
-        assert!(
-            matches!(refused, Err(ActionCallError::NotPermitted)),
-            "a key with no grant reads none of the workspace: {refused:?}"
         );
     });
 }

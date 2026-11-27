@@ -21,15 +21,20 @@
 //! grant as the workspace's governance keeps it, woken when the governance moves. A key reads its
 //! own grant and the grants it minted, a device of a person every grant of theirs, and whoever the
 //! workspace lets revoke its grants every one.
+//! Its members (`record:tilo.workspace:workspace/members`) read as the store answers them on the
+//! device, decided as any record: every member reads them, anyone else is refused as for a
+//! workspace this device does not keep.
 
 use std::sync::Arc;
 
+use collab_types::store::wire::{Command, Reply};
 use collab_types::workspace_grant::WorkspaceGrant;
 use tilo_action_types::ActionKind;
 use tilo_actions::remote::{
     ActionCallError, Caller, DEVICE_JOBS, KEY_GRANTS, PRESENCE, RESOURCE_READ_REFUSED,
     RESOURCE_WRITE_REFUSED, ReadingAnswer, ReadsAnswer, RemoteActionMessage, ResourceAddress,
-    ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake, parse_device_record_space,
+    ResourceCopy, ResourceReadRequest, ResourceReads, ResourceWake, WORKSPACE_GOVERNANCE_PROVIDER,
+    parse_device_record_space,
 };
 use tilo_peer_state::StatePeer;
 use tilo_server_protocol::workspaces::MEMBERSHIP_APP;
@@ -151,6 +156,13 @@ enum Route {
     Served(Arc<dyn ResourceReads>),
 }
 
+/// The kind of the resource `address` names when the workspace builds it from its members and roles
+/// rather than keeps it ([`super::resources::built_kind`]).
+fn built_kind(address: &ResourceAddress) -> Option<&'static str> {
+    super::resources::built_kind(&address.record)
+        .filter(|_| address.app == WORKSPACE_GOVERNANCE_PROVIDER)
+}
+
 fn refused() -> ActionCallError {
     ActionCallError::Refused {
         reason: RESOURCE_READ_REFUSED.into(),
@@ -255,6 +267,7 @@ impl RecordReads {
             tilo_action_services::workspace_invocations::PROVIDER,
         ]
         .contains(&address.app.as_str())
+            || built_kind(address).is_some()
         {
             return Ok(AppReach::Changes);
         }
@@ -987,6 +1000,23 @@ impl RecordReads {
             Route::Held(workspaces) => workspaces,
             Route::Served(served) => return served.read(caller, address).await,
         };
+        if let Some(kind) = built_kind(address) {
+            let (kind, id) = (kind.to_owned(), address.record.clone());
+            let (reader, content) = (caller.user_public_key(), Command::Content { kind, id });
+            let copy = match workspaces
+                .resource_read(
+                    &address.workspace,
+                    &reader.map(hex::encode).unwrap_or_default(),
+                    &content,
+                )
+                .await
+                .map_err(|reason| ActionCallError::Unavailable { reason })?
+            {
+                Reply::Content(Some(value)) => ResourceCopy::reading(value, None),
+                _ => ResourceCopy::Absent,
+            };
+            return self.handed(&workspaces, caller, address, copy).await;
+        }
         let unavailable = |error: super::CollaborationError| ActionCallError::Unavailable {
             reason: error.to_string(),
         };
@@ -1128,8 +1158,8 @@ impl RecordReads {
             address.app.clone(),
             address.record.clone(),
         );
-        // A grant or a membership is no document: it moves with the workspace's governance.
-        if app == KEY_GRANTS || app == MEMBERSHIP_APP {
+        // A grant, a membership or the members move with the workspace's members and roles.
+        if app == KEY_GRANTS || app == MEMBERSHIP_APP || built_kind(address).is_some() {
             let changes = workspaces.governance_changes();
             wake_at(
                 &runtime,

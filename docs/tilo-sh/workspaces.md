@@ -196,11 +196,9 @@ async def main() -> None:
         print("invite link:", invitation["link"])
         print("sent by mail:", invitation.get("sent"))
 
-        members = (
-            await run(workspace, {"path": "workspace/members", "action": "list"})
-        )["result"]
-        for member in members or []:
-            print("member:", member.get("name") or member["person"], member["role"])
+        members = await workspace.resource("record:tilo.workspace:workspace/members").load()
+        for member in members.fields["people"]:
+            print("member:", member.get("name") or member["actor"]["member"], member.get("role"))
 
 
 asyncio.run(main())
@@ -226,9 +224,9 @@ const invitation = invited.result as { link: string; sent?: boolean };
 console.log("invite link:", invitation.link);
 console.log("sent by mail:", invitation.sent);
 
-const listed = await run(workspace, { path: "workspace/members", action: "list" });
-for (const member of (listed.result ?? []) as { person: string; name?: string; role: string }[]) {
-  console.log("member:", member.name || member.person, member.role);
+const members = await workspace.resource("record:tilo.workspace:workspace/members").load();
+for (const member of members.fields.people as { actor: { member: unknown }; name?: string; role?: string }[]) {
+  console.log("member:", member.name || member.actor.member, member.role);
 }
 ```
 
@@ -243,8 +241,8 @@ invitation=$(curl -sS --fail-with-body "$tree/invitations/actions/invite" -H "$a
   -H "Content-Type: application/json" -d '{"role": "editor", "invitee_name": "reviewer@example.com"}')
 echo "invite link: $(jq -r .result.link <<<"$invitation")"
 
-curl -sS --fail-with-body "$tree/members/actions/list" -H "$auth" -X POST \
-  | jq -r '.result[] | "member: \(.name // .member.person) \(.role)"'
+curl -sS --fail-with-body "$api/workspaces/$workspace/resources/record:tilo.workspace:workspace/members" \
+  -H "$auth" | jq -r '.fields.people[] | "member: \(.name // .actor.member) \(.role)"'
 ```
 
 A key you created that reaches all your workspaces invites as you would, as far as your role in the

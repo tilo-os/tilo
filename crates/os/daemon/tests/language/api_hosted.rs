@@ -425,10 +425,13 @@ fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_it() {
         let agent = host.agent();
         let (listed, failed) = said(
             &agent
-                .tool("tilo_do", &json!({"path": "workspace/members#list"}))
+                .tool(
+                    "tilo_read",
+                    &json!({"path": "record:tilo.workspace:workspace/members"}),
+                )
                 .await,
         );
-        assert!(!failed, "the agent lists the workspace's people: {listed}");
+        assert!(!failed, "the agent reads the workspace's people: {listed}");
         assert!(listed.contains(host.person()), "{listed}");
 
         // Inviting someone asks the person first: the call waits in its asked record, and

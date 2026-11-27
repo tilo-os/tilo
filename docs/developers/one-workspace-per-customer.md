@@ -458,7 +458,7 @@ Open the workspace in Tilo, or invite the person who reviews it:
 
 ```sh
 tilo do workspace/invitations#invite role=editor invitee_name=ops@example.com -w "Applicant: Jane Doe"
-tilo do workspace/members#list -w "Applicant: Jane Doe"
+tilo read record:tilo.workspace:workspace/members -w "Applicant: Jane Doe"
 tilo do workspace/invitations#list -w "Applicant: Jane Doe"
 tilo do workspace/members#name name="Jane Doe" -w "Applicant: Jane Doe"   # what its people and your invitations call you
 ```
@@ -509,7 +509,7 @@ tilo -w "Applicant: Jane Doe" do word-processor#export_document format=docx
 tilo files get tilo.content:… -w "Applicant: Jane Doe" -o cover-letter.docx
 tilo do account/keys#mint workspace="Applicant: Jane Doe" name="Jane Doe's agent"
 tilo do workspace/invitations#invite role=editor invitee_name=ops@example.com -w "Applicant: Jane Doe"
-tilo do workspace/members#list -w "Applicant: Jane Doe"
+tilo read record:tilo.workspace:workspace/members -w "Applicant: Jane Doe"
 tilo do "account/keys/<grant>#revoke"
 tilo do account/workspaces#delete workspace="Applicant: Jane Doe"   # when the customer leaves
 ```

@@ -385,8 +385,7 @@ mod tests {
             policy.is_administrator(&hex::encode(host.1.user_public_key)),
             "the host it was handed from serves it as an administrator"
         );
-        // Who the workspace lists as its owner (`tilo do workspace/members#list`): the
-        // person the link made one.
+        // Who the workspace lists as its owner: the person the link made one.
         let members = workspaces.members(&workspace).await.unwrap();
         let row = members
             .iter()
