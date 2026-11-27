@@ -180,9 +180,9 @@ fn answered_content(value: &serde_json::Value, hashes: &mut Vec<String>) {
             {
                 hashes.push(hash.to_owned());
             }
-            fields
-                .values()
-                .for_each(|field| answered_content(field, hashes));
+            for field in fields.values() {
+                answered_content(field, hashes);
+            }
         }
         serde_json::Value::Array(items) => {
             for item in items {
