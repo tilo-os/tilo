@@ -47,7 +47,7 @@ view widget(
 ) {
     let prefs = widget_prefs(kind)
     let unfolded = is_kind(open, kind)
-    if widget_shown(kind, prefs, a, unfolded) {
+    if widget_shown(kind, prefs, unfolded) {
         let width = widget_width(kind, prefs, unfolded)
         let place = widget_place(kind, prefs, display)
         ui.FloatingPanel(
@@ -222,7 +222,7 @@ fn widget_prefs(kind: WidgetKind) -> settings.WidgetPrefs {
 /// one kept to "back after a pause" steps aside while the person types and comes back once they
 /// pause, unless they are holding Super for it. An open card stays: the person is using it. Every
 /// widget stays away while another surface has the shell.
-fn widget_shown(kind: WidgetKind, prefs: settings.WidgetPrefs, a: Layout, unfolded: Bool) -> Bool {
+fn widget_shown(kind: WidgetKind, prefs: settings.WidgetPrefs, unfolded: Bool) -> Bool {
     if not prefs.enabled {
         return false
     }
@@ -247,7 +247,10 @@ fn widget_shown(kind: WidgetKind, prefs: settings.WidgetPrefs, a: Layout, unfold
         return music_now() != .none
     }
     if kind == .team {
-        return not a.people.is_empty()
+        // The faces it draws are the people here, beside this one: the layout's people are the
+        // workspace's members, which is everyone including the person looking, and a widget with
+        // no one beside them has nothing to say and stands nowhere.
+        return not device.people.rows.is_empty()
     }
     true
 }
