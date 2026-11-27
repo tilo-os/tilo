@@ -1698,4 +1698,4 @@ pub use tone::Tone;
 
 #[cfg(feature = "model")]
 pub use collab_types::ArtifactKind;
-pub use tilo_actions::HistoryEntryId;
+pub use tilo_action_types::HistoryEntryId;

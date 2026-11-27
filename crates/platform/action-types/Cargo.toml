@@ -8,11 +8,15 @@ license = "MIT"
 readme = "../../../docs/crates/supporting-crate.md"
 repository.workspace = true
 homepage.workspace = true
-description = "Plain names the action model and the toolkit share: an action's address, an invocation's id, a presence and a resource's id."
+description = "Plain names the action model and the toolkit share: an action's address and id, a control's request, an invocation, a presence, a resource and a history entry."
 
 [dependencies]
 serde.workspace = true
-uuid = { workspace = true, features = ["v4", "serde"] }
+serde_json.workspace = true
+uuid = { workspace = true, features = ["v4", "v7", "serde"] }
+hex.workspace = true
+# An action's id is stamped with the sanctioned wall clock.
+tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
 
 [lints]
 workspace = true

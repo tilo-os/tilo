@@ -5,7 +5,7 @@ use std::{
     collections::{BTreeSet, VecDeque},
     rc::{Rc, Weak},
 };
-use tilo_actions::ControlInvocation;
+use tilo_action_types::ControlInvocation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ControlRequestId(uuid::Uuid, u64);

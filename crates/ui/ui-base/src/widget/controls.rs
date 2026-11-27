@@ -43,7 +43,7 @@ pub fn note_drained_origin(origin: Origin) {
 /// A control intent and the effect invocation it continues, when an effect's handler or completion
 /// queued it.
 pub type AttributedControlInvocation = (
-    tilo_actions::ControlInvocation,
+    tilo_action_types::ControlInvocation,
     Option<tilo_action_types::InvocationId>,
 );
 
@@ -60,7 +60,7 @@ pub trait ActionControls: Widget {
     }
 
     /// Drain one queued action-bound control intent from this subtree.
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+    fn take_control_invocation(&mut self) -> Option<tilo_action_types::ControlInvocation> {
         self.children_mut()
             .into_iter()
             .find_map(take_control_invocation)
@@ -146,7 +146,9 @@ macro_rules! optional_emitter_controls {
                 let _ = action.attach(domain, attachment);
             }
         }
-        fn take_control_invocation(&mut self) -> Option<$crate::tilo_actions::ControlInvocation> {
+        fn take_control_invocation(
+            &mut self,
+        ) -> Option<$crate::tilo_action_types::ControlInvocation> {
             self.action
                 .as_mut()
                 .and_then($crate::widget::ActionEmitter::take)
@@ -240,7 +242,9 @@ pub fn attach_controls(
 }
 
 /// Drain one queued control intent from `widget`'s subtree.
-pub fn take_control_invocation(widget: &mut dyn Widget) -> Option<tilo_actions::ControlInvocation> {
+pub fn take_control_invocation(
+    widget: &mut dyn Widget,
+) -> Option<tilo_action_types::ControlInvocation> {
     if let Some(controls) = capability_mut::<dyn ActionControls>(&mut *widget) {
         return controls.take_control_invocation();
     }

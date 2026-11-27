@@ -141,7 +141,7 @@ impl Press {
         Some(Box::new(move || press.run()))
     }
 
-    pub fn take(&self) -> Option<tilo_actions::ControlInvocation> {
+    pub fn take(&self) -> Option<tilo_action_types::ControlInvocation> {
         self.action
             .as_ref()
             .and_then(|action| action.borrow_mut().take())

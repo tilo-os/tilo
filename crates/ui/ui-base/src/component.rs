@@ -759,7 +759,7 @@ pub struct Fired {
     /// screen: the picture a paste writes into a document, and the edit that records its name,
     /// are one step of theirs. Their changes name the same gesture, so one undo takes both back.
     /// `None` for an event that is an act of its own.
-    pub gesture: Option<tilo_actions::ActionId>,
+    pub gesture: Option<tilo_action_types::ActionId>,
 }
 
 /// A view intent: [`Fired`] queued on the host's [`crate::Intents`].
@@ -791,7 +791,11 @@ impl Intent {
 
     /// Queue the intent, carrying `value`, as one part of the act `gesture`: the changes the
     /// event's action makes and the edit it was made with are one step of the person's.
-    pub fn fire_in_gesture(&self, value: Option<Value>, gesture: Option<tilo_actions::ActionId>) {
+    pub fn fire_in_gesture(
+        &self,
+        value: Option<Value>,
+        gesture: Option<tilo_action_types::ActionId>,
+    ) {
         self.queue.push(Fired {
             value,
             gesture,
@@ -828,7 +832,11 @@ impl Event {
 
     /// Queue a view intent carrying `value` as one part of the person's act `gesture`, whose
     /// changes undo takes back together ([`Fired::gesture`]); an action event runs as it does.
-    pub fn fire_in_gesture(&self, value: Option<Value>, gesture: Option<tilo_actions::ActionId>) {
+    pub fn fire_in_gesture(
+        &self,
+        value: Option<Value>,
+        gesture: Option<tilo_action_types::ActionId>,
+    ) {
         if let Self::View(intent) = self {
             intent.fire_in_gesture(value, gesture);
         }
@@ -891,7 +899,7 @@ impl<T: Clone + 'static> Bound<T> {
     /// Report an edit to the value as one part of the person's act `gesture`: what a control
     /// changed as part of a paste whose event names the same gesture ([`Fired::gesture`]), so
     /// the two changes are one step of theirs.
-    pub fn edited_in(&self, value: Value, gesture: Option<tilo_actions::ActionId>) {
+    pub fn edited_in(&self, value: Value, gesture: Option<tilo_action_types::ActionId>) {
         if let Some(edits) = &self.edits {
             edits.fire_in_gesture(Some(value), gesture);
         }

@@ -1,12 +1,20 @@
 //! Plain names the action model and the toolkit share: which action of which resource
-//! ([`ActionAddress`]), one invocation of it ([`InvocationId`]), whose view state it is
-//! ([`PresenceId`]) and which resource ([`ResourceId`]).
+//! ([`ActionAddress`]), a control's request to run it ([`ControlInvocation`]), one invocation
+//! of it ([`InvocationId`]) and the change it made ([`ActionId`]), whose view state it is
+//! ([`PresenceId`]), which resource ([`ResourceId`]) and which history entry
+//! ([`HistoryEntryId`]).
 //!
 //! They are data alone. The action model (`tilo-actions`) builds on them, and the
 //! toolkit's widgets carry them without knowing that model.
 
+use std::sync::Mutex;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use uuid::timestamp::{Timestamp, context::ContextV7};
+
+pub mod history;
+pub use history::HistoryEntryId;
 
 /// Field separator inside a flattened composite key — a unit-separator
 /// control char never appears in a resource or action id.
@@ -172,6 +180,79 @@ impl From<PresenceId> for String {
 impl std::fmt::Display for PresenceId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+/// A globally-unique id minted per dispatched action. Its 16 bytes
+/// double as the deterministic Automerge actor id, making replay
+/// content-addressed identical across replicas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ActionId(pub Uuid);
+
+/// The counter that keeps a minted id after every id minted here before it:
+/// one millisecond never goes backwards, and within a millisecond the
+/// counter orders them.
+static MINTED: Mutex<ContextV7> = Mutex::new(ContextV7::new());
+
+impl ActionId {
+    /// Mint a fresh id, ordered after every id this device minted before it.
+    ///
+    /// Its bytes are the actor of the action's change, and a document keeps its actors sorted:
+    /// an actor that sorts before others renumbers the actor of every op the document holds.
+    /// A time-ordered id (`UUIDv7`: milliseconds, then random bits) sorts after the actors a
+    /// document already has, so taking an action's change in costs what the change holds.
+    ///
+    /// The time is [`tilo_clock`]'s, which is the reading this process was given: an app model
+    /// runs as a WebAssembly module with no clock of its own, and what it stamps an action's
+    /// change with is the host's time.
+    pub fn new() -> Self {
+        let now_ms = tilo_clock::unix_now_ms();
+        let seconds = now_ms / 1_000;
+        let nanos = u32::try_from(now_ms % 1_000).map_or(0, |rest| rest.saturating_mul(1_000_000));
+        Self(Uuid::new_v7(Timestamp::from_unix(&MINTED, seconds, nanos)))
+    }
+
+    /// The 16 raw bytes, used verbatim as the Automerge actor id.
+    pub fn actor_bytes(&self) -> [u8; 16] {
+        *self.0.as_bytes()
+    }
+}
+
+impl Default for ActionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A UI control's inert request to invoke one advertised operation.
+///
+/// This deliberately carries an address and typed JSON arguments, not an
+/// encoded action. The app process resolves the address against its
+/// *fresh* resource tree before opening the action API, so a control cannot
+/// retain stale authority when availability or policy changes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ControlInvocation {
+    pub address: ActionAddress,
+    pub arguments: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ControlInvocation {
+    /// An invocation of `action` on `resource`, with its arguments, or `None`
+    /// when either half is empty or contains the address separator.
+    ///
+    /// This checks the format only. The app process resolves the address
+    /// against its fresh resource tree and revalidates the arguments;
+    /// constructing a value grants no authority.
+    #[must_use]
+    pub fn from_parts(
+        resource: impl AsRef<str>,
+        action: impl AsRef<str>,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) -> Option<Self> {
+        Some(Self {
+            address: ActionAddress::checked(resource, action)?,
+            arguments,
+        })
     }
 }
 

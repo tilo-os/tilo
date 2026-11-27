@@ -92,7 +92,7 @@ impl<I> ActionEmitter<I> {
         Ok(())
     }
 
-    pub fn take(&mut self) -> Option<tilo_actions::ControlInvocation> {
+    pub fn take(&mut self) -> Option<tilo_action_types::ControlInvocation> {
         self.pending.take()
     }
 

@@ -97,7 +97,7 @@ impl Drop for DrainOriginScope {
 pub fn take_attributed_with_origin(
     widget: &mut dyn Widget,
 ) -> Option<(
-    tilo_actions::ControlInvocation,
+    tilo_action_types::ControlInvocation,
     Option<tilo_action_types::InvocationId>,
     Origin,
 )> {

@@ -11,11 +11,7 @@
 //! selection, scroll) must never go through an action; only shared CRDT
 //! mutations do.
 
-use std::sync::Mutex;
-
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-use uuid::timestamp::{Timestamp, context::ContextV7};
 
 /// The CRDT document an action mutates — aliased so call sites read as
 /// "mutate the Doc"; exactly [`automerge::AutoCommit`].
@@ -69,46 +65,7 @@ impl OperationKind {
     }
 }
 
-/// A globally-unique id minted per dispatched action. Its 16 bytes
-/// double as the deterministic Automerge actor id, making replay
-/// content-addressed identical across replicas.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct ActionId(pub Uuid);
-
-/// The counter that keeps a minted id after every id minted here before it:
-/// one millisecond never goes backwards, and within a millisecond the
-/// counter orders them.
-static MINTED: Mutex<ContextV7> = Mutex::new(ContextV7::new());
-
-impl ActionId {
-    /// Mint a fresh id, ordered after every id this device minted before it.
-    ///
-    /// Its bytes are the actor of the action's change, and a document keeps its actors sorted:
-    /// an actor that sorts before others renumbers the actor of every op the document holds.
-    /// A time-ordered id (`UUIDv7`: milliseconds, then random bits) sorts after the actors a
-    /// document already has, so taking an action's change in costs what the change holds.
-    ///
-    /// The time is [`tilo_clock`]'s, which is the reading this process was given: an app model
-    /// runs as a WebAssembly module with no clock of its own, and what it stamps an action's
-    /// change with is the host's time.
-    pub fn new() -> Self {
-        let now_ms = tilo_clock::unix_now_ms();
-        let seconds = now_ms / 1_000;
-        let nanos = u32::try_from(now_ms % 1_000).map_or(0, |rest| rest.saturating_mul(1_000_000));
-        Self(Uuid::new_v7(Timestamp::from_unix(&MINTED, seconds, nanos)))
-    }
-
-    /// The 16 raw bytes, used verbatim as the Automerge actor id.
-    pub fn actor_bytes(&self) -> [u8; 16] {
-        *self.0.as_bytes()
-    }
-}
-
-impl Default for ActionId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+pub use tilo_action_types::ActionId;
 
 /// Errors from encoding, decoding, or applying an action.
 #[derive(Debug, thiserror::Error)]
