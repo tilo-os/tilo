@@ -1921,21 +1921,15 @@ impl Driver {
         for root in self.app.presentation_roots() {
             crate::headless::collect_named_targets(root, "", &mut HashMap::new(), &mut retained);
         }
-        let mut unique = HashMap::new();
-        for target in &retained {
-            unique
-                .entry(target.key.clone())
-                .and_modify(|entry| *entry = false)
-                .or_insert(true);
-        }
         let mut targets = HashMap::new();
         for target in retained {
-            if unique.get(&target.key) != Some(&true) {
-                continue;
-            }
             let Some(Some(node)) = registered.get(&target.key).copied() else {
                 continue;
             };
+            // One widget the walk meets under two paths (a decorator's child, which it lays out
+            // in place of itself) is that one widget: both its paths name it, and a press on
+            // either reaches it. Only a name a *different* widget already holds is left alone,
+            // so one name never comes to mean two controls.
             targets.insert(target.path, node);
             if let Some(bare) = target.bare {
                 targets.entry(bare).or_insert(node);
