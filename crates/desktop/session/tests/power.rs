@@ -1697,3 +1697,89 @@ fn a_failed_active_profile_read_keeps_polling_until_retry_succeeds() {
         reads_once_live
     );
 }
+
+/// A first login whose person was never made has no setup to go through and nobody to unlock as:
+/// "Tilo didn't start" stands in front with the words founding failed with, and nothing locks it,
+/// not the idle timer, a sleep, the lid or the power key, though the same policy locks a session
+/// with a person behind it.
+#[test]
+fn a_first_login_that_made_no_person_says_why_and_never_locks() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let (machine, service) = Machine::start(PowerPolicy {
+        idle_lock: Some(Duration::from_millis(60)),
+        ..quiet()
+    });
+    let why = "Tilo could not set up this computer's person: this device's key is another \
+               process's";
+    let app_wire = tempfile::tempdir().expect("a directory to serve the app wire in");
+    std::fs::set_permissions(app_wire.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("the app wire's directory is this user's");
+    // What startup answers a login on the computer's own daemon whose founding failed.
+    let setup = tilo_session::startup::before_shell(
+        &tilo_session::startup::Identity::NotStarted(why.to_owned()),
+        false,
+    );
+    let mut session = crate::common::headless(Options {
+        services: vec![service],
+        power: Some(machine.link.clone()),
+        user: "ada".to_owned(),
+        verifier: Arc::new(Sesame),
+        app_socket: AppSocket::At(app_wire.path().join("actions.sock")),
+        surfaces: vec![lock_screen()],
+        setup,
+        ..Options::default()
+    });
+    session.step(Duration::from_millis(1)).unwrap();
+    assert!(
+        session.setup_up(),
+        "the screen stands in front of the desktop"
+    );
+    assert!(
+        !session.compositor().locked(),
+        "nothing locks it as it starts"
+    );
+    // What every window reads to assistive technology: the lock screen's app the session keeps
+    // ready is among them, and stays out of sight.
+    let read: String = session
+        .a11y_windows()
+        .into_iter()
+        .flat_map(|(_, _, tree)| tree.nodes)
+        .flat_map(|(_, node)| {
+            [
+                node.label().map(str::to_owned),
+                node.description().map(str::to_owned),
+            ]
+        })
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        read.contains("Tilo didn't start"),
+        "it says Tilo didn't start, not setup's first step: {read}"
+    );
+    assert!(read.contains(why), "it reads why founding failed: {read}");
+
+    step_for(&mut session, Duration::from_millis(400));
+    assert!(
+        !session.compositor().locked(),
+        "the idle timer locks nothing in front of setup"
+    );
+    machine.sleep(true);
+    until(&mut session, |_| !machine.lock_held("sleep"));
+    assert!(
+        !session.compositor().locked(),
+        "a sleep goes ahead at once and locks nothing"
+    );
+    machine.sleep(false);
+    until(&mut session, |_| machine.lock_held("sleep"));
+    machine.lid(true);
+    press(&mut session, POWER_KEY);
+    step_for(&mut session, Duration::from_millis(200));
+    assert!(
+        !session.compositor().locked(),
+        "neither the lid nor the power key locks it"
+    );
+    assert!(session.setup_up(), "and the screen still stands");
+}

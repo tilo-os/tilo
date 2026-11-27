@@ -772,6 +772,8 @@ impl Session {
         // or a script.
         self.shared.deliver_hands();
         self.shared.deliver_sends(Some(self.content.as_ref()));
+        // Setup standing over the shell has no person behind it to unlock as: it is never locked.
+        self.compositor.hold_lock(self.setup_up());
         self.follow_power()?;
         if let Some(comforts) = &mut self.comforts {
             comforts.observe();

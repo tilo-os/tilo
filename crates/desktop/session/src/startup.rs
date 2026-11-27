@@ -56,6 +56,10 @@ pub enum Identity {
     /// Nothing proved the stored identity invalid, so the session stops rather than start a shell
     /// under an identity nobody could check.
     Refused(String),
+    /// The account signed in with no identity, and this computer's daemon, which starts every
+    /// login's person, made none for it, as the words say: setup has nothing behind it, so what
+    /// opens is [`BeforeShell::NotStarted`] with them.
+    NotStarted(String),
 }
 
 /// What a verification that did not pass calls for.
@@ -212,8 +216,11 @@ pub fn identity() -> Identity {
         // one way a person is made: the daemon founds them and keeps their root, and this
         // account takes up their public record. It then certifies the key the daemon made it,
         // as a person whose identity another device of theirs holds does.
-        if let Some(identity_dir) = identity_path.parent() {
-            found_here(identity_dir);
+        if let Some(identity_dir) = identity_path.parent()
+            && let Err(why) = found_here(identity_dir)
+            && tilo_api::daemon::this_computer().is_ok_and(|place| place.system())
+        {
+            return Identity::NotStarted(why);
         }
         return Identity::Shell;
     }
@@ -267,6 +274,9 @@ pub fn before_shell(identity: &Identity, host_desktop: bool) -> Option<BeforeShe
             host_desktop,
             refusal.clone(),
         ))),
+        Identity::NotStarted(why) => Some(BeforeShell::NotStarted {
+            why: Some(why.clone()),
+        }),
         Identity::Shell | Identity::Recovery(_) | Identity::Refused(_) => {
             setup_due_now(host_desktop).map(|view| BeforeShell::Ceremony(Box::new(view)))
         }
@@ -392,11 +402,13 @@ fn certify_this_computers_key(identity_path: &Path) {
 /// holds makes none.
 ///
 /// The session after a login that made no identity reads and writes nothing of a person's, so
-/// that is logged as the error it is: a session logs errors alone unless asked for more.
-fn found_here(identity_dir: &Path) {
-    match found_and_certify(identity_dir) {
+/// that is logged as the error it is (a session logs errors alone unless asked for more), and
+/// answered as the words the screen in front of it shows.
+fn found_here(identity_dir: &Path) -> Result<(), String> {
+    let failed = match found_and_certify(identity_dir) {
         Ok(true) => {
             tracing::info!("this account made its Tilo identity on this computer");
+            return Ok(());
         }
         // A person another device of theirs certifies this account for is on the way; an
         // account the daemon names no person at all is left with none.
@@ -404,16 +416,13 @@ fn found_here(identity_dir: &Path) {
             if tilo_api::daemon::who::who()
                 .is_ok_and(|who| who.person.is_none() && who.certify_person.is_none()) =>
         {
-            tracing::error!(
-                "this account signed in with no Tilo identity, and this computer's daemon lets it \
-                 make none"
-            );
+            "this computer's daemon has no person for this account and lets it make none".to_owned()
         }
-        Ok(false) => {}
-        Err(error) => {
-            tracing::error!(%error, "this account's identity was not made on this computer");
-        }
-    }
+        Ok(false) => return Ok(()),
+        Err(error) => error,
+    };
+    tracing::error!(error = %failed, "this account's identity was not made on this computer");
+    Err(failed)
 }
 
 /// [`found_here`], answering whether an identity was made and its key certified, and why not.

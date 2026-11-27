@@ -285,7 +285,9 @@ impl Session {
                 // window is started here, and the session admits the machine may sleep once it drew
                 // (`follow_lock`).
                 self.follow_lock()?;
-                if self.compositor.lock_drawn() {
+                // A sleep that locks nothing (the person turned the password after sleep off, or
+                // setup has no one to unlock as) has no frame to wait for.
+                if self.compositor.lock_drawn() || !self.compositor.locked() {
                     link.bridge().lock_screen_drawn();
                 } else {
                     self.machine.sleep.awaiting = true;

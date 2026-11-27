@@ -159,7 +159,8 @@ fn main() -> std::process::ExitCode {
     tilo_startup_metrics::mark("identity-verified");
     match &identity {
         tilo_session::startup::Identity::Shell
-        | tilo_session::startup::Identity::WaitForClock { .. } => {}
+        | tilo_session::startup::Identity::WaitForClock { .. }
+        | tilo_session::startup::Identity::NotStarted(_) => {}
         tilo_session::startup::Identity::Recovery(problem) => {
             eprintln!(
                 "tilo-session: this device's Tilo identity needs its owner: {}",

@@ -395,6 +395,12 @@ pub struct Compositor {
     /// It runs in a window of a desktop it did not start: that desktop owns idle, blanking, locking
     /// and suspend, so this one runs no idle timers.
     hosted: bool,
+    /// Nothing stands behind a lock yet (the computer's first setup, with no person to unlock
+    /// as): neither the idle timer nor a sleep locks the session while it holds.
+    lock_held: bool,
+    /// The idle-to-lock timeout the session was last given, which runs again once the lock is no
+    /// longer held.
+    given_lock: Option<std::time::Duration>,
     /// The outputs as Settings and the session last read them ([`Compositor::display_snapshot`]).
     displays: settings_bridge::Published,
     /// Told of every turn of the loop's wait, when someone watches for a loop that has stopped.
@@ -458,6 +464,8 @@ impl Compositor {
             display,
             data: LoopData { state, backend },
             hosted: false,
+            lock_held: false,
+            given_lock: IdleConfig::default().lock_timeout,
             displays: settings_bridge::Published::default(),
             turns: None,
             a11y: A11y::default(),
@@ -1419,17 +1427,35 @@ impl Compositor {
 
     /// When the displays dim, blank, and the session locks or suspends with no input. Applied to
     /// the current idle episode: a shorter timeout can fire at the next dispatch. A hosted session
-    /// runs no idle timers whatever it is given: the desktop it runs in owns idle.
+    /// runs no idle timers whatever it is given: the desktop it runs in owns idle. While the lock
+    /// is held ([`Self::hold_lock`]) the lock's timeout is kept for later, not run.
     pub fn set_idle_config(&mut self, config: IdleConfig) {
         let config = if self.hosted {
             IdleConfig::never()
         } else {
             config
         };
+        self.given_lock = config.lock_timeout;
         let session = &mut self.data.state.idle.session;
         session.set_blank_timeout(config.blank_timeout);
-        session.set_lock_timeout(config.lock_timeout);
+        session.set_lock_timeout(if self.lock_held {
+            None
+        } else {
+            config.lock_timeout
+        });
         session.set_suspend_timeout(config.suspend_timeout);
+    }
+
+    /// Hold the session's lock while `held`: nothing stands behind one yet, as on a computer's
+    /// first setup with no person to unlock as. The displays still dim, blank and sleep; neither
+    /// the idle timer nor a sleep locks, and the lock's timeout runs again once it is let go.
+    pub fn hold_lock(&mut self, held: bool) {
+        if self.lock_held == held {
+            return;
+        }
+        self.lock_held = held;
+        let timeout = if held { None } else { self.given_lock };
+        self.data.state.idle.session.set_lock_timeout(timeout);
     }
 
     /// Whether this session runs in a window of a desktop it did not start;
@@ -1601,7 +1627,7 @@ impl Compositor {
             .state
             .idle
             .session
-            .prepare_for_sleep(std::time::Instant::now(), lock_on_sleep);
+            .prepare_for_sleep(std::time::Instant::now(), lock_on_sleep && !self.lock_held);
         self.apply_idle_by(transitions, locked_by)
     }
 

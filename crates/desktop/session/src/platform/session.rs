@@ -3181,8 +3181,13 @@ impl Session {
     /// Whether this session can lock at all: a password it can check, and a
     /// screen that shows the lock and takes that password. Missing either, a
     /// lock would leave the session with nothing that could lift it, so it
-    /// stays unlocked and says which part is missing.
+    /// stays unlocked and says which part is missing. Setup standing over the shell has no person
+    /// behind it to unlock as, so it never locks either.
     pub(crate) fn can_lock(&self) -> bool {
+        if self.setup_up() {
+            tracing::info!("setup has no person to unlock as: not locking");
+            return false;
+        }
         if !self.unlocking.verifier.available() {
             tracing::warn!("no password can be checked here: not locking");
             return false;

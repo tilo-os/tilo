@@ -33,6 +33,9 @@ pub(crate) fn mount_setup(
     surface.map(|surface| {
         let setup = Rc::new(RefCell::new(Setup::new(surface, scale, waiter, commands)));
         compositor.add_surface(setup.clone());
+        // Setup has no person behind it to unlock as: nothing locks it from its first frame, before
+        // the session's first pass holds the lock for as long as it is up.
+        compositor.hold_lock(true);
         surfaces.add(Rc::clone(&setup) as tilo_session_core::surfaces::Shared);
         setup
     })
