@@ -27,7 +27,6 @@ PUBLIC_COPY_FILES = (
     "crates/desktop/session-core/src/desktop/workspace_settings/people.rs",
     "crates/desktop/session/src/device_lists.rs",
     "crates/desktop/session/src/people.rs",
-    "crates/desktop/session/src/people/roster.rs",
     "crates/desktop/session/src/workspace_settings.rs",
     "crates/desktop/sheets/src/workspace_settings/people.rs",
 )
