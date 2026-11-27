@@ -1207,6 +1207,7 @@ fn endpoints_agree(identity: &ServerIdentity, endpoint: &Endpoint) -> Result<(),
 )]
 mod tests {
     use super::*;
+    use crate::device::keep::servers::floor;
     use std::time::Duration;
     use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity,
@@ -1482,56 +1483,31 @@ mod tests {
                 .await
                 .unwrap();
             let hosted = server.workspaces().unwrap();
-            // Its rollback floor says which key it takes, and it never answers
-            // its own request: that is its person's other devices' to sign.
+            // After a healthy boot it asks its person's other devices to move its rollback
+            // floor, saying which key the floor takes, and it never answers its own request.
             let secret_sync = tilo_seal::SecretKey::from_bytes([3; 32]);
-            let made = crate::device::keep::servers::floor::make_key(
-                &root,
-                &secret_sync.public_key().unwrap(),
-            )
-            .unwrap();
-            crate::device::keep::servers::floor::apply(hosted, made.action)
-                .await
-                .unwrap();
-            assert_eq!(
-                tilo_workspace_service::workspaces::servers::read(hosted)
-                    .await
-                    .unwrap()
-                    .active(&host.public_key)
-                    .unwrap()
-                    .floor_key,
-                made.public
-            );
-            assert_eq!(
-                crate::device::keep::servers::floor::answer(hosted, &secret_sync)
-                    .await
-                    .unwrap(),
-                0,
-                "a server never answers its own floor request"
-            );
-            let own = tilo_workspace_service::workspaces::servers::device_id(&host.public_key);
-            let id = crate::device::keep::servers::floor::request_id(own.as_str(), 6);
-            assert!(
-                crate::device::keep::servers::floor::apply(
-                    hosted,
-                    crate::device::keep::servers::floor::Floor::APPROVE_FLOOR_ADVANCE.with((
-                        id.clone(),
-                        own.as_str().to_owned(),
-                        "[]".into()
-                    )),
-                )
-                .await
-                .is_err(),
-                "nor may it approve it by hand"
-            );
-            let pending = crate::device::keep::servers::floor::read(hosted)
-                .await
-                .unwrap();
-            assert_eq!(
-                pending.requests.get(&id).unwrap().answer,
-                "",
-                "it stays pending"
-            );
+            let made = floor::make_key(&root, &secret_sync.public_key().unwrap()).unwrap();
+            floor::apply(hosted, made.action).await.unwrap();
+            let state = tilo_rollback::counter::FloorState {
+                counter: 9,
+                base: 4,
+            };
+            let request =
+                tilo_rollback::approval::build_request(0x01D9_1100, &[0, 11, 1], state, &[5, 6], 3);
+            let asked = floor::Asked {
+                generation: 6,
+                image: "sha256:next".into(),
+                updates: "stable".into(),
+                authority: made.public.clone(),
+                request: serde_json::to_string(&request.unwrap()).unwrap(),
+            };
+            let asked = floor::ask(hosted, asked).await.unwrap();
+            assert!(asked.is_err_and(|why| why.contains("waiting")));
+            let servers = tilo_workspace_service::workspaces::servers::read(hosted).await;
+            let entry = servers.unwrap().active(&host.public_key).cloned().unwrap();
+            assert_eq!(entry.floor_key, made.public);
+            let answered = floor::answer(hosted, &secret_sync).await.unwrap();
+            assert_eq!(answered, 0, "a server never answers its own floor request");
             server.shutdown().await;
         }
     }

@@ -465,8 +465,20 @@ impl Workspaces {
         };
         let hosted: WorkspaceHosted =
             serde_json::from_value(answer).map_err(|error| error.to_string())?;
+        // The device signs its address again as it answers, and its direct addresses may have
+        // moved since it signed the one named: what must match is who signed it, the endpoint it
+        // terminates at, the workspace and the role.
         let answered: TransportHint = super::decode_hex(&hosted.host_hint)?;
-        if answered != hint {
+        let signed = |hint: &TransportHint| {
+            let hint = WorkspaceDeviceHintV1::from_transport_hint(hint).ok()?;
+            Some((
+                hint.device_certificate,
+                hint.endpoint_addr.id,
+                hint.workspace_id,
+                hint.holds_keys,
+            ))
+        };
+        if signed(&answered).is_none() || signed(&answered) != signed(&hint) {
             return Err(self
                 .unnamed(
                     workspace,
