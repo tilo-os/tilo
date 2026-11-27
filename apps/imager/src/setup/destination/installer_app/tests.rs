@@ -1520,10 +1520,8 @@ fn the_media_step_is_one_install_button_and_review_repeats_it() {
     );
 }
 
-fn hardware_report(
-    state: imager_backend::support_report::SupportState,
-) -> imager_backend::support_report::SupportReport {
-    use imager_backend::support_report::{
+fn hardware_report(state: hardware_report::SupportState) -> hardware_report::SupportReport {
+    use hardware_report::{
         Applicability, ComponentKind, ComponentSupport, DestinationIdentity, REPORT_SCHEMA,
         ReportSource, SupportReason, SupportReport,
     };
@@ -1558,7 +1556,7 @@ tilo_test_env::scenario! {
 
     phase review_begin_refuses_a_report_missing_an_essential_component;
     {
-        use imager_backend::support_report::SupportState;
+        use hardware_report::SupportState;
         for (state, blocked) in [
             (SupportState::Unverified, false),
             (SupportState::Unsupported, true),

@@ -1,6 +1,6 @@
 //! This computer's components, as read once for the compatibility report.
 
-use imager_backend::support_report::{
+use hardware_report::{
     Applicability, ComponentKind, ComponentSupport, ReportSource, SupportReport, SupportState,
 };
 use tilo_ui_base::tokens::typography::TextRole;

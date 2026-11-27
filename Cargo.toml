@@ -434,6 +434,7 @@ members = [
     "crates/desktop/frame-metrics",
     "crates/os/greetd-client",
     "crates/os/greeter",
+    "crates/os/hardware-report",
     "crates/os/imager-backend",
     "crates/os/install-plan",
     "crates/os/install-profile-model",

@@ -5162,6 +5162,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hardware-report"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-bounded-command",
+ "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
 name = "harfrust"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6288,6 +6300,7 @@ dependencies = [
  "cap-std",
  "console-control",
  "crc32fast",
+ "hardware-report",
  "hex",
  "host-fs",
  "imager-backend",

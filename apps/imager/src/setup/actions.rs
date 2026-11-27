@@ -178,9 +178,9 @@ pub struct HardwareComponentProjection {
     pub present: bool,
     pub status: &'static str,
     pub applicability: &'static str,
-    pub reason: imager_backend::support_report::SupportReason,
-    pub evidence: Vec<imager_backend::support_report::Evidence>,
-    pub remedy: Option<imager_backend::support_report::Remedy>,
+    pub reason: hardware_report::SupportReason,
+    pub evidence: Vec<hardware_report::Evidence>,
+    pub remedy: Option<hardware_report::Remedy>,
     pub critical: bool,
 }
 
@@ -204,8 +204,8 @@ pub struct HardwareProjection {
 
 impl HardwareProjection {
     #[must_use]
-    pub fn from_report(report: &imager_backend::support_report::SupportReport) -> Self {
-        use imager_backend::support_report::ReportSource;
+    pub fn from_report(report: &hardware_report::SupportReport) -> Self {
+        use hardware_report::ReportSource;
         let summary = report.summary();
         Self {
             source: match report.identity.source {
@@ -234,13 +234,9 @@ impl HardwareProjection {
                     present: component.present,
                     status: component.state.key(),
                     applicability: match component.applicability {
-                        imager_backend::support_report::Applicability::ReleaseVerified => {
-                            "release-verified"
-                        }
-                        imager_backend::support_report::Applicability::ObservationOnly => {
-                            "observation-only"
-                        }
-                        imager_backend::support_report::Applicability::Unknown => "unknown",
+                        hardware_report::Applicability::ReleaseVerified => "release-verified",
+                        hardware_report::Applicability::ObservationOnly => "observation-only",
+                        hardware_report::Applicability::Unknown => "unknown",
                     },
                     reason: component.reason.clone(),
                     evidence: component.evidence.clone(),

@@ -1,6 +1,9 @@
 //! Hardware compatibility for the computer that will run Tilo: the components the kernel found,
 //! the driver bound and the evidence that makes a result applicable to the selected release.
 //!
+//! The installers read it before they write anything, and the running system publishes it in
+//! About, so a person sees the same report on both sides of an installation.
+//!
 //! A report grants nothing: the privileged helper re-probes before any change, and imported bytes
 //! are relabelled, never authenticated.
 
@@ -381,6 +384,10 @@ impl ComponentSupport {
         self.kind.critical() && self.state == SupportState::Unsupported
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table of what each reason and each piece of evidence may say"
+    )]
     fn validate(&self) -> Result<(), String> {
         if self.name.chars().count() > MAX_FIELD_CHARS || self.name.chars().any(char::is_control) {
             return Err("A hardware report component has an invalid name.".into());
@@ -653,13 +660,17 @@ impl SupportReport {
         let mut summary = SupportSummary::default();
         for component in &self.components {
             match component.state {
-                SupportState::Supported => summary.supported += 1,
-                SupportState::Limited => summary.limited += 1,
-                SupportState::Unsupported => summary.unsupported += 1,
-                SupportState::Unverified => summary.unverified += 1,
+                SupportState::Supported => summary.supported = summary.supported.saturating_add(1),
+                SupportState::Limited => summary.limited = summary.limited.saturating_add(1),
+                SupportState::Unsupported => {
+                    summary.unsupported = summary.unsupported.saturating_add(1);
+                }
+                SupportState::Unverified => {
+                    summary.unverified = summary.unverified.saturating_add(1);
+                }
             }
             if component.blocks_install() {
-                summary.blocking += 1;
+                summary.blocking = summary.blocking.saturating_add(1);
             }
         }
         summary

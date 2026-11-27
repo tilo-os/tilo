@@ -2,7 +2,7 @@
 //! relies on.
 
 use super::*;
-use imager_backend::support_report::{
+use hardware_report::{
     DestinationIdentity, DeviceBinding, Evidence, EvidenceFact, EvidenceScope, REPORT_SCHEMA,
     Remedy, SupportReason, SupportSummary,
 };

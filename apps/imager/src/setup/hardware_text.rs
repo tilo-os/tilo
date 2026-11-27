@@ -1,7 +1,7 @@
 //! The words of the hardware compatibility report, shared by the report and the setup.
 
 use crate::setup::strings::{t, t_args};
-use imager_backend::support_report::{
+use hardware_report::{
     ComponentKind, ComponentSupport, DeviceBinding, Evidence, EvidenceFact, EvidenceScope, Remedy,
     SupportReason,
 };
@@ -27,8 +27,8 @@ pub(crate) fn component_title(kind: ComponentKind) -> String {
 }
 
 #[cfg(feature = "installation")]
-pub(crate) fn state_label(state: imager_backend::support_report::SupportState) -> String {
-    use imager_backend::support_report::SupportState;
+pub(crate) fn state_label(state: hardware_report::SupportState) -> String {
+    use hardware_report::SupportState;
     t(match state {
         SupportState::Supported => "installer-hardware-state-supported",
         SupportState::Limited => "installer-hardware-state-limited",

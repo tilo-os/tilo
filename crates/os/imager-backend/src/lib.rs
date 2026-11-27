@@ -78,7 +78,6 @@ pub mod profile;
 pub mod record;
 pub mod staging;
 pub mod startup_password;
-pub mod support_report;
 pub mod write;
 
 pub mod firmware;

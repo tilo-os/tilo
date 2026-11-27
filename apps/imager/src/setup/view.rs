@@ -34,7 +34,7 @@ use crate::page::{self, Frame, stack};
 use crate::resource::CATALOG;
 
 use crate::hosting::{EffectAnswer, EffectCx, Effected, Hosted, Port};
-use imager_backend::support_report::SupportReport;
+use hardware_report::SupportReport;
 use tilo_resource::{EffectStatus, LiveRow};
 use tilo_ui_base::LocalState;
 

@@ -823,10 +823,7 @@ impl InstallerApp {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_hardware_for_test(
-        mut self,
-        report: imager_backend::support_report::SupportReport,
-    ) -> Self {
+    pub(crate) fn with_hardware_for_test(mut self, report: hardware_report::SupportReport) -> Self {
         self.hardware =
             crate::setup::destination::hardware_report::HardwareReport::from_report(report);
         self
@@ -2810,7 +2807,7 @@ impl InstallerApp {
     fn hardware_blocks_install(&self) -> bool {
         self.hardware
             .report()
-            .is_some_and(imager_backend::support_report::SupportReport::blocks_install)
+            .is_some_and(hardware_report::SupportReport::blocks_install)
     }
 
     fn compose_hardware_report(&self, children: &mut Vec<Box<dyn Widget>>) {
@@ -3038,7 +3035,7 @@ impl InstallerApp {
         if self
             .hardware
             .report()
-            .is_some_and(imager_backend::support_report::SupportReport::blocks_install)
+            .is_some_and(hardware_report::SupportReport::blocks_install)
         {
             children.push(Box::new(
                 Text::new(&crate::setup::strings::t(

@@ -35,12 +35,12 @@ kind = "host-program"
 # The person's data comes over later, through the migration app on Tilo.
 # The host downloads build it; the default build is the image writer alone.
 # tools/ci/package_features.py tests and lints with it.
-installation = []
+installation = ["dep:hardware-report"]
 # The destination side of the guided setup, on the live installer medium:
 # keyboard, network, disk, account and the install itself, consuming the
 # profile and staged handoff the host side produced. It does not need the
 # host side (`installation`). Linux only, like the live medium it runs on.
-destination = ["imager-backend/destination", "dep:url"]
+destination = ["imager-backend/destination", "dep:url", "dep:hardware-report"]
 # Host downloads opt into the narrowly elevated raw-media writer. A host
 # download is the guided installer, so it brings `installation`.
 host-media-writer = ["installation"]
@@ -64,6 +64,8 @@ tilo-clock = { path = "../../crates/platform/tilo-clock", features = ["local"] }
 # `tilo machine add` so the window and the command write the same document.
 install-plan = { path = "../../crates/os/install-plan" }
 imager-backend = { path = "../../crates/os/imager-backend" }
+# This computer's hardware, read the same way the live installer reads it.
+hardware-report = { path = "../../crates/os/hardware-report", optional = true }
 staging-handoff-model = { path = "../staging-handoff-model" }
 uuid.workspace = true
 base64.workspace = true

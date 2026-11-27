@@ -14,7 +14,7 @@ use super::staging::plan::{self, Basis, Plan, PlanError, Requirements, TargetBou
 use super::staging::probe::{self, Blocker, HostFacts};
 use super::staging::record::{Record, ReleaseRef, Step};
 use super::staging::{ALIGN_BYTES, DEFAULT_TARGET_BYTES};
-use imager_backend::support_report::SupportReport;
+use hardware_report::SupportReport;
 use tilo_lock::MutexRecover as _;
 
 pub(super) const BUILD_ALLOW: Option<&str> = option_env!("TILO_IMAGER_INTERNAL_INSTALL");

@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::sync::mpsc::TryRecvError;
 
-use imager_backend::support_report::{MAX_REPORT_BYTES, ReportSource, SupportReport};
+use hardware_report::{MAX_REPORT_BYTES, ReportSource, SupportReport};
 use tilo_ui_base::icons::Icon;
 use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
 use tilo_ui_base::{widget::LabelPlacement, widget::Spacer, widget::Widget};

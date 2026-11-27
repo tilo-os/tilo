@@ -2,7 +2,7 @@
 //! effects.
 
 use super::{Destination, InstallerPreview, InstallerPreviewEffect, Page};
-use imager_backend::support_report::{
+use hardware_report::{
     Applicability, ComponentKind, ComponentSupport, DestinationIdentity, DeviceBinding, Evidence,
     EvidenceFact, EvidenceScope, REPORT_SCHEMA, Remedy, ReportSource, SupportReason, SupportReport,
     SupportState,

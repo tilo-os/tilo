@@ -241,8 +241,8 @@ fn sound(sys: &Path, out: &mut Vec<RawSoundCard>) {
                 driver: None,
             });
             match direction {
-                'p' => card.playback += 1,
-                'c' => card.capture += 1,
+                'p' => card.playback = card.playback.saturating_add(1),
+                'c' => card.capture = card.capture.saturating_add(1),
                 _ => {}
             }
         }
@@ -328,7 +328,8 @@ fn power(sys: &Path, raw: &mut RawReport) {
                 let design = read_u64(&supply.join("energy_full_design"))
                     .or_else(|| read_u64(&supply.join("charge_full_design")));
                 let health = full.zip(design).and_then(|(full, design)| {
-                    (design > 0).then(|| (full * 100 / design).min(100) as u32)
+                    let percent = full.checked_mul(100)?.checked_div(design)?;
+                    Some(percent.min(100) as u32)
                 });
                 raw.battery = Some(RawBattery {
                     name: read_trim(&supply.join("model_name")).unwrap_or_else(|| "Battery".into()),
@@ -403,7 +404,7 @@ fn storage(sys: &Path, out: &mut Vec<RawDisk>) {
         out.push(RawDisk {
             name: name.to_string(),
             model: read_trim(&device.join("model")).or_else(|| read_trim(&device.join("../model"))),
-            size_bytes: read_u64(&disk.join("size")).map(|sectors| sectors * 512),
+            size_bytes: read_u64(&disk.join("size")).map(|sectors| sectors.saturating_mul(512)),
             driver,
         });
     }

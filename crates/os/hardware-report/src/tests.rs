@@ -17,6 +17,10 @@ fn link(root: &std::path::Path, target: &str, path: &str) {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one machine's sysfs, written out file by file"
+)]
 fn hybrid_laptop() -> tempfile::TempDir {
     let root = tempfile::tempdir().unwrap();
     for (name, value) in [

@@ -750,6 +750,10 @@ fn acpi(tables: Option<usize>, kernel: Option<&str>) -> ComponentSupport {
 /// the way Tilo needs; whether the image was built for this architecture and
 /// board decides whether it can start at all. A machine that fails the second
 /// is not merely missing an entry.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the firmware half and the architecture half of one answer, read together"
+)]
 fn boot(
     uefi: Option<bool>,
     secure_boot: Option<bool>,

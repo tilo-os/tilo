@@ -5,7 +5,7 @@ use crate::setup::hardware_text::{
     component_icon, component_title, evidence_text, reason_text, remedy_text, state_label,
 };
 use crate::setup::strings::{t, t_args};
-use imager_backend::support_report::{
+use hardware_report::{
     Applicability, ComponentSupport, ReportSource, SupportReport as HardwareReport, SupportState,
 };
 
@@ -363,8 +363,8 @@ mod tests {
     use super::*;
 
     /// A computer whose report has a working, a limited and an unsupported part.
-    fn fixture_support_report() -> imager_backend::support_report::SupportReport {
-        use imager_backend::support_report::{
+    fn fixture_support_report() -> hardware_report::SupportReport {
+        use hardware_report::{
             Applicability, ComponentKind, ComponentSupport, DestinationIdentity, DeviceBinding,
             Evidence, EvidenceFact, EvidenceScope, REPORT_SCHEMA, Remedy, ReportSource,
             SupportReason, SupportReport, SupportState,
