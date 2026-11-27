@@ -124,7 +124,7 @@ fn asked(shell: &StagedWindow, name: &str) -> serde_json::Map<String, serde_json
                 .iter()
                 .map(|invocation| match invocation {
                     Invocation::Action { app, name, .. } => format!("{app}/{name}"),
-                    other => format!("{other:?}"),
+                    Invocation::Edit { .. } => format!("{invocation:?}"),
                 })
                 .collect();
             panic!("the panel asks `{name}`: it ran {called:?}")

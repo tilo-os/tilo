@@ -50,57 +50,14 @@ pub fn call(op: &str, input: &str, opener: &dyn Opener) -> Result<String, String
     let ask = parse(input);
     match op {
         "open" => open(&ask),
-        "send" | "type" => with_live(&ask, |live| {
-            let text = text(&ask)?;
-            live.write(text.as_bytes())
-                .map(|()| "{}".to_owned())
-                .map_err(|error| error.to_string())
-        }),
+        "send" | "type" => with_live(&ask, |live| answered(live.write(text(&ask)?.as_bytes()))),
         "paste" => with_live(&ask, |live| {
             let bytes = crate::input::encode_paste(text(&ask)?, live.modes());
-            live.write(&bytes)
-                .map(|()| "{}".to_owned())
-                .map_err(|error| error.to_string())
+            answered(live.write(&bytes))
         }),
-        "run" => with_live(&ask, |live| {
-            live.run_as(text(&ask)?, agent(&ask))
-                .map(|()| "{}".to_owned())
-                .map_err(|error| error.to_string())
-        }),
-        "answer_history" => with_live(&ask, |live| {
-            let key = ask.get("key").and_then(Value::as_str).unwrap_or_default();
-            let count = |name: &str| {
-                ask.get(name)
-                    .and_then(Value::as_u64)
-                    .and_then(|count| usize::try_from(count).ok())
-                    .unwrap_or_default()
-            };
-            let asked = crate::commands::HistoryAsk {
-                skip: count("skip"),
-                limit: count("limit"),
-                matching: ask
-                    .get("matching")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-            };
-            let lines: Vec<String> = ask
-                .get("lines")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-                .map(str::to_owned)
-                .collect();
-            live.answer_history(key, &asked, &lines)
-                .map(|()| "{}".to_owned())
-                .map_err(|error| error.to_string())
-        }),
-        "interrupt" => with_live(&ask, |live| {
-            live.interrupt()
-                .map(|()| "{}".to_owned())
-                .map_err(|error| error.to_string())
-        }),
+        "run" => with_live(&ask, |live| answered(live.run_as(text(&ask)?, agent(&ask)))),
+        "answer_history" => with_live(&ask, |live| history(&ask, live)),
+        "interrupt" => with_live(&ask, |live| answered(live.interrupt())),
         "clear" => with_live(&ask, |live| {
             live.clear();
             Ok("{}".to_owned())
@@ -123,79 +80,136 @@ pub fn call(op: &str, input: &str, opener: &dyn Opener) -> Result<String, String
             live.set_allow_clipboard(ask.get("allow").and_then(Value::as_bool).unwrap_or(false));
             Ok("{}".to_owned())
         }),
-        "inspect" => with_live(&ask, |live| {
-            Ok(json!({
-                "shell": live.id(),
-                "shell_name": live.session().shell_name(),
-                "relay_session": live.session().relay_session().unwrap_or_default(),
-                "ended": live.ended(),
-                "end": live.end().map(|end| format!("{end:?}")),
-                "allows_clipboard": live.allows_clipboard(),
-            })
-            .to_string())
-        }),
-        "inspect_editor" => with_live(&ask, |live| {
-            Ok(live
-                .editor()
-                .map_or_else(
-                    || json!({"available": false}),
-                    |snapshot| {
-                        json!({
-                            "available": true,
-                            "protocol": tilo_process::editor::VERSION,
-                            "lease": serde_json::to_string(&snapshot.lease).unwrap_or_default(),
-                            "can_undo": snapshot.can_undo,
-                            "can_redo": snapshot.can_redo,
-                        })
-                    },
-                )
-                .to_string())
-        }),
+        "inspect" => with_live(&ask, |live| Ok(describe(live))),
+        "inspect_editor" => with_live(&ask, |live| Ok(editor(live))),
         "replace_editor_selection" => with_live(&ask, |live| {
             let lease = ask.get("lease").and_then(Value::as_str).unwrap_or_default();
             live.replace_editor_selection(lease, text(&ask)?.to_owned())
                 .map(|()| "{}".to_owned())
         }),
-        "read_screen" => with_live(&ask, |live| {
-            let (text, truncated) = live.readable();
-            let modes = live.modes();
-            Ok(json!({
-                "text": text,
-                "truncated": truncated,
-                "cursor_visible": modes.cursor_visible,
-                "links": live
-                    .links()
-                    .into_iter()
-                    .filter(|(_, url)| crate::is_public_web_link(url))
-                    .map(|(id, url)| json!({"id": id, "url": url}))
-                    .collect::<Vec<_>>(),
-            })
-            .to_string())
-        }),
-        "events" => with_live(&ask, |live| {
-            let since = ask.get("since").and_then(Value::as_u64).unwrap_or(0);
-            let (events, next) = live.events(since);
-            let events: Vec<Value> = events.into_iter().map(event_value).collect();
-            Ok(json!({"events": events, "next": next}).to_string())
-        }),
-        "rerun_test" => {
-            let command = ask
-                .get("command")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let test = ask.get("test").and_then(Value::as_str).unwrap_or_default();
-            let again = crate::parse::rerun_test(command, test)
-                .ok_or_else(|| "this command's tool cannot run one test".to_owned())?;
-            Ok(json!({"command": again}).to_string())
-        }
-        "environments" => Ok(json!({
-            "available": far_shells().is_some() || environments_available(false),
-            "self_hosted": ush_binary().is_some(),
-        })
-        .to_string()),
+        "read_screen" => with_live(&ask, |live| Ok(screen(live))),
+        "events" => with_live(&ask, |live| Ok(events(&ask, live))),
+        "rerun_test" => rerun(&ask),
+        "environments" => Ok(environments()),
         "open_link" => opener.open_uri(text(&ask)?).map(|()| "{}".to_owned()),
         other => Err(format!("`{other}` is no op this device runs")),
     }
+}
+
+/// `{}` for a write that went through, or why it did not.
+fn answered(result: std::io::Result<()>) -> Result<String, String> {
+    result
+        .map(|()| "{}".to_owned())
+        .map_err(|error| error.to_string())
+}
+
+/// Answer the shell's ask for the lines its Up recalls.
+fn history(ask: &Value, live: &Live) -> Result<String, String> {
+    let key = ask.get("key").and_then(Value::as_str).unwrap_or_default();
+    let count = |name: &str| {
+        ask.get(name)
+            .and_then(Value::as_u64)
+            .and_then(|count| usize::try_from(count).ok())
+            .unwrap_or_default()
+    };
+    let asked = crate::commands::HistoryAsk {
+        skip: count("skip"),
+        limit: count("limit"),
+        matching: ask
+            .get("matching")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    };
+    let lines: Vec<String> = ask
+        .get("lines")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect();
+    live.answer_history(key, &asked, &lines)
+        .map(|()| "{}".to_owned())
+        .map_err(|error| error.to_string())
+}
+
+/// The session as its drivers read it.
+fn describe(live: &Live) -> String {
+    json!({
+        "shell": live.id(),
+        "shell_name": live.session().shell_name(),
+        "relay_session": live.session().relay_session().unwrap_or_default(),
+        "ended": live.ended(),
+        "end": live.end().map(|end| format!("{end:?}")),
+        "allows_clipboard": live.allows_clipboard(),
+    })
+    .to_string()
+}
+
+/// What the session's editor connection holds, when it has one.
+fn editor(live: &Live) -> String {
+    live.editor()
+        .map_or_else(
+            || json!({"available": false}),
+            |snapshot| {
+                json!({
+                    "available": true,
+                    "protocol": tilo_process::editor::VERSION,
+                    "lease": serde_json::to_string(&snapshot.lease).unwrap_or_default(),
+                    "can_undo": snapshot.can_undo,
+                    "can_redo": snapshot.can_redo,
+                })
+            },
+        )
+        .to_string()
+}
+
+/// What the session's grid shows, with the links a person may be handed.
+fn screen(live: &Live) -> String {
+    let (text, truncated) = live.readable();
+    let modes = live.modes();
+    json!({
+        "text": text,
+        "truncated": truncated,
+        "cursor_visible": modes.cursor_visible,
+        "links": live
+            .links()
+            .into_iter()
+            .filter(|(_, url)| crate::is_public_web_link(url))
+            .map(|(id, url)| json!({"id": id, "url": url}))
+            .collect::<Vec<_>>(),
+    })
+    .to_string()
+}
+
+/// The session's events past `since`, and the count that reads them next.
+fn events(ask: &Value, live: &Live) -> String {
+    let since = ask.get("since").and_then(Value::as_u64).unwrap_or(0);
+    let (events, next) = live.events(since);
+    let events: Vec<Value> = events.into_iter().map(event_value).collect();
+    json!({"events": events, "next": next}).to_string()
+}
+
+/// The command that runs one test again, as the ask names it.
+fn rerun(ask: &Value) -> Result<String, String> {
+    let command = ask
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let test = ask.get("test").and_then(Value::as_str).unwrap_or_default();
+    let again = crate::parse::rerun_test(command, test)
+        .ok_or_else(|| "this command's tool cannot run one test".to_owned())?;
+    Ok(json!({"command": again}).to_string())
+}
+
+/// Whether the device can run shells of its own.
+fn environments() -> String {
+    json!({
+        "available": far_shells().is_some() || environments_available(false),
+        "self_hosted": ush_binary().is_some(),
+    })
+    .to_string()
 }
 
 /// One request started as a job: a run that the app reads back when its shell finished it.

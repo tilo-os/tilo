@@ -59,7 +59,7 @@ use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
 pub use wake::OwedSettle;
 #[cfg(feature = "model")]
-pub use workspace_side::{ProvidedInvocation, ServedProvider, ShownHost};
+pub use workspace_side::{ProvidedInvocation, ServedProvider, ServedReads, ShownHost};
 
 /// The surface a [`Driver`] shows its app on: a size and a scale, with
 /// nothing behind them. What the app asks of it (another frame, a pointer

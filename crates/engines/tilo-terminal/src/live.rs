@@ -100,8 +100,8 @@ struct Prompt {
     marked: bool,
     /// The shell takes a whole command line in a mark of its own.
     reads_input: bool,
-    /// The shell is at its prompt: nothing runs in front of it.
-    at_prompt: bool,
+    /// The shell waits at its prompt: nothing runs in front of it.
+    ready: bool,
     /// The command lines waiting for the prompt, oldest first.
     waiting: std::collections::VecDeque<Asked>,
 }
@@ -579,12 +579,14 @@ impl Live {
             command: command.to_owned(),
             agent,
         });
-        self.type_waiting(&mut prompt)
+        self.type_waiting(prompt)
     }
 
-    /// Type the oldest waiting command line when the shell is at its prompt.
-    fn type_waiting(&self, prompt: &mut Prompt) -> std::io::Result<()> {
-        if !prompt.at_prompt {
+    /// Type the oldest waiting command line when the shell is at its prompt: it takes the prompt
+    /// itself, so the line is written before another thread's mark of a new prompt may type the
+    /// one queued behind it.
+    fn type_waiting(&self, mut prompt: std::sync::MutexGuard<'_, Prompt>) -> std::io::Result<()> {
+        if !prompt.ready {
             return Ok(());
         }
         let Some(asked) = prompt.waiting.pop_front() else {
@@ -602,7 +604,7 @@ impl Live {
         } else {
             typed_line(&asked.command)
         };
-        prompt.at_prompt = false;
+        prompt.ready = false;
         self.write(&line)
     }
 
@@ -837,8 +839,8 @@ impl Live {
                 if let Piece::Mark(mark) = &piece {
                     prompt.marked = true;
                     match mark {
-                        Mark::Prompt => prompt.at_prompt = true,
-                        Mark::Started { .. } => prompt.at_prompt = false,
+                        Mark::Prompt => prompt.ready = true,
+                        Mark::Started { .. } => prompt.ready = false,
                         Mark::History(ask) => told.push(Event::History {
                             key: marks.key().to_owned(),
                             ask: ask.clone(),
@@ -856,7 +858,7 @@ impl Live {
             }
             marks.key().clone_into(&mut prompt.key);
             prompt.reads_input = marks.reads_input();
-            if let Err(error) = self.type_waiting(&mut prompt) {
+            if let Err(error) = self.type_waiting(prompt) {
                 tracing::warn!(%error, "a command line asked of the terminal was not typed");
             }
         }
@@ -914,6 +916,22 @@ impl Live {
                 .push(Event::Lost("another window took this session".to_owned())),
         }
         self.wake();
+    }
+}
+
+/// What the editor answered an edit with, for the caller waiting on it.
+struct EditorAnswer(std::sync::mpsc::SyncSender<Result<(), tilo_process::editor::Failure>>);
+
+impl tilo_process::editor::Completion for EditorAnswer {
+    fn send(
+        &self,
+        send: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> Result<(), tilo_process::editor::Failure> {
+        send().map_err(|_| tilo_process::editor::Failure::Unknown)
+    }
+
+    fn finish(self: Box<Self>, result: Result<(), tilo_process::editor::Failure>) {
+        let _ = self.0.send(result);
     }
 }
 
@@ -1178,21 +1196,5 @@ mod tests {
                 "{events:?}"
             );
         }
-    }
-}
-
-/// What the editor answered an edit with, for the caller waiting on it.
-struct EditorAnswer(std::sync::mpsc::SyncSender<Result<(), tilo_process::editor::Failure>>);
-
-impl tilo_process::editor::Completion for EditorAnswer {
-    fn send(
-        &self,
-        send: &mut dyn FnMut() -> std::io::Result<()>,
-    ) -> Result<(), tilo_process::editor::Failure> {
-        send().map_err(|_| tilo_process::editor::Failure::Unknown)
-    }
-
-    fn finish(self: Box<Self>, result: Result<(), tilo_process::editor::Failure>) {
-        let _ = self.0.send(result);
     }
 }

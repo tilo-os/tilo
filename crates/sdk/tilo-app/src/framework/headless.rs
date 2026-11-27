@@ -501,13 +501,7 @@ fn serve_persons_own<A: ResourceApp>(
         }
         _ => return Ok(None),
     };
-    let mut declared = super::Resources::declaring();
-    A::resources(&mut declared);
-    let keeps = declared.declares_profile()
-        || A::PERSON_RESOURCES
-            .iter()
-            .any(|record| record.owner().is_none());
-    if !keeps {
+    if !keeps_persons_records::<A>() {
         return Ok(None);
     }
     let provider = Rc::new(std::cell::RefCell::new(HeadlessApp::<A>::open(
@@ -520,88 +514,111 @@ fn serve_persons_own<A: ResourceApp>(
         None,
         |_| {},
     )?));
-    let served = Rc::clone(&provider);
+    let invocations = Rc::clone(&provider);
+    let reads = Rc::clone(&provider);
     driver.serve_provider(
         tilo_actions::remote::application_provider_token(&own, A::ID),
-        Box::new(move |invocation| {
-            // Who called, as the workspace admitted them: an agent acts for the person its
-            // certificate chains to.
-            let invoker = match invocation.actor.member_id() {
-                Some(MemberId::Agent { id, person }) => {
-                    tilo_actions::ActionInvoker::agent(id.clone(), person.clone())
-                        .acting_for(person.clone())
-                }
-                Some(member) => tilo_actions::ActionInvoker::member(member.clone()),
-                None => {
-                    return Err(tilo_actions::ApiError::Unavailable {
-                        code: "permission_denied".into(),
-                        reason: "only a member changes their own records".into(),
-                    });
-                }
-            };
-            let arguments = match invocation.argument {
-                tilo_actions::remote::InvokeArgument::Json(arguments) => arguments.clone(),
-                tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
-                tilo_actions::remote::InvokeArgument::Text(_) => {
-                    return Err(tilo_actions::ApiError::InvalidArguments(
-                        "a change to a record carries typed arguments".into(),
-                    ));
-                }
-            };
-            served.borrow_mut().call_by(
-                invoker,
-                &invocation.address.resource,
-                &invocation.address.action,
-                serde_json::Value::Object(arguments),
-            )
-        }),
+        persons_own_invocations(invocations),
     );
-    let read = Rc::clone(&provider);
-    driver.serve_records(
-        own,
-        Box::new(move |request| {
-            let id = DocumentId::parse(&request.record)
-                .ok_or_else(|| format!("`{}` names no record", request.record))?;
-            let held = read
-                .try_borrow()
-                .map_err(|_| "the app is busy".to_owned())?;
-            // The record as the app there holds it now: a step it has not committed yet is
-            // committed first, as a save is, so a reader in another workspace sees what the app
-            // shows.
-            let reading =
-                held.records
-                    .replication_snapshot(&id)
-                    .ok()
-                    .map(|(document, mut heads)| {
-                        heads.sort_unstable();
-                        (
-                            heads
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect::<Vec<_>>()
-                                .join("."),
-                            document,
-                        )
-                    });
-            Ok(match reading {
-                Some((revision, document)) => serde_json::json!({
-                    "revision": revision,
-                    "records": [{
-                        "record": request.record,
-                        "document": document.iter().fold(String::new(), |mut text, byte| {
-                            let _ = write!(text, "{byte:02x}");
-                            text
-                        }),
-                    }],
-                }),
-                None => serde_json::json!({
-                    "revision": "",
-                    "records": [{"record": request.record, "absent": true}],
-                }),
-            })
-        }),
-    );
+    driver.serve_records(own, persons_own_reads(reads));
     Ok(Some(provider))
+}
+
+/// Whether `A` keeps records of the person's own: its profile's, or any whose owner is no
+/// workspace. Only then does a window in another workspace stand in for the person's own.
+fn keeps_persons_records<A: ResourceApp>() -> bool {
+    let mut declared = super::Resources::declaring();
+    A::resources(&mut declared);
+    declared.declares_profile()
+        || A::PERSON_RESOURCES
+            .iter()
+            .any(|record| record.owner().is_none())
+}
+
+/// What answers a window's invocations on the app's own records in the person's workspace: the
+/// app there, called as the member the workspace admitted.
+fn persons_own_invocations<A: ResourceApp>(
+    served: Rc<std::cell::RefCell<HeadlessApp<A>>>,
+) -> ui_core::app::driver::ServedProvider {
+    Box::new(move |invocation| {
+        // Who called, as the workspace admitted them: an agent acts for the person its
+        // certificate chains to.
+        let invoker = match invocation.actor.member_id() {
+            Some(MemberId::Agent { id, person }) => {
+                tilo_actions::ActionInvoker::agent(id.clone(), person.clone())
+                    .acting_for(person.clone())
+            }
+            Some(member) => tilo_actions::ActionInvoker::member(member.clone()),
+            None => {
+                return Err(tilo_actions::ApiError::Unavailable {
+                    code: "permission_denied".into(),
+                    reason: "only a member changes their own records".into(),
+                });
+            }
+        };
+        let arguments = match invocation.argument {
+            tilo_actions::remote::InvokeArgument::Json(arguments) => arguments.clone(),
+            tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
+            tilo_actions::remote::InvokeArgument::Text(_) => {
+                return Err(tilo_actions::ApiError::InvalidArguments(
+                    "a change to a record carries typed arguments".into(),
+                ));
+            }
+        };
+        served.borrow_mut().call_by(
+            invoker,
+            &invocation.address.resource,
+            &invocation.address.action,
+            serde_json::Value::Object(arguments),
+        )
+    })
+}
+
+/// What answers a window's reads of the app's own records in the person's workspace.
+fn persons_own_reads<A: ResourceApp>(
+    read: Rc<std::cell::RefCell<HeadlessApp<A>>>,
+) -> ui_core::app::driver::ServedReads {
+    Box::new(move |request| {
+        let id = DocumentId::parse(&request.record)
+            .ok_or_else(|| format!("`{}` names no record", request.record))?;
+        let held = read
+            .try_borrow()
+            .map_err(|_| "the app is busy".to_owned())?;
+        // The record as the app there holds it now: a step it has not committed yet is
+        // committed first, as a save is, so a reader in another workspace sees what the app
+        // shows.
+        let reading = held
+            .records
+            .replication_snapshot(&id)
+            .ok()
+            .map(|(document, mut heads)| {
+                heads.sort_unstable();
+                (
+                    heads
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("."),
+                    document,
+                )
+            });
+        Ok(match reading {
+            Some((revision, document)) => serde_json::json!({
+                "revision": revision,
+                "records": [{
+                    "record": request.record,
+                    "document": document.iter().fold(String::new(), |mut text, byte| {
+                        let _ = write!(text, "{byte:02x}");
+                        text
+                    }),
+                }],
+            }),
+            None => serde_json::json!({
+                "revision": "",
+                "records": [{"record": request.record, "absent": true}],
+            }),
+        })
+    })
 }
 
 /// Stand in for the hosts keeping the records `A` declares kept by them
