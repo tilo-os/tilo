@@ -6,7 +6,9 @@
 //! other devices. Each person's state of one app is one resource of the kind [`KIND`] in the
 //! device's resource store ([`id_of`]), which only that person reads: its kind's readers are its
 //! author ([`crate::surface::personal_surface`]), so the store places it in a document of theirs
-//! alone and it reaches only their devices.
+//! alone and it reaches only their devices. The app's own process writes it as itself, for them:
+//! the change names the app as its invoker and the person it acted for, which is the attribution
+//! an app's own action makes for the member whose session it runs in.
 //!
 //! The resource indexes nothing; its content holds the state:
 //!
@@ -328,8 +330,8 @@ pub fn read(port: &dyn Port, app: &str, person: &str) -> Result<PersonalState, S
 }
 
 /// Keep `keeps`, the changes `person` made of their own state of the app `app`, in the store as
-/// theirs: their resource is made the first time, readable by them alone, and each change is its
-/// own write. A change of anyone else's state is refused, and keeps nothing.
+/// the app's writes for them: their resource is made the first time, readable by them alone, and
+/// each change is its own write. A change of anyone else's state is refused, and keeps nothing.
 ///
 /// # Errors
 /// A change is someone else's, or the store refused it; what came before it is kept.
@@ -346,7 +348,7 @@ pub fn keep(port: &dyn Port, app: &str, person: &str, keeps: &[Keep]) -> Result<
     let id = id_of(app, person);
     let mut held = content(port, app, person)?;
     for keep in keeps {
-        let stamp = stamp(keep.verb(), person);
+        let stamp = stamp(keep.verb(), app, person);
         let none = Map::new();
         let edits = keep.edits(held.as_ref().unwrap_or(&none));
         if edits.is_empty() {
@@ -424,12 +426,16 @@ fn apply(content: &mut Map<String, Json>, edit: &Edit) {
     }
 }
 
-/// The stamp of one write of `person`'s own state, of the verb `verb`.
-fn stamp(verb: &str, person: &str) -> Stamp {
+/// The stamp of one write of `person`'s own state of `app`, of the verb `verb`: the app's own
+/// write for them, the app its invoker and the person the one it acts for. A record of a kind
+/// only its author reads is the person's to read, and its change says the app wrote it for them.
+fn stamp(verb: &str, app: &str, person: &str) -> Stamp {
+    let wrote = tilo_actions::Acting::by_app(app).acting_for(tilo_actions::Acting::person(person));
     Stamp {
         invoked: String::new(),
         verb: verb.to_owned(),
-        invoker: Stamp::by(&actor(person)),
+        invoker: Stamp::by(&wrote.by),
+        acted_for: Some(person.to_owned()),
         invocation: uuid::Uuid::new_v4().to_string(),
         at: crate::clock::system_time(),
         ..Stamp::default()
@@ -536,6 +542,79 @@ mod tests {
         SeenMark {
             change: change.repeat(32),
             at: "2026-11-04T12:00:00Z".to_owned(),
+        }
+    }
+
+    /// A store with the personal kind's rule declared, keeping every command it is sent: what a
+    /// write of a person's state names, and what the store makes of it.
+    struct Recorded {
+        store: LocalPort,
+        commands: std::cell::RefCell<Vec<Command>>,
+    }
+
+    impl Recorded {
+        fn new() -> Self {
+            let store = LocalPort::in_memory();
+            Port::declare(&store, readers());
+            Self {
+                store,
+                commands: std::cell::RefCell::default(),
+            }
+        }
+    }
+
+    impl Port for Recorded {
+        fn command(&self, command: Command) -> Result<Reply, String> {
+            self.commands.borrow_mut().push(command.clone());
+            self.store.command(command)
+        }
+
+        fn declare(&self, schema: tilo_resource_store::Schema) {
+            self.store.declare(schema);
+        }
+    }
+
+    /// The app's own write of a person's state reads back as theirs, and says the app wrote it
+    /// for them: the app is the invoker, the person the one it acted for.
+    #[test]
+    fn a_persons_state_is_the_apps_write_for_them_and_reads_back() {
+        let port = Recorded::new();
+        keep(
+            &port,
+            APP,
+            "ada",
+            &[view("ada", "1/tasks", "place", Json::from("today"))],
+        )
+        .expect("the app keeps the person's state");
+        let theirs = read(&port, APP, "ada").expect("their state reads");
+        assert_eq!(theirs.slots.len(), 1);
+        assert_eq!(theirs.slots[0].value, Value::text("today"));
+
+        let commands = port.commands.borrow();
+        let written = commands
+            .iter()
+            .find_map(|command| match command {
+                Command::Batch(written) => Some(written),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                panic!("a write makes the record and keeps the place, none among {commands:?}")
+            });
+        for command in written {
+            let stamp = match command {
+                Command::Put { stamp, .. } | Command::Edit { stamp, .. } => stamp,
+                other => panic!("the write is a put and an edit, not {other:?}"),
+            };
+            assert_eq!(
+                stamp.invoked_by(),
+                Some(Actor::App(APP.into())),
+                "the app wrote it"
+            );
+            assert_eq!(
+                stamp.acted_for.as_deref(),
+                Some("ada"),
+                "for the person whose state it is"
+            );
         }
     }
 

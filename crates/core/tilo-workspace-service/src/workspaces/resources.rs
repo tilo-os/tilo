@@ -3130,14 +3130,14 @@ fn stamp_resource_write(
         person,
         &|kind| reads_by_author_alone(surfaces, context.app_id(), kind),
         &mut unserved,
-    );
+    )?;
     Ok((Some(acting), unserved))
 }
 
-/// Whether `app`'s surface makes a `kind` one only its author reads
+/// Whether `app`'s surface makes a `kind` one it declares and only its author reads
 /// ([`ReaderRule::Author`](tilo_actions::surface::ReaderRule)): the store keeps such a record in
-/// its author's document and refuses one no person made, so an app's own process cannot write it
-/// as itself.
+/// its author's document and refuses one no person made, so the app's own process writes it for
+/// the person, never as itself alone.
 #[cfg(feature = "apps")]
 fn reads_by_author_alone(
     surfaces: &collab_types::app_surface::Surfaces,
@@ -3171,11 +3171,15 @@ fn writes_kind(command: &collab_types::store::wire::Command, kind: &str) -> bool
 /// whoever invoked the invocation a write serves, when the workspace service delivered that one
 /// to the app, and otherwise `otherwise` (the app itself on its own process's route; the device's
 /// person, or the caller its view was opened for, on the device's own) for any other write, whose
-/// resource type and verb are added to `unserved`. A write of a kind only its author reads that
-/// names the route's own person is theirs, made through the app: the store refuses such a record
-/// when no person made it, and the person whose session the route is certified for is that one.
-/// `person` is the route's caller; `device` (its key in hex and what it calls itself) is where a
-/// resource the write makes live is live.
+/// resource type and verb are added to `unserved`. An app's own write may name the person it acts
+/// for only on the ruled path of its own actions: a kind its surface declares that only its author
+/// reads, for the person the route is certified for; a write naming anyone else, or another app's
+/// kind, is refused. `person` is the route's caller; `device` (its key in hex and what it calls
+/// itself) is where a resource the write makes live is live.
+///
+/// # Errors
+/// An app's write that names a person other than the one whose session the route is certified
+/// for, or on a kind that is not its own author-only one.
 fn stamp_resource_invoker(
     command: &mut collab_types::store::wire::Command,
     device: &(String, String),
@@ -3184,7 +3188,7 @@ fn stamp_resource_invoker(
     person: &str,
     author_read: &dyn Fn(&str) -> bool,
     unserved: &mut Vec<(String, String)>,
-) {
+) -> Result<(), String> {
     use collab_types::store::wire::Command;
     let (kind, stamp) = match command {
         Command::Put { kind, stamp, .. }
@@ -3204,36 +3208,28 @@ fn stamp_resource_invoker(
                     person,
                     author_read,
                     unserved,
-                );
+                )?;
             }
-            return;
+            return Ok(());
         }
         // Every other command writes nothing, and so names no one who made one.
-        _ => return,
+        _ => return Ok(()),
     };
-    let mut acting = served(&stamp.invocation).unwrap_or_else(|| {
+    let serving = served(&stamp.invocation);
+    if serving.is_none()
+        && otherwise.by.app().is_some()
+        && let Some(named) = stamp.acted_for.as_deref()
+        && !(author_read(kind) && named.eq_ignore_ascii_case(person))
+    {
+        return Err(format!(
+            "a write of `{kind}` names `{named}` for the app to act for, which it may not: an \
+             app writes for the person whose session it runs in, on a kind of its own that only \
+             its author reads"
+        ));
+    }
+    let mut acting = serving.unwrap_or_else(|| {
         unserved.push((kind.to_owned(), stamp.verb.clone()));
-        // The app's own process writes as itself outside an invocation, except a person's own
-        // state: a record of a kind only its author reads is nobody's the app can write as
-        // itself, and the person it names, the one the route is certified for, made it through
-        // the app.
-        let named = stamp
-            .invoked_by()
-            .and_then(|actor| actor.person_id().map(str::to_owned));
-        match named {
-            Some(named)
-                if otherwise.by.app().is_some()
-                    && author_read(kind)
-                    && named.eq_ignore_ascii_case(person) =>
-            {
-                let mut theirs = tilo_actions::Acting::person(person);
-                if let Some(app) = &otherwise.app {
-                    theirs = theirs.in_app(app.clone());
-                }
-                theirs
-            }
-            _ => otherwise.clone(),
-        }
+        otherwise.clone()
     });
     // An agent works for a person: the person the route's caller is, where its call named none.
     if acting.agent_id().is_some() && acting.acted_for_person().is_none() {
@@ -3252,6 +3248,7 @@ fn stamp_resource_invoker(
     }
     device.0.clone_into(&mut stamp.device);
     device.1.clone_into(&mut stamp.device_name);
+    Ok(())
 }
 
 /// Who a caller reads records as: a member as the person they are or act for, and a visitor, who

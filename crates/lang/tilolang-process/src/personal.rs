@@ -2,9 +2,9 @@
 //! app's views and what they have seen ([`tilolang_tilo::personal`]).
 //!
 //! It is one resource of the person's in the workspace's store, readable by them alone: the
-//! instance reads it when it starts and again whenever the store moved, and writes what the
-//! person changed of it. So the place a person picked is still theirs after a restart and on
-//! their other devices.
+//! instance reads it when it starts and again whenever the store moved, and keeps what the
+//! person changed of it as the app's own writes for them. So the place a person picked is still
+//! theirs after a restart and on their other devices.
 
 use tilolang_tilo::personal::{self, Keep, PersonalState};
 use tilolang_tilo::resources::{ResourceStore, Watch};

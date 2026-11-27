@@ -2258,17 +2258,25 @@ mod tests {
     const PERSONAL: &str = "tilolang.personal";
     const PERSONAL_SURFACE: &str = "{\"format\":2,\"resources\":[{\"fields\":[],\"kind\":\"tilolang.personal\",\"label\":\"Your place in the app\",\"readers\":{\"author\":{}},\"verbs\":[{\"id\":\"view-state\",\"kind\":\"undoable\",\"label\":\"Keep a view's state\",\"params\":[]},{\"id\":\"seen\",\"kind\":\"undoable\",\"label\":\"Keep what is seen\",\"params\":[]},{\"id\":\"seen-runs\",\"kind\":\"undoable\",\"label\":\"Keep reviewed runs\",\"params\":[]}],\"version\":1}]}";
 
-    /// `person`'s own state of `app` as the app's process keeps it: the record made, readable by
-    /// them alone, and one place kept in its content, both named the person's.
-    fn personal_kept(app: &str, person: &str) -> Command {
-        let id = format!("{app}@{}", person.to_ascii_lowercase());
-        let stamp = Stamp {
+    /// The stamp of a write `app`'s own process makes for `person`, as the runtime writes one:
+    /// the app is the invoker, and the person the one it acted for. `of` is the person it names,
+    /// which may be someone else.
+    fn app_for(app: &str, of: &str) -> Stamp {
+        Stamp {
             invoked: String::new(),
             verb: "view-state".to_owned(),
-            invoker: Stamp::by(&Actor::Member(MemberId::person(person))),
+            invoker: Stamp::by(&Actor::App(app.into())),
+            acted_for: Some(of.to_owned()),
             invocation: uuid::Uuid::new_v4().to_string(),
             ..Stamp::default()
-        };
+        }
+    }
+
+    /// `person`'s own state of `app` as the app's process keeps it: the record made, readable by
+    /// them alone, and one place kept in its content, both the app's writes for them.
+    fn personal_kept(app: &str, person: &str) -> Command {
+        let id = format!("{app}@{}", person.to_ascii_lowercase());
+        let stamp = app_for(app, person);
         Command::Batch(vec![
             Command::Put {
                 kind: PERSONAL.to_owned(),
@@ -2290,12 +2298,28 @@ mod tests {
         ])
     }
 
-    /// The app's own process keeps the person's state of it: the person whose session the route
-    /// was opened for, not the app. The state reads back as it was kept.
+    /// The app whose own process writes, and one whose kind it does not declare.
+    const APP: &str = "so.tilo.tube";
+    const OTHER_APP: &str = "so.tilo.chat";
+    const OTHER_SURFACE: &str = "{\"format\":2,\"resources\":[{\"fields\":[{\"path\":\"body\",\"type\":\"text\"}],\"kind\":\"test.chat.message\",\"label\":\"Message\",\"readers\":{\"author\":{}},\"verbs\":[{\"id\":\"type\",\"kind\":\"undoable\"}],\"version\":1}]}";
+
+    /// `command`, written by `app`'s own process in `workspace`.
+    async fn write_as_app_process(
+        workspaces: &Workspaces,
+        workspace: &str,
+        app: &str,
+        command: Command,
+    ) -> Result<Reply, String> {
+        let context =
+            ResourceRequestContext::authenticated(app, workspace, caller_of(workspaces, workspace))
+                .of_app_process();
+        workspaces.resource_command(&context, command).await
+    }
+
+    /// The app's own process writes a person's state of it as itself, for them: the app is the
+    /// record's invoker and the person the one it acted for. It reads back as it was kept.
     #[tokio::test(flavor = "current_thread")]
-    async fn a_persons_own_state_written_by_the_apps_process_is_theirs() {
-        /// The app whose window kept the state, as its process writes it.
-        const APP: &str = "so.tilo.tube";
+    async fn a_persons_own_state_written_by_the_apps_process_is_the_apps_for_them() {
         let dir = tempfile::tempdir().unwrap();
         let (host, workspace) = kitchen(dir.path()).await;
         let workspaces = host.workspaces();
@@ -2305,30 +2329,36 @@ mod tests {
             PERSONAL_SURFACE.as_bytes(),
         )
         .unwrap();
-        let caller = caller_of(workspaces, &workspace);
-        let person = caller
+        let person = caller_of(workspaces, &workspace)
             .acting()
             .person_id()
             .expect("the route is a person's")
             .to_owned();
-        let context =
-            ResourceRequestContext::authenticated(APP, &workspace, caller).of_app_process();
-        let written = workspaces
-            .resource_command(&context, personal_kept(APP, &person))
-            .await;
+        // Installing the app gave it its own records: the grant its own writes are decided by.
+        crate::workspaces::fixtures::record_grants(
+            workspaces,
+            &workspace,
+            &[tilo_action_policy::roles::app_records_grant(
+                &workspace, APP, &person,
+            )],
+        )
+        .await;
+        let written =
+            write_as_app_process(workspaces, &workspace, APP, personal_kept(APP, &person)).await;
         assert!(matches!(written, Ok(Reply::Written)), "{written:?}");
 
         let id = format!("{APP}@{}", person.to_ascii_lowercase());
-        let kept = workspaces
-            .resource_command(
-                &context,
-                Command::Content {
-                    kind: PERSONAL.to_owned(),
-                    id,
-                },
-            )
-            .await
-            .expect("their state reads");
+        let kept = write_as_app_process(
+            workspaces,
+            &workspace,
+            APP,
+            Command::Content {
+                kind: PERSONAL.to_owned(),
+                id: id.clone(),
+            },
+        )
+        .await
+        .expect("their state reads");
         let Reply::Content(Some(serde_json::Value::Object(kept_content))) = kept else {
             panic!("the kept state reads as an object of places, not {kept:?}");
         };
@@ -2338,6 +2368,106 @@ mod tests {
                 .and_then(|views| views.get("[\"1/tasks\",\"place\"]")),
             Some(&serde_json::json!("today")),
             "the place they picked is kept"
+        );
+
+        // What the record says made it: the app, for the person, never the person themselves.
+        let versions = write_as_app_process(
+            workspaces,
+            &workspace,
+            APP,
+            Command::Versions {
+                kind: PERSONAL.to_owned(),
+                id,
+            },
+        )
+        .await
+        .expect("its versions read");
+        let Reply::Versions(versions) = versions else {
+            panic!("a read answers the record's versions, not {versions:?}");
+        };
+        let first = versions.first().and_then(|version| version.stamp.as_ref());
+        assert_eq!(
+            first.and_then(Stamp::invoked_by),
+            Some(Actor::App(APP.into())),
+            "the app wrote it"
+        );
+        assert_eq!(
+            first.and_then(|stamp| stamp.acted_for.as_deref()),
+            Some(person.as_str()),
+            "for the person whose state it is"
+        );
+    }
+
+    /// An app's own process writes for the person whose session it runs in: naming anyone else is
+    /// refused, and nothing is kept.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_apps_own_process_naming_another_person_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, workspace) = kitchen(dir.path()).await;
+        let workspaces = host.workspaces();
+        crate::workspaces::keep_surface(
+            &workspaces.inner.host.surfaces,
+            APP,
+            PERSONAL_SURFACE.as_bytes(),
+        )
+        .unwrap();
+        let someone_else = hex::encode([7_u8; 32]);
+        let refused = write_as_app_process(
+            workspaces,
+            &workspace,
+            APP,
+            personal_kept(APP, &someone_else),
+        )
+        .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.contains("may not")),
+            "{refused:?}"
+        );
+    }
+
+    /// An app's own process writes for the person on a kind its own surface declares, and one
+    /// only its author reads: another app's author-only kind is refused.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_apps_own_process_writing_another_apps_author_only_kind_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, workspace) = kitchen(dir.path()).await;
+        let workspaces = host.workspaces();
+        crate::workspaces::keep_surface(
+            &workspaces.inner.host.surfaces,
+            APP,
+            PERSONAL_SURFACE.as_bytes(),
+        )
+        .unwrap();
+        crate::workspaces::keep_surface(
+            &workspaces.inner.host.surfaces,
+            OTHER_APP,
+            OTHER_SURFACE.as_bytes(),
+        )
+        .unwrap();
+        let person = caller_of(workspaces, &workspace)
+            .acting()
+            .person_id()
+            .expect("the route is a person's")
+            .to_owned();
+        let refused = write_as_app_process(
+            workspaces,
+            &workspace,
+            APP,
+            Command::Put {
+                kind: "test.chat.message".to_owned(),
+                id: "chat-1".to_owned(),
+                resource: collab_types::store::Resource::default(),
+                stamp: app_for(APP, &person),
+            },
+        )
+        .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.contains("may not")),
+            "{refused:?}"
         );
     }
 }
