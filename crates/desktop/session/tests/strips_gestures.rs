@@ -48,6 +48,63 @@ fn session() -> (Session, Vec<String>) {
     (session, notes)
 }
 
+thread_local! {
+    /// This computer: its device daemon, which keeps the layout a workspace shares, so a step of
+    /// the person's arranging is one its undo takes back.
+    static DEVICE: crate::common::Device =
+        crate::common::device_daemon(crate::common::device_home(), None);
+    /// Where a session of this computer keeps its own services' files.
+    static STATE: tempfile::TempDir = tempfile::tempdir().expect("a state directory");
+}
+
+/// A session on this computer, whose layout is its daemon's workspace record: the one a step of
+/// the person's arranging is taken back from.
+fn device_session() -> (Session, Vec<String>) {
+    let (notebook, notes) = notes(&TITLES);
+    let session = DEVICE.with(|device| {
+        device.session_with(Options {
+            collab: false,
+            state: Some(STATE.with(|state| state.path().to_path_buf())),
+            services: vec![Box::new(notebook)],
+            ..Options::default()
+        })
+    });
+    (session, notes)
+}
+
+/// A window resized by its edge is one step of the person's arranging: Undo takes the gesture
+/// back and the window stands at the width it had, as the same resize asked as an action does.
+#[test]
+fn resizing_a_strip_by_its_edge_is_one_step_and_undone() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let (mut session, notes) = device_session();
+    until(&mut session, "the strips", |session| {
+        on_screen(session, "Showing Strips").is_some()
+    });
+    let (_first, own) = place(&mut session, &notes[0]);
+    place(&mut session, &notes[1]);
+    let before = width_of(&session, own);
+    let name = shown_as(&session, TITLES[0]);
+    carry_edge(&mut session, &name, 140.0);
+    until(&mut session, "the window is wider", |session| {
+        width_of(session, own) > before
+    });
+    session
+        .undo_layout()
+        .unwrap_or_else(|error| panic!("the person's step is taken back: {error:?}"));
+    let until = std::time::Instant::now() + tilo_test_env::hang_bound();
+    while width_of(&session, own) != before {
+        assert!(
+            std::time::Instant::now() < until,
+            "one undo puts the width back to {before}; it stands at {}; the step the person has \
+             is {:?}",
+            width_of(&session, own),
+            session.layout().borrow().last_step()
+        );
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+}
+
 /// A session with the shell on a wide display, where a row of two windows is wider than the least
 /// a window keeps and has room for an edge to trade.
 fn wide_session() -> (Session, Vec<String>) {
