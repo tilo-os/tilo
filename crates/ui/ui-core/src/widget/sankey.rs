@@ -15,6 +15,7 @@ use vello::peniko::{Color, Fill};
 use crate::color_compat::ColorCompat;
 use crate::widget::chart_data::{ChartLink, ChartNode, graph_items};
 use crate::widget::chart_labels::format_compact;
+use crate::widget::chart_legend;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
@@ -76,16 +77,19 @@ struct LinkBand {
 #[derive(Clone, Debug)]
 struct NodeLabel {
     /// Which node it names.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only the label tests ask which node a painted label names"
-        )
-    )]
     index: usize,
     lines: Vec<(String, Rect)>,
     value: Option<(String, Rect)>,
+}
+
+/// A node's entry in the legend under the flow: where it stands, the lines its name reads as,
+/// and its value.
+#[derive(Clone, Debug)]
+struct LegendRow {
+    index: usize,
+    rect: Rect,
+    lines: Vec<String>,
+    value: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -163,25 +167,123 @@ impl SankeyMarks {
         self.frame.inside()
     }
 
-    /// The title over the flow, and the trailing width the last column's labels need: its
-    /// widest label, never more than a third of the chart, so the flow keeps its width.
+    /// The title over the flow, and either the trailing width the last column's labels need, or
+    /// — where a name will not read beside its node — the room a legend under the flow takes for
+    /// every node.
     fn measure_margins(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        let rect = self.frame.rect;
+        self.frame.margins = if self.legend_needed(tr, theme, rect) {
+            let legend = self
+                .legend_rows(tr, theme, rect, 0.0)
+                .last()
+                .map_or(0.0, |row| row.rect.y1);
+            let mut margins = Margins::header(theme, &self.frame.title, 0);
+            margins.bottom = crate::widget::plot::step(theme) + legend;
+            margins
+        } else {
+            self.beside_margins(tr, theme, rect)
+        };
+    }
+
+    /// The margins the beside-labels take: the title's band and the trailing width the last
+    /// column's labels need — its widest label, never more than a third of the chart, so the
+    /// flow keeps its width.
+    fn beside_margins(&self, tr: &mut TextRenderer, theme: &Theme, rect: Rect) -> Margins {
+        let mut margins = Margins::header(theme, &self.frame.title, 0);
+        margins.right = self.last_widest(tr, theme).map_or(0.0, |widest| {
+            (widest + f64::from(theme.tokens.spacing.s2)).min(rect.width() / 3.0)
+        });
+        margins
+    }
+
+    /// The widest name in the flow's last column, which its labels stand in the trailing width.
+    fn last_widest(&self, tr: &mut TextRenderer, theme: &Theme) -> Option<f64> {
         let links = self.resolved_links();
         let depths = self.depths(&links);
         let last = depths.iter().copied().max().unwrap_or_default();
         let style = Self::label_style(theme);
-        let widest = self
-            .nodes
+        self.nodes
             .iter()
             .zip(&depths)
             .filter(|(_, depth)| **depth == last && last > 0)
             .map(|(node, _)| f64::from(tr.measure_style(&node.label, None, &style).0))
-            .fold(0.0, f64::max);
+            .reduce(f64::max)
+    }
+
+    /// Whether a node's name would be left off beside its node at `rect`: the chart then names
+    /// every node in a legend under the flow instead.
+    fn legend_needed(&self, tr: &mut TextRenderer, theme: &Theme, rect: Rect) -> bool {
+        let links = self.resolved_links();
+        if self.nodes.is_empty() || links.is_empty() {
+            return false;
+        }
+        let content = self.beside_margins(tr, theme, rect).inside(rect);
+        let boxes = self.node_boxes(&links, content);
+        let labels = self.label_layout(&boxes, tr, theme, rect);
+        self.nodes
+            .iter()
+            .enumerate()
+            .any(|(index, _)| !labels.iter().any(|label| label.index == index))
+    }
+
+    /// The tallest column's labels, values and the gaps between its nodes: the room the flow's
+    /// nodes share at `width`, with `reserve` standing off its trailing edge for the last
+    /// column's labels.
+    fn flow_height(&self, tr: &mut TextRenderer, theme: &Theme, width: f64, reserve: f64) -> f64 {
+        let links = self.resolved_links();
+        let depths = self.depths(&links);
+        let last = depths.iter().copied().max().unwrap_or_default();
+        let style = Self::label_style(theme);
+        let line = f64::from(style.line_height_px());
+        let value_line = crate::widget::plot::caption_line(theme);
         let pad = f64::from(theme.tokens.spacing.s2);
-        let reserve = if widest > 0.0 { widest + pad } else { 0.0 };
-        let mut margins = Margins::header(theme, &self.frame.title, 0);
-        margins.right = reserve.min(self.frame.rect.width() / 3.0).max(0.0);
-        self.frame.margins = margins;
+        let content = (width - reserve).max(0.0);
+        let columns = last.saturating_add(1);
+        let step = if columns > 1 {
+            (content - self.style.node_width)
+                / tilo_ui_base::num::f64_of_usize(columns.saturating_sub(1))
+        } else {
+            0.0
+        };
+        let gap = if columns > 1 {
+            step - self.style.node_width
+        } else {
+            0.0
+        };
+        let value = if self.style.show_values {
+            value_line
+        } else {
+            0.0
+        };
+        let mut needed = vec![0.0_f64; columns];
+        for (index, depth) in depths.iter().enumerate() {
+            let Some(node) = self.nodes.get(index) else {
+                continue;
+            };
+            let spare = if *depth == last {
+                if columns > 1 {
+                    reserve - pad
+                } else {
+                    width - self.style.node_width - pad
+                }
+            } else {
+                gap - 2.0 * pad
+            };
+            let lines = crate::widget::chart_labels::wrapped_labels(tr, &node.label, &style)
+                .into_iter()
+                .find(|wrapped| wrapped.width <= spare.max(0.0))
+                .map_or(1, |wrapped| wrapped.lines.len());
+            if let Some(total) = needed.get_mut(*depth) {
+                // Each label stands a step past its node's top and keeps air above the node
+                // below it, so it needs those along with its lines and value.
+                *total += tilo_ui_base::num::f64_of_usize(lines) * line
+                    + value
+                    + self.style.node_gap
+                    + pad
+                    + 2.0;
+            }
+        }
+        needed.iter().copied().fold(0.0, f64::max)
     }
 
     fn resolved_links(&self) -> Vec<(usize, usize, usize, f64)> {
@@ -245,8 +347,7 @@ impl SankeyMarks {
             .collect()
     }
 
-    fn node_boxes(&self, links: &[(usize, usize, usize, f64)]) -> Vec<NodeBox> {
-        let content = self.content_rect();
+    fn node_boxes(&self, links: &[(usize, usize, usize, f64)], content: Rect) -> Vec<NodeBox> {
         let depths = self.depths(links);
         let values = self.node_values(links);
         let max_depth = depths.iter().copied().max().unwrap_or_default();
@@ -295,7 +396,7 @@ impl SankeyMarks {
 
     fn geometry(&self) -> (Vec<NodeBox>, Vec<LinkBand>) {
         let links = self.resolved_links();
-        let boxes = self.node_boxes(&links);
+        let boxes = self.node_boxes(&links, self.content_rect());
         let by_node = boxes
             .iter()
             .map(|node| (node.index, *node))
@@ -356,8 +457,9 @@ impl SankeyMarks {
     /// the gap before the next column (the last column's in the trailing width the chart
     /// reserves for them), broken over the lines the room between it and the node below holds so
     /// a long name reads whole; shortened at a word boundary where even those lines do not hold
-    /// it; and dropped (the tooltip and accessible name still read the node) where not even a
-    /// whole word either side of its ellipsis fits, or it would run into the label above it.
+    /// it; and dropped where not even a whole word either side of its ellipsis fits, or it would
+    /// run into the label above it. A dropped name is not left unread: the chart then names every
+    /// node in the legend under the flow, and the tooltip and accessible name carry it too.
     #[allow(
         clippy::too_many_lines,
         reason = "each node's column, room and collision are weighed in one ordered pass"
@@ -367,6 +469,7 @@ impl SankeyMarks {
         nodes: &[NodeBox],
         tr: &mut TextRenderer,
         theme: &Theme,
+        frame: Rect,
     ) -> Vec<NodeLabel> {
         let style = Self::label_style(theme);
         let value_style = theme.text(TextRole::Caption);
@@ -411,7 +514,7 @@ impl SankeyMarks {
             let column = column_of(node.rect.x0);
             // A label stands a step past its node; the last column's ends on the chart's edge.
             let spare = if column == last {
-                self.frame.rect.x1 - node.rect.x1 - pad
+                frame.x1 - node.rect.x1 - pad
             } else {
                 gap - 2.0 * pad
             };
@@ -420,7 +523,7 @@ impl SankeyMarks {
             let below = tops
                 .get(&column)
                 .and_then(|tops| tops.iter().copied().find(|top| *top > node.rect.y0 + 0.5))
-                .unwrap_or(self.frame.rect.y1);
+                .unwrap_or(frame.y1);
             let available = (below - y - pad).max(0.0);
             let value_text = format_compact(node.value);
             let (value_width, _) = tr.measure_style(&value_text, None, &value_style);
@@ -488,6 +591,97 @@ impl SankeyMarks {
             .with_weight(TextWeight::Medium)
     }
 
+    /// The legend under the flow: one entry per node, its whole name broken over the lines its
+    /// width holds and its value under them, in the order the nodes read. `top` is where the
+    /// entries start.
+    fn legend_rows(
+        &self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        area: Rect,
+        top: f64,
+    ) -> Vec<LegendRow> {
+        if self.nodes.is_empty() {
+            return Vec::new();
+        }
+        let links = self.resolved_links();
+        let values = self.node_values(&links);
+        let measured = chart_legend::measure_lines(
+            tr,
+            theme,
+            self.nodes.iter().map(|node| node.label.as_str()),
+            area.width(),
+        );
+        let value_line = crate::widget::plot::caption_line(theme);
+        let tight = f64::from(theme.tokens.spacing.rhythm.tight);
+        let entries = measured
+            .iter()
+            .map(|entry| chart_legend::LegendEntry {
+                width: entry.size.width,
+                height: entry.size.height + tight + value_line,
+            })
+            .collect::<Vec<_>>();
+        let placed = chart_legend::wrap(&entries, area.x0, area.x1, top, theme);
+        measured
+            .into_iter()
+            .zip(placed)
+            .enumerate()
+            .map(|(index, (entry, rect))| LegendRow {
+                index,
+                rect,
+                lines: entry.lines,
+                value: format_compact(values.get(index).copied().unwrap_or_default()),
+            })
+            .collect()
+    }
+
+    /// The labels painted beside the nodes: none where the chart names every node in the legend
+    /// under the flow instead, so a narrow chart shows one complete reading per node rather than
+    /// a few cut ones.
+    fn painted_labels(
+        &self,
+        nodes: &[NodeBox],
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Vec<NodeLabel> {
+        if self.legend_needed(tr, theme, self.frame.rect) {
+            Vec::new()
+        } else {
+            self.label_layout(nodes, tr, theme, self.frame.rect)
+        }
+    }
+
+    /// Paint the legend under the flow: each node's own colour, its whole name and its value.
+    fn draw_legend(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        let top = self.content_rect().y1 + crate::widget::plot::step(theme);
+        for row in self.legend_rows(tr, theme, self.frame.rect, top) {
+            let Some(node) = self.nodes.get(row.index) else {
+                continue;
+            };
+            let colour = node
+                .color
+                .unwrap_or_else(|| Self::palette(theme, row.index));
+            chart_legend::paint_lines(
+                scene,
+                transform,
+                tr,
+                theme,
+                colour,
+                chart_legend::PlacedEntry {
+                    rect: row.rect,
+                    lines: &row.lines,
+                    value: Some(&row.value),
+                },
+            );
+        }
+    }
+
     /// The colour a link is painted in over the chart's ground: its palette colour, faded by
     /// the link's alpha and brought forward while it is inspected.
     fn link_ground(&self, link: &LinkBand, theme: &Theme) -> Option<Color> {
@@ -550,7 +744,7 @@ impl SankeyMarks {
     ) {
         let style = Self::label_style(theme);
         let value_style = theme.text(TextRole::Caption);
-        for label in self.label_layout(nodes, tr, theme) {
+        for label in self.painted_labels(nodes, tr, theme) {
             for (text, rect) in &label.lines {
                 tr.draw_style(
                     scene,
@@ -646,80 +840,30 @@ impl PlotMarks for SankeyMarks {
     }
 
     /// The height the flow wants at `width`: each column's labels stand beside its nodes, so the
-    /// tallest column's names broken over two lines, with their values and the gaps between
-    /// nodes, is the room its nodes share. [`NATURAL_HEIGHT`] is the least it draws at.
+    /// tallest column's names broken over the lines its gap holds, with their values and the
+    /// gaps between nodes, is the room its nodes share. Where a name will not read there, the
+    /// flow takes the full width and the legend under it adds its rows. [`NATURAL_HEIGHT`] is the
+    /// least it draws at.
     fn natural_height(&self, tr: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         let links = self.resolved_links();
         if self.nodes.is_empty() || links.is_empty() {
             return NATURAL_HEIGHT;
         }
-        let depths = self.depths(&links);
-        let last = depths.iter().copied().max().unwrap_or_default();
-        let style = Self::label_style(theme);
-        let line = f64::from(style.line_height_px());
-        let value_line = crate::widget::plot::caption_line(theme);
-        let pad = f64::from(theme.tokens.spacing.s2);
-        let widest = self
-            .nodes
-            .iter()
-            .zip(&depths)
-            .filter(|(_, depth)| **depth == last && last > 0)
-            .map(|(node, _)| f64::from(tr.measure_style(&node.label, None, &style).0))
-            .fold(0.0, f64::max);
-        let reserve = if widest > 0.0 {
-            (widest + pad).min(width / 3.0)
-        } else {
-            0.0
-        };
-        let content = (width - reserve).max(0.0);
-        let columns = last.saturating_add(1);
-        let step = if columns > 1 {
-            (content - self.style.node_width)
-                / tilo_ui_base::num::f64_of_usize(columns.saturating_sub(1))
-        } else {
-            0.0
-        };
-        let gap = if columns > 1 {
-            step - self.style.node_width
-        } else {
-            0.0
-        };
-        let value = if self.style.show_values {
-            value_line
-        } else {
-            0.0
-        };
-        let mut needed = vec![0.0_f64; columns];
-        for (index, depth) in depths.iter().enumerate() {
-            let Some(node) = self.nodes.get(index) else {
-                continue;
-            };
-            let spare = if *depth == last {
-                if columns > 1 {
-                    reserve - pad
-                } else {
-                    width - self.style.node_width - pad
-                }
-            } else {
-                gap - 2.0 * pad
-            };
-            let lines = crate::widget::chart_labels::wrapped_labels(tr, &node.label, &style)
-                .into_iter()
-                .find(|wrapped| wrapped.width <= spare.max(0.0))
-                .map_or(1, |wrapped| wrapped.lines.len());
-            if let Some(total) = needed.get_mut(*depth) {
-                // Each label stands a step past its node's top and keeps air above the node
-                // below it, so it needs those along with its lines and value.
-                *total += tilo_ui_base::num::f64_of_usize(lines) * line
-                    + value
-                    + self.style.node_gap
-                    + pad
-                    + 2.0;
-            }
-        }
-        let body = needed.iter().copied().fold(0.0, f64::max);
         let title = crate::widget::chart_navigation::title_band(theme, &self.frame.title);
-        (title + body).max(NATURAL_HEIGHT)
+        let reserve = self.last_widest(tr, theme).map_or(0.0, |widest| {
+            (widest + f64::from(theme.tokens.spacing.s2)).min(width / 3.0)
+        });
+        let beside = self.flow_height(tr, theme, width, reserve);
+        let probe = Rect::new(0.0, 0.0, width, (title + beside).max(NATURAL_HEIGHT));
+        if !self.legend_needed(tr, theme, probe) {
+            return (title + beside).max(NATURAL_HEIGHT);
+        }
+        let flow = self.flow_height(tr, theme, width, 0.0);
+        let legend = self
+            .legend_rows(tr, theme, Rect::new(0.0, 0.0, width, 0.0), 0.0)
+            .last()
+            .map_or(0.0, |row| row.rect.y1);
+        (title + flow + crate::widget::plot::step(theme) + legend).max(NATURAL_HEIGHT)
     }
 
     #[allow(
@@ -790,7 +934,11 @@ impl PlotMarks for SankeyMarks {
                 );
             }
         }
-        self.draw_node_labels(scene, transform, tr, theme, &nodes, &links);
+        if self.legend_needed(tr, theme, self.frame.rect) {
+            self.draw_legend(scene, transform, tr, theme);
+        } else {
+            self.draw_node_labels(scene, transform, tr, theme, &nodes, &links);
+        }
     }
 
     fn readout(&self, _theme: &Theme) -> Option<Readout> {
@@ -869,8 +1017,9 @@ mod tests {
 
     /// Every node's label stays readable at a laptop's width and a phone's: it is the whole name
     /// — broken over the lines the gap beside its node holds — or whole words at its start and
-    /// its end around one ellipsis, never a cut inside a word. A node left unnamed is still read
-    /// whole by its tooltip and accessible name, and no label paints outside the chart.
+    /// its end around one ellipsis, never a cut inside a word. Where a name cannot read beside
+    /// its node, the chart names every node in the legend under the flow instead. No label paints
+    /// outside the chart.
     #[test]
     fn node_labels_stay_readable_at_every_width() {
         for theme in [Theme::light(), Theme::dark()] {
@@ -891,7 +1040,7 @@ mod tests {
                     );
                 }
                 let (boxes, _) = chart.marks.geometry();
-                let labels = chart.marks.label_layout(&boxes, &mut tr, &theme);
+                let labels = chart.marks.painted_labels(&boxes, &mut tr, &theme);
                 let mut shown = 0;
                 for label in &labels {
                     let Some(node) = chart.marks.nodes.get(label.index) else {
@@ -924,10 +1073,74 @@ mod tests {
                         );
                     }
                 }
-                // A laptop's gap holds every long name over its lines; a phone's holds the ones
-                // a whole word either side of an ellipsis still names, and drops the rest.
+                // A laptop's gap holds every long name over its lines; a phone's holds none, so
+                // the chart puts every name in the legend under the flow instead of dropping it.
                 if width > 500.0 {
                     assert_eq!(shown, 4, "{width}: every node of the flow is named");
+                } else {
+                    assert!(chart.marks.legend_needed(&mut tr, &theme, rect));
+                    assert_eq!(shown, 0, "{width}: no name is cut beside its node");
+                }
+            }
+        }
+    }
+
+    /// At a phone's width a long name has no room beside its node, so the chart names every node
+    /// in a legend under the flow: each entry's lines read its whole name, its value stands under
+    /// them, every entry lies inside the frame and none over another. The names and values take
+    /// the theme's ink and clear the small-text floor on the chart's ground in both themes.
+    #[test]
+    fn a_phone_width_names_every_node_in_a_legend() {
+        for theme in [Theme::light(), Theme::dark()] {
+            let ground = theme.tokens.colors.surfaces.base;
+            let (name_ink, value_ink) = chart_legend::entry_inks(&theme);
+            for ink in [name_ink, value_ink] {
+                assert!(
+                    tilo_ui_base::a11y::contrast_ratio(ink, ground) >= 4.5,
+                    "legend ink {ink:?} on {ground:?}"
+                );
+            }
+            let mut tr = TextRenderer::new();
+            let width = 358.0;
+            let (nodes, links) = docs_to_team();
+            let mut chart = SankeyChart::new(nodes, links);
+            let height = chart.marks.natural_height(&mut tr, &theme, width);
+            chart.marks.frame.rect = Rect::new(0.0, 0.0, width, height);
+            chart.marks.place(&mut tr, &theme);
+            let rect = chart.marks.frame.rect;
+            assert!(chart.marks.legend_needed(&mut tr, &theme, rect));
+            let top = chart.marks.content_rect().y1 + crate::widget::plot::step(&theme);
+            let rows = chart.marks.legend_rows(&mut tr, &theme, rect, top);
+            assert_eq!(rows.len(), chart.marks.nodes.len(), "one entry per node");
+            let values = chart.marks.node_values(&chart.marks.resolved_links());
+            for row in &rows {
+                let node = chart
+                    .marks
+                    .nodes
+                    .get(row.index)
+                    .expect("an entry names a node");
+                assert_eq!(row.lines.join(" "), node.label, "the whole name reads");
+                assert_eq!(
+                    row.value,
+                    format_compact(values.get(row.index).copied().unwrap_or_default())
+                );
+                assert!(
+                    row.rect.x0 >= rect.x0 - 0.5
+                        && row.rect.x1 <= rect.x1 + 0.5
+                        && row.rect.y0 >= rect.y0 - 0.5
+                        && row.rect.y1 <= rect.y1 + 0.5,
+                    "{:?} lies outside {rect:?}",
+                    row.rect
+                );
+            }
+            for (index, a) in rows.iter().enumerate() {
+                for b in rows.iter().skip(index + 1) {
+                    assert!(
+                        a.rect.intersect(b.rect).is_zero_area(),
+                        "{:?} covers {:?}",
+                        a.rect,
+                        b.rect
+                    );
                 }
             }
         }
@@ -958,7 +1171,13 @@ mod tests {
                 chart.marks.frame.rect = Rect::new(0.0, 0.0, width, height);
                 chart.marks.place(&mut tr, &theme);
                 let (boxes, _) = chart.marks.geometry();
-                let labels = chart.marks.label_layout(&boxes, &mut tr, &theme);
+                assert!(
+                    !chart
+                        .marks
+                        .legend_needed(&mut tr, &theme, chart.marks.frame.rect),
+                    "{width}: a short name fits beside its node, so there is no legend"
+                );
+                let labels = chart.marks.painted_labels(&boxes, &mut tr, &theme);
                 let mut named: Vec<String> = labels
                     .iter()
                     .map(|label| {
@@ -1011,7 +1230,7 @@ mod tests {
         chart.marks.frame.rect = Rect::new(0.0, 0.0, width, height);
         chart.marks.place(&mut tr, &theme);
         let (boxes, _) = chart.marks.geometry();
-        let labels = chart.marks.label_layout(&boxes, &mut tr, &theme);
+        let labels = chart.marks.painted_labels(&boxes, &mut tr, &theme);
         let named = labels
             .iter()
             .filter(|label| label.index != 0)

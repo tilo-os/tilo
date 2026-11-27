@@ -6,7 +6,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{Color, Fill};
 
-use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::text_render::{TextRenderer, TextStyle};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::TextRole;
 use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
@@ -15,6 +15,15 @@ use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 pub struct LegendEntry {
     pub width: f64,
     pub height: f64,
+}
+
+/// One entry measured against the width its row gives it: its name broken over as many lines as
+/// that width holds, and the box the entry takes.
+#[derive(Clone, Debug)]
+pub struct LegendLines {
+    /// The name's lines as they read.
+    pub lines: Vec<String>,
+    pub size: LegendEntry,
 }
 
 fn swatch(theme: &Theme) -> (f64, f64) {
@@ -42,24 +51,91 @@ pub fn measure<'a>(
         .collect()
 }
 
+/// Measure each label as an entry broken over the lines `width` holds: its swatch, gap and name,
+/// the name wrapped at the words' own breaks so a long one reads whole rather than elided. A
+/// single word wider than `width` is elided, since a word never splits.
+pub fn measure_lines<'a>(
+    text: &mut TextRenderer,
+    theme: &Theme,
+    labels: impl IntoIterator<Item = &'a str>,
+    width: f64,
+) -> Vec<LegendLines> {
+    let style = theme.text(TextRole::Caption);
+    let (dot, gap) = swatch(theme);
+    let line = f64::from(text.measure_style("Ag", None, &style).1);
+    let tight = f64::from(theme.tokens.spacing.rhythm.tight);
+    let spare = tilo_ui_base::num::f32_of_f64((width - dot - gap).max(1.0));
+    labels
+        .into_iter()
+        .map(|label| {
+            let lines = break_lines(text, label, &style, spare);
+            let widest = lines
+                .iter()
+                .map(|line| f64::from(text.measure_style(line, None, &style).0))
+                .fold(0.0, f64::max);
+            LegendLines {
+                size: LegendEntry {
+                    width: (dot + gap + widest).ceil(),
+                    height: (tilo_ui_base::num::f64_of_usize(lines.len()) * line + tight).ceil(),
+                },
+                lines,
+            }
+        })
+        .collect()
+}
+
+/// `label` packed greedily into lines no wider than `spare`, at the words' own breaks.
+fn break_lines(text: &mut TextRenderer, label: &str, style: &TextStyle, spare: f32) -> Vec<String> {
+    let fits =
+        |text: &mut TextRenderer, line: &str| text.measure_style(line, None, style).0 <= spare;
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in label.split_whitespace() {
+        let word = if fits(text, word) {
+            word.to_owned()
+        } else {
+            text.elide_to_width_style(word, spare, style)
+        };
+        let candidate = if current.is_empty() {
+            word.clone()
+        } else {
+            format!("{current} {word}")
+        };
+        if current.is_empty() || fits(text, &candidate) {
+            current = candidate;
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current = word;
+        }
+    }
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
 /// Place measured entries left to right from `top`, wrapping before
 /// `right`, a section step apart. An entry wider than the space is clamped
-/// to it (its label elides when painted).
+/// to it (its label elides when painted). A line of entries advances past
+/// the tallest of them.
 pub fn wrap(entries: &[LegendEntry], left: f64, right: f64, top: f64, theme: &Theme) -> Vec<Rect> {
     let gap = f64::from(theme.tokens.spacing.rhythm.section);
     let available = (right - left).max(1.0);
     let mut x = left;
     let mut y = top;
+    let mut row = 0.0_f64;
     entries
         .iter()
         .map(|entry| {
             let width = entry.width.min(available);
             if x > left && x + width > right {
                 x = left;
-                y += entry.height;
+                y += row;
+                row = 0.0;
             }
             let rect = Rect::new(x, y, x + width, y + entry.height);
             x += width + gap;
+            row = row.max(entry.height);
             rect
         })
         .collect()
@@ -112,6 +188,83 @@ pub fn paint_entry_emphasised(
         None,
         &style,
     );
+}
+
+/// The ink a legend entry's name and its value take on the chart's ground: the theme's primary
+/// and dim text, the dim one only where it clears the small-text floor there, so a chart on a
+/// ground the dim tier is too light for still reads its values.
+pub fn entry_inks(theme: &Theme) -> (Color, Color) {
+    let ground = theme.tokens.colors.surfaces.base;
+    let dim = theme.tokens.colors.text_dim;
+    let name = theme
+        .tokens
+        .colors
+        .ink_on(ground, theme.tokens.colors.text_primary, 4.5);
+    let value = if tilo_ui_base::a11y::contrast_ratio(dim, ground) >= 4.5 {
+        dim
+    } else {
+        theme.tokens.colors.text_primary
+    };
+    (name, value)
+}
+
+/// An entry [`measure_lines`] measured, placed at `rect` with the value that follows its name.
+#[derive(Clone, Copy, Debug)]
+pub struct PlacedEntry<'a> {
+    pub rect: Rect,
+    pub lines: &'a [String],
+    pub value: Option<&'a str>,
+}
+
+/// Paint a placed entry: its swatch on the first line, its name's lines under each other, and
+/// its value under them where it has one.
+pub fn paint_lines(
+    scene: &mut Scene,
+    transform: Affine,
+    text: &mut TextRenderer,
+    theme: &Theme,
+    colour: Color,
+    entry: PlacedEntry<'_>,
+) {
+    let style = theme.text(TextRole::Caption);
+    let (dot, gap) = swatch(theme);
+    let line = f64::from(text.measure_style("Ag", None, &style).1);
+    let tight = f64::from(theme.tokens.spacing.rhythm.tight);
+    let (name_ink, value_ink) = entry_inks(theme);
+    let rect = entry.rect;
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colour,
+        None,
+        &Circle::new(
+            Point::new(rect.x0 + dot / 2.0, rect.y0 + line / 2.0),
+            dot / 2.0,
+        ),
+    );
+    let x = rect.x0 + dot + gap;
+    for (index, text_line) in entry.lines.iter().enumerate() {
+        let y = rect.y0 + tilo_ui_base::num::f64_of_usize(index) * line;
+        text.draw_style(
+            scene,
+            text_line,
+            name_ink,
+            transform * Affine::translate((x, y)),
+            None,
+            &style,
+        );
+    }
+    if let Some(value) = entry.value {
+        let y = rect.y0 + tilo_ui_base::num::f64_of_usize(entry.lines.len()) * line + tight;
+        text.draw_style(
+            scene,
+            value,
+            value_ink,
+            transform * Affine::translate((x, y)),
+            None,
+            &style,
+        );
+    }
 }
 
 /// The series a legend has hidden, where the layout placed each entry, and
