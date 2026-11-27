@@ -1205,8 +1205,12 @@ impl ActionService {
         // agent is the agent, a bot the bot, never the person.
         let caller = match &authority.acting.by {
             Actor::Member(MemberId::Agent { id: agent, .. }) => {
+                // The workspace's grants naming the agent reach it, as they reach a key that
+                // acts as its person ([`crate::key_caller::caller_of_key`]): a key its person's
+                // root certified for an agent is decided by those grants, never by its person's.
                 let caller =
-                    Caller::delegated_agent(agent.clone(), certificate.user_public_key, acting);
+                    Caller::delegated_agent(agent.clone(), certificate.user_public_key, acting)
+                        .granting(authority.granted.clone());
                 // The roster's own word: the agent's key its person's root certified for this
                 // workspace, still on the roster, works under that entry.
                 match roster {

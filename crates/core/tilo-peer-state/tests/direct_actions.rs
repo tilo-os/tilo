@@ -626,6 +626,7 @@ async fn the_agent_acts_inside_its_window_and_not_after(process: tilo_clock::tes
     let root = SigningKey::from_bytes(&[1; 32]);
     let a = device(&root, 2);
     let helper = agent_device(&root, 4);
+    let owner_device = a.1.device_public_key;
     let roster = vec![a.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
     let engine = Engine::serving(
@@ -820,6 +821,8 @@ fn agent_key(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
 struct HostWithKeys {
     engine: Engine,
     dispatcher: Arc<TestProvider>,
+    /// The owner's own device: the person's access, where an agent's key is the agent's.
+    owner_device: [u8; 32],
     agent: (SigningKey, DeviceCert),
     server: (SigningKey, DeviceCert),
     now: SystemTime,
@@ -866,6 +869,7 @@ async fn host_with_keys() -> HostWithKeys {
     HostWithKeys {
         engine,
         dispatcher,
+        owner_device,
         agent,
         server,
         now,
@@ -941,11 +945,12 @@ async fn a_key_the_workspace_lists_acts_as_its_agent() {
     // does not.
     let settings = tilo_action_policy::roles::workspace_resource(WORKSPACE);
     let write = tilo_action_types::ActionKind::Undoable;
+    // The person's own device holds the person's access: the agent's key holds its agent's.
     let access = host
         .engine
         .replica
-        .read(|peer| peer.permissions(agent.1.device_public_key, host.now))
-        .expect("the workspace knows the key");
+        .read(|peer| peer.permissions(host.owner_device, host.now))
+        .expect("the workspace knows the owner's device");
     assert!(
         access.allows(&settings, write, host.now),
         "the person may change their workspace's settings"
