@@ -400,7 +400,14 @@ impl crate::Shared {
     /// them, when the front window or the resource it shows moved: the app, the resource and the
     /// view it shows it through.
     pub(crate) fn offer_front(&self) {
-        let tab = self.desktop.with_policy(|policy| policy.focused_tab());
+        // The window in front is the one the keyboard is in, when a window holds it: a shell that
+        // draws its windows itself (the tilolang shell) holds the keyboard, and the window in
+        // front there is the one the layout's own record says the person brought forward
+        // ([`tilo_session_core::layout::Layout::tab_in_front`]).
+        let tab = self
+            .desktop
+            .with_policy(|policy| policy.focused_tab())
+            .or_else(|| self.layout.borrow().tab_in_front());
         let resources = self.layout.borrow().window_resources();
         let resource = tab
             .and_then(|tab| resources.get(&tab).cloned())

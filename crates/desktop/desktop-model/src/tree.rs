@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{GroupId, StripId, WorkspaceId};
+use crate::ids::{GroupId, StripId, TabId, WorkspaceId};
 use crate::layout::Tab;
 use crate::partition::OutputPartition;
 use crate::serde_ids::deserialize_id_map;
@@ -127,6 +127,29 @@ impl Layout {
 
     pub fn active_workspace(&self) -> Option<&Workspace> {
         self.workspaces.iter().find(|w| w.id() == self.active)
+    }
+
+    /// The window this device has in front: the tab the group in front of the active workspace's
+    /// shown strip keeps active, and, where the layout records no such pointer — a layout whose
+    /// shell draws the windows itself keeps none of the keyboard's — the first window that strip
+    /// shows. `None` for a layout with no window at all.
+    #[must_use]
+    pub fn tab_in_front(&self) -> Option<TabId> {
+        let workspace = self
+            .active_workspace()
+            .or_else(|| self.workspaces.first())?;
+        let strip_id = self.active_strip_for(workspace)?;
+        let strip = workspace.strips.iter().find(|strip| strip.id == strip_id)?;
+        let group = self
+            .active_group_for(strip_id)
+            .and_then(|group| strip.window_groups.iter().find(|held| held.id == group))
+            .or_else(|| strip.window_groups.first())?;
+        group
+            .tabs
+            .iter()
+            .find(|tab| tab.id == group.active_tab)
+            .or_else(|| group.tabs.first())
+            .map(|tab| tab.id)
     }
 
     /// Every window of the layout, in the tree's order: workspace by workspace, strip by strip,

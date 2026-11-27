@@ -3421,6 +3421,15 @@ impl tilo_session_core::layout::Layouts for Steps {
         shown
     }
 
+    fn front_tab(&self) -> Option<tilo_desktop_model::TabId> {
+        // The workspace in front is the tree's: which one the person is in does not wait on the
+        // windows its record keeps, which this device's shell may not have drawn yet.
+        let workspace = (self.handle).read(|tree| tree.active);
+        let doc = self.layouts.layout(workspace)?;
+        let layout = shared_resource::read(&doc, None)?;
+        layout.tree.tab_in_front()
+    }
+
     fn recent_opens(&self, person: &str) -> tilo_session_core::layout::RecentOpens {
         let Some(workspace_id) = self.workspace_id() else {
             return tilo_session_core::layout::RecentOpens::default();

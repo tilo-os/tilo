@@ -704,6 +704,13 @@ pub trait Layouts {
     );
     /// The record each window shows, by its tab: what a place put on a record was placed on.
     fn shown(&self) -> BTreeMap<TabId, String>;
+    /// The window the person has in front, read off the layout this host keeps: the active tab
+    /// of the workspace in front's strip and group in its record, and, where the record names
+    /// none, the first window it holds. `None` for a host that keeps no such record, and for a
+    /// layout whose record holds no window.
+    fn front_tab(&self) -> Option<TabId> {
+        None
+    }
     /// What `person`'s recents are read from in the workspace in front: every open its layout's
     /// history holds, and when they cleared their recents. A host that keeps no shared history
     /// has none.
@@ -1609,6 +1616,17 @@ impl Layout {
     #[must_use]
     pub fn window_resources(&self) -> BTreeMap<TabId, String> {
         self.layouts.shown()
+    }
+
+    /// The window this device has in front: what the layout's own record says the person brought
+    /// forward ([`Layouts::front_tab`]) — how a shell that draws its windows itself has none of
+    /// the keyboard's — and, where the record names none yet, the window in front of the tree the
+    /// shell drew.
+    #[must_use]
+    pub fn tab_in_front(&self) -> Option<TabId> {
+        self.layouts
+            .front_tab()
+            .or_else(|| self.handle.read(Tree::tab_in_front))
     }
 
     /// Every record a place of the layout shows, by the id of the workspace (a hex device key) the
