@@ -375,7 +375,27 @@ fn lay_out_section(
         .copied()
         .filter(|group| !floating.contains_key(&group.id))
         .collect();
+    // Each window of the strip in its run of the canvas, from the display's left edge: how far
+    // the strip may scroll, and where the person has it. The shell shows the strip in front as
+    // this run whichever layout the workspace keeps, so its pan stands also on a canvas, where a
+    // host's `pan` moves it.
+    let usable = (area.width() - 2.0 * STRIP_EDGE_GUTTER_PX).max(1.0);
+    let alone = in_strip.len() == 1;
+    let mut x = STRIP_EDGE_GUTTER_PX;
+    let spans: Vec<(GroupId, f64, f64)> = in_strip
+        .iter()
+        .map(|group| {
+            let width = group.width.resolve_in_strip(usable, alone);
+            let span = (group.id, x, x + width);
+            x += width + HANDLE_SLOT_PX;
+            span
+        })
+        .collect();
+    let pan = pan_section(shared, section, &spans, reveal_asked);
+    laid.pans.insert((section.strip, section.display), pan);
     if workspace.layout.kind == LayoutKind::Canvas {
+        // A place of a canvas keeps the point the person put it at: its window stands there,
+        // never at the run's.
         for group in in_strip {
             if let Some(place) = workspace.layout.place_of(group.id) {
                 laid.shown
@@ -383,21 +403,6 @@ fn lay_out_section(
             }
         }
     } else {
-        // Each window of the strip in its run of the canvas, from the display's left edge.
-        let usable = (area.width() - 2.0 * STRIP_EDGE_GUTTER_PX).max(1.0);
-        let alone = in_strip.len() == 1;
-        let mut x = STRIP_EDGE_GUTTER_PX;
-        let spans: Vec<(GroupId, f64, f64)> = in_strip
-            .iter()
-            .map(|group| {
-                let width = group.width.resolve_in_strip(usable, alone);
-                let span = (group.id, x, x + width);
-                x += width + HANDLE_SLOT_PX;
-                span
-            })
-            .collect();
-        let pan = pan_section(shared, section, &spans, reveal_asked);
-        laid.pans.insert((section.strip, section.display), pan);
         for (group, (_, x0, x1)) in in_strip.iter().zip(spans) {
             let window = Rect::new(
                 area.x0 + x0 - pan.scroll,
@@ -426,14 +431,11 @@ fn lay_out_section(
 
 /// Present the pan of the strip the person works on beside the tree: how far it is scrolled, the
 /// view its windows are seen through and how far it may scroll. The navigation snapshot and the
-/// `pan` verb read it, and a host that pans a strip by a swipe presents it here.
+/// `pan` verb read it, and a host that pans a strip by a swipe presents it here. A workspace's
+/// layout says what its places keep, not how the shell shows it: a canvas kind is shown as the
+/// strip's run by the strips style, so its front strip has a pan like any other.
 pub fn present_pan(shared: &mut Shared) {
-    // A canvas has no strip to pan: its places stand where the person put them.
-    let pans = shared
-        .tree
-        .active_workspace()
-        .is_some_and(|workspace| workspace.layout.kind != LayoutKind::Canvas);
-    let Some(strip) = shared.tree.active_strip_id().filter(|_| pans) else {
+    let Some(strip) = shared.tree.active_strip_id() else {
         let mut next = shared.presentation.clone();
         next.pan = None;
         shared.present(next);

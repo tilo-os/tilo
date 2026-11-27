@@ -14,7 +14,7 @@ use tilo_compositor::{GestureEvent, InputEvent};
 use tilo_session::Session;
 
 use crate::common::{on_screen, until};
-use crate::layout_shortcuts::{CHROME, new_strip, open, session, settle, strips, workspace};
+use crate::layout_shortcuts::{CHROME, new_strip, open, session, settle, strips, tree, workspace};
 
 /// A swipe of `fingers` fingers travelling `(dx, dy)`, landed, moved and lifted as a touchpad
 /// reports one.
@@ -212,11 +212,13 @@ fn the_strip_in_front_presents_its_pan_and_the_pan_verb_moves_it() {
     open(&mut session, &notes, 6);
     settle(&mut session);
     let strip = strips(&session).1.expect("a strip in front");
-    let presented = session
-        .handle()
-        .presentation()
-        .pan
-        .expect("the strip in front presents its pan");
+    let kind = tree(&session, |tree| {
+        tree.active_workspace()
+            .map(|workspace| workspace.layout.kind)
+    });
+    let presented = session.handle().presentation().pan.unwrap_or_else(|| {
+        panic!("the strip in front presents its pan: strip {strip:?} in a {kind:?} layout")
+    });
     assert_eq!(
         presented.strip,
         strip.0.to_string(),
