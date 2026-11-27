@@ -101,8 +101,21 @@ impl Instance {
             }
             Err(error) => {
                 tracing::warn!(app = self.app, %error, "the app did not open");
+                // The window opens on why, where its page would stand, and keeps saying it:
+                // a notice that fades leaves an empty window behind it.
+                let title = self.platform.phrase("tilolang-open-failed", &[]);
+                let why = refusal_said(&error);
                 self.open_failed = Some(error.to_string());
-                self.notice(Words::phrase("tilolang-open-failed"), ui::NoticeKind::Error);
+                self.out.push(ToUi::Open {
+                    level: Level::Root,
+                    target: ui::ResourceRef {
+                        id: String::new(),
+                        ty: String::new(),
+                    },
+                    tree: state_page(&title, why.as_deref()),
+                    front: None,
+                    capture_protected: false,
+                });
             }
         }
     }
@@ -1181,10 +1194,38 @@ fn changed_rows(
 /// The page a level shows when the workspace no longer holds what it showed: the platform's
 /// words, in the page's own column where the view stood.
 fn gone_page(words: &str) -> ui::Node {
+    state_page(words, None)
+}
+
+/// The workspace's own words of why it refused a write, when that is why the window did not
+/// open: what it says is written for the person (the app isn't installed here, its permission
+/// was taken back). Anything else is not theirs to read, and the window says only that the app
+/// did not open.
+fn refusal_said(error: &crate::host::HostError) -> Option<String> {
+    use crate::host::HostError;
+    let (HostError::Store(store)
+    | HostError::Runtime(tilolang_runtime::RuntimeError::Store(store))) = error
+    else {
+        return None;
+    };
+    match store {
+        StoreError::Backend(said) => said.strip_prefix("refused: ").map(str::to_owned),
+        StoreError::Declined(declined) => Some(declined.to_string()),
+        _ => None,
+    }
+}
+
+/// A level's page that holds no view, only the platform's `title` and, under it, `message`.
+fn state_page(title: &str, message: Option<&str>) -> ui::Node {
     let mut state = ui::Node::empty("ui.EmptyState", &format!("{GONE}state"));
     state
         .props
-        .insert("title".to_owned(), ui::Value::text(words));
+        .insert("title".to_owned(), ui::Value::text(title));
+    if let Some(message) = message {
+        state
+            .props
+            .insert("message".to_owned(), ui::Value::text(message));
+    }
     let mut content = ui::Node::empty("part", &format!("{GONE}content"));
     content
         .props
