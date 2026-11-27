@@ -1,7 +1,7 @@
 use super::super::internal_download::SelectedManifest;
 use super::*;
+use crate::backend::test_support::isolated;
 use crate::release::InternalRelease;
-use crate::setup::test_support::isolated;
 
 fn selected() -> SelectedManifest {
     let bytes = super::super::internal_bundle::tests::bytes(
@@ -43,7 +43,7 @@ tilo_test_env::scenario! {
             for index in 0..2 {
                 assert_eq!(
                     final_component_path(&selected, index),
-                    imager_backend::cache::unsupported()
+                    crate::backend::cache::unsupported()
                 );
             }
         });

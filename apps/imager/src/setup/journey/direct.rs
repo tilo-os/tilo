@@ -1,6 +1,5 @@
 //! The direct route: Full Tilo installed beside the system the person is using.
 use super::{Destination, InstallerPreview, InstallerPreviewEffect, Page};
-use crate::setup::staging;
 use ui::widget::{ButtonRole, Row};
 
 pub(super) struct Direct {
@@ -20,9 +19,7 @@ impl Default for Direct {
 impl InstallerPreview {
     /// The reviewed, secret-free installation preferences: the person's
     /// choices on top of the imager's own profile, without any password.
-    pub(super) fn install_profile(
-        &self,
-    ) -> Result<imager_backend::imager_model::InstallProfile, &'static str> {
+    pub(super) fn install_profile(&self) -> Result<crate::model::InstallProfile, &'static str> {
         let mut profile = self.install_preferences.clone();
         profile.device_label.clone_from(&self.journey.device_name);
         profile.purpose.clone_from(&self.journey.purpose);
@@ -70,10 +67,10 @@ impl InstallerPreview {
                                     facts.basis.as_ref().map_or(
                                         crate::setup::model::HostOs::Other,
                                         |basis| match basis.host_os() {
-                                            staging::plan::HostOs::Linux => {
+                                            crate::backend::plan::HostOs::Linux => {
                                                 crate::setup::model::HostOs::Linux
                                             }
-                                            staging::plan::HostOs::Windows => {
+                                            crate::backend::plan::HostOs::Windows => {
                                                 crate::setup::model::HostOs::Windows
                                             }
                                         },
@@ -84,7 +81,7 @@ impl InstallerPreview {
                 );
             }
             if let Err(error) = self.storage.admit() {
-                if let staging::plan::PlanError::InsufficientSpace {
+                if let crate::backend::plan::PlanError::InsufficientSpace {
                     needed_bytes,
                     available_bytes,
                 } = error
@@ -120,7 +117,7 @@ impl InstallerPreview {
         else {
             return t("installer-review-storage-pending");
         };
-        let Ok(plan) = staging::plan::compute(
+        let Ok(plan) = crate::backend::plan::compute(
             basis,
             super::storage::requirements(self.storage.selected() << 30),
         ) else {
@@ -237,8 +234,8 @@ mod tests {
                 assert!(summary.contains(&t("installer-review-unallocated")));
                 assert!(format!("{node:?}").contains(&size.to_string()));
             }
-            let basis = crate::setup::staging::plan::tests::windows_basis(512, 500, 100, false);
-            preview.storage.accept(staging::probe::HostFacts {
+            let basis = crate::backend::plan::tests::windows_basis(512, 500, 100, false);
+            preview.storage.accept(crate::setup::staging::probe::HostFacts {
                 basis: Some(basis),
                 bitlocker_protected: false,
                 blockers: Vec::new(),

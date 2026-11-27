@@ -285,10 +285,6 @@
       "libraries": 26110605,
       "tests": 959327816
     },
-    "imager-backend": {
-      "libraries": 188086707,
-      "tests": 224962192
-    },
     "install": {
       "libraries": 1627296,
       "tests": 244204208

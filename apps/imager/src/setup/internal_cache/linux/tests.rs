@@ -51,8 +51,8 @@ fn linux_ancestry_and_acl_mask_rules_are_lossless_and_strict() {
 #[cfg(target_os = "linux")]
 mod native {
     use super::super::{native::fixture_acquire, *};
+    use crate::backend::test_support::isolated;
     use crate::setup::internal_cache::layout;
-    use crate::setup::test_support::isolated;
     use crate::{
         release::InternalRelease,
         setup::{
@@ -80,7 +80,7 @@ mod native {
         SelectedManifest::from_bytes(&release, bytes).unwrap()
     }
     fn directory() -> tempfile::TempDir {
-        crate::setup::test_support::qualified_tempdir()
+        crate::backend::test_support::qualified_tempdir()
     }
     fn root(path: &std::path::Path, s: &SelectedManifest) -> std::path::PathBuf {
         path.join("tilo-internal-install").join(s.manifest_sha256())

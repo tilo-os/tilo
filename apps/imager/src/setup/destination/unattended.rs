@@ -11,11 +11,11 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use zeroize::{Zeroize, Zeroizing};
 
+use crate::backend::destination::disks::Disk;
+use crate::backend::destination::private_io;
+use crate::backend::destination::probes::{ProtectionReport, SystemProtection};
 use crate::setup::destination::installer_app::{InstallerApp, validate_startup_secret_for};
 use crate::setup::destination::{InstallState, Step, installer_app};
-use imager_backend::destination::disks::Disk;
-use imager_backend::destination::private_io;
-use imager_backend::destination::probes::{ProtectionReport, SystemProtection};
 use install_profile_model::plan::Plan;
 use ui::tilo_actions::remote::Confirmation;
 
@@ -129,7 +129,7 @@ impl Invocation {
     pub fn run(self) -> Result<(), Box<dyn std::error::Error>> {
         let console = start_console(
             crate::setup::destination::effects::PROVIDER,
-            imager_backend::destination::console::Endpoint::discover(
+            crate::backend::destination::console::Endpoint::discover(
                 crate::setup::destination::effects::PROVIDER,
             ),
             private_io::stderr_is_terminal(),
@@ -176,7 +176,7 @@ impl PlannedInvocation {
     /// it carries one. A manual installation carries none and shows the
     /// wizard, which reports a handoff that does not read.
     pub fn find() -> Option<Self> {
-        imager_backend::destination::internal_handoff::load()
+        crate::backend::destination::internal_handoff::load()
             .ok()
             .flatten()
             .and_then(|handoff| handoff.plan)
@@ -193,7 +193,7 @@ impl PlannedInvocation {
     pub fn install(self) -> Result<(), Box<dyn std::error::Error>> {
         let console = start_console(
             crate::setup::destination::effects::PROVIDER,
-            imager_backend::destination::console::Endpoint::discover(
+            crate::backend::destination::console::Endpoint::discover(
                 crate::setup::destination::effects::PROVIDER,
             ),
             private_io::stderr_is_terminal(),
@@ -307,8 +307,8 @@ fn private_fd(value: &OsString, what: &str) -> Result<i32, String> {
 }
 
 struct Console {
-    server: imager_backend::destination::console::ConsoleServer,
-    endpoints: Vec<imager_backend::destination::console::Endpoint>,
+    server: crate::backend::destination::console::ConsoleServer,
+    endpoints: Vec<crate::backend::destination::console::Endpoint>,
     wake: mpsc::Receiver<()>,
     _fallback: Option<tempfile::TempDir>,
 }
@@ -317,8 +317,8 @@ impl Console {
     #[cfg(test)]
     fn socket_path(&self) -> Option<&Path> {
         self.endpoints.iter().find_map(|endpoint| match endpoint {
-            imager_backend::destination::console::Endpoint::Socket(path) => Some(path.as_path()),
-            imager_backend::destination::console::Endpoint::Port(_) => None,
+            crate::backend::destination::console::Endpoint::Socket(path) => Some(path.as_path()),
+            crate::backend::destination::console::Endpoint::Port(_) => None,
         })
     }
 
@@ -326,10 +326,10 @@ impl Console {
         self.endpoints
             .iter()
             .map(|endpoint| match endpoint {
-                imager_backend::destination::console::Endpoint::Socket(path) => {
+                crate::backend::destination::console::Endpoint::Socket(path) => {
                     format!("TILO_TEST_CONTROL={} tilo action list", path.display())
                 }
-                imager_backend::destination::console::Endpoint::Port(path) => {
+                crate::backend::destination::console::Endpoint::Port(path) => {
                     format!("the console channel at {}", path.display())
                 }
             })
@@ -337,20 +337,20 @@ impl Console {
     }
 }
 
-fn endpoint_path(endpoint: &imager_backend::destination::console::Endpoint) -> &Path {
+fn endpoint_path(endpoint: &crate::backend::destination::console::Endpoint) -> &Path {
     match endpoint {
-        imager_backend::destination::console::Endpoint::Socket(path)
-        | imager_backend::destination::console::Endpoint::Port(path) => path,
+        crate::backend::destination::console::Endpoint::Socket(path)
+        | crate::backend::destination::console::Endpoint::Port(path) => path,
     }
 }
 
 fn start_console(
     app: &'static str,
-    discovered: Vec<imager_backend::destination::console::Endpoint>,
+    discovered: Vec<crate::backend::destination::console::Endpoint>,
     terminal_available: bool,
     fallback_root: Option<PathBuf>,
 ) -> Result<Console, String> {
-    let console = imager_backend::destination::console::ConsoleServer::new(app);
+    let console = crate::backend::destination::console::ConsoleServer::new(app);
     let (wake_tx, wake) = mpsc::channel();
     console.set_waker(Arc::new(move || {
         let _ = wake_tx.send(());
@@ -395,7 +395,7 @@ fn start_console(
         private_io::restrict_to_owner(directory.path()).map_err(|error| {
             format!("A private fallback console directory could not be secured: {error}")
         })?;
-        let endpoint = imager_backend::destination::console::Endpoint::Socket(
+        let endpoint = crate::backend::destination::console::Endpoint::Socket(
             directory.path().join(format!("{app}.sock")),
         );
         console.serve(&endpoint).map_err(|error| {
@@ -418,7 +418,7 @@ fn start_console(
 
 fn drain_console(
     app: &mut InstallerApp,
-    console: &imager_backend::destination::console::ConsoleServer,
+    console: &crate::backend::destination::console::ConsoleServer,
 ) -> usize {
     let pending = console.take_pending();
     let answered = pending.len();
@@ -773,7 +773,7 @@ impl DiskRecipe {
             ));
         }
         if self.partition_table == "gpt"
-            && !imager_backend::destination::internal_handoff::is_guid(&self.partition_table_uuid)
+            && !crate::backend::destination::internal_handoff::is_guid(&self.partition_table_uuid)
         {
             return Err("A reviewed GPT destination needs its exact partition-table UUID".into());
         }
@@ -1235,9 +1235,9 @@ mod tests {
     )]
 
     use super::*;
+    use crate::backend::destination::backend::InstallBackend;
+    use crate::backend::destination::install::{InstallOptions, PowerAction};
     use crate::setup::destination::installer_app::Protection;
-    use imager_backend::destination::backend::InstallBackend;
-    use imager_backend::destination::install::{InstallOptions, PowerAction};
     use serde_json::json;
     use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixStream;
@@ -1593,7 +1593,7 @@ mod tests {
                 "the actual TPM2 did not answer"
             );
             assert_eq!(state["step"], "keyboard");
-            let console = imager_backend::destination::console::ConsoleServer::new(
+            let console = crate::backend::destination::console::ConsoleServer::new(
                 crate::setup::destination::effects::PROVIDER,
             );
             let dump: Value = serde_json::from_str(
@@ -1702,7 +1702,7 @@ mod tests {
             std::fs::create_dir(&shared).unwrap();
             std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o755)).unwrap();
             let endpoint =
-                imager_backend::destination::console::Endpoint::Socket(shared.join("installer.sock"));
+                crate::backend::destination::console::Endpoint::Socket(shared.join("installer.sock"));
             let error = start_console(
                 crate::setup::destination::effects::PROVIDER,
                 vec![endpoint],

@@ -40,7 +40,11 @@ installation = ["dep:hardware-report"]
 # keyboard, network, disk, account and the install itself, consuming the
 # profile and staged handoff the host side produced. It does not need the
 # host side (`installation`). Linux only, like the live medium it runs on.
-destination = ["imager-backend/destination", "dep:url", "dep:hardware-report"]
+destination = [
+    "dep:url",
+    "dep:hardware-report",
+    "dep:tilo-connectivity-service",
+]
 # Host downloads opt into the narrowly elevated raw-media writer. A host
 # download is the guided installer, so it brings `installation`.
 host-media-writer = ["installation"]
@@ -48,22 +52,35 @@ host-media-writer = ["installation"]
 # namespace.  This backend asks the host's root-owned UDisks2 service for one
 # polkit-authorized, exclusive file descriptor to the reviewed removable
 # drive.  No /dev access or host-command escape is granted to the sandbox.
-flatpak-media-writer = ["installation", "imager-backend/flatpak-media-writer"]
+flatpak-media-writer = ["installation", "block-devices/udisks", "dep:zbus"]
+
+# The backend's test helpers (`crate::backend::test_support`), which a build that
+# is not itself running tests can ask for. Its tests compile them either way.
+test-support = ["dep:tilo-install-helpers", "dep:tilo-test-env"]
 
 [dependencies]
 tilo-action-services = { version = "0.1.0", path = "../../crates/core/action-services" }
 tilo-action-line = { version = "0.1.0", path = "../../crates/core/action-line" }
 tilo-lock = { version = "0.1.0", path = "../../crates/platform/tilo-lock" }
+# The host keychain the backend's secrets and device proofs live in: a process
+# with no app connection.
+tilo-secrets = { version = "0.1.0", path = "../../crates/platform/tilo-secrets", features = ["host-keyring"] }
+tilo-unlock-protocol = { path = "../../crates/core/tilo-unlock-protocol" }
+# The exclusive lock on a target disk or image while it is written.
+tilo-advisory-lock = { path = "../../crates/platform/advisory-lock" }
+crc32fast.workspace = true
+# The backend's tests in one merged phase: its fixtures and fault hooks under a
+# process environment of their own.
+tilo-test-env = { path = "../../tools/test-env", optional = true }
 # The host's own release, read instead of guessing from a file name.
 tilo-os-release = { version = "0.1.0", path = "../../crates/platform/os-release" }
-install-profile-model = { path = "../../crates/os/install-profile-model" }
+install-profile-model = { path = "../../crates/os/install-profile-model", features = ["model"] }
 tilo-keyboard-map = { path = "../../crates/desktop/tilo-keyboard-map" }
 # The time zones the profile offers, as this machine reads them.
 tilo-clock = { path = "../../crates/platform/tilo-clock", features = ["local"] }
 # The one maker of a machine's plan and its single-use token, shared with
 # `tilo machine add` so the window and the command write the same document.
 install-plan = { path = "../../crates/os/install-plan" }
-imager-backend = { path = "../../crates/os/imager-backend" }
 # This computer's hardware, read the same way the live installer reads it.
 hardware-report = { path = "../../crates/os/hardware-report", optional = true }
 staging-handoff-model = { path = "../staging-handoff-model" }
@@ -109,6 +126,9 @@ tilo-process = { version = "0.1.0", path = "../../crates/platform/tilo-process" 
 # address.
 url = { workspace = true, optional = true }
 tilo-device-identity = { version = "0.1.0", path = "../../crates/core/tilo-device-identity" }
+# The device's connectivity, as the network step reads and changes it: the
+# system's service, before there is a person whose settings it could keep.
+tilo-connectivity-service = { path = "../../crates/os/connectivity-service", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -116,6 +136,7 @@ workspace-hack = { version = "0.1" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+rustix = { workspace = true, features = ["process", "fs"] }
 # The daemon that issues the ticket an image joins with (Unix stages tickets only).
 tilo-api = { path = "../../crates/core/tilo-api" }
 # The action frames a console caller sends the installer's windows.
@@ -123,6 +144,13 @@ console-control = { path = "../../crates/os/console-control" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 host-fs = { path = "../../crates/core/host-fs" }
+# The machine's battery, read the same way the session reads it.
+tilo-power-mgmt = { path = "../../crates/os/power", default-features = false }
+# The shared rule the staging helper and the destination's capacity test both
+# ask (`test-support`, and the tests that call it).
+tilo-install-helpers = { path = "../../crates/os/install-helpers", optional = true }
+# Flatpak's one polkit-authorized descriptor, asked of the host's UDisks2.
+zbus = { workspace = true, optional = true, features = ["tokio", "blocking-api"] }
 
 [target.'cfg(not(windows))'.dependencies]
 tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
@@ -142,13 +170,13 @@ jiff = { workspace = true, features = ["tzdb-bundle-platform"] }
 blake3 = { workspace = true, features = ["no_neon"] }
 
 [package.metadata.cargo-machete]
-# These target dependencies only enable a feature on a transitive crate.
-ignored = ["blake3", "jiff"]
+# These target dependencies only enable a feature on a transitive crate;
+# `tilo-secrets` is named for its `host-keyring` feature alone, which links the
+# process's keychain backend, and no line of this crate calls the store itself.
+ignored = ["blake3", "jiff", "tilo-secrets"]
 
 [dev-dependencies]
 url.workspace = true
-crc32fast.workspace = true
-imager-backend = { path = "../../crates/os/imager-backend", features = ["test-support"] }
 test-http = { package = "tilo-test-http", path = "../../tools/test-http" }
 # The sentences History shows for the resource's changes.
 tilo-history = { path = "../../crates/sdk/tilo-history" }

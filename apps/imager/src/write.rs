@@ -12,13 +12,15 @@ use std::sync::mpsc::{Receiver, Sender};
 #[cfg(test)]
 use std::time::Duration;
 
-use crate::model::{
-    Action, InstallProfile, JobPhase, Progress, Source, SourceIdentity, TargetDrive,
-};
+#[cfg(test)]
+use crate::model::SourceIdentity;
+use crate::model::{Action, InstallProfile, JobPhase, Progress, Source, TargetDrive};
 #[cfg(test)]
 use sha2::{Digest, Sha256};
 
-pub use imager_backend::profile::{PROFILE_BLOCK_SIZE, PROFILE_MAGIC};
+use crate::backend::profile::PROFILE_BLOCK_SIZE;
+#[cfg(test)]
+use crate::backend::profile::PROFILE_MAGIC;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JobStart {
@@ -123,11 +125,13 @@ pub fn begin_job(req: &WriteRequest, typed_confirmation: &str) -> JobStart {
     JobStart::Started
 }
 
+use crate::backend::profile::encode_profile_block;
 #[cfg(test)]
-use imager_backend::profile::write_profile_block_bound;
-pub use imager_backend::profile::{encode_profile_block, write_profile_block};
+use crate::backend::profile::write_profile_block;
+#[cfg(test)]
+use crate::backend::profile::write_profile_block_bound;
 
-pub use imager_backend::write::JobResult;
+use crate::backend::write::JobResult;
 
 #[derive(Clone, Debug)]
 pub struct JobControl {
@@ -298,18 +302,9 @@ impl JobControl {
 }
 
 #[cfg(all(test, unix))]
-use imager_backend::write::try_lock_file;
+use crate::backend::write::try_lock_file;
 #[cfg(test)]
-fn target_lock_name(target: &TargetDrive) -> String {
-    imager_backend::write::target_lock_name(target)
-}
-#[cfg(all(test, target_os = "windows"))]
-fn acquire_target_write_lock(
-    target: &TargetDrive,
-) -> io::Result<imager_backend::write::TargetWriteLock> {
-    imager_backend::write::acquire_target_write_lock(target)
-}
-pub use imager_backend::write::{CHUNK, stream_copy, verify_readback};
+use crate::backend::write::{CHUNK, stream_copy, verify_readback};
 
 pub fn run_job_paths(
     src: &Path,
@@ -317,26 +312,14 @@ pub fn run_job_paths(
     total: u64,
     mut on_progress: impl FnMut(Progress),
 ) -> JobResult {
-    run_job_paths_bound(src, dst, total, None, None, &|| false, &mut on_progress)
-}
-
-fn run_job_paths_bound(
-    src: &Path,
-    dst: &Path,
-    total: u64,
-    expected_identity: Option<SourceIdentity>,
-    expected_sha256: Option<&str>,
-    should_cancel: &impl Fn() -> bool,
-    on_progress: impl FnMut(Progress),
-) -> JobResult {
-    imager_backend::write::job::run_job_paths_bound(
+    crate::backend::write::job::run_job_paths_bound(
         src,
         dst,
         total,
-        expected_identity,
-        expected_sha256,
-        should_cancel,
-        on_progress,
+        None,
+        None,
+        &|| false,
+        &mut on_progress,
     )
 }
 
@@ -351,8 +334,8 @@ fn run_job_file_bound(
         Ok(source) => source,
         Err(error) => return JobResult::WriteFailed(error.to_string()),
     };
-    imager_backend::write::transaction::run_job_file_bound(
-        &imager_backend::write::transaction::DescriptorWriteRequest {
+    crate::backend::write::transaction::run_job_file_bound(
+        &crate::backend::write::transaction::DescriptorWriteRequest {
             source,
             expected_sha256: req.source.expected_sha256.clone(),
             target_size: req.target.size,
@@ -370,32 +353,29 @@ fn run_system_job(
     should_cancel: &impl Fn() -> bool,
     on_progress: impl FnMut(Progress),
 ) -> JobResult {
-    imager_backend::write::job::run_system_job(
-        &imager_backend::write::job::SystemWriteRequest {
+    crate::backend::write::job::run_system_job(
+        &crate::backend::write::job::SystemWriteRequest {
             source: reviewed_source(req).map_err(|error| error.to_string()),
             target: req.target.clone(),
             expected_sha256: req.source.expected_sha256.clone(),
             installable: req.source.installable,
         },
-        &AppWriteSetup { req },
+        req,
         should_cancel,
         on_progress,
     )
 }
 
-struct AppWriteSetup<'a> {
-    req: &'a WriteRequest,
-}
-impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {
+impl crate::backend::write::job::WriteSetup for WriteRequest {
     fn write_descriptor(
         &self,
         device: &mut std::fs::File,
         should_cancel: &dyn Fn() -> bool,
-        on_progress: &mut dyn FnMut(imager_backend::write::helper::HelperProgress),
+        on_progress: &mut dyn FnMut(crate::backend::write::helper::HelperProgress),
     ) -> JobResult {
         #[cfg(any(test, target_os = "linux"))]
         {
-            run_job_file_bound(self.req, device, &|| should_cancel(), on_progress)
+            run_job_file_bound(self, device, &|| should_cancel(), on_progress)
         }
         #[cfg(not(any(test, target_os = "linux")))]
         {
@@ -409,28 +389,23 @@ impl imager_backend::write::job::WriteSetup for AppWriteSetup<'_> {
         destination: &Path,
         should_cancel: &dyn Fn() -> bool,
     ) -> io::Result<()> {
-        imager_backend::profile::write_profile_block_bound(
+        crate::backend::profile::write_profile_block_bound(
             destination,
-            self.req.target.size,
-            &self.req.profile,
+            self.target.size,
+            &self.profile,
             &|| should_cancel(),
         )
     }
 
     fn apply_handoff(&self, destination: &Path) -> io::Result<()> {
-        if let Some(stage) = self.req.handoff_stage.as_deref() {
-            apply_handoff_stage_to_device(
-                destination,
-                stage,
-                self.req.source.size,
-                self.req.target.size,
-            )?;
+        if let Some(stage) = self.handoff_stage.as_deref() {
+            apply_handoff_stage_to_device(destination, stage, self.source.size, self.target.size)?;
         }
         Ok(())
     }
 
     fn release_handoff(&self) {
-        release_handoff_stage(self.req);
+        release_handoff_stage(self);
     }
 }
 
@@ -440,22 +415,17 @@ fn run_udisks_job(
     should_cancel: &impl Fn() -> bool,
     on_progress: impl FnMut(Progress),
 ) -> JobResult {
-    imager_backend::write::job::run_udisks_job(
-        &req.target,
-        &AppWriteSetup { req },
-        should_cancel,
-        on_progress,
-    )
+    crate::backend::write::job::run_udisks_job(&req.target, req, should_cancel, on_progress)
 }
 
 #[cfg(test)]
-use imager_backend::write::helper::create_progress_output;
+use crate::backend::write::helper::create_progress_output;
 #[cfg(all(test, target_os = "linux"))]
-use imager_backend::write::helper::read_linux_helper_request;
+use crate::backend::write::helper::read_linux_helper_request;
 #[cfg(test)]
-use imager_backend::write::helper::{WINDOWS_ELEVATION_SCRIPT, elevated_helper_command};
+use crate::backend::write::helper::{WINDOWS_ELEVATION_SCRIPT, elevated_helper_command};
 #[cfg(test)]
-use imager_backend::write::helper::{WRITE_HELPER_ARG, validate_helper_paths};
+use crate::backend::write::helper::{WRITE_HELPER_ARG, validate_helper_paths};
 
 /// The staged tree holds the Wi-Fi passphrase and possibly a device key.
 /// It goes away on every exit, including a write that never started.
@@ -466,7 +436,7 @@ fn release_handoff_stage(req: &WriteRequest) {
 }
 
 pub(crate) fn apply_handoff_stage_to_image_file(image: &Path, staged: &Path) -> io::Result<()> {
-    imager_backend::write::handoff::apply_handoff_stage_to_image_file(
+    crate::backend::write::handoff::apply_handoff_stage_to_image_file(
         image,
         staged,
         apply_handoff_stage_onto_mounted_root,
@@ -479,7 +449,7 @@ fn apply_handoff_stage_to_device(
     image_len: u64,
     device_len: u64,
 ) -> io::Result<()> {
-    imager_backend::write::handoff::apply_handoff_stage_to_device(
+    crate::backend::write::handoff::apply_handoff_stage_to_device(
         device,
         staged,
         image_len,
@@ -517,7 +487,7 @@ fn handoff_when_root_was_not_found(
     device_len: u64,
     staged: &Path,
 ) -> io::Result<()> {
-    imager_backend::write::handoff::handoff_when_root_was_not_found(
+    crate::backend::write::handoff::handoff_when_root_was_not_found(
         device,
         image_len,
         device_len,
@@ -527,7 +497,7 @@ fn handoff_when_root_was_not_found(
 }
 
 pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn std::error::Error>> {
-    let Some(authorized) = imager_backend::write::helper::read_authorized_helper_request(args)?
+    let Some(authorized) = crate::backend::write::helper::read_authorized_helper_request(args)?
     else {
         return Ok(None);
     };
@@ -541,7 +511,7 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
     #[cfg(target_os = "linux")]
     let request = {
         let mut request = request;
-        request.source.path = imager_backend::write::helper::bind_linux_helper_source(
+        request.source.path = crate::backend::write::helper::bind_linux_helper_source(
             request.source.size,
             request.source.identity,
         )?
@@ -549,7 +519,7 @@ pub fn maybe_run_write_helper(args: &[String]) -> Result<Option<i32>, Box<dyn st
         .into_owned();
         request
     };
-    let exit = imager_backend::write::helper::serve_helper(
+    let exit = crate::backend::write::helper::serve_helper(
         progress_path,
         cancel_path,
         |should_cancel, on_progress| run_system_job(&request, &|| should_cancel(), on_progress),
@@ -575,7 +545,7 @@ fn spawn_privileged_helper(req: WriteRequest, control: &JobControl, tx: &Sender<
 /// whose window was restored is reopened through the chooser that gave it.
 fn reviewed_source(
     req: &WriteRequest,
-) -> io::Result<imager_backend::write::helper::ReviewedSource> {
+) -> io::Result<crate::backend::write::helper::ReviewedSource> {
     let file = match &req.source_file {
         Some(file) => file.try_clone()?,
         None if ui::portal::is_document_reference(Path::new(&req.source.path)) => {
@@ -597,7 +567,7 @@ fn reviewed_source(
         }
         None => std::fs::File::open(&req.source.path)?,
     };
-    Ok(imager_backend::write::helper::ReviewedSource {
+    Ok(crate::backend::write::helper::ReviewedSource {
         file,
         size: req.source.size,
         identity: req.source.identity,
@@ -611,7 +581,7 @@ fn run_privileged_helper(
 ) -> io::Result<()> {
     let source = reviewed_source(&req)?;
     let bytes = serde_json::to_vec(&req.without_secrets())?;
-    imager_backend::write::helper::run_privileged_helper(
+    crate::backend::write::helper::run_privileged_helper(
         &source,
         &bytes,
         &|| control.is_cancelled(),
@@ -629,7 +599,7 @@ fn relay_helper_progress(
     control: &JobControl,
     tx: &Sender<Progress>,
 ) -> io::Result<()> {
-    imager_backend::write::helper::relay_helper_progress(
+    crate::backend::write::helper::relay_helper_progress(
         child,
         progress_path,
         cancel_path,
@@ -642,15 +612,15 @@ fn relay_helper_progress(
 
 #[cfg(test)]
 fn relay_cancellation(control: &JobControl, cancel_path: &Path, sent: &mut bool) -> io::Result<()> {
-    imager_backend::write::helper::relay_cancellation(&|| control.is_cancelled(), cancel_path, sent)
+    crate::backend::write::helper::relay_cancellation(&|| control.is_cancelled(), cancel_path, sent)
 }
 
 #[cfg(test)]
 fn target_identity_matches(selected: &TargetDrive, current: &TargetDrive) -> bool {
-    imager_backend::write::target_identity_matches(selected, current)
+    crate::backend::write::target_identity_matches(selected, current)
 }
 #[cfg(test)]
-use imager_backend::write::{macos_should_eject, run_finite_status};
+use crate::backend::write::{macos_should_eject, run_finite_status};
 
 pub fn spawn_job(
     req: WriteRequest,
@@ -725,11 +695,11 @@ mod tests {
                 original.stable_id = Some("usb-serial-123".into());
                 let mut renumbered = original.clone();
                 renumbered.name = "renumbered-device".into();
-                assert_eq!(target_lock_name(&original), target_lock_name(&renumbered));
+                assert_eq!(crate::backend::write::target_lock_name(&original), crate::backend::write::target_lock_name(&renumbered));
 
                 original.stable_id = None;
                 renumbered.stable_id = None;
-                assert_ne!(target_lock_name(&original), target_lock_name(&renumbered));
+                assert_ne!(crate::backend::write::target_lock_name(&original), crate::backend::write::target_lock_name(&renumbered));
             }
 
             {
@@ -1007,13 +977,15 @@ mod tests {
     #[test]
     fn target_lock_excludes_another_helper_handle_until_the_owner_releases_it() {
         let target = sample_targets().remove(0);
-        let first = acquire_target_write_lock(&target).expect("first helper reserves target");
-        let contention =
-            acquire_target_write_lock(&target).expect_err("second helper must be excluded");
+        let first = crate::backend::write::acquire_target_write_lock(&target)
+            .expect("first helper reserves target");
+        let contention = crate::backend::write::acquire_target_write_lock(&target)
+            .expect_err("second helper must be excluded");
         assert_eq!(contention.kind(), io::ErrorKind::WouldBlock);
 
         drop(first);
-        acquire_target_write_lock(&target).expect("kernel releases lock with its owner");
+        crate::backend::write::acquire_target_write_lock(&target)
+            .expect("kernel releases lock with its owner");
     }
 
     fn req() -> WriteRequest {
@@ -1353,7 +1325,7 @@ mod tests {
                 let signal = control.clone();
                 let mut phases = Vec::new();
 
-                let result = run_job_paths_bound(
+                let result = crate::backend::write::job::run_job_paths_bound(
                     src.path(),
                     dst.path(),
                     data.len() as u64,
@@ -1379,7 +1351,7 @@ mod tests {
                 let signal = control.clone();
                 let mut saw_verify = false;
 
-                let result = run_job_paths_bound(
+                let result = crate::backend::write::job::run_job_paths_bound(
                     src.path(),
                     dst.path(),
                     data.len() as u64,
@@ -1452,7 +1424,7 @@ mod tests {
                 std::fs::write(&selected, &data).unwrap();
                 let dst = tmp_with(b"leave destination untouched");
 
-                let result = run_job_paths_bound(
+                let result = crate::backend::write::job::run_job_paths_bound(
                     &selected,
                     dst.path(),
                     data.len() as u64,
@@ -1470,7 +1442,7 @@ mod tests {
                 );
 
                 let absent_destination = root.path().join("not-created.img");
-                let result = run_job_paths_bound(
+                let result = crate::backend::write::job::run_job_paths_bound(
                     &selected,
                     &absent_destination,
                     data.len() as u64,
@@ -1482,7 +1454,7 @@ mod tests {
                 assert!(matches!(result, JobResult::WriteFailed(_)));
                 assert!(!absent_destination.exists());
 
-                let result = run_job_paths_bound(
+                let result = crate::backend::write::job::run_job_paths_bound(
                     &root.path().join("reviewed.img"),
                     dst.path(),
                     data.len() as u64,
@@ -1529,7 +1501,7 @@ mod tests {
                 let dst = tmp_with(b"leave destination untouched");
                 let wrong_digest = "0".repeat(64);
 
-                let result = run_job_paths_bound(
+                let result = crate::backend::write::job::run_job_paths_bound(
                     src.path(),
                     dst.path(),
                     data.len() as u64,

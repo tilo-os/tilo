@@ -39,7 +39,7 @@ pub(crate) const HELPERS: &[Helper] = &[
         run: |args| crate::setup::staging::helper::maybe_run_staging_helper(args),
     },
     Helper {
-        run: |args| imager_backend::staging::final_bootnext::maybe_run(args),
+        run: |args| crate::backend::staging::final_bootnext::maybe_run(args),
     },
     Helper {
         run: |args| crate::setup::staging::cli::maybe_run_staging_request(args),
@@ -86,7 +86,7 @@ fn flatpak_probe_smoke(args: &[String]) -> Result<Option<i32>, String> {
     {
         return Err("the Flatpak probe smoke test is outside its sandbox".into());
     }
-    let drives = imager_backend::probe::probe()
+    let drives = crate::backend::probe::probe()
         .ok_or("the Flatpak could not reconcile lsblk with host UDisks2 inventory")?;
     if drives.is_empty() {
         return Err("the Flatpak returned an empty drive inventory".into());

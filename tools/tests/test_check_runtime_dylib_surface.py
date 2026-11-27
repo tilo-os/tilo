@@ -164,7 +164,7 @@ class RuntimeSurfaceTests(unittest.TestCase):
     def test_sqlite_in_the_runtime_fails(self) -> None:
         # A feature an app enabled (browser-continuity/native) carried
         # rusqlite and its bundled SQLite into the runtime through the
-        # toolkit; imager-backend and db-client then failed to link, because
+        # toolkit; imager and db-client then failed to link, because
         # rusqlite's inline API calls sqlite3_* the runtime does not export.
         tree = self._with_runtime_crates("rusqlite v0.37.0", "libsqlite3-sys v0.35.0")
         found = checker.violations(tree, ["notes", "imager"], TARGET, frozenset({"libsqlite3-sys"}))

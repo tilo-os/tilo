@@ -1,7 +1,7 @@
 use super::*;
+use crate::backend::destination::disks::{DiskPartition, EFI_SYSTEM_GUID, LINUX_FILESYSTEM_GUID};
 use automerge::AutoCommit;
 use automerge::ReadDoc;
-use imager_backend::destination::disks::{DiskPartition, EFI_SYSTEM_GUID, LINUX_FILESYSTEM_GUID};
 use serde_json::Value;
 use tilo_ui_base::widget::find_test_id;
 
@@ -297,7 +297,7 @@ tilo_test_env::scenario! {
     phase server_destination_asks_for_the_disk_secret_and_no_account;
     {
         let mut app = InstallerApp::with_disks(sample());
-        app.purpose = imager_backend::destination::install::SERVER_PURPOSE.into();
+        app.purpose = crate::backend::destination::install::SERVER_PURPOSE.into();
         app.step = Step::Account;
         *app.password.lock().unwrap() = "correct horse battery staple".into();
         *app.password_confirmation.lock().unwrap() = "correct horse battery staple".into();
@@ -331,7 +331,7 @@ tilo_test_env::scenario! {
         let opts = app.install_options();
         assert_eq!(
             opts.purpose,
-            imager_backend::destination::install::SERVER_PURPOSE
+            crate::backend::destination::install::SERVER_PURPOSE
         );
         assert_eq!(
             opts.pin.as_str(),
@@ -910,7 +910,7 @@ tilo_test_env::scenario! {
     phase staged_handoff_preselects_the_plan_and_offers_a_way_back_only_when_valid;
     {
         {
-            use imager_backend::destination::internal_handoff::tests::TARGET;
+            use crate::backend::destination::internal_handoff::tests::TARGET;
             let mut app = staged_app();
             assert_eq!(app.selected_disk, Some(0));
             assert_eq!(app.install_method, InstallMethod::Alongside);
@@ -929,7 +929,7 @@ tilo_test_env::scenario! {
             );
             assert_eq!(
                 opts.internal_handoff,
-                imager_backend::destination::internal_handoff::HANDOFF_PATH
+                crate::backend::destination::internal_handoff::HANDOFF_PATH
             );
             assert_eq!(
                 opts.expected_partitions.len(),
@@ -973,13 +973,13 @@ tilo_test_env::scenario! {
             );
         }
         {
-            let mut json = imager_backend::destination::internal_handoff::tests::lsblk_json();
+            let mut json = crate::backend::destination::internal_handoff::tests::lsblk_json();
             json["blockdevices"][0]["ptuuid"] = "99999999-2222-4333-8444-555555555555".into();
             let mut app = InstallerApp::with_disks(
-                imager_backend::destination::disks::parse_lsblk(&json.to_string()),
+                crate::backend::destination::disks::parse_lsblk(&json.to_string()),
             );
             app.apply_internal_handoff(
-                imager_backend::destination::internal_handoff::tests::handoff(),
+                crate::backend::destination::internal_handoff::tests::handoff(),
             );
             assert!(app.internal_handoff.is_none());
             assert!(app.internal_host().is_none());
@@ -1435,7 +1435,7 @@ tilo_test_env::scenario! {
         }
         {
             let mut app = InstallerApp::with_disks(sample());
-            app.apply_media_profile(imager_backend::destination::media_profile::MediaProfile {
+            app.apply_media_profile(crate::backend::destination::media_profile::MediaProfile {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
                 hostname: Some("studio".into()),
@@ -2021,11 +2021,11 @@ tilo_test_env::scenario! {
 }
 
 fn staged_app() -> InstallerApp {
-    let disk = imager_backend::destination::disks::parse_lsblk(
-        &imager_backend::destination::internal_handoff::tests::lsblk_json().to_string(),
+    let disk = crate::backend::destination::disks::parse_lsblk(
+        &crate::backend::destination::internal_handoff::tests::lsblk_json().to_string(),
     );
     let mut app = InstallerApp::with_disks(disk);
-    app.apply_internal_handoff(imager_backend::destination::internal_handoff::tests::handoff());
+    app.apply_internal_handoff(crate::backend::destination::internal_handoff::tests::handoff());
     app
 }
 
@@ -2523,7 +2523,7 @@ tilo_test_env::scenario! {
                 "filesystem": "btrfs",
             });
             app.apply_media_profile(
-                imager_backend::destination::media_profile::validate_object(
+                crate::backend::destination::media_profile::validate_object(
                     object.as_object().unwrap(),
                 )
                 .unwrap(),
@@ -2537,7 +2537,7 @@ tilo_test_env::scenario! {
         }
         {
             let mut app = InstallerApp::with_disks(Disk::samples());
-            app.apply_media_profile(imager_backend::destination::media_profile::MediaProfile {
+            app.apply_media_profile(crate::backend::destination::media_profile::MediaProfile {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
                 hostname: Some("studio".into()),
@@ -2587,7 +2587,7 @@ tilo_test_env::scenario! {
         }
         {
             let mut app = InstallerApp::with_disks(Disk::samples());
-            app.apply_media_profile(imager_backend::destination::media_profile::MediaProfile {
+            app.apply_media_profile(crate::backend::destination::media_profile::MediaProfile {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
                 hostname: None,
@@ -2598,7 +2598,7 @@ tilo_test_env::scenario! {
                 timezone: Some("Europe/Berlin".into()),
                 filesystem: Some("ext4".into()),
                 repairs: vec![
-                    imager_backend::destination::media_profile::MediaProfileField::Hostname,
+                    crate::backend::destination::media_profile::MediaProfileField::Hostname,
                 ],
             });
             app.tpm2 = false;
@@ -2620,7 +2620,7 @@ tilo_test_env::scenario! {
         }
         {
             let mut app = InstallerApp::with_disks(Disk::samples());
-            app.apply_media_profile(imager_backend::destination::media_profile::MediaProfile {
+            app.apply_media_profile(crate::backend::destination::media_profile::MediaProfile {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
                 hostname: Some("studio".into()),
@@ -2631,7 +2631,7 @@ tilo_test_env::scenario! {
                 timezone: Some("Europe/Berlin".into()),
                 filesystem: Some("ext4".into()),
                 repairs: vec![
-                    imager_backend::destination::media_profile::MediaProfileField::Locale,
+                    crate::backend::destination::media_profile::MediaProfileField::Locale,
                 ],
             });
             app.tpm2 = false;
@@ -2652,7 +2652,7 @@ tilo_test_env::scenario! {
         }
         {
             let mut app = InstallerApp::with_disks(Disk::samples());
-            app.apply_media_profile(imager_backend::destination::media_profile::MediaProfile {
+            app.apply_media_profile(crate::backend::destination::media_profile::MediaProfile {
                 purpose: install_profile_model::default_purpose(),
                 device_label: String::new(),
                 hostname: Some("studio".into()),
@@ -2663,7 +2663,7 @@ tilo_test_env::scenario! {
                 timezone: Some("Europe/Berlin".into()),
                 filesystem: Some("ext4".into()),
                 repairs: vec![
-                    imager_backend::destination::media_profile::MediaProfileField::Keyboard,
+                    crate::backend::destination::media_profile::MediaProfileField::Keyboard,
                 ],
             });
             assert_eq!(app.step, Step::Keyboard);

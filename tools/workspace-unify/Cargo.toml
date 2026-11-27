@@ -380,6 +380,7 @@ doc = false
 "guillotiere-0_7_0" = { package = "guillotiere", version = "^0.7.0", default-features = false, features = ["std", "svg_fmt"] }
 "h2-0_4_19" = { package = "h2", version = "^0.4.19", default-features = false, features = ["stream"] }
 "half-2_7_1" = { package = "half", version = "^2.7.1", default-features = false, features = ["alloc", "default", "num-traits", "std"] }
+"hardware-report" = { path = "../../crates/os/hardware-report", default-features = false, features = [] }
 "harfrust-0_12_0" = { package = "harfrust", version = "^0.12.0", default-features = false, features = ["default", "std"] }
 "hash32-0_2_1" = { package = "hash32", version = "^0.2.1", default-features = false, features = [] }
 "hashbrown-0_14_5" = { package = "hashbrown", version = "^0.14.5", default-features = false, features = ["raw"] }
@@ -462,7 +463,6 @@ doc = false
 "image-0_25_10" = { package = "image", version = "^0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 "image-webp-0_2_4" = { package = "image-webp", version = "^0.2.4", default-features = false, features = [] }
 "imager" = { path = "../../apps/imager", default-features = false, features = ["destination", "installation"] }
-"imager-backend" = { path = "../../crates/os/imager-backend", default-features = false, features = ["destination", "test-support"] }
 "imagesize-0_14_0" = { package = "imagesize", version = "^0.14.0", default-features = false, features = ["aesprite", "bmp", "dds", "default", "exr", "farbfeld", "gif", "hdr", "heif", "ico", "ilbm", "jpeg", "jxl", "ktx2", "mod", "png", "pnm", "psd", "qoi", "tga", "tiff", "vtf", "webp"] }
 "imap-proto-0_16_7" = { package = "imap-proto", version = "^0.16.7", default-features = false, features = [] }
 "indenter-0_3_4" = { package = "indenter", version = "^0.3.4", default-features = false, features = ["default"] }
@@ -1101,7 +1101,7 @@ doc = false
 "tilo-desktop-model" = { path = "../../crates/desktop/desktop-model", default-features = false, features = [] }
 "tilo-desktop-policy" = { path = "../../crates/desktop/window-placement", default-features = false, features = [] }
 "tilo-desktop-search" = { path = "../../crates/desktop/desktop-search", default-features = false, features = ["catalogue", "indexes", "settings"] }
-"tilo-device-identity" = { path = "../../crates/core/tilo-device-identity", default-features = false, features = [] }
+"tilo-device-identity" = { path = "../../crates/core/tilo-device-identity", default-features = false, features = ["test-support"] }
 "tilo-device-protocol" = { path = "../../crates/os/tilo-device-protocol", default-features = false, features = [] }
 "tilo-device-steps" = { path = "../../crates/os/tilo-device-steps", default-features = false, features = [] }
 "tilo-device-surfaces" = { path = "../../crates/desktop/device-surfaces", default-features = false, features = [] }
@@ -1169,6 +1169,7 @@ doc = false
 "tilo-mcp" = { path = "../../crates/core/tilo-mcp", default-features = false, features = ["test-support"] }
 "tilo-media" = { path = "../../crates/engines/tilo-media", default-features = false, features = ["cast", "decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }
 "tilo-media-controls" = { path = "../../crates/services/media-controls", default-features = false, features = ["default", "service"] }
+"tilo-member-types" = { path = "../../crates/platform/member-types", default-features = false, features = [] }
 "tilo-messaging" = { path = "../../crates/integrations/tilo-messaging", default-features = false, features = ["engine", "service-client", "wire"] }
 "tilo-messaging-protocol" = { path = "../../crates/integrations/messaging-protocol", default-features = false, features = ["default", "signal-broker", "sms-dbus", "whatsapp-sdk"] }
 "tilo-messaging-service" = { path = "../../crates/integrations/messaging-service", default-features = false, features = ["default", "service"] }
@@ -1193,6 +1194,7 @@ doc = false
 "tilo-oci-images" = { path = "../../crates/vm/oci-images", default-features = false, features = [] }
 "tilo-ocr" = { path = "../../crates/engines/ocr", default-features = false, features = [] }
 "tilo-onboarding-session" = { path = "../../crates/desktop/onboarding-session", default-features = false, features = [] }
+"tilo-os-release" = { path = "../../crates/platform/os-release", default-features = false, features = [] }
 "tilo-os-search" = { path = "../../crates/integrations/os-search", default-features = false, features = [] }
 "tilo-package-store" = { path = "../../crates/core/package-store", default-features = false, features = ["default", "dev-overrides", "lease", "store"] }
 "tilo-page-engine" = { path = "../../crates/engines/page-engine", default-features = false, features = [] }
@@ -1288,7 +1290,7 @@ doc = false
 "tilo-typst" = { path = "../../crates/engines/typst-engine", default-features = false, features = [] }
 "tilo-typst-fonts" = { path = "../../crates/engines/tilo-typst-fonts", default-features = false, features = [] }
 "tilo-ui" = { path = "../../crates/ui/ui-core", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "host-portals", "local-daemons", "model", "mpris", "native", "portal", "syntax-definitions", "test-support", "webview-adblock"] }
-"tilo-ui-app" = { path = "../../crates/ui/ui-app", default-features = false, features = [] }
+"tilo-ui-app" = { path = "../../crates/ui/ui-app", default-features = false, features = ["broker-transport", "default", "host-portals", "local-daemons", "model", "mpris", "native", "portal", "test-support"] }
 "tilo-ui-base" = { path = "../../crates/ui/ui-base", default-features = false, features = ["broker-transport", "default", "dmabuf-import", "gpu-video", "local-daemons", "model", "native", "syntax-definitions", "test-support"] }
 "tilo-ui-graph" = { path = "../../crates/ui/ui-graph", default-features = false, features = [] }
 "tilo-ui-kms" = { path = "../../crates/ui/ui-kms", default-features = false, features = [] }
@@ -2280,8 +2282,10 @@ doc = false
 "tilo-image-info" = { path = "../../crates/platform/image-info", default-features = false, features = [] }
 "tilo-key-group" = { path = "../../crates/core/key-group", default-features = false, features = [] }
 "tilo-lock" = { path = "../../crates/platform/tilo-lock", default-features = false, features = [] }
+"tilo-member-types" = { path = "../../crates/platform/member-types", default-features = false, features = [] }
 "tilo-mime" = { path = "../../crates/platform/tilo-mime", default-features = false, features = [] }
 "tilo-net" = { path = "../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "system-status"] }
+"tilo-os-release" = { path = "../../crates/platform/os-release", default-features = false, features = [] }
 "tilo-paths" = { path = "../../crates/platform/tilo-paths", default-features = false, features = [] }
 "tilo-platform-caps" = { path = "../../crates/platform/tilo-platform-caps", default-features = false, features = [] }
 "tilo-presence" = { path = "../../crates/platform/tilo-presence", default-features = false, features = [] }
@@ -2928,7 +2932,6 @@ doc = false
 "image-0_25_10" = { package = "image", version = "^0.25.10", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
 "image-webp-0_2_4" = { package = "image-webp", version = "^0.2.4", default-features = false, features = [] }
 "imager" = { path = "../../apps/imager", default-features = false, features = ["destination", "installation"] }
-"imager-backend" = { path = "../../crates/os/imager-backend", default-features = false, features = ["destination", "test-support"] }
 "imagesize-0_14_0" = { package = "imagesize", version = "^0.14.0", default-features = false, features = ["aesprite", "bmp", "dds", "default", "exr", "farbfeld", "gif", "hdr", "heif", "ico", "ilbm", "jpeg", "jxl", "ktx2", "mod", "png", "pnm", "psd", "qoi", "tga", "tiff", "vtf", "webp"] }
 "imap-proto-0_16_7" = { package = "imap-proto", version = "^0.16.7", default-features = false, features = [] }
 "indenter-0_3_4" = { package = "indenter", version = "^0.3.4", default-features = false, features = ["default"] }

@@ -16,13 +16,13 @@ use super::{
     valid_locale, valid_timezone_name, valid_username, validate_passwords,
     validate_startup_secret_for,
 };
+use crate::backend::destination::install::PowerAction;
 use crate::setup::destination::disk_row::capacity;
 use crate::setup::destination::effects::{
     DestinationEffect, Disk, Network, PROVIDER, REVIEW, Region, Review, STORAGE, Session, Storage,
     disk_row, reference, region_row, reviewed_digest,
 };
 use crate::setup::strings::{t, t_args};
-use imager_backend::destination::install::PowerAction;
 
 /// How long a copied recovery key stays on the clipboard: time to paste it
 /// into a password manager. Rebooting or powering off clears it sooner.
@@ -374,7 +374,7 @@ impl InstallerApp {
         let label = match self.step {
             Step::Network
                 if self.network.connectivity
-                    == imager_backend::destination::network_step::Connectivity::Full =>
+                    == crate::backend::destination::network_step::Connectivity::Full =>
             {
                 crate::resource::CATALOG.t("imager-installer-continue")
             }
@@ -492,7 +492,7 @@ impl InstallerApp {
         ]
     }
 
-    fn disk_blocked(&self, disk: &imager_backend::destination::Disk) -> Blocked {
+    fn disk_blocked(&self, disk: &crate::backend::destination::Disk) -> Blocked {
         self.off_step(Step::Disk).or_else(|| {
             if disk.blocks_install() {
                 Some(("installer_disk", t("installer-blocked-installer-disk")))
@@ -983,7 +983,7 @@ impl InstallerApp {
                 full.with_capacity_bytes(bytes).ok_or_else(|| {
                     format!(
                         "Choose at least {} within the selected unallocated region",
-                        tilo_ui_base::format::memory(imager_backend::MIN_TARGET_BYTES)
+                        tilo_ui_base::format::memory(crate::backend::MIN_TARGET_BYTES)
                     )
                 })?;
                 self.alongside_capacity = Some((disk.clone(), full, bytes));

@@ -282,7 +282,7 @@ pub struct InstallerPreview {
     profile_breakpoint: f64,
     field_values: [tilo_ui_base::LocalState<String>; 4],
     storage: storage::Storage,
-    install_preferences: imager_backend::imager_model::InstallProfile,
+    install_preferences: crate::model::InstallProfile,
     direct: direct::Direct,
     compatibility: compatibility::Compatibility,
     target: target::Target,
@@ -312,7 +312,7 @@ impl Default for InstallerPreview {
             profile_breakpoint: 0.0,
             field_values: std::array::from_fn(|_| tilo_ui_base::LocalState::new(String::new())),
             storage: storage::Storage::default(),
-            install_preferences: imager_backend::imager_model::InstallProfile::default(),
+            install_preferences: crate::model::InstallProfile::default(),
             direct: direct::Direct::default(),
             compatibility: compatibility::Compatibility::default(),
             target: target::Target::default(),
@@ -489,7 +489,7 @@ impl InstallerPreview {
                         content.push(Box::new(Text::new(&t("installer-preview-storage-shrink"))));
                 }
             }
-        } else if let Some(Err(super::staging::plan::PlanError::InsufficientSpace {
+        } else if let Some(Err(crate::backend::plan::PlanError::InsufficientSpace {
             needed_bytes,
             available_bytes,
         })) = &self.storage.plan
@@ -1529,9 +1529,7 @@ impl crate::hosting::Window for InstallerPreview {
         self.install_preferences = state.profile.clone();
         self.install_preferences.user.password.clear();
         self.install_preferences.encryption_passphrase.clear();
-        if self.install_preferences.user.username
-            == imager_backend::imager_model::UserAccount::default().username
-        {
+        if self.install_preferences.user.username == crate::model::UserAccount::default().username {
             if let Ok(login) = std::env::var("USER") {
                 let mut candidate = self.install_preferences.clone();
                 candidate.user.username = login;

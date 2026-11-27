@@ -382,7 +382,7 @@ impl Journey {
     pub fn validation(&self) -> Option<&'static str> {
         match self.page {
             Page::Password => {
-                use imager_backend::startup_password::{ValidationError, validate};
+                use crate::backend::startup_password::{ValidationError, validate};
                 if let Err(reason) = validate(&self.password) {
                     Some(match reason {
                         ValidationError::SurroundingSpaces => "installer-preview-password-spaces",

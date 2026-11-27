@@ -34,6 +34,12 @@ use install_profile_model::{
     FILESYSTEMS, valid_full_name, valid_hostname, valid_locale, valid_timezone_name, valid_username,
 };
 
+use crate::backend::destination::backend::{InstallBackend, SystemBackend};
+use crate::backend::destination::disks::{Disk, GuidedAlongsidePlan};
+use crate::backend::destination::install::{InstallOptions, PowerAction, SERVER_PURPOSE};
+use crate::backend::destination::network_step::{Connectivity, NetworkPhase, NetworkStep, Wake};
+use crate::backend::destination::power_readiness::current_insufficient_battery_percent;
+use crate::backend::destination::probes;
 use crate::resource::CATALOG;
 use crate::setup::destination::action_button::ActionButton;
 use crate::setup::destination::control::{Bound, Control, Press, Presses};
@@ -42,12 +48,6 @@ use crate::setup::destination::effects::DestinationEffect;
 use crate::setup::destination::keyboard_view::KeyboardView;
 use crate::setup::destination::seg_choice::seg_choice;
 use crate::setup::destination::status_log::status_log;
-use imager_backend::destination::backend::{InstallBackend, SystemBackend};
-use imager_backend::destination::disks::{Disk, GuidedAlongsidePlan};
-use imager_backend::destination::install::{InstallOptions, PowerAction, SERVER_PURPOSE};
-use imager_backend::destination::network_step::{Connectivity, NetworkPhase, NetworkStep, Wake};
-use imager_backend::destination::power_readiness::current_insufficient_battery_percent;
-use imager_backend::destination::probes;
 
 pub(crate) mod console;
 #[cfg(test)]
@@ -82,7 +82,7 @@ fn storage_text(key: &str) -> String {
         &[(
             "minimum",
             tilo_ui_base::i18n::ArgValue::Text(tilo_ui_base::format::memory(
-                imager_backend::MIN_TARGET_BYTES,
+                crate::backend::MIN_TARGET_BYTES,
             )),
         )],
     )
@@ -409,7 +409,7 @@ pub fn validate_passwords(password: &str, confirmation: &str) -> Result<(), Stri
 }
 
 pub(crate) fn validate_startup_secret_for(secret: &str, tpm_pin: bool) -> Result<(), &'static str> {
-    imager_backend::startup_password::validate_on_destination(secret, tpm_pin)
+    crate::backend::startup_password::validate_on_destination(secret, tpm_pin)
 }
 
 #[cfg(test)]
@@ -525,12 +525,12 @@ pub struct InstallerApp {
     storage_preflight_request: Option<String>,
     storage_preflight_passed: bool,
     profile_completion: Option<ProfileCompletion>,
-    internal_handoff: Option<imager_backend::destination::internal_handoff::Handoff>,
+    internal_handoff: Option<crate::backend::destination::internal_handoff::Handoff>,
     mailbox: Option<Mailbox>,
     power_probe: fn() -> Option<u8>,
     viewport_offset: Rc<Cell<(f32, f32)>>,
     backend: Arc<dyn InstallBackend>,
-    console: Option<imager_backend::destination::console::ConsoleServer>,
+    console: Option<crate::backend::destination::console::ConsoleServer>,
 
     dirty: bool,
 }
@@ -548,19 +548,19 @@ impl InstallerApp {
         s.hardware =
             crate::setup::support_report_view::checked(hardware_report::SupportReport::probe());
         s.timezones = crate::timezones::offered().to_vec();
-        match imager_backend::destination::media_profile::load() {
+        match crate::backend::destination::media_profile::load() {
             Ok(Some(profile)) => s.apply_media_profile(profile),
             Ok(None) => {
-                if let Some(message) = imager_backend::destination::media_profile::boot_error() {
+                if let Some(message) = crate::backend::destination::media_profile::boot_error() {
                     s.status = message;
                 }
             }
             Err(message) => s.status = message,
         }
-        match imager_backend::destination::internal_handoff::load() {
+        match crate::backend::destination::internal_handoff::load() {
             Ok(Some(handoff)) => s.apply_internal_handoff(handoff),
             Ok(None) => {
-                if let Some(message) = imager_backend::destination::internal_handoff::boot_error() {
+                if let Some(message) = crate::backend::destination::internal_handoff::boot_error() {
                     s.status = message;
                 }
             }
@@ -573,9 +573,9 @@ impl InstallerApp {
 
     fn apply_internal_handoff(
         &mut self,
-        handoff: imager_backend::destination::internal_handoff::Handoff,
+        handoff: crate::backend::destination::internal_handoff::Handoff,
     ) {
-        let profile = imager_backend::destination::internal_handoff::media_profile(&handoff);
+        let profile = crate::backend::destination::internal_handoff::media_profile(&handoff);
         self.internal_handoff = Some(handoff);
         if !self.bind_internal_handoff() {
             self.internal_handoff = None;
@@ -621,7 +621,7 @@ impl InstallerApp {
         }
     }
 
-    fn internal_host(&self) -> Option<imager_backend::destination::internal_handoff::HostOs> {
+    fn internal_host(&self) -> Option<crate::backend::destination::internal_handoff::HostOs> {
         self.internal_handoff
             .as_ref()
             .filter(|_| self.disks.iter().any(Disk::hosts_staged_installer))
@@ -838,7 +838,7 @@ impl InstallerApp {
 
     fn apply_media_profile(
         &mut self,
-        profile: imager_backend::destination::media_profile::MediaProfile,
+        profile: crate::backend::destination::media_profile::MediaProfile,
     ) {
         self.purpose.clone_from(&profile.purpose);
         self.device_label.clone_from(&profile.device_label);
@@ -1003,7 +1003,7 @@ impl InstallerApp {
     }
 
     pub fn shot_locale_repair(&mut self) {
-        self.apply_media_profile(imager_backend::destination::media_profile::MediaProfile {
+        self.apply_media_profile(crate::backend::destination::media_profile::MediaProfile {
             purpose: install_profile_model::default_purpose(),
             device_label: String::new(),
             hostname: Some("studio".into()),
@@ -1013,7 +1013,7 @@ impl InstallerApp {
             keyboard: Some("de".into()),
             timezone: Some("Europe/Berlin".into()),
             filesystem: Some("ext4".into()),
-            repairs: vec![imager_backend::destination::media_profile::MediaProfileField::Locale],
+            repairs: vec![crate::backend::destination::media_profile::MediaProfileField::Locale],
         });
         self.selected_disk = Some(0);
         self.step = Step::Options;
@@ -1326,7 +1326,7 @@ impl InstallerApp {
             fido2: self.fido2,
             internal_handoff: if guided.is_some() && disk.is_some_and(Disk::hosts_staged_installer)
             {
-                imager_backend::destination::internal_handoff::HANDOFF_PATH.to_string()
+                crate::backend::destination::internal_handoff::HANDOFF_PATH.to_string()
             } else {
                 String::new()
             },
@@ -2274,7 +2274,7 @@ impl InstallerApp {
         children.push(Box::new(
             ui::widget::NumberInput::from_state(&self.capacity_gib)
                 .with_range(
-                    tilo_ui_base::num::f64_of_u64(imager_backend::MIN_TARGET_BYTES >> 30),
+                    tilo_ui_base::num::f64_of_u64(crate::backend::MIN_TARGET_BYTES >> 30),
                     tilo_ui_base::num::f64_of_u64(full.free_size_bytes / (1 << 30)),
                 )
                 .with_step(1.0)
@@ -2376,9 +2376,9 @@ impl InstallerApp {
         }
         format!(
             "No safe alongside space was found. Back up your files and use the existing OS's supported partitioning tools to leave at least {} contiguous unallocated, or prepare an empty Linux root and {} boot plus {} EFI partition, then refresh disks. Tilo will not resize existing partitions or switch to Erase automatically.",
-            tilo_ui_base::format::memory(imager_backend::MIN_TARGET_BYTES),
-            tilo_ui_base::format::memory(imager_backend::BOOT_BYTES),
-            tilo_ui_base::format::memory(imager_backend::MIN_ALONGSIDE_ESP_BYTES),
+            tilo_ui_base::format::memory(crate::backend::MIN_TARGET_BYTES),
+            tilo_ui_base::format::memory(crate::backend::BOOT_BYTES),
+            tilo_ui_base::format::memory(crate::backend::MIN_ALONGSIDE_ESP_BYTES),
         )
     }
 
@@ -3692,7 +3692,7 @@ impl Widget for InstallerApp {
 impl InstallerApp {
     pub(crate) fn attach_live(&mut self, waker: ui::WakeHandle) {
         let mailbox = Mailbox::new(move || waker.wake());
-        let console = imager_backend::destination::console::ConsoleServer::new(
+        let console = crate::backend::destination::console::ConsoleServer::new(
             crate::setup::destination::effects::PROVIDER,
         );
         let wake = mailbox.clone();

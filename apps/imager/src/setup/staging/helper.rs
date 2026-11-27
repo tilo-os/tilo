@@ -7,22 +7,23 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use super::handoff;
-use super::plan::{Basis, Plan};
 use super::record::{
     OriginalFirmware, OwnedBootEntry, Record, RecordStatus, RecordStore, RecordedBundle,
-    RecordedComponent, ReleaseRef, Step, StepState,
+    RecordedComponent, ReleaseRef,
 };
+use crate::backend::plan::{Basis, Plan};
+use crate::backend::platform::{Disk, NewPartition, Partition, Platform};
+use crate::backend::staging::fat::{self, Range};
+use crate::backend::staging::protocol::{Step, StepState};
 use crate::setup::internal_bundle::BundleFacts;
-use imager_backend::platform::{Disk, NewPartition, Partition, Platform};
-use imager_backend::staging::fat::{self, Range};
 use staging_handoff_model::efi;
 
-pub use imager_backend::staging::protocol::{REQUEST_SCHEMA, STAGING_HELPER_ARG};
+pub use crate::backend::staging::protocol::{REQUEST_SCHEMA, STAGING_HELPER_ARG};
 const MAX_MANIFEST_BYTES: u64 = crate::setup::internal_bundle::MAX_MANIFEST_BYTES as u64;
 const CHUNK: usize = 4 << 20;
 const MIB: u64 = 1 << 20;
 
-pub use imager_backend::staging::protocol::{Action, ComponentPaths};
+pub use crate::backend::staging::protocol::{Action, ComponentPaths};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -57,7 +58,7 @@ pub struct Request {
 
 /// Where a staged plan's machine finds its single-use ticket and the prebuilt layers a
 /// development install applies before its first boot, owner-only.
-pub use imager_backend::staging::layout::{STAGED_DEVELOPMENT_LAYERS_DIR, STAGED_TOKEN_PATH};
+pub use crate::backend::staging::layout::{STAGED_DEVELOPMENT_LAYERS_DIR, STAGED_TOKEN_PATH};
 /// A ticket longer than this is not one a device issues.
 const MAX_TOKEN_BYTES: u64 = 16 * 1024;
 /// The most layers one staging carries.
@@ -65,7 +66,7 @@ pub(crate) const MAX_DEVELOPMENT_LAYERS: usize = 16;
 /// The most those layers may come to together.
 pub(crate) const MAX_DEVELOPMENT_LAYER_BYTES: u64 = 8 << 30;
 
-pub use imager_backend::staging::protocol::{Outcome, Progress, Refusal, codes};
+pub use crate::backend::staging::protocol::{Outcome, Progress, Refusal, codes};
 
 fn io_refusal(e: impl std::fmt::Display) -> Refusal {
     Refusal::new(codes::IO_FAILED, e.to_string())
@@ -250,7 +251,7 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
     if request.schema != REQUEST_SCHEMA {
         return bad("unsupported request schema");
     }
-    if !super::record::valid_operation_id(&request.operation_id) {
+    if !crate::backend::staging::protocol::valid_operation_id(&request.operation_id) {
         return bad("invalid operation ID");
     }
     if request
@@ -276,7 +277,7 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
     if plan.basis.disk.id.is_empty() {
         return bad("the plan names no disk");
     }
-    if plan.boot_entry.description != super::BOOT_ENTRY_DESCRIPTION {
+    if plan.boot_entry.description != crate::backend::BOOT_ENTRY_DESCRIPTION {
         return bad("unexpected boot entry description");
     }
     let (t, e, r) = (
@@ -300,15 +301,16 @@ pub fn validate_request(request: &Request) -> Result<(), Refusal> {
     if guids.iter().any(|g| g.is_some() != expected_some)
         || guids
             .iter()
-            .any(|g| g.as_deref().is_some_and(|g| !super::is_guid(g)))
+            .any(|g| g.as_deref().is_some_and(|g| !crate::backend::is_guid(g)))
         || (expected_some && guids[0] == guids[1])
     {
         return bad("partition GUIDs do not match what this host can set");
     }
     if plan.basis.disk.partitions.iter().any(|p| {
-        guids
-            .iter()
-            .any(|g| g.as_deref().is_some_and(|g| super::same_guid(g, &p.guid)))
+        guids.iter().any(|g| {
+            g.as_deref()
+                .is_some_and(|g| crate::backend::same_guid(g, &p.guid))
+        })
     }) {
         return bad("a staging GUID names an existing partition");
     }
@@ -407,15 +409,15 @@ pub(crate) fn rule_names_disk(
     rule: &install_profile_model::plan::DiskRule,
     disk: &Disk,
 ) -> Result<bool, String> {
-    if let Ok(named) = super::TargetDisk::parse(&disk.id) {
+    if let Ok(named) = crate::backend::staging::TargetDisk::parse(&disk.id) {
         return Ok(named.kind == rule.kind && rule_names(rule, &[named.identity]));
     }
     Ok(rule_names(rule, &disk_identities(disk)?))
 }
 
-pub use imager_backend::firmware::read_firmware;
+pub use crate::backend::firmware::read_firmware;
 
-pub fn read_basis(platform: &dyn Platform) -> imager_backend::platform::IoResult<Basis> {
+pub fn read_basis(platform: &dyn Platform) -> crate::backend::platform::IoResult<Basis> {
     Ok(Basis {
         disk: platform.system_disk()?,
         system_volume: platform.system_volume()?,
@@ -441,7 +443,7 @@ fn overlaps(p: &Partition, first: u64, last: u64) -> bool {
     p.first_lba <= last && first <= p.last_lba
 }
 
-use imager_backend::staging::request_io::{open_input, read_input};
+use crate::backend::staging::request_io::{open_input, read_input};
 
 const BTRFS_SUPERBLOCK_OFFSET: u64 = 0x1_0000;
 
@@ -467,7 +469,7 @@ pub fn execute(
     validate_request(request)?;
     if request.action == Action::Stage && request.token_file.is_some() {
         // Refuse a token nobody could place before any disk is touched.
-        imager_backend::staging::request_io::read_secret_input(
+        crate::backend::staging::request_io::read_secret_input(
             Path::new(request.token_file.as_deref().expect("checked above")),
             MAX_TOKEN_BYTES,
         )
@@ -513,9 +515,9 @@ struct Engine<'a> {
 }
 
 fn linux_binding(
-    volume: &imager_backend::platform::LinuxBtrfsVolume,
-) -> imager_backend::staging::btrfs_resize::Binding {
-    imager_backend::staging::btrfs_resize::Binding {
+    volume: &crate::backend::platform::LinuxBtrfsVolume,
+) -> crate::backend::staging::btrfs_resize::Binding {
+    crate::backend::staging::btrfs_resize::Binding {
         partition_guid: volume.partition_guid.clone(),
         filesystem_uuid: volume.filesystem_uuid.clone(),
         device_id: volume.device_id,
@@ -529,8 +531,8 @@ fn linux_binding(
 /// adapter pins the newly admitted mount/namespace for this invocation; only
 /// stable physical/filesystem facts compare against the protected old plan.
 fn same_linux_volume(
-    a: &imager_backend::platform::LinuxBtrfsVolume,
-    b: &imager_backend::platform::LinuxBtrfsVolume,
+    a: &crate::backend::platform::LinuxBtrfsVolume,
+    b: &crate::backend::platform::LinuxBtrfsVolume,
 ) -> bool {
     a.partition_guid == b.partition_guid
         && a.filesystem_uuid == b.filesystem_uuid
@@ -542,17 +544,17 @@ fn same_linux_volume(
 struct JournaledBtrfsVolume<'a, 'b> {
     engine: &'a mut Engine<'b>,
 }
-impl imager_backend::staging::btrfs_resize::Volume for JournaledBtrfsVolume<'_, '_> {
+impl crate::backend::staging::btrfs_resize::Volume for JournaledBtrfsVolume<'_, '_> {
     fn observe(
         &mut self,
-    ) -> imager_backend::platform::IoResult<imager_backend::staging::btrfs_resize::Facts> {
+    ) -> crate::backend::platform::IoResult<crate::backend::staging::btrfs_resize::Facts> {
         let facts = self
             .engine
             .linux_volume()
             .map_err(|error| error.to_string())?;
-        let minimum_bytes = super::plan::minimum_linux_btrfs_bytes(&facts)
+        let minimum_bytes = crate::backend::plan::minimum_linux_btrfs_bytes(&facts)
             .map_err(|error| format!("Btrfs shrink bound changed: {error:?}"))?;
-        Ok(imager_backend::staging::btrfs_resize::Facts {
+        Ok(crate::backend::staging::btrfs_resize::Facts {
             binding: linux_binding(&facts),
             partition_bytes: facts.size_bytes,
             kernel_partition_bytes: facts.kernel_partition_bytes,
@@ -565,10 +567,10 @@ impl imager_backend::staging::btrfs_resize::Volume for JournaledBtrfsVolume<'_, 
     }
     fn record_intent(
         &mut self,
-        phase: imager_backend::staging::btrfs_resize::Phase,
+        phase: crate::backend::staging::btrfs_resize::Phase,
         bytes: u64,
-    ) -> imager_backend::platform::IoResult<()> {
-        use imager_backend::staging::btrfs_resize::Phase;
+    ) -> crate::backend::platform::IoResult<()> {
+        use crate::backend::staging::btrfs_resize::Phase;
         let predecessor = match phase {
             Phase::ShrinkPartition => Some(Phase::ShrinkFilesystem),
             Phase::GrowFilesystem => Some(Phase::GrowPartition),
@@ -622,13 +624,13 @@ impl imager_backend::staging::btrfs_resize::Volume for JournaledBtrfsVolume<'_, 
     }
     fn record_done(
         &mut self,
-        phase: imager_backend::staging::btrfs_resize::Phase,
+        phase: crate::backend::staging::btrfs_resize::Phase,
         bytes: u64,
-    ) -> imager_backend::platform::IoResult<()> {
+    ) -> crate::backend::platform::IoResult<()> {
         self.engine.record_mut().resize_done(phase, bytes)?;
         self.engine.save().map_err(|error| error.to_string())
     }
-    fn resize_filesystem(&mut self, bytes: u64) -> imager_backend::platform::IoResult<()> {
+    fn resize_filesystem(&mut self, bytes: u64) -> crate::backend::platform::IoResult<()> {
         let guid = self
             .engine
             .plan()
@@ -641,7 +643,7 @@ impl imager_backend::staging::btrfs_resize::Volume for JournaledBtrfsVolume<'_, 
             .platform
             .resize_linux_btrfs_filesystem(&guid, bytes)
     }
-    fn resize_partition(&mut self, bytes: u64) -> imager_backend::platform::IoResult<()> {
+    fn resize_partition(&mut self, bytes: u64) -> crate::backend::platform::IoResult<()> {
         let guid = self
             .engine
             .plan()
@@ -716,7 +718,8 @@ impl Engine<'_> {
         }
         let plan = self.plan();
         let s = plan.basis.disk.sector_bytes;
-        let fits = |x: super::plan::Extent, c: &crate::setup::internal_bundle::ComponentFacts| {
+        let fits = |x: crate::backend::plan::Extent,
+                    c: &crate::setup::internal_bundle::ComponentFacts| {
             x.lbas() * s >= c.minimum_partition_bytes.max(c.byte_size)
         };
         if !fits(plan.staging_esp.extent(), &facts.esp)
@@ -741,8 +744,8 @@ impl Engine<'_> {
         let plan = self.plan();
         let target_bytes = plan.target_extent.lbas() * plan.basis.disk.sector_bytes;
         let facts = self.facts();
-        let expected = super::plan::compute(&plan.basis, facts.requirements(target_bytes))
-            .map(|p| super::plan::with_loader_path(p, &facts.efi_path))
+        let expected = crate::backend::plan::compute(&plan.basis, facts.requirements(target_bytes))
+            .map(|p| crate::backend::plan::with_loader_path(p, &facts.efi_path))
             .map_err(|e| {
                 Refusal::new(
                     codes::REQUEST_INVALID,
@@ -758,11 +761,12 @@ impl Engine<'_> {
             .staging_root
             .partition_guid
             .clone_from(&expected.staging_root.partition_guid);
-        let guids_valid = [&plan.staging_esp, &plan.staging_root]
-            .iter()
-            .all(|p| p.partition_guid.as_deref().is_none_or(super::is_guid))
-            && plan.staging_esp.partition_guid.is_some()
-                == expected.staging_esp.partition_guid.is_some()
+        let guids_valid = [&plan.staging_esp, &plan.staging_root].iter().all(|p| {
+            p.partition_guid
+                .as_deref()
+                .is_none_or(crate::backend::is_guid)
+        }) && plan.staging_esp.partition_guid.is_some()
+            == expected.staging_esp.partition_guid.is_some()
             && plan.staging_root.partition_guid.is_some()
                 == expected.staging_root.partition_guid.is_some();
         if comparable != expected || !guids_valid {
@@ -802,7 +806,7 @@ impl Engine<'_> {
         let disk = &self.plan().basis.disk.guid;
         if let Some(other) = records.iter().find(|r| {
             r.operation_id != self.request.operation_id
-                && super::same_guid(&r.plan.basis.disk.guid, disk)
+                && crate::backend::same_guid(&r.plan.basis.disk.guid, disk)
                 && r.status() != RecordStatus::Removed
         }) {
             return Err(Refusal::new(
@@ -861,7 +865,7 @@ impl Engine<'_> {
                 let ours = [Which::Esp, Which::Root].iter().any(|w| {
                     let staged = self.staged(*w);
                     match self.guid_for(*w, record) {
-                        Some(g) => super::same_guid(&g, &p.guid),
+                        Some(g) => crate::backend::same_guid(&g, &p.guid),
                         None => same_extent(p, staged.first_lba, staged.last_lba),
                     }
                 });
@@ -875,7 +879,7 @@ impl Engine<'_> {
                         .disk
                         .partitions
                         .iter_mut()
-                        .find(|p| super::same_guid(&p.guid, &shrink.partition_guid))
+                        .find(|p| crate::backend::same_guid(&p.guid, &shrink.partition_guid))
                     {
                         c.last_lba = c.first_lba + shrink.from_bytes / s - 1;
                     }
@@ -891,7 +895,7 @@ impl Engine<'_> {
         }
         self.normalize_linux_btrfs_basis(&mut current)?;
         let (d, e) = (&current.disk, &expected.disk);
-        if !super::same_guid(&d.guid, &e.guid)
+        if !crate::backend::same_guid(&d.guid, &e.guid)
             || d.size_bytes != e.size_bytes
             || d.sector_bytes != e.sector_bytes
         {
@@ -912,7 +916,7 @@ impl Engine<'_> {
         match (&current.system_volume, &expected.system_volume) {
             (None, None) => {}
             (Some(c), Some(e))
-                if super::same_guid(&c.partition_guid, &e.partition_guid)
+                if crate::backend::same_guid(&c.partition_guid, &e.partition_guid)
                     && c.size_bytes == e.size_bytes => {}
             _ => return stale("the system volume changed since review".into()),
         }
@@ -927,7 +931,7 @@ impl Engine<'_> {
             _ => return stale("the retained Btrfs volume changed since review".into()),
         }
         let (cf, ef) = (&current.firmware, &expected.firmware);
-        let boot_fields_probed = plan.basis.host_os() == super::plan::HostOs::Linux;
+        let boot_fields_probed = plan.basis.host_os() == crate::backend::plan::HostOs::Linux;
         if cf.uefi != ef.uefi
             || cf.secure_boot != ef.secure_boot
             || (boot_fields_probed
@@ -958,7 +962,7 @@ impl Engine<'_> {
             .expect("component opened");
             file.seek(SeekFrom::Start(0)).map_err(io_refusal)?;
             let digest =
-                imager_backend::write::hash_source_exact(&mut *file, size, &|| false, |done| {
+                crate::backend::write::hash_source_exact(&mut *file, size, &|| false, |done| {
                     (self.progress)(&Progress {
                         step: Step::Verify,
                         done_bytes: done,
@@ -1035,7 +1039,7 @@ impl Engine<'_> {
         .expect("component opened")
     }
 
-    fn staged(&self, which: Which) -> &super::plan::StagedPartition {
+    fn staged(&self, which: Which) -> &crate::backend::plan::StagedPartition {
         match which {
             Which::Esp => &self.plan().staging_esp,
             Which::Root => &self.plan().staging_root,
@@ -1051,8 +1055,8 @@ impl Engine<'_> {
 
     fn type_guid(which: Which) -> &'static str {
         match which {
-            Which::Esp => super::ESP_TYPE,
-            Which::Root => super::STAGING_ROOT_TYPE,
+            Which::Esp => crate::backend::ESP_TYPE,
+            Which::Root => crate::backend::staging::STAGING_ROOT_TYPE,
         }
     }
 
@@ -1074,9 +1078,11 @@ impl Engine<'_> {
             if let Some(p) = disk
                 .partitions
                 .iter()
-                .find(|p| super::same_guid(&p.guid, g))
+                .find(|p| crate::backend::same_guid(&p.guid, g))
             {
-                return if same_extent(p, first, last) && super::same_guid(&p.type_guid, kind) {
+                return if same_extent(p, first, last)
+                    && crate::backend::same_guid(&p.type_guid, kind)
+                {
                     Ok(Some(p.clone()))
                 } else {
                     changed("a staging partition no longer has its recorded extent and type")
@@ -1092,14 +1098,14 @@ impl Engine<'_> {
             [] => Ok(None),
             [p] if known.is_none()
                 && same_extent(p, first, last)
-                && super::same_guid(&p.type_guid, kind)
+                && crate::backend::same_guid(&p.type_guid, kind)
                 && !self
                     .plan()
                     .basis
                     .disk
                     .partitions
                     .iter()
-                    .any(|b| super::same_guid(&b.guid, &p.guid)) =>
+                    .any(|b| crate::backend::same_guid(&b.guid, &p.guid)) =>
             {
                 Ok(Some((*p).clone()))
             }
@@ -1401,7 +1407,7 @@ impl Engine<'_> {
             .system_volume()
             .map_err(io_refusal)?
             .ok_or_else(|| Refusal::new(codes::PLAN_STALE, "no system volume"))?;
-        if shrink.to_bytes < super::plan::minimum_system_volume_bytes(&volume) {
+        if shrink.to_bytes < crate::backend::plan::minimum_system_volume_bytes(&volume) {
             return Err(Refusal::new(
                 codes::PLAN_STALE,
                 "the system volume can no longer shrink that far safely",
@@ -1414,7 +1420,7 @@ impl Engine<'_> {
         self.platform.sync_disk(&disk).map_err(io_refusal)
     }
 
-    fn linux_volume(&self) -> Result<imager_backend::platform::LinuxBtrfsVolume, Refusal> {
+    fn linux_volume(&self) -> Result<crate::backend::platform::LinuxBtrfsVolume, Refusal> {
         let expected = self
             .plan()
             .basis
@@ -1438,7 +1444,7 @@ impl Engine<'_> {
         let partition = disk
             .partitions
             .iter()
-            .find(|partition| super::same_guid(&partition.guid, &actual.partition_guid))
+            .find(|partition| crate::backend::same_guid(&partition.guid, &actual.partition_guid))
             .ok_or_else(|| {
                 Refusal::new(codes::STAGING_CHANGED, "retained Btrfs partition is absent")
             })?;
@@ -1463,7 +1469,7 @@ impl Engine<'_> {
 
     fn resize_authorized(
         &self,
-        phase: imager_backend::staging::btrfs_resize::Phase,
+        phase: crate::backend::staging::btrfs_resize::Phase,
     ) -> Result<bool, Refusal> {
         self.record
             .as_ref()
@@ -1478,7 +1484,7 @@ impl Engine<'_> {
     }
 
     fn normalize_linux_btrfs_basis(&self, current: &mut Basis) -> Result<(), Refusal> {
-        use imager_backend::staging::btrfs_resize::Phase;
+        use crate::backend::staging::btrfs_resize::Phase;
         let Some(expected) = self.plan().basis.linux_btrfs_volume.as_ref() else {
             return Ok(());
         };
@@ -1524,7 +1530,7 @@ impl Engine<'_> {
             .disk
             .partitions
             .iter_mut()
-            .find(|partition| super::same_guid(&partition.guid, &shrink.partition_guid))
+            .find(|partition| crate::backend::same_guid(&partition.guid, &shrink.partition_guid))
             .ok_or_else(|| {
                 Refusal::new(codes::PLAN_STALE, "retained Btrfs GPT entry disappeared")
             })?;
@@ -1550,7 +1556,7 @@ impl Engine<'_> {
     }
 
     fn check_linux_btrfs_resize(&mut self, restoring: bool) -> Result<Actual, Refusal> {
-        use imager_backend::staging::btrfs_resize::Phase;
+        use crate::backend::staging::btrfs_resize::Phase;
         let shrink = self.plan().shrink.clone().expect("reviewed shrink");
         let volume = self.linux_volume()?;
         let (from, to) = (shrink.from_bytes, shrink.to_bytes);
@@ -1614,7 +1620,7 @@ impl Engine<'_> {
         let partition = disk
             .partitions
             .iter()
-            .find(|partition| super::same_guid(&partition.guid, &shrink.partition_guid))
+            .find(|partition| crate::backend::same_guid(&partition.guid, &shrink.partition_guid))
             .ok_or_else(|| {
                 Refusal::new(codes::STAGING_CHANGED, "retained partition disappeared")
             })?;
@@ -1639,7 +1645,7 @@ impl Engine<'_> {
 
     fn finish_resize_phase(
         &mut self,
-        phase: imager_backend::staging::btrfs_resize::Phase,
+        phase: crate::backend::staging::btrfs_resize::Phase,
         bytes: u64,
     ) -> Result<(), Refusal> {
         if self
@@ -1662,14 +1668,14 @@ impl Engine<'_> {
         let shrink = self.plan().shrink.clone().expect("reviewed shrink");
         let mut volume = JournaledBtrfsVolume { engine: self };
         if restoring {
-            imager_backend::staging::btrfs_resize::restore(
+            crate::backend::staging::btrfs_resize::restore(
                 &mut volume,
                 &binding,
                 shrink.from_bytes,
                 shrink.to_bytes,
             )
         } else {
-            imager_backend::staging::btrfs_resize::shrink(
+            crate::backend::staging::btrfs_resize::shrink(
                 &mut volume,
                 &binding,
                 shrink.from_bytes,
@@ -1711,7 +1717,7 @@ impl Engine<'_> {
             .create_partition(&disk, &spec)
             .map_err(io_refusal)?;
         if let Some(expected) = &staged.partition_guid {
-            if !super::same_guid(expected, &guid) {
+            if !crate::backend::same_guid(expected, &guid) {
                 return Err(Refusal::new(
                     codes::IO_FAILED,
                     "the created partition did not take the planned GUID",
@@ -1817,7 +1823,7 @@ impl Engine<'_> {
             return Ok(false);
         }
         let expected = self.facts().root.filesystem_uuid.clone();
-        if !super::is_guid(&expected) {
+        if !crate::backend::is_guid(&expected) {
             return Ok(false);
         }
         let (disk, p) = self.require_staged(Which::Root)?;
@@ -1826,7 +1832,7 @@ impl Engine<'_> {
         let mut buf = vec![0_u8; sector.max(4096) as usize];
         self.read_at(&disk, &p.guid, start, &mut buf)?;
         let at = (BTRFS_SUPERBLOCK_OFFSET - start) as usize;
-        Ok(btrfs_fsid(&buf[at..]).is_some_and(|fsid| super::same_guid(&fsid, &expected)))
+        Ok(btrfs_fsid(&buf[at..]).is_some_and(|fsid| crate::backend::same_guid(&fsid, &expected)))
     }
 
     fn allocate_boot_number(&mut self) -> Result<u16, Refusal> {
@@ -1896,7 +1902,7 @@ impl Engine<'_> {
         let Some(path) = &self.request.token_file else {
             return Ok(None);
         };
-        let bytes = imager_backend::staging::request_io::read_secret_input(
+        let bytes = crate::backend::staging::request_io::read_secret_input(
             Path::new(path),
             MAX_TOKEN_BYTES,
         )
@@ -2093,7 +2099,7 @@ impl Engine<'_> {
                 if !disk
                     .partitions
                     .iter()
-                    .any(|p| super::same_guid(&p.guid, &g)) =>
+                    .any(|p| crate::backend::same_guid(&p.guid, &g)) =>
             {
                 return Ok(Actual::Done(Detail::new()));
             }
@@ -2115,7 +2121,7 @@ impl Engine<'_> {
             .disk
             .partitions
             .iter()
-            .any(|b| super::same_guid(&b.guid, &p.guid))
+            .any(|b| crate::backend::same_guid(&b.guid, &p.guid))
         {
             return Err(Refusal::new(
                 codes::STAGING_CHANGED,
@@ -2154,7 +2160,7 @@ impl Engine<'_> {
         let Some(c) = disk
             .partitions
             .iter()
-            .find(|p| super::same_guid(&p.guid, &shrink.partition_guid))
+            .find(|p| crate::backend::same_guid(&p.guid, &shrink.partition_guid))
         else {
             return skipped("the system volume is not on this disk");
         };
@@ -2308,17 +2314,17 @@ fn find_placeholders(
     Ok(Placeholders { handoff, record })
 }
 
-pub use imager_backend::staging::process::{Poll, Running, helper_executable};
+pub use crate::backend::staging::process::{Poll, Running, helper_executable};
 
 pub fn launch(request: &Request) -> Result<Running, String> {
     validate_request(request).map_err(|r| r.to_string())?;
     let bytes = serde_json::to_vec(request).map_err(|e| e.to_string())?;
-    imager_backend::staging::process::launch(&bytes)
+    crate::backend::staging::process::launch(&bytes)
 }
 
-use imager_backend::staging::request_io::{create_progress, read_request};
+use crate::backend::staging::request_io::{create_progress, read_request};
 
-pub use imager_backend::firmware::test_overrides_allowed;
+pub use crate::backend::firmware::test_overrides_allowed;
 
 fn system_store() -> Result<RecordStore, String> {
     let mut store = RecordStore::system()?;
@@ -2338,7 +2344,7 @@ fn open_platform(request: &Request) -> Result<Box<dyn Platform>, String> {
         // The plan's disk is the identity the request was reviewed against:
         // a `serial:`/`wwid:` name from a plan, or the system disk's device
         // path when this machine's own disk was staged.
-        Ok(Box::new(imager_backend::linux::LinuxPlatform::open_on(
+        Ok(Box::new(crate::backend::linux::LinuxPlatform::open_on(
             &request.plan.basis.disk.id,
         )?))
     }
@@ -2346,7 +2352,7 @@ fn open_platform(request: &Request) -> Result<Box<dyn Platform>, String> {
     {
         let _ = request;
         Ok(Box::new(
-            imager_backend::staging::windows::WindowsPlatform::elevated()?,
+            crate::backend::staging::windows::WindowsPlatform::elevated()?,
         ))
     }
     #[cfg(not(any(target_os = "linux", windows)))]
@@ -2419,9 +2425,9 @@ pub fn pending_records() -> Vec<super::record::Record> {
     let dir = if test_overrides_allowed() {
         std::env::var_os("TILO_STAGING_TEST_RECORD_DIR")
             .map(|d| PathBuf::from(d).join("staging-status"))
-            .or_else(super::record::public_dir)
+            .or_else(crate::backend::staging::record_io::public_dir)
     } else {
-        super::record::public_dir()
+        crate::backend::staging::record_io::public_dir()
     };
     dir.map(|d| super::record::pending_in(&d))
         .unwrap_or_default()
@@ -2431,7 +2437,7 @@ pub fn pending_records() -> Vec<super::record::Record> {
 mod tests {
     #[test]
     fn durable_btrfs_recovery_readmits_mount_but_keeps_stable_identity() {
-        let original = imager_backend::platform::LinuxBtrfsVolume {
+        let original = crate::backend::platform::LinuxBtrfsVolume {
             partition_guid: "11111111-2222-3333-4444-555555555555".into(),
             filesystem_uuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into(),
             device_id: 1,

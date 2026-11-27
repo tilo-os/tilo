@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use imager_backend::platform::{Disk, IoResult, NewPartition, Partition, Platform, SystemVolume};
+use crate::backend::platform::{Disk, IoResult, NewPartition, Partition, Platform, SystemVolume};
 
 const BLOCK: u64 = 4096;
 
@@ -74,7 +74,7 @@ impl FakePlatform {
         self.disk
             .partitions
             .iter()
-            .find(|p| super::same_guid(&p.guid, guid))
+            .find(|p| crate::backend::same_guid(&p.guid, guid))
             .cloned()
             .ok_or_else(|| format!("no partition {guid}"))
     }
@@ -179,7 +179,10 @@ impl Platform for FakePlatform {
             return Err("overlapping partition".into());
         }
         self.before(format!("create {}..{}", spec.first_lba, spec.last_lba))?;
-        let guid = spec.guid.clone().unwrap_or_else(super::random_guid);
+        let guid = spec
+            .guid
+            .clone()
+            .unwrap_or_else(crate::backend::random_guid);
         let number = (1..=u32::MAX)
             .find(|n| !self.disk.partitions.iter().any(|p| p.number == *n))
             .expect("free number");
@@ -202,7 +205,7 @@ impl Platform for FakePlatform {
         self.before(format!("delete {partition_guid}"))?;
         self.disk
             .partitions
-            .retain(|p| !super::same_guid(&p.guid, partition_guid));
+            .retain(|p| !crate::backend::same_guid(&p.guid, partition_guid));
         self.after();
         Ok(())
     }
@@ -322,7 +325,7 @@ impl Platform for FakePlatform {
 impl FakePlatform {
     fn resize(&mut self, guid: &str, to_bytes: u64, shrink: bool) -> IoResult<()> {
         let volume = self.volume.clone().ok_or("no system volume")?;
-        if !super::same_guid(&volume.partition_guid, guid) {
+        if !crate::backend::same_guid(&volume.partition_guid, guid) {
             return Err("not the system volume".into());
         }
         if shrink == (to_bytes >= volume.size_bytes) {
@@ -342,7 +345,7 @@ impl FakePlatform {
         }
         self.before(format!("resize {guid} -> {to_bytes}"))?;
         for p in &mut self.disk.partitions {
-            if super::same_guid(&p.guid, guid) {
+            if crate::backend::same_guid(&p.guid, guid) {
                 p.last_lba = last;
             }
         }
@@ -360,11 +363,12 @@ mod tests {
     use super::super::helper::{
         self, Action, ComponentPaths, Refusal, ReleaseAuthority, Request, codes,
     };
-    use super::super::plan::{self, Basis, Plan, Requirements};
-    use super::super::record::{RecordStatus, RecordStore, ReleaseRef, Step, StepState};
+    use super::super::record::{RecordStatus, RecordStore, ReleaseRef};
     use super::*;
+    use crate::backend::plan::{self, Basis, Plan, Requirements};
+    use crate::backend::staging::fat;
+    use crate::backend::staging::protocol::{Step, StepState};
     use crate::setup::internal_bundle::{BundleFacts, ComponentFacts};
-    use imager_backend::staging::fat;
     use sha2::{Digest, Sha256};
     use staging_handoff_model::efi;
 
@@ -551,9 +555,12 @@ mod tests {
             assert_eq!(&esp_guid, g);
         }
         let esp_part = p.partition(&esp_guid).unwrap();
-        assert_eq!(esp_part.type_guid, super::super::ESP_TYPE);
+        assert_eq!(esp_part.type_guid, crate::backend::ESP_TYPE);
         let root_part = p.partition(&root_guid).unwrap();
-        assert_eq!(root_part.type_guid, super::super::STAGING_ROOT_TYPE);
+        assert_eq!(
+            root_part.type_guid,
+            crate::backend::staging::STAGING_ROOT_TYPE
+        );
         assert_eq!(p.partition_bytes(&root_guid, w.root.len()), w.root);
         let mut on_disk = p.partition_bytes(&esp_guid, w.esp.len());
         let mut read = |at: u64, buf: &mut [u8]| {

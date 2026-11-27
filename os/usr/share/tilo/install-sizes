@@ -1,5 +1,5 @@
 # The partitions a Tilo install lays out, in bytes. The installer's scripts source this file
-# (/usr/share/tilo/install-sizes, beside /usr/libexec) and imager-backend reads it when it is
+# (/usr/share/tilo/install-sizes, beside /usr/libexec) and the imager reads it when it is
 # built, so the sizes the installer offers and the sizes it checks before writing a disk are one.
 # The least room Tilo takes on a disk is their sum: 35 GiB.
 

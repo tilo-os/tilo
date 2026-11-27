@@ -215,7 +215,7 @@ tilo_test_env::scenario! {
     {
         let (mut app, mut doc, _) = fixture("ext4");
         let mut disks = app.disks.clone();
-        disks[0].size_bytes = imager_backend::MIN_TARGET_BYTES - 1;
+        disks[0].size_bytes = crate::backend::MIN_TARGET_BYTES - 1;
         app.refresh_disks_with(disks);
         let reply = invoke(
             &mut app,
@@ -231,7 +231,7 @@ tilo_test_env::scenario! {
         assert_eq!(app.selected_disk, None);
 
         let mut disks = app.disks.clone();
-        disks[0].size_bytes = imager_backend::MIN_TARGET_BYTES;
+        disks[0].size_bytes = crate::backend::MIN_TARGET_BYTES;
         app.refresh_disks_with(disks);
         select(&mut app, &mut doc, "/dev/sda");
         assert_eq!(app.selected_disk, Some(0));

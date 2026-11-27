@@ -28,33 +28,6 @@
       "tests": 28,
       "wall_seconds": 72.808991135
     },
-    "imager-backend": {
-      "slowest": [
-        {
-          "seconds": 16.592546232,
-          "test": "imager_backend$setup::prepared_tpm::tests::a_real_swtpm_sidecar_and_a_large_mail_journal_compose_without_growing_the_package"
-        },
-        {
-          "seconds": 12.425302525,
-          "test": "imager_backend$setup::portable_transfer::tests::mid_export_cancellation_reaps_actual_tar_removes_ciphertext_and_retries"
-        },
-        {
-          "seconds": 12.391644443,
-          "test": "imager_backend$account_transfer::thunderbird_source::stream::tests::a_folder_beyond_the_former_inspection_cap_streams_into_the_mail_cache"
-        },
-        {
-          "seconds": 7.618254502,
-          "test": "imager_backend$account_transfer::portable::tests::selected_serialization_limit_rejects_account_before_emitting_transport"
-        },
-        {
-          "seconds": 5.228860495,
-          "test": "imager_backend$setup::browser_transfer_helper::tests::canonical_headless_activation_and_retry_verify_original_ciphertext_and_output"
-        }
-      ],
-      "test_seconds": 174.34683794100005,
-      "tests": 697,
-      "wall_seconds": 174.34683794100005
-    },
     "mail": {
       "slowest": [
         {

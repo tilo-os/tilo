@@ -435,7 +435,6 @@ members = [
     "crates/os/greetd-client",
     "crates/os/greeter",
     "crates/os/hardware-report",
-    "crates/os/imager-backend",
     "crates/os/install-plan",
     "crates/os/install-profile-model",
     "crates/desktop/liveness",
@@ -1545,13 +1544,6 @@ codegen-units = 1
 [profile.thin-app.package.tilo-ui]
 codegen-units = 16
 
-# Imager's backend is the longest single compile of the thin graph: at one
-# unit it took three minutes of a warm build on sixteen cores, after the
-# toolkit, so it set when the collection was done. It is linked into Imager
-# alone, which has room under its budget for what parallel codegen costs.
-[profile.thin-app.package.imager-backend]
-codegen-units = 16
-
 # Mail's model and engine are linked into Mail's tapp alone, and build the way
 # the app itself does (build-thin-apps.sh knows only the apps' own crates):
 # optimised for size, in the one codegen unit above.
@@ -1574,9 +1566,6 @@ incremental = true
 debug = false
 
 [profile.thin-dev.package.tilo-ui]
-codegen-units = 256
-
-[profile.thin-dev.package.imager-backend]
 codegen-units = 256
 
 # The published graph's size setting is for a tapp a person downloads; a

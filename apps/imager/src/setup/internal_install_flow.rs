@@ -9,11 +9,13 @@ use super::internal_cache::HeldReadSeek;
 use super::internal_cache::coordinator::Cancellation;
 use super::internal_download::SelectedManifest;
 use super::model::HostOs;
+use super::staging::DEFAULT_TARGET_BYTES;
 use super::staging::helper::{self, Action, ComponentPaths, Outcome, Poll, Progress, Request};
-use super::staging::plan::{self, Basis, Plan, PlanError, Requirements, TargetBounds};
 use super::staging::probe::{self, Blocker, HostFacts};
-use super::staging::record::{Record, ReleaseRef, Step};
-use super::staging::{ALIGN_BYTES, DEFAULT_TARGET_BYTES};
+use super::staging::record::{Record, ReleaseRef};
+use crate::backend::ALIGN_BYTES;
+use crate::backend::plan::{self, Basis, Plan, PlanError, Requirements, TargetBounds};
+use crate::backend::staging::protocol::Step;
 use hardware_report::SupportReport;
 use tilo_lock::MutexRecover as _;
 
@@ -57,7 +59,7 @@ impl HelperRun for helper::Running {
     }
 }
 
-pub(super) use imager_backend::setup::native_host::HostCommand;
+pub(super) use crate::backend::setup::native_host::HostCommand;
 
 type ProbeFn = dyn Fn() -> HostFacts + Send + Sync;
 type PlanFn = dyn Fn(&Basis, Requirements) -> Result<Plan, PlanError> + Send + Sync;
@@ -456,7 +458,7 @@ impl InternalInstall {
             pending: Vec::new(),
             target_gib: tilo_ui_base::LocalState::new((DEFAULT_TARGET_BYTES / GIB) as f64),
             target_bytes: DEFAULT_TARGET_BYTES,
-            minimum_target_bytes: super::staging::MIN_TARGET_BYTES,
+            minimum_target_bytes: crate::backend::MIN_TARGET_BYTES,
             bounds: None,
             plan: None,
             seen_revision: 0,
@@ -723,7 +725,7 @@ impl InternalInstall {
             .lbas()
             .checked_mul(reviewed.plan.basis.disk.sector_bytes)
             .ok_or_else(refused)?;
-        let minimum = super::staging::MIN_TARGET_BYTES;
+        let minimum = crate::backend::MIN_TARGET_BYTES;
         if bytes < minimum || !bytes.is_multiple_of(GIB) {
             return Err(refused());
         }
@@ -1055,18 +1057,16 @@ pub(super) fn target_extent_bytes(plan: &Plan) -> u64 {
 }
 
 fn live_host_command(command: HostCommand) -> Result<(), String> {
-    imager_backend::setup::native_host::run(command)
+    crate::backend::setup::native_host::run(command)
 }
 
 #[cfg(test)]
 pub(super) mod fixture {
     use super::{GIB, HostFacts, Plan, PlanError, Requirements, TargetBounds};
-    use crate::setup::staging::plan::{
-        Basis, BootEntry, Extent, FirmwareFacts, Shrink, StagedPartition,
-    };
+    use crate::backend::plan::{Basis, BootEntry, Extent, FirmwareFacts, Shrink, StagedPartition};
+    use crate::backend::platform::{Disk, SystemVolume};
+    use crate::backend::{BOOT_ENTRY_DESCRIPTION, MIN_TARGET_BYTES};
     use crate::setup::staging::probe::Blocker;
-    use crate::setup::staging::{BOOT_ENTRY_DESCRIPTION, MIN_TARGET_BYTES};
-    use imager_backend::platform::{Disk, SystemVolume};
 
     pub(in crate::setup) fn basis() -> Basis {
         Basis {
@@ -1176,7 +1176,8 @@ pub(super) mod fixture {
 pub(super) mod tests {
     use super::fixture::{basis, facts, fake_bounds, fake_plan};
     use super::*;
-    use crate::setup::staging::record::{OriginalFirmware, StepEntry, StepState};
+    use crate::backend::staging::protocol::{StepEntry, StepState};
+    use crate::setup::staging::record::OriginalFirmware;
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

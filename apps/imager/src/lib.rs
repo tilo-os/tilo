@@ -17,6 +17,7 @@
     clippy::match_wildcard_for_single_variants,
     clippy::missing_const_for_thread_local,
     clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
     clippy::needless_continue,
     clippy::needless_lifetimes,
     clippy::needless_option_as_deref,
@@ -26,10 +27,12 @@
     clippy::or_fun_call,
     clippy::panic_in_result_fn,
     clippy::redundant_closure_for_method_calls,
+    clippy::result_unit_err,
     clippy::semicolon_if_nothing_returned,
     clippy::significant_drop_tightening,
     clippy::similar_names,
     clippy::struct_excessive_bools,
+    clippy::struct_field_names,
     clippy::suspicious_operation_groupings,
     clippy::too_many_lines,
     clippy::type_complexity,
@@ -61,7 +64,7 @@
     clippy::cast_precision_loss,
     clippy::cast_sign_loss,
     clippy::cast_possible_wrap,
-    reason = "app-local arithmetic; see the note above"
+    reason = "app-local arithmetic of the installer"
 )]
 #![cfg_attr(
     test,
@@ -73,6 +76,7 @@
 )]
 
 pub mod app;
+pub mod backend;
 mod contents;
 pub mod customize;
 pub mod customize_image;

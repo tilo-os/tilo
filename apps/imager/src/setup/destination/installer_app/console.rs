@@ -1,6 +1,6 @@
 //! The console endpoints the installer answers while it runs headless or unattended.
 
-use imager_backend::destination::console::{self as console_control, ConsoleApp};
+use crate::backend::destination::console::{self as console_control, ConsoleApp};
 use serde_json::{Value, json};
 use ui::tilo_actions::{ActionAddress, ActionFailure, EncodedAction, Exports as _, ResourceSpec};
 

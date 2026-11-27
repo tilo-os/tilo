@@ -1,9 +1,9 @@
 //! Readiness of the machine: facts plus blockers with stable IDs. Unprivileged where the platform
 //! allows; the helper re-probes before mutating.
 
-use super::plan::{PlanError, Requirements};
+use crate::backend::plan::{PlanError, Requirements};
 
-pub use imager_backend::model::{Blocker, HostFacts};
+pub use crate::backend::model::{Blocker, HostFacts};
 
 /// Probe this machine. Never mutates; safe to call from the UI thread's worker.
 ///
@@ -11,7 +11,7 @@ pub use imager_backend::model::{Blocker, HostFacts};
 /// [`add_shared_blockers`] are added here for both; `InsufficientSpace`
 /// needs bundle sizes and comes from [`space_blocker`].
 pub fn probe() -> HostFacts {
-    let mut facts = imager_backend::staging::probe_host();
+    let mut facts = crate::backend::staging::probe_host();
     add_shared_blockers(&mut facts);
     facts
 }
@@ -30,8 +30,8 @@ pub fn probe_target(text: &str) -> Result<HostFacts, String> {
     }
     #[cfg(target_os = "linux")]
     {
-        let target = super::TargetDisk::parse(text)?;
-        let mut facts = imager_backend::linux::probe_target(&target)?;
+        let target = crate::backend::staging::TargetDisk::parse(text)?;
+        let mut facts = crate::backend::linux::probe_target(&target)?;
         add_shared_blockers(&mut facts);
         Ok(facts)
     }
@@ -48,7 +48,7 @@ pub fn add_shared_blockers(facts: &mut HostFacts) {
         }
         let pending = super::helper::pending_records();
         if pending.iter().any(|r| {
-            super::same_guid(&r.plan.basis.disk.guid, &basis.disk.guid)
+            crate::backend::same_guid(&r.plan.basis.disk.guid, &basis.disk.guid)
                 && r.status() == super::record::RecordStatus::InProgress
         }) {
             found.push(Blocker::PendingOperation);
@@ -64,7 +64,7 @@ pub fn add_shared_blockers(facts: &mut HostFacts) {
 
 pub fn space_blocker(facts: &HostFacts, requirements: Requirements) -> Option<Blocker> {
     let basis = facts.basis.as_ref()?;
-    match super::plan::target_bounds(basis, requirements) {
+    match crate::backend::plan::target_bounds(basis, requirements) {
         Ok(_) => None,
         Err(PlanError::InsufficientSpace { .. }) => Some(Blocker::InsufficientSpace),
         Err(PlanError::Unsupported(_)) => Some(Blocker::DiskUnsupported),
@@ -80,7 +80,7 @@ mod tests {
 
         phase non_uefi_preparation_geometry_does_not_offer_installation;
         {
-            use super::super::plan;
+            use crate::backend::plan;
             let mut basis = plan::tests::linux_basis(512, 64 << 30, Vec::new());
             basis.firmware.uefi = false;
             basis.firmware.secure_boot = false;
@@ -112,7 +112,7 @@ mod tests {
         phase staging_offer_blockers_and_remedies_follow_planner_bounds;
         {
             {
-                let basis = super::super::plan::tests::linux_basis(512, 256 << 30, Vec::new());
+                let basis = crate::backend::plan::tests::linux_basis(512, 256 << 30, Vec::new());
                 let mut facts = HostFacts {
                     basis: Some(basis),
                     bitlocker_protected: false,
@@ -127,7 +127,7 @@ mod tests {
             }
 
             {
-                let small = super::super::plan::tests::linux_basis(512, 60 << 30, Vec::new());
+                let small = crate::backend::plan::tests::linux_basis(512, 60 << 30, Vec::new());
                 let facts = HostFacts {
                     basis: Some(small),
                     bitlocker_protected: false,
@@ -140,7 +140,7 @@ mod tests {
                 };
                 assert_eq!(space_blocker(&facts, r), Some(Blocker::InsufficientSpace));
                 let big = HostFacts {
-                    basis: Some(super::super::plan::tests::linux_basis(
+                    basis: Some(crate::backend::plan::tests::linux_basis(
                         512,
                         200 << 30,
                         Vec::new(),

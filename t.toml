@@ -143,7 +143,7 @@ unify = "workspace-unify"
 # the two whose tests need a disk of their own (`imager-tests-<arch>`, VM steps).
 exclude = [
     "app-catalogue", "app-cli", "compat-service", "env-tools", "tilo-fs-native",
-    "imager", "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
+    "imager", "install", "launcher", "launcher-macos", "local-model-service",
     "tilo-runtime-bundle", "tilo-agent-session",
     "tilo-app-builder", "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox",
     "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
@@ -332,7 +332,7 @@ unify = "workspace-unify"
 trailing = ["-D", "warnings"]
 exclude = [
     "app-catalogue", "app-cli", "compat-service", "env-tools", "tilo-fs-native", "imager",
-    "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
+    "install", "launcher", "launcher-macos", "local-model-service",
     "tilo-runtime-bundle", "tilo-agent-session", "tilo-app-builder",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
     "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
@@ -367,7 +367,7 @@ unify = "workspace-unify"
 trailing = ["-D", "warnings"]
 packages = [
     "app-catalogue", "app-cli", "compat-service", "env-tools", "tilo-fs-native", "imager",
-    "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
+    "install", "launcher", "launcher-macos", "local-model-service",
     "tilo-runtime-bundle", "tilo-agent-session", "tilo-app-builder",
     "tilo-environment", "tilo-liveness", "tilo-oci-images", "tilo-sandbox", "tilo-sandbox-core",
     "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush", "windows-vm",
@@ -413,7 +413,7 @@ tool = "clippy"
 args = ["--locked", "--all-targets"]
 trailing = ["-D", "warnings"]
 packages = [
-    "tilo-collaboration", "imager", "imager-backend", "tilo-crypto", "tilo-model-gateway", "tilo-net",
+    "tilo-collaboration", "imager", "tilo-crypto", "tilo-model-gateway", "tilo-net",
     "tilo-test-env",
 ]
 
@@ -438,7 +438,7 @@ args = ["--locked", "--all-targets"]
 unify = "workspace-unify"
 exclude = [
     "app-catalogue", "app-cli", "compat-service", "env-tools", "tilo-fs-native", "imager",
-    "imager-backend", "install", "launcher", "launcher-macos", "local-model-service",
+    "install", "launcher", "launcher-macos", "local-model-service",
     "tilo-runtime-bundle", "tilo-agent-session", "tilo-app-builder",
     "tilo-environment", "tilo-liveness", "tilo-messaging-protocol", "tilo-oci-images",
     "tilo-sandbox", "tilo-sandbox-core", "tilo-device-steps", "tilolang-cli", "tilolang-tilo", "ush",
@@ -1909,7 +1909,7 @@ arch = ["x86_64", "aarch64"]
 name = "imager-tests-build-{arch}"
 on = ["idle", "stable"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# nextest keeps its store at the repository's target/nextest unless told otherwise, and the\n# sources are read-only: a tool config moves it into the build directory.\nprintf '[store]\\ndir = \"%s/nextest\"\\n' \"$CARGO_TARGET_DIR\" > \"$CARGO_TARGET_DIR/vm/nextest-store.toml\"\ncargo nextest archive --locked --profile ci --tests -p imager -p imager-backend -p workspace-unify \\\n  --tool-config-file \"t:$CARGO_TARGET_DIR/vm/nextest-store.toml\" \\\n  --archive-file \"$CARGO_TARGET_DIR/vm/imager-tests-{arch}.tar.zst\"\n"
+run = "set -eu\nmkdir -p \"$CARGO_TARGET_DIR/vm\"\n# nextest keeps its store at the repository's target/nextest unless told otherwise, and the\n# sources are read-only: a tool config moves it into the build directory.\nprintf '[store]\\ndir = \"%s/nextest\"\\n' \"$CARGO_TARGET_DIR\" > \"$CARGO_TARGET_DIR/vm/nextest-store.toml\"\ncargo nextest archive --locked --profile ci --tests -p imager -p workspace-unify \\\n  --tool-config-file \"t:$CARGO_TARGET_DIR/vm/nextest-store.toml\" \\\n  --archive-file \"$CARGO_TARGET_DIR/vm/imager-tests-{arch}.tar.zst\"\n"
 requires = ["arch={arch}"]
 outputs = ["/target/vm/imager-tests-{arch}.tar.zst"]
 [check.matrix]

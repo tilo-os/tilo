@@ -28,7 +28,7 @@ downloads it. Two rules hold for its dependency graph:
   the runtime, and a Rust dylib exports only Rust symbols. rustc then leaves
   the crate and its ``-l static=`` library off every app's link, so an app
   whose own code calls the C functions (rusqlite's ``#[inline]`` statement
-  API, instantiated in imager-backend and sheets) cannot link. Every
+  API, instantiated in the imager and sheets) cannot link. Every
   C-library crate in the runtime (``*-sys`` or one declaring Cargo's
   ``links``) is classified below; a new one fails until it is, and a library
   apps call themselves stays out of the runtime.

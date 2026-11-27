@@ -1463,7 +1463,6 @@ inputs = [
   "crates/lang/tilolang-process/",
   "crates/lang/tilolang-tilo/",
   "crates/integrations/account-probe/",
-  "crates/os/imager-backend/",
   "crates/integrations/mail-engine/",
   "crates/integrations/mail-session/",
   "crates/core/tilo-contact-directory/",
@@ -1600,7 +1599,13 @@ readers = [
 [[cargo]]
 package = "imager"
 inputs = [
+  "keys/tpm2-pcr-signing.public.pem",
+  "os/usr/libexec/tilo-firstboot-user",
   "crates/os/block-devices/tests/fixtures/imager.json",
+  "crates/os/block-devices/tests/fixtures/installer.json",
+  "crates/os/block-devices/tests/fixtures/sfdisk.json",
+  "apps/imager/tests/fixtures/lsblk-targets.json",
+  "apps/imager/tests/fixtures/lsblk-disks.txt",
   "os/usr/libexec/tilo-guided-partition", "os/usr/share/tilo/install-sizes",
   "dist/session/tilo.desktop", "dist/session/tilo-session", "dist/session/tilo-session-runner",
   "os/tests/fixtures/internal-bundle-v2.json", "os/usr/libexec/tilo-installer-profile-extract",
@@ -1609,22 +1614,9 @@ inputs = [
 readers = [
   "apps/imager/src/setup/desktop_install.rs",
   "apps/imager/src/setup/internal_bundle.rs", "apps/imager/src/write.rs",
-]
-
-[[cargo]]
-package = "imager-backend"
-inputs = [
-  "keys/tpm2-pcr-signing.public.pem",
-  "os/usr/libexec/tilo-firstboot-user",
-  "crates/os/block-devices/tests/fixtures/imager.json",
-  "apps/imager/tests/fixtures/lsblk-targets.json",
-  "crates/os/block-devices/tests/fixtures/installer.json",
-  "crates/os/block-devices/tests/fixtures/sfdisk.json",
-]
-readers = [
-  "crates/os/imager-backend/src/destination/disks.rs",
-  "crates/os/imager-backend/src/linux_parse.rs",
-  "crates/os/imager-backend/src/probe.rs",
+  "apps/imager/src/backend/destination/disks.rs",
+  "apps/imager/src/backend/linux_parse.rs",
+  "apps/imager/src/backend/probe.rs",
 ]
 
 [[cargo]]

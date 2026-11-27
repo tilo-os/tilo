@@ -1,8 +1,8 @@
 use super::*;
+use crate::backend::test_support::isolated;
 use crate::setup::{
     internal_bundle,
     internal_download::tests::{Server, response},
-    test_support::isolated,
 };
 use std::io::Read;
 

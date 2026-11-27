@@ -190,16 +190,16 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
     let Some(basis) = probed.basis.as_ref().filter(|_| blockers.is_empty()) else {
         return Err(Failure::Blocked(json!({"ok": false, "blockers": blockers})));
     };
-    let mut plan = super::plan::compute(basis, facts.requirements(target))
-        .map(|p| super::plan::with_loader_path(p, &facts.efi_path))
+    let mut plan = crate::backend::plan::compute(basis, facts.requirements(target))
+        .map(|p| crate::backend::plan::with_loader_path(p, &facts.efi_path))
         .map_err(|e| {
             Failure::Plan(match e {
-                super::plan::PlanError::InsufficientSpace {
+                crate::backend::plan::PlanError::InsufficientSpace {
                     needed_bytes,
                     available_bytes,
                 } => json!({"ok": false, "plan_error": "insufficient-space",
                     "needed_bytes": needed_bytes, "available_bytes": available_bytes}),
-                super::plan::PlanError::Unsupported(m) => {
+                crate::backend::plan::PlanError::Unsupported(m) => {
                     json!({"ok": false, "plan_error": "unsupported", "message": m})
                 }
             })
@@ -224,12 +224,14 @@ fn build(args: &Args) -> Result<(Request, serde_json::Value), Failure> {
     if let Some(target) = &args.disk {
         // The plan's disk handle is the identity the helper resolves again;
         // a `/dev` name means nothing in another namespace or boot.
-        let identity = super::TargetDisk::parse(target).map_err(other)?.to_string();
+        let identity = crate::backend::staging::TargetDisk::parse(target)
+            .map_err(other)?
+            .to_string();
         plan.basis.disk.id = identity;
     }
     let request = Request {
         schema: helper::REQUEST_SCHEMA,
-        operation_id: super::random_guid(),
+        operation_id: crate::backend::random_guid(),
         action,
         release: ReleaseRef {
             release_id: facts.release_id.clone(),

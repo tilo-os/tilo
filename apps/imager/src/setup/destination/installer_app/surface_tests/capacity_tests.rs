@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
         assert!(summary.contains("remains unused"), "{summary}");
         let opts = app.install_options();
         let command =
-            imager_backend::destination::install::install_command("/dev/sda", "person", &opts);
+            crate::backend::destination::install::install_command("/dev/sda", "person", &opts);
         let args = command
             .get_args()
             .map(|a| a.to_str().unwrap())

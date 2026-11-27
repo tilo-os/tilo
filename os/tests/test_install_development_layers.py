@@ -8,7 +8,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "os/usr/libexec/tilo-install"
-STAGING = ROOT / "crates/os/imager-backend/src/staging/layout.rs"
+STAGING = ROOT / "apps/imager/src/backend/staging/layout.rs"
 
 STUBS = """\
 die() { printf 'die: %s\\n' "$*" >&2; exit 91; }

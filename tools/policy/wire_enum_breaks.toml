@@ -413,11 +413,6 @@ enum = "RefusalReason"
 reason = "renames NotACustodian to NotAKeyHolder in place: both devices of an unlock speak one build's format"
 
 [[break]]
-file = "crates/os/imager-backend/src/home_transfer/promotion.rs"
-enum = "Kind"
-reason = "renames InactiveCustody to InactiveOwnership in place: stored formats change with the code and nothing written before is read"
-
-[[break]]
 file = "crates/core/tilo-server-protocol/src/transport.rs"
 enum = "Envelope"
 reason = "the content-refused envelope goes with the content budget it reported, and content is no longer budgeted; it is a live frame on a device's session, never stored, and the peer protocol version is bumped from 52 to 53 with its removal, so a device at another version admits nothing from this one"
@@ -584,11 +579,6 @@ reason = "tagged by name, not position: the remaining actions read as before, an
 file = "crates/desktop/network-actor/src/fabric/model.rs"
 enum = "PersonalFabricAction"
 reason = "sent between a person's devices as it happens and never kept; every device updates together, so no build reads another's numbering"
-
-[[break]]
-file = "crates/os/imager-backend/src/account_sources/mod.rs"
-enum = "Provider"
-reason = "the installer's private discovery, review and handoff values live in one running install and are never read by another build: the deferred journal is bound to the install plan it was written for and every account is re-discovered before it is imported, so no bytes are kept"
 
 [[break]]
 file = "crates/core/tilo-fs-client/src/cloud.rs"

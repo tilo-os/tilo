@@ -3,8 +3,8 @@
 use tilo_ui_base::icons::Icon;
 use ui::widget::ListRow;
 
+use crate::backend::destination::disks::Disk;
 use crate::setup::destination::control::{Bound, Control};
-use imager_backend::destination::disks::Disk;
 
 pub fn capacity(disk: &Disk) -> String {
     if disk.size_bytes > 0 {
@@ -21,7 +21,7 @@ pub fn too_small() -> String {
         &[(
             "minimum",
             tilo_ui_base::i18n::ArgValue::Text(tilo_ui_base::format::memory(
-                imager_backend::MIN_TARGET_BYTES,
+                crate::backend::MIN_TARGET_BYTES,
             )),
         )],
     )
@@ -271,7 +271,7 @@ mod tests {
         {
             let mut target = disk();
             target.is_system = true;
-            target.internal_plan = Some(imager_backend::destination::disks::GuidedAlongsidePlan {
+            target.internal_plan = Some(crate::backend::destination::disks::GuidedAlongsidePlan {
                 free_start_bytes: 1 << 30,
                 free_size_bytes: 35 << 30,
                 efi_start_bytes: 1 << 30,

@@ -94,7 +94,7 @@ class PackageSetsTests(unittest.TestCase):
             "tilo-sandbox-core": "seccompiler target",
             "windows-vm": "the guest architecture",
             "local-model-service": "CMAKE_SYSTEM_PROCESSOR, the AOT CPU check",
-            "imager-backend": "capture build --arch",
+            "imager": "the EFI loader path by target architecture",
             "launcher": "seccomp in tests",
             "tilo-app-builder": "the other architecture in tests",
         }

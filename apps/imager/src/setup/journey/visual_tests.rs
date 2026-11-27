@@ -388,7 +388,7 @@ pub(super) fn body_scroll_geometry(root: &mut dyn Widget) -> Option<(vello::kurb
 #[test]
 #[cfg(unix)]
 fn resizing_or_changing_host_scale_discards_old_transition_geometry() {
-    let ownership = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::backend::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", ownership.path().join("state"));
     environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
@@ -448,7 +448,7 @@ fn resizing_or_changing_host_scale_discards_old_transition_geometry() {
 #[test]
 #[cfg(unix)]
 fn destination_discloses_usb_route_before_the_install_questions() {
-    let ownership = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::backend::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", ownership.path().join("state"));
     environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
@@ -494,7 +494,7 @@ fn destination_discloses_usb_route_before_the_install_questions() {
 #[test]
 #[cfg(unix)]
 fn unavailable_guided_host_paints_honest_state_and_refuses_semantic_navigation() {
-    let ownership = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::backend::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", ownership.path().join("state"));
     environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
@@ -550,7 +550,7 @@ fn unavailable_guided_host_paints_honest_state_and_refuses_semantic_navigation()
 #[test]
 #[cfg(unix)]
 fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
-    let ownership = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::backend::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", ownership.path().join("state"));
     environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
@@ -596,7 +596,7 @@ fn missing_direct_preparation_stays_disabled_and_refuses_installation() {
 #[test]
 #[cfg(unix)]
 fn semantic_validation_error_matches_inline_feedback_and_survives_read_preview() {
-    let ownership = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::backend::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", ownership.path().join("state"));
     environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
@@ -697,7 +697,7 @@ fn semantic_validation_error_matches_inline_feedback_and_survives_read_preview()
 #[test]
 #[cfg(unix)]
 fn password_mismatch_marks_confirmation_and_uses_shared_field_feedback() {
-    let ownership = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::backend::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", ownership.path().join("state"));
     environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
@@ -763,7 +763,7 @@ fn password_mismatch_marks_confirmation_and_uses_shared_field_feedback() {
 #[test]
 #[cfg(unix)]
 fn password_policy_feedback_explains_the_actual_requirement_through_public_effects() {
-    let ownership = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::backend::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", ownership.path().join("state"));
     environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
@@ -887,7 +887,7 @@ fn compact_password_submission_keeps_feedback_readable_at_200_percent() {
 
 #[cfg(unix)]
 fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
-    let ownership = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::backend::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", ownership.path().join("state"));
     environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
@@ -1307,7 +1307,7 @@ fn password_route_keeps_disabled_continue_and_real_back_in_every_frame() {
             node.name.as_deref() == Some(t("installer-preview-password-hint").as_str())
         }) || root.children().into_iter().any(has_guidance)
     }
-    let ownership = crate::setup::test_support::qualified_tempdir();
+    let ownership = crate::backend::test_support::qualified_tempdir();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_STATE_HOME", ownership.path().join("state"));
     environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));

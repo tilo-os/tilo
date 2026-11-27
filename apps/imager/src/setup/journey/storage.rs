@@ -1,7 +1,8 @@
 //! Read-only host inspection and the existing staging planner. No helper writes.
 use std::sync::mpsc::{self, Receiver};
 
-use super::super::staging::{self, plan, probe};
+use super::super::staging::{self, probe};
+use crate::backend::plan;
 
 pub(super) struct Storage {
     pub facts: Option<probe::HostFacts>,
@@ -91,7 +92,7 @@ impl Storage {
                 .and_then(|bounds| {
                     let min = bounds
                         .min_bytes
-                        .max(staging::MIN_TARGET_BYTES)
+                        .max(crate::backend::MIN_TARGET_BYTES)
                         .div_ceil(1 << 30);
                     let max = bounds.max_bytes >> 30;
                     (min <= max).then_some((min, max))
@@ -123,15 +124,15 @@ impl Storage {
             .and_then(|facts| facts.basis.as_ref())
             .map(|basis| {
                 let selected = self.selected << 30;
-                if selected < staging::MIN_TARGET_BYTES {
+                if selected < crate::backend::MIN_TARGET_BYTES {
                     Err(plan::PlanError::InsufficientSpace {
-                        needed_bytes: staging::MIN_TARGET_BYTES,
+                        needed_bytes: crate::backend::MIN_TARGET_BYTES,
                         available_bytes: selected,
                     })
                 } else {
                     let requirements = requirements(selected);
                     let plan = plan::compute(basis, requirements)?;
-                    imager_backend::plan::admit_reviewed(&plan, requirements)?;
+                    crate::backend::plan::admit_reviewed(&plan, requirements)?;
                     Ok(plan)
                 }
             });
@@ -148,7 +149,7 @@ impl Storage {
             })?
             .as_ref()
             .map_err(Clone::clone)?;
-        imager_backend::plan::admit_reviewed(plan, requirements(self.selected << 30))
+        crate::backend::plan::admit_reviewed(plan, requirements(self.selected << 30))
     }
 
     pub fn selected(&self) -> u64 {
@@ -157,7 +158,7 @@ impl Storage {
 
     /// Captures use a partitioned disk and the production planner, never host I/O.
     pub fn stage(&mut self) {
-        use imager_backend::platform::{Disk, Partition};
+        use crate::backend::platform::{Disk, Partition};
         self.accept(probe::HostFacts {
             basis: Some(plan::Basis {
                 linux_btrfs_volume: None,

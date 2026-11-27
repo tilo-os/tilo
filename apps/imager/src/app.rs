@@ -326,7 +326,7 @@ impl ImagerApp {
                 let reference = reference.unwrap_or_else(|| std::path::PathBuf::from(&name));
                 let mut file = file.into_std();
                 if let Some(source) =
-                    imager_backend::probe::inspect_source_file(&mut file, &reference)
+                    crate::backend::probe::inspect_source_file(&mut file, &reference)
                 {
                     app.source_file = Some((source.id(), std::sync::Arc::new(file)));
                     app.select_source(&source);
@@ -413,7 +413,7 @@ impl ImagerApp {
         }
         // An official image also carries the install profile block at the drive's tail.
         let profile = if self.source_is_official(source) {
-            imager_backend::media_model::PROFILE_BLOCK_SIZE as u64
+            crate::backend::media_model::PROFILE_BLOCK_SIZE as u64
         } else {
             0
         };
@@ -671,7 +671,7 @@ impl ImagerApp {
         self.progress.phase == JobPhase::Success
             && !self.ejected
             && self.target().is_some()
-            && imager_backend::write::can_eject()
+            && crate::backend::write::can_eject()
     }
 
     fn source_listed(&self, source: &Source) -> bool {
@@ -1325,7 +1325,7 @@ impl ImagerApp {
         };
         let reference = chosen.reference().to_path_buf();
         let mut file = chosen.into_file().into_std();
-        if let Some(source) = imager_backend::probe::inspect_source_file(&mut file, &reference) {
+        if let Some(source) = crate::backend::probe::inspect_source_file(&mut file, &reference) {
             self.source_file = Some((source.id(), std::sync::Arc::new(file)));
             self.select_source(&source);
             Ok(Effected::done())
@@ -1919,7 +1919,7 @@ impl ImagerApp {
         let Some(target) = self.target().cloned() else {
             return;
         };
-        match imager_backend::write::eject_target(&target) {
+        match crate::backend::write::eject_target(&target) {
             Ok(()) => {
                 self.status_is_error = false;
                 self.set_status(&crate::setup::strings::t_args(
@@ -1968,7 +1968,7 @@ impl ImagerApp {
     }
     fn do_rescan(&mut self) -> bool {
         if self.live {
-            let Some(found) = imager_backend::probe::probe() else {
+            let Some(found) = crate::backend::probe::probe() else {
                 self.set_status(&crate::setup::strings::t("imager-rescan-failed"));
                 self.dirty = true;
                 return false;
@@ -2329,7 +2329,7 @@ impl ImagerApp {
             Command::PickFile => {
                 self.port.presses().press(ImagerEffect::ChooseImage);
             }
-            Command::Dropped(path) => match imager_backend::probe::inspect_source(&path) {
+            Command::Dropped(path) => match crate::backend::probe::inspect_source(&path) {
                 Some(source) => self.select_source(&source),
                 None => self.fail(&crate::setup::strings::t("imager-image-unreadable")),
             },
@@ -2428,7 +2428,7 @@ impl Widget for ImagerApp {
         self.take_window_toolbar_events();
         if !self.seeded {
             if self.live {
-                self.targets = imager_backend::probe::probe().unwrap_or_default();
+                self.targets = crate::backend::probe::probe().unwrap_or_default();
             }
             if self.live {
                 self.reconcile_persisted_write_state();

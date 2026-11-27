@@ -7,9 +7,9 @@ use std::sync::Mutex;
 use serde_json::{Value, json};
 
 use super::*;
+use crate::backend::destination::disks::LINUX_FILESYSTEM_GUID;
 use crate::setup::destination::effects::{DestinationEffect, STORAGE, reviewed_digest};
 use automerge::AutoCommit;
-use imager_backend::destination::disks::LINUX_FILESYSTEM_GUID;
 use tilo_action_line::frame_line;
 use tilo_resource::Effect as _;
 use ui::tilo_actions::remote::{
@@ -107,7 +107,7 @@ fn app(backend: &Arc<FakeBackend>) -> (InstallerApp, AutoCommit) {
 
 /// The installer's answer to one console line, as an endpoint gives it.
 fn exchange(app: &mut InstallerApp, line: &str) -> Value {
-    let console = imager_backend::destination::console::ConsoleServer::new(
+    let console = crate::backend::destination::console::ConsoleServer::new(
         crate::setup::destination::effects::PROVIDER,
     );
     serde_json::from_str(&console.exchange(&mut Console(app), line)).unwrap()
@@ -345,8 +345,8 @@ tilo_test_env::scenario! {
         }
         {
             let backend = Arc::new(FakeBackend {
-                disks: imager_backend::destination::disks::parse_lsblk(
-                    &imager_backend::destination::internal_handoff::tests::lsblk_json().to_string(),
+                disks: crate::backend::destination::disks::parse_lsblk(
+                    &crate::backend::destination::internal_handoff::tests::lsblk_json().to_string(),
                 ),
                 installs: Mutex::new(Vec::new()),
                 power: Mutex::new(Vec::new()),
@@ -354,7 +354,7 @@ tilo_test_env::scenario! {
             });
             let (mut app, mut doc) = app(&backend);
             app.refresh_disks_with(backend.read_disks());
-            app.apply_internal_handoff(imager_backend::destination::internal_handoff::tests::handoff());
+            app.apply_internal_handoff(crate::backend::destination::internal_handoff::tests::handoff());
             let doc = &mut doc;
             app.step = Step::Disk;
             let device = app.disks[0].name.clone();

@@ -41,7 +41,7 @@ use tilo_ui_base::LocalState;
 #[derive(Clone)]
 pub(crate) struct FullOsCheck {
     pub facts: super::staging::probe::HostFacts,
-    pub plan: super::staging::plan::Plan,
+    pub plan: crate::backend::plan::Plan,
 }
 
 type WorkerTask = Box<dyn FnOnce() + Send + 'static>;
@@ -179,10 +179,10 @@ impl SetupApp {
 
     #[must_use]
     pub fn new() -> Self {
-        let host = match imager_backend::setup::native_host::host() {
-            imager_backend::setup::native_host::Host::Linux => HostOs::Linux,
-            imager_backend::setup::native_host::Host::Windows => HostOs::Windows,
-            imager_backend::setup::native_host::Host::Other => HostOs::Other,
+        let host = match crate::backend::setup::native_host::host() {
+            crate::backend::setup::native_host::Host::Linux => HostOs::Linux,
+            crate::backend::setup::native_host::Host::Windows => HostOs::Windows,
+            crate::backend::setup::native_host::Host::Other => HostOs::Other,
         };
         let capabilities = SetupCapabilities {
             platform: Capabilities {
@@ -1633,7 +1633,7 @@ impl SetupApp {
         });
         let summary = match plan {
             None => t("imager-setup-internal-plan-checking"),
-            Some(Err(super::staging::plan::PlanError::InsufficientSpace {
+            Some(Err(crate::backend::plan::PlanError::InsufficientSpace {
                 needed_bytes,
                 available_bytes,
             })) => t_args(
@@ -1646,7 +1646,7 @@ impl SetupApp {
                     ),
                 ],
             ),
-            Some(Err(super::staging::plan::PlanError::Unsupported(detail))) => t_args(
+            Some(Err(crate::backend::plan::PlanError::Unsupported(detail))) => t_args(
                 "imager-setup-internal-plan-error-other",
                 &[("detail", detail.into())],
             ),

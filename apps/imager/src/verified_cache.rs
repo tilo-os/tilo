@@ -202,7 +202,7 @@ impl Cache {
             return Err(mismatch());
         }
         file.seek(SeekFrom::Start(0))?;
-        let digest = imager_backend::write::hash_source_exact(
+        let digest = crate::backend::write::hash_source_exact(
             file,
             size,
             &|| cancel.load(Ordering::Acquire),

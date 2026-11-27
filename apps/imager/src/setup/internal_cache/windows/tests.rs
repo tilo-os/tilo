@@ -53,8 +53,8 @@ fn windows_aces_and_names_are_strict_lossless_and_bounded() {
 #[cfg(windows)]
 mod native {
     use super::super::{native::fixture_acquire, *};
+    use crate::backend::test_support::isolated;
     use crate::setup::internal_cache::layout;
-    use crate::setup::test_support::isolated;
     use crate::{
         release::InternalRelease,
         setup::{

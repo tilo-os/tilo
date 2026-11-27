@@ -149,7 +149,7 @@ impl Worker {
         + Send
         + 'static,
     ) -> Result<Self, String> {
-        imager_backend::cache::ensure_supported()?;
+        crate::backend::cache::ensure_supported()?;
         Self::spawn_with(InternalTransport::new()?, consumer)
     }
     fn spawn_with(
@@ -440,7 +440,7 @@ fn run_selected(
         &mut dyn HeldReadSeek,
     ) -> Result<(), String>,
 ) -> Result<(), String> {
-    imager_backend::cache::unsupported()
+    crate::backend::cache::unsupported()
 }
 
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
@@ -666,5 +666,5 @@ fn unsupported_host_refuses_worker_before_transport_or_consumer() {
         Err(error) => error,
         Ok(_) => panic!("unsupported cache must not start a worker"),
     };
-    assert_eq!(Err::<(), _>(error), imager_backend::cache::unsupported());
+    assert_eq!(Err::<(), _>(error), crate::backend::cache::unsupported());
 }

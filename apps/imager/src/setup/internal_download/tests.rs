@@ -1,5 +1,5 @@
 use super::*;
-use crate::setup::test_support::isolated;
+use crate::backend::test_support::isolated;
 use test_http::Responder;
 fn manifest() -> Vec<u8> {
     super::super::internal_bundle::tests::bytes(&super::super::internal_bundle::tests::fixture())

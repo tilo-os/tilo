@@ -1,6 +1,6 @@
 //! Validating the internal installer's manifest, and the views over what it bound.
 
-use super::staging::STAGING_ROOT_TYPE;
+use crate::backend::staging::STAGING_ROOT_TYPE;
 use serde::Deserialize;
 
 pub const MAX_MANIFEST_BYTES: usize = 65_536;
@@ -143,8 +143,8 @@ pub struct BundleFacts {
 }
 
 impl BundleFacts {
-    pub fn requirements(&self, target_bytes: u64) -> super::staging::plan::Requirements {
-        super::staging::plan::Requirements {
+    pub fn requirements(&self, target_bytes: u64) -> crate::backend::plan::Requirements {
+        crate::backend::plan::Requirements {
             staging_esp_bytes: self.esp.minimum_partition_bytes,
             staging_root_bytes: self.root.minimum_partition_bytes,
             target_bytes,

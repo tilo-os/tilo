@@ -280,7 +280,7 @@ mod transaction_core {
             .mode(0o600)
             .open(&path)
             .map_err(|_| "Cannot create private package.")?;
-        let digest = imager_backend::write::copy_source_exact(
+        let digest = crate::backend::write::copy_source_exact(
             &mut pinned,
             &mut output,
             release.byte_size,
@@ -304,7 +304,7 @@ mod transaction_core {
     }
 
     fn verify_bytes(mut input: File, release: &DesktopRelease) -> Result<(), String> {
-        let digest = imager_backend::write::hash_source_exact(
+        let digest = crate::backend::write::hash_source_exact(
             &mut input,
             release.byte_size,
             &|| false,

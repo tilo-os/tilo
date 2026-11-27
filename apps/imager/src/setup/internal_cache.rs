@@ -37,7 +37,7 @@ pub(in crate::setup) fn final_component_path(
     #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = component;
-        imager_backend::cache::unsupported()
+        crate::backend::cache::unsupported()
     }
 }
 

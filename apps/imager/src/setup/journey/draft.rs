@@ -4,8 +4,8 @@
 //! Only choices live here. A password, a confirmation, a ticket or anything
 //! else secret is never written: the format has nowhere to put one.
 
+use crate::backend::record::read_bounded;
 use hardware_report::SupportReport;
-use imager_backend::record::read_bounded;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

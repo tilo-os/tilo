@@ -26,8 +26,6 @@ NATIVE_TEST_FEATURES = {
     # and lints cover the guided installation as the host downloads ship it,
     # and its destination side as the live installer medium ships it.
     "imager": ("installation", "destination"),
-    # Its tests and lints cover the live installer's platform half.
-    "imager-backend": ("destination",),
     "tilo-media": ("decode", "encode", "realtime", "voice", "test-support"),
     # The detector and the document scanner are what its own tests test: a rendered code
     # decodes only with `codes`, and the scanners' tests exist only with `scanner`. The
@@ -101,7 +99,6 @@ NATIVE_TEST_FEATURES = {
 DEFAULT_BUILDS_ALSO_CHECKED = (
     "tilo-collaboration",
     "imager",
-    "imager-backend",
     "tilo-crypto",
     "tilo-model-gateway",
     "tilo-net",

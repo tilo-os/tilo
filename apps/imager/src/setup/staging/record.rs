@@ -5,11 +5,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use super::plan::Plan;
+use crate::backend::plan::Plan;
 
 pub const SCHEMA: u32 = 1;
 
-pub use imager_backend::staging::protocol::{Step, StepEntry, StepState};
+use crate::backend::staging::protocol::{Step, StepEntry, StepState};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -82,7 +82,7 @@ fn now() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
-pub use imager_backend::staging::protocol::valid_operation_id;
+use crate::backend::staging::protocol::valid_operation_id;
 
 impl Record {
     pub fn new(
@@ -121,8 +121,8 @@ impl Record {
         self.step(step)?.detail.get(key)?.as_str()
     }
 
-    fn resize_key(phase: imager_backend::staging::btrfs_resize::Phase) -> (Step, &'static str) {
-        use imager_backend::staging::btrfs_resize::Phase;
+    fn resize_key(phase: crate::backend::staging::btrfs_resize::Phase) -> (Step, &'static str) {
+        use crate::backend::staging::btrfs_resize::Phase;
         match phase {
             Phase::ShrinkFilesystem => (Step::Shrink, "btrfs_shrink_filesystem"),
             Phase::ShrinkPartition => (Step::Shrink, "btrfs_shrink_partition"),
@@ -133,7 +133,7 @@ impl Record {
 
     pub(super) fn resize_checkpoint(
         &self,
-        phase: imager_backend::staging::btrfs_resize::Phase,
+        phase: crate::backend::staging::btrfs_resize::Phase,
     ) -> Result<Option<ResizeCheckpoint>, String> {
         let (step, key) = Self::resize_key(phase);
         self.step(step)
@@ -144,7 +144,7 @@ impl Record {
 
     pub(super) fn resize_intent(
         &mut self,
-        phase: imager_backend::staging::btrfs_resize::Phase,
+        phase: crate::backend::staging::btrfs_resize::Phase,
         bytes: u64,
     ) -> Result<(), String> {
         let (step, key) = Self::resize_key(phase);
@@ -174,7 +174,7 @@ impl Record {
 
     pub(super) fn resize_done(
         &mut self,
-        phase: imager_backend::staging::btrfs_resize::Phase,
+        phase: crate::backend::staging::btrfs_resize::Phase,
         bytes: u64,
     ) -> Result<(), String> {
         let (step, key) = Self::resize_key(phase);
@@ -204,10 +204,10 @@ impl Record {
 
     fn validate_resize_target(
         &self,
-        phase: imager_backend::staging::btrfs_resize::Phase,
+        phase: crate::backend::staging::btrfs_resize::Phase,
         bytes: u64,
     ) -> Result<(), String> {
-        use imager_backend::staging::btrfs_resize::Phase;
+        use crate::backend::staging::btrfs_resize::Phase;
         let shrink = self
             .plan
             .shrink
@@ -226,7 +226,7 @@ impl Record {
     }
 
     fn validate_resize_checkpoints(&self) -> Result<(), String> {
-        use imager_backend::staging::btrfs_resize::Phase;
+        use crate::backend::staging::btrfs_resize::Phase;
         for phase in [
             Phase::ShrinkFilesystem,
             Phase::ShrinkPartition,
@@ -336,7 +336,7 @@ pub struct RecordStore {
     pub require_privileged_owner: bool,
 }
 
-pub use imager_backend::staging::record_io::{public_dir, system_dir};
+use crate::backend::staging::record_io::{public_dir, system_dir};
 
 impl RecordStore {
     pub fn system() -> Result<Self, String> {
@@ -458,18 +458,17 @@ pub fn pending_in(dir: &Path) -> Vec<Record> {
     out
 }
 
-use imager_backend::staging::record_io::{read_bounded, secure};
+use crate::backend::staging::record_io::{read_bounded, secure};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setup::staging::plan;
 
     pub(crate) fn sample_record(id: &str) -> Record {
-        let basis = plan::tests::linux_basis(512, 256 << 30, Vec::new());
-        let plan = plan::compute(
+        let basis = crate::backend::plan::tests::linux_basis(512, 256 << 30, Vec::new());
+        let plan = crate::backend::plan::compute(
             &basis,
-            plan::Requirements {
+            crate::backend::plan::Requirements {
                 staging_esp_bytes: 600 << 20,
                 staging_root_bytes: 40 << 30,
                 target_bytes: 64 << 30,
@@ -495,7 +494,7 @@ mod tests {
 
     #[test]
     fn btrfs_resize_journal_requires_durable_order_and_preserves_retry_intent() {
-        use imager_backend::staging::btrfs_resize::Phase;
+        use crate::backend::staging::btrfs_resize::Phase;
         let temp = tempfile::tempdir().unwrap();
         let store = RecordStore {
             dir: temp.path().join("private"),
@@ -503,12 +502,12 @@ mod tests {
             require_privileged_owner: false,
         };
         let mut record = sample_record("btrfs-resize-fixture");
-        record.plan.shrink = Some(plan::Shrink {
+        record.plan.shrink = Some(crate::backend::plan::Shrink {
             partition_guid: "a".repeat(36),
             from_bytes: 128 << 30,
             to_bytes: 64 << 30,
         });
-        record.plan.basis.linux_btrfs_volume = Some(imager_backend::platform::LinuxBtrfsVolume {
+        record.plan.basis.linux_btrfs_volume = Some(crate::backend::platform::LinuxBtrfsVolume {
             partition_guid: "a".repeat(36),
             filesystem_uuid: "b".repeat(36),
             device_id: 1,
@@ -764,11 +763,11 @@ mod tests {
         #[cfg(all(feature = "destination", target_os = "linux"))]
         {
             let media =
-                imager_backend::destination::media_profile::validate_object(&loaded.profile)
+                crate::backend::destination::media_profile::validate_object(&loaded.profile)
                     .unwrap();
             assert!(media.hostname.is_none());
             assert!(media.repairs.contains(
-                &imager_backend::destination::media_profile::MediaProfileField::Hostname
+                &crate::backend::destination::media_profile::MediaProfileField::Hostname
             ));
         }
         assert!(super::super::handoff::validate_profile(&loaded.profile).is_ok());

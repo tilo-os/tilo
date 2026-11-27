@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use staging_handoff_model::StagedIdentity;
 pub use staging_handoff_model::{HANDOFF_FILE, pad_json};
 
-use super::plan::Plan;
+use crate::backend::plan::Plan;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -165,10 +165,10 @@ mod tests {
     use super::*;
 
     fn sample() -> Handoff {
-        let basis = super::super::plan::tests::linux_basis(
+        let basis = crate::backend::plan::tests::linux_basis(
             512,
             256 << 30,
-            vec![imager_backend::platform::Partition {
+            vec![crate::backend::platform::Partition {
                 number: 1,
                 guid: "22222222-2222-4222-8222-222222222222".into(),
                 type_guid: "0fc63daf-8483-4772-8e79-3d69d8477de4".into(),
@@ -176,9 +176,9 @@ mod tests {
                 last_lba: 1048575,
             }],
         );
-        let plan = super::super::plan::compute(
+        let plan = crate::backend::plan::compute(
             &basis,
-            super::super::plan::Requirements {
+            crate::backend::plan::Requirements {
                 staging_esp_bytes: 600 << 20,
                 staging_root_bytes: 40 << 30,
                 target_bytes: 64 << 30,
@@ -202,7 +202,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     fn parse_live(bytes: &[u8]) -> Result<serde_json::Value, String> {
-        imager_backend::test_support::parse_live_handoff(bytes)
+        crate::backend::test_support::parse_live_handoff(bytes)
     }
 
     #[cfg(target_os = "linux")]
