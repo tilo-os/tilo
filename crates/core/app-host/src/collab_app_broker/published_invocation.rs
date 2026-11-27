@@ -46,6 +46,16 @@ pub(super) enum InvocationCaller {
     /// it owns only the run and the steps the approval covers, rechecked at every admission.
     Shortcut(Box<super::shortcut_approval::ShortcutApproval>),
 }
+
+impl InvocationCaller {
+    /// Whether this invocation was the person's own press in an app's window
+    /// ([`AppBrokerState::pressed_own_call`]): what its code asks while it runs
+    /// is the person's act, and a request continuing it keeps that standing.
+    pub(super) fn the_persons_press(&self) -> bool {
+        matches!(self, Self::Local { pressed: true, .. })
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct OriginalInvocationData {
     request: InvocationRequest,

@@ -724,22 +724,6 @@ impl JoinedChannel {
                     "only remote-action requests are answered".into(),
                 ));
             }
-            // An application reaching for another app's action it holds no grant for waits for the
-            // person using it, or is refused. A step the action of an invocation delivered to it
-            // declares is not asked again: the yes that invocation was given covers it. A call the
-            // person's own press made is the person's, the app only the means, and it is admitted
-            // on their grants as their own call is.
-            if let (Some(app_id), tilo_actions::remote::RemoteActionMessage::Invoke(invoke)) =
-                (caller.acting().app(), &request.message)
-                && matches!(caller.acting().by, tilo_actions::Actor::App(_))
-                && serving.is_none()
-                && let Err(refused) = state.app_action_consent(&person, app_id, invoke)
-            {
-                return match refusal(&request.message, refused) {
-                    Ok(answer) => answer.await,
-                    Err(error) => Err(error),
-                };
-            }
             // What an app calls as its person that waits for their yes is kept for them to answer
             // ([`super::app_asks`]); an agent's waits through its own dispatch.
             let keeps = current.agent_id.is_none();
@@ -751,6 +735,29 @@ impl JoinedChannel {
                 && state
                     .pressed_own_call(peer_id, &route.app_id, &person, &request.message, press)
                     .await;
+            // An application reaching for another app's action it holds no grant for waits for the
+            // person using it, or is refused. A step the action of an invocation delivered to it
+            // declares is not asked again: the yes that invocation was given covers it. A call the
+            // person's own press made is the person's, the app only the means, and it is admitted
+            // on their grants as their own call is: the proof of the press is what lifts the ask,
+            // so an app reaching out without one is asked as it always was. A request continuing
+            // the invocation that press made keeps that standing too: it is a call the person's
+            // code makes while their press's action runs, not the app reaching out by itself.
+            let their_press = pressed
+                || continued_origin
+                    .as_ref()
+                    .is_some_and(InvocationCaller::the_persons_press);
+            if let (Some(app_id), tilo_actions::remote::RemoteActionMessage::Invoke(invoke)) =
+                (caller.acting().app(), &request.message)
+                && !their_press
+                && serving.is_none()
+                && let Err(refused) = state.app_action_consent(&person, app_id, invoke)
+            {
+                return match refusal(&request.message, refused) {
+                    Ok(answer) => answer.await,
+                    Err(error) => Err(error),
+                };
+            }
             let origin = match (continued_origin, &evidence) {
                 (Some(continued), _) => continued,
                 // Checked again as the call is made: a certificate revoked, or a person no
