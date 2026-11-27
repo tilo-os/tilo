@@ -177,15 +177,13 @@ fn bar_of(session: &mut Session, name: &str) -> (f64, f64, f64, f64) {
     })
 }
 
-/// The pill showing the place named `name`, its tab's: the narrowest node that says it, since the
-/// window's bar says the same name.
+/// Where the pill of the tab named `name` stands: the title is drawn inside it, so where the shell
+/// draws that title is a point on the pill.
 fn pill_of(session: &mut Session, name: &str) -> (f64, f64, f64, f64) {
     crate::common::wait_for(session, "the tab's pill", |session| {
         session
-            .shell_controls(name)
-            .into_iter()
-            .filter(|rect| rect.2 > 0.0)
-            .min_by(|a, b| a.2.total_cmp(&b.2))
+            .shell_text_bounds(name)
+            .filter(|(_, _, width, height)| *width > 0.0 && *height > 0.0)
     })
 }
 
