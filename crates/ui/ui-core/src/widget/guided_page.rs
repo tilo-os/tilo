@@ -781,6 +781,7 @@ mod tests {
 
     use super::*;
     use crate::component_testing::Node;
+    use crate::widget::FloatingPanelFace;
     use tilo_ui_base::component::Value;
 
     /// The page's parts change where they stand, between the track above and the ways forward
@@ -813,6 +814,41 @@ mod tests {
             page.children().len(),
             4,
             "a notice stands between the page and the ways forward"
+        );
+    }
+
+    /// A guided page in a card stands its parts a group apart, as every guided page's do, where
+    /// the panel's own header, body and footer slots stood two section insets (8 + 8) apart; and
+    /// one surface draws no hairline between its own parts.
+    #[test]
+    fn a_guided_page_in_a_panel_stands_one_group_apart_and_draws_no_rule() {
+        let theme = Theme::light();
+        let group = f64::from(theme.tokens.spacing.rhythm.get(Rhythm::Group));
+        let (header, page, footer) = (36.0, 320.0, 40.0);
+        let slots = FloatingPanelFace::new()
+            .header(header)
+            .footer(footer)
+            .height_for(page, &theme);
+        let guided =
+            FloatingPanelFace::new().height_for(header + page + footer + 2.0 * group, &theme);
+        assert!(
+            (guided - slots - 16.0).abs() < 0.01,
+            "the card stands one group gap taller at each end than the slots' 8 + 8: {guided} \
+             against {slots}"
+        );
+        let old = FloatingPanelFace::new()
+            .header(header)
+            .footer(footer)
+            .layout(Rect::from_origin_size(Point::ZERO, (400.0, slots)), &theme);
+        let new = FloatingPanelFace::new()
+            .layout(Rect::from_origin_size(Point::ZERO, (400.0, guided)), &theme);
+        assert!(
+            old.rule.is_some(),
+            "a header slot draws the panel's hairline over its body"
+        );
+        assert!(
+            new.rule.is_none(),
+            "one surface draws no hairline between its own parts"
         );
     }
 
