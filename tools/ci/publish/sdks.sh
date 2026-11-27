@@ -232,6 +232,10 @@ build_typescript
 check_typescript "$v"
 build_python
 check_python "$v"
-publish_typescript "$v"
-publish_python "$v"
+# Each registry is published on its own: one that refuses the release leaves the other's
+# package out there, and the run still fails, naming the one that refused.
+refused=()
+( publish_typescript "$v" ) || refused+=(npm)
+( publish_python "$v" ) || refused+=(PyPI)
+((${#refused[@]} == 0)) || die "$name $v did not publish to ${refused[*]}"
 printf '%s %s is on npm and PyPI\n' "$name" "$v"
