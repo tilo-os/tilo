@@ -714,7 +714,7 @@ fn a_devices_redemption_and_its_further_row_race_in_either_order() {
     let row = further(&[]);
     assert!(!row.is_empty());
     let after = redeemed(&row);
-    let mut copy = peer.clone();
+    let mut copy = peer;
     from_author(&mut copy, phone.device_public_key, row, now).unwrap();
     from_author(&mut copy, phone.device_public_key, after, now).unwrap();
     assert!(copy.role(&phone.device_public_key, now).is_ok());
