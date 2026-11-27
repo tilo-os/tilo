@@ -176,21 +176,24 @@ fn write_of_committed(
     signed(key, DESKTOP_DOCUMENT, true, &mut doc, &heads, sequence)
 }
 
-/// `person`'s rename of the desktop to `desktop` as one step of theirs, and their undo of it, as
-/// `key`'s writes `sequence` and the one after: what a session's Ctrl+Z after a rename sends.
-fn rename_and_take_back(
+/// `person`'s one step that writes the desktop as each of `desktops` in turn, a change each, and
+/// their undo of it, as `key`'s writes `sequence` and the one after: what a session's Ctrl+Z after
+/// an action sends.
+fn step_and_take_back(
     peer: &StatePeer,
     key: &SigningKey,
     person: &str,
-    desktop: &SharedDesktop,
+    desktops: &[&SharedDesktop],
     sequence: u64,
 ) -> (NeighbourMsg, NeighbourMsg) {
     let mut doc = held_desktop(peer, key);
     let mut log = collab_types::history::UndoLog::new(&mut doc);
     let member = collab_types::MemberId::person(person);
     let before = doc.get_heads();
-    shared_resource::write(&mut doc, desktop).unwrap();
-    shared_resource::commit_change(&mut doc, person, 0, None);
+    for desktop in desktops {
+        shared_resource::write(&mut doc, desktop).unwrap();
+        shared_resource::commit_change(&mut doc, person, 0, None);
+    }
     log.record_committed_action_authored(
         &mut doc,
         before.clone(),
@@ -201,7 +204,7 @@ fn rename_and_take_back(
     let after = doc.get_heads();
     let step = signed(key, DESKTOP_DOCUMENT, true, &mut doc, &before, sequence);
     log.undo_as(&mut doc, Some(&member), None, None)
-        .expect("the rename is theirs to take back");
+        .expect("the step is theirs to take back");
     let undo = signed(
         key,
         DESKTOP_DOCUMENT,
@@ -351,23 +354,36 @@ tilo_test_env::scenario! {
         assert!(refused.contains("without claiming"), "{refused}");
         assert_eq!(strip_names(&peer), ["Workspace"]);
 
-        let (step, undo) = rename_and_take_back(&peer, &key, &person, &renamed, 2);
+        let (step, undo) = step_and_take_back(&peer, &key, &person, &[&renamed], 2);
         receive(&mut peer, &guest, step).expect("a moderator renames the strip");
         assert_eq!(strip_names(&peer), ["Renamed"]);
         receive(&mut peer, &guest, undo).expect("a moderator takes their rename back");
         assert_eq!(strip_names(&peer), ["Workspace"]);
+
+        // A step of several changes that renamed in an older one than its last is taken back
+        // whole, the rename with it.
+        let mut opened = desktop(&[(1, &owner), (2, &person)]);
+        opened.tree.workspaces[0].strips[0].name = "Renamed".into();
+        let (step, undo) = step_and_take_back(&peer, &key, &person, &[&renamed, &opened], 4);
+        receive(&mut peer, &guest, step).expect("a moderator renames the strip and opens a window");
+        assert_eq!((strip_names(&peer), windows(&peer)), (vec!["Renamed".to_owned()], vec![1, 2]));
+        receive(&mut peer, &guest, undo).expect("a moderator takes the whole step back");
+        assert_eq!((strip_names(&peer), windows(&peer)), (vec!["Workspace".to_owned()], vec![1]));
     }
 
     phase a_former_moderator_takes_no_rename_back;
     // Once the workspace made them an editor, the moderator may not take their rename back: the
-    // undo claims the rename it takes back, which an editor's role denies.
+    // undo claims the rename it takes back, which an editor's role denies, also where the rename
+    // was not the last change of the step.
     {
         let (mut peer, owner, key, guest) = workspace_with(Role::Moderator);
         let person = hex::encode(guest.user_public_key);
         let mut renamed = desktop(&[(1, &owner)]);
         renamed.tree.workspaces[0].strips[0].name = "Renamed".into();
-        let (step, undo) = rename_and_take_back(&peer, &key, &person, &renamed, 1);
-        receive(&mut peer, &guest, step).expect("a moderator renames the strip");
+        let mut opened = desktop(&[(1, &owner), (2, &person)]);
+        opened.tree.workspaces[0].strips[0].name = "Renamed".into();
+        let (step, undo) = step_and_take_back(&peer, &key, &person, &[&renamed, &opened], 1);
+        receive(&mut peer, &guest, step).expect("a moderator renames the strip and opens a window");
         assert!(
             peer.governance_mut()
                 .set_member_role(
@@ -381,6 +397,7 @@ tilo_test_env::scenario! {
         let refused = receive(&mut peer, &guest, undo).unwrap_err();
         assert!(refused.contains("item:10/field:moderation"), "{refused}");
         assert_eq!(strip_names(&peer), ["Renamed"], "refused, the rename stands");
+        assert_eq!(windows(&peer), [1, 2]);
     }
 
     phase another_devices_page_reaches_the_shell_and_its_rename_follows;

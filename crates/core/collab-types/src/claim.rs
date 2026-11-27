@@ -280,48 +280,26 @@ impl ClaimedAction {
                 let history = Self::History(step.op.clone());
                 let mut moderated = Vec::new();
                 if let Some(of) = &step.of {
-                    Self::moderation_edits(&of.what, kind, &mut moderated);
+                    moderation_edits(&of.what, &mut moderated);
                 }
-                if moderated.is_empty() {
+                let mut claimed: Vec<Self> = Vec::new();
+                for edit in moderated {
+                    let Did::Edit(edit) = edit else { continue };
+                    let edit = Self::Edit {
+                        kind: kind.to_owned(),
+                        path: edit.path,
+                    };
+                    if !claimed.contains(&edit) {
+                        claimed.push(edit);
+                    }
+                }
+                if claimed.is_empty() {
                     history
                 } else {
-                    Self::Group(std::iter::once(history).chain(moderated).collect())
+                    Self::Group(std::iter::once(history).chain(claimed).collect())
                 }
             }
         })
-    }
-
-    /// Each edit `what` makes under a [`tilo_action_policy::roles::MODERATION_FIELD`], as a claim
-    /// on a resource of kind `kind`, into `into`: what a step through history that moves `what`
-    /// does again.
-    fn moderation_edits(what: &Did, kind: &str, into: &mut Vec<Self>) {
-        match what {
-            Did::Edit(edit)
-                if edit.path.iter().any(|step| {
-                    matches!(step, PathStep::Field(field)
-                        if field == tilo_action_policy::roles::MODERATION_FIELD)
-                }) =>
-            {
-                let edit = Self::Edit {
-                    kind: kind.to_owned(),
-                    path: edit.path.clone(),
-                };
-                if !into.contains(&edit) {
-                    into.push(edit);
-                }
-            }
-            Did::Group(group) => {
-                for member in group.members.iter().chain(&group.distinct) {
-                    Self::moderation_edits(member, kind, into);
-                }
-            }
-            Did::History(step) => {
-                if let Some(of) = &step.of {
-                    Self::moderation_edits(&of.what, kind, into);
-                }
-            }
-            Did::Edit(_) | Did::Verb(_) => {}
-        }
     }
 
     /// What a continuation message (the next keystroke of a gesture) says
@@ -945,6 +923,35 @@ pub fn check_claimed<E>(
         Ok(())
     } else {
         Err("a cleartext op carries claims; its changes name their actions".into())
+    }
+}
+
+/// Each edit `what` makes under a [`tilo_action_policy::roles::MODERATION_FIELD`], into `into`
+/// once: those it makes itself, and those of a step it moves through history. What a step through
+/// history that moves `what` does again, and claims.
+pub(crate) fn moderation_edits(what: &Did, into: &mut Vec<Did>) {
+    match what {
+        Did::Edit(edit)
+            if edit.path.iter().any(|step| {
+                matches!(step, PathStep::Field(field)
+                    if field == tilo_action_policy::roles::MODERATION_FIELD)
+            }) =>
+        {
+            if !into.contains(what) {
+                into.push(what.clone());
+            }
+        }
+        Did::Group(group) => {
+            for member in group.members.iter().chain(&group.distinct) {
+                moderation_edits(member, into);
+            }
+        }
+        Did::History(step) => {
+            if let Some(of) = &step.of {
+                moderation_edits(&of.what, into);
+            }
+        }
+        Did::Edit(_) | Did::Verb(_) => {}
     }
 }
 

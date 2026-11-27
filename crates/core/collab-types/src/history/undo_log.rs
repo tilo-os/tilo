@@ -241,6 +241,31 @@ fn moved_step(context: &ActionContext) -> Option<ActionContext> {
     )
 }
 
+/// `context`, the entry of the newest change of `step`, claiming beside what it did every
+/// moderation edit (a rename of a shared desktop's strip, say) an older change of the step claimed.
+/// Taking the step back or bringing it back again does all its changes did, so a step of several
+/// changes that moderated in any of them is moderation however it ends.
+fn with_step_moderation(mut context: ActionContext, step: &[Version]) -> ActionContext {
+    let mut own = Vec::new();
+    if let Some(what) = &context.what {
+        crate::claim::moderation_edits(what, &mut own);
+    }
+    let mut older = Vec::new();
+    for what in step
+        .iter()
+        .skip(1)
+        .filter_map(|version| version.context.as_ref()?.what.as_ref())
+    {
+        crate::claim::moderation_edits(what, &mut older);
+    }
+    older.retain(|edit| !own.contains(edit));
+    if older.is_empty() {
+        return context;
+    }
+    context.what = Some(Did::group(context.what.take().into_iter().chain(older)));
+    context
+}
+
 /// A step's bracket: the heads before it and after it.
 pub type Bracket = (Vec<ChangeHash>, Vec<ChangeHash>);
 
@@ -459,14 +484,17 @@ impl UndoLog {
             author: step.first().and_then(|newest| self.author_of(newest)),
             instance_id: presented.and_then(|step| step.instance_id),
             // A redo stands for the step it brought back.
-            step: step.first().and_then(|newest| {
-                let context = newest.context.as_ref()?;
-                if moves_history(context) == Some(&HistoryOp::Redo) {
-                    moved_step(context)
-                } else {
-                    Some(context.clone())
-                }
-            }),
+            step: step
+                .first()
+                .and_then(|newest| {
+                    let context = newest.context.as_ref()?;
+                    if moves_history(context) == Some(&HistoryOp::Redo) {
+                        moved_step(context)
+                    } else {
+                        Some(context.clone())
+                    }
+                })
+                .map(|context| with_step_moderation(context, step)),
         }
     }
 
