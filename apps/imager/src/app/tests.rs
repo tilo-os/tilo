@@ -239,49 +239,57 @@ fn startup_state_is_blank_local_and_reconciled_before_writes() {
     }
 }
 
+/// The image writer in a German window: its buttons, its customization form, its progress
+/// captions and its stations read from the German catalogue, with none of the source language left.
 #[test]
-fn the_wizards_buttons_read_in_the_windows_language() {
-    let catalog = &crate::resource::CATALOG;
-    catalog.set_locale("de-DE");
-    let mut labels = Vec::new();
-    for step in [Step::Source, Step::Customize] {
-        let (mut app, doc) = seeded_app();
-        app.step = step;
-        let host = harness(app, doc, (960, 720));
-        labels.extend(
-            host.a11y_nodes()
-                .into_iter()
-                .filter_map(|(_, node)| node.label().map(str::to_owned)),
-        );
+fn the_writer_reads_in_the_windows_language() {
+    fn labels(driver: &ui::headless::Driver) -> Vec<String> {
+        driver
+            .a11y_nodes()
+            .into_iter()
+            .filter_map(|(_, node)| node.label().map(str::to_owned))
+            .collect()
     }
-    catalog.set_locale("en-US");
-    for german in ["Zurück", "Weiter", "Durchsuchen…"] {
-        assert!(
-            labels.iter().any(|label| label == german),
-            "{german} is missing from {labels:?}"
-        );
-    }
-    assert!(
-        labels
-            .iter()
-            .all(|label| !matches!(label.as_str(), "Back" | "Continue" | "Browse…")),
-        "the source language is left in the German window: {labels:?}"
-    );
-}
-
-#[test]
-fn the_customization_form_reads_in_the_windows_language() {
     let catalog = &crate::resource::CATALOG;
     let previous = catalog.current_locale();
     catalog.set_locale("de-DE");
-    let mut host = TestHost::capture(Some("customize"));
-    let labels: Vec<String> = host
-        .harness()
-        .a11y_nodes()
-        .into_iter()
-        .filter_map(|(_, node)| node.label().map(str::to_owned))
+    let mut buttons = Vec::new();
+    for step in [Step::Source, Step::Customize] {
+        let (mut app, doc) = seeded_app();
+        app.step = step;
+        buttons.extend(labels(&harness(app, doc, (960, 720))));
+    }
+    let form = labels(TestHost::capture(Some("customize")).harness());
+    let mut app = ImagerApp::new();
+    app.action = Action::Install;
+    let (_, caption) = app.phase();
+    app.action = Action::Flash;
+    let (_, writing) = app.phase();
+    let stations: Vec<String> = Step::all()
+        .iter()
+        .map(|step| crate::setup::strings::t(step_message(*step)))
         .collect();
+    let eta = crate::setup::strings::t_args(
+        "imager-writing-eta",
+        &[(
+            "time",
+            tilo_ui_base::i18n::ArgValue::Text("3 Minuten".into()),
+        )],
+    );
     catalog.set_locale(&previous);
+
+    for german in ["Zurück", "Weiter", "Durchsuchen…"] {
+        assert!(
+            buttons.iter().any(|label| label == german),
+            "{german} is missing from {buttons:?}"
+        );
+    }
+    assert!(
+        buttons
+            .iter()
+            .all(|label| !matches!(label.as_str(), "Back" | "Continue" | "Browse…")),
+        "the source language is left in the German window: {buttons:?}"
+    );
     for german in [
         "Identität",
         "Region",
@@ -295,12 +303,12 @@ fn the_customization_form_reads_in_the_windows_language() {
         "Dateisystem",
     ] {
         assert!(
-            labels.iter().any(|label| label == german),
-            "{german} is missing from {labels:?}"
+            form.iter().any(|label| label == german),
+            "{german} is missing from {form:?}"
         );
     }
     assert!(
-        labels.iter().all(|label| !matches!(
+        form.iter().all(|label| !matches!(
             label.as_str(),
             "Identity"
                 | "Storage"
@@ -311,8 +319,22 @@ fn the_customization_form_reads_in_the_windows_language() {
                 | "Keyboard layout"
                 | "Filesystem"
         )),
-        "the source language is left in the German window: {labels:?}"
+        "the source language is left in the German window: {form:?}"
     );
+    assert_eq!(caption, "Wird installiert");
+    assert_eq!(writing, "Wird geschrieben");
+    assert_eq!(
+        stations,
+        [
+            "Quelle",
+            "Laufwerk",
+            "Anpassen",
+            "Prüfen",
+            "Schreiben",
+            "Fertig"
+        ]
+    );
+    assert_eq!(eta, "noch etwa 3 Minuten");
 }
 
 #[test]
@@ -429,44 +451,6 @@ fn wizard_semantics_labels_live_regions_and_keyboard_order() {
     assert!(host.harness().a11y_nodes().iter().any(|(_, n)| n.role()
         == ui::accesskit::Role::ProgressIndicator
         && n.value().is_some()));
-}
-
-#[test]
-fn the_writers_progress_and_stations_read_in_the_windows_language() {
-    let catalog = &crate::resource::CATALOG;
-    let previous = catalog.current_locale();
-    catalog.set_locale("de-DE");
-    let mut app = ImagerApp::new();
-    app.action = Action::Install;
-    let (_, caption) = app.phase();
-    app.action = Action::Flash;
-    let (_, writing) = app.phase();
-    let stations: Vec<String> = Step::all()
-        .iter()
-        .map(|step| crate::setup::strings::t(step_message(*step)))
-        .collect();
-    let eta = crate::setup::strings::t_args(
-        "imager-writing-eta",
-        &[(
-            "time",
-            tilo_ui_base::i18n::ArgValue::Text("3 Minuten".into()),
-        )],
-    );
-    catalog.set_locale(&previous);
-    assert_eq!(caption, "Wird installiert");
-    assert_eq!(writing, "Wird geschrieben");
-    assert_eq!(
-        stations,
-        [
-            "Quelle",
-            "Laufwerk",
-            "Anpassen",
-            "Prüfen",
-            "Schreiben",
-            "Fertig"
-        ]
-    );
-    assert_eq!(eta, "noch etwa 3 Minuten");
 }
 
 #[test]
