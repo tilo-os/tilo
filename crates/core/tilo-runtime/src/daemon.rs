@@ -1287,6 +1287,11 @@ fn shell_reads(name: &std::ffi::OsStr) -> bool {
 /// which whoever started the daemon set and no account that asks for a shell can: the graphics
 /// driver and the libraries the daemon itself was started to load (a machine with no GPU draws with
 /// Mesa's software drivers, and its shell must too).
+///
+/// A cache location is not one of them. It is written state, and a directory the daemon's user
+/// can write is not necessarily one the person's session runs with: a shader that cannot be
+/// cached is compiled in the frame that first draws with it, seconds a person waits for. The
+/// shell keeps its own, under the person's cache.
 #[cfg(target_os = "linux")]
 fn shell_keeps_from_the_daemon(name: &std::ffi::OsStr) -> bool {
     const NAMED: [&str; 6] = [
@@ -1298,8 +1303,18 @@ fn shell_keeps_from_the_daemon(name: &std::ffi::OsStr) -> bool {
         "RUST_LOG",
     ];
     const PREFIXED: [&str; 2] = ["WGPU_", "MESA_"];
+    /// What points Mesa's caches at a path; the same names the launcher drops before it gives an
+    /// app its own cache.
+    const CACHE_LOCATIONS: [&str; 5] = [
+        "MESA_SHADER_CACHE_DIR",
+        "MESA_DISK_CACHE_SINGLE_FILE",
+        "MESA_DISK_CACHE_MULTI_FILE",
+        "MESA_DISK_CACHE_DATABASE",
+        "MESA_DISK_CACHE_READ_ONLY_FOZ_DBS_DYNAMIC_LIST",
+    ];
     name.to_str().is_some_and(|name| {
-        NAMED.contains(&name) || PREFIXED.iter().any(|prefix| name.starts_with(prefix))
+        !CACHE_LOCATIONS.contains(&name)
+            && (NAMED.contains(&name) || PREFIXED.iter().any(|prefix| name.starts_with(prefix)))
     })
 }
 

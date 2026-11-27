@@ -4161,3 +4161,37 @@ fn a_first_line_as_long_as_a_frame_is_read_whole() {
     assert_eq!(first.len(), long + 1);
     assert_eq!(first.last(), Some(&b'\n'));
 }
+
+/// The shell the daemon starts draws with the machine's drivers, and keeps its own shader cache:
+/// a cache path the daemon's user was given is not one the person's session can write, and a
+/// shader that cannot be cached is compiled in the frame that first draws with it.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_shell_keeps_the_daemons_driver_but_not_the_cache_it_names() {
+    use std::ffi::OsStr;
+    for driver in [
+        "VK_DRIVER_FILES",
+        "VK_ICD_FILENAMES",
+        "LIBGL_ALWAYS_SOFTWARE",
+        "GALLIUM_DRIVER",
+        "MESA_SHADER_CACHE_DISABLE",
+        "WGPU_BACKEND",
+    ] {
+        assert!(
+            super::shell_keeps_from_the_daemon(OsStr::new(driver)),
+            "{driver} is how the daemon's display draws, and its shell must too"
+        );
+    }
+    for cache in [
+        "MESA_SHADER_CACHE_DIR",
+        "MESA_DISK_CACHE_SINGLE_FILE",
+        "MESA_DISK_CACHE_MULTI_FILE",
+        "MESA_DISK_CACHE_DATABASE",
+        "MESA_DISK_CACHE_READ_ONLY_FOZ_DBS_DYNAMIC_LIST",
+    ] {
+        assert!(
+            !super::shell_keeps_from_the_daemon(OsStr::new(cache)),
+            "{cache} names a cache the person's session keeps for itself"
+        );
+    }
+}
