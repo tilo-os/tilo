@@ -230,9 +230,6 @@ impl WorkspaceAnswers for Provided {
                     }
                     (telling::TELLING, telling::agent_rows())
                 }
-                // The person finds their workspace's model providers on their own device: their
-                // windows, commands and palette reach them by their address.
-                model_providers::PROVIDER => (models::MODELS, services.offered_models(asked).await),
                 // An agent finds what it may read of the services the workspace connected.
                 // Adding one is no row.
                 tilo_workspace_records::connections::PROVIDER

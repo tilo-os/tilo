@@ -304,6 +304,8 @@ mod machine_steps;
 pub mod mcp_server;
 pub mod mentions;
 #[cfg(target_os = "linux")]
+mod model_steps;
+#[cfg(target_os = "linux")]
 mod nearby_send;
 #[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]

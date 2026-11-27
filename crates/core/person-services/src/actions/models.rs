@@ -14,7 +14,7 @@ use tilo_actions::remote::{
 use tilo_resource::{Effect as _, EffectDecl};
 
 use tilo_workspace_records::models::{self as model_providers, ModelsAction};
-use tilo_workspace_service::workspaces::actions::{DeclaredRow as _, Publisher};
+use tilo_workspace_service::workspaces::actions::DeclaredRow as _;
 use tilo_workspace_service::workspaces::workspace_stores::Store;
 
 /// Whether the workspace's tree offers the action `decl` declares: every one but those a
@@ -53,43 +53,7 @@ pub(super) fn models_action(address: &tilo_actions::ActionAddress) -> Option<(&s
     Some((workspace, action))
 }
 
-/// The model providers as a person's windows, commands and palette reach them on their device:
-/// `tilo.models`' own calls, by their address (`tilo.models/models#list`), in the workspace the
-/// call is made in.
-pub(super) const MODELS: Publisher = Publisher {
-    provider: model_providers::PROVIDER,
-    kind: model_providers::RESOURCE,
-};
-
 impl crate::PersonServices {
-    /// The `tilo.models` rows `asked` is offered in the workspace it asks in: each action the
-    /// providers declare but a turn of the model, which a window asks as it runs one, that the
-    /// workspace's policy on the providers lets the caller do without asking first. An agent or
-    /// an app acting for the person chooses no model, and is offered none.
-    pub(super) async fn offered_models(
-        &self,
-        asked: tilo_workspace_service::workspaces::actions::Asked<'_>,
-    ) -> Vec<CatalogueRow> {
-        let (_, caller, _) = asked;
-        if caller.acting().is_agent() || caller.acting().app().is_some() {
-            return Vec::new();
-        }
-        let mut rows = Vec::new();
-        for decl in ModelsAction::declarations()
-            .into_iter()
-            .filter(|decl| decl.id != model_providers::ASK)
-        {
-            if self
-                .reaching(asked, Store::MODELS, decl.id, decl.action_kind)
-                .await
-                .is_ok_and(|reach| reach.answer == tilo_action_policy::Answer::Allow)
-            {
-                rows.push(decl.row(MODELS, model_providers::RESOURCE, "Agent models"));
-            }
-        }
-        rows
-    }
-
     /// The rows of `workspace`'s model providers (its UUID) `asked` is offered:
     /// those the workspace's policy on the providers lets it ask.
     pub(super) async fn models_rows(
