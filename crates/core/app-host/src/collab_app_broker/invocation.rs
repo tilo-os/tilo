@@ -883,8 +883,13 @@ impl AppBrokerState {
         }
         // A host step that declared itself cancellable stops on its own flag, and answers as
         // cancelled when it does. Such a step keeps no pending invocation of its own.
-        if self.stop_host_step(id) {
-            return Ok(tilo_invocation_journal::Durable::settled());
+        if let Some(asked_by) = self.host_step_owner(id) {
+            if !may_cancel(&asked_by, owner) {
+                return Err(NOT_YOURS_TO_CANCEL.into());
+            }
+            if self.stop_host_step(id) {
+                return Ok(tilo_invocation_journal::Durable::settled());
+            }
         }
         let mut pending = self
             .pending_invocations
@@ -893,10 +898,10 @@ impl AppBrokerState {
         let job = pending
             .get(&id)
             .ok_or_else(|| "the invocation is not running".to_string())?;
-        if &job.owner != owner {
-            return Err("only the invocation owner may cancel it".into());
+        if !may_cancel(&job.owner, owner) {
+            return Err(NOT_YOURS_TO_CANCEL.into());
         }
-        let waits = self.waits_on_cancellable_step(job.update.invocation());
+        let waits = self.waits_on_cancellable_step(job);
         if !job.cancellable && !waits {
             return Err("the action did not declare cooperative cancellation".into());
         }
@@ -937,22 +942,29 @@ impl AppBrokerState {
             .ok()
             .and_then(|pending| {
                 pending.get(&id).map(|job| {
-                    &job.owner == owner
-                        && (job.cancellable
-                            || self.waits_on_cancellable_step(job.update.invocation()))
+                    may_cancel(&job.owner, owner)
+                        && (job.cancellable || self.waits_on_cancellable_step(job))
                 })
             })
             .unwrap_or(false)
     }
-    /// Whether `invocation` waits on a host step that declared itself cancellable, one a call
-    /// its app made as its step: an action is cancellable while it awaits such a step, and its
-    /// cancel, which its app passes on to the calls it waits on, stops that step.
-    fn waits_on_cancellable_step(&self, invocation: tilo_actions::InvocationId) -> bool {
+    /// Whether `job` waits on a host step that declared itself cancellable, one a call its app
+    /// made as its step: an action is cancellable while it awaits such a step, and its cancel,
+    /// which its app passes on to the calls it waits on, stops that step. This is the one rule
+    /// for every action in every language: no action opts in to being stopped.
+    fn waits_on_cancellable_step(&self, job: &PendingInvocation) -> bool {
         self.host_step_stops.lock().is_ok_and(|stops| {
             stops
                 .values()
-                .any(|step| step.continues == Some(invocation))
+                .any(|step| step.continues.as_ref().is_some_and(|of| of.is(job)))
         })
+    }
+    /// Who asked for host step `id`, while it is a cancellable one that runs.
+    fn host_step_owner(&self, id: u64) -> Option<InvocationOwner> {
+        self.host_step_stops
+            .lock()
+            .ok()
+            .and_then(|stops| stops.get(&id).map(|step| step.owner.clone()))
     }
     pub(super) fn disconnect_device_media(&self, peer_id: u64) {
         if let Some(media) = self.services.call_media.as_ref() {
@@ -1177,5 +1189,42 @@ impl AppBrokerState {
         if let Some(clipboard) = self.services.file_clipboard.as_ref() {
             clipboard.disconnect(peer_id);
         }
+    }
+}
+
+/// Why a cancel is refused to someone the invocation is not theirs to stop.
+pub(super) const NOT_YOURS_TO_CANCEL: &str = "only whoever started the invocation, or the person it runs for, \
+     may cancel it";
+
+/// Whether `asker` may cancel an invocation `owner` started: the invoker itself, or the person an
+/// agent of theirs runs it for, who can always stop what their agents run. Nobody else: not
+/// another agent of the same person, not an app, not another member of the workspace.
+fn may_cancel(owner: &InvocationOwner, asker: &InvocationOwner) -> bool {
+    if owner == asker {
+        return true;
+    }
+    match (owner, asker) {
+        (InvocationOwner::Local { actor: started }, InvocationOwner::Local { actor: asking }) => {
+            let runs_for = started
+                .member_id()
+                .and_then(tilo_action_policy::MemberId::agent_person);
+            let asking = asking
+                .member_id()
+                .and_then(tilo_action_policy::MemberId::as_person);
+            runs_for.is_some() && runs_for == asking
+        }
+        (
+            InvocationOwner::AuthenticatedLocal {
+                root: started,
+                agent: Some(_),
+                ..
+            },
+            InvocationOwner::AuthenticatedLocal {
+                root: asking,
+                agent: None,
+                ..
+            },
+        ) => started == asking,
+        _ => false,
     }
 }

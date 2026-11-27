@@ -198,14 +198,16 @@ fn passed(invocation: tilo_actions::InvocationId, check_id: &str) -> Receipt {
 tilo_test_env::scenario! {
     fn a_tilolang_action_runs_its_projects_approved_check_as_the_devices_work;
 
-    phase the_check_is_published_as_the_cancellable_job_a_check_runs_as;
+    phase the_check_is_published_as_the_job_a_check_runs_as;
     {
         let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", CHECKED, checked());
         settle(&mut host, &mut window);
         let check = the_check(&host);
+        // It declares no cancellation of its own: the dispatch lets its invoker stop it while it
+        // waits on the device's check, a step that can be stopped, as it does any action.
         assert_eq!(
             check.contract.execution,
-            tilo_actions::ExecutionMode::Background { cancellable: true }
+            tilo_actions::ExecutionMode::Background { cancellable: false }
         );
         assert_eq!(check.contract.kind, tilo_actions::ActionKind::Undoable);
         // A check answers the host's receipt of what the commands did: a document with the

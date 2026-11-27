@@ -1176,7 +1176,8 @@ tilo_test_env::scenario! {
         assert_eq!(check.contract.kind, ActionKind::Undoable);
         assert_eq!(
             check.contract.execution,
-            tilo_actions::ExecutionMode::Background { cancellable: true }
+            tilo_actions::ExecutionMode::Background { cancellable: false },
+            "a check is stopped through the device's step it waits on, not a cancel of its own"
         );
         let tilo_actions::ResultSpec::Json { schema } = &check.contract.result else {
             panic!(

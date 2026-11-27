@@ -503,13 +503,14 @@ const NOT_THE_CHECK: &str = "An approved check runs only as the work of an actio
      dispatched to the app, for the check that action was asked to run";
 
 /// The check `request` names, when it is the one `serving` was asked to run. The delivered action
-/// must declare work its invoker can stop, an undoable background job, so a check the person
-/// stops is one the action's contract lets them stop; what the action is called, and everything
-/// else about it, is the effect it declares ([`Self::start`]).
+/// must declare an undoable background job, one that reports how far it got; its invoker stops it
+/// through this step, which can be stopped, as the dispatch lets them stop any action waiting on
+/// one. What the action is called, and everything else about it, is the effect it declares
+/// ([`Self::start`]).
 fn asked_check<'a>(serving: &dyn Serving, request: &'a InvokeRequest) -> Result<&'a str, String> {
     let contract = serving.contract();
     if contract.kind != ActionKind::Undoable
-        || contract.execution != (ExecutionMode::Background { cancellable: true })
+        || !matches!(contract.execution, ExecutionMode::Background { .. })
     {
         return Err(NOT_THE_CHECK.to_owned());
     }

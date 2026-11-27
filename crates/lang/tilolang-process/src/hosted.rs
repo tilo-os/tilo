@@ -3532,10 +3532,9 @@ impl Hosted {
             CollabEvent::InvocationCancellation { id } => {
                 // A run that waits on a call stops that call, by the call's own cancel through
                 // the dispatch: its answer ends the run, and the run answers the invocation.
-                // A check the run started stops, and the invocation is answered as stopped once
-                // it has. Any other invocation ran to its end in the frame it arrived in and was
+                // Any other invocation ran to its end in the frame it arrived in and was
                 // answered there: a cancellation that was not in that frame stops nothing.
-                if !self.checks.cancel_delivery(id) && !self.stop_calls_of(id) {
+                if !self.stop_calls_of(id) {
                     tracing::debug!(id, "a cancellation of an invocation already answered");
                 }
                 return false;
@@ -3781,8 +3780,8 @@ impl Hosted {
         }
     }
 
-    /// Stop each call a run serving the invocation the dispatch delivered as `served` waits on.
-    /// Whether any waits.
+    /// Stop each call a run serving the invocation the dispatch delivered as `served` waits on,
+    /// and the check it started that it waits on once its run ended. Whether any waits.
     fn stop_calls_of(&self, served: u64) -> bool {
         let pressed = self.presses.borrow().delivered_as(served);
         let calls: Vec<(String, Served)> = self
@@ -3801,7 +3800,16 @@ impl Hosted {
         self.stopping
             .borrow_mut()
             .extend(calls.iter().map(|(_, of)| of.invocation()));
-        let calls: Vec<String> = calls.into_iter().map(|(call, _)| call).collect();
+        let calls: Vec<String> = calls
+            .into_iter()
+            .map(|(call, _)| call)
+            .chain(
+                self.checks
+                    .waited_on_by(served)
+                    .iter()
+                    .map(ToString::to_string),
+            )
+            .collect();
         for call in &calls {
             let Ok(invocation) = call.parse::<tilo_actions::InvocationId>() else {
                 continue;

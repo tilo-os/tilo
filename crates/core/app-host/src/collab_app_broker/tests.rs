@@ -1066,6 +1066,8 @@ mod durable_admission_tests;
 #[cfg(test)]
 mod authority;
 #[cfg(test)]
+mod cancel_rule;
+#[cfg(test)]
 mod directory;
 #[cfg(test)]
 mod lifecycle;

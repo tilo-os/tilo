@@ -764,7 +764,8 @@ impl AppBrokerState {
                 id,
                 super::HostStepStop {
                     stop: Arc::clone(&stop),
-                    continues: serving.as_ref().map(|serving| serving.invocation()),
+                    owner: admitted.owner.clone(),
+                    continues: serving.as_deref().map(super::StepOf::of),
                 },
             );
         }

@@ -21,6 +21,12 @@ impl crate::services::LauncherServices for ProgressFixtureLaunch {
     }
 }
 fn progress_descriptors() -> Vec<runtime_collab::ExportedAction> {
+    descriptors_executing(tilo_actions::ExecutionMode::Background { cancellable: true })
+}
+/// The app's check action, declaring `execution`.
+fn descriptors_executing(
+    execution: tilo_actions::ExecutionMode,
+) -> Vec<runtime_collab::ExportedAction> {
     let directory = signed_worker::directory_state("reported-check-r1");
     let mut check = directory.borrow().row().descriptor.unwrap();
     check.action = tilo_action_services::approved_checks::ACTION_ID.into();
@@ -32,7 +38,7 @@ fn progress_descriptors() -> Vec<runtime_collab::ExportedAction> {
     check.contract = tilo_actions::ActionContract {
         kind: tilo_actions::ActionKind::Undoable,
         result: tilo_actions::ResultSpec::Job,
-        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+        execution,
         // Its one declared step: the declared probe's run.
         effects: vec![tilo_actions::ActionEffect::new(
             DECLARED_PROBE,
@@ -203,9 +209,36 @@ impl PersonSession {
         broker: (&Arc<AppBrokerState>, &Rc<LocalActionDirectoryRegistry>),
         invocation: tilo_actions::InvocationId,
     ) {
-        on_broker_turn(broker, self.provider.cancel(&self.caller, &invocation))
-            .await
-            .unwrap();
+        self.tries_to_cancel(broker, invocation).await.unwrap();
+    }
+
+    /// What their cancel of `invocation` is answered.
+    async fn tries_to_cancel(
+        &self,
+        broker: (&Arc<AppBrokerState>, &Rc<LocalActionDirectoryRegistry>),
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<(), tilo_actions::remote::ActionCallError> {
+        on_broker_turn(broker, self.provider.cancel(&self.caller, &invocation)).await
+    }
+
+    /// What they read of `invocation` once it ended.
+    async fn ended(
+        &self,
+        (state, directories): (&Arc<AppBrokerState>, &Rc<LocalActionDirectoryRegistry>),
+        invocation: tilo_actions::InvocationId,
+    ) -> tilo_actions::InvocationUpdate {
+        tilo_test_env::within("the invocation ends", async {
+            loop {
+                state.take_turn(directories);
+                if let Some(observed) = self.provider.observe(&self.caller, &invocation)
+                    && observed.update.is_terminal()
+                {
+                    return observed.update;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
     }
 }
 
@@ -250,6 +283,8 @@ type Told = (String, String, String, tilo_actions::ActionAddress);
 struct ServedProbe {
     seen: Mutex<Vec<Option<Told>>>,
     ends: Mutex<Vec<tilo_actions::remote::Completer<tilo_actions::remote::Outcome>>>,
+    /// Each call's flag its caller's cancel sets.
+    stops: Mutex<Vec<Arc<std::sync::atomic::AtomicBool>>>,
 }
 
 const DECLARED_PROBE: &str = "tilo.declared-probe";
@@ -307,6 +342,7 @@ impl ServedProbe {
             .ok_or("no invocation this runs for")?;
         serving.recheck()?;
         (admitted.progress)("tests", Some(1), Some(2));
+        self.stops.lock().unwrap().push(Arc::clone(&admitted.stop));
         let (end, outcome) = tilo_actions::remote::pending();
         self.ends.lock().unwrap().push(end);
         Ok(outcome)
@@ -406,6 +442,39 @@ async fn app_observes(
     RemoteActionFrame::decode(&connection.handle.remote_action(&frame).await.unwrap())
         .unwrap()
         .message
+}
+
+/// The app's connection cancels its call `invocation`, as a run passes its cancel on.
+async fn app_cancels(
+    connection: &signed_worker::Connection,
+    invocation: tilo_actions::InvocationId,
+) {
+    use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+    let frame = RemoteActionFrame::new(RemoteActionMessage::Cancel { invocation })
+        .encode()
+        .unwrap();
+    connection.handle.remote_action(&frame).await.unwrap();
+}
+
+/// The app's call `invocation`'s end, once it ended.
+async fn app_call_ended(
+    connection: &signed_worker::Connection,
+    invocation: tilo_actions::InvocationId,
+) -> tilo_actions::InvocationUpdate {
+    tilo_test_env::within("the call ends", async {
+        loop {
+            if let tilo_actions::remote::RemoteActionMessage::Update {
+                state: Some(followed),
+                ..
+            } = app_observes(connection, invocation).await
+                && followed.update.is_terminal()
+            {
+                return followed.update;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
 }
 
 fn status_of(
@@ -573,6 +642,150 @@ async fn an_apps_call_for_a_delivered_invocation_reaches_the_device_as_that_invo
             assert!(
                 probe.seen.lock().unwrap()[seen..].iter().all(Option::is_none),
                 "a cancelled invocation's step is never handed on as its work"
+            );
+        })
+        .await;
+}
+
+/// An action that declares no cancellation of its own can be cancelled while it waits on a step
+/// that can be stopped, in any language: the dispatch admits the cancel because the step it
+/// recorded for the invocation, as the app's verified connection was delivered it, still runs.
+/// The cancel reaches the app, which passes it on to its call, and the step stops; the
+/// invocation answers cancelled. An invocation that waits on no such step is refused, and a
+/// cancel never reaches a step another invocation waits on.
+#[tokio::test(flavor = "current_thread")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one invocation's cancel, from its refusal to its step's stop and its answer"
+)]
+async fn an_invocation_waiting_on_a_cancellable_step_can_be_cancelled() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            use std::sync::atomic::Ordering;
+            let workspace = signed_worker::OriginalWorkspace::new(
+                tilo_user_identity::DeviceCapabilities::primary(),
+                None,
+                None,
+            );
+            let probe = Arc::new(ServedProbe::default());
+            let providers = tilo_workspace_service::workspaces::providers::Providers::default();
+            providers.provide(
+                DECLARED_PROBE,
+                tilo_app_id::apps::SETTINGS,
+                tilo_workspace_service::workspaces::providers::Reach::ThisDevice,
+                Arc::new(Served(Arc::clone(&probe))),
+            );
+            // The action declares no cancellation of its own.
+            let descriptors = descriptors_executing(tilo_actions::ExecutionMode::Background {
+                cancellable: false,
+            });
+            let (state, connection, directories) =
+                progress_native_connection(&workspace, providers)
+                    .await
+                    .unwrap();
+            let broker = (&state, &directories);
+            let (invocations, waiting, session) =
+                progress_parent(broker, &workspace, &connection, &descriptors, 997).await;
+            let parent =
+                tilo_actions::InvocationId(uuid::Uuid::from_bytes(waiting.invocation_uuid));
+            let other = session
+                .runs_check(broker, 997, "workspace:atlas")
+                .await
+                .invocation;
+            assert_eq!(
+                invocations.read().await.unwrap().invocation_uuid,
+                *other.0.as_bytes()
+            );
+
+            // Waiting on nothing that can be stopped, it cannot be cancelled.
+            let refused = session.tries_to_cancel(broker, parent).await;
+            assert!(
+                matches!(
+                    &refused,
+                    Err(tilo_actions::remote::ActionCallError::NotCancellable { reason })
+                        if reason == "the action did not declare cooperative cancellation"
+                ),
+                "{refused:?}"
+            );
+
+            // Once its app's call of a step that can be stopped runs as its work, it can.
+            let (call, answer) = app_calls(&connection, DECLARED_PROBE, parent).await;
+            assert!(
+                matches!(
+                    status_of(&answer).expect("the call is answered with its receipt"),
+                    tilo_actions::remote::ReceiptStatus::Accepted
+                ),
+                "{answer:?}"
+            );
+            let step = Arc::clone(probe.stops.lock().unwrap().last().unwrap());
+
+            // Another invocation of the same action and app waits on no step: its cancel is
+            // refused, and the step another invocation waits on runs on.
+            let refused = session.tries_to_cancel(broker, other).await;
+            assert!(
+                matches!(
+                    &refused,
+                    Err(tilo_actions::remote::ActionCallError::NotCancellable { .. })
+                ),
+                "{refused:?}"
+            );
+            assert!(
+                !step.load(Ordering::Acquire),
+                "a cancel never reaches a step another invocation waits on"
+            );
+
+            session.cancels(broker, parent).await;
+            assert!(
+                !step.load(Ordering::Acquire),
+                "the cancel reaches the app, which stops what its run waits on"
+            );
+            assert!(
+                connection
+                    .handle
+                    .invocation_cancellation(waiting.id)
+                    .await
+                    .unwrap(),
+                "the app is told its invocation was cancelled"
+            );
+            app_cancels(&connection, call).await;
+            assert!(
+                step.load(Ordering::Acquire),
+                "the app's cancel of its call stops the step"
+            );
+            probe
+                .ends
+                .lock()
+                .unwrap()
+                .pop()
+                .unwrap()
+                .complete(Err(Box::new(tilo_actions::ActionFailure {
+                    code: "stopped".into(),
+                    message: "the check stopped".into(),
+                    details: None,
+                    retryable: false,
+                })));
+            assert!(
+                matches!(
+                    app_call_ended(&connection, call).await,
+                    tilo_actions::InvocationUpdate::Cancelled { .. }
+                ),
+                "the stopped step answers cancelled"
+            );
+            let cancelled = tilo_actions::InvocationUpdate::Cancelled {
+                invocation: parent,
+                message: Some("the check stopped".into()),
+            };
+            connection
+                .handle
+                .update_invocation(waiting.id, &serde_json::to_string(&cancelled).unwrap())
+                .await
+                .unwrap();
+            assert!(
+                matches!(
+                    session.ended(broker, parent).await,
+                    tilo_actions::InvocationUpdate::Cancelled { .. }
+                ),
+                "the invocation answers cancelled"
             );
         })
         .await;

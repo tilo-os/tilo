@@ -9,8 +9,9 @@
 //! The action's code ends once it started the check, and the invocation stays open until the
 //! check ends, answered then with the receipt of what the device observed. How far the device
 //! said the check got is the invocation's progress, and the app reads the same through
-//! `engine.job(job)`, the device's record of it; `engine.cancel(job)`, or the invocation's own
-//! cancel, stops it.
+//! `engine.job(job)`, the device's record of it. `engine.cancel(job)` stops it, and so does the
+//! invocation's own cancel, which the dispatch admits because the invocation waits on the device's
+//! check, a step that can be stopped, as it does for any action.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -359,22 +360,22 @@ impl Checks {
         }
     }
 
-    /// The broker cancelled the delivery `delivery`: the check that is its work stops, and the
-    /// invocation is answered as cancelled once it has. Whether one ran.
-    pub fn cancel_delivery(&self, delivery: u64) -> bool {
-        let call = self
-            .jobs
+    /// The calls to the device the invocation delivered as `delivery` waits on: its run ended,
+    /// and the check it started still runs. Its cancel stops them as it stops any call a run
+    /// waits on, and the check's end answers the invocation.
+    pub fn waited_on_by(&self, delivery: u64) -> Vec<InvocationId> {
+        self.jobs
             .borrow()
             .values()
-            .find(|job| {
+            .filter(|job| {
                 job.answers
                     .as_ref()
                     .is_some_and(|(answered, _)| *answered == delivery)
                     && !job.settled
                     && job.heard.end.is_none()
             })
-            .map(|job| job.call);
-        call.is_some_and(|call| self.stop(call))
+            .map(|job| job.call)
+            .collect()
     }
 
     /// What the broker is owed now, by delivery: each check's progress since the last turn as

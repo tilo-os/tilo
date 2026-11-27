@@ -246,9 +246,41 @@ struct PendingInvocation {
 struct HostStepStop {
     /// The flag that stops it when its caller cancels it.
     stop: Arc<AtomicBool>,
+    /// Who asked for it: only they, or whoever may cancel what they run, stop it.
+    owner: InvocationOwner,
     /// The invocation it is a step of, as the dispatch delivered that invocation to the app that
     /// made the call: that invocation waits on it, and its cancel stops it.
-    continues: Option<tilo_actions::InvocationId>,
+    continues: Option<StepOf>,
+}
+
+/// The delivered invocation a host step is the work of, as its app's verified connection was
+/// delivered it: the app, the workspace and the invocation's id, never what the call named.
+#[derive(Clone, PartialEq, Eq)]
+struct StepOf {
+    app: String,
+    workspace: String,
+    invocation: tilo_actions::InvocationId,
+}
+
+impl StepOf {
+    fn of(serving: &dyn tilo_actions::remote::Serving) -> Self {
+        Self {
+            app: serving.app().to_owned(),
+            workspace: serving.workspace().to_owned(),
+            invocation: serving.invocation(),
+        }
+    }
+
+    /// Whether `job` is the invocation this step is the work of: the same invocation, delivered
+    /// to the same app in the same workspace.
+    fn is(&self, job: &PendingInvocation) -> bool {
+        job.update.invocation() == self.invocation
+            && job.cluster_id == self.workspace
+            && job
+                .original
+                .as_ref()
+                .is_some_and(|original| original.acts_on().0 == self.app)
+    }
 }
 
 impl PendingInvocation {

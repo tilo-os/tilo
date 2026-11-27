@@ -602,9 +602,19 @@ impl AppBrokerState {
             return Err(ActionCallError::NotPermitted);
         }
         // Host services end through this barrier; a cancellable one is no longer running, so
-        // its stop flag is forgotten with it.
-        if let Ok(mut stops) = self.host_step_stops.lock() {
-            stops.remove(&admitted.id);
+        // its stop flag is forgotten with it. One that was stopped leaves the invocation it was
+        // the work of free to answer that it was stopped too.
+        let ended = self
+            .host_step_stops
+            .lock()
+            .ok()
+            .and_then(|mut stops| stops.remove(&admitted.id));
+        if let Some(of) = ended.and_then(|step| step.continues)
+            && matches!(update, InvocationUpdate::Cancelled { .. })
+            && let Ok(mut pending) = self.pending_invocations.lock()
+            && let Some(job) = pending.values_mut().find(|job| of.is(job))
+        {
+            job.cancellable = true;
         }
         // A host service's `Accepted` observation is not an application dispatch: what ends it
         // is either its own answer or, for a step that declared itself cancellable, its

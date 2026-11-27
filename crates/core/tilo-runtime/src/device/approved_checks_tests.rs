@@ -521,7 +521,7 @@ fn delivered_kind(workspace: &str, action: &str, asked: &str, kind: OperationKin
         )),
         contract: ActionContract {
             kind: ActionKind::Undoable,
-            execution: ExecutionMode::Background { cancellable: true },
+            execution: ExecutionMode::Background { cancellable: false },
             effects: vec![ActionEffect::new(
                 tilo_action_services::approved_checks::PROVIDER,
                 tilo_action_services::approved_checks::RESOURCE,

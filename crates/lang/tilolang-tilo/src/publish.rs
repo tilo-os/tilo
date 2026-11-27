@@ -540,12 +540,13 @@ fn described(
             chord: false,
         })
         .collect();
-    // A check its project's host approved runs as a job its invoker follows and can stop, and
-    // what it answers is what the commands printed, which no one vetted: the contract the broker
-    // runs a check for.
+    // A check its project's host approved runs as a job its invoker follows, and what it
+    // answers is what the commands printed, which no one vetted: the contract the broker runs a
+    // check for. It declares no cancellation of its own: while it waits on the device's check,
+    // a step that can be stopped, the dispatch lets its invoker stop it, as it does any action.
     if crate::meta::runs_approved_check(action) {
         let contract = &mut spec.type_mut().contract;
-        contract.execution = tilo_actions::ExecutionMode::Background { cancellable: true };
+        contract.execution = tilo_actions::ExecutionMode::Background { cancellable: false };
         if matches!(contract.result, tilo_actions::ResultSpec::None) {
             // What it answers is the host's receipt of what the commands did: a document with
             // the outcome, the exit code and the output they printed.

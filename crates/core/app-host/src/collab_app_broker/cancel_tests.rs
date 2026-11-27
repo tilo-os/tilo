@@ -184,6 +184,27 @@ fn a_cancelled_host_step_stops_and_answers_cancelled() {
             .is_terminal(),
         "the step runs until its caller stops it"
     );
+    // Nobody else stops it by naming its job: not another member, not an app.
+    let job = state
+        .remote_job(&person, &request.invocation)
+        .expect("the person's step is their job");
+    for stranger in [
+        tilo_action_policy::Actor::from(tilo_action_policy::MemberId::person(hex::encode(
+            [42; 32],
+        ))),
+        tilo_action_policy::Actor::App(APP.into()),
+    ] {
+        assert!(
+            state.request_cancellation(job, &stranger).is_err(),
+            "{stranger:?} does not stop another's step"
+        );
+    }
+    assert!(
+        !state.host_step_stops.lock().unwrap()[&job]
+            .stop
+            .load(Ordering::Acquire),
+        "a refused cancel leaves the step running"
+    );
     crate::collab_app_broker::answered(state.action_cancel(&person, &request.invocation))
         .expect("a cancellable step is cancelled");
 
