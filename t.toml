@@ -3858,7 +3858,7 @@ default = false
 [[check]]
 name = "people-bar-shots"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "rm -rf /target/people-bar-shots /target/people-bar-shots-light\nbash tools/build-sibling-binaries.sh tilo-daemon:tilo-runtime=test-support,agents launcher:tilo-launcher=dev-overrides\nTL_SHELL_SHOTS=/target/people-bar-shots bash tools/test-env.sh cargo test --locked -p tilo-session --test it --features ui/test-support -- people_between_devices::\nTILO_PEOPLE_LIGHT=1 TL_SHELL_SHOTS=/target/people-bar-shots-light bash tools/test-env.sh cargo test --locked -p tilo-session --test it --features ui/test-support -- people_between_devices::\n"
+run = "rm -rf /target/people-bar-shots /target/people-bar-shots-light\nbash tools/build-sibling-binaries.sh tilo-daemon:tilo-runtime=test-support,agents launcher:tilo-launcher=dev-overrides\nTL_SHELL_SHOTS=/target/people-bar-shots bash tools/test-env.sh cargo test --locked -p tilo-session --test it --features ui/test-support -- people_between_devices:: --test-threads=1\nTILO_PEOPLE_LIGHT=1 TL_SHELL_SHOTS=/target/people-bar-shots-light bash tools/test-env.sh cargo test --locked -p tilo-session --test it --features ui/test-support -- people_between_devices:: --test-threads=1\n"
 requires = ["arch=aarch64"]
 outputs = ["/target/people-bar-shots/**", "/target/people-bar-shots-light/**"]
 evidence = ["/target/people-bar-shots/**", "/target/people-bar-shots-light/**"]
