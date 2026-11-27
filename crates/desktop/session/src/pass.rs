@@ -536,6 +536,10 @@ impl Session {
         self.shared
             .wallpapers
             .set_active(active.map(|workspace| workspace.to_string()));
+        // A program's question no workspace runs is asked in the workspace in front.
+        self.shared
+            .program_notices
+            .in_front(active.map(|workspace| workspace.to_string()));
         // The picture the workspace in front shows, as the shell's views draw it under everything:
         // decoded once for all its hosts and handed to the thread that lays the views out.
         self.shared.wallpaper.set(

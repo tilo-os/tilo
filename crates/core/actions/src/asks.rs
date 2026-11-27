@@ -75,6 +75,8 @@ struct Pending {
     /// Tells this asking apart from another under the same handle.
     id: u64,
     question: Question,
+    /// The workspace it is raised in: its sender's ([`AskSender::in_workspace`]).
+    workspace: Option<String>,
     reply: oneshot::Sender<Answer>,
 }
 
@@ -110,6 +112,7 @@ pub fn channel() -> (AskSender, AskReceiver) {
         AskSender {
             sent,
             waking: Arc::clone(&waking),
+            workspace: None,
         },
         AskReceiver {
             received: Arc::new(Mutex::new(Received {
@@ -127,12 +130,17 @@ pub fn channel() -> (AskSender, AskReceiver) {
 pub struct AskSender {
     sent: mpsc::UnboundedSender<Sent>,
     waking: Waking,
+    /// The workspace of the program that asks through it: where each of its questions is raised.
+    /// `None` for a program no workspace runs (polkit, a program outside Tilo), whose questions
+    /// are raised in the workspace the person has in front.
+    workspace: Option<String>,
 }
 
 impl std::fmt::Debug for AskSender {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AskSender")
             .field("received", &!self.sent.is_closed())
+            .field("workspace", &self.workspace)
             .finish_non_exhaustive()
     }
 }
@@ -147,6 +155,16 @@ impl AskSender {
         reached
     }
 
+    /// This sender for a program `workspace` runs: each question asked through it is raised in
+    /// that workspace and no other, whatever the program says of it.
+    #[must_use]
+    pub fn in_workspace(&self, workspace: impl Into<String>) -> Self {
+        Self {
+            workspace: Some(workspace.into()),
+            ..self.clone()
+        }
+    }
+
     /// Ask `question`; the answer is `None` when it was declined or replaced, or nobody receives
     /// questions any more. Asking again under the same handle replaces the question.
     pub fn ask(&self, question: Question) -> Asked {
@@ -159,6 +177,7 @@ impl AskSender {
             Sent::Ask(Pending {
                 id,
                 question,
+                workspace: self.workspace.clone(),
                 reply,
             }),
         );
@@ -279,6 +298,19 @@ impl AskReceiver {
         self.pending()
             .into_iter()
             .find(|question| question.handle == handle)
+    }
+
+    /// The workspace pending question `handle` is raised in: its program's, `None` for a
+    /// program no workspace runs.
+    #[must_use]
+    pub fn workspace_of(&self, handle: &str) -> Option<String> {
+        let mut received = self.received.lock_recover();
+        received.take_in();
+        received
+            .pending
+            .iter()
+            .find(|pending| pending.question.handle == handle)
+            .and_then(|pending| pending.workspace.clone())
     }
 
     /// Answer question `handle`; `false` when it is no longer pending, or its program stopped

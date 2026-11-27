@@ -65,6 +65,8 @@ struct Device {
     store: Arc<AskedStore>,
     kept: Arc<Kept>,
     records: Mutex<Option<Arc<dyn AskedRecords>>>,
+    /// The workspace each question was raised in, in order.
+    raised_in: Mutex<Vec<String>>,
     states: Mutex<HashMap<InvocationId, InvocationUpdate>>,
     changes: Mutex<Vec<Completer<()>>>,
 }
@@ -85,6 +87,7 @@ impl Device {
             store,
             kept,
             records: Mutex::default(),
+            raised_in: Mutex::default(),
             states: Mutex::default(),
             changes: Mutex::default(),
         });
@@ -169,9 +172,17 @@ impl ActionProvider for Device {
 
     fn invoke(
         &self,
-        _: &Caller,
+        caller: &Caller,
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // As the device's shell does, a call that names no workspace is refused: an asked record
+        // is kept by one.
+        let Some(workspace) = caller.workspace().map(str::to_owned) else {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: "the shell calls that in a workspace, and named none".into(),
+            }));
+        };
+        self.raised_in.lock().unwrap().push(workspace.clone());
         let invocation = request.invocation;
         let records = self.records.lock().unwrap().clone().expect("records");
         let (done, answer) = pending();
@@ -179,7 +190,7 @@ impl ActionProvider for Device {
         self.asks.invoke(&ada(), request.clone()).then(move |sent| {
             let receipt = match sent {
                 Some(Err(ActionCallError::ConfirmationRequired(facts))) => {
-                    match records.write_asked(WORKSPACE, &ada(), &request, &facts) {
+                    match records.write_asked(&workspace, &ada(), &request, &facts) {
                         Ok(_) => {
                             device(invocation, InvocationUpdate::Accepted { invocation });
                             Ok(InvocationReceipt {
@@ -289,11 +300,35 @@ impl AskedDispatch for Device {
     }
 }
 
-/// The session's side of the programs' questions, and the device it raises them through.
+/// The session's side of the programs' questions, and the device it raises them through, with
+/// [`WORKSPACE`] in front.
 fn session() -> (tilo_service::AskSender, Arc<Device>) {
     let (sender, receiver) = tilo_service::asks::channel();
     let asks = ProgramAsks::over(&receiver, tokio::runtime::Handle::current(), || {});
+    asks.in_front(Some(WORKSPACE.to_owned()));
     (sender, Device::start(&asks))
+}
+
+impl Device {
+    /// The workspaces the questions were raised in so far.
+    fn raised_in(&self) -> Vec<String> {
+        self.raised_in.lock().unwrap().clone()
+    }
+}
+
+/// What an app that starts in `workspace` asks before it first reaches the network.
+fn network_question(workspace: &str, app: &str) -> tilo_service::Question {
+    tilo_service::Question {
+        handle: format!("{}:{workspace}:{app}", crate::network_reach::KIND),
+        kind: crate::network_reach::KIND.into(),
+        app_id: Some(app.into()),
+        label: "YouTube".into(),
+        details: serde_json::to_value(crate::network_reach::ReachQuestion {
+            hosts: vec!["*.youtube.com".into(), "*.googlevideo.com".into()],
+            calls: false,
+        })
+        .unwrap(),
+    }
 }
 
 fn approve(typed: &[&str]) -> Resolve {
@@ -551,4 +586,89 @@ async fn a_long_name_and_an_ipv6_receiver_fit_the_verification_card() {
         "the fingerprint is read as it is typed"
     );
     drop(answer);
+}
+
+/// An app asks whether it may reach the internet before it first starts in its workspace: the
+/// person is asked there, not in the workspace in front, and allowing it answers the launch that
+/// waits.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_apps_network_question_is_asked_in_its_workspace_and_allowed() {
+    let (sender, device) = session();
+    let answer = sender
+        .in_workspace("tube")
+        .ask(network_question("tube", "so.tilo.tube"));
+    let asked = device.asked().await;
+    assert_eq!(device.raised_in(), ["tube"]);
+    let sites: Vec<&str> = asked
+        .facts
+        .facts
+        .iter()
+        .skip(1)
+        .map(|fact| fact.value.as_str())
+        .collect();
+    assert_eq!(sites.len(), 2, "each site is shown: {asked:?}");
+    device.resolve(&asked, approve(&[])).await.unwrap();
+    tokio::time::timeout(WAIT, answer)
+        .await
+        .expect("the launch is answered")
+        .expect("the person allowed it");
+}
+
+/// Denying an app the internet tells its launch no.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_apps_network_question_denied_is_no() {
+    let (sender, device) = session();
+    let answer = sender
+        .in_workspace("tube")
+        .ask(network_question("tube", "so.tilo.tube"));
+    let asked = device.asked().await;
+    device
+        .resolve(
+            &asked,
+            Resolve {
+                resolution: Offer::Decline,
+                ..Resolve::default()
+            },
+        )
+        .await
+        .unwrap();
+    let answered = tokio::time::timeout(WAIT, answer)
+        .await
+        .expect("the launch is told");
+    assert!(answered.is_none(), "a denied app reaches nothing");
+}
+
+/// polkit asks for no workspace: its question is asked in the workspace in front, and one asked
+/// while none is in front waits until one is.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_question_of_no_workspace_is_asked_in_the_one_in_front() {
+    use tilo_polkit_agent::service::Sheets as _;
+    let (sender, receiver) = tilo_service::asks::channel();
+    let asks = ProgramAsks::over(&receiver, tokio::runtime::Handle::current(), || {});
+    let device = Device::start(&asks);
+    let sheets = tilo_polkit_agent::questions::QuestionSheets::new(sender);
+    let _answer = sheets.ask("polkit-4", polkit_prompt());
+    tokio::task::yield_now().await;
+    assert!(
+        device.raised_in().is_empty(),
+        "nothing is in front to ask in"
+    );
+    asks.in_front(Some(WORKSPACE.to_owned()));
+    let asked = device.asked().await;
+    assert_eq!(device.raised_in(), [WORKSPACE]);
+    assert_eq!(device.store.waiting_in(WORKSPACE).len(), 1, "{asked:?}");
+}
+
+/// A program of one workspace cannot have its question asked in another: whatever it names, it
+/// is raised in the workspace its sender is bound to.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_program_cannot_ask_in_another_workspace() {
+    let (sender, device) = session();
+    let _answer = sender
+        .in_workspace("ours")
+        .ask(network_question("theirs", "so.example.app"));
+    device.asked().await;
+    assert_eq!(device.raised_in(), ["ours"]);
+    assert!(device.store.waiting_in("theirs").is_empty());
+    assert_eq!(device.store.waiting_in("ours").len(), 1);
 }

@@ -30,9 +30,11 @@ pub(crate) struct ReachQuestion {
     pub(crate) calls: bool,
 }
 
-/// Ask the person whether the app `first` starts may reach what it declares.
+/// Ask the person whether the app `first` starts may reach what it declares, in the workspace it
+/// starts in.
 pub(crate) fn ask(questions: &AskSender, first: &ReachFirst) -> Asked {
-    questions.ask(Question {
+    // Asked in the workspace the app starts in, which keeps the grants an answer writes.
+    questions.in_workspace(&first.workspace).ask(Question {
         handle: format!("{KIND}:{}:{}", first.workspace, first.app),
         kind: KIND.to_owned(),
         app_id: Some(first.app.clone()),

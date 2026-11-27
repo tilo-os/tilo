@@ -38,6 +38,11 @@ pub(crate) struct ProgramNotices {
 }
 
 impl ProgramNotices {
+    /// The person has `workspace` in front now ([`ProgramAsks::in_front`]).
+    pub(crate) fn in_front(&self, workspace: Option<String>) {
+        self.asks.in_front(workspace);
+    }
+
     pub(crate) fn new(asks: ProgramAsks, services: Rc<RefCell<Services>>) -> Self {
         Self {
             asks,

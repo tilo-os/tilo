@@ -68,6 +68,8 @@ pub(crate) struct Dispatch {
 /// One question raised: the call it waits in, what it shows, and what an answer means.
 struct Raised {
     invocation: InvocationId,
+    /// Who the session raised it as: in the workspace it was raised in.
+    caller: Caller,
     question: Question,
     facts: AskedFacts,
     reply: Reply,
@@ -86,6 +88,9 @@ struct Inner {
     dispatch: OnceLock<Dispatch>,
     /// Wakes the session's loop, where the notices are shown.
     wake: OnceLock<Wake>,
+    /// The workspace the person has in front, as the session's pass last saw it: where a
+    /// question of a program no workspace runs is raised.
+    in_front: Mutex<Option<String>>,
 }
 
 /// The programs' questions as asked records.
@@ -98,7 +103,9 @@ pub(crate) struct ProgramAsks {
 
 impl ProgramAsks {
     /// Raise every question `questions` receives, as it arrives, once the dispatch is reached
-    /// ([`Self::serve_on`]); `wake` wakes the session's loop when a notice is due.
+    /// ([`Self::serve_on`]); `wake` wakes the session's loop when a notice is due. A question is
+    /// raised in the workspace of the program that asks it, and one of a program no workspace
+    /// runs (polkit, a program outside Tilo) in the workspace in front ([`Self::in_front`]).
     pub(crate) fn over(
         questions: &AskReceiver,
         runtime: tokio::runtime::Handle,
@@ -145,6 +152,18 @@ impl ProgramAsks {
                 caller: Caller::local_system(),
             });
         });
+    }
+
+    /// The person has `workspace` in front now: a question of a program no workspace runs is
+    /// raised there from now on, and one that waited for a workspace to be in front is raised.
+    pub(crate) fn in_front(&self, workspace: Option<String>) {
+        let mut in_front = self.inner.in_front.lock_recover();
+        if *in_front == workspace {
+            return;
+        }
+        *in_front = workspace;
+        drop(in_front);
+        self.follow();
     }
 
     /// Raise the questions through `dispatch`, from now on.
@@ -219,6 +238,24 @@ impl ProgramAsks {
                 return;
             }
         };
+        // The call is the person's in the question's workspace: an asked record is kept by a
+        // workspace, and the device answers no call that names none.
+        let Some(workspace) = self
+            .questions
+            .workspace_of(&handle)
+            .or_else(|| self.inner.in_front.lock_recover().clone())
+        else {
+            // It waits unraised until a workspace is in front ([`Self::in_front`]).
+            tracing::debug!(
+                kind = question.kind,
+                "a program's question waits for a workspace"
+            );
+            return;
+        };
+        let dispatch = Dispatch {
+            actions: Arc::clone(&dispatch.actions),
+            caller: dispatch.caller.clone().in_workspace(workspace),
+        };
         let kinds::Raised {
             facts,
             reply,
@@ -229,6 +266,7 @@ impl ProgramAsks {
             handle.clone(),
             Raised {
                 invocation,
+                caller: dispatch.caller.clone(),
                 question,
                 facts,
                 reply,
@@ -252,7 +290,6 @@ impl ProgramAsks {
             signed: None,
         };
         let asks = self.clone();
-        let dispatch = dispatch.clone();
         self.runtime.spawn(async move {
             let admitted = dispatch.actions.invoke(&dispatch.caller, request).await;
             match &admitted {
@@ -326,14 +363,11 @@ impl ProgramAsks {
         let Some(was) = self.inner.raised.lock_recover().remove(handle) else {
             return;
         };
-        let dispatch = dispatch.clone();
+        let actions = Arc::clone(&dispatch.actions);
         self.runtime.spawn(async move {
             let _ = tilo_failure::ignored!(
                 "a question its program took back that ended already has nothing left to end",
-                dispatch
-                    .actions
-                    .cancel(&dispatch.caller, &was.invocation)
-                    .await
+                actions.cancel(&was.caller, &was.invocation).await
             );
         });
     }
