@@ -60,10 +60,11 @@ fn window(key: &str, title: &str, app: &str, elsewhere: bool) -> serde_json::Val
         "workspace_key": "w1", "group_key": key, "tab_index": 0, "share": 1.0,
         "elsewhere": elsewhere, "device": "", "device_name": "", "place": 1, "recency": 1,
         "focused": false, "preview": "live", "width": 0, "height": 0,
-        "not_responding": false, "fullscreen": false,
+        "not_responding": false, "attention": false, "busy": false, "modified": false,
+        "presence": [], "fullscreen": false,
         "floating": false, "renameable": false, "opens_tabs": false, "controls_desktop": false,
         "display_id": "screen-1", "bar_location": "", "bar_field": "", "bar_typing": false,
-        "bar": null, "author": null, "ended": null,
+        "find": null, "bar": null, "author": null, "ended": null,
     })
 }
 

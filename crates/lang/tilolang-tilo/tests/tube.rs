@@ -339,7 +339,10 @@ fn a_playback_that_fails_says_why_and_try_again_asks_again() {
     page.fire_with(
         &player,
         "fail",
-        Some(&Value::text("YouTube refused this stream (403)")),
+        Some(&Value::List(vec![
+            Value::text("YouTube refused this stream (403)"),
+            Value::Float(0.0),
+        ])),
     )
     .unwrap();
     ada.commit();

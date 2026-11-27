@@ -171,6 +171,8 @@ const READING: &str = r#"{
       },
       "x": 0, "y": 0, "width": 2560, "height": 1440, "scale": 1.0,
       "transform": "normal", "primary": true,
+      "bar_reached": false, "bar_covered": false,
+      "dock_reached": false, "dock_covered": false,
       "mode": {"width": 2560, "height": 1440, "refresh_mhz": 60000},
       "modes": [{"width": 2560, "height": 1440, "refresh_mhz": 60000}],
       "hdr": true, "hdr_on": false, "sink_hdr": true, "hdr_unavailable": null,

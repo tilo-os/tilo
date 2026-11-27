@@ -130,11 +130,13 @@ tilo_test_env::scenario! {
             .run_agent_block(&Actor::from(tilolang_tilo::runtime::ids::MemberId::person("stranger")), &add_block(&ada, "milk"))
             .unwrap();
         assert_eq!(state(stranger), "denied");
+        // An agent is its id and the person it acts for: admitting it admits that pair, so the
+        // block runs as the agent that was admitted.
         ada.host.admit_agent(&agent());
         let admitted = ada
             .host
             .runtime()
-            .run_agent_block(&Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("task-1", "stranger")), &add_block(&ada, "eggs"))
+            .run_agent_block(&Actor::from(tilolang_tilo::runtime::ids::MemberId::agent("task-1", "ada")), &add_block(&ada, "eggs"))
             .unwrap();
         assert_eq!(state(admitted), "done");
     }

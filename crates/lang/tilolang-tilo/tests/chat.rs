@@ -798,9 +798,9 @@ tilo_test_env::scenario! {
         );
         let sidebar = ada.view(APP);
         let mut all = sidebar.tree().of_kind("ui.NavItem");
-        let place = |all: &mut Vec<&UiNode>, key: &str| {
+        let place = |all: &mut Vec<&UiNode>, name: &str| {
             all.iter()
-                .find(|item| item.props.get("key") == Some(&Value::text(key)))
+                .find(|item| item.props.get("label") == Some(&Value::text(name)))
                 .map(|item| {
                     (
                         item.props.get("live").cloned(),
@@ -810,13 +810,13 @@ tilo_test_env::scenario! {
                 .expect("the place")
         };
         assert_ne!(
-            place(&mut all, "/design").0,
+            place(&mut all, "design").0,
             Some(Value::Int(2)),
             "design's badge cleared"
         );
-        assert_ne!(place(&mut all, "/design").1, Some(Value::Bool(true)));
+        assert_ne!(place(&mut all, "design").1, Some(Value::Bool(true)));
         assert_eq!(
-            place(&mut all, "/random").0,
+            place(&mut all, "random").0,
             Some(Value::Int(1)),
             "random's is its own"
         );
@@ -859,7 +859,7 @@ tilo_test_env::scenario! {
 
         // Three messages are new: the thread started from the first is not one of them, and both
         // places say the same number.
-        let badge = badge_of(&mut ada.view(APP), "/design");
+        let badge = badge_of(&mut ada.view(APP), "design");
         let mut channel = open(&ada, &target(&design));
         let header = header_count(&mut channel);
         assert_eq!(badge, Some(3), "three messages wait in design");
@@ -871,7 +871,7 @@ tilo_test_env::scenario! {
             .mark_seen(&tilolang_tilo::personal::actor("ada"), &target(&design))
             .unwrap();
         ada.commit();
-        assert_eq!(badge_of(&mut ada.view(APP), "/design"), None, "read");
+        assert_eq!(badge_of(&mut ada.view(APP), "design"), None, "read");
         let mut read = open(&ada, &target(&design));
         assert_eq!(header_count(&mut read), None, "and the header agrees");
     }
@@ -946,13 +946,13 @@ tilo_test_env::scenario! {
 }
 
 /// The number a place in the sidebar shows, on the row `key` names.
-fn badge_of(view: &mut ViewInstance, key: &str) -> Option<i64> {
+fn badge_of(view: &mut ViewInstance, name: &str) -> Option<i64> {
     view.poll_patches().unwrap();
     let places = view.tree().of_kind("ui.NavItem");
     let place = places
         .into_iter()
-        .find(|item| item.props.get("key") == Some(&Value::text(key)))
-        .unwrap_or_else(|| panic!("no place {key}"));
+        .find(|item| item.props.get("label") == Some(&Value::text(name)))
+        .unwrap_or_else(|| panic!("no place {name}"));
     match place.props.get("live") {
         Some(Value::Int(count)) => Some(*count),
         _ => None,

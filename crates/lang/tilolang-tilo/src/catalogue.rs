@@ -1286,7 +1286,7 @@ params = [
         let sign_in = action
             .params
             .iter()
-            .find(|param| param.name == "sign_in")
+            .find(|param| param.name == "signIn")
             .expect("the sign-in parameter");
         assert!(!sign_in.secret, "a plain text parameter stays plain");
     }

@@ -37,11 +37,19 @@ fn settings_with(access: Option<MemberAccess>) -> (Host, tilolang::Compiled) {
     let metas = crate::fixtures::settings_packages().expect("the platform's packages read");
     let compiled =
         tilolang::compile_package_source(&source, &ids, &metas).expect("the package compiles");
+    let policy = access
+        .as_ref()
+        .map(|access| std::sync::Arc::clone(&access.policy));
     let host = Host::new(
         Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
         move || access.clone(),
     )
     .expect("a host");
+    // A member's role is read from the workspace's members' resource: the people the policy names
+    // are in it, as the workspace's add-member action puts them.
+    if let Some(policy) = &policy {
+        crate::fixtures::stage_people(&host, policy);
+    }
     host.load_compiled(&compiled).expect("the package loads");
     // The platform's packages it uses, as a window's process loads them: what a pane reads of the
     // workspace or the device is a resource their readings and actions come from.

@@ -368,8 +368,10 @@ fn a_computer_without_a_running_firewall_says_so_and_how_to_try_again() {
     assert!(words.iter().any(|text| text == "Try again"), "{words:?}");
 }
 
+/// The Delete key deletes the rule it names, and the press asks first: handing the configuration
+/// to firewalld changes the device, which undo cannot take back.
 #[test]
-fn the_delete_key_acts_on_the_chosen_rule_and_undo_brings_it_back() {
+fn the_delete_key_asks_first_and_the_yes_deletes_the_chosen_rule() {
     let app = installed(READING);
     let window = app.window();
     let mut deleting = Vec::new();
@@ -381,25 +383,31 @@ fn the_delete_key_acts_on_the_chosen_rule_and_undo_brings_it_back() {
     let before = applies(&app);
     window
         .fire(&chosen.key, "press")
-        .expect("the Delete key deletes");
+        .expect("the Delete key asks");
+    assert_eq!(
+        applies(&app),
+        before,
+        "nothing is handed to firewalld before the person's yes"
+    );
+    // The person answers the confirm: the delete runs on their yes, and the rule is gone.
+    let args = app.sent.asked("delete_rule");
+    let outcome = app
+        .host
+        .runtime()
+        .invoke_approved_through(&me(), None, (app.action_id("delete_rule"), args), None)
+        .expect("the yes deletes");
+    assert!(
+        matches!(outcome, tilolang_runtime::InvokeOutcome::Done(_)),
+        "{outcome:?}"
+    );
     assert!(
         applies(&app) > before,
-        "the rule is handed to firewalld at once, without a dialog"
+        "the yes hands the rule to firewalld"
     );
     let window = app.window();
     assert!(
         !has(&window, "Port 3389"),
         "the rule is gone: {:?}",
-        shown(&window)
-    );
-    app.host
-        .store()
-        .undo_last(Some(&me()))
-        .expect("the change is taken back");
-    let window = app.window();
-    assert!(
-        has(&window, "Port 3389"),
-        "undo brings the rule back: {:?}",
         shown(&window)
     );
 }
