@@ -403,9 +403,9 @@ impl Allowance {
     }
 }
 
-/// A change [`VaultItems`] made to the vault's entries, for whoever keeps the vault to write:
-/// the entry kept, the entry forgotten, or the uses of an entry. A use changes only an entry's
-/// uses, never the entry, so a use written while a member edits the entry loses neither.
+/// A change made to the vault's entries, for whoever keeps the vault to write: the entry kept,
+/// the entry forgotten, or the uses of an entry. A use changes only an entry's uses, never the
+/// entry, so a use written while a member edits the entry loses neither.
 #[derive(Clone, PartialEq, Eq)]
 pub enum VaultChange {
     Keep(SecretItem),
