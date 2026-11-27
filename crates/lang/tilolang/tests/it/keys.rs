@@ -250,3 +250,15 @@ fn one_key_is_refused_for_one_action_on_different_values() {
         "one command on two values is two presses: {got:?}"
     );
 }
+
+#[test]
+fn a_view_shown_in_two_arms_keeps_the_key_of_the_control_it_shows() {
+    // Both arms show the same view, so its keyed control is lowered once per arm: the two are
+    // one control, written once, and neither loses the press its key answers.
+    let body = "type Note {\n    title: Text\n}\ntype Notebook {\n    notes: Collection<Note>\n}\naction share(nb: Notebook) (key: \"Ctrl+1\") {\n}\nview share_bar(nb: Notebook) {\n    ui.Button(\"Share\", key: \"Ctrl+1\") {\n        on press: share(nb)\n    }\n}\nview notebook(nb: Notebook) {\n    state grid: Bool = true\n    if grid {\n        share_bar(nb)\n    } else {\n        share_bar(nb)\n    }\n}\n";
+    let got = codes(body);
+    assert!(
+        got.is_empty(),
+        "the view's control shows its action's key whichever arm shows it: {got:?}"
+    );
+}

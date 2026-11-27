@@ -177,6 +177,9 @@ struct FnState {
     /// Whether the expression is the action `file.choose` runs, whose file fills the parameter the
     /// action leaves out.
     choosing: bool,
+    /// Whether the expression is the action `file.pick_folder` runs, whose folder's reference
+    /// fills a text parameter the action leaves out.
+    picking: bool,
     /// The resource the call of an action at the span is made from (`ask(a).made_from(m)` in an
     /// action): the call it names runs as a change of its own, made from it.
     made_from: Option<(Span, Ex)>,
@@ -924,13 +927,25 @@ impl Checker<'_> {
         };
         match crate::resolve::shortcut_key(&text) {
             Ok((key, shown)) => {
-                self.control_keys.push((
-                    self.st.view_id.clone(),
-                    key.clone(),
-                    value.span,
-                    None,
-                    self.st.arms.clone(),
-                ));
+                // A view shown in two arms of one view is lowered once per arm over the source
+                // it is written in, so its controls meet the checker again at the same span: a
+                // key already recorded where it is written is the one control, kept once. Its
+                // press is recorded against the record it was first written at
+                // ([`Self::key_presses`] matches by that span), so a second record would be left
+                // without one.
+                let known = self
+                    .control_keys
+                    .iter()
+                    .any(|(_, held, at, _, _)| *held == key && *at == value.span);
+                if !known {
+                    self.control_keys.push((
+                        self.st.view_id.clone(),
+                        key.clone(),
+                        value.span,
+                        None,
+                        self.st.arms.clone(),
+                    ));
+                }
                 self.last_shortcut = Some((key, value.span));
                 self.prop(Ex::local(n, Ty::View), name, Ex::str(&shown), value.span);
             }
