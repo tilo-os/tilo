@@ -555,7 +555,9 @@ view banners_over(roomy: Bool) {
     // the dot on their face instead, and their card is where the question waits.
     if device.overlays.ask != "" and device.overlays.ask_open {
         stack(at: .top_trailing, padding: .group) {
-            ui.FloatingPanel(width: 360.0) {
+            // A display too narrow for a card at a banner's width takes it across, as the
+            // questions that rise with the banners do, so it never stands off the display.
+            ui.FloatingPanel(width: if not space.compact { 360.0 }, fill: space.compact) {
                 ask_card()
             }
         }

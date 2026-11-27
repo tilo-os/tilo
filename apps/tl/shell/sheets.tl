@@ -93,12 +93,7 @@ view power_sheet() {
         // surface that takes the menu down.
         let room = device.room
         let width = 380.0.min(room.width)
-        ui.FloatingPanel(
-            label: "Power",
-            width: width,
-            x: room.x + room.width - width,
-            y: room.y,
-        ) {
+        ui.FloatingPanel(label: "Power", width: width, x: room.x + room.width - width, y: room.y) {
             stack(gap: .tight) {
                 ui.Text("Power", role: .caption, secondary: true)
                 for e in m.offers {

@@ -219,7 +219,7 @@ view start_cards() {
                     secondary: true,
                 )
             }
-            grid(min: 18rem, gap: .related) {
+            grid(min: 18rem, gap: .sibling) {
                 ui.Card(title: "Notes") {
                     row(gap: .related, align: .center) {
                         ui.Icon(.file_text, size: .large)

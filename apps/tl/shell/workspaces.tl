@@ -70,18 +70,22 @@ view workspace_card(w: LayoutWorkspace) {
 view your_tilo() {
     // Read once, so a section that hides itself still reads the same answer as the one beside it.
     let yours = device.yours
-    ui.Text("Your Tilo", role: .heading)
-    if not yours.elsewhere.is_empty() {
-        ui.Section("More workspaces") {
-            for e in yours.elsewhere {
-                ui.ListRow(e.name, secondary: "On one of your hosts", icon: .layers) {
-                    on activate: device.host_action(device.people, id: e.action)
+    // The heading leads the sections under it: the room over each section's own title is more
+    // than the room that title keeps over the rows it opens, so it reads with what it opens.
+    stack(gap: .sibling) {
+        ui.Text("Your Tilo", role: .heading)
+        if not yours.elsewhere.is_empty() {
+            ui.Section("More workspaces") {
+                for e in yours.elsewhere {
+                    ui.ListRow(e.name, secondary: "On one of your hosts", icon: .layers) {
+                        on activate: device.host_action(device.people, id: e.action)
+                    }
                 }
             }
         }
+        hosts_section(yours.hosts)
+        agents_section()
     }
-    hosts_section(yours.hosts)
-    agents_section()
 }
 
 /// The hosts running the person's workspaces: each its name and what the account is on, the
