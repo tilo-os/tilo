@@ -1748,7 +1748,10 @@ impl Store {
         };
         let doc = self.doc(&doc_id)?;
         let before = doc.get_heads();
-        let mut tx = doc.transaction();
+        // What the edit did is logged, so what the content names is read from it alone.
+        let mut tx = doc
+            .transaction_log_patches(PatchLog::active())
+            .map_err(|_| StoreError::Document(automerge::AutomergeError::Fail))?;
         let answer = edit(&mut tx, &ROOT);
         let answer = match answer {
             Ok(answer) => answer,
@@ -1762,10 +1765,11 @@ impl Store {
             held.add_in(&tx, &ROOT);
             named_in(called_before.as_ref(), &doc_id, stamp.for_change(&held))
         });
-        tx.commit_with(CommitOptions::default().with_message(called.message()));
+        let (_, mut log) = tx.commit_with(CommitOptions::default().with_message(called.message()));
         if doc.get_heads() == before {
             return Ok((answer, None));
         }
+        let patches = doc.make_patches(&mut log);
         self.kept_call(&doc_id, &called);
         let doc = self.doc(&doc_id)?;
         let change = doc
@@ -1778,7 +1782,7 @@ impl Store {
             heads: &heads,
             changes: &[],
         });
-        self.note_named_content(&doc_id);
+        self.note_named_content(&doc_id, Some(&patches));
         // The resource changed when its content did: it is indexed again with the time.
         if let Some(held) = self.index.get(kind, id).cloned() {
             let heads = self
@@ -1858,8 +1862,8 @@ impl Store {
         let copied = new
             .get_last_local_change()
             .ok_or(StoreError::Document(automerge::AutomergeError::Fail))?;
-        self.note_named_content(&old_id);
-        self.note_named_content(&new_id);
+        self.note_named_content(&old_id, None);
+        self.note_named_content(&new_id, None);
         self.note_group(&old_id, stamp);
         self.note_group(&new_id, stamp);
         self.kept_call(&old_id, &emptying);
@@ -3077,20 +3081,24 @@ impl Store {
                 touched.insert(id.to_owned());
             }
         }
-        self.index_resources(doc_id, readers, Some(touched))
+        self.index_resources(doc_id, readers, Some((touched, &patches)))
     }
 
-    /// Reads from `doc` the resources `only` names (all of them when `None`) and commits what
-    /// it holds of them to the index.
+    /// Reads from `doc` the resources `only` names, beside what the change that touched them did
+    /// to it (all of them when `None`, a document read whole), and commits what it holds of them
+    /// to the index.
     fn index_resources(
         &mut self,
         doc_id: &str,
         readers: &str,
-        only: Option<BTreeSet<String>>,
+        only: Option<(BTreeSet<String>, &[automerge::Patch])>,
     ) -> Result<(), StoreError> {
+        let (touched, patches) = only.map_or((None, None), |(touched, patches)| {
+            (Some(touched), Some(patches))
+        });
         let doc = self.doc(doc_id)?;
-        let ids: BTreeSet<String> = match only {
-            Some(ids) => ids,
+        let ids: BTreeSet<String> = match touched {
+            Some(touched) => touched,
             None => doc
                 .keys(ROOT)
                 .filter_map(|key| key.strip_prefix(HELD).map(str::to_owned))
@@ -3123,7 +3131,7 @@ impl Store {
             }
         }
         // A content document holds no resources: what its content names is noted instead.
-        self.note_named_content(doc_id);
+        self.note_named_content(doc_id, patches);
         self.commit(&Commit {
             doc: doc_id,
             readers,

@@ -5,7 +5,10 @@
 
 use std::collections::BTreeSet;
 
-use automerge::{Automerge, ObjId, ObjType, ROOT, ReadDoc as _, ScalarValue, Span, Value, hydrate};
+use automerge::{
+    Automerge, ObjId, ObjType, Patch, PatchAction, ROOT, ReadDoc as _, ScalarValue, Span, Value,
+    hydrate,
+};
 
 use super::Store;
 
@@ -13,18 +16,73 @@ impl Store {
     /// Note what the content document `doc_id` names now, when it is the content of a resource
     /// ([`super::content_resource`]) and this store holds it: a write of it, a peer's change or
     /// its load. A document only a snapshot restored is noted from that snapshot.
-    pub(super) fn note_named_content(&mut self, doc_id: &str) {
+    ///
+    /// `changed` is what the write or the peer's change did to the document, when that is all
+    /// that happened to it since it was last noted: what it names is then read from what the
+    /// change put, not the whole document, so a write costs what it changed, however large the
+    /// document is. `None` reads the whole document.
+    pub(super) fn note_named_content(&mut self, doc_id: &str, changed: Option<&[Patch]>) {
         let Some((kind, id)) = super::content_resource(doc_id) else {
             return;
         };
         let Some(doc) = self.docs.get(doc_id) else {
             return;
         };
-        let mut named = BTreeSet::new();
-        object(doc, &ROOT, &mut named);
+        let before: BTreeSet<String> = self.index.named_in(doc_id).map(str::to_owned).collect();
+        let named = changed
+            .and_then(|patches| named_after(doc, before.clone(), patches))
+            .unwrap_or_else(|| {
+                let mut named = BTreeSet::new();
+                object(doc, &ROOT, &mut named);
+                named
+            });
+        if named == before {
+            return;
+        }
         let (kind, id) = (kind.to_owned(), id.to_owned());
         self.index.name_in_content(doc_id, (&kind, &id), named);
     }
+}
+
+/// What a document that named `before` names once `patches` changed it, read from what they put;
+/// `None` when they may have taken back something it named, which only the whole document says.
+/// A document that named nothing loses nothing, and an insertion into a list never ends a name.
+fn named_after(
+    doc: &Automerge,
+    mut named: BTreeSet<String>,
+    patches: &[Patch],
+) -> Option<BTreeSet<String>> {
+    for patch in patches {
+        // Nothing named yet, nothing can be taken back, the change's own earlier patches included.
+        let named_nothing = named.is_empty();
+        match &patch.action {
+            PatchAction::Insert { values, .. } => {
+                for (value, id, _) in values.iter() {
+                    value_of(doc, value, id, &mut named);
+                }
+            }
+            PatchAction::PutMap {
+                key,
+                value: (value, id),
+                ..
+            } if named_nothing => {
+                words(key, &mut named);
+                value_of(doc, value, id, &mut named);
+            }
+            PatchAction::PutSeq {
+                value: (value, id), ..
+            } if named_nothing => value_of(doc, value, id, &mut named),
+            // Spliced or marked text can join or split a name across what it held: the text is
+            // read again, all of it.
+            PatchAction::SpliceText { .. } | PatchAction::Mark { .. } if named_nothing => {
+                object(doc, &patch.obj, &mut named);
+            }
+            PatchAction::DeleteMap { .. } | PatchAction::DeleteSeq { .. } if named_nothing => {}
+            PatchAction::Increment { .. } | PatchAction::Conflict { .. } => {}
+            _ => return None,
+        }
+    }
+    Some(named)
 }
 
 /// What `obj` of `doc` names, and every object in it.
