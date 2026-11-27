@@ -1,7 +1,7 @@
-//! `tilo machine add` at a profile whose identity `tilo login --new-identity`
-//! made: the person's own action reaches the session, writes the machine's
-//! plan into their Servers workspace, and answers — the identity the command
-//! and the session read is one.
+//! `tilo machine add` at a fresh computer: the person's own action reaches the
+//! session's device daemon, writes the machine's plan into their Servers
+//! workspace, and answers — the identity the command and the session read is
+//! one.
 
 #![cfg(target_os = "linux")]
 
@@ -11,33 +11,11 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use tilo_device_identity::IdentityPaths;
 use tilo_session::{AppSocket, Options};
-
-use crate::common::PERSON;
 
 /// How long the person's action may take before the session is taken to have
 /// hung on it: every step of planning a machine answers within this.
 const ANSWER_WITHIN: Duration = Duration::from_secs(60);
-
-/// `tilo login --new-identity` on a fresh profile: the person's root in the
-/// one identity directory the session reads, and the device key, certificate
-/// and fleet entry that admit this computer. Returns the device key this
-/// process took as the daemon's, which the session signs with from here.
-fn login(identity_dir: &Path) -> tilo_device_identity::persist::DeviceKeyLock {
-    let paths = IdentityPaths::under(identity_dir);
-    let taken_key = tilo_identity::provisioning::device_key_taken_as_daemon(&paths)
-        .expect("this computer's device key");
-    tilo_identity::provisioning::create_person(
-        identity_dir,
-        &paths,
-        "plan cycle owner",
-        "plan cycle owner",
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .unwrap();
-    taken_key
-}
 
 /// The plan `tilo machine add --os server --name cupboard --disk
 /// serial:tilo-install-target --network dhcp --unlock owner-device --updates
@@ -112,30 +90,21 @@ fn step_until(
 
 #[test]
 fn a_person_on_a_fresh_profile_plans_a_machine_and_is_answered() {
-    let mut home = tilo_test_env::TestHome::new().expect("a home");
-    let identity = home.config().join("tilo/identity");
-    std::fs::create_dir_all(&identity).expect("the identity's directory");
-    let secrets = home.root().join("secrets");
-    // One tree for the person and their device, as a disposable profile has
-    // it: the directory the session reads is where the command wrote.
-    // The session is Tilo OS's, whose devices are native.
-    home.env()
-        .set("TILO_IDENTITY_ROOT", &identity)
-        .set("TILO_SECRETS_DIR", &secrets)
-        .set(
-            tilo_identity::provisioning::TEST_PLATFORM_ENV,
-            tilo_identity::provisioning::TILO_OS_PLATFORM,
-        );
-    let _taken_key = login(&identity);
-    let socket = home.runtime().join("test-control.sock");
-    let mut session = crate::common::headless(Options {
-        person: PERSON.to_owned(),
-        collab: true,
-        state: Some(home.state().to_path_buf()),
-        app_socket: AppSocket::At(home.runtime().join("app_wire.sock")),
-        test_control: Some(socket.clone()),
-        ..Options::default()
-    });
+    let root = crate::common::private_home();
+    let socket = root.path().join("test-control.sock");
+    // The daemon founds the person, the session starts as its shell on the link it makes, and
+    // the person's first workspace is the one the session starts with, which the daemon makes
+    // when the session asks.
+    let mut session = crate::common::on_its_daemon(
+        &[tilo_compositor::OutputConfig::new("HEADLESS-1", 1280, 800)],
+        Options {
+            collab: true,
+            state: Some(root.path().join("state")),
+            app_socket: AppSocket::At(root.path().join("app_wire.sock")),
+            test_control: Some(socket.clone()),
+            ..Options::default()
+        },
+    );
     // The command as `tilo machine add` asks it, once the session answers a
     // step of it: the command asks the same cheap one until the person's own
     // workspace is the one in front, then plans.
