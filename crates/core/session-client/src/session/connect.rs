@@ -47,6 +47,9 @@ pub(super) struct Dial {
     /// The lent endpoint is this session's own: it joins the live sessions from it.
     #[cfg(not(target_arch = "wasm32"))]
     lent_own: bool,
+    /// The person's relays, held back while the server answers ([`Self::server_reachable`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    fallback: tilo_endpoint_reachability::Reachability,
 }
 
 impl Dial {
@@ -119,6 +122,22 @@ impl Dial {
         // NAT over iroh through its packet relay, and signs the same statement.
         if config.host.carrier() != Carrier::WebTransport {
             let endpoint = dialer.endpoint().await?;
+            // The person's relays other than the server's, woken only while it is unreachable.
+            #[cfg(not(target_arch = "wasm32"))]
+            if !self.fallback.holds_relays() && (self.lent.is_none() || self.lent_own) {
+                let others: iroh::RelayMap = (tilo_endpoint_reachability::relays().relays)
+                    .urls::<Vec<_>>()
+                    .into_iter()
+                    .filter(|url| Some(url) != config.host.relay())
+                    .collect();
+                let rest_at_once = Some(std::time::Duration::ZERO);
+                self.fallback = tilo_endpoint_reachability::Reachability::defer(
+                    &endpoint,
+                    &others,
+                    tokio::runtime::Handle::current(),
+                    rest_at_once,
+                );
+            }
             sign_delegation(
                 signer,
                 config.cert.device_public_key,
@@ -128,6 +147,22 @@ impl Dial {
             .await?;
         }
         Ok(dialer)
+    }
+
+    /// Wake the person's relays while the server is unreachable; whether they run now.
+    pub(super) fn server_reachable(&self, reachable: bool) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let why = (!reachable).then_some("its server is unreachable");
+            self.fallback
+                .need(tilo_endpoint_reachability::Need::Transport, why);
+            self.fallback.holds_relays() && !reachable
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (self, reachable);
+            false
+        }
     }
 
     /// Let go of the host, waiting for it to hear: a session that ends for

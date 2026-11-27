@@ -33,10 +33,7 @@ pub struct ServerDaemon {
 
 impl Drop for ServerDaemon {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        self.stop();
     }
 }
 
@@ -72,38 +69,8 @@ impl ServerDaemon {
         std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
             .create(root.join("runtime"))
             .expect("the server's runtime directory");
+        let mut child = spawn(root, &config);
         let env_out = root.join("session.env");
-        let log = std::fs::File::create(root.join("logs/daemon.log")).expect("the daemon's log");
-        let mut command =
-            Command::new(tilo_test_env::sibling_binary("tilo-daemon", "tilo-runtime"));
-        command
-            .env("HOME", root.join("home"))
-            .env("XDG_CONFIG_HOME", root.join("config"))
-            .env("XDG_DATA_HOME", root.join("data"))
-            .env("XDG_STATE_HOME", root.join("state"))
-            .env("XDG_CACHE_HOME", root.join("cache"))
-            .env("XDG_RUNTIME_DIR", root.join("runtime"))
-            .env("TILO_IDENTITY_ROOT", root.join("identity"))
-            .env("TILO_SERVER_CONFIG", &config)
-            .env("TILO_SERVER_SESSION_ENV_OUT", &env_out)
-            .env("TILO_SECRETS_DIR", root.join("secrets"))
-            .env("TILO_IDENTITY_FILE_SECRETS", "1")
-            .env("TILO_APPS_DATA_DIR", root.join("data/tilo-apps"))
-            .env(super::loopback_relay().0, super::loopback_relay().1)
-            .env(tilo_endpoint_reachability::NETWORKS_ENV, "127.0.0.1")
-            .env(
-                "RUST_LOG",
-                std::env::var("TILO_SERVER_DAEMON_LOG").unwrap_or_else(|_| "info".to_owned()),
-            )
-            .env("NO_COLOR", "1")
-            .env_remove("TILO_RUNTIME_PROFILE")
-            .env_remove("TILO_DEVICE_PORT")
-            .env_remove("WAYLAND_DISPLAY")
-            .env_remove("DISPLAY")
-            .stdin(Stdio::null())
-            .stdout(log.try_clone().expect("the log's own handle"))
-            .stderr(log);
-        let mut child = command.spawn_locked().expect("the server's daemon starts");
         let native = root.join("runtime/tilo/native.sock");
         // A machine nobody signed in to answers its device actions on its native endpoint, and
         // its login among them, before it keeps anything.
@@ -111,11 +78,7 @@ impl ServerDaemon {
             tilo_socket::connect(&native).ok().map(drop)
         });
         log_in(&native, ticket, label, root);
-        let addr = until(&mut child, root, "keep, once signed in", || {
-            let line = std::fs::read_to_string(&env_out).ok()?;
-            let value = line.trim().strip_prefix("TILO_COLLAB_HOST='")?;
-            serde_json::from_str::<iroh::EndpointAddr>(value.strip_suffix('\'')?).ok()
-        });
+        let addr = until(&mut child, root, "keep, once signed in", || named(&env_out));
         let identity = IdentityPaths::under(root.join("identity"));
         let key = tilo_device_identity::persist::read_device_key(&identity.device_privkey)
             .expect("the key the server's login filed");
@@ -173,6 +136,67 @@ impl ServerDaemon {
     pub fn log(&self) -> String {
         said(self.home.path())
     }
+
+    /// The server stopped, as a machine that goes away is: nothing answers at its address.
+    pub fn stop(&mut self) {
+        drop(
+            self.child
+                .take()
+                .map(|mut child| child.kill().and_then(|()| child.wait())),
+        );
+    }
+
+    /// The server started again over the home it keeps, as a machine that comes back is: the same
+    /// device, answering at the address it names once it keeps again.
+    pub fn start_again(&mut self) {
+        let root = self.home.path();
+        let env_out = root.join("session.env");
+        std::fs::remove_file(&env_out).expect("the address the server named before");
+        let mut child = spawn(root, &root.join("server.toml"));
+        self.addr = until(&mut child, root, "keep again", || named(&env_out));
+        self.child = Some(child);
+    }
+}
+
+/// The address the daemon named in `env_out` once it keeps.
+fn named(env_out: &Path) -> Option<iroh::EndpointAddr> {
+    let line = std::fs::read_to_string(env_out).ok()?;
+    let value = line.trim().strip_prefix("TILO_COLLAB_HOST='")?;
+    serde_json::from_str(value.strip_suffix('\'')?).ok()
+}
+
+/// The daemon over `root`, as its server configuration `config` starts it, logging below it.
+fn spawn(root: &Path, config: &Path) -> Child {
+    let log = std::fs::File::create(root.join("logs/daemon.log")).expect("the daemon's log");
+    let mut command = Command::new(tilo_test_env::sibling_binary("tilo-daemon", "tilo-runtime"));
+    command
+        .env("HOME", root.join("home"))
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_STATE_HOME", root.join("state"))
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .env("XDG_RUNTIME_DIR", root.join("runtime"))
+        .env("TILO_IDENTITY_ROOT", root.join("identity"))
+        .env("TILO_SERVER_CONFIG", config)
+        .env("TILO_SERVER_SESSION_ENV_OUT", root.join("session.env"))
+        .env("TILO_SECRETS_DIR", root.join("secrets"))
+        .env("TILO_IDENTITY_FILE_SECRETS", "1")
+        .env("TILO_APPS_DATA_DIR", root.join("data/tilo-apps"))
+        .env(super::loopback_relay().0, super::loopback_relay().1)
+        .env(tilo_endpoint_reachability::NETWORKS_ENV, "127.0.0.1")
+        .env(
+            "RUST_LOG",
+            std::env::var("TILO_SERVER_DAEMON_LOG").unwrap_or_else(|_| "info".to_owned()),
+        )
+        .env("NO_COLOR", "1")
+        .env_remove("TILO_RUNTIME_PROFILE")
+        .env_remove("TILO_DEVICE_PORT")
+        .env_remove("WAYLAND_DISPLAY")
+        .env_remove("DISPLAY")
+        .stdin(Stdio::null())
+        .stdout(log.try_clone().expect("the log's own handle"))
+        .stderr(log);
+    command.spawn_locked().expect("the server's daemon starts")
 }
 
 /// What `probe` answers once it answers, while the daemon below `root` runs.

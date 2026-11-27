@@ -1022,7 +1022,11 @@ impl Task {
         purpose: Purpose,
     ) -> Result<tilo_server_client::link::Link, LinkError> {
         let dialer = self.dial.dialer(&self.config, self.signer.as_ref()).await?;
-        let link = dialer.link(purpose).await?;
+        let link = dialer.link(purpose).await;
+        self.server_reachable(
+            !matches!(&link, Err(error) if matches!(refusal(error), Refusal::Reachability)),
+        );
+        let link = link?;
         // A workspace's link proves its device on its first stream over every carrier: the host
         // reads the proof before the dial names the workspace.
         if purpose == Purpose::Records {
@@ -1573,6 +1577,19 @@ impl Task {
                 Some(Command::Client(Cmd::Reconnect | Cmd::Refresh)) => return true,
                 Some(command) => self.apply_offline(command).await,
             }
+        }
+    }
+
+    /// Relay through the person's relays too while the server is unreachable: rested by any dial
+    /// that reaches it.
+    fn server_reachable(&self, reachable: bool) {
+        let fallback = self.dial.server_reachable(reachable);
+        if self
+            .reports
+            .read(|status| status.fallback_relays != fallback)
+        {
+            self.reports
+                .change(|status| status.fallback_relays = fallback);
         }
     }
 

@@ -181,6 +181,8 @@ tilo-socket = { version = "0.1.0", path = "../../platform/tilo-socket" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 iroh.workspace = true
+# The person's relays, which a session's endpoint wakes while its server is unreachable.
+tilo-endpoint-reachability = { path = "../endpoint-reachability" }
 # The shell's connection to the device's daemon, which keeps the person's workspaces.
 runtime-collab = { package = "tilo-runtime-collab", path = "../runtime-collab" }
 runtime-portal = { package = "tilo-runtime-portal", path = "../runtime-portal" }

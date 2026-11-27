@@ -109,8 +109,8 @@ impl std::fmt::Debug for Reachability {
 
 impl Reachability {
     /// Hold `relays` back from `endpoint`, which must have been bound with
-    /// a relay transport and an empty relay map
-    /// (`RelayMode::Custom(RelayMap::empty())`); [`Self::wake`] inserts them
+    /// a relay transport (`RelayMode::Custom`), its map empty or holding other
+    /// relays, which these leave be; [`Self::wake`] inserts them
     /// on `runtime`, and they rest again `rest_after` after nothing needs
     /// them ([`REST_AFTER`] in a session), or never for `None`. An empty
     /// `relays` holds nothing back.

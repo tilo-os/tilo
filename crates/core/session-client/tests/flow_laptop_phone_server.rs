@@ -219,42 +219,14 @@ async fn flow_signs_in_and_controls_all_workspaces_without_tilosh() {
     );
 }
 
-/// Nothing of a server's reaches tilo.sh or a public relay: its endpoint relays nowhere
-/// public and resolves peers on no number 0 DNS, and the devices reach it on this machine.
-///
-/// The runtime's default endpoint still binds number 0's relays and DNS (the hosting lane
-/// takes this step).
+/// Nothing of a server's reaches tilo.sh or a public relay: it is its devices' relay, and they
+/// relay through the person's relays (number 0's by default) only while it is unreachable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn nothing_reaches_tilo_sh_or_a_public_relay() {
-    let f = Box::pin(rig()).await;
-    // The endpoint every device of the person's binds with, as the runtime binds it by
-    // default.
-    let relays = tilo_endpoint_reachability::relays();
-    let named: Vec<String> = relays
-        .relays
-        .urls::<Vec<_>>()
-        .iter()
-        .map(ToString::to_string)
-        .collect();
-    let host = named
-        .first()
-        .map(|url| {
-            url.split("://")
-                .nth(1)
-                .unwrap_or(url)
-                .split(['/', '?'])
-                .next()
-                .unwrap_or(url)
-                .to_owned()
-        })
-        .unwrap_or_default();
-    assert!(
-        !relays.n0_dns && named.is_empty(),
-        "the server's endpoint reaches {host} (and number 0's DNS: {}) where nothing of \
-         the person's should reach tilo.sh or a public relay: {named:?}",
-        relays.n0_dns
-    );
-
+    // The person's relays stand in for number 0's: a loopback address nothing answers on.
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("TILO_RELAY", "http://127.0.0.1:9/");
+    let mut f = Box::pin(rig()).await;
     let addr = f.host.node_addr();
     let loopback = test_server::loopback_url();
     assert!(
@@ -281,6 +253,21 @@ async fn nothing_reaches_tilo_sh_or_a_public_relay() {
         "the laptop and the phone dial the server on this machine: {:?}",
         f.host.iroh().addr()
     );
+
+    let fallback = |want: bool, why: &'static str| {
+        let session = f.laptop_session.clone();
+        crate::support::wait_for(why, move || {
+            let status = session.status();
+            let settled = status.fallback_relays == want
+                && (want || status.phase == tilo_session_client::TransportPhase::Connected);
+            async move { settled.then_some(()) }
+        })
+    };
+    fallback(false, "no fallback relay while the server is reachable").await;
+    f.host.daemon.stop();
+    fallback(true, "the person's relays once the server is unreachable").await;
+    tokio::task::block_in_place(|| f.host.daemon.start_again());
+    fallback(false, "no fallback relay once the server answers again").await;
 }
 
 /// The server serves its own web UI by default, and a device setting turns it off.

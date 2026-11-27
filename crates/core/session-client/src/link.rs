@@ -123,6 +123,9 @@ pub struct PeerStatus {
     /// session's placement of it or its link's dial, one entry per workspace, replaced by each
     /// answer and gone once the link is up or the workspace is left.
     pub refused: BTreeMap<WorkspaceId, String>,
+    /// Whether the session's endpoint relays through the person's relays (number 0's unless
+    /// they chose otherwise): only while its server, whose relay it uses first, is unreachable.
+    pub fallback_relays: bool,
     /// Each record's local store state, as reported with [`Link::set_local_state`].
     pub local: BTreeMap<DocumentRoute, LocalState>,
     /// Current failures, newest last.
@@ -174,6 +177,7 @@ impl PeerStatus {
             serving: BTreeSet::new(),
             unlinked: BTreeSet::new(),
             refused: BTreeMap::new(),
+            fallback_relays: false,
             local: BTreeMap::new(),
             failures: Vec::new(),
             outgoing_pending: 0,
