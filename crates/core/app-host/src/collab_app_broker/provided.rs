@@ -1034,6 +1034,9 @@ pub(crate) mod signed_test_support {
     pub(crate) struct Authority {
         certificate: tilo_user_identity::DeviceCert,
         pub revoked: AtomicBool,
+        /// This host runs on another computer than the one its certificate is: the device whose
+        /// person it serves is not the one this host is.
+        pub elsewhere: AtomicBool,
         time: Mutex<crate::policy_clock::PolicyTime>,
         replace_time_on_authorize: Mutex<Option<crate::policy_clock::PolicyTime>>,
     }
@@ -1062,6 +1065,10 @@ pub(crate) mod signed_test_support {
                 return Err("device is no longer enrolled".into());
             }
             tilo_user_identity::verify_device_cert(certificate).map_err(|error| error.to_string())
+        }
+
+        fn device(&self) -> Option<[u8; 32]> {
+            (!self.elsewhere.load(Ordering::SeqCst)).then_some(self.certificate.device_public_key)
         }
     }
 
@@ -1132,6 +1139,7 @@ pub(crate) mod signed_test_support {
             let authority = Arc::new(Authority {
                 certificate: certificate.clone(),
                 revoked: AtomicBool::new(false),
+                elsewhere: AtomicBool::new(false),
                 time: Mutex::new(policy_origin.capture().unwrap()),
                 replace_time_on_authorize: Mutex::new(None),
             });

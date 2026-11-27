@@ -187,19 +187,38 @@ impl AppBrokerState {
             time.now_ns().map_err(|error| error.to_string())?,
         )
         .map_err(|error| error.to_string())?;
-        let current = self
-            .services
-            .local_person
-            .as_ref()
-            .ok_or("native person authority unavailable")?
-            .certificate(
-                workspace,
-                &super::person_id_for_root(certificate.user_public_key),
-            )?;
+        let Some(service) = self.services.local_person.as_ref() else {
+            return self.current_device_person(workspace, certificate);
+        };
+        let current = service.certificate(
+            workspace,
+            &super::person_id_for_root(certificate.user_public_key),
+        )?;
         if current != *certificate {
             return Err("native person identity replaced".into());
         }
         Ok(())
+    }
+
+    /// [`Self::current_native_person`] on the device's own host, whose sessions reach it as their
+    /// person through its link: the person stands there under this device's own certificate, the
+    /// one their root signed for it, while `workspace` admits this device now. Another device's
+    /// certificate, however current, never stands for a person here.
+    fn current_device_person(
+        &self,
+        workspace: &str,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        let authority = self
+            .certificate_authority
+            .get()
+            .ok_or("native person authority unavailable")?;
+        if authority.device() != Some(certificate.device_public_key) {
+            return Err("native person is another device's".into());
+        }
+        let workspace =
+            uuid::Uuid::parse_str(workspace).map_err(|_| "native person workspace is not exact")?;
+        authority.authorize(workspace, certificate)
     }
 
     /// Bind one host-issued execution to an existing signed, workspace-bound presentation.
@@ -783,6 +802,61 @@ fn certified_provider(provider: &str) -> bool {
         || super::launchable::is_launchable_provider(provider)
         || tilo_actions::remote::is_resource_provider(provider)
         || tilo_actions::remote::provider_workspace(provider).is_some()
+}
+
+#[cfg(test)]
+mod device_person_tests {
+    use super::super::provided::signed_test_support::Fixture;
+    use std::sync::atomic::Ordering;
+
+    /// A host with no session of its own is the device: the person stands there under this
+    /// device's own certificate while the workspace admits it, and under nobody else's.
+    #[test]
+    fn the_person_stands_on_the_device_they_use_and_nowhere_else() {
+        let fixture = Fixture::new(crate::services::ProcessServices::default(), true);
+        let (_, own) = tilo_identity::trusted_device::current(&fixture.workspace).unwrap();
+        fixture
+            .state
+            .current_native_person(&fixture.workspace, &own)
+            .expect("the person stands under this device's own certificate");
+
+        // A key their root never signed is nobody's standing, whichever key it claims to be.
+        let stranger = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let mut theirs = tilo_user_identity::DeviceCert {
+            user_public_key: stranger.verifying_key().to_bytes(),
+            ..own.clone()
+        };
+        tilo_user_identity::sign_device_cert(&mut theirs, &stranger).unwrap();
+        assert!(
+            fixture
+                .state
+                .current_native_person(&fixture.workspace, &theirs)
+                .is_err(),
+            "a stranger's certificate for this device's key stands for no one"
+        );
+
+        // The same certificate on a host that is another computer: that device's grant is not
+        // this one's.
+        fixture.authority.elsewhere.store(true, Ordering::SeqCst);
+        assert!(
+            fixture
+                .state
+                .current_native_person(&fixture.workspace, &own)
+                .is_err(),
+            "another computer's certificate stands for no one here"
+        );
+        fixture.authority.elsewhere.store(false, Ordering::SeqCst);
+
+        // The workspace no longer admits the device: its person stands there no more.
+        fixture.authority.revoked.store(true, Ordering::SeqCst);
+        assert!(
+            fixture
+                .state
+                .current_native_person(&fixture.workspace, &own)
+                .is_err(),
+            "a device the workspace stopped admitting stands for no one"
+        );
+    }
 }
 
 #[cfg(test)]
