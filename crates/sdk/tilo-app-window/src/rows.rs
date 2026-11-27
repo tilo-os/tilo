@@ -888,8 +888,8 @@ mod tests {
         );
         assert_eq!(
             rebuilt.range,
-            0..2,
-            "the new store asks for the range it shows"
+            0..PAGE,
+            "the new store asks for the page that holds what it shows"
         );
         assert!(
             again.row("v/a").is_none(),

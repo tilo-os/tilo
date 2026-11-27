@@ -698,7 +698,6 @@ inputs = [
   # The history feed's actions and records, which the toolkit binds to the activity's published
   # surface.
   "crates/desktop/session-core/workspace-activity-surface.json",
-  "vendor/winit/src/platform_impl/quit_request.rs",
   "crates/engines/paint-stream/tests/fixtures/",
   # The theme bundle's test loads a theme written only against the theme SDK.
   "crates/ui/themes/bauhaus/theme.json",
@@ -717,7 +716,6 @@ inputs = [
 readers = [
   "crates/ui/ui-core/src/lib.rs",
   "crates/ui/ui-core/src/activity_wire.rs",
-  "crates/ui/ui-app/src/app/close_admission.rs",
   "crates/ui/ui-core/src/webview/paint.rs",
   "crates/ui/ui-core/src/theme_bundle/tests.rs",
   "crates/ui/ui-core/src/component/coverage_tests.rs",
@@ -740,8 +738,14 @@ inputs = [
   "crates/ui/ui-base/locales/",
   "crates/ui/themes/bauhaus/theme.json",
   "tools/test-assets.py",
+  # The close admission's words come from the platform layer's quit request, compiled in by path.
+  "vendor/winit/src/platform_impl/quit_request.rs",
+  # The startup probe compiles the toolkit's startup cache fixture by path.
+  "crates/ui/ui-core/examples/startup_cache_fixture.rs",
 ]
 readers = [
+  "crates/ui/ui-app/examples/startup_frame_probe.rs",
+  "crates/ui/ui-app/src/app/close_admission.rs",
   "crates/ui/ui-app/tests/finish_render.rs",
   "crates/ui/ui-app/tests/history_mode_host.rs",
   "crates/ui/ui-app/tests/painter_aot.rs",

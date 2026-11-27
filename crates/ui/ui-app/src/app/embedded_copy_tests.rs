@@ -263,7 +263,7 @@ fn scroll(theme: &Theme, host: Host, scale: f64, runs: &[(f64, usize)]) -> Vec<R
         .expect("a host's copies are checked on the GPU the toolkit renders with");
     let mut full = OffscreenRenderer::new(size.0, size.1);
     let _ = presented.render(&device_scene(&shown.0), ground);
-    let mut bounds = tilo_cpu_raster::DrawBounds::default();
+    let mut bounds = tilo_ui_base::scene_parts::DrawBounds::default();
     let mut done = Vec::new();
     for &(step, frames) in runs {
         let mut run = Run::default();

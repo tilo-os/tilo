@@ -426,7 +426,7 @@ fn shell_runtime(profile: &std::path::Path) -> std::process::Child {
         .args(["--host-root", "/"])
         .env("TILO_USH_BIN", &bin)
         .env(tilo_machine::DAEMON_PROFILE_VAR, profile)
-        .spawn()
+        .spawn_locked()
         .expect("the shell runtime starts");
     let deadline = tilo_test_env::hang_deadline();
     while !socket.exists() {

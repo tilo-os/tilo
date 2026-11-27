@@ -72,6 +72,8 @@ FRAMEWORK = (
     "crates/core/tilo-resource",
     "crates/ui/ui-base",
     "crates/ui/ui-core",
+    # The app runner, which left ui-core with the toolkit framework it was part of.
+    "crates/ui/ui-app",
 )
 SCOPES = ("apps", "crates", "tools")
 

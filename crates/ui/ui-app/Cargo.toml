@@ -52,7 +52,6 @@ tilo-app-id.workspace = true
 tilo-content = { version = "0.1.0", path = "../../core/content", default-features = false }
 # The launcher hands an app its content-store capability (`launch`).
 tilo-content-device = { version = "0.1.0", path = "../../core/content-device" }
-tilo-cpu-raster = { version = "0.1.0", path = "../tilo-cpu-raster" }
 tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", features = ["json"] }
 tilo-headless-schema = { version = "0.1.0", path = "../../platform/headless-schema" }
 tilo-image-codec = { version = "0.1.0", path = "../../platform/image-codec" }

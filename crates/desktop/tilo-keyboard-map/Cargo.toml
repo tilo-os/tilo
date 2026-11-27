@@ -23,7 +23,7 @@ tilo-keyboard-engine = { version = "0.1.0", path = "../../engines/keyboard", opt
 # The one table of layouts a host offers without reading an installed set.
 tilo-keyboard-catalog = { version = "0.1.0", path = "../tilo-keyboard-catalog" }
 # The physical outlines a drawing lays its keys out with.
-tilo-pc-keyboard-geometry = { path = "../pc-keyboard-geometry" }
+tilo-pc-keyboard-geometry = { version = "0.1.0", path = "../pc-keyboard-geometry" }
 # What is printed on a key: the legends, named in the layout's language.
 tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # xkeyboard-config's rules, read for the layouts this device installs.
