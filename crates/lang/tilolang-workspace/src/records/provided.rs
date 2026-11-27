@@ -745,13 +745,10 @@ mod tests {
 
         let caller = Caller::authenticated(owner.user_public_key, owner.device_public_key)
             .in_workspace(workspace.clone());
-        let request = write_to(
-            &records(&workspaces),
-            &caller,
-            &tilo_actions::MemberId::agent("scout", "ada"),
-            "The plan is ready",
-        )
-        .await;
+        // The person's own agent: an agent reads where its person does, so one named for a
+        // person outside the workspace reads nothing it is written in.
+        let agent = tilo_actions::MemberId::agent("scout", hex::encode(owner.user_public_key));
+        let request = write_to(&records(&workspaces), &caller, &agent, "The plan is ready").await;
         let output = run(&workspaces, &caller, request)
             .await
             .expect("the write lands");
@@ -900,13 +897,9 @@ mod tests {
 
         let ada = Caller::authenticated(owner.user_public_key, owner.device_public_key)
             .in_workspace(workspace.clone());
-        let request = write_to(
-            &records,
-            &ada,
-            &tilo_actions::MemberId::agent("scout", "ada"),
-            "The safe's code is 4711",
-        )
-        .await;
+        // Ada's own agent: an agent reads where its person does, and Ada is the workspace's.
+        let agent = tilo_actions::MemberId::agent("scout", hex::encode(owner.user_public_key));
+        let request = write_to(&records, &ada, &agent, "The safe's code is 4711").await;
         run(&workspaces, &ada, request)
             .await
             .expect("Ada writes to her agent");
