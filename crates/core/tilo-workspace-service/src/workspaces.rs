@@ -854,6 +854,11 @@ impl HostedWorkspace {
         self.kept_heads = candidate.workspace_heads();
         *replica = candidate;
         self.unsent.extend(own);
+        // The workspace's governance, which every decision here about who may do what in it
+        // reads, moved: whatever decides by it (the broker's admitted windows among them) checks
+        // again, reading it once the caller lets go of the replica.
+        #[cfg(feature = "device-keys")]
+        tilo_identity::policy_change::announce();
         Ok(())
     }
 

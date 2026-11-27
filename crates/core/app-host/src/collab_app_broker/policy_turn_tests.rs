@@ -298,3 +298,122 @@ fn an_idle_broker_rechecks_at_an_expiry_and_on_a_revocation(
         owner.checks().len() > checks
     });
 }
+
+/// The daemon's broker over the workspaces its device hosts, wired as the daemon wires it: a
+/// person a grant lets read a workspace keeps the window it opened there only while the grant
+/// stands. Idle, the broker sleeps through what a one-second clock would wake it for; when the
+/// owner takes the grant back, the change is announced and the window is dropped on that, sooner
+/// than any one-second re-check could have.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_revoked_grant_drops_the_window_it_let_in_on_the_announcement() {
+    use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
+    use tilo_workspace_service::workspaces::{ProfileMemberships, fixtures};
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let state_root = tempfile::tempdir().unwrap();
+    let (key, cert) = fixtures::hosting_device();
+    let host = runtime.block_on(fixtures::test_host(state_root.path(), &key, &cert));
+    let workspaces = host.workspaces().clone();
+    let workspace = runtime
+        .block_on(workspaces.create("Studio"))
+        .expect("the device founds a workspace")
+        .workspace;
+    let (_, guest) = fixtures::guest_device();
+    let grant = Grant::new(
+        "guest-reads",
+        Grantee::person(person_id_for_root(guest.user_public_key)),
+        TreePath::workspace(&workspace),
+        KindSet::READ,
+        Answer::Allow,
+        Grantee::person(person_id_for_root(cert.user_public_key)),
+    );
+    let change = |change: tilo_action_policy::Change| {
+        runtime
+            .block_on(workspaces.commit_own_change(
+                &workspace,
+                WorkspaceMembershipCommand::Member { change },
+                None,
+            ))
+            .expect("the owner changes their workspace's grants");
+    };
+    change(tilo_action_policy::Change::Grant(grant.clone()));
+
+    let directory = tempfile::tempdir().expect("temporary socket directory");
+    super::tests::secure_socket_parent(directory.path()).expect("private socket directory");
+    let authority: crate::services::WorkspaceAuthorityHandle = Arc::new(workspaces.clone());
+    let services = ProcessServices {
+        workspace_memberships: Some(ProfileMemberships::new(
+            workspaces.clone(),
+            Arc::clone(&authority),
+        ) as Arc<_>),
+        ..ProcessServices::default()
+    };
+    // The kernel's 15-byte name of `tilo-collab-broker`.
+    let (broker, tid) = tilo_test_env::idle::spawned_thread("tilo-collab-bro", || {
+        crate::collab_broker::spawn_with_test_services(
+            directory.path().join("policy.sock"),
+            Some(Arc::clone(&authority)),
+            PeerPublisher::disabled(),
+            None,
+            services,
+            None,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            Arc::new(FanoutState::new()),
+        )
+        .expect("test broker")
+    });
+    let state = Arc::clone(broker.app_action_broker().unwrap().state());
+
+    // The guest's window on a record of the workspace, admitted for the grant.
+    let route = CrdtRoute::record("so.tilo.chat", &workspace, "main");
+    let now = tilo_clock::unix_now();
+    let mut admitted = authority
+        .decide_in_workspace(&workspace, |held| {
+            admit_verified_join_at(held, &route, VerifiedJoinIdentity::of(&guest, false), now)
+        })
+        .unwrap()
+        .expect("the grant lets the guest in");
+    admitted.certificate = Some(guest.clone());
+    let native = state
+        .native_roster_for_subscriber(&route, &admitted)
+        .unwrap()
+        .expect("the device hosts the workspace");
+    let mut window = state.subscribe_context(&route.channel_key(), 1, Some(native));
+    tilo_test_env::wait_until("the broker's turn for the new window", || {
+        state.native_context_targets().unwrap().len() == 1
+            && matches!(window.try_recv(), Ok(ContextUpdate::RecordsMoved(_)))
+    });
+
+    // Idle: no clock wakes the broker, only announcements do, each a turn of about two switches.
+    let epoch = policy_change::epoch();
+    let settled = tilo_test_env::idle::asleep_switches(&tid);
+    std::thread::sleep(RECHECK_INTERVAL.saturating_mul(2));
+    let woke = tilo_test_env::idle::asleep_switches(&tid).saturating_sub(settled);
+    let announced = policy_change::epoch().wrapping_sub(epoch);
+    assert!(
+        woke <= announced.saturating_mul(2),
+        "the idle broker thread woke {woke} times with {announced} announcements"
+    );
+
+    // The owner takes the grant back: the window is dropped on the announcement.
+    let revoked = std::time::Instant::now();
+    change(tilo_action_policy::Change::Revoke(grant.id.clone()));
+    tilo_test_env::wait_until("the window dropped", || {
+        loop {
+            match window.try_recv() {
+                Ok(_) => {}
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break false,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break true,
+            }
+        }
+    });
+    let took = revoked.elapsed();
+    assert!(
+        took < RECHECK_INTERVAL,
+        "the revocation took {took:?} to drop the window: a clock's re-check, not the announcement"
+    );
+    assert!(state.native_context_targets().unwrap().is_empty());
+    drop(state);
+    drop(broker);
+    runtime.block_on(host.shutdown());
+}
