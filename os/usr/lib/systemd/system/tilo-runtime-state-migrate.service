@@ -1,0 +1,57 @@
+[Unit]
+Description=Move a server's daemon state to the device daemon's state root
+Documentation=file:///usr/share/doc/tilo/recovery.md
+# A server that kept its daemon's state under /var/lib/tilo-server before it
+# ran the device's one daemon has it moved below that daemon's root, once,
+# before the daemon starts. Nothing on a machine that never had the old root.
+After=local-fs.target systemd-tmpfiles-setup.service
+Before=tilo-runtime.service
+ConditionPathExists=/var/lib/tilo-server
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/tilo-runtime-state-migrate
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateIPC=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+# The old root, the daemon's root it moves into, and the configuration that may
+# name the old one. The old root is gone on every machine that never had it,
+# which the unit's own condition already skips.
+ReadWritePaths=-/var/lib/tilo-server
+ReadWritePaths=/var/lib/tilo /etc/tilo
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+# It makes the daemon's own root the daemon account's and reads state the
+# account owns: CAP_DAC_OVERRIDE reaches both, CAP_CHOWN gives the root its
+# owner, CAP_FOWNER its mode.
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@clock @debug @keyring @module @mount @network-io @obsolete @raw-io @reboot @resources @swap
+SystemCallErrorNumber=EPERM
+# The chown family is part of the privileged set, which the allow list above
+# leaves out. The first allow list fixes the default action and a later one adds
+# back what it names: the calls that give the daemon its root. fchownat is the
+# generic table's name (arm64), where the kernel has no chown; systemd logs a
+# name it does not know for that architecture and goes on.
+SystemCallFilter=chown fchownat
+
+[Install]
+WantedBy=multi-user.target

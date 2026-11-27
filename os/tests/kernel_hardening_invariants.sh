@@ -309,7 +309,7 @@ for required in \
   "device_key_meta=\"\$(stat -c '%u:%a:%h:%s' \"\$device_key\" 2>/dev/null || echo invalid)\"" \
   "[ \"\$device_key_meta\" = \"\$device_key_owner:600:1:32\" ]" \
   "[ \"\$device_dir_meta\" = \"\$device_key_owner:700\" ]" \
-  "daemon_uids=\" \$(id -u tilo 2>/dev/null || true) \$(id -u tilo-server 2>/dev/null || true) \""; do
+  "daemon_uids=\" \$(id -u tilo 2>/dev/null || true) \""; do
   grep -Fq "$required" "$audit" \
     || bad "installed audit does not prove device-key storage: $required"
 done
@@ -750,7 +750,7 @@ grep -Fq 'journalctl --quiet --boot --dmesg' "$audit" \
 if grep -rIl 'hidepid=' "$repo/os/usr" "$repo/os/Containerfile" 2>/dev/null | grep -q .; then
   bad "a global hidepid /proc remount is back: $(grep -rIl 'hidepid=' "$repo/os/usr" "$repo/os/Containerfile" | tr '\n' ' ')"
 fi
-for unit in tilo-server tilo-local-model; do
+for unit in tilo-runtime tilo-local-model; do
   grep -Fqx 'ProtectProc=invisible' "$repo/os/usr/lib/systemd/system/$unit.service" \
     || bad "$unit.service can see other users' processes (ProtectProc=invisible missing)"
 done

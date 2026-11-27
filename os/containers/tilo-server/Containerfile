@@ -2,7 +2,7 @@
 # ============================================================================
 # tilo-server standalone container image
 # ----------------------------------------------------------------------------
-# Ships the server daemon + its systemd unit as a small OCI image
+# Ships the server daemon and its entrypoint as a small OCI image
 # usable outside of the full bootc host mode. Two use cases:
 #
 #   1. Home users who want a server container next to another home
@@ -17,7 +17,7 @@
 # server-binaries) and this build lays them out with the base and the packages
 # they run against, from the same frozen snapshot and mirrored base as the
 # other server images (tools/ci/publish/server-build.sh). Its context is the
-# binaries, the entrypoint and the unit beside this file.
+# binaries, the entrypoint beside this file.
 #
 # Published by t: `image-server` builds it (tools/ci/publish/server-build.sh),
 # and `sign-server` and `publish-server` release it on version tags.
@@ -63,7 +63,6 @@ COPY bin/tilo /usr/bin/tilo
 COPY bin/tilo-runtime /usr/bin/tilo-runtime
 COPY os/containers/tilo-server/tilo-home-peer /usr/bin/tilo-home-peer
 RUN /usr/bin/busybox chmod 0755 /usr/bin/tilo-home-peer /usr/bin/tilo /usr/bin/tilo-runtime
-COPY os/usr/lib/systemd/system/tilo-server.service /usr/lib/systemd/system/tilo-server.service
 
 # Where the daemon writes state + reads config. The container
 # operator mounts a volume here for persistence.

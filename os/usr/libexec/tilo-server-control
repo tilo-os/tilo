@@ -8,7 +8,7 @@
 # changes the machine itself — restarting a unit, rebooting, staging an update,
 # pausing updates, going back to the previous system, or reading a unit's
 # journal — the daemon writes the request at one fixed path
-# (/var/lib/tilo-server/control.request) and a path unit starts this as root.
+# (/var/lib/tilo/state/control.request) and a path unit starts this as root.
 # The request is one `key=value` line per field:
 #
 #   id=<request id>
@@ -16,7 +16,7 @@
 #   service=<a systemd unit, for restart and logs>
 #   lines=<how many journal lines, for logs>
 #
-# This answers at /var/lib/tilo-server/control.result, whose first line names
+# This answers at /var/lib/tilo/state/control.result, whose first line names
 # the request and whether it worked (`<id> 1` or `<id> 0`), and whose rest is
 # what it read (a journal, or why it failed). Writing the answer before a
 # reboot or a rollback lets the daemon tell its owner what it did.
@@ -25,8 +25,8 @@
 # again, and a request naming anything else is refused as a whole.
 set -uo pipefail
 
-request="${TILO_SERVER_CONTROL_REQUEST:-/var/lib/tilo-server/control.request}"
-result="${TILO_SERVER_CONTROL_RESULT:-/var/lib/tilo-server/control.result}"
+request="${TILO_SERVER_CONTROL_REQUEST:-/var/lib/tilo/state/control.request}"
+result="${TILO_SERVER_CONTROL_RESULT:-/var/lib/tilo/state/control.result}"
 deployment="${TILO_SERVER_CONTROL_DEPLOYMENT:-/usr/libexec/tilo-deployment}"
 journal="${TILO_SERVER_CONTROL_JOURNAL:-journalctl}"
 systemctl="${TILO_SERVER_CONTROL_SYSTEMCTL:-systemctl}"

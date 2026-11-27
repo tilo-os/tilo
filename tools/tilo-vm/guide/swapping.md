@@ -67,7 +67,7 @@ the machine's first boot. Each component is a pair:
 `tilo-vm layer-pack --component <name> --profile <profile> --incoming <dir>`
 writes exactly that pair. At first boot `tilo-vm-incoming.service`
 (`ConditionDirectoryNotEmpty=/var/lib/tilo-vm/incoming`, ordered before
-`tilo-server.service`) runs the device's own step
+`tilo-runtime.service`) runs the device's own step
 `tilo-device-step apply-incoming`, which needs no caller. Components
 apply in `os/components.toml` declaration order: a `vm`-scope component goes
 into the `vm` account, a `session`-scope one into the `device` account, which

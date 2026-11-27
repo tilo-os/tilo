@@ -241,10 +241,9 @@ layer = "desktop-binaries"
 files = [
   { from = "tilo-runtime", to = "/usr/libexec/tilo/tilo-runtime", mode = "0755" },
   { link = "../libexec/tilo/tilo-runtime", to = "/usr/bin/tilo-runtime" },
-  # A node: the account, the server configuration and the units that run the
-  # daemon for one account's session.
+  # A node: the server configuration and the units that run the daemon for
+  # one account's session.
   { from = "@manifest/usr/lib/tilo/node-server.toml", to = "/usr/lib/tilo/node-server.toml", mode = "0644", layer = "desktop-files" },
-  { from = "@manifest/usr/lib/sysusers.d/tilo-server.conf", to = "/usr/lib/sysusers.d/tilo-server.conf", mode = "0644", layer = "desktop-files" },
   { from = "@manifest/usr/lib/systemd/system/tilo-node-server@.service", to = "/usr/lib/systemd/system/tilo-node-server@.service", mode = "0644", layer = "desktop-files" },
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session-key@.service", to = "/usr/lib/systemd/system/tilo-node-session-key@.service", mode = "0644", layer = "desktop-files" },
   { from = "@manifest/usr/lib/systemd/system/tilo-node-session@.service", to = "/usr/lib/systemd/system/tilo-node-session@.service", mode = "0644", layer = "desktop-files" },
@@ -579,9 +578,9 @@ files = [
 ]
 
 # The server image's own server: the device's one daemon, which keeps what a
-# server keeps as its server configuration says (tilo-server.service).
-# tools/ci/publish/server-binaries.sh builds it and host-build.sh lays it out
-# from this entry, as a swap into a server does.
+# server keeps as its server configuration says (tilo-runtime.service, with the
+# image's own drop-in). tools/ci/publish/server-binaries.sh builds it and
+# host-build.sh lays it out from this entry, as a swap into a server does.
 [[component]]
 name = "host-server"
 kind = "userspace"
@@ -589,14 +588,14 @@ scope = "vm"
 images = ["host"]
 packages = ["tilo-daemon"]
 bins = ["tilo-runtime"]
-units = ["tilo-server.service"]
+units = ["tilo-runtime.service"]
 layer = "host-binaries"
 files = [
   { from = "tilo-runtime", to = "/usr/libexec/tilo/tilo-runtime", mode = "0755" },
 ]
 
-# The command line a server logs in with at first boot, spending the ticket left on its
-# volume (tilo-server-firstboot): its own `tilo`, as the server image carries no OS image's.
+# The command line a server joins its person's devices with from the installer:
+# its own `tilo`, as the server image carries no OS image's.
 [[component]]
 name = "host-tilo-cli"
 kind = "userspace"

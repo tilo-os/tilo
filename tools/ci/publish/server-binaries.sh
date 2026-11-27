@@ -86,7 +86,7 @@ for image in "${images[@]}"; do
                  -p tilolang-process --bin tilolang-process
                  -p tilo-esp-write --bin tilo-esp-write
                  -p tilo-image-policy-check --bin tilo-image-policy-check
-                 -p tilo-device-identity --bin tilo-image-trust
+                 -p tilo-device-identity --bin tilo-image-trust --bin tilo-device-key-init
                  -p tilo-board-successor --bin tilo-board-successor
                  -p tilo-rollback --bin tilo-rollback
                  -p tilo-auth --bin tilo-auth
@@ -95,7 +95,7 @@ for image in "${images[@]}"; do
                  -p tilo-boot-order --bin tilo-default-start)
       bins+=("${host_bins[@]}" fs tilo-linux-vm tilo-hosted-jail tilo-api
              tilolang-process
-             tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-board-successor
+             tilo-esp-write tilo-image-policy-check tilo-image-trust tilo-device-key-init tilo-board-successor
              tilo-rollback tilo-auth tilo-boot-signin tilo-crypto tilo-default-start) ;;
     host-dev)
       # The runtime that runs the device's steps and the dev-VM CLI, as os/components.toml

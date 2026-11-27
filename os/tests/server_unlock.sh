@@ -110,10 +110,10 @@ boot() {
 }
 
 # --- the unit --------------------------------------------------------------
-grep -q '^User=tilo-server$' "$unit" && ok "the daemon is asked as its own account" \
-  || bad "the unit does not run as tilo-server"
-grep -q '^After=tilo-server.service$' "$unit" && ok "it runs once the server's daemon does" \
-  || bad "the unit is not ordered after tilo-server.service"
+grep -q '^User=tilo$' "$unit" && ok "the daemon is asked as its own account" \
+  || bad "the unit does not run as tilo"
+grep -q '^After=tilo-runtime.service$' "$unit" && ok "it runs once the device's daemon does" \
+  || bad "the unit is not ordered after tilo-runtime.service"
 grep -q '^ExecStartPre=+/usr/libexec/tilo-server-unlock prepare$' "$unit" \
   && grep -q '^ExecStart=/usr/libexec/tilo-server-unlock register$' "$unit" \
   && grep -q '^ExecStopPost=+/usr/libexec/tilo-server-unlock finish$' "$unit" \

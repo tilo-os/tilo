@@ -14,8 +14,8 @@ PrivateIPC=yes
 ProtectHome=yes
 ProtectSystem=strict
 # The request the server writes, and the policy the helper rewrites beside the
-# timer it configures.
-ReadWritePaths=/var/lib/tilo-server /var/lib/tilo /etc/systemd/system/bootc-fetch-apply-updates.timer.d
+# timer it configures. The request is in the daemon's own 0700 state root.
+ReadWritePaths=/var/lib/tilo/state /var/lib/tilo /etc/systemd/system/bootc-fetch-apply-updates.timer.d
 # "-": a key directory that does not exist yet has nothing to hide, and without
 # the prefix systemd refuses to start the unit at all on a machine that has not
 # created every one of them.
@@ -35,7 +35,8 @@ RestrictAddressFamilies=AF_UNIX
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 RemoveIPC=yes
-CapabilityBoundingSet=
+# The request it reads is inside the daemon's 0700 state root.
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_FOWNER
 AmbientCapabilities=
 SystemCallArchitectures=native
 SystemCallFilter=@system-service

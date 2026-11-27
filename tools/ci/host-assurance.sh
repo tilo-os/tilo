@@ -758,10 +758,8 @@ boot_settled() {
   console 'true' >/dev/null || die 'the installed disk never answered at its console'
   # Keep the console to the runner: kernel messages — auditd's lines among them,
   # one per sudo call — interleave mid-line with the marker it reads, and a marker
-  # split that way waits out the command's whole deadline. An unpaired server also
-  # prints its pairing prompt here on every attempt, and a line that lands inside
-  # a read is read as part of it: this machine is never paired by this check.
-  as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true
+  # split that way waits out the command's whole deadline.
+  as_root 'dmesg -n 1' >/dev/null 2>&1 || true
 }
 
 stage_serves() {
@@ -769,9 +767,9 @@ say 'the machine serves'
 # What is up: multi-user reached, the hosted-VM service bound its socket, the API
 # server inert until configured, the update timers enabled, the boot path judging
 # itself by the server probe.
-# A console answers at its getty before the boot has settled: firstboot starts
-# before multi-user.target (for up to its own enrollment timeout), so the target
-# is not reached just because someone can type. Wait for it as a person would.
+# A console answers at its getty before the boot has settled: the daemon starts
+# as part of multi-user.target, so the target is not reached just because someone
+# can type. Wait for it as a person would.
 for _ in $(seq 1 90); do
   as_root 'systemctl is-active --quiet multi-user.target' && break
   sleep 5
@@ -904,7 +902,7 @@ set -eu
 ss -H -tulnp > /run/host-assurance-listeners
 cat /run/host-assurance-listeners
 beyond=$(grep -Ev "^[a-z]+ +[A-Z]+ +[0-9]+ +[0-9]+ +(127\.[0-9.]+|\[::1\]|\[::ffff:127\.[0-9.]+\])(%[^:]+)?:" /run/host-assurance-listeners || true)
-odd=$(printf "%s\n" "$beyond" | grep -Ev "users:\(\(\"(NetworkManager|tilo-server|fs)\"" | grep . || true)
+odd=$(printf "%s\n" "$beyond" | grep -Ev "users:\(\(\"(NetworkManager|tilo-runtime|fs)\"" | grep . || true)
 [ -z "$odd" ] || { echo "listening beyond this machine: $odd"; exit 1; }
 tcp=$(printf "%s\n" "$beyond" | grep "^tcp" || true)
 [ -z "$tcp" ] || { echo "a TCP port beyond loopback: $tcp"; exit 1; }
@@ -935,8 +933,8 @@ ok 'the boot judged itself: not paired yet, multi-user reached'
 # wrapper, with the same configuration, accepts this machine's server probe.
 as_root 'systemctl reset-failed host-assurance-boot-health.service' >/dev/null 2>&1 || true
 # The environment is read inside the guest: the console carries other writers'
-# lines too (a pairing prompt among them), and a value that makes a round trip
-# through it comes back with them in it.
+# lines too, and a value that makes a round trip through it comes back with them
+# in it.
 as_root 'systemd-run --quiet --wait --unit=host-assurance-boot-health --service-type=oneshot \
   --property="Environment=$(systemctl show -p Environment --value tilo-boot-health.service)" \
   /usr/libexec/tilo-boot-health' \
@@ -1012,7 +1010,7 @@ qemu-img snapshot -d signed "$disk" || true
 
 boot_vm
 unlock_until_console || die 'the signed disk never answered at its console again'
-as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true
+as_root 'dmesg -n 1' >/dev/null 2>&1 || true
 for _ in $(seq 1 90); do
   as_root 'systemctl is-active --quiet multi-user.target' && break
   sleep 5
@@ -1134,7 +1132,7 @@ for unit in tilo-boot-entries.service tilo-boot-fallback.service; do
   fi
 done
 '
-as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true
+as_root 'dmesg -n 1' >/dev/null 2>&1 || true
 machine_sealed=1
 }
 
@@ -1199,7 +1197,7 @@ as_root 'sync' >/dev/null 2>&1 || true
 qemu-img snapshot -c floor "$disk" || die 'cannot keep the disk to go back to after the older image'
 boot_vm
 unattended_unlock || die 'the sealed disk did not open by itself before the older image went on it'
-as_root 'dmesg -n 1; systemctl stop tilo-server-firstboot.service' >/dev/null 2>&1 || true
+as_root 'dmesg -n 1' >/dev/null 2>&1 || true
 refuse 'the older signed image is on the ESP' '
 set -eu
 mkdir -p /mnt/update; mountpoint -q /mnt/update || mount -o ro /dev/vdb /mnt/update

@@ -81,13 +81,12 @@ need "$binaries" "thin) export CARGO_PROFILE_RELEASE_LTO=thin ;;"
 need "$binaries" 'bash os/scripts/verify-elf-hardening.sh "$out"'
 
 # The build t runs (image-server): this contract first; the base and the frozen RPM snapshot are
-# passed by digest; the binaries are the check's output, staged with the entrypoint and the unit
+# passed by digest; the binaries are the check's output, staged with the entrypoint
 # the image copies; nothing else enters the context, and a commit time is no input.
 need "$build" "bash os/containers/tilo-server/test-contract.sh"
 need "$build" 'for bin in tilo tilo-runtime; do'
 need "$build" '--build-arg "RPMS_REF=$rpms_ref"'
 need "$build" 'cp os/containers/tilo-server/tilo-home-peer "$context/os/containers/tilo-server/"'
-need "$build" 'cp os/usr/lib/systemd/system/tilo-server.service "$context/os/usr/lib/systemd/system/"'
 forbid "$build" '--build-arg "BASE_REF'
 forbid "$build" 'SOURCE_DATE_EPOCH'
 forbid "$build" "sccache"

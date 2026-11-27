@@ -5,8 +5,8 @@
 #   tilo-server-update-policy
 #
 # The server runs unprivileged and writes what it wants at one fixed path
-# (/var/lib/tilo-server/update-policy.request, written by the tilo-server
-# daemon from the server's entry in the admin workspace's `tilo.servers`
+# (/var/lib/tilo/state/update-policy.request, written by the device's daemon
+# from the server's entry in the admin workspace's `tilo.servers`
 # document): `updates=<updates>` and `window=HH:MM-HH:MM`, one per line, and
 # only lines for the settings the entry names. A path unit starts this as root
 # when that file changes, and it applies exactly what the lines name through
@@ -18,7 +18,7 @@
 # the window, since its entry is the one place a server's window lives.
 set -eu
 
-request="${TILO_SERVER_POLICY_REQUEST:-/var/lib/tilo-server/update-policy.request}"
+request="${TILO_SERVER_POLICY_REQUEST:-/var/lib/tilo/state/update-policy.request}"
 policy_set="${TILO_UPDATE_POLICY_SET:-/usr/libexec/tilo-update-policy-set}"
 
 refuse() { printf 'tilo-server-update-policy: %s\n' "$*" >&2; exit 2; }

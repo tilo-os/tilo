@@ -88,6 +88,7 @@ for bin in usr/libexec/tilo/tilo-runtime \
   usr/libexec/tilo-image-policy-check usr/libexec/tilo-board-successor \
   usr/libexec/tilo-deployment usr/libexec/tilo-verified-update \
   usr/libexec/tilo-boot-health usr/libexec/tilo-server-health \
+  usr/libexec/tilo-runtime-state-migrate \
   usr/libexec/tilo-server-update-window usr/libexec/tilo-server-update-apply \
   usr/libexec/tilo-hosted-prepare usr/libexec/tilo-hosted-serve \
   usr/libexec/tilo-update-channel usr/libexec/tilo-update-policy-set \
@@ -160,14 +161,37 @@ grep -q '"keyPath": "/usr/share/tilo/cosign.pub"' <<<"$guest_policy" || die 'the
 grep -q '^tilo-hosted:x:10001:' "$root/etc/passwd" || die 'no tilo-hosted account at 10001'
 grep -q '^tilo-api:x:65532:' "$root/etc/passwd" || die 'no tilo-api account at 65532'
 
-# What boots, and what judges the boot: the server, the hosted-VM
+# What boots, and what judges the boot: the device's one daemon, the hosted-VM
 # service, the API (inert), and the assessment that rolls a bad update back,
 # judged by this image's own server probe.
 wants=$root/etc/systemd/system
-for unit in tilo-server.service tilo-server-firstboot.service tilo-server-unlock.service \
-  tilo-hosted.service tilo-api.service; do
+for unit in tilo-runtime.service tilo-runtime-state-migrate.service \
+  tilo-server-unlock.service tilo-hosted.service tilo-api.service; do
   [[ -L $wants/multi-user.target.wants/$unit ]] || die "$unit is not enabled"
 done
+# The key and the re-key run before sysinit, as on every device.
+for unit in tilo-device-key-init.service tilo-device-branch.service; do
+  [[ -L $wants/sysinit.target.wants/$unit ]] || die "$unit is not enabled"
+done
+# The image's one daemon is every device's, as the account every device runs it
+# as, and what a server keeps is its configuration: no second account, no
+# second unit, no second state root.
+if inside getent passwd tilo-server >/dev/null 2>&1; then
+  die 'the image carries a second daemon account'
+fi
+inside getent passwd tilo >/dev/null || die 'the image carries no daemon account'
+for stale in /var/lib/tilo-server /usr/lib/systemd/system/tilo-server.service \
+  /usr/lib/systemd/system/tilo-server-firstboot.service; do
+  [[ ! -e $root$stale ]] || die "the image carries $stale, a second host's setup"
+done
+grep -qx 'Environment=TILO_SERVER_CONFIG=/etc/tilo/server.toml' \
+  "$root/usr/lib/systemd/system/tilo-runtime.service.d/50-server.conf" \
+  || die 'the daemon is not a server through its own configuration'
+grep -q '^state_root = "/var/lib/tilo/state"$' "$root/etc/tilo/server.toml" \
+  || die "the server's state is not the device daemon's root"
+grep -qx 'd /var/lib/tilo/device-private   0700 tilo tilo         -' \
+  "$root/usr/lib/tmpfiles.d/tilo-runtime-state.conf" \
+  || die 'the device key directory is not the daemon account'"'"'s'
 for timer in tilo-boot-entries.timer bootc-fetch-apply-updates.timer \
   tilo-server-update-apply.timer tilo-rollback-harden.timer tilo-rollback-confirm.timer; do
   [[ -L $wants/timers.target.wants/$timer ]] || die "$timer is not enabled"
@@ -184,11 +208,11 @@ grep -q 'Environment=TILO_BOOT_HEALTH_UNIT=tilo-server-health.service' \
 # daemon's 0700 directories are not even readable by root without capabilities.
 grep -q 'status --daemon' "$root/usr/libexec/tilo-server-health" \
   || die 'the server health check does not ask the daemon a status call'
-grep -q '^User=tilo-server$' "$root/usr/lib/systemd/system/tilo-server-health.service" \
+grep -q '^User=tilo$' "$root/usr/lib/systemd/system/tilo-server-health.service" \
   || die 'the server health check does not run as the daemon account'
 # The disk unlock is asked of the daemon as its own account, the way the health check asks it,
 # while the volume's header stays root's.
-grep -q '^User=tilo-server$' "$root/usr/lib/systemd/system/tilo-server-unlock.service" \
+grep -q '^User=tilo$' "$root/usr/lib/systemd/system/tilo-server-unlock.service" \
   || die 'the server unlock does not ask the daemon as the daemon account'
 grep -q '^ExecStartPre=+/usr/libexec/tilo-server-unlock prepare$' \
   "$root/usr/lib/systemd/system/tilo-server-unlock.service" \

@@ -2,7 +2,7 @@
 Description=Watch for what a server's owner asked it to do
 
 [Path]
-PathChanged=/var/lib/tilo-server/control.request
+PathChanged=/var/lib/tilo/state/control.request
 Unit=tilo-server-control.service
 
 [Install]

@@ -1558,6 +1558,19 @@ find_deploy_etc() {
   fi
 }
 
+# The number the installed image gives the daemon account, as user:group. A
+# copy of this medium's files carries numbers, and the two images need not
+# number the account alike: the medium's number is not the installed
+# system's, and a file left with it belongs there to another account.
+installed_daemon_owner() {
+  local etc ids
+  etc="$(find_deploy_etc "$MNT")"
+  [ -n "$etc" ] && [ -f "$etc/passwd" ] || return 1
+  ids="$(awk -F: '$1 == "tilo" { print $3 ":" $4; exit }' "$etc/passwd")"
+  [ -n "$ids" ] || return 1
+  printf '%s\n' "$ids"
+}
+
 # The installed system's /var, which holds its identity after enrollment.
 find_installed_var() {
   find "$1/state/os" "$1/ostree/deploy" -mindepth 2 -maxdepth 2 -type d -name var 2>/dev/null
@@ -1879,9 +1892,9 @@ label_installed_tilo_path "$DEPLOY_ETC/tilo/install-purpose" /etc/tilo/install-p
 if [ -n "$STORE_PART" ]; then
   step "Configuring the store volume"
   # The store's files belong to whichever account serves them: the person's
-  # desktop account, or the server image's own service account.
+  # desktop account, or the daemon account a server's image runs.
   STORE_OWNER="$USERNAME"
-  [ "$SERVER_DESTINATION" -eq 0 ] || STORE_OWNER=tilo-server
+  [ "$SERVER_DESTINATION" -eq 0 ] || STORE_OWNER=tilo
   "$STORE_VOLUME" install-config --etc "$DEPLOY_ETC" \
     --luks-uuid "$STORE_LUKS_UUID" --fs-uuid "$STORE_FS_UUID" \
     --key-file "$STORE_KEY_FILE" --owner "$STORE_OWNER"
@@ -2159,7 +2172,7 @@ apply_plan_network() {
 # enrolled by a joined machine that holds the person's device store, and the first boot must open
 # its disk before any service can start.
 enrol_planned_server() {
-  local var identity live=/var/lib/tilo part relative
+  local var identity live=/var/lib/tilo part relative owner
   mapfile -t PLAN_IDENTITY_TARGET_VARS < <(find_installed_var "$MNT")
   [ "${#PLAN_IDENTITY_TARGET_VARS[@]}" -eq 1 ] \
     || die "could not locate exactly one installed /var for the login"
@@ -2192,14 +2205,14 @@ enrol_planned_server() {
       || die "could not carry this machine's $part to the installed system"
   done
   # The identity was copied into the installed /var from this live medium; label every file with
-  # the policy path it will have there, so the server's own account can read it.
+  # the policy path it will have there, so the daemon's account can read it.
   while IFS= read -r -d '' written; do
     relative="${written#"$var"/}"
     label_installed_tilo_path "$written" "/var/$relative"
   done < <(find "$identity" -mindepth 1 -print0)
   # The installed system's first boot would have created these trees with tmpfiles' group: give
   # the identity tree the group and the setgid flag it has there. The device-private directory
-  # keeps neither: it is the daemon's own, and its first boot gives the key that account and 0600.
+  # keeps neither: it is the daemon account's own, below.
   label_installed_tilo_path "$identity" /var/lib/tilo
   getent group tilo-identity >/dev/null 2>&1 \
     || die "the installed image declares no tilo-identity group"
@@ -2209,6 +2222,15 @@ enrol_planned_server() {
   find "$identity" -mindepth 1 -type d \
     \( -path "$identity/device-private" -prune \) -o -exec chmod g+s {} + \
     || die "could not make the joined identity's directories group-inheriting"
+  # A copy carries numbers, and this medium and the installed image need not
+  # give the daemon account the same one: give the key's directory the number
+  # the installed image gives it, which is the account the daemon runs as.
+  owner="$(installed_daemon_owner)" \
+    || die "the installed image declares no daemon account"
+  chown -R "$owner" "$identity/device-private" \
+    || die "could not give the joined device key to the daemon account"
+  chmod 0700 "$identity/device-private" \
+    || die "could not make the device key's directory owner-only"
   PLAN_ENROLLED_IDENTITY="$identity"
   log "  the machine joined your devices; its identity is at $identity"
 }
@@ -2236,18 +2258,23 @@ enrol_planned_sibling() {
 # The live daemon answered the join, the recovery key and the unlock's list of the person's devices
 # as this machine. One process at a time serves a device key, so it stops before the installed
 # system takes the key over, and its state goes with it: where the device enters and its copy of
-# the person's workspaces. The installed server runs the same daemon over /var/lib/tilo-server,
-# which its first boot gives to the server's account (tilo-server-state-migrate).
+# the person's workspaces. The installed server runs the device's one daemon, which keeps that
+# state at /var/lib/tilo/state like every other device.
 hand_over_planned_server() {
-  local live=/var/lib/tilo server_state written relative
+  local live=/var/lib/tilo server_state written relative owner
   [ -n "$PLAN_INSTALLED_VAR" ] || return 0
-  server_state="$PLAN_INSTALLED_VAR/lib/tilo-server"
+  server_state="$PLAN_INSTALLED_VAR/lib/tilo/state"
   systemctl stop tilo-runtime.service \
     || die "this computer's Tilo daemon did not stop, so its key cannot move to the installed system"
   [ -d "$live/state" ] || die "the login left no daemon state to install"
   install -d -m 0700 "$server_state" || die "could not create the installed server's state"
   cp -a -- "$live/state/." "$server_state/" \
     || die "could not carry this machine's login to the installed server"
+  # The account is named in both images and need not have the same number in
+  # them: give the state the number the installed image gives the daemon.
+  owner="$(installed_daemon_owner)" \
+    && chown -R "$owner" "$server_state" \
+    || die "could not give the installed server's state to the daemon account"
   while IFS= read -r -d '' written; do
     relative="${written#"$PLAN_INSTALLED_VAR"/}"
     label_installed_tilo_path "$written" "/var/$relative"

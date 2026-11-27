@@ -11,7 +11,7 @@
 #
 # A server that serves means, in order:
 #
-#   1. The server is serving: tilo-server.service is active, the daemon answers a
+#   1. The server is serving: tilo-runtime.service is active, the daemon answers a
 #      status call, and its metrics snapshot is one it wrote since this boot
 #      began. The daemon binds its endpoint and opens every durable workspace
 #      before it serves anything, and stops with its unit when either fails, so an
@@ -20,11 +20,11 @@
 #      and environment (this unit runs as it): the file a native endpoint leaves
 #      behind outlives the daemon, so it is no answer.
 #
-# A server that has not been paired yet has no server: tilo-server-firstboot waits
-# on the console for the pairing token from the person's own device, and until
-# then multi-user.target is everything the machine can do. That boot is judged by
-# the target alone, as an always-on board with no account yet is, so a fresh
-# server is never rolled back for waiting to be paired.
+# A server that has not been paired yet has no server: its daemon waits for a
+# certificate that names its key, and until then multi-user.target is everything
+# the machine can do. That boot is judged by the target alone, as an always-on
+# board with no account yet is, so a fresh server is never rolled back for
+# waiting to be paired.
 set -uo pipefail
 
 log()  { printf 'tilo-server-health: %s\n' "$*"; }
@@ -48,7 +48,7 @@ POLL="${TILO_SERVER_HEALTH_POLL:-2}"
 FRESH="${TILO_SERVER_HEALTH_FRESH:-30}"
 
 final_state() {
-  systemctl status --no-pager --lines=20 tilo-server.service 2>&1 \
+  systemctl status --no-pager --lines=20 tilo-runtime.service 2>&1 \
     | sed 's/^/tilo-server-health:   /' >&2
 }
 
@@ -74,8 +74,8 @@ fi
 # part failed rather than only that the boot did.
 serving() {
   local reason= said=
-  if ! systemctl is-active --quiet tilo-server.service; then
-    reason="tilo-server.service is not active"
+  if ! systemctl is-active --quiet tilo-runtime.service; then
+    reason="tilo-runtime.service is not active"
   elif ! said=$("$TILO" status --daemon 2>&1); then
     reason=$said
   elif [ ! -r "$OWN/metrics.json" ]; then
@@ -94,8 +94,8 @@ serving() {
 end=$(( $(date +%s) + DEADLINE ))
 while :; do
   # A unit that has already failed will not start serving by waiting.
-  if systemctl is-failed --quiet tilo-server.service; then
-    warn 'tilo-server.service FAILED, so this boot does not count as a success and the'
+  if systemctl is-failed --quiet tilo-runtime.service; then
+    warn 'tilo-runtime.service FAILED, so this boot does not count as a success and the'
     warn 'boot loader keeps its spent try'
     final_state
     exit 1

@@ -74,7 +74,7 @@ else
 fi
 
 # Public certificate publication must work for every authorized login user.
-for identity_tmpfiles in "$tmpfiles" "$repo/os/usr/lib/tmpfiles.d/tilo-host.conf"; do
+for identity_tmpfiles in "$tmpfiles" "$repo/os/usr/lib/tmpfiles.d/tilo-runtime-state.conf"; do
   if grep -Eq '^d[[:space:]]+/var/lib/tilo/device/certs[[:space:]]+2770[[:space:]]+root[[:space:]]+tilo-identity' "$identity_tmpfiles"; then
     ok 'identity-specific public certificates stay writable by later login identities'
   else

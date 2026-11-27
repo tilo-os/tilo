@@ -85,6 +85,9 @@ COPY bin/tilo-linux-vm /usr/libexec/tilo/tilo-linux-vm
 COPY bin/tilo-hosted-jail /usr/libexec/tilo/tilo-hosted-jail
 COPY bin/tilo-esp-write /usr/libexec/tilo-esp-write
 COPY bin/tilo-image-trust /usr/libexec/tilo/tilo-image-trust
+# The device key every machine has: made before sysinit, given the daemon
+# account and 0600 every boot.
+COPY bin/tilo-device-key-init /usr/libexec/tilo/tilo-device-key-init
 COPY bin/tilo-image-policy-check /usr/libexec/tilo-image-policy-check
 COPY bin/tilo-board-successor /usr/libexec/tilo-board-successor
 # Making Tilo the default start after an alongside install: the same tool the
@@ -112,6 +115,7 @@ RUN chown 0:10001 /usr/libexec/tilo/tilo-hosted-jail \
     && chmod 0755 /usr/libexec/tilo/tilo-api \
         /usr/libexec/tilo/tilolang-process \
         /usr/libexec/tilo/tilo-linux-vm /usr/libexec/tilo/tilo-image-trust \
+        /usr/libexec/tilo/tilo-device-key-init \
         /usr/libexec/tilo-esp-write /usr/libexec/tilo-image-policy-check \
         /usr/libexec/tilo-board-successor /usr/bin/fs \
         /usr/libexec/tilo/tilo-auth /usr/libexec/tilo/tilo-boot-signin \
@@ -146,7 +150,7 @@ COPY os/usr/libexec/tilo-hosted-prepare os/usr/libexec/tilo-hosted-serve \
      os/usr/libexec/tilo-update-channel os/usr/libexec/tilo-update-policy-check \
      os/usr/libexec/tilo-update-policy-set \
      os/usr/libexec/tilo-image-trust-staged os/usr/libexec/tilo-esp-mount \
-     os/usr/libexec/tilo-server-firstboot os/usr/libexec/tilo-server-state-migrate \
+     os/usr/libexec/tilo-runtime-state-migrate \
      os/usr/libexec/tilo-server-unlock os/usr/libexec/tilo-server-update-policy \
      os/usr/libexec/tilo-server-control os/usr/libexec/tilo-server-device-config \
      os/usr/libexec/tilo-disk-encrypt os/usr/libexec/tilo-store-volume \
@@ -195,9 +199,9 @@ RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
         /usr/libexec/tilo-verified-update /usr/libexec/tilo-update-channel \
         /usr/libexec/tilo-update-policy-check /usr/libexec/tilo-update-policy-set \
         /usr/libexec/tilo-image-trust-staged \
-        /usr/libexec/tilo-esp-mount /usr/libexec/tilo-server-firstboot \
+        /usr/libexec/tilo-esp-mount /usr/libexec/tilo-runtime-state-migrate \
         /usr/libexec/tilo-server-unlock \
-        /usr/libexec/tilo-server-state-migrate /usr/libexec/tilo-server-update-policy \
+        /usr/libexec/tilo-server-update-policy \
         /usr/libexec/tilo-server-device-config \
         /usr/libexec/tilo-disk-encrypt /usr/libexec/tilo-store-volume \
         /usr/libexec/tilo-rollback-common /usr/libexec/tilo-rollback-confirm \
@@ -209,10 +213,15 @@ RUN chmod 0755 /usr/libexec/tilo-hosted-prepare /usr/libexec/tilo-hosted-serve \
         /usr/lib/dracut/modules.d/91tilo-rollback/module-setup.sh
 
 # ---- Units ------------------------------------------------------------------
-COPY os/usr/lib/systemd/system/tilo-server.service \
-    os/usr/lib/systemd/system/tilo-server-firstboot.service \
+# A server runs the device's one daemon (tilo-runtime.service), with this
+# image's own drop-in for the configuration only a server reads, and the units
+# a server's person drives it with. The device's key is the daemon account's,
+# made and kept by the units every device runs.
+COPY os/usr/lib/systemd/system/tilo-runtime.service \
+    os/usr/lib/systemd/system/tilo-runtime-state-migrate.service \
+    os/usr/lib/systemd/system/tilo-device-key-init.service \
+    os/usr/lib/systemd/system/tilo-device-branch.service \
     os/usr/lib/systemd/system/tilo-server-unlock.service \
-    os/usr/lib/systemd/system/tilo-server-state-migrate.service \
     os/usr/lib/systemd/system/tilo-hosted.service \
     os/usr/lib/systemd/system/tilo-api.service \
     os/usr/lib/systemd/system/tilo-boot-entries.service \
@@ -254,22 +263,26 @@ COPY os/usr/lib/systemd/system/systemd-bless-boot.service.d/10-tilo-writable-esp
     /usr/lib/systemd/system/systemd-bless-boot.service.d/10-tilo-writable-esp.conf
 COPY os/usr/lib/systemd/system/tilo-boot-health.service.d/10-tilo-server.conf \
     /usr/lib/systemd/system/tilo-boot-health.service.d/10-tilo-server.conf
+# What a server is, in the one daemon's configuration.
+COPY os/usr/lib/systemd/system/tilo-runtime.service.d/50-server.conf \
+    /usr/lib/systemd/system/tilo-runtime.service.d/50-server.conf
 
 COPY os/usr/lib/sysusers.d/tilo-identity.conf \
-    os/usr/lib/sysusers.d/tilo-server.conf \
+    os/usr/lib/sysusers.d/tilo-runtime.conf \
     os/usr/lib/sysusers.d/tilo-hosted.conf \
     os/usr/lib/sysusers.d/tilo-api.conf \
     /usr/lib/sysusers.d/
-COPY os/usr/lib/tmpfiles.d/tilo-host.conf os/usr/lib/tmpfiles.d/tilo-server.conf \
+COPY os/usr/lib/tmpfiles.d/tilo-runtime-state.conf \
     /usr/lib/tmpfiles.d/
 # pasta, one per workspace VM, opens /dev/net/tun; the node exists only once the
 # module is loaded, and the service's own machine setup refuses to start without
 # it.
 COPY os/etc/modules-load.d/tilo-hosted.conf /usr/lib/modules-load.d/tilo-hosted.conf
 # The device-trust group owns the certificate directories, so it has to exist before tmpfiles-setup
-# runs. There is no session user on a server image; only the static server account joins this
-# narrow boundary, for the certificates it serves.
-RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf /usr/lib/sysusers.d/tilo-server.conf \
+# runs. The daemon account owns the device key, which this group is never given; there is no
+# session user on a server image, so it is the only account that joins this narrow boundary,
+# for the certificates it serves.
+RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf /usr/lib/sysusers.d/tilo-runtime.conf \
         /usr/lib/sysusers.d/tilo-hosted.conf /usr/lib/sysusers.d/tilo-api.conf
 
 COPY docs/recovery.md docs/app-model/environments.md /usr/share/doc/tilo/
@@ -280,25 +293,21 @@ COPY docs/recovery.md docs/app-model/environments.md /usr/share/doc/tilo/
 # paths — treats this one as a release image.
 RUN install -d -m 0755 /usr/lib/tilo && echo server > /usr/lib/tilo/image-flavour
 
-# The first-boot script logs this machine in with the ticket provisioned on its volume: `tilo login`
-# with the ticket in /etc/tilo/ticket, which the installer writes. A machine with no ticket says
-# how to make one and stops.
-RUN mkdir -p /etc/tilo && : > /etc/tilo/ticket
-
-# Default server config, which the first-boot service keeps under
-# `/etc/tilo/server.toml` as the machine enrolls. `relay` is the packet relay
-# the machine enrolls through and shows its code at, so a data-centre server
-# behind a network address translation is reached; a deployment replaces it with
-# its own.
-RUN printf 'identity_root = "/var/lib/tilo"\nstate_root = "/var/lib/tilo-server"\niroh_listen = "0.0.0.0:0"\ntrust_policy = { kind = "allow_matching_user" }\nrelay = "https://use1-1.relay.n0.iroh.link."\n' \
+# Default server config: the workspaces this machine keeps, its own web
+# listener, and the relay it shows its code at, so a data-centre server behind
+# a network address translation is reached. Its state is the device daemon's
+# own, the same root every device keeps. A deployment replaces it with its own.
+RUN printf 'identity_root = "/var/lib/tilo"\nstate_root = "/var/lib/tilo/state"\niroh_listen = "0.0.0.0:0"\ntrust_policy = { kind = "allow_matching_user" }\nrelay = "https://use1-1.relay.n0.iroh.link."\n' \
         > /etc/tilo/server.toml
 
 # Enable services. The update timer keeps its Tilo drop-ins: it stages a verified
 # image with its try counter and never reboots blindly, and
 # tilo-server-update-apply is the only step that restarts the machine into a
 # staged one.
-RUN systemctl enable tilo-server-firstboot.service \
-    && systemctl enable tilo-server.service \
+RUN systemctl enable tilo-device-key-init.service \
+    && systemctl enable tilo-device-branch.service \
+    && systemctl enable tilo-runtime.service \
+    && systemctl enable tilo-runtime-state-migrate.service \
     && systemctl enable tilo-server-unlock.service \
     && systemctl enable tilo-hosted.service \
     && systemctl enable tilo-api.service \

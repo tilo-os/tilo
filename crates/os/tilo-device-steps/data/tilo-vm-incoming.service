@@ -2,7 +2,7 @@
 Description=Apply the component layers an installation left for this machine's first boot
 ConditionDirectoryNotEmpty=/var/lib/tilo-vm/incoming
 After=local-fs.target tilo-vm-restore.service
-Before=tilo-server.service
+Before=tilo-runtime.service
 
 [Service]
 Type=oneshot

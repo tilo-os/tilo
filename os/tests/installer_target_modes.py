@@ -94,8 +94,8 @@ promote_target_uki() {\n''' + body + '\n}\npromote_target_uki "$FIXTURE_ESP"\n'
             self.assertNotIn('firstboot-autologin-pending', SOURCE.split(
                 'install -m 0644 /usr/share/tilo/greetd-config.toml "$GREETD_CONFIG_TMP"', 1)[0])
             self.assertIn('rm -f "$DEPLOY_ETC/tilo/install-user.conf"', SOURCE)
-            # The server's store belongs to the image's own service account.
-            self.assertIn('[ "$SERVER_DESTINATION" -eq 0 ] || STORE_OWNER=tilo-server', SOURCE)
+            # The server's store belongs to the daemon account its image runs.
+            self.assertIn('[ "$SERVER_DESTINATION" -eq 0 ] || STORE_OWNER=tilo', SOURCE)
         with self.subTest(phase="one_startup_secret_is_the_server_whole_secret"):
             self.assertIn('the Tilo Server\'s startup secret must be the one secret supplied on stdin',
                           SOURCE)

@@ -6,11 +6,11 @@
 # The window is one setting, `window=HH:MM-HH:MM` (local time, `HH:MM` either
 # side; `22:00-04:00` wraps midnight), in the update policy every Tilo machine
 # keeps at /var/lib/tilo/update-policy beside its channel and schedule
-# (sysusers.d/tilo-server.conf, /usr/libexec/tilo-update-policy-set). A window is
-# what a server needs and a desktop does not: the update service may only stage
-# inside it, and tilo-server-update-apply only reboots into a staged generation
-# inside it, so a machine that serves other people's workspaces restarts when its
-# operator said, never in the middle of their day.
+# (/usr/libexec/tilo-update-policy-set). A window is what a server needs and a
+# desktop does not: the update service may only stage inside it, and
+# tilo-server-update-apply only reboots into a staged generation inside it, so a
+# machine that serves other people's workspaces restarts when its operator said,
+# never in the middle of their day.
 #
 # No window, or a policy file this image cannot read, means any time: an
 # operator who set nothing is not silently kept on an old image.

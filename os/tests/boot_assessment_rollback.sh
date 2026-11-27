@@ -141,8 +141,7 @@ boot_id() { guest 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null | tr -d '\r\
 # of it. Quiet the boot's own writers, as the check that drives a machine with
 # no sshd has to.
 quiet_console() {
-  as_root 'dmesg -n 1; systemctl cat tilo-server-firstboot.service >/dev/null 2>&1 && systemctl stop tilo-server-firstboot.service' \
-    >/dev/null 2>&1 || true
+  as_root 'dmesg -n 1' >/dev/null 2>&1 || true
 }
 booted_digest() {
   guest 'tr " " "\n" < /proc/cmdline | sed -n "s/^composefs=//p"' 2>/dev/null | tr -d '\r\n'

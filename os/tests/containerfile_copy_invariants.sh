@@ -125,7 +125,6 @@ done
 # dry run cannot prove that the build context supplies the installed bytes.
 for path in \
   usr/lib/tilo/node-server.toml \
-  usr/lib/sysusers.d/tilo-server.conf \
   usr/lib/systemd/system/tilo-node-server@.service \
   usr/lib/systemd/system/tilo-node-session-key@.service \
   usr/lib/systemd/system/tilo-node-session@.service \
@@ -141,7 +140,7 @@ done
 python3 "$repo/os/scripts/install-components.py" native-runtime-host --dry-run --format json |
   python3 -c 'import json,sys
 rows = [row for row in json.load(sys.stdin) if (row["from"] or "").startswith("@manifest/")]
-assert len(rows) == 6, rows
+assert len(rows) == 5, rows
 for row in rows:
     assert row["from"] == "@manifest" + row["to"], row
     assert row["mode"] == "0644" and not row["optional"], row'

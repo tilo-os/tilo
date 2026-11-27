@@ -15,7 +15,7 @@ ProtectHome=yes
 ProtectSystem=strict
 # The request the server writes and the answer this writes back, and the
 # systemd state a restart, a mask and a rollback change.
-ReadWritePaths=/var/lib/tilo-server /etc/systemd/system /run/systemd
+ReadWritePaths=/var/lib/tilo/state /etc/systemd/system /run/systemd
 InaccessiblePaths=-/var/lib/tilo/device-private -/var/lib/tilo/secureboot -/var/lib/tilo/image-trust -/var/lib/tilo/rollback
 ProtectProc=invisible
 ProcSubset=pid

@@ -96,7 +96,7 @@ async fn every_mutation_reaches_the_helper_and_is_kept() {
     for (operation, verb) in [
         (
             ServerOperation::Restart {
-                service: "tilo-server.service".into(),
+                service: "tilo-runtime.service".into(),
             },
             "restart",
         ),
@@ -110,7 +110,7 @@ async fn every_mutation_reaches_the_helper_and_is_kept() {
         assert_eq!(result.answer, ServerAnswer::Nothing);
     }
     let logs = ask(ServerOperation::Logs {
-        service: "tilo-server.service".into(),
+        service: "tilo-runtime.service".into(),
         lines: 5,
     })
     .await;
@@ -156,7 +156,7 @@ async fn a_stale_answer_is_never_taken_for_the_request() {
         None,
         &own(),
         ServerOperation::Restart {
-            service: "tilo-server.service".into(),
+            service: "tilo-runtime.service".into(),
         },
         Duration::from_millis(300),
     )
@@ -190,17 +190,20 @@ async fn a_helper_that_refuses_answers_with_why() {
 #[test]
 fn a_service_is_a_unit_name_and_nothing_else() {
     assert_eq!(
-        valid_service("tilo-server.service").unwrap(),
-        "tilo-server.service"
+        valid_service("tilo-runtime.service").unwrap(),
+        "tilo-runtime.service"
     );
-    assert_eq!(valid_service("tilo-server").unwrap(), "tilo-server.service");
+    assert_eq!(
+        valid_service("tilo-runtime").unwrap(),
+        "tilo-runtime.service"
+    );
     assert_eq!(
         valid_service("tilo-fs-replica@1.service").unwrap(),
         "tilo-fs-replica@1.service"
     );
     for refused in [
         "../../bin/sh",
-        "tilo-server.service --now",
+        "tilo-runtime.service --now",
         "$(reboot)",
         "tilo server",
         "",
