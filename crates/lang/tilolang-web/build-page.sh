@@ -23,7 +23,7 @@ wasm-bindgen --target web --out-dir "$out" \
 
 python3 - "$out/apps.json" <<'PY'
 import base64, json, pathlib, sys
-names = {"app.ids", "tilo-app.toml", "surface.toml"}
+names = {"app.ids", "tilo-app.toml", "surface.json"}
 files = {}
 for path in sorted(pathlib.Path("apps/tl").rglob("*")):
     if not path.is_file():
@@ -37,8 +37,8 @@ for path in sorted(pathlib.Path("apps/tl").rglob("*")):
 # A directory with a manifest and a surface is a native app a package can `use`: its metadata is
 # what the package compiles against, as a `tilolang build` search reads it.
 for app in sorted(pathlib.Path("apps").glob("*")):
-    if (app / "tilo-app.toml").is_file() and (app / "surface.toml").is_file():
-        for name in ("tilo-app.toml", "surface.toml"):
+    if (app / "tilo-app.toml").is_file() and (app / "surface.json").is_file():
+        for name in ("tilo-app.toml", "surface.json"):
             path = app / name
             files[path.as_posix()] = path.read_text(encoding="utf-8")
 pathlib.Path(sys.argv[1]).write_text(json.dumps(files, ensure_ascii=False), encoding="utf-8")
