@@ -1708,11 +1708,14 @@ class Walk:
         self.dark = dark
         return True
 
-    def theme_shot(self, name: str, dark: bool) -> str:
+    def theme_shot(self, name: str, dark: bool, spent=None) -> str:
         """The state `name` again, in the theme named: the person switches it and
-        looks at what they had."""
+        looks at what they had. `spent`, when given, hears how long the switch took."""
         before = (self.window_of() or {}).get("frames") or 0
+        switch_began = time.monotonic()
         switched = self.set_dark(dark)
+        if spent is not None:
+            spent("dark_switch", switch_began)
         if self.v.get("id") is None:
             # A walk of the shell has no app window to count frames of: the
             # shell restyles on its next frame, which a snapshot waits for.
@@ -2289,16 +2292,23 @@ class Walk:
 
         missing: list = []
         end = time.monotonic() + deadline
+        # How many times the screen was read before it showed everything, and how long the last
+        # read took: what a slow `must` spent waiting for the app and what it spent reading.
+        rounds, read_ms = 0, 0
         while True:
+            read_began = time.monotonic()
             listed = targets_of(self.session,
                                 [s for entry in entries for s in choices_of(entry)])
             missing = [entry for entry in entries if missed(entry, listed)]
+            rounds += 1
+            read_ms = round((time.monotonic() - read_began) * 1000)
             if not missing or time.monotonic() > end:
                 break
             time.sleep(0.05)
         if missing:
-            raise Failed(f"not on screen: {json.dumps(missing, ensure_ascii=False)}")
-        return {"saw": entries}
+            raise Failed(f"not on screen: {json.dumps(missing, ensure_ascii=False)} "
+                         f"({rounds} reads, the last {read_ms} ms)")
+        return {"saw": entries, "reads": rounds, "read_ms": read_ms}
 
     def op_count(self, value) -> dict:
         """How many controls the selector in `see` is drawn as, which must be
@@ -3397,9 +3407,18 @@ class Walk:
             if self.catalogued is not None:
                 record["catalogue"] = self.catalogued
             shots_began = time.monotonic()
+            # Each part of the shots on its own: the shot, the switch to the dark theme, the dark
+            # shot and the switch back, so a step whose shots cost more says which part did.
+            shots_spent: dict[str, int] = {}
+
+            def spent(part: str, began_at: float) -> None:
+                shots_spent[part] = round((time.monotonic() - began_at) * 1000)
+
             if step.get("shot", True):
                 name = f"{index:02d}-{step['id']}"
+                part_began = time.monotonic()
                 record["shot"] = self.shot(name)
+                spent("shot", part_began)
                 if self.devices is not None:
                     # Each further device is shot too: what reached it is the step's point.
                     record["device_shots"] = {
@@ -3407,9 +3426,14 @@ class Walk:
                             f"{name}-{device}"))
                         for device in self.devices.further()}
                 if dark:
-                    record["shot_dark"] = self.theme_shot(name, True)
+                    part_began = time.monotonic()
+                    record["shot_dark"] = self.theme_shot(name, True, spent)
+                    spent("dark", part_began)
+                    part_began = time.monotonic()
                     self.set_dark(False)
+                    spent("back_to_light", part_began)
             record["shots_ms"] = round((time.monotonic() - shots_began) * 1000)
+            record["shots_spent"] = shots_spent
             budget = step.get("budget_ms")
             took = round((time.monotonic() - began) * 1000)
             if budget is not None and took > budget:
