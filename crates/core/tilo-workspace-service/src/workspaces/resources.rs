@@ -650,9 +650,20 @@ impl Resources {
     /// Keeps `doc` whole with its snapshot, and lets it go from memory.
     fn let_go(&mut self, doc: &str) {
         self.used.remove(doc);
+        // The records whose model the document held: a device keeps no more records than it
+        // holds documents, so each goes as the document it was read from goes.
+        let records: Vec<String> = self
+            .store_mut()
+            .index()
+            .held(doc)
+            .map(|(_, record)| record.to_owned())
+            .collect();
         let Some(bytes) = self.store_mut().evict(doc) else {
             return;
         };
+        for record in records {
+            tilo_resource::action::forget_record(&record);
+        }
         if let Err(error) = self.keep_whole(doc, &bytes) {
             tracing::warn!(%doc, %error, "a resource document was not kept whole");
         }

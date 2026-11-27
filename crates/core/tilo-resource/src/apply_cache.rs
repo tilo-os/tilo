@@ -39,13 +39,20 @@
 //! document the device holds (`--cfg tilo_model_guest`), so there is no next
 //! action to keep anything for, and its writes are the whole ones.
 //!
-//! Keyed by the record's type and by content-addressed change hashes, so a
-//! record kept for one document is never mistaken for another's: a document
-//! without the kept version reads the record whole.
+//! Keyed by the record's type, by the address its caller gives it
+//! ([`with_record`]) and by content-addressed change hashes, so a record kept
+//! for one document is never mistaken for another's: a document without the
+//! kept version reads the record whole.
+//!
+//! A record is kept for the thread that writes it, so a device runs a
+//! record's actions on one worker, chosen by its address
+//! (`tilo-workspace-service`'s record workers): the record one write leaves is
+//! the one the next write of it starts from, whichever task asks.
 
 use std::any::{Any, TypeId};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tilo_sort::CompactSort as _;
 
 use automerge::transaction::Transactable as _;
@@ -59,8 +66,71 @@ use crate::model::Doc;
 const MAX_CHANGES: usize = 256;
 const MAX_OPS: u64 = 50_000;
 
+/// The key a kept record is under: its type, and the address of the record when its caller
+/// names one.
+type RecordKey = (TypeId, Option<Arc<str>>);
+
 thread_local! {
-    static KEPT: RefCell<HashMap<TypeId, Kept>> = RefCell::new(HashMap::new());
+    /// The records kept on this thread, by type and by record: a record is kept for the one that
+    /// keeps its writes, so two records of one type behind the same thread are each kept.
+    static KEPT: RefCell<HashMap<RecordKey, Kept>> = RefCell::new(HashMap::new());
+    /// The record the action running on this thread writes, when its caller names it.
+    static RECORD: RefCell<Option<Arc<str>>> = const { RefCell::new(None) };
+}
+
+/// Run `write` for the record `record` (its address, unique on this device), so the record it
+/// leaves is the one the next write of the same record starts from: the action pool runs a
+/// record's writes on the worker that keeps it, and this is what that worker keys by.
+pub fn with_record<T>(record: Option<&Arc<str>>, write: impl FnOnce() -> T) -> T {
+    struct Restore(Option<Arc<str>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            RECORD.with(|record| *record.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(RECORD.with(|held| held.replace(record.cloned())));
+    write()
+}
+
+/// The key the record kept now is under: its type, and the record's address when its caller
+/// named one.
+fn key_of(kind: TypeId) -> RecordKey {
+    (kind, RECORD.with(|record| record.borrow().clone()))
+}
+
+/// Keep `kept` for the record written now: the next write of that record starts from it, and
+/// its next write replaces it. A record is kept no longer than the store keeps its document:
+/// [`forget_record`] drops it as the document goes.
+fn keep_keyed(key: RecordKey, kept: Kept) {
+    KEPT.with(|held| {
+        held.borrow_mut().insert(key, kept);
+    });
+}
+
+fn take_keyed(kind: TypeId) -> Option<Kept> {
+    let key = key_of(kind);
+    KEPT.with(|held| held.borrow_mut().remove(&key))
+}
+
+/// The record the action running on this thread writes, when its caller names it. What
+/// [`crate::action::whole_reads`] counts reads by: a test's, and no cost of a write.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn current_record() -> Option<Arc<str>> {
+    RECORD.with(|record| record.borrow().clone())
+}
+
+/// Let go the records kept for the resource `record`, which the store no longer holds: called as
+/// the store lets the record's document go, so a kept record lives no longer than the document it
+/// was read from, and a device keeps no more records than it holds documents.
+pub fn forget_record(record: &str) {
+    let suffix = format!("/{record}");
+    KEPT.with(|held| {
+        held.borrow_mut().retain(|(_, address), _| {
+            address
+                .as_deref()
+                .is_none_or(|address| !address.ends_with(&suffix))
+        });
+    });
 }
 
 struct Kept {
@@ -93,7 +163,7 @@ pub(crate) fn take_any(
         base,
         mut wrote,
         open,
-    } = KEPT.with(|kept| kept.borrow_mut().remove(&kind))?;
+    } = take_keyed(kind)?;
     // What was kept as written into a transaction holds its own change.
     let holds_person_workspace = open.is_some();
     if let Some((actor, pending)) = open {
@@ -211,9 +281,7 @@ pub(crate) fn keep_any(kind: TypeId, record: Box<dyn Any>, doc: &Doc, started: &
             wrote,
             open: None,
         };
-        KEPT.with(|cell| {
-            cell.borrow_mut().insert(kind, kept);
-        });
+        keep_keyed(key_of(kind), kept);
     }
 }
 
@@ -231,9 +299,7 @@ pub(crate) fn keep_open(kind: TypeId, record: Box<dyn Any>, doc: &Doc) {
         wrote: None,
         open: Some((doc.get_actor().clone(), doc.pending_ops())),
     };
-    KEPT.with(|cell| {
-        cell.borrow_mut().insert(kind, kept);
-    });
+    keep_keyed(key_of(kind), kept);
 }
 
 /// The change an action wrote on top of the version it started from: its

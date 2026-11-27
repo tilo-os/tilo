@@ -227,7 +227,9 @@ ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
 tilo-workspace-keys = { path = "../workspace-keys", features = ["test-support"] }
 tilo-identity = { path = "../tilo-identity", features = ["test-support"] }
 tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
-tilo-resource = { path = "../tilo-resource" }
+# Its tests count how often a write reads its whole record
+# (`tilo_resource::action::whole_reads`).
+tilo-resource = { path = "../tilo-resource", features = ["test-support"] }
 
 [lints]
 workspace = true

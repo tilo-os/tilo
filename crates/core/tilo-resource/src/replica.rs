@@ -72,6 +72,10 @@ pub struct Replica<R: Resource, A = NoApp> {
     now_ms: i64,
     /// The incrementally maintained state views would see, once asked for.
     reader: Option<Reader<R>>,
+    /// The record this replica writes, as its address on the device, when its caller names it:
+    /// what the kept record is keyed by, so the same record's writes start from it whichever
+    /// of the device's workers runs them.
+    record: Option<std::sync::Arc<str>>,
     marker: std::marker::PhantomData<fn() -> (R, A)>,
 }
 
@@ -134,6 +138,7 @@ impl<R: Resource> Replica<R, NoApp> {
             now_ms: 1_700_000_000_000,
             reader: None,
             marker: std::marker::PhantomData,
+            record: None,
         }
     }
 
@@ -167,6 +172,7 @@ impl<R: Resource> Replica<R, NoApp> {
             now_ms: self.now_ms,
             reader: self.reader,
             marker: std::marker::PhantomData,
+            record: self.record,
         }
     }
 }
@@ -327,6 +333,15 @@ impl<R: Resource, A> Replica<R, A> {
         )
     }
 
+    /// The record this replica writes, as its address on the device (`workspace/app/record`): the
+    /// key the record an action leaves is kept under, so its next write starts from it rather
+    /// than reading the whole record again, whichever worker runs it.
+    #[must_use]
+    pub fn at_record(mut self, record: impl Into<std::sync::Arc<str>>) -> Self {
+        self.record = Some(record.into());
+        self
+    }
+
     fn invoke(&mut self, invoke: Invoke<R>, confirmed: bool) -> Result<&ActionEnvelope, ApiError> {
         if let Some(refusal) = invoke.refusal() {
             return Err(ApiError::InvalidArguments(refusal.to_owned()));
@@ -368,22 +383,25 @@ impl<R: Resource, A> Replica<R, A> {
             None => ambient,
         };
         let mut transport = LocalTransport::new();
+        let record = self.record.clone();
         let (doc, registry) = (&mut self.doc, &self.registry);
-        let dispatched = resource::with_origin_clock(self.now_ms, || {
-            let resources = std::slice::from_ref(&tree);
-            let provenance = match &ambient {
-                Some(ambient) => InvocationProvenance::caller(&actor).within(ambient),
-                None => InvocationProvenance::caller(&actor),
-            };
-            api::invoke_json(
-                doc,
-                resources,
-                &address,
-                &arguments,
-                (provenance, confirmed),
-                registry,
-                &mut transport,
-            )
+        let dispatched = crate::apply_cache::with_record(record.as_ref(), || {
+            resource::with_origin_clock(self.now_ms, || {
+                let resources = std::slice::from_ref(&tree);
+                let provenance = match &ambient {
+                    Some(ambient) => InvocationProvenance::caller(&actor).within(ambient),
+                    None => InvocationProvenance::caller(&actor),
+                };
+                api::invoke_json(
+                    doc,
+                    resources,
+                    &address,
+                    &arguments,
+                    (provenance, confirmed),
+                    registry,
+                    &mut transport,
+                )
+            })
         })?;
         self.log.push(dispatched.envelope().clone());
         self.log
@@ -452,6 +470,7 @@ impl<R: Resource, A> Replica<R, A> {
             now_ms: self.now_ms,
             reader: None,
             marker: std::marker::PhantomData,
+            record: self.record.clone(),
         }
     }
 

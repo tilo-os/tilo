@@ -150,6 +150,7 @@ mod document_format;
 #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
 pub mod profile_import;
 mod record_authority;
+pub(crate) mod record_workers;
 mod resources;
 pub use resources::RecordFailure;
 pub use resources::person_reading;
@@ -171,6 +172,8 @@ pub use crate::documents::device_keys::{
 };
 #[cfg(test)]
 mod copy_now_tests;
+#[cfg(test)]
+mod kept_record_tests;
 #[cfg(test)]
 mod member_grants_tests;
 pub mod membership;

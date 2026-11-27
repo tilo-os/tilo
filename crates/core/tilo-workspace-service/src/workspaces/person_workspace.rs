@@ -241,10 +241,15 @@ pub async fn apply_on<R: Resource>(
 ) -> Result<(), String> {
     let cert = workspaces.device_cert().clone();
     let (app, name) = resource;
+    let app = app.to_owned();
+    // The record this writes, as the device addresses it: the worker that does its writes keeps
+    // the record it leaves, so the next write of it starts from it rather than reading it whole.
+    let keeps = format!("{workspace}/{app}/{name}");
+    let record_app = app.clone();
     // Boxed: committing a write can apply a change of the person's own workspace in turn.
     Box::pin(
-        workspaces.author_record(workspace, (app, R::KIND, name), |doc| {
-            invoke(doc, &cert, app, action)
+        workspaces.author_record_kept(workspace, (&app, R::KIND, name), move |doc| {
+            invoke(doc, &cert, &record_app, action, &keeps)
         }),
     )
     .await
@@ -266,36 +271,45 @@ pub async fn apply_actions_on<R: Resource>(
 ) -> Result<(), String> {
     let cert = workspaces.device_cert().clone();
     let (app, name) = resource;
-    let mut refused = Ok(());
-    // Boxed: committing a write can apply a change of the person's own workspace in turn.
-    Box::pin(
-        workspaces.author_record(workspace, (app, R::KIND, name), |doc| {
-            let replica = Replica::<R>::from_doc(std::mem::take(doc))
-                .as_invoker(&hex::encode(cert.user_public_key));
-            let mut replica = replica.in_app(app, &app_label::<R>(app));
-            replica
-                .doc_mut()
-                .set_actor(automerge::ActorId::from(cert.device_public_key.to_vec()));
-            for (at, action) in actions.into_iter().enumerate() {
-                if let Err(error) = replica
-                    .apply(action)
-                    .map(drop)
-                    .map_err(|error| error.to_string())
-                {
-                    if Some(at) == optional {
-                        refused = Err(error);
-                        continue;
+    let app = app.to_owned();
+    // The record this writes, as the device addresses it: the worker that does its writes keeps
+    // the record it leaves, so the next write of it starts from it rather than reading it whole.
+    let keeps = format!("{workspace}/{app}/{name}");
+    let record_app = app.clone();
+    let mut refused =
+        Box::pin(
+            workspaces.author_record_kept(workspace, (&app, R::KIND, name), move |doc| {
+                let replica = Replica::<R>::from_doc(std::mem::take(doc))
+                    .as_invoker(&hex::encode(cert.user_public_key))
+                    .at_record(keeps);
+                let mut replica = replica.in_app(&record_app, &app_label::<R>(&record_app));
+                replica
+                    .doc_mut()
+                    .set_actor(automerge::ActorId::from(cert.device_public_key.to_vec()));
+                let mut refused = None;
+                for (at, action) in actions.into_iter().enumerate() {
+                    if let Err(error) = replica
+                        .apply(action)
+                        .map(drop)
+                        .map_err(|error| error.to_string())
+                    {
+                        if Some(at) == optional {
+                            refused = Some(error);
+                            continue;
+                        }
+                        std::mem::swap(doc, replica.doc_mut());
+                        return Err(error);
                     }
-                    std::mem::swap(doc, replica.doc_mut());
-                    return Err(error);
                 }
-            }
-            std::mem::swap(doc, replica.doc_mut());
-            Ok(())
-        }),
-    )
-    .await?;
-    refused
+                std::mem::swap(doc, replica.doc_mut());
+                Ok(refused)
+            }),
+        )
+        .await?;
+    match refused.take() {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 /// The kinds of the person's own records, of what a workspace's owner alone keeps of it, and of
@@ -427,9 +441,11 @@ pub(super) fn invoke<R: Resource>(
     cert: &tilo_user_identity::DeviceCert,
     app: &str,
     action: Invoke<R>,
+    keeps: &str,
 ) -> Result<(), String> {
-    let replica =
-        Replica::<R>::from_doc(std::mem::take(doc)).as_invoker(&hex::encode(cert.user_public_key));
+    let replica = Replica::<R>::from_doc(std::mem::take(doc))
+        .as_invoker(&hex::encode(cert.user_public_key))
+        .at_record(keeps);
     // The record is the app's: every device decides the change against that app's surface, and
     // a change naming no app has one guessed from the kind's id, which the record's app does
     // not publish. This device's own actor is the genesis' already, and two devices continuing

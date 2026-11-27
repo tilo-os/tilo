@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use tilo_action_policy::MemberId;
 use tilo_actions::{ActionError, ExecutionLocus, RiskLevel};
 
+pub use crate::apply_cache::forget_record;
+
 use crate::collection::Id;
 use crate::kind::ResourceKind;
 use crate::model::{Doc, Fields};
@@ -1243,8 +1245,37 @@ fn apply_edit_queued(
 /// never costs, as an observation of it says.
 fn read_whole(ops: &'static ResourceOps, doc: &Doc) -> Result<Box<dyn Any>, ActionError> {
     let _whole = crate::profiling::Phase::start("resource.apply_whole_read");
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(record) = crate::apply_cache::current_record() {
+        let mut counts = WHOLE_READS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = counts.entry(record.to_string()).or_default();
+        *count = count.saturating_add(1);
+        drop(counts);
+    }
     (ops.read)(doc).map_err(model_refused)
 }
+
+/// How many actions have read the whole record at `record` (its address as its caller names it)
+/// since this process started: what a test asserts a run of writes costs once per record, not
+/// once per write.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn whole_reads(record: &str) -> usize {
+    WHOLE_READS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(record)
+        .copied()
+        .unwrap_or_default()
+}
+
+/// [`read_whole`]'s counts, by the address of the record read: a test's, and no cost of a write.
+#[cfg(any(test, feature = "test-support"))]
+static WHOLE_READS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::BTreeMap<String, usize>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::BTreeMap::new()));
 
 /// [`Stamped::apply`] of `operation`, of a record of the type `record`,
 /// encoded as `payload` at `now_ms`.
@@ -1369,15 +1400,14 @@ fn apply_operation(
     .map_err(model_refused)?;
     index(doc)?;
     crate::apply_cache::seal_stored(doc);
-    // Kept once all it wrote is written: the next action finds this one's
-    // change by its size, or, inside a transaction still open, starts from
-    // the record exactly as it was written.
-    if committed {
-        if let Some(kept) = kept {
-            crate::apply_cache::keep_any((record.kind)(), kept, doc, &started);
-        }
-    } else {
+    // Kept once all it wrote is written: inside a transaction still open (a caller applying
+    // several actions before it commits), the record exactly as the action wrote it, which the
+    // next action starts from; else the record it read, which the next action that starts from
+    // it brings up to date by this one's change.
+    if automerge::transaction::Transactable::pending_ops(doc) > 0 {
         crate::apply_cache::keep_open((record.kind)(), current, doc);
+    } else if let Some(kept) = kept {
+        crate::apply_cache::keep_any((record.kind)(), kept, doc, &started);
     }
     Ok(())
 }

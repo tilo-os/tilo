@@ -714,55 +714,145 @@ impl Workspaces {
         )
         .await;
         let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
-        let (mut doc, heads) = {
-            let mut store = self.store_of(&mut hosted);
-            // A record the store lists is changed from the document that holds it: founding it
-            // again would number this device's change as one the store already holds. The store
-            // keeps that document in memory, so it is copied for the change rather than written
-            // out and read back: a write costs its own bytes, not the record's encoding.
-            let held = match store.index().get(kind, record) {
-                Some(_) => Some(
-                    store
-                        .content_document(kind, record)
-                        .map_err(|error| error.to_string())?
-                        .ok_or_else(|| {
-                            format!("the store lists {kind} {record} but holds no document of it")
-                        })?
-                        .clone(),
-                ),
-                None => None,
-            };
-            let begun = if let Some(held) = held {
-                let mut doc = automerge::AutoCommit::from(held);
-                let heads = doc.get_heads();
-                (doc, heads)
-            } else {
-                let mut doc = automerge::AutoCommit::new();
-                if let Some(founding) = store
-                    .founding(kind, record)
-                    .map_err(|error| error.to_string())?
-                {
-                    tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, founding)
-                        .map_err(|error| error.to_string())?;
-                }
-                (doc, Vec::new())
-            };
-            drop(store);
-            begun
-        };
+        let (mut doc, heads) = self.record_copy(&mut hosted, kind, record)?;
         let result = change(&mut doc)?;
-        // This device's own edit of the record, naming the person it acts for.
-        if automerge::transaction::Transactable::pending_ops(&doc) != 0 {
+        self.commit_authored(&mut doc);
+        if doc.get_heads() == heads {
+            return Ok(result);
+        }
+        let changes = doc.get_changes(&heads);
+        self.keep_authored(state, hosted, turn, workspace, (app, kind, record), changes)
+            .await?;
+        Ok(result)
+    }
+
+    /// [`Self::author_record`] with the change made on the worker that does `record`'s writes
+    /// ([`crate::workspaces::record_workers`]): the record an action leaves is kept on that
+    /// worker, so its next write starts from it instead of reading the whole record again,
+    /// whichever of the device's tasks asks for it.
+    ///
+    /// # Errors
+    /// As [`Self::author_record`].
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the hold is the point: it lasts until the change built on the read is kept"
+    )]
+    pub(crate) async fn author_record_kept<R: Send + 'static>(
+        &self,
+        workspace: &str,
+        (app, kind, record): (&str, &str, &str),
+        change: impl FnOnce(&mut automerge::AutoCommit) -> Result<R, String> + Send + 'static,
+    ) -> Result<R, String> {
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        // The record's turn, as [`Self::author_record`] takes it: the changes it made are read by
+        // the next write from the store, and this one's are kept before it lets the turn go.
+        let turn = record_turn(
+            &self.signing_device().cert.device_public_key,
+            workspace,
+            kind,
+            record,
+        )
+        .await;
+        let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
+        let (doc, heads) = self.record_copy(&mut hosted, kind, record)?;
+        let message = crate::workspaces::authored::own_edit(&self.signing_device().cert);
+        let keeps = format!("{workspace}/{app}/{record}");
+        let applied = super::super::record_workers::run(
+            &keeps,
+            move || -> Result<(R, Vec<AmChange>), String> {
+                let mut doc = doc;
+                let result = change(&mut doc)?;
+                if automerge::transaction::Transactable::pending_ops(&doc) != 0 {
+                    doc.commit_with(
+                        automerge::transaction::CommitOptions::default().with_message(message),
+                    );
+                }
+                if doc.get_heads() == heads {
+                    return Ok((result, Vec::<AmChange>::new()));
+                }
+                let changes = doc.get_changes(&heads);
+                Ok((result, changes))
+            },
+        )
+        .await??;
+        let (result, changes) = applied;
+        if changes.is_empty() {
+            return Ok(result);
+        }
+        self.keep_authored(state, hosted, turn, workspace, (app, kind, record), changes)
+            .await?;
+        Ok(result)
+    }
+
+    /// A copy of the record `record` of `kind` as the store holds it, and the heads it stood at:
+    /// what [`Self::author_record`] changes. The store keeps the document in memory, so it is
+    /// copied for the change rather than written out and read back: a write costs its own bytes,
+    /// not the record's encoding.
+    fn record_copy(
+        &self,
+        hosted: &mut HostedWorkspace,
+        kind: &str,
+        record: &str,
+    ) -> Result<(automerge::AutoCommit, Vec<ChangeHash>), String> {
+        let mut store = self.store_of(hosted);
+        // A record the store lists is changed from the document that holds it: founding it
+        // again would number this device's change as one the store already holds.
+        let held = match store.index().get(kind, record) {
+            Some(_) => Some(
+                store
+                    .content_document(kind, record)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        format!("the store lists {kind} {record} but holds no document of it")
+                    })?
+                    .clone(),
+            ),
+            None => None,
+        };
+        let begun = if let Some(held) = held {
+            let mut doc = automerge::AutoCommit::from(held);
+            let heads = doc.get_heads();
+            (doc, heads)
+        } else {
+            let mut doc = automerge::AutoCommit::new();
+            if let Some(founding) = store
+                .founding(kind, record)
+                .map_err(|error| error.to_string())?
+            {
+                tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, founding)
+                    .map_err(|error| error.to_string())?;
+            }
+            (doc, Vec::new())
+        };
+        drop(store);
+        Ok(begun)
+    }
+
+    /// This device's own edit of the record, naming the person it acts for.
+    fn commit_authored(&self, doc: &mut automerge::AutoCommit) {
+        if automerge::transaction::Transactable::pending_ops(doc) != 0 {
             doc.commit_with(
                 automerge::transaction::CommitOptions::default().with_message(
                     crate::workspaces::authored::own_edit(&self.signing_device().cert),
                 ),
             );
         }
-        if doc.get_heads() == heads {
-            return Ok(result);
-        }
-        let changes = doc.get_changes(&heads);
+    }
+
+    /// Keep `changes`, this device's own changes of `app`'s record `record` of `kind` in
+    /// `workspace`, under `hosted`'s hold: as [`Self::author_record`] ends.
+    async fn keep_authored(
+        &self,
+        state: std::sync::Arc<tokio::sync::Mutex<HostedWorkspace>>,
+        mut hosted: tokio::sync::OwnedMutexGuard<HostedWorkspace>,
+        turn: tokio::sync::OwnedMutexGuard<()>,
+        workspace: &str,
+        (app, kind, record): (&str, &str, &str),
+        changes: Vec<AmChange>,
+    ) -> Result<(), String> {
         // Counted before it lands: a list of agents read from here on is known to be behind it
         // until it is read again.
         self.begins_write(workspace, app, record);
@@ -792,7 +882,7 @@ impl Workspaces {
         // own workspace, and admission reads them now: this device's write is read again before
         // it answers, as the follower reads one admitted from another device.
         self.read_wrote(workspace, app, record).await;
-        Ok(result)
+        Ok(())
     }
 
     /// Keep `changes`, this device's own changes of `app`'s record `record` of `kind` in
