@@ -1162,6 +1162,11 @@ impl KeptRig {
     /// A desktop on the device keeping its state at `state`, taking up what the keepers hold
     /// `following` an in-place restart.
     fn start_at(&self, following: bool, state: &Path) -> KeptDesktop {
+        self.start_beside(None, following, state)
+    }
+
+    /// The compatibility service the desktop runs, from what the rig stands in for.
+    fn assembly(&self) -> Assembly {
         let catalogue = self.catalogue.clone();
         let dir = self.probe.clone();
         let sound = self.sound.clone();
@@ -1179,7 +1184,7 @@ impl KeptRig {
             root: self.network_leases.clone(),
         };
         let administrator = self.administrator;
-        let assembly = Assembly::with(move |mut side| {
+        Assembly::with(move |mut side| {
             // The manager is this test binary, not the stand-in launcher the programs start
             // through.
             side.launcher = std::env::current_exe().expect("this test binary");
@@ -1207,7 +1212,18 @@ impl KeptRig {
                 },
                 vm,
             )
-        });
+        })
+    }
+
+    /// [`Self::start_at`] as the shell of `device`'s daemon, whose workspaces hold the layout the
+    /// test left: `None` for a desktop of its own, with no daemon to read one from.
+    fn start_beside(
+        &self,
+        device: Option<&crate::layout::Device>,
+        following: bool,
+        state: &Path,
+    ) -> KeptDesktop {
+        let assembly = self.assembly();
         let apps = Rc::new(Apps::with_launcher(
             tilo_app_launch::SessionEnvironment::from_process(),
             None,
@@ -1216,7 +1232,7 @@ impl KeptRig {
         let launches = Arc::new(Launches::default());
         let ending = Rc::new(std::cell::Cell::new(tilo_app_launch::Teardown::Logout));
         let asked = Rc::clone(&ending);
-        let mut session = crate::common::headless(Options {
+        let options = Options {
             launch: Some(Rc::clone(&apps)),
             launches: Arc::clone(&launches),
             state: Some(state.to_path_buf()),
@@ -1224,7 +1240,11 @@ impl KeptRig {
             windows: assembly,
             teardown: Box::new(move || asked.get()),
             ..Options::default()
-        });
+        };
+        let mut session = match device {
+            Some(device) => device.session_with(options),
+            None => crate::common::headless(options),
+        };
         let display = self
             .home
             .runtime()
@@ -2173,11 +2193,12 @@ fn two_workspaces_with(app: &str) -> tilo_desktop_model::Layout {
 
 #[test]
 fn a_saved_tab_of_another_workspace_starts_nothing() {
-    let rig = KeptRig::new();
+    let mut rig = KeptRig::new();
     // The program's window was seen in the workspace in front; the saved tab stands in the
     // workspace behind, where the session never saw it.
     let (device, workspaces) =
         crate::layout::Device::with_layout(&two_workspaces_with(PROGRAM_WINDOW));
+    crate::common::its_own_home(&mut rig.home);
     let seen = serde_json::json!([{
         "workspace": workspaces[0].to_string(),
         "window": PROGRAM_WINDOW,
@@ -2190,19 +2211,24 @@ fn a_saved_tab_of_another_workspace_starts_nothing() {
     fs::create_dir_all(path.parent().expect("the directory")).unwrap();
     fs::write(&path, seen.to_string()).unwrap();
 
-    let mut second = rig.start_at(false, &device.state);
-    let note = crate::common::wait_for(&mut second.session, "the tab's note", |session| {
+    let mut second = rig.start_beside(Some(&device), false, &device.state);
+    let (tab, note) = crate::common::wait_for(&mut second.session, "the tab's note", |session| {
         crate::layout::tabs(session)
             .into_iter()
             .find_map(|(tab, _)| match crate::layout::tile_of(session, tab)? {
                 tilo_desktop_model::TileContent::LocalApp { app_id, note, .. }
                     if app_id == PROGRAM_WINDOW && !note.is_empty() =>
                 {
-                    Some(note)
+                    Some((tab, note))
                 }
                 _ => None,
             })
     });
+    assert_eq!(
+        crate::layout::workspace_of(&second.session, tab),
+        Some(workspaces[1]),
+        "the saved tab is in the workspace behind, the one the session never saw"
+    );
     assert!(note.contains("not installed"), "{note}");
     assert!(
         rig.starts().is_empty(),
