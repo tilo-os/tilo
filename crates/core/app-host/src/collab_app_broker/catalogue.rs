@@ -63,6 +63,23 @@ impl AppBrokerState {
         drop(surfaces);
         selected
     }
+    /// The action `action` on `resource` as the peer `peer` publishes it on `route`, whoever
+    /// else publishes the same: what an invocation that peer was handed is held to while it
+    /// runs. Another window of the app on the same record publishes it too, and neither
+    /// replaces the other's.
+    pub(super) fn published_action_of(
+        &self,
+        peer: u64,
+        route: &CrdtRoute,
+        resource: &str,
+        action: &str,
+    ) -> Option<(PublishedSurface, PublishedAction)> {
+        let surfaces = self.publishers.surfaces.lock().ok()?;
+        surfaces
+            .get(&peer)
+            .filter(|surface| surface.app_id == route.app_id && surface.route == *route)?
+            .action_projection(resource, action)
+    }
     /// Check one live action route without cloning the published catalogue.
     pub fn has_live_published_action(
         &self,

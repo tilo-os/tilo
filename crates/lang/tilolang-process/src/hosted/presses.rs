@@ -115,6 +115,11 @@ impl Presses {
         self.open.get(&press).and_then(|open| open.delivered)
     }
 
+    /// Whether a press is still on its way: running, or not yet answered by the dispatch.
+    pub(super) fn any_open(&self) -> bool {
+        !self.open.is_empty()
+    }
+
     /// The press the dispatch handed back under `id`, if one was.
     pub(super) fn delivered_as(&self, id: u64) -> Option<InvocationId> {
         self.open

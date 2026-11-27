@@ -313,17 +313,18 @@ impl OriginalInvocation {
     }
     pub(super) fn check_resource_publication(&self, state: &AppBrokerState) -> Result<(), String> {
         let identity = self.resource_identity()?;
+        // The publication the invocation was accepted against is the peer's own: another
+        // instance of the app publishing the same record (a second window on it) leaves it as
+        // it was.
         let (surface, offered) = state
-            .published_action(
+            .published_action_of(
+                self.peer,
                 &self.data.route,
                 &self.data.request.address.resource,
                 &self.data.request.address.action,
             )
             .ok_or("accepted resource publication retired")?;
-        if !surface.live
-            || surface.peer_id != self.peer
-            || offered.semantic_identity.as_ref() != Some(identity)
-        {
+        if !surface.live || offered.semantic_identity.as_ref() != Some(identity) {
             return Err(
                 "accepted resource semantic identity changed or publication replaced".into(),
             );

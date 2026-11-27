@@ -374,6 +374,9 @@ fn tools_of(
 struct Running {
     hosted: Hosted,
     window: Option<Descriptor>,
+    /// Its window closed while a run of it waited on a call: it runs on without one until those
+    /// calls end, so what the person started there finishes.
+    closed: bool,
 }
 
 /// An instance being opened: its module read and its connection joining its workspace's route,
@@ -710,7 +713,11 @@ impl TilolangProcess {
             instance = hosted.spec().instance,
             "instance started"
         );
-        self.running.push(Running { hosted, window });
+        self.running.push(Running {
+            hosted,
+            window,
+            closed: false,
+        });
     }
 
     /// The later builds of `app` its instances follow are `builds`: those `tilolang dev` publishes
@@ -1263,13 +1270,17 @@ impl TilolangProcess {
         let before = self.running.len();
         let ended = &mut self.ended;
         self.running.retain_mut(|running| {
-            let open = running
-                .window
-                .as_ref()
-                .is_none_or(|window| !window_closed(window));
-            if !open {
+            if running.window.as_ref().is_some_and(window_closed) {
                 running.hosted.page_closed();
                 running.hosted.flush();
+                running.window = None;
+                running.closed = true;
+            }
+            // A press the person made there may still wait on a call it made (another app's
+            // action, a device's step they are asked about): its run goes on to the end, as it
+            // would with the window open, and the instance ends after it.
+            let ends = running.closed && !running.hosted.waits_on_calls();
+            if ends {
                 tracing::info!(
                     app = running.hosted.spec().app,
                     instance = running.hosted.spec().instance,
@@ -1277,7 +1288,7 @@ impl TilolangProcess {
                 );
                 ended.push(running.hosted.spec().instance);
             }
-            open
+            !ends
         });
         changed || self.running.len() != before
     }

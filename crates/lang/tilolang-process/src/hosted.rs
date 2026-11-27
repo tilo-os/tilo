@@ -5049,6 +5049,13 @@ impl Hosted {
             .withdraw_all(|request| connection.manager().send(request));
     }
 
+    /// Whether the person's press is still on its way through the dispatch, or a run of the
+    /// instance waits on a call it made, which answers it once it ends.
+    #[must_use]
+    pub fn waits_on_calls(&self) -> bool {
+        self.presses.borrow().any_open() || !self.children.borrow().is_empty()
+    }
+
     /// What the workspace's document of each person's own state holds, as this instance holds it.
     #[must_use]
     pub fn personal(&self) -> &tilolang_tilo::personal::PersonalState {

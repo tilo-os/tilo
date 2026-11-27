@@ -328,8 +328,9 @@ fn the_terminal_walks_a_thunderbird_migration_on_the_device() {
         assert_eq!(
             asked.len(),
             1,
-            "one question, for the one account: {:?}",
-            declined.said
+            "one question, for the one account: {:?}, answered {:#}",
+            declined.said,
+            declined.answer
         );
         assert!(asked[0].contains(WORK_EMAIL), "{asked:?}");
         assert!(
