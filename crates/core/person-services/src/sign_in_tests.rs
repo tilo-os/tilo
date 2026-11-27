@@ -488,6 +488,41 @@ async fn a_drive_is_kept_once_its_provider_page_approves_it() {
         account["services"],
         json!({"mail": false, "calendar": false, "files": true})
     );
+
+    // The drive's mount is handed the grant's access token, read from the workspace's vault,
+    // as the workspace answers it: the mount never reads the sealed grant itself.
+    let drive = kept_of_type(
+        workspaces,
+        workspace_id,
+        accounts::cloud_types::GOOGLE_DRIVE,
+    )
+    .await
+    .expect("the drive is kept");
+    let own = tilo_actions::remote::Caller::own_person(hex::encode(owner.user_public_key))
+        .in_workspace(workspace.clone());
+    let handed = workspaces
+        .person_accounts_invoke(
+            Some(workspace_id),
+            &own,
+            None,
+            &asking(
+                workspace_accounts::CLOUD_CREDENTIAL,
+                json!({"account": drive.id.as_str()}),
+            ),
+        )
+        .await
+        .expect("the drive's mount is handed its sign-in");
+    assert_eq!(handed["kind"], json!("bearer"));
+    assert!(
+        handed["secret"]
+            .as_str()
+            .is_some_and(|token| !token.is_empty()),
+        "the mount is handed the grant's access token: {handed}"
+    );
+    assert!(
+        handed["expiresAtMs"].as_u64().is_some(),
+        "the mount reads when its token stops being accepted: {handed}"
+    );
 }
 
 /// A `WebDAV` server is connected from the address and sign-in the person

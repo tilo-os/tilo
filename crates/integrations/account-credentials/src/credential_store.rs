@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tilo_oauth::client::{Authorization, OAuthClient};
 use tilo_oauth::device::DeviceAuthorization;
 use tilo_oauth::{OAuthError, Provider, Registration, TokenSet};
+use tilo_workspace_records::accounts::{CloudCredential, CloudCredentialKind, CloudHeader};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::clients::ClientTable;
@@ -1263,5 +1264,52 @@ impl std::fmt::Debug for DriveCredential {
             .field("credential", &self.credential)
             .field("renewed", &self.renewed.is_some())
             .finish()
+    }
+}
+
+impl DriveCredential {
+    /// What a device's cloud mount is handed for this sign-in, as the workspace answers it
+    /// ([`tilo_workspace_records::accounts::CLOUD_CREDENTIAL`]'s [`CloudCredential`]): none
+    /// where the provider will not renew the grant any more, and its person signs in again.
+    pub fn mount_credential(&self) -> Option<CloudCredential> {
+        let credential = self.credential.as_ref()?;
+        let expires_at_ms = match credential {
+            cloud_source::Credential::Bearer { expires, .. }
+            | cloud_source::Credential::Session { expires, .. } => expires.and_then(|time| {
+                time.duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .and_then(|since| u64::try_from(since.as_millis()).ok())
+            }),
+            cloud_source::Credential::Basic { .. } => None,
+        };
+        Some(match credential {
+            cloud_source::Credential::Basic { username, password } => CloudCredential {
+                kind: CloudCredentialKind::Basic,
+                username: username.clone(),
+                secret: password.to_string(),
+                headers: Vec::new(),
+                expires_at_ms,
+            },
+            cloud_source::Credential::Bearer { token, .. } => CloudCredential {
+                kind: CloudCredentialKind::Bearer,
+                username: String::new(),
+                secret: token.to_string(),
+                headers: Vec::new(),
+                expires_at_ms,
+            },
+            cloud_source::Credential::Session { headers, .. } => CloudCredential {
+                kind: CloudCredentialKind::Session,
+                username: String::new(),
+                secret: String::new(),
+                headers: headers
+                    .iter()
+                    .map(|(name, value)| CloudHeader {
+                        name: name.clone(),
+                        value: value.to_string(),
+                    })
+                    .collect(),
+                expires_at_ms,
+            },
+        })
     }
 }

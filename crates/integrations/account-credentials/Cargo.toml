@@ -57,6 +57,7 @@ store = [
     "dep:zeroize",
     "dep:sha2",
     "dep:cloud-source",
+    "dep:tilo-workspace-records",
     "dep:cloud-source-gdrive",
     "dep:cloud-source-onedrive",
     "dep:cloud-source-dropbox",
@@ -82,6 +83,9 @@ sha2 = { workspace = true, optional = true }
 # Resolving a new account's storage (drive ids, team roots) once at sign-in,
 # and iCloud's web sign-in behind `icloud::ICloudAuth`.
 cloud-source = { package = "tilo-cloud-source", path = "../cloud-source", optional = true }
+# A drive's sign-in in the shape a device's mount is handed it: the workspace's own answer
+# type (`DriveCredential::mount_credential`).
+tilo-workspace-records = { path = "../../core/workspace-records", optional = true }
 cloud-source-gdrive = { package = "tilo-cloud-source-gdrive", path = "../cloud-source-gdrive", optional = true }
 cloud-source-onedrive = { package = "tilo-cloud-source-onedrive", path = "../cloud-source-onedrive", optional = true }
 cloud-source-dropbox = { package = "tilo-cloud-source-dropbox", path = "../cloud-source-dropbox", optional = true }
