@@ -839,21 +839,20 @@ fn mounts_under(root: &Path) -> Vec<String> {
         .collect()
 }
 
-/// A member killed the hard way leaves its mounts to the guardian: wait for them all to go
-/// before wiping, since a folder still mounted cannot be removed (ENOTCONN).
-fn wait_for_unmount(root: &Path) {
-    let cleared = std::time::Instant::now();
-    loop {
-        let left = mounts_under(root);
-        if left.is_empty() {
-            return;
-        }
-        assert!(
-            cleared.elapsed() <= Duration::from_secs(30),
-            "the stopped member's mounts never went: {left:?}"
-        );
-        std::thread::sleep(Duration::from_millis(50));
+/// A member killed the hard way leaves its folders mounted with no daemon behind them: an
+/// owner-only mount has no unmount guardian, and the member's next start clears them. A wiped
+/// disk is a computer that starts afresh, with nothing mounted: they go as a restart takes them,
+/// since a folder still mounted cannot be removed (ENOTCONN).
+fn unmount_as_a_restart(root: &Path) {
+    for left in mounts_under(root) {
+        tilo_fs::fuse_session::clear_stale_mount(Path::new(&left))
+            .unwrap_or_else(|error| panic!("the stopped member's mount at {left} stays: {error}"));
     }
+    let left = mounts_under(root);
+    assert!(
+        left.is_empty(),
+        "the stopped member's mounts never went: {left:?}"
+    );
 }
 
 /// Empties the disk of the device whose process runs under `root`, as a VM
@@ -1072,7 +1071,7 @@ fn a_member_whose_disk_was_wiped_gets_the_workspaces_files_back() {
     let _ = first.wait();
     eprintln!("the server kept the tree after {:?}", started.elapsed());
 
-    wait_for_unmount(&member_root);
+    unmount_as_a_restart(&member_root);
 
     // The member's disk is wiped; it starts again with its identity alone and
     // takes part in the workspace again.
