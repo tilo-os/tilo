@@ -1653,6 +1653,10 @@ d-turaaosk = Bereich Geräte
     .w-add-this-device = Dieses Gerät hinzufügen
     .w-this-device-is-not-one-of = Dieses Gerät gehört noch zu niemandem, also handelt hier nichts als du. Füge es mit einem Code von einem deiner anderen Geräte hinzu.
     .w-add-a-device = Ein Gerät hinzufügen
+    .w-the-new-device-s-code = Der Code des neuen Geräts
+    .w-on-the-new-computer-open-tilo = Öffne auf dem neuen Computer Tilo und wähle, deine vorhandene Identität zu verwenden; gib dann diesen Code ein. Er gilt einmal.
+    .w-code = Code
+    .w-copy-code = Code kopieren
     .w-everything-that-can-act-as-you = Alles, was als du handeln kann
     .w-remove-anything-you-don-t-recognize = Entferne alles, das du nicht kennst.
     .w-connect-an-agent-or-computer = Einen Agenten oder Rechner verbinden
@@ -2545,3 +2549,11 @@ d-3s74ndu4 = Anbieterwörter
     .w-key-kept = Schlüssel hinterlegt
     .w-no-key = kein Schlüssel
     .w-not-offered = nicht angeboten
+
+d-pq53jrjn = Gerät hinzufügen
+    .doc = Gibt den einmaligen Code aus, mit dem ein neuer Computer dieser Person ihr Gerät wird. Das Gerät der Person stellt ihn aus, und der Code steht auf der Seite, bis die Person ihn auf den anderen Rechner kopiert.
+
+d-uxxownqu = Code kopieren
+    .doc = Legt den Code in die Zwischenablage, um ihn an den Computer weiterzugeben, der hinzugefügt wird.
+
+d-uxxownqu-ticket = Der Code

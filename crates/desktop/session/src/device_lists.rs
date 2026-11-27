@@ -4,6 +4,7 @@
 //! reader.
 
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
 use tilo_actions::remote::session_actions::INVITE_RESOURCE;
@@ -461,6 +462,9 @@ pub(crate) struct DeviceLists {
     pub(crate) styles: Followed<tilo_workspace_service::styles::StyleList>,
     /// The styles that failed in this session's shell, marked on what it shows of them.
     pub(crate) failed_styles: Rc<std::cell::RefCell<crate::styles::Failed>>,
+    /// The ticket this device last printed for a new device of the person's, as the daemon issued
+    /// it: what Settings' devices page shows and copies. Empty until one is asked for here.
+    pub(crate) pair_ticket: Arc<Mutex<String>>,
     /// The workspaces' folders on this computer, as the device's daemon last said each stands.
     pub(crate) folders: Followed<tilo_workspace_service::files::FolderList>,
     /// The apps this device lists, whose generation says which welcome cards stand here.
@@ -487,6 +491,8 @@ pub(crate) struct Shared {
     pub(crate) folders: Followed<tilo_workspace_service::files::FolderList>,
     pub(crate) styles: Followed<tilo_workspace_service::styles::StyleList>,
     pub(crate) lists: crate::lists::Lists,
+    /// The ticket the session last asked the device's daemon for, which its invite reading shows.
+    pub(crate) pair_ticket: Arc<Mutex<String>>,
     /// The pictures the workspaces show, as the person chose them: what the shell's wallpaper is.
     pub(crate) wallpapers: std::sync::Arc<crate::wallpapers::Wallpapers>,
 }
@@ -506,6 +512,7 @@ pub(crate) fn device_lists_from(shared: Shared) -> impl Fn() -> DeviceLists {
         asks: Rc::clone(&shared.asks),
         styles: shared.styles.clone(),
         failed_styles: Rc::clone(&failed_styles),
+        pair_ticket: Arc::clone(&shared.pair_ticket),
         folders: shared.folders.clone(),
         lists_source: shared.lists.clone(),
         wallpapers: std::sync::Arc::clone(&shared.wallpapers),
@@ -603,6 +610,11 @@ impl DeviceLists {
                         .map(|workspace| workspace.id().to_string())
                         .unwrap_or_default()
                 }),
+                ticket: self
+                    .pair_ticket
+                    .lock()
+                    .map(|ticket| ticket.clone())
+                    .unwrap_or_default(),
             })),
 
             _ => None,
@@ -950,6 +962,31 @@ impl DeviceLists {
     }
 }
 
+impl DeviceLists {
+    /// Print the one-use code a new computer of the person's joins them with, as the device's
+    /// daemon issues it, and keep it for the invite reading Settings' devices page shows: the
+    /// page copies it, and a machine of theirs without anyone at it takes it as `tilo.ticket`.
+    fn issue_device_ticket(&self) -> Result<Started, ApiError> {
+        let view = std::sync::Arc::clone(self.view()?);
+        let kept = std::sync::Arc::clone(&self.pair_ticket);
+        Ok(Started::Later(crate::landing::off_loop(async move {
+            let value = view.ask_device_ticket().await.map_err(ApiError::Failed)?;
+            let ticket = value
+                .get("ticket")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            if let Ok(mut held) = kept.lock() {
+                *held = ticket;
+            }
+            Ok(tilo_actions::ActionOutput {
+                value: Some(value),
+                resources: Vec::new(),
+            })
+        })))
+    }
+}
+
 /// Every picture the image ships, with the thumbnail a picker shows: read once, as the image's
 /// files do not change under a running session.
 fn shipped_wallpapers() -> &'static [ShippedWallpaper] {
@@ -1103,6 +1140,9 @@ impl DeviceLists {
                 .asks
                 .borrow_mut()
                 .push(DesktopAsk::Intent(ChromeIntent::PairDevice)),
+            // The code a new computer of the person's joins with: the daemon issues it, and
+            // Settings' devices page shows it and copies it.
+            InviteEffect::IssueDeviceTicket => return self.issue_device_ticket(),
             InviteEffect::ShowConnect => self
                 .handle
                 .choose_host_action(tilo_actions::remote::session_actions::CONNECT_AGENT),

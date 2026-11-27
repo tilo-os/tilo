@@ -22,6 +22,7 @@ pub use tilo_peer_state::workspace_view::{
     Holder, Hosting, Listed, NotDeletable, WorkspaceReading,
 };
 use tilo_peer_state::{Member, MemberList};
+use tilo_server_protocol::device_tickets::{ISSUE, target as device_ticket};
 use tilo_server_protocol::workspaces::{HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE};
 
 use crate::engine::ServiceAnswer;
@@ -509,6 +510,15 @@ impl WorkspaceView {
             failed.insert(workspace);
         }
         founded
+    }
+
+    /// Ask this device's daemon for the one-use ticket a new computer of the person's joins with
+    /// (`tilo.device devices#issue`): the code Settings' "Add a device" shows, and the one a
+    /// machine without anyone at it takes as its `tilo.ticket` credential.
+    #[must_use]
+    pub fn ask_device_ticket(&self) -> ServiceAnswer {
+        self.asks
+            .invoke(None, request(device_ticket(ISSUE), serde_json::Map::new()))
     }
 
     /// Ask `workspace`'s key access and membership action `action` with `arguments`, as the person on this

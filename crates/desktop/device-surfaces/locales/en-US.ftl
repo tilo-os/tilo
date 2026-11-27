@@ -118,6 +118,7 @@ so-tilo-session-invite-issue-invitation = Make an invitation link
 so-tilo-session-invite-show-invite = Invite people
 so-tilo-session-invite-show-connect = Connect an agent or computer
 so-tilo-session-invite-show-pair-device = Add a device
+so-tilo-session-invite-issue-device-ticket = Print a new device's code
 so-tilo-session-invite-open-link = Open a link
 so-tilo-session-invite-cancel-invitation = Cancel invitation
 

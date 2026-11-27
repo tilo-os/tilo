@@ -455,12 +455,16 @@ pub fn invite_surface() -> tilo_resource::surface::Surface {
 
 /// The invitations' resource as a view of another language reads it: the workspace whose sheet an
 /// invitation is made in — every invitation itself is read from the workspace's host through the
-/// `invitations` verb.
+/// `invitations` verb — and the ticket this device last printed for a new device of the person's,
+/// which its Settings page shows with the control that copies it.
 #[derive(Debug, Default, serde::Serialize, tilo_resource::JsonSchema)]
 #[allow(dead_code, reason = "read by the schema it describes, never in Rust")]
 pub struct Invite {
     /// The workspace in front, by its key: whose sheet the shell's invite button opens.
     pub workspace: String,
+    /// The one-use code a new computer of the person's joins with (`tilo1…`), as this device
+    /// last printed it: empty until one is asked for here.
+    pub ticket: String,
 }
 
 /// What inviting offers: the links into a workspace, the invite sheet, and adding another device or
@@ -521,6 +525,11 @@ pub enum InviteEffect {
     /// adding to it this way.
     #[effect(screen)]
     ShowPairDevice,
+    /// Print the one-use code a new computer of the person's joins them with.
+    /// The device's daemon issues it, where the person can read and copy it, and a machine of
+    /// theirs without anyone at it is set up with it too (`tilo.ticket`).
+    #[effect(kind = "outside")]
+    IssueDeviceTicket,
     /// Open what a `tilo://open#…` link names: the app that keeps it shows it, started first when
     /// no window of it does. An app that shows a link opens it this way, whoever it was copied
     /// from.

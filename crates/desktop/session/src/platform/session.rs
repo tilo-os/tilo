@@ -1041,6 +1041,10 @@ impl Session {
         // control it shows: the session keeps them in its settings service, and this is what the
         // broker hands a change of them, on the loop's pass, as it hands the session's own steps.
         let settings_steps = std::sync::Arc::new(crate::settings_steps::SettingsSteps::new(steps));
+        // The code this device last printed for a new device of the person's, kept where the
+        // invite reading shows it: what Settings' devices page copies and what a machine without
+        // anyone at it takes as its ticket.
+        let pair_ticket = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
         let shell = crate::device_lists::device_lists_from(crate::device_lists::Shared {
             agent_sessions: std::sync::Arc::clone(&agent_sessions),
             handle: handle.clone(),
@@ -1054,6 +1058,7 @@ impl Session {
             folders,
             styles,
             lists: options.lists.clone(),
+            pair_ticket,
             wallpapers: std::sync::Arc::clone(&wallpapers),
         });
         let shell_service = shell();

@@ -127,7 +127,17 @@ struct Pane {
     view: ViewInstance,
 }
 
+fn invite() -> ResourceRef {
+    ResourceRef::parse_id("session:invite", "so.tilo.device#Invite").expect("a resource id")
+}
+
 fn pane() -> Pane {
+    pane_with_ticket("")
+}
+
+/// The pane on a device whose invite reading carries `ticket`: the code a new computer joins
+/// with, as the daemon printed it (empty until one is asked for).
+fn pane_with_ticket(ticket: &str) -> Pane {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/settings");
     let source = tilolang::PackageSource::read_dir(&dir).expect("the package reads");
     let ids = tilolang::IdsLock::parse(
@@ -156,6 +166,12 @@ fn pane() -> Pane {
             &serde_json::json!({ "colour": null }).to_string(),
         )
         .expect("the identity reading is set");
+    host.runtime()
+        .set_reading(
+            &invite(),
+            &serde_json::json!({ "workspace": "w1", "ticket": ticket }).to_string(),
+        )
+        .expect("the invite reading is set");
     let view = devices_pane(&host);
     Pane { host, view }
 }
@@ -448,15 +464,28 @@ fn stopping_an_agent_asks_the_server_by_its_grant_and_session() {
     );
 }
 
-/// Adding a device opens the session's own sheet, where the code a new computer joins with is
-/// printed.
+/// Adding a device asks the device's daemon for the one-use code a new computer joins with: the
+/// daemon prints it, and the invite reading carries it here.
 #[test]
-fn adding_a_device_opens_the_sessions_sheet() {
+fn adding_a_device_asks_for_the_code_a_new_computer_joins_with() {
     let pane = pane();
     let seen = watching(&pane);
     let add = labelled(pane.view.tree(), "ui.Button", "Add a device");
-    pane.view.press(&add).expect("the sheet opens");
-    asked(&seen, "so.tilo.device", "show-pair-device");
+    pane.view.press(&add).expect("the code is asked for");
+    asked(&seen, "so.tilo.device", "issue-device-ticket");
+}
+
+/// The code the daemon printed stands in the page, with the control that copies it, so a person
+/// hands it to the computer they are adding.
+#[test]
+fn the_new_devices_code_shows_with_the_control_that_copies_it() {
+    let pane = pane_with_ticket("tilo1abcdef");
+    let shown = texts(&pane.view);
+    assert!(
+        shown.iter().any(|line| line.contains("tilo1abcdef")),
+        "the code stands where the person reads it: {shown:?}"
+    );
+    labelled(pane.view.tree(), "ui.Button", "Copy code");
 }
 
 /// A device that is nobody's yet offers the one thing it can do, and lists nothing as acting as a

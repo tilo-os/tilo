@@ -141,10 +141,25 @@ view devices_pane() {
             ui.Text("Remove anything you don't recognize.", role: .caption, secondary: true)
             row(gap: .related, align: .center, wrap: true) {
                 ui.Button("Add a device", icon: .monitor_smartphone, role: .primary) {
-                    on press: device.show_pair_device(device.invite)
+                    on press: add_device()
                 }
                 ui.Button("Connect an agent or computer", icon: .plus) {
                     on press: device.show_connect(device.invite)
+                }
+            }
+        }
+        if device.invite.ticket != "" {
+            // The code stands in the page while it works: a person reads it here and hands it to
+            // the computer they are adding, by copying it or by typing it there.
+            ui.Section("The new device's code") {
+                ui.Text(
+                    "On the new computer, open Tilo and choose to use your existing identity, then type this code. It works once.",
+                    role: .caption,
+                    secondary: true,
+                )
+                ui.Property("Code", device.invite.ticket, copyable: true)
+                ui.Button("Copy code", icon: .copy) {
+                    on press: copy_device_ticket(device.invite.ticket)
                 }
             }
         }
@@ -341,6 +356,17 @@ template view name_field(one: device.AccessKey, renaming: State<Text>, draft: St
             on press: set(renaming, "").then(set(draft, ""))
         }
     }
+}
+
+/// Prints the one-use code a new computer of this person's joins them with: the device's daemon
+/// issues it, and the code stands in the page until the person copies it to the other machine.
+action add_device() (icon: .monitor_smartphone, label: "Add a device") {
+    device.issue_device_ticket(device.invite)
+}
+
+/// Puts the code on the clipboard, to hand to the computer being added.
+action copy_device_ticket(ticket: Text) uses clipboard (icon: .copy, label: "Copy code") {
+    clipboard.copy(ticket)
 }
 
 /// What an agent's grant lets it reach, as its row says it.
