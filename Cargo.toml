@@ -1545,11 +1545,14 @@ debug = false
 # crate; this keeps their dependencies on the same size-oriented setting.
 codegen-units = 1
 
-# tilo-ui is one crate on the critical path of every thin build: at one unit
-# its codegen alone takes about 4.5 of a full collection's 10 minutes. Sixteen
-# cost the shared runtime 1.8% in size; tapp crates stay at one unit.
+# tilo-ui is on the critical path of every thin build: at one unit its
+# codegen takes 400 s, and the runtime links about 100 s later than at four.
+# Each unit that turns a widget into `dyn Widget` emits that widget's vtable
+# again (about 1.3 KB of relocated pointers), and an app process writes every
+# page they sit on when it maps the runtime: sixteen units wrote 41 more pages
+# than four, which link at the same time. Tapp crates stay at one unit.
 [profile.thin-app.package.tilo-ui]
-codegen-units = 16
+codegen-units = 4
 
 # Mail's model and engine are linked into Mail's tapp alone, and build the way
 # the app itself does (build-thin-apps.sh knows only the apps' own crates):
