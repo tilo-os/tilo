@@ -442,8 +442,14 @@ impl<P: Resource> FollowedResource<P> {
 
     /// Read it again now, after a change this session just made, and wait for the answer: the
     /// caller reads what it changed next, and the follow hears of the write only a moment later.
+    /// A caller on the session's loop asks the follow instead: the loop never waits for the
+    /// daemon, which every frame, every control-socket answer and every app's request waits for.
     pub(crate) fn changed(&self) {
         let core = &self.shared.core;
+        if tilo_session_client::daemon_documents::on_the_loop() {
+            core.refresh();
+            return;
+        }
         if let Err(error) = core.read_now() {
             tilo_failure::ignored!(
                 "the follow reads the change when the daemon answers it",

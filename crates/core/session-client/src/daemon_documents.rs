@@ -181,6 +181,13 @@ impl Drop for OnTheLoop {
     }
 }
 
+/// Whether this thread is running a pass of the desktop session's loop ([`OnTheLoop::mark`]): what
+/// a caller asks before reading the daemon, so the loop follows a read instead of waiting for it.
+#[must_use]
+pub fn on_the_loop() -> bool {
+    ON_THE_LOOP.with(std::cell::Cell::get)
+}
+
 /// Refuse a blocking read asked on the session's loop, saying what was asked and from where. A
 /// build with debug assertions, every test's, stops there: such a read is a bug to move off the
 /// loop, never a wait to take.
