@@ -809,6 +809,14 @@ impl Widget for DeclaredPopover {
         self.popover.is_layout_dirty()
     }
 
+    /// The popover asks the host to solve the tree again once paint learns the window it floats
+    /// in: its body's width bounds follow that window. Answered from the content alone, a host
+    /// only repositions what it solved before, and the content keeps the bounds and the place it
+    /// had under the window's first, smaller size while the panel paints elsewhere.
+    fn layout_needs_measure(&self) -> bool {
+        self.popover.layout_needs_measure()
+    }
+
     fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
@@ -1195,6 +1203,86 @@ mod tests {
         assert!(
             !popover.popover().is_open(),
             "a popover the host closed shut"
+        );
+    }
+
+    /// A declared popover open in a window that starts at a single pixel and then takes its real
+    /// size, as a session's surface does: once the window settles, what assistive technology reads
+    /// of its content stands inside the panel it paints, and a press there takes the control.
+    #[test]
+    fn a_declared_popover_is_read_and_pressed_where_it_paints() {
+        use crate::headless::Driver;
+        use crate::widget::arrange::{Align, Distribute, Row, Stack};
+        use std::{cell::Cell, rc::Rc};
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let pressed = Rc::new(Cell::new(false));
+        let shut_down = {
+            let pressed = Rc::clone(&pressed);
+            crate::widget::Button::new("shut-down", "Shut down").on_click(move || pressed.set(true))
+        };
+        let content = Stack::stack()
+            .push(Box::new(crate::widget::Text::new("Power")))
+            .push(Box::new(crate::widget::Button::new("lock", "Lock")))
+            .push(Box::new(shut_down));
+        let popover = DeclaredPopover::new(PopoverProps {
+            label: Some("Power menu".into()),
+            open: true,
+            side: Some(PopoverSide::Below),
+            content: vec![Box::new(content)],
+            ..PopoverProps::default()
+        });
+        let row = Row::row()
+            .fill_width()
+            .align(Align::Start)
+            .distribute(Distribute::End)
+            .push(Box::new(popover));
+        let root = Stack::stack()
+            .fill_width()
+            .push(Box::new(tilo_ui_base::widget::Spacer::fixed(40.0)))
+            .push(Box::new(row));
+        let mut driver = Driver::for_root(
+            crate::State::new(),
+            root,
+            (1, 1),
+            tilo_ui_base::theme::Theme::dark(),
+        );
+        driver.poll_frame().expect("the first frame lays out");
+        driver
+            .resize((800, 600))
+            .expect("the window takes its size");
+        let settled = (0..20).any(|_| !driver.poll_frame().expect("a frame lays out"));
+        assert!(settled, "the window comes to rest at its size");
+
+        let panel = {
+            let mut root = driver.root_mut::<Stack>();
+            let row = &mut *root.children_mut().remove(1);
+            let declared = row.children_mut().remove(0);
+            declared
+                .as_any_mut()
+                .and_then(|any| any.downcast_mut::<DeclaredPopover>())
+                .expect("the declared popover")
+                .popover()
+                .rect()
+        };
+        let id = driver
+            .a11y_node_named("Shut down")
+            .expect("the panel's control is read");
+        let bounds = driver
+            .a11y_node(id)
+            .and_then(|node| node.bounds())
+            .expect("its bounds");
+        let bounds = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1);
+        assert!(
+            panel.contains_rect(bounds),
+            "the control {bounds:?} is read inside the panel painted at {panel:?}"
+        );
+
+        let centre = bounds.center();
+        driver.hover_at(centre.x, centre.y);
+        driver.click_at(centre.x, centre.y);
+        assert!(
+            pressed.get(),
+            "a press where the control is read at takes it"
         );
     }
 }
