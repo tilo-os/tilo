@@ -108,8 +108,10 @@ class Desktop:
         self.invokes = []
         self.refusal = refusal
 
-    def windows(self):
-        return list(self.shown)
+    def windows(self, app=None):
+        if app is None:
+            return list(self.shown)
+        return [window for window in self.shown if window.get("app_id") == app]
 
     def open(self, ident, deadline=120.0):
         self.invokes.append(ident)
@@ -138,7 +140,7 @@ class Launch(unittest.TestCase):
 
     def session(self, desktop: Desktop) -> real_apps.Session:
         return type("Launched", (real_apps.Session,), {
-            "windows": lambda _: desktop.windows(),
+            "windows": lambda _self, app=None: desktop.windows(app),
             "open": lambda _, ident, deadline=120.0: desktop.open(ident, deadline),
         })(Path("/nonexistent-session"))
 
