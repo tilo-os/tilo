@@ -524,7 +524,8 @@ mod tests {
             let mut schedule = Schedule::default();
             // An app is opening: its process, its first frame and the session's own drawing
             // allocate the whole way, and a trim takes every arena's lock over them.
-            tilo_startup_metrics::launch_requested("so.tilo.test-opening");
+            let opening = tilo_startup_metrics::launch_requested("so.tilo.test-opening");
+            tilo_startup_metrics::launch_spawned(opening, 9_000);
             schedule.request(start);
             assert_eq!(schedule.due(), Some(at(start, 1_000)), "the settle is over");
             assert!(!schedule.take(at(start, 1_000)), "the trim waits for the open");
@@ -535,7 +536,7 @@ mod tests {
             );
             assert!(!schedule.take(at(start, 1_050)));
             // The app's window maps: the trim runs.
-            tilo_startup_metrics::launch_mapped("so.tilo.test-opening", 9_100);
+            tilo_startup_metrics::launch_mapped("so.tilo.test-opening", 9_100, None);
             tilo_startup_metrics::launch_first_present(9_100, 1);
             assert!(schedule.take(at(start, 1_100)), "its window came");
         }
