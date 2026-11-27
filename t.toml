@@ -1511,13 +1511,18 @@ on = ["dispatch"]
 # rustup, then `check` and `build`, and the same from `cargo install tilolang-cli` into an empty
 # CARGO_HOME (tools/sdk/installer_proof.sh). Dispatched once a release is out; `--input
 # RELEASE=vX.Y.Z` proves another release than the one tools/ci/publish/release-version names.
-# Each setup adds only what a person adds first: curl and the C compiler Rust links with.
+# Each setup adds only what a person adds first: curl and the C compiler Rust links with. It
+# also gives root the empty home /var/tmp/home: the sandbox keeps /root read-only, and Cargo
+# would read the configuration t keeps in /tmp/.cargo for anything under /tmp.
 [[check]]
 name = "installer-clean-fedora"
+# `tilolang check` reads an app's surface in a user and network namespace of its own, as a stock
+# Linux allows; t's nested isolation allows it too.
+isolation = "nested"
 image = "docker.io/library/fedora@sha256:f01112b9a1f1d0504ad962d9adfa401425033f8ab067e0a821904ebdde5b8ca5"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/sdk/installer_proof.sh"
-setup = { run = "dnf install -y --setopt=install_weak_deps=False curl gcc && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
+setup = { run = "dnf install -y --setopt=install_weak_deps=False curl gcc && dnf clean all && sed -i 's|^root:\\([^:]*:[^:]*:[^:]*:[^:]*\\):/root:|root:\\1:/var/tmp/home:|' /etc/passwd", egress = { to = ["0.0.0.0/0", "::/0"] } }
 requires = ["arch=x86_64"]
 timeout_secs = 7200
 cache = false
@@ -1526,10 +1531,13 @@ dispatch_inputs = { RELEASE = "" }
 
 [[check]]
 name = "installer-clean-debian"
+# `tilolang check` reads an app's surface in a user and network namespace of its own, as a stock
+# Linux allows; t's nested isolation allows it too.
+isolation = "nested"
 image = "docker.io/library/debian@sha256:3cda3ca472ce45507a5109c6a3907093e24d9ae67d55954c9a07a45665dafba2"
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/sdk/installer_proof.sh"
-setup = { run = "apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gcc libc6-dev && rm -rf /var/lib/apt/lists/*", egress = { to = ["0.0.0.0/0", "::/0"] } }
+setup = { run = "apt-get update && apt-get install -y --no-install-recommends ca-certificates curl gcc libc6-dev && rm -rf /var/lib/apt/lists/* && sed -i 's|^root:\\([^:]*:[^:]*:[^:]*:[^:]*\\):/root:|root:\\1:/var/tmp/home:|' /etc/passwd", egress = { to = ["0.0.0.0/0", "::/0"] } }
 requires = ["arch=x86_64"]
 timeout_secs = 7200
 cache = false

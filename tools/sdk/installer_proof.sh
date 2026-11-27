@@ -19,11 +19,25 @@ set -uo pipefail
 release=${T_INPUT_RELEASE:-}
 [[ -n $release ]] || release=v$(tr -d '[:space:]' < tools/ci/publish/release-version)
 version=${release#v}
-# The image's own user, in the home the image gave it, which is empty, as a new computer's is:
-# rustup refuses a HOME other than the user's own.
+# The user the job runs as, in the home the user database gives it, empty as a new computer's is:
+# rustup refuses any other HOME. For root the setups name /var/tmp/home, since t's sandbox keeps
+# the image's /root read-only.
 HOME=$(getent passwd "$(id -u)" | cut -d: -f6)
 export HOME
-work=$(mktemp -d)
+mkdir -p "$HOME"
+# Nothing of the build environment the job runs in: a person's login sets no Cargo, Rust or
+# compiler variable, so rustup and Cargo use their own defaults under HOME.
+for name in $(compgen -e); do
+  case $name in
+    CARGO*|RUST*|SCCACHE*|CC|CXX|AR|CFLAGS|CXXFLAGS|LDFLAGS|CC_*|CXX_*|AR_*) unset "$name" ;;
+  esac
+done
+# t's sandbox keeps Cargo offline in /.cargo/config.toml, which Cargo reads from any directory; a
+# stock computer has none, and fetches an app's crates the first time it builds it.
+export CARGO_NET_OFFLINE=false
+export TMPDIR=$HOME/tmp
+mkdir -p "$TMPDIR"
+work=$(mktemp -d -p "$HOME")
 trap 'rm -rf -- "$work"' EXIT
 export PATH=$HOME/.local/bin:$PATH
 failed=()
