@@ -196,6 +196,11 @@ pub struct InteractionEnvironment {
 
 impl Default for InteractionEnvironment {
     fn default() -> Self {
+        // A phone is reached by touch before anything else: laid out for a finger from its first
+        // frame, so the first tap lands on the controls the person saw rather than moving them.
+        if cfg!(any(target_os = "android", target_os = "ios")) {
+            return Self::TOUCH;
+        }
         Self {
             modality: InputModality::default(),
             pointer_precision: PointerPrecision::default(),
