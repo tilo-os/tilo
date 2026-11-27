@@ -656,6 +656,7 @@ impl AppBrokerState {
             approved,
             false,
         )
+        .map_err(|error| super::approval::stated(caller, &descriptor, request, error))
         .map_err(abandon)?;
         if !Self::confirmed_as_asked(
             &policy,

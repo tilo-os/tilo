@@ -346,6 +346,23 @@ fn resource_in_words(resource: &str) -> Option<String> {
     (!last.is_empty()).then(|| last.replace('-', " "))
 }
 
+/// `error`, the policy's answer to `caller`'s `request` of `descriptor`, naming what it asks of
+/// the person where it asks them first: the action as its provider describes it, what it would
+/// run with and who asks. The policy alone knows only that it asks.
+pub(super) fn stated(
+    caller: &Caller,
+    descriptor: &tilo_actions::ActionDescriptor,
+    request: &InvokeRequest,
+    error: ActionCallError,
+) -> ActionCallError {
+    match error {
+        ActionCallError::ConfirmationRequired(_) => {
+            ActionCallError::asks(asked_of(caller, descriptor.clone(), request))
+        }
+        other => other,
+    }
+}
+
 /// `facts`, stating what `descriptor`, the action as the person is offered it, does with
 /// `argument`: the arguments it would run with, and what a grant given with their answer allows.
 pub(super) fn described(
