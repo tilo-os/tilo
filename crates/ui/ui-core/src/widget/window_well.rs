@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use taffy::{NodeId, Style, TaffyTree};
-use vello::kurbo::{Point, Rect};
+use vello::kurbo::{Point, Rect, Vec2};
 
 use tilo_ui_base::{component::Component, component::Described};
 
@@ -54,6 +54,9 @@ pub struct Wells {
     /// The part this handle's wells belong to (a display's id, as the shell names its parts):
     /// empty for a handle that is not a part's.
     part: Rc<String>,
+    /// Where the tree reporting through this handle stands in the layout: a tree lays its wells
+    /// out in its own coordinates, and they are kept in the layout's, where the windows go.
+    origin: Vec2,
 }
 
 /// A well by the part that laid it out and the place it stands for.
@@ -78,6 +81,18 @@ impl Wells {
             pointers: Rc::clone(&self.pointers),
             frames: Rc::clone(&self.frames),
             part: Rc::new(part.into()),
+            origin: Vec2::ZERO,
+        }
+    }
+
+    /// This handle for a tree that stands at `origin` in the layout: a display's part draws
+    /// from its display's corner, and the wells it lays out stand there too, not over the first
+    /// display.
+    #[must_use]
+    pub fn at(&self, origin: Vec2) -> Self {
+        Self {
+            origin,
+            ..self.clone()
         }
     }
 
@@ -175,8 +190,10 @@ impl Wells {
         self.generation.get()
     }
 
-    /// Record `rect` as the well of `place`, on this handle's part.
+    /// Record `rect`, in the coordinates of the tree reporting through this handle, as the well
+    /// of `place`, on this handle's part.
     pub fn place(&self, place: &str, rect: Rect) {
+        let rect = rect + self.origin;
         let key = ((*self.part).clone(), place.to_owned());
         let mut placed = self.placed.borrow_mut();
         if placed.get(&key).copied() == Some(rect) {
@@ -241,15 +258,22 @@ struct Pointed {
 
 impl Wells {
     /// Record the pointers drawn over the window of `place`, on this handle's part: each one's
-    /// name and where it stands across the window, `over` standing in for the window while the
-    /// place has no well. None drawn forgets the place.
+    /// name and where it stands across the window, `over` (in the coordinates of the tree
+    /// reporting through this handle, as a well's are) standing in for the window while the place
+    /// has no well. None drawn forgets the place.
     pub fn point(&self, place: &str, over: Rect, at: Vec<(String, (f64, f64))>) {
         let key = ((*self.part).clone(), place.to_owned());
         let mut pointers = self.pointers.borrow_mut();
         if at.is_empty() {
             pointers.remove(&key);
         } else {
-            pointers.insert(key, Pointed { over, at });
+            pointers.insert(
+                key,
+                Pointed {
+                    over: over + self.origin,
+                    at,
+                },
+            );
         }
     }
 
@@ -282,12 +306,13 @@ impl Wells {
 
 impl Wells {
     /// Record the frame drawn round the work on this handle's part: the followed person's colour
-    /// and the rectangle it runs round. None forgets it.
+    /// and the rectangle it runs round, in the coordinates of the tree reporting through this
+    /// handle, as a well's are. None forgets it.
     pub fn frame(&self, drawn: Option<(String, Rect)>) {
         let mut frames = self.frames.borrow_mut();
         match drawn {
-            Some(drawn) => {
-                frames.insert((*self.part).clone(), drawn);
+            Some((colour, rect)) => {
+                frames.insert((*self.part).clone(), (colour, rect + self.origin));
             }
             None => {
                 frames.remove(self.part.as_str());
@@ -651,6 +676,20 @@ mod tests {
             wells.well("7"),
             None,
             "gone with the well, whatever is installed"
+        );
+    }
+
+    /// A display's part lays its tree out from its own corner: the well it lays out in the
+    /// corner of the display beside the first stands beside it in the layout, where the window
+    /// goes, not over the first display.
+    #[test]
+    fn a_parts_well_stands_where_the_part_does() {
+        let wells = super::Wells::new();
+        let beside = wells.for_part("1").at(vello::kurbo::Vec2::new(1280.0, 0.0));
+        beside.place("place", vello::kurbo::Rect::new(0.0, 40.0, 400.0, 340.0));
+        assert_eq!(
+            wells.well_on("1", "place"),
+            Some(vello::kurbo::Rect::new(1280.0, 40.0, 1680.0, 340.0))
         );
     }
 

@@ -333,7 +333,12 @@ impl WidgetSurface {
     /// out. What `work` draws, it draws over this tree's own backdrops.
     fn with_reports<T>(&mut self, work: impl FnOnce(&mut Driver) -> T) -> T {
         let _placed = self.placed();
-        let _wells = self.wells.clone().map(ui::widget::window_well::install);
+        let (x, y) = self.placement.origin;
+        let _wells = self
+            .wells
+            .as_ref()
+            .map(|wells| wells.at(vello::kurbo::Vec2::new(f64::from(x), f64::from(y))))
+            .map(ui::widget::window_well::install);
         let _previews = self
             .previews
             .clone()
