@@ -343,6 +343,34 @@ tilo_test_env::scenario! {
         unclaimed.claims.clear();
         assert_eq!(check_opened_mutation(&unclaimed, &opened), Err(ReceiptRefusal::Unclaimed));
     }
+
+    phase an_op_claiming_a_migration_as_a_history_move_is_refused_by_its_record;
+    {
+        // A write whose bytes were laid down before the step wrote its `rewrite` whole reads as
+        // a migration the record's app claims, which no build claims: refused by the record,
+        // whatever grant would let the history move it reads as through.
+        let (mut op, _) = sealed(&write_by(Some(&mount_agent())));
+        op.claims = vec![ChangeClaim {
+            change: [9; 32],
+            action: ClaimedAction::History(tilo_actions::HistoryOp::Migrate {
+                to: 3,
+                rewrite: true,
+            }),
+            units: Vec::new(),
+            invoker: None,
+            call: None,
+        }];
+        for answered in [None, Some(Answer::Deny), Some(Answer::Allow)] {
+            assert_eq!(
+                received(&op, &person(&policy(answered), "ada")),
+                Err(ReceiptRefusal::MigrationAsHistory {
+                    app: FILES.into(),
+                    document: "tree".into(),
+                }),
+                "{answered:?}: the record names the write it refuses"
+            );
+        }
+    }
 }
 
 /// A window's direct edit of a record names who made it. A commit that names no one is refused
