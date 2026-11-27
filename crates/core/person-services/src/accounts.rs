@@ -137,46 +137,8 @@ fn view_of(
         enabled: account.enabled,
         incoming: mail_server(&account.config, "imap_host", "imap_port", 993),
         outgoing: mail_server(&account.config, "smtp_host", "smtp_port", 465),
-        identities: account
-            .config
-            .get("identities")
-            .and_then(Value::as_array)
-            .map(|identities| {
-                identities
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default(),
-        calendars: account
-            .config
-            .get("calendars")
-            .and_then(Value::as_array)
-            .map(|calendars| {
-                calendars
-                    .iter()
-                    .filter_map(|calendar| {
-                        Some(CalendarView {
-                            id: calendar.get("id")?.as_str()?.to_owned(),
-                            name: calendar
-                                .get("name")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_owned(),
-                            visible: calendar
-                                .get("visible")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(true),
-                            read_only: calendar
-                                .get("read_only")
-                                .and_then(Value::as_bool)
-                                .unwrap_or(false),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
+        identities: identities_of(account),
+        calendars: calendars_of(account),
         services,
         files_mode: account
             .config
@@ -195,6 +157,54 @@ fn view_of(
             .unwrap_or_default()
             .to_owned(),
     })
+}
+
+/// The addresses `account` sends as, besides its own.
+fn identities_of(account: &accounts::Account) -> Vec<String> {
+    account
+        .config
+        .get("identities")
+        .and_then(Value::as_array)
+        .map(|identities| {
+            identities
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The calendars `account` keeps, as the reading shows them.
+fn calendars_of(account: &accounts::Account) -> Vec<CalendarView> {
+    account
+        .config
+        .get("calendars")
+        .and_then(Value::as_array)
+        .map(|calendars| {
+            calendars
+                .iter()
+                .filter_map(|calendar| {
+                    Some(CalendarView {
+                        id: calendar.get("id")?.as_str()?.to_owned(),
+                        name: calendar
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        visible: calendar
+                            .get("visible")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true),
+                        read_only: calendar
+                            .get("read_only")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The address or name `account` signs in at: its mail address where it has one, else the name
