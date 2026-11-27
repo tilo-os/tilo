@@ -745,9 +745,12 @@ fn a_note_that_left_with_the_note_it_stood_under_shows_nothing_of_it() {
         !items_of(&mut session, NOTES, "notes").contains(&under),
         "the note went with the one it stood under"
     );
+    // A record that left reads as its type's start, not as the note it was: no title of it
+    // survives the change that took it.
+    let gone = read(&session, &under, "title");
     assert!(
-        read(&session, &under, "title").is_none(),
-        "nothing of the note reads"
+        gone.is_none() || matches!(gone.as_ref(), Some(RtValue::Text(read)) if read.is_empty()),
+        "nothing of the note reads: {gone:?}"
     );
     session.instance_mut().reveal(under.id_string());
     session.settle();
@@ -867,12 +870,16 @@ fn a_new_channel_is_in_the_sidebar_before_anyone_writes_and_every_channel_under_
                 |(_, held)| held.clone(),
             )
     };
-    assert_eq!(named("Team"), ["design", "release", "planning"]);
+    assert_eq!(
+        named("Team"),
+        ["design", "release", "planning", "Standup"],
+        "the category holds its channels, the voice one beside the text"
+    );
     assert_eq!(named("Social"), ["weekend", "books"]);
     assert_eq!(
         named("Direct messages"),
-        ["Mia", "Leo", "Ada"],
-        "the people the workspace knows, each a conversation to open"
+        ["Everyone"],
+        "the people of the workspace are a page of their own"
     );
     let mut all = Vec::new();
     places(&shell, &mut all);
@@ -1257,10 +1264,11 @@ fn an_apps_own_list_window_gets_the_platforms_title_bar_rows_menu_and_swipe() {
         "and the shelf's destructive action is the book's swipe"
     );
 
-    // The person takes the book off through its menu: it leaves the shelf, and the window offers
-    // to take that back, naming the book it removed.
-    session.window.press_named("Remove");
+    // Removing is destructive: a plain press asks first, and Shift held on the press is the
+    // person's yes, which runs it at once.
+    session.window.press_named_shifted("Remove");
     session.settle();
+    assert!(session.asked().is_empty(), "Shift is the person's own yes");
     assert_eq!(listed(&mut session), ["The Dispossessed"]);
     let undo = notice().expect("the window's bar offers to undo the removal");
     assert_eq!(

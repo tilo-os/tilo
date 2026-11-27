@@ -345,6 +345,21 @@ impl Window {
         );
     }
 
+    /// Press the control named `name` with Shift held: the person's yes to what undo takes
+    /// back, said on the press itself.
+    fn press_named_shifted(&mut self, name: &str) {
+        use ui::winit::keyboard::ModifiersState;
+        match self {
+            Self::Harness(window) => window.set_modifiers(&["shift".to_owned()]),
+            Self::Live(app) => app.set_surface_modifiers(ModifiersState::SHIFT.into()),
+        }
+        self.press_named(name);
+        match self {
+            Self::Harness(window) => window.set_modifiers(&[]),
+            Self::Live(app) => app.set_surface_modifiers(ModifiersState::empty().into()),
+        }
+    }
+
     /// The named key `key` pressed and released.
     fn press_key(&mut self, key: ui::winit::keyboard::NamedKey) {
         use ui::winit::event::ElementState;
