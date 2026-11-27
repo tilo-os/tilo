@@ -50,13 +50,21 @@ fi
 # the workspace's manifests alone, where no program of the checkout is. Only the build at the end
 # of this script would say so, after every metadata scan and after whatever the caller built
 # before it. Ask the front end first, with cargo's help, which builds nothing and finds the
-# refusal now: a t job takes the settings, a front end that forwards to `t cargo` does not.
-if [ "$t_job" -eq 0 ] && [ "$BUILD_PHASE" != verify ] && ! refusal=$(cd "$REPO" && "${CARGO:-cargo}" build --help \
-        --config 'build.rustc-workspace-wrapper=""' 2>&1 >/dev/null); then
-    echo "build-thin-apps: the cargo front end (${CARGO:-cargo}) refuses the compiler wrapper this build sets:" >&2
-    printf '%s\n' "$refusal" | sed 's/^/  /' >&2
-    echo 'run the thin build as a t job, where its compiles run through t'"'"'s own wrapper ("t test tilolang-runtime" builds the runtime; the local stack'"'"'s TILO_SH_BUILD=t takes its apps from the checks), not through a front end that forwards to `t cargo`' >&2
-    exit 1
+# refusal now: a t job takes the settings, a front end that forwards to `t cargo` does not. The
+# help runs in a directory of its own below the build directory, so a front end that acts on its
+# working directory leaves the build's tree alone, and one that reads the project still finds it.
+if [ "$t_job" -eq 0 ] && [ "$BUILD_PHASE" != verify ]; then
+    mkdir -p "$TARGET_DIR"
+    probe_dir=$(mktemp -d "$TARGET_DIR/.thin-app-probe.XXXXXX")
+    if ! refusal=$(cd "$probe_dir" && "${CARGO:-cargo}" build --help \
+            --config 'build.rustc-workspace-wrapper=""' 2>&1 >/dev/null); then
+        rm -rf "$probe_dir"
+        echo "build-thin-apps: the cargo front end (${CARGO:-cargo}) refuses the compiler wrapper this build sets:" >&2
+        printf '%s\n' "$refusal" | sed 's/^/  /' >&2
+        echo 'run the thin build as a t job, where its compiles run through t'"'"'s own wrapper ("t test tilolang-runtime" builds the runtime; the local stack'"'"'s TILO_SH_BUILD=t takes its apps from the checks), not through a front end that forwards to `t cargo`' >&2
+        exit 1
+    fi
+    rm -rf "$probe_dir"
 fi
 
 # TILO_THIN_KEEP_SYMBOLS=1 keeps the symbol tables of the apps, the runtime and its engines, for
