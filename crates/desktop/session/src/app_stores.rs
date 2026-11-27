@@ -45,24 +45,21 @@ impl crate::Shared {
         if kept == AppStores::Kept {
             // What the apps' code calls of other apps goes over a connection the daemon vouches
             // for as that app, decided as their windows' calls are.
-            match self.launch.clone() {
-                Some(apps) => {
-                    let runtime = runtime.clone();
-                    let calls_in = workspace.clone();
-                    let connect: tilo_service::ConnectApp =
-                        std::rc::Rc::new(move |from: &tilo_service::CallsFrom| {
-                            let connection = apps.connection_as(&from.app, &calls_in)?;
-                            AppConnection::over(connection, from, &runtime).map(|calls| {
-                                std::rc::Rc::new(calls) as std::rc::Rc<dyn tilo_service::AppCalls>
-                            })
-                        });
-                    self.services.borrow_mut().reach_workspace(
-                        &connect,
-                        &workspace,
-                        &self.wake_handle,
-                    );
-                }
-                None => tracing::warn!("the apps' calls of other apps reach no workspace"),
+            if let Some(apps) = self.launch.clone() {
+                let runtime = runtime.clone();
+                let calls_in = workspace.clone();
+                let connect: tilo_service::ConnectApp =
+                    std::rc::Rc::new(move |from: &tilo_service::CallsFrom| {
+                        let connection = apps.connection_as(&from.app, &calls_in)?;
+                        AppConnection::over(connection, from, &runtime).map(|calls| {
+                            std::rc::Rc::new(calls) as std::rc::Rc<dyn tilo_service::AppCalls>
+                        })
+                    });
+                self.services
+                    .borrow_mut()
+                    .reach_workspace(&connect, &workspace, &self.wake_handle);
+            } else {
+                tracing::warn!("the apps' calls of other apps reach no workspace");
             }
         }
         *self.app_stores.borrow_mut() = kept;

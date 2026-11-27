@@ -891,14 +891,10 @@ fn one_window_layout() -> LayoutReading {
     }
 }
 
-/// Each display's part draws its own display's strips and no other's, and only the display in use
-/// carries the whole bar. The part reads the display it stands on as its own (`device.screen`),
-/// so the strips it filters by that display are its own, and its bar is the whole one exactly
-/// when it is the display in use.
-#[test]
-fn a_part_draws_its_own_displays_strips_and_no_others() {
-    let _settled = tilo_ui_base::motion::testing::settled();
-    let reading = LayoutReading {
+/// One row of one workspace whose two strips stand on two displays, each showing one window:
+/// "Groceries" on display 0 and "Packing list" on display 1.
+fn two_display_reading() -> LayoutReading {
+    LayoutReading {
         person: "Pat".to_owned(),
         rows: vec![LayoutRowReading {
             key: "r1".to_owned(),
@@ -948,7 +944,17 @@ fn a_part_draws_its_own_displays_strips_and_no_others() {
             },
         ],
         ..LayoutReading::default()
-    };
+    }
+}
+
+/// Each display's part draws its own display's strips and no other's, and only the display in use
+/// carries the whole bar. The part reads the display it stands on as its own (`device.screen`),
+/// so the strips it filters by that display are its own, and its bar is the whole one exactly
+/// when it is the display in use.
+#[test]
+fn a_part_draws_its_own_displays_strips_and_no_others() {
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let reading = two_display_reading();
     let display =
         |id: i64, connector: &str, primary: bool| tilo_session_core::shell::LayoutDisplayReading {
             id,
