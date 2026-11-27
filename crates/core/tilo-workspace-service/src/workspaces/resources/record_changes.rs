@@ -708,22 +708,23 @@ impl Workspaces {
         let (mut doc, heads) = {
             let mut store = self.store_of(&mut hosted);
             // A record the store lists is changed from the document that holds it: founding it
-            // again would number this device's change as one the store already holds.
+            // again would number this device's change as one the store already holds. The store
+            // keeps that document in memory, so it is copied for the change rather than written
+            // out and read back: a write costs its own bytes, not the record's encoding.
             let held = match store.index().get(kind, record) {
                 Some(_) => Some(
                     store
                         .content_document(kind, record)
                         .map_err(|error| error.to_string())?
-                        .map(automerge::Automerge::save)
                         .ok_or_else(|| {
                             format!("the store lists {kind} {record} but holds no document of it")
-                        })?,
+                        })?
+                        .clone(),
                 ),
                 None => None,
             };
-            let begun = if let Some(bytes) = held {
-                let mut doc =
-                    automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+            let begun = if let Some(held) = held {
+                let mut doc = automerge::AutoCommit::from(held);
                 let heads = doc.get_heads();
                 (doc, heads)
             } else {

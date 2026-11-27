@@ -2433,6 +2433,14 @@ pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_act
     publish_parts::<R>(id, label, Some(state))
 }
 
+/// The resource tree built from `R`'s declarations alone, reading no state of the record: what
+/// a write is dispatched against. An action is declared by its type, never by what the record
+/// holds, so a write costs the change it makes, not a read of the whole record.
+#[must_use]
+pub(crate) fn publish_actions<R: Resource>(id: &str, label: &str) -> tilo_actions::ResourceSpec {
+    publish_parts::<R>(id, label, None)
+}
+
 /// A record's state from the reading a document host publishes for it
 /// ([`Resource::state_json`](Resource::state_json), [`crate::Model::to_json`]):
 /// what an app's process reads when the record lives in the session's

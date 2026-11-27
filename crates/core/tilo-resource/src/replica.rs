@@ -332,12 +332,10 @@ impl<R: Resource, A> Replica<R, A> {
             return Err(ApiError::InvalidArguments(refusal.to_owned()));
         }
         let Invoke { id, arguments, .. } = invoke;
-        // Published from the state kept current change by change, so an
-        // action costs what it touched, not a whole read of the record.
-        let tree = self
-            .live()
-            .map(|state| resource::publish::<R>(R::KIND, R::LABEL, state))
-            .map_err(|error| ApiError::Failed(error.to_string()))?;
+        // The action's declaration is what the write is dispatched against, and a type declares
+        // its actions: the tree is built from them alone, so a write costs what it changed, not
+        // a read of the whole record (which is what publishing its state would take).
+        let tree = resource::publish_actions::<R>(R::KIND, R::LABEL);
         let address = ActionAddress::new(tree.id.as_str(), id);
         // Without an author, the replica's own actor: every replica is a
         // device of its own.
