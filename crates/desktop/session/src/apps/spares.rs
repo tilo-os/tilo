@@ -254,9 +254,13 @@ impl Apps {
         .send(&link)
         .map_err(|error| format!("its display: {error}"))?;
         let planned = self
-            .with_plan_context(None, &self.workspace_named(workspace), false, None, |context| {
-                Planned::spare_window(workspace, (&runtimes.0, &runtimes.1), context)
-            })
+            .with_plan_context(
+                None,
+                &self.workspace_named(workspace),
+                false,
+                None,
+                |context| Planned::spare_window(workspace, (&runtimes.0, &runtimes.1), context),
+            )
             .map_err(|error| error.to_string())?;
         let (started, _) = self
             .state
@@ -319,6 +323,8 @@ impl Apps {
         links: &Rc<Links>,
     ) -> Result<bool, ApiError> {
         let app = asked.app();
+        // The window asks for its instance by its tag: that is the window this open is timed to.
+        tilo_startup_metrics::launch_shows(timed, instance);
         let failed = |error: String| {
             tilo_startup_metrics::launch_failed(timed);
             ApiError::Failed(error)

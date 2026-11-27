@@ -2074,8 +2074,11 @@ impl Apps {
             .map_err(failed)?;
         let launch = launch.as_ref();
         if instance.is_none()
-            && self.ask_shell_window(launch, workspace, new_window, reveal, hosted, timed)?
+            && self.ask_shell_window(launch, workspace, new_window, reveal, hosted)?
         {
+            // The shell places the window and asks for it again with its instance: that ask is
+            // this open, timed from here.
+            tilo_startup_metrics::launch_handed_on(timed);
             return Ok(true);
         }
         let chosen = self.state.borrow().chosen.clone();
@@ -2171,10 +2174,7 @@ impl Apps {
     }
 
     /// Ask the shell for `launch`'s window where this session has one: whether the shell took it
-    /// and the window opens there rather than here. A window it takes is started by the shell's own
-    /// pass, whose launch is timed from its own request, so an ask it took leaves `timed` no
-    /// launch: pending, it would take that window's map and first frame as an open whose launcher
-    /// never spawned one.
+    /// and the window opens there rather than here.
     fn ask_shell_window(
         &self,
         launch: &Launch,
@@ -2182,14 +2182,9 @@ impl Apps {
         new_window: bool,
         reveal: Option<&str>,
         hosted: bool,
-        timed: u64,
     ) -> Result<bool, ApiError> {
         window_opens(launch, reveal, hosted).map_err(ApiError::Failed)?;
-        let taken = self.ask_shell(launch, workspace, new_window, reveal, None)?;
-        if taken {
-            tilo_startup_metrics::launch_handed_over(timed);
-        }
-        Ok(taken)
+        self.ask_shell(launch, workspace, new_window, reveal, None)
     }
 
     /// `launch` as a hosted window takes it: a file of the person's becomes the content it is,
@@ -2266,9 +2261,13 @@ impl Apps {
         new_window: bool,
         instance: Option<u64>,
     ) -> Result<Planned, tilo_app_launch::PlanError> {
-        self.with_plan_context(Some(&launch.id()), workspace, new_window, instance, |context| {
-            Planned::of(launch, context)
-        })
+        self.with_plan_context(
+            Some(&launch.id()),
+            workspace,
+            new_window,
+            instance,
+            |context| Planned::of(launch, context),
+        )
     }
 
     /// `plan` with what a launch in `workspace` is planned against: the files the person granted

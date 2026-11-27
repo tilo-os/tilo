@@ -1861,7 +1861,7 @@ impl State {
         // The app's first buffer is here: the launch that asked for it is timed to the frame that
         // first shows it.
         if let Some(app) = info.app_id.as_deref() {
-            tilo_startup_metrics::launch_mapped(app, info.id);
+            tilo_startup_metrics::launch_mapped(app, info.id, info.tag.as_deref());
         }
         // It came back before the desktop was done with its close.
         self.closing.retain(|closing| closing.info.id != info.id);

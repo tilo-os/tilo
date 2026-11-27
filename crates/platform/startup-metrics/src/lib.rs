@@ -58,6 +58,12 @@ struct PendingLaunch {
     key: String,
     requested_at: Instant,
     spawned_at: Option<Instant>,
+    /// The instance the launch's window shows, when the launch named one: its window asks for it
+    /// by its tag, which is what binds the window to this launch.
+    instance: Option<u64>,
+    /// Handed to the shell, which asks for the window again with its place: that ask is this
+    /// launch, timed from the person's request ([`launch_handed_on`]).
+    handed_on: bool,
     surface_id: Option<u64>,
     mapped_at: Option<Instant>,
     /// Where the compositor's dispatch got to before the spawn
@@ -171,10 +177,25 @@ pub fn launch_generation() -> u128 {
     *GENERATION.get_or_init(|| u128::from(tilo_clock::unix_now_ns()))
 }
 
-/// Begin timing one user-requested launch; same-app launches are FIFO.
+/// Begin timing one user-requested launch; same-app launches are FIFO. A launch of `key` the
+/// shell was handed ([`launch_handed_on`]) is the one its ask continues: it keeps its id and the
+/// time the person asked.
 pub fn launch_requested(key: impl Into<String>) -> u64 {
-    let id = NEXT_LAUNCH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let key = key.into();
+    {
+        let mut launches = launch_table();
+        if let Some(launch) = launches
+            .iter_mut()
+            .find(|launch| launch.key == key && launch.handed_on)
+        {
+            launch.handed_on = false;
+            if launch.phases.len() < LAUNCH_PHASES_MAX {
+                launch.phases.push(("shell", Instant::now()));
+            }
+            return launch.id;
+        }
+    }
+    let id = NEXT_LAUNCH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let retired = {
         let mut launches = launch_table();
         let retired = (launches.len() >= PENDING_LAUNCHES_MAX).then(|| launches.remove(0));
@@ -183,6 +204,8 @@ pub fn launch_requested(key: impl Into<String>) -> u64 {
             key: key.clone(),
             requested_at: Instant::now(),
             spawned_at: None,
+            instance: None,
+            handed_on: false,
             surface_id: None,
             mapped_at: None,
             phases: Vec::new(),
@@ -268,14 +291,46 @@ pub fn launch_spawned(id: u64, pid: u32) {
     );
 }
 
-/// Bind the oldest launch of `key` that has not mapped to the exact surface: the compositor
-/// knows a window's app, not the launch that started it, and same-app launches are FIFO.
-pub fn launch_mapped(key: &str, surface_id: u64) {
+/// The shell was handed launch `id` to place its window: its ask for the window, a
+/// [`launch_requested`] of the same app, continues this launch rather than starting another.
+pub fn launch_handed_on(id: u64) {
+    if let Some(launch) = launch_table().iter_mut().find(|launch| launch.id == id) {
+        launch.handed_on = true;
+    }
+}
+
+/// The window of launch `id` shows `instance`, and asks for it by its tag ([`launch_mapped`]).
+pub fn launch_shows(id: u64, instance: u64) {
+    if let Some(launch) = launch_table().iter_mut().find(|launch| launch.id == id) {
+        launch.instance = Some(instance);
+    }
+}
+
+/// Bind the launch a window of `key` that just mapped belongs to, to the exact surface: the one
+/// whose instance the window's `tag` names, or else the oldest launch of `key` that started a
+/// process and named no instance. A launch that started nothing, or one waiting for another
+/// instance's window, is never credited with this one.
+pub fn launch_mapped(key: &str, surface_id: u64, tag: Option<&str>) {
+    let instance = tag.and_then(|tag| tag.parse::<u64>().ok());
     let mut launches = launch_table();
-    let Some(launch) = launches
-        .iter_mut()
-        .find(|launch| launch.key == key && launch.surface_id.is_none())
-    else {
+    let unmapped = |launch: &&mut PendingLaunch| launch.key == key && launch.surface_id.is_none();
+    let found = match instance {
+        Some(instance)
+            if launches
+                .iter()
+                .any(|launch| launch.instance == Some(instance)) =>
+        {
+            launches
+                .iter_mut()
+                .filter(unmapped)
+                .find(|launch| launch.instance == Some(instance))
+        }
+        _ => launches
+            .iter_mut()
+            .filter(unmapped)
+            .find(|launch| launch.spawned_at.is_some() && launch.instance.is_none()),
+    };
+    let Some(launch) = found else {
         return;
     };
     let now = Instant::now();
@@ -401,24 +456,6 @@ pub fn launch_failed(id: u64) {
         &retired,
         "application launch timing retired before first frame",
     );
-}
-
-/// Retire one launch's timing because the window it asked for is the shell's to map: the shell
-/// opens the window and starts the app through a pass of its own, whose launch is timed from its
-/// own request. Nothing is logged: the open was asked for, not started here, and leaving the ask
-/// pending would have the window's map and first frame credited to a request that never spawned
-/// a process, so a reader of the log (a walk's record of the open) would find no open at all.
-pub fn launch_handed_over(id: u64) {
-    let retired = {
-        let mut launches = launch_table();
-        let Some(index) = launches.iter().position(|launch| launch.id == id) else {
-            return;
-        };
-        launches.remove(index)
-    };
-    if retired.surface_id.is_some() {
-        AWAITING_FIRST_PRESENT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-    }
 }
 
 /// Global capture state: the first `mark` reads a single atomic pointer.
@@ -944,58 +981,68 @@ mod tests {
         );
     }
 
-    /// The launches still being timed: the ask that the next window's map is credited to.
-    fn pending() -> Vec<(u64, String, bool, Option<u64>)> {
+    /// The pending launch `id`, as the table holds it: what it started, and the window credited
+    /// to it.
+    fn pending(id: u64) -> Option<(bool, Option<u64>)> {
         launch_table()
             .iter()
-            .map(|launch| {
-                (
-                    launch.id,
-                    launch.key.clone(),
-                    launch.spawned_at.is_some(),
-                    launch.surface_id,
-                )
-            })
-            .collect()
+            .find(|launch| launch.id == id)
+            .map(|launch| (launch.spawned_at.is_some(), launch.surface_id))
     }
 
+    /// Two opens of one app, each handed to the shell to place and asked for again with its
+    /// instance, whose windows map in the other order: each open is one launch, timed from the
+    /// person's request, and each window is credited to the open whose instance it shows.
     #[test]
-    fn a_window_the_shell_maps_is_timed_by_the_launch_that_starts_it() {
-        // A person's open reaches the session as the shell's ask for a window, and the shell's
-        // own pass starts the app. The ask started no process, so it leaves nothing pending for
-        // the window's map to be credited to: that map is the launching process's, measured from
-        // its own request, which is the open a walk records.
-        let key = "so.tilo.test-held-by-the-shell";
-        let surface = 9_001;
-        let planned = launch_requested(key);
-        launch_handed_over(planned);
-        assert!(
-            !pending().iter().any(|(id, ..)| *id == planned),
-            "the ask the shell took is no longer a launch: {:?}",
-            pending()
-        );
-        let started = launch_requested(key);
-        launch_spawned(started, 4_242);
-        launch_mapped(key, surface);
-        let credited = pending()
-            .into_iter()
-            .find(|(_, _, _, mapped)| *mapped == Some(surface));
+    fn an_open_the_shell_places_is_one_launch_credited_with_its_own_window() {
+        let app = "so.tilo.test.launch-attribution";
+        let first = launch_requested(app);
+        launch_handed_on(first);
+        let second = launch_requested(app);
+        launch_handed_on(second);
+        assert_ne!(first, second, "two opens are two launches");
+
+        // The shell asks for each window again, in order: each ask continues its open.
         assert_eq!(
-            credited.as_ref().map(|(id, ..)| *id),
-            Some(started),
-            "the window's map is credited to the launch that spawned the process"
+            launch_requested(app),
+            first,
+            "the shell's ask is the first open"
         );
-        assert!(
-            credited.is_some_and(|(_, _, spawned, _)| spawned),
-            "the launch the window is credited to spawned"
+        launch_shows(first, 41);
+        launch_spawned(first, 7001);
+        assert_eq!(
+            launch_requested(app),
+            second,
+            "the shell's ask is the second open"
         );
-        launch_first_present(surface, 1);
-        assert!(
-            !pending()
-                .iter()
-                .any(|(_, _, _, mapped)| *mapped == Some(surface)),
-            "the open ends at its first presented frame"
+        launch_shows(second, 42);
+        launch_spawned(second, 7002);
+
+        // The second open's window maps first.
+        launch_mapped(app, 902, Some("42"));
+        launch_mapped(app, 901, Some("41"));
+        assert_eq!(
+            pending(first),
+            Some((true, Some(901))),
+            "the first open's own window"
         );
+        assert_eq!(
+            pending(second),
+            Some((true, Some(902))),
+            "the second open's own window"
+        );
+
+        // A launch that started nothing is credited with no window.
+        let idle = launch_requested(app);
+        launch_mapped(app, 903, None);
+        assert_eq!(
+            pending(idle),
+            Some((false, None)),
+            "nothing started, nothing shown"
+        );
+        for id in [first, second, idle] {
+            launch_failed(id);
+        }
     }
 
     #[test]
