@@ -59,10 +59,11 @@ fn in_front(device: &Device, route: (&str, &str)) -> Value {
         })
 }
 
-/// The id and name of every agent `value` holds, however the record keys them.
+/// The id and name of every agent `value` holds, however the record keys them: the workspace's
+/// agent record keeps each as its id, its name and the person it acts for.
 fn agents_in(value: &Value, agents: &mut Vec<(String, String)>) {
     match value {
-        Value::Object(fields) if fields.contains_key("keeper") => {
+        Value::Object(fields) if fields.contains_key("acts_for") => {
             let text = |field: &str| fields.get(field).and_then(Value::as_str).map(str::to_owned);
             if let (Some(id), Some(name)) = (text("id"), text("name")) {
                 agents.push((id, name));

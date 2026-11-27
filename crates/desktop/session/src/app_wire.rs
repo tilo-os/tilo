@@ -44,6 +44,9 @@ struct Watch {
     missing: Option<u64>,
     /// What it was last sent, so a change elsewhere does not re-send it.
     reading: Option<Vec<u8>>,
+    /// Whether the person keeps this reading for the session's own programs: the app is told it
+    /// has nothing to read here, once, and never sent the value.
+    denied: bool,
     /// Where its readings go.
     sink: mpsc::UnboundedSender<Event>,
 }
@@ -361,13 +364,17 @@ impl Link {
             if watch.revision == Some(revision) {
                 return true;
             }
-            let reading = services
-                .read_for(
-                    &watch.caller.app_id,
-                    &watch.caller.workspace,
-                    &watch.resource,
-                )
-                .map(|value| encoded(&value));
+            let reading = if watch.denied {
+                None
+            } else {
+                services
+                    .read_for(
+                        &watch.caller.app_id,
+                        &watch.caller.workspace,
+                        &watch.resource,
+                    )
+                    .map(|value| encoded(&value))
+            };
             watch.revision = Some(revision);
             if reading.is_none() {
                 // No service publishes it yet: the app is told once, and
@@ -419,7 +426,21 @@ impl PublishedResources for Link {
         resource: &str,
         sink: mpsc::UnboundedSender<Event>,
     ) -> Result<ResourceWatch, String> {
-        self.reading_granted(caller, resource)?;
+        // A reading the person keeps for the session's own programs is none this app follows: it
+        // reads what it would start with, as it reads a resource no service publishes, and is told
+        // so once — never asked again, and never left waiting for a reading it will not be given.
+        let denied = match self.reading_granted(caller, resource) {
+            Ok(()) => false,
+            Err(reason) => {
+                tracing::warn!(
+                    app = %caller.app_id,
+                    resource,
+                    %reason,
+                    "a personal reading is not this app's to follow"
+                );
+                true
+            }
+        };
         let id = ResourceWatch::new(self.next_watch.fetch_add(1, Ordering::Relaxed));
         self.watches.lock_recover().push(Watch {
             id,
@@ -428,6 +449,7 @@ impl PublishedResources for Link {
             revision: None,
             missing: None,
             reading: None,
+            denied,
             sink,
         });
         (self.wake)();
