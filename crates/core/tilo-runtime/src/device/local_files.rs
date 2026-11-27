@@ -214,21 +214,19 @@ impl LocalFiles {
                 .and_then(|context| context.group.clone())
                 .filter(|group| group.kind != tilo_actions::context::AGENT_SESSION_GROUP),
         };
-        let mut context = tilo_actions::ActionContext {
+        // Every change the workspace keeps names who made it: the caller the dispatch admitted,
+        // with the agent it named, as the one the invocation the change keeps is signed by. What
+        // the call says of its own invoker is no proof of who made it.
+        let invoker = tilo_actions::ActionInvoker::admitted(caller.acting())
+            .named(caller.agent_name().map(str::to_owned));
+        tilo_actions::ActionContext {
             group,
             purpose: said.and_then(|context| context.purpose.clone()),
             gesture: said.and_then(|context| context.gesture),
             source_invocation: Some(request.invocation),
             ..tilo_actions::ActionContext::default()
-        };
-        // Every change the workspace keeps names who made it: the call's own invoker where it
-        // named one, else the caller the dispatch admitted. A change of a record the workspace
-        // already holds names none otherwise, and the workspace refuses it.
-        context.invoker = said.and_then(|context| context.invoker.clone());
-        if context.invoker.is_none() {
-            context = context.with_host_actor(caller.acting(), None);
         }
-        context
+        .with_invoker(invoker)
     }
 
     /// The workspace `caller` asks in, and this device holds.
