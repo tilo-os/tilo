@@ -318,7 +318,7 @@ impl PackageStore {
     }
 
     pub fn registry(&self) -> Result<Registry, StoreError> {
-        Ok(Registry::load(&self.layout.registry())?)
+        Ok(Registry::load_in(&self.layout)?)
     }
 
     /// Install the `.tapp` streamed from `tapp`.

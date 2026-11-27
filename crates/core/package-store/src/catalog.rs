@@ -116,7 +116,7 @@ impl Catalog {
     /// or parsed, or a system row points outside the system store.
     pub fn list(&self) -> Result<Vec<InstalledPackage>, CatalogError> {
         let mut out = self.image_packages()?;
-        for entry in Registry::load(&self.user.registry())?.into_entries() {
+        for entry in Registry::load_in(&self.user)?.into_entries() {
             match out.iter_mut().find(|row| row.id == entry.id) {
                 Some(slot) => {
                     if runs_over_image(&entry, slot) && self.fits(&entry) {
@@ -130,7 +130,7 @@ impl Catalog {
     }
 
     pub fn layers(&self, app_id: &str) -> Result<Layers, CatalogError> {
-        let user = Registry::load(&self.user.registry())?.find(app_id).cloned();
+        let user = Registry::load_in(&self.user)?.find(app_id).cloned();
         let image = self
             .image_packages()?
             .into_iter()
@@ -167,7 +167,7 @@ impl Catalog {
 
     pub fn superseded(&self) -> Result<Vec<InstalledPackage>, CatalogError> {
         let image = self.image_packages()?;
-        Ok(Registry::load(&self.user.registry())?
+        Ok(Registry::load_in(&self.user)?
             .into_entries()
             .into_iter()
             .filter(|entry| {
@@ -196,7 +196,7 @@ impl Catalog {
     ///
     /// See [`Catalog::list`].
     pub fn taken_over_by(&self, id: &str) -> Result<Option<String>, CatalogError> {
-        Ok(Registry::load(&self.user.registry())?
+        Ok(Registry::load_in(&self.user)?
             .taken_over_by(id)
             .map(str::to_owned))
     }
@@ -756,5 +756,56 @@ mod tests {
             assert_eq!(layers.user.unwrap().version, "0.2.0");
             assert!(older.superseded().unwrap().is_empty());
         }
+    }
+
+    /// A store read where it stands names its own package trees: a device's daemon reads the copy
+    /// an installer staged, and what it launches comes from that copy — never from the session's
+    /// private store the rows were installed with, which the sandbox that serves it cannot reach.
+    #[test]
+    fn a_store_copied_aside_lists_its_own_payloads() {
+        let session = tempfile::tempdir().expect("the session's store");
+        let id = tilo_app_package::PackageId::from_bytes([3; 32]);
+        let hex = id.to_hex();
+        let installed = session.path().join("pkgs").join(&hex);
+        let manifest = session
+            .path()
+            .join("pkgs")
+            .join(format!("{hex}.pkg"))
+            .join("manifest.toml");
+        std::fs::create_dir_all(&installed).unwrap();
+        std::fs::create_dir_all(manifest.parent().expect("the metadata's directory")).unwrap();
+        std::fs::write(&manifest, "").unwrap();
+        std::fs::write(
+            session.path().join("registry.toml"),
+            format!(
+                "[[entry]]\nid = 'so.tilo.notes'\npackage_id_hex = {hex:?}\n\
+                 payload_root = {installed:?}\nmanifest_path = {manifest:?}\n",
+                installed = installed.display().to_string(),
+                manifest = manifest.display().to_string(),
+            ),
+        )
+        .unwrap();
+        // The copy a device's daemon reads, staged as an installer stages it: the rows come with
+        // the store, and name the session's tree still.
+        let device = tempfile::tempdir().expect("the device's store");
+        std::fs::create_dir_all(device.path().join("pkgs")).unwrap();
+        std::fs::copy(
+            session.path().join("registry.toml"),
+            device.path().join("registry.toml"),
+        )
+        .unwrap();
+        let found = Catalog::at(device.path(), None)
+            .find("so.tilo.notes")
+            .expect("the registry reads")
+            .expect("the row");
+        assert_eq!(found.payload_root, device.path().join("pkgs").join(&hex));
+        assert_eq!(
+            found.manifest_path,
+            device
+                .path()
+                .join("pkgs")
+                .join(format!("{hex}.pkg"))
+                .join("manifest.toml"),
+        );
     }
 }

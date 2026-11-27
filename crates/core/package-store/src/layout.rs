@@ -94,6 +94,25 @@ impl Layout {
         let name = path.file_name()?.to_str()?;
         parse_id_hex(name)
     }
+
+    /// Resolve `row`'s payload and manifest in this store: a registry describes the packages this
+    /// store holds, so what it names is here, by the id the row carries.
+    ///
+    /// A store is installed once and read from wherever it stands: a device's daemon reads the
+    /// copy an installer staged, and a walk's device reads the copy of a session's store. The rows
+    /// keep the paths they were installed with, which name the store the copy came from — outside
+    /// this one, and, where that was one person's private tree, unreadable to the sandbox that
+    /// serves it. A row is resolved here instead, never by a path recorded elsewhere.
+    pub fn resolve(&self, row: &mut crate::registry::InstalledPackage) {
+        let Some(id) = self
+            .materialised_id(&row.payload_root)
+            .or_else(|| parse_id_hex(&row.package_id_hex))
+        else {
+            return;
+        };
+        row.payload_root = self.payload(id);
+        row.manifest_path = self.manifest(id);
+    }
 }
 
 /// Parse a bare 64-character hex package id.

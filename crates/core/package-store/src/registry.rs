@@ -199,6 +199,21 @@ impl Registry {
         })
     }
 
+    /// [`Self::load`] of the registry a store at `layout` keeps, each row resolved in that store
+    /// ([`crate::layout::Layout::resolve`]): a store read where it stands names its own payloads,
+    /// wherever the rows were first installed.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::load`].
+    pub fn load_in(layout: &crate::layout::Layout) -> Result<Self, RegistryError> {
+        let mut registry = Self::load(&layout.registry())?;
+        for entry in &mut registry.entries {
+            layout.resolve(entry);
+        }
+        Ok(registry)
+    }
+
     /// Persist to `path` atomically, creating parent directories.
     ///
     /// # Errors
@@ -320,5 +335,44 @@ mod tests {
                 Err(RegistryError::Parse { .. })
             ));
         }
+    }
+
+    /// A registry read where its store stands names that store's payloads, not the store the rows
+    /// were installed with: a store copied whole (a device's daemon reading what an installer
+    /// staged, a walk's device reading a session's store) launches from where it is read, and from
+    /// nothing the copy cannot reach.
+    #[test]
+    fn a_registry_resolves_its_rows_in_the_store_it_lives_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = crate::layout::Layout::new(dir.path().join("device/tilo-apps"));
+        let id = PackageId::from_bytes([7; 32]);
+        let hex = id.to_hex();
+        std::fs::create_dir_all(layout.packages()).unwrap();
+        std::fs::write(
+            layout.registry(),
+            format!(
+                "[[entry]]\nid = 'so.tilo.notes'\npackage_id_hex = {hex:?}\n\
+                 payload_root = {:?}\nmanifest_path = {:?}\n",
+                format!("/person/state/apps/pkgs/{hex}"),
+                format!("/person/state/apps/pkgs/{hex}.pkg/manifest.toml"),
+            ),
+        )
+        .unwrap();
+        let row = Registry::load_in(&layout)
+            .unwrap()
+            .find("so.tilo.notes")
+            .cloned()
+            .expect("the row");
+        assert_eq!(row.payload_root, layout.payload(id));
+        assert_eq!(row.manifest_path, layout.manifest(id));
+        // The file itself is untouched: it still records where the copy came from.
+        assert!(
+            Registry::load(&layout.registry())
+                .unwrap()
+                .find("so.tilo.notes")
+                .unwrap()
+                .payload_root
+                .starts_with("/person/state/apps")
+        );
     }
 }

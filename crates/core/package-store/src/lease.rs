@@ -65,7 +65,7 @@ pub fn record_close(lease: &FileLock, app_id: &str, payload_root: &Path) -> io::
 /// When `app_id`'s row in the store at `layout` names a tree other than
 /// `ran_from`, record a use of that tree.
 fn record_use_of_replacement(layout: &Layout, app_id: &str, ran_from: &Path) -> io::Result<()> {
-    let registry = Registry::load(&layout.registry()).map_err(io::Error::other)?;
+    let registry = Registry::load_in(layout).map_err(io::Error::other)?;
     let Some(row) = registry.find(app_id) else {
         return Ok(());
     };
