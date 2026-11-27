@@ -418,10 +418,9 @@ impl FileArea {
     /// entries.
     pub fn open(dir: &Path, budget: u64) -> io::Result<Self> {
         std::fs::create_dir_all(dir)?;
-        let db = Database::builder()
-            .set_cache_size(META_CACHE_BYTES)
-            .create(dir.join("area.redb"))
-            .map_err(db_error)?;
+        let db = crate::redb_open::open(&dir.join("area.redb"), |builder| {
+            builder.set_cache_size(META_CACHE_BYTES);
+        })?;
         Self::open_with(dir, db, budget, Some(CommitLog::open(dir)?))
     }
 

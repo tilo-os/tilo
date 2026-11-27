@@ -174,7 +174,7 @@ pub enum NodeUpdate {
 
 impl NativeState {
     pub fn open(path: &Path) -> Result<Self> {
-        let db = Database::create(path)
+        let db = crate::redb_open::open(path, |_| {})
             .with_context(|| format!("opening native backend state {}", path.display()))?;
         let txn = db.begin_write()?;
         {

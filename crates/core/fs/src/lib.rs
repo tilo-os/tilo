@@ -59,6 +59,7 @@ pub mod native;
 pub mod node;
 #[cfg(feature = "document-media")]
 pub mod public_content;
+mod redb_open;
 #[cfg(feature = "filesystem")]
 mod rich_metadata;
 #[cfg(feature = "filesystem")]
