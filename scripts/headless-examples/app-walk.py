@@ -74,7 +74,7 @@ sys.path.insert(0, str(HERE))
 # check of a desktop with the tree's apps starts (scripts/headless-examples/real_apps.py).
 import real_apps  # noqa: E402
 from real_apps import (  # noqa: E402
-    BUILD, Failed, Session, address, as_account, prepare, run, until)
+    BUILD, Failed, Refused, Session, address, as_account, prepare, record, run, until)
 
 WALKS = HERE / "app-walks"
 # What a control's identity joins: the record kind it acts on, and the operation,
@@ -94,12 +94,12 @@ APPEARANCE = "settings/appearance"
 # The shell's own verbs: a window is focused and closed by the tab it holds.
 SHELL = "so.tilo.session"
 SHELL_RESOURCE = "desktop:shell"
-# The file chooser's own steps (`so.tilo.file-chooser`), which the person takes in
-# its sheet: select the file, then use it.
-FILE_CHOOSER = "so.tilo.file-chooser"
-FILE_CHOOSER_STEP = f"{FILE_CHOOSER}.step"
-FILE_CHOOSER_QUESTION = "portal.file-chooser"
-FILE_CHOOSER_RESOURCE = "file-chooser.request"
+# What asks the person: a call that needs their yes waits as its asked
+# `tilo.invocations` record, which the workspace's invocations read beside the
+# calls it kept, and the person answers with the record's own `resolve`. A
+# program's file chooser is such a record; its answer is the files chosen.
+INVOCATIONS_APP = "tilo.invocations"
+ASKED_RESOLVE = "resolve"
 # The small picture a walk of an app that shows photographs imports: the same
 # 64-by-64 PNG in two colours that `ui::headless::FIXTURE_PICTURE` carries, kept
 # here as its bytes so a file chooser can be handed a real image.
@@ -2414,8 +2414,33 @@ class Walk:
                                  if (t.get("identity") and ID_SEP in t["identity"])]}
 
     def op_questions(self, _value) -> dict:
-        """What is asking the person now: a file chooser, a sheet."""
-        return {"questions": self.session.control({"op": "questions"})["answer"]["questions"]}
+        """What is asking the person now: a file chooser, a sheet: the calls
+        that wait for their yes, each as the person reads it."""
+        return {"questions": [{
+            "handle": row.get("id"),
+            "app": row.get("action") or "",
+            "kind": "asks for files" if (row.get("asked") or {}).get("files") else "asks",
+            "label": (row.get("asked") or {}).get("words")
+            or (row.get("by") or {}).get("name") or "",
+        } for row in self.waiting_asks()]}
+
+    def waiting_asks(self) -> list:
+        """The calls waiting for the person's yes, as the workspace's invocations
+        read them (`tilo.invocations`): each an invocation whose `asked` names
+        the record the person answers with its own `resolve`."""
+        workspace = ((self.session.state_dump() or {}).get("workspace_tree") or {}).get("active")
+        if not workspace:
+            return []
+        try:
+            reading = record(self.session.control, workspace, INVOCATIONS_APP, "")
+        except Refused:
+            # A daemon reconnecting, or a workspace not looked at yet: nothing
+            # is answered for it now, which is no question waiting.
+            return []
+        rows = [row
+                for held in reading.get("records") or []
+                for row in (held.get("value") or {}).get("items") or []]
+        return [row for row in rows if row.get("status") == "waiting" and row.get("asked")]
 
     def op_must(self, value) -> dict:
         """What a person must see now: every control the list names drawn on the
@@ -3498,89 +3523,29 @@ class Walk:
         return {"file": str(path), "bytes": path.stat().st_size}
 
     def chooser_question(self) -> dict | None:
-        """The file chooser asking the person now, if one is."""
-        questions = self.session.control({"op": "questions"})["answer"]["questions"]
-        return next((q for q in questions if q.get("kind") == FILE_CHOOSER_QUESTION), None)
-
-    def chooser_step(self, ident: str) -> dict | None:
-        """The chooser's own step `ident` ("select", "confirm"), as the sheet
-        publishes it: the person's way through the chooser, not a shortcut past
-        it. The session lists the sheet's steps on its request resource
-        (`file-chooser.request`), the step's name its operation; a session that
-        lists them another way still names the sheet in the operation or its
-        provider."""
-        def of(row: dict) -> bool:
-            resource, operation = address(row) or ("", "")
-            if resource == FILE_CHOOSER_RESOURCE:
-                return ident == operation
-            return (operation == ident
-                    and (resource.startswith(FILE_CHOOSER_STEP)
-                         or FILE_CHOOSER in resource
-                         or FILE_CHOOSER in str(row.get("provider") or "")))
-
-        return next((a for a in self.session.actions("") if of(a)), None)
+        """The file chooser asking the person now, if one is: the call that
+        waits for their yes and names files for its answer."""
+        return next((q for q in self.waiting_asks() if (q.get("asked") or {}).get("files")),
+                    None)
 
     def op_choose(self, value) -> dict:
-        """Choose the file a person's chooser offers: the sheet the app's request
-        opens is answered by its own steps. `{"name": ..}` names a fixture where
-        the person's files are; `{"path": ..}` names a file anywhere the chooser
-        reaches, such as a workspace's own tree. The file is selected through the
-        chooser's published step, which waits for it to have listed the file;
-        then its confirm button is pressed as a person's pointer does. Giving an
-        app a file is the person's alone: the chooser refuses its confirm step to
-        any caller that is not at the computer, so the walk never invokes it."""
+        """Answer the app's file request with the file it asked for: the person's
+        own answer to the question's asked record, which the shell's picker and
+        the palette give through the same `resolve`. `{"name": ..}` names a
+        fixture where the person's files are; `{"path": ..}` names a file
+        anywhere the chooser reaches, such as a workspace's own tree."""
         path = Path(value["path"]).resolve() if "path" in value \
             else (self.files() / value["name"]).resolve()
         question = until_value("the file chooser to ask for a file",
                                self.chooser_question, 60)
-        handle = question["handle"]
-        # What each step last said when it did not take: the walk's finding when
-        # the chooser never does.
-        said: dict[str, str] = {}
-
-        def act(ident: str) -> bool:
-            action = self.chooser_step(ident)
-            if action is None:
-                said[ident] = "the chooser lists no such step"
-                return False
-            try:
-                self.session.invoke_row(action, {"handle": handle, "path": str(path)}
-                                        if ident == "select" else {"handle": handle})
-                return True
-            except Failed as error:
-                # The chooser has not listed the file yet, or the answer is
-                # already given: what it says is the finding, not a failure.
-                said[ident] = str(error)
-                return False
-
-        def confirm() -> bool:
-            """Press the chooser's confirm button: its own word for what it does,
-            or the one the asking app gave it."""
-            names = [question.get("accept_label"), "Save" if question.get("save") else "Open",
-                     "Choose folder"]
-            for button in filter(None, names):
-                if control(self.session, button) is not None:
-                    press(self.session, button)
-                    return True
-            said["confirm"] = f"no confirm button among {names}"
-            return False
-
-        deadline = time.monotonic() + 60
-        selected = used = False
-        while time.monotonic() < deadline:
-            if not selected:
-                selected = act("select")
-            if selected and not used:
-                used = confirm()
-            if used or self.chooser_question() is None:
-                break
-            time.sleep(0.1)
-        answered = self.chooser_question() is None
-        if not (selected and (used or answered)):
-            raise Failed(f"the chooser did not take {path.name!r} "
-                         f"(selected: {selected}, used: {used}, answered: {answered}; "
-                         f"it said: {said})")
-        return {"chose": str(path), "question": handle}
+        invocation = question.get("id") or ""
+        if not invocation:
+            raise Failed(f"the file chooser names no asked record: {question!r}")
+        self.session.invoke(INVOCATIONS_APP, invocation, ASKED_RESOLVE,
+                            {"resolution": "approve", "files": [str(path)]})
+        until(f"the file chooser to take {path.name!r}",
+              lambda: self.chooser_question() is None, 60)
+        return {"chose": str(path), "question": invocation}
 
     # -- a step ---------------------------------------------------------------------------
 
