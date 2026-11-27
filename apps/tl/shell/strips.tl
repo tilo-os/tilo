@@ -405,10 +405,7 @@ view standing_window(a: Layout, s: LayoutStrip, lists: Bool, resizable: Bool) {
             // The window's trailing edge carried and let go: one arranging action sets the
             // share of its row it takes, recorded and undoable, so a press, a script and an
             // agent resize the same way.
-            on resize(to: Int, was: Int): session.resize(
-                strip: the_strip(s.key),
-                permille: share_for_width(a, s, to, was),
-            )
+            on resize(to: Int, was: Int): resize_strip(a, s, to, was)
             // A press on the window's bar brings it forward, the keyboard in it.
             on press: bring_forward(a, s)
             // The window fills the room the drop target around it is given: the target only
@@ -1412,6 +1409,17 @@ action move_right(w: device.Window (label: "The window")) (
             )
         }
     }
+}
+
+/// Resize the strip `s` to the width its trailing edge was carried to (`to`), from the width it
+/// had when it was grabbed (`was`), both in the shell's pixels: one arranging action
+/// (`layout.strip.resize`), recorded and undoable like every other, so a press, a script and an
+/// agent resize the same way.
+action resize_strip(a: Layout, s: LayoutStrip, to: Int, was: Int) (
+    icon: .columns_2,
+    label: "Resize the window",
+) {
+    session.resize(strip: the_strip(s.key), permille: share_for_width(a, s, to, was))
 }
 
 /// The share of its row the window of `s` takes when its trailing edge is carried to `to` pixels
