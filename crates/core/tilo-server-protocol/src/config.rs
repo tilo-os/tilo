@@ -255,8 +255,6 @@ impl Default for ServerConfig {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WebTls {
-    /// What configurations written before [`WebTls::Local`] name it: read as that.
-    Dev,
     /// The PEM certificate chain and private key a deployment serves, and the name
     /// browsers reach it by.
     Files {

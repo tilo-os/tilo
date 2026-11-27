@@ -331,7 +331,29 @@ impl Web {
     /// reached only after the listener started (its first network report found none, as when
     /// the host's own relay is not routable yet) is named as soon as it is.
     fn current_host_info(&self) -> ServerInfo {
-        host_info_now(&self.server_info, self.endpoint.as_ref())
+        let mut info = host_info_now(&self.server_info, self.endpoint.as_ref());
+        if let (Some(address), Some(live)) = (info.address.as_mut(), self.context.link.get()) {
+            address.web = Some(live.now());
+        }
+        info
+    }
+}
+
+/// Where pages reach this host over WebTransport, with the certificate it
+/// presents now: one the person's local CA issues is issued again in place.
+pub(crate) struct LiveLink {
+    link: WebLink,
+    local: Option<Arc<tls::LocalCertificate>>,
+}
+
+impl LiveLink {
+    /// The link, pinning the certificate presented now.
+    pub(crate) fn now(&self) -> WebLink {
+        let mut link = self.link.clone();
+        if let Some(local) = &self.local {
+            link.certificate_sha256 = Some(local.sha256());
+        }
+        link
     }
 }
 
@@ -653,7 +675,10 @@ async fn serve_parts(parts: WebParts) -> Result<WebHandle, ServerError> {
         bind_link(udp, addr, public_origin.as_ref(), &identity).map_err(failed)?;
     // Where pages reach this host, for whoever holds the server and not this handle: a
     // page dials it as the one its host published.
-    let _ = context.link.set(web_link.clone());
+    let _ = context.link.set(LiveLink {
+        link: web_link.clone(),
+        local: identity.local.clone(),
+    });
     let server_info = ServerInfo {
         server_cert,
         address: Some(ServerAddress {
@@ -784,8 +809,9 @@ fn bind_link(
     let bound = socket
         .local_addr()
         .map_err(|error| format!("WebTransport listener: {error}"))?;
-    let listener = tilo_net::webtransport::Listener::bind(socket, identity.certificate()?)
-        .map_err(|error| format!("WebTransport listener: {error}"))?;
+    let listener =
+        tilo_net::webtransport::Listener::bind(socket, Arc::clone(&identity.certificate))
+            .map_err(|error| format!("WebTransport listener: {error}"))?;
     let link = WebLink {
         origin: named_port(
             &public_origin
@@ -793,11 +819,7 @@ fn bind_link(
                 .unwrap_or_else(|| format!("https://{addr}")),
             bound.port(),
         ),
-        certificate_sha256: identity
-            .fingerprint
-            .as_deref()
-            .and_then(|fingerprint| hex::decode(fingerprint).ok())
-            .and_then(|bytes| bytes.try_into().ok()),
+        certificate_sha256: identity.local.as_ref().map(|local| local.sha256()),
     };
     Ok((listener, link))
 }
@@ -1267,12 +1289,11 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
     if request.method() == Method::GET
         && let Some(address) = tilo_server_protocol::page::PageAddress::parse(request.uri().path())
     {
-        let link = web
-            .server_info
-            .address
-            .as_ref()
-            .and_then(|address| address.web.as_ref());
-        return page::answer(&address, link, web.server_info.origin.as_deref());
+        let link = web.context.link.get().map(LiveLink::now).or_else(|| {
+            let address = web.server_info.address.as_ref()?;
+            address.web.clone()
+        });
+        return page::answer(&address, link.as_ref(), web.server_info.origin.as_deref());
     }
     // A person's picture, which a place outside Tilo fetches at the public
     // address a bridged post names.

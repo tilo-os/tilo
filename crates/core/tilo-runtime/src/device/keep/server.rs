@@ -197,7 +197,7 @@ pub(crate) struct WebContext {
     pub(crate) server: ServerProtocol,
     /// Where pages reach this host over WebTransport, once it serves browsers: what
     /// [`Server::web_link`] answers, and what a test that stands in for a page dials.
-    pub(crate) link: Arc<std::sync::OnceLock<tilo_server_protocol::web::WebLink>>,
+    pub(crate) link: Arc<std::sync::OnceLock<crate::device::keep::web::LiveLink>>,
     /// The key for Apple's push service its configuration names, which its people's closed
     /// apps are told through.
     #[cfg(feature = "agents")]
@@ -216,7 +216,10 @@ impl Server {
     /// ([`Self::serve_web`]): its endpoint and the listener pages dial.
     #[must_use]
     pub fn web_link(&self) -> Option<tilo_server_protocol::web::WebLink> {
-        self.web.link.get().cloned()
+        self.web
+            .link
+            .get()
+            .map(crate::device::keep::web::LiveLink::now)
     }
 }
 

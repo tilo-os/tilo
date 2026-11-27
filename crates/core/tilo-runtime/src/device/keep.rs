@@ -452,7 +452,7 @@ fn beside_session(key: &str) -> io::Result<crate::device::keep::web::install::Se
 fn web_config(cfg: &ServerConfig, listen: SocketAddr) -> crate::device::keep::web::WebConfig {
     use crate::device::keep::web::{TlsSource, WebConfig};
     let tls = match &cfg.web_tls {
-        WebTls::Local | WebTls::Dev => TlsSource::Local {
+        WebTls::Local => TlsSource::Local {
             hosts: local_hosts(listen),
             store: Some(cfg.state_root.join("web-certificate")),
         },

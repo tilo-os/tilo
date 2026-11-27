@@ -6,9 +6,10 @@
 //!   13 days for the names it is reached under. The person's own devices
 //!   trust it ([`trusting_person`]); a browser elsewhere does not, and pins
 //!   the certificate's hash, which the server's link names
-//!   (`serverCertificateHashes`). The certificate (never the CA's key) is
-//!   kept under the host's state root and reused across restarts while it
-//!   still names every host that needs it.
+//!   (`serverCertificateHashes`). It is issued again a day before it
+//!   expires, live, and kept (never the CA's key) under the host's state
+//!   root, reused across restarts while it still names every host that
+//!   needs it.
 //! - **Files**: a PEM chain and key on disk, renewed by whatever manages them
 //!   — an ACME client (certbot, lego, Caddy) on a home host, or the Cloud
 //!   machine's managed certificate. The listener reads the pair again when
@@ -19,14 +20,14 @@
 //!   at the Cloud edge.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::pem::PemObject as _;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::server::{ClientHello, ResolvesServerCert};
-use rustls::sign::{CertifiedKey, SingleCertAndKey};
+use rustls::sign::CertifiedKey;
 use rustls::{CertificateError, DigitallySignedStruct, SignatureScheme};
 use sha2::Digest as _;
 use tilo_lock::MutexRecover as _;
@@ -64,17 +65,11 @@ pub enum TlsSource {
 
 /// A loaded TLS identity.
 pub(crate) struct Identity {
-    pub(crate) chain: Vec<CertificateDer<'static>>,
-    pub(crate) key: PrivateKeyDer<'static>,
-    /// SHA-256 (lowercase hex) of a certificate the person's local CA issued,
-    /// which a browser that does not trust that CA pins.
-    pub(crate) fingerprint: Option<String>,
-    /// The names the certificate is for, when this host's CA issued it;
-    /// `None` for a certificate from files, whose names this host does not
-    /// read.
-    pub(crate) hosts: Option<Vec<String>>,
-    /// The PEM pair to follow for renewals, for certificates from files.
-    pub(crate) files: Option<(PathBuf, PathBuf)>,
+    /// The certificate the listener presents, one for its HTTPS and
+    /// WebTransport listeners alike, which follows its renewals.
+    pub(crate) certificate: Arc<dyn ResolvesServerCert>,
+    /// The certificate the person's local CA issues, when it is that.
+    pub(crate) local: Option<Arc<LocalCertificate>>,
 }
 
 impl Identity {
@@ -90,32 +85,20 @@ impl Identity {
         match source {
             TlsSource::Local { hosts, store } => {
                 let ca = LocalCa::new(key, cert)?;
-                if let Some(stored) = store
-                    .as_deref()
-                    .and_then(|path| load_stored(path, hosts, &ca))
-                {
-                    return Ok(stored);
-                }
-                let issued = ca.issue(hosts, SystemTime::now())?;
-                if let Some(store) = store {
-                    save_stored(store, &issued, &ca)?;
-                }
-                Ok(issued)
+                let local = Arc::new(LocalCertificate::new(ca, hosts.clone(), store.clone())?);
+                Ok(Self {
+                    certificate: local.clone(),
+                    local: Some(local),
+                })
             }
             TlsSource::Files {
                 certificate_chain,
                 private_key,
                 ..
-            } => {
-                let (chain, key) = load_pem(certificate_chain, private_key)?;
-                Ok(Self {
-                    chain,
-                    key,
-                    fingerprint: None,
-                    hosts: None,
-                    files: Some((certificate_chain.clone(), private_key.clone())),
-                })
-            }
+            } => Ok(Self {
+                certificate: Arc::new(FileCertificate::load(certificate_chain, private_key)?),
+                local: None,
+            }),
             TlsSource::Managed { domain } => Err(format!(
                 "managed certificates for {domain} are not implemented: use TlsSource::Files with \
                  an ACME-managed certificate, or terminate TLS at the Cloud edge"
@@ -123,18 +106,9 @@ impl Identity {
         }
     }
 
-    /// The certificate the listener presents: one that follows renewals for
-    /// files, the loaded one otherwise.
-    pub(crate) fn certificate(&self) -> Result<Arc<dyn ResolvesServerCert>, String> {
-        match &self.files {
-            Some((chain, key)) => Ok(Arc::new(FileCertificate::load(chain, key)?)),
-            None => fixed_certificate(self.chain.clone(), self.key.clone_key()),
-        }
-    }
-
     /// rustls server configuration for HTTPS over TCP (HTTP/2 and HTTP/1.1).
     pub(crate) fn https_config(&self) -> Result<rustls::ServerConfig, String> {
-        https_server_config(self.certificate()?)
+        https_server_config(Arc::clone(&self.certificate))
     }
 }
 
@@ -190,14 +164,6 @@ fn certified(
     CertifiedKey::from_der(chain, key, &provider())
         .map(Arc::new)
         .map_err(|error| error.to_string())
-}
-
-/// A certificate loaded once and presented for as long as the listener runs.
-fn fixed_certificate(
-    chain: Vec<CertificateDer<'static>>,
-    key: PrivateKeyDer<'static>,
-) -> Result<Arc<dyn ResolvesServerCert>, String> {
-    Ok(Arc::new(SingleCertAndKey::from(certified(chain, key)?)))
 }
 
 /// How often a [`FileCertificate`] looks at its files' modification times.
@@ -295,8 +261,9 @@ fn stamp(chain: &Path, key: &Path) -> Stamp {
 /// pins one for (`serverCertificateHashes` takes no more than 14 days).
 const ISSUED_FOR: Duration = Duration::from_secs(13 * 24 * 3600);
 
-/// How long a stored certificate is reused: replaced with a day to spare.
-const REUSE: Duration = Duration::from_secs(12 * 24 * 3600);
+/// How long a certificate is presented before it is issued again: a day
+/// before it expires.
+const RENEW_AFTER: Duration = Duration::from_secs(12 * 24 * 3600);
 
 /// What the local CA's Ed25519 key is derived from the device key under.
 const CA_KEY_CONTEXT: &[u8] = b"tilo/web-ca/key/v1\0";
@@ -395,9 +362,8 @@ impl LocalCa {
         Ok(Self { issuer, public_key })
     }
 
-    /// A certificate for `hosts`, valid from `from` for [`ISSUED_FOR`], with
-    /// its chain up to this CA.
-    fn issue(&self, hosts: &[String], from: SystemTime) -> Result<Identity, String> {
+    /// A certificate for `hosts`, valid from `from` for [`ISSUED_FOR`].
+    fn issue(&self, hosts: &[String], from: SystemTime) -> Result<Issued, String> {
         let mut params =
             rcgen::CertificateParams::new(hosts.to_vec()).map_err(|error| error.to_string())?;
         params.not_before = from.into();
@@ -410,14 +376,115 @@ impl LocalCa {
         let certificate = params
             .signed_by(&key, &self.issuer)
             .map_err(|error| error.to_string())?;
-        let der = certificate.der().clone();
-        Ok(Identity {
-            fingerprint: Some(hex::encode(sha2::Sha256::digest(der.as_ref()))),
-            chain: vec![der, self.issuer.der().clone()],
-            key: PrivateKeyDer::Pkcs8(key.serialize_der().into()),
-            hosts: Some(hosts.to_vec()),
-            files: None,
+        Ok(Issued {
+            from_unix: from
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs()),
+            hosts: hosts.to_vec(),
+            ca: self.public_key,
+            certificate: certificate.der().to_vec(),
+            pkcs8_key: key.serialize_der(),
         })
+    }
+
+    /// `issued` and its chain up to this CA.
+    fn chain(&self, issued: &Issued) -> Vec<CertificateDer<'static>> {
+        vec![
+            CertificateDer::from(issued.certificate.clone()),
+            self.issuer.der().clone(),
+        ]
+    }
+
+    /// `issued` as the listener presents it.
+    fn certified(&self, issued: &Issued) -> Result<Arc<CertifiedKey>, String> {
+        certified(
+            self.chain(issued),
+            PrivateKeyDer::Pkcs8(issued.pkcs8_key.clone().into()),
+        )
+    }
+}
+
+/// The certificate the person's local CA issues, renewed in place: from the
+/// first handshake [`RENEW_AFTER`] after it was issued, a new one is issued
+/// and presented, so a server that runs past [`ISSUED_FOR`] never presents an
+/// expired certificate and needs no restart. Its time is
+/// [`tilo_clock::wall`].
+pub(crate) struct LocalCertificate {
+    ca: LocalCa,
+    hosts: Vec<String>,
+    store: Option<PathBuf>,
+    current: Mutex<(Issued, Arc<CertifiedKey>)>,
+}
+
+impl LocalCertificate {
+    /// The stored certificate when it is still current for `hosts`, or a new
+    /// one `ca` issues and keeps at `store`.
+    fn new(ca: LocalCa, hosts: Vec<String>, store: Option<PathBuf>) -> Result<Self, String> {
+        let stored = store
+            .as_deref()
+            .and_then(|path| load_stored(path, &hosts, &ca));
+        let issued = if let Some(stored) = stored {
+            stored
+        } else {
+            let issued = ca.issue(&hosts, tilo_clock::wall())?;
+            if let Some(store) = &store {
+                save_stored(store, &issued)?;
+            }
+            issued
+        };
+        let key = ca.certified(&issued)?;
+        Ok(Self {
+            ca,
+            hosts,
+            store,
+            current: Mutex::new((issued, key)),
+        })
+    }
+
+    /// The certificate presented now, issued again first when it is due. One
+    /// that cannot be issued again stays presented while it is valid.
+    fn current(&self) -> MutexGuard<'_, (Issued, Arc<CertifiedKey>)> {
+        let mut current = self.current.lock_recover();
+        if !current.0.current() {
+            let renewed = self
+                .ca
+                .issue(&self.hosts, tilo_clock::wall())
+                .and_then(|issued| Ok((self.ca.certified(&issued)?, issued)));
+            match renewed {
+                Ok((key, issued)) => {
+                    if let Some(store) = &self.store
+                        && let Err(error) = save_stored(store, &issued)
+                    {
+                        tracing::warn!(%error, "the renewed web certificate is presented, not kept");
+                    }
+                    *current = (issued, key);
+                }
+                Err(error) => {
+                    tracing::error!(%error, "the web certificate is due and was not issued");
+                }
+            }
+        }
+        current
+    }
+
+    /// SHA-256 of the certificate presented now, which a browser that does
+    /// not trust the person's CA pins.
+    pub(crate) fn sha256(&self) -> [u8; 32] {
+        sha2::Sha256::digest(&self.current().0.certificate).into()
+    }
+}
+
+impl std::fmt::Debug for LocalCertificate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalCertificate")
+            .field("hosts", &self.hosts)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ResolvesServerCert for LocalCertificate {
+    fn resolve(&self, _client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        Some(Arc::clone(&self.current().1))
     }
 }
 
@@ -592,9 +659,10 @@ fn der_value(input: &[u8]) -> Option<(u8, &[u8])> {
     Some((tag, rest.get(..len)?))
 }
 
+/// A certificate the local CA issued, and its key, as the host keeps it.
 #[derive(serde::Serialize, serde::Deserialize)]
-struct Stored {
-    created_unix: u64,
+struct Issued {
+    from_unix: u64,
     /// The names the certificate carries, so a host that starts serving a new
     /// name replaces it instead of presenting one that cannot cover it.
     hosts: Vec<String>,
@@ -602,49 +670,32 @@ struct Stored {
     ca: [u8; 32],
     certificate: Vec<u8>,
     pkcs8_key: Vec<u8>,
-    sha256: String,
 }
 
-/// A stored certificate `ca` issued, while it is young enough and names every
-/// host it is now needed for.
-fn load_stored(path: &Path, hosts: &[String], ca: &LocalCa) -> Option<Identity> {
-    let stored: Stored = postcard::from_bytes(&std::fs::read(path).ok()?).ok()?;
-    let age = tilo_clock::unix_now().checked_sub(stored.created_unix)?;
+impl Issued {
+    /// Whether it is presented still, short of [`RENEW_AFTER`].
+    fn current(&self) -> bool {
+        tilo_clock::unix_now()
+            .checked_sub(self.from_unix)
+            .is_some_and(|age| age < RENEW_AFTER.as_secs())
+    }
+}
+
+/// A stored certificate `ca` issued, while it is current and names every host
+/// it is now needed for.
+fn load_stored(path: &Path, hosts: &[String], ca: &LocalCa) -> Option<Issued> {
+    let stored: Issued = postcard::from_bytes(&std::fs::read(path).ok()?).ok()?;
     let covers = hosts.iter().all(|host| {
         stored
             .hosts
             .iter()
             .any(|named| named.eq_ignore_ascii_case(host))
     });
-    (age < REUSE.as_secs() && covers && stored.ca == ca.public_key).then(|| Identity {
-        chain: vec![
-            CertificateDer::from(stored.certificate),
-            ca.issuer.der().clone(),
-        ],
-        key: PrivateKeyDer::Pkcs8(stored.pkcs8_key.into()),
-        fingerprint: Some(stored.sha256),
-        hosts: Some(stored.hosts),
-        files: None,
-    })
+    (covers && stored.ca == ca.public_key && stored.current()).then_some(stored)
 }
 
-fn save_stored(path: &Path, identity: &Identity, ca: &LocalCa) -> Result<(), String> {
-    let PrivateKeyDer::Pkcs8(key) = &identity.key else {
-        return Err("the issued key is not PKCS#8".into());
-    };
-    let stored = Stored {
-        created_unix: tilo_clock::unix_now(),
-        hosts: identity.hosts.clone().unwrap_or_default(),
-        ca: ca.public_key,
-        certificate: identity
-            .chain
-            .first()
-            .map(|der| der.to_vec())
-            .unwrap_or_default(),
-        pkcs8_key: key.secret_pkcs8_der().to_vec(),
-        sha256: identity.fingerprint.clone().unwrap_or_default(),
-    };
-    let bytes = postcard::to_allocvec(&stored).map_err(|error| error.to_string())?;
+fn save_stored(path: &Path, issued: &Issued) -> Result<(), String> {
+    let bytes = postcard::to_allocvec(issued).map_err(|error| error.to_string())?;
     // A host awaiting its certificate serves before anything else created
     // its state directory.
     if let Some(parent) = path.parent() {
@@ -676,8 +727,9 @@ mod tests {
 
             let (certificates, private_key) = load_pem(&chain, &key).unwrap();
             assert_eq!(certificates, vec![generated.cert.der().clone()]);
+            assert!(certified(certificates, private_key).is_ok());
             let config =
-                https_server_config(fixed_certificate(certificates, private_key).unwrap()).unwrap();
+                https_server_config(Arc::new(FileCertificate::load(&chain, &key).unwrap())).unwrap();
             assert_eq!(
                 config.alpn_protocols,
                 vec![b"h2".to_vec(), b"http/1.1".to_vec()]
@@ -727,33 +779,30 @@ mod tests {
             let bob = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
             let (server, server_cert) = device(&ada, 3);
             let (bobs_server, bobs_cert) = device(&bob, 4);
-            let hosts = ["localhost".to_string()];
+            let now = SystemTime::now();
+            let issued = |ca: &LocalCa, from| ca.chain(&ca.issue(&["localhost".into()], from).unwrap());
             let ca = LocalCa::new(&server, Some(&server_cert)).unwrap();
-            let issued = ca.issue(&hosts, SystemTime::now()).unwrap();
+            let adas_chain = issued(&ca, now);
 
             let adas = trusting_person(ada.verifying_key().to_bytes(), RevocationList::new());
             let bobs = trusting_person(bob.verifying_key().to_bytes(), RevocationList::new());
-            presented(&adas, &issued.chain, "localhost").expect("Ada's devices trust her server's CA");
+            presented(&adas, &adas_chain, "localhost", now).expect("Ada's devices trust her server's CA");
             assert!(
-                presented(&adas, &issued.chain, "elsewhere.example").is_err(),
+                presented(&adas, &adas_chain, "elsewhere.example", now).is_err(),
                 "a certificate is trusted only for the names it was issued for"
             );
             assert_eq!(
-                presented(&bobs, &issued.chain, "localhost").unwrap_err(),
+                presented(&bobs, &adas_chain, "localhost", now).unwrap_err(),
                 rustls::Error::InvalidCertificate(CertificateError::UnknownIssuer),
                 "another person's devices do not trust Ada's CA"
             );
-            let bobs_issued = LocalCa::new(&bobs_server, Some(&bobs_cert))
-                .unwrap()
-                .issue(&hosts, SystemTime::now())
-                .unwrap();
-            assert!(presented(&adas, &bobs_issued.chain, "localhost").is_err());
+            let bobs_ca = LocalCa::new(&bobs_server, Some(&bobs_cert)).unwrap();
+            assert!(presented(&adas, &issued(&bobs_ca, now), "localhost", now).is_err());
 
-            let month_ago = SystemTime::now() - Duration::from_secs(30 * 24 * 3600);
-            let expired = ca.issue(&hosts, month_ago).unwrap();
+            let month_ago = now - Duration::from_secs(30 * 24 * 3600);
             assert!(
                 matches!(
-                    presented(&adas, &expired.chain, "localhost"),
+                    presented(&adas, &issued(&ca, month_ago), "localhost", now),
                     Err(rustls::Error::InvalidCertificate(
                         CertificateError::ExpiredContext { .. }
                     ))
@@ -761,32 +810,26 @@ mod tests {
                 "an expired certificate is refused"
             );
 
-            let foreign = rcgen::generate_simple_self_signed(hosts.to_vec()).unwrap();
+            let foreign = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
             let foreign = foreign.cert.der().clone();
-            assert!(presented(&adas, std::slice::from_ref(&foreign), "localhost").is_err());
+            assert!(presented(&adas, std::slice::from_ref(&foreign), "localhost", now).is_err());
             assert!(
-                presented(&adas, &[foreign, issued.chain[1].clone()], "localhost").is_err(),
+                presented(&adas, &[foreign, adas_chain[1].clone()], "localhost", now).is_err(),
                 "a certificate the person's CA did not issue is refused beside it"
             );
 
-            let unendorsed = LocalCa::new(&server, None)
-                .unwrap()
-                .issue(&hosts, SystemTime::now())
-                .unwrap();
+            let unendorsed = LocalCa::new(&server, None).unwrap();
             assert_eq!(
-                presented(&adas, &unendorsed.chain, "localhost").unwrap_err(),
+                presented(&adas, &issued(&unendorsed, now), "localhost", now).unwrap_err(),
                 rustls::Error::InvalidCertificate(CertificateError::UnknownIssuer),
                 "a node not yet installed is trusted by no device"
             );
 
             // A CA endorsed by a key that is not the device its certificate names.
             let stranger = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
-            let forged = LocalCa::new(&stranger, Some(&server_cert))
-                .unwrap()
-                .issue(&hosts, SystemTime::now())
-                .unwrap();
+            let forged = LocalCa::new(&stranger, Some(&server_cert)).unwrap();
             assert_eq!(
-                presented(&adas, &forged.chain, "localhost").unwrap_err(),
+                presented(&adas, &issued(&forged, now), "localhost", now).unwrap_err(),
                 rustls::Error::InvalidCertificate(CertificateError::BadSignature)
             );
         }
@@ -798,45 +841,65 @@ mod tests {
         {
             let ada = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
             let (server, server_cert) = device(&ada, 3);
+            let (other, other_cert) = device(&ada, 6);
             let dir = tempfile::tempdir().unwrap();
             let store = Some(dir.path().join("web-certificate"));
-            let load = |hosts: &[&str]| {
-                let source = TlsSource::Local {
-                    hosts: hosts.iter().map(|host| (*host).to_string()).collect(),
-                    store: store.clone(),
-                };
-                Identity::load(&source, &server, Some(&server_cert)).unwrap()
+            let load = |device: (&ed25519_dalek::SigningKey, &DeviceCert), hosts: &[&str]| {
+                let hosts = hosts.iter().map(|host| (*host).to_string()).collect();
+                let ca = LocalCa::new(device.0, Some(device.1)).unwrap();
+                LocalCertificate::new(ca, hosts, store.clone()).unwrap().sha256()
             };
-            let first = load(&["localhost", "127.0.0.1"]);
-            assert_eq!(
-                first.hosts.as_deref(),
-                Some(&["localhost".to_string(), "127.0.0.1".to_string()][..])
-            );
-            let again = load(&["127.0.0.1"]);
-            assert_eq!(again.chain, first.chain, "names it covers are reused");
-            let wider = load(&["127.0.0.1", "live.example"]);
-            assert_ne!(
-                wider.chain, first.chain,
-                "a start that needs a new name replaces the certificate"
-            );
-            assert_eq!(
-                wider.hosts.unwrap(),
-                vec!["127.0.0.1".to_string(), "live.example".to_string()]
-            );
-            let (other, other_cert) = device(&ada, 6);
-            let reissued = Identity::load(
-                &TlsSource::Local {
-                    hosts: vec!["127.0.0.1".into(), "live.example".into()],
-                    store: store.clone(),
-                },
-                &other,
-                Some(&other_cert),
-            )
-            .unwrap();
-            assert_ne!(
-                reissued.chain[0], wider.chain[0],
-                "a certificate another CA issued is not presented"
-            );
+            let first = load((&server, &server_cert), &["localhost", "127.0.0.1"]);
+            let again = load((&server, &server_cert), &["127.0.0.1"]);
+            assert_eq!(again, first, "names it covers are reused");
+            let wider = load((&server, &server_cert), &["127.0.0.1", "live.example"]);
+            assert_ne!(wider, first, "a start that needs a new name replaces the certificate");
+            let reissued = load((&other, &other_cert), &["127.0.0.1", "live.example"]);
+            assert_ne!(reissued, wider, "a certificate another CA issued is not presented");
+        }
+
+        phase a_due_certificate_is_issued_again_live_and_never_presented_expired;
+        // A server that runs on presents a new certificate from the handshake
+        // after it is due, without a restart, and a device trusts that one long
+        // after the first expired.
+        {
+            let ada = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+            let (server, server_cert) = device(&ada, 3);
+            let dir = tempfile::tempdir().unwrap();
+            let store = dir.path().join("web-certificate");
+            let start = tilo_clock::wall();
+            let day = |days: u64| start + Duration::from_secs(days * 24 * 3600);
+            let ca = || LocalCa::new(&server, Some(&server_cert)).unwrap();
+            let hosts = vec!["localhost".to_string()];
+            let local = tilo_clock::testing::with_wall(day(0), || {
+                LocalCertificate::new(ca(), hosts.clone(), Some(store.clone())).unwrap()
+            });
+            let presented_on = |days| {
+                tilo_clock::testing::with_wall(day(days), || {
+                    let presented = local.current().1.cert.clone();
+                    (presented, local.sha256())
+                })
+            };
+            let (first, first_pin) = presented_on(0);
+            assert_eq!(presented_on(11).0, first, "a current certificate stays");
+
+            let (renewed, renewed_pin) = presented_on(12);
+            assert_ne!(renewed, first, "a due certificate is issued again, live");
+            assert_ne!(renewed_pin, first_pin, "a page pins the one presented now");
+            let adas = trusting_person(ada.verifying_key().to_bytes(), RevocationList::new());
+            assert!(matches!(
+                presented(&adas, &first, "localhost", day(14)),
+                Err(rustls::Error::InvalidCertificate(
+                    CertificateError::ExpiredContext { .. }
+                ))
+            ));
+            presented(&adas, &renewed, "localhost", day(14))
+                .expect("the renewed certificate is trusted after the first expired");
+
+            let restarted = tilo_clock::testing::with_wall(day(12), || {
+                LocalCertificate::new(ca(), hosts.clone(), Some(store.clone())).unwrap().sha256()
+            });
+            assert_eq!(restarted, renewed_pin, "the renewed certificate is the one kept");
         }
     }
 
@@ -860,11 +923,12 @@ mod tests {
         (key, cert)
     }
 
-    /// What `verifier` makes of `chain` presented for `name`.
+    /// What `verifier` makes of `chain` presented for `name` at `at`.
     fn presented(
         verifier: &Arc<dyn ServerCertVerifier>,
         chain: &[CertificateDer<'static>],
         name: &str,
+        at: SystemTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
         let (leaf, rest) = chain.split_first().unwrap();
         verifier.verify_server_cert(
@@ -872,7 +936,7 @@ mod tests {
             rest,
             &ServerName::try_from(name.to_string()).unwrap(),
             &[],
-            UnixTime::now(),
+            UnixTime::since_unix_epoch(at.duration_since(SystemTime::UNIX_EPOCH).unwrap()),
         )
     }
 }

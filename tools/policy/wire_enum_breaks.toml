@@ -804,3 +804,8 @@ reason = "the pages of the query an app held open over its route are gone, so th
 file = "crates/core/actions/src/remote/person_telling.rs"
 enum = "WhyCode"
 reason = "a person's told log and the pushes made from it are JSON, read by name and never by position; the four reasons a thing did not reach its person under the importance rule read as `news`, which is what they now are, through serde aliases"
+
+[[break]]
+file = "crates/core/tilo-server-protocol/src/config.rs"
+enum = "WebTls"
+reason = "read only from a server's TOML configuration, by name, never by position; its `dev` value never reached stable, which has no `web_tls` at all"
