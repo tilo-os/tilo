@@ -7007,7 +7007,7 @@ impl RuntimeActionProvider {
                 name: name.to_owned(),
             };
             let route = (Arc::clone(&session.provider), agent.clone());
-            return asked.send(run, caller, route, request);
+            return asked.send(run, caller, route, request, None);
         }
         // The person's own call waits for them as its asked record too: where a program
         // outside Tilo asks them through the shell, or a press needs their yes. A key of
@@ -7022,7 +7022,7 @@ impl RuntimeActionProvider {
         {
             let run = self.own_run(session, &request);
             let route = (Arc::clone(&session.provider), session.acting().clone());
-            return asked.send(run, caller, route, request);
+            return asked.send(run, caller, route, request, None);
         }
         // A key or an agent of the person's asks the workspace's own tree as itself, where a
         // device of the workspace asks it: the workspace's governance decides it by that run's
@@ -7068,11 +7068,12 @@ impl RuntimeActionProvider {
     /// asked record where the provider asks for their yes in its own call, which their answer
     /// then runs. A confirmation this call wrote itself is none: only their answer of the asked
     /// record runs what asks them.
-    fn answered_at_own_device(
+    fn answered_at_the_device(
         &self,
         registered: &tilo_workspace_service::workspaces::providers::Registered,
         caller: &Caller,
         mut request: InvokeRequest,
+        asks: Option<tilo_actions::remote::asked::AskedFacts>,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         if !matches!(
             request.confirmation.as_ref(),
@@ -7086,7 +7087,7 @@ impl RuntimeActionProvider {
                 workspace: self.workspace.clone(),
                 pressed: None,
             };
-            return asked.send(run, caller, route, request);
+            return asked.send(run, caller, route, request, asks);
         }
         self.invocations.record(
             caller,
@@ -7696,17 +7697,21 @@ impl ActionProvider for RuntimeActionProvider {
                 &request,
             );
             match verdict {
-                // It runs, or waits for the person as its asked record where the provider asks
-                // for their yes in its own call: a question a program raises, a press that asks.
-                Some(Ok(()) | Err(ActionCallError::ConfirmationRequired(_))) => {
-                    return self.answered_at_own_device(&registered, caller, request);
+                // It runs; or the provider asks for the person's yes in its own call — a question
+                // a program raises, a press that asks — and keeps it as their asked record.
+                Some(Ok(())) => {
+                    return self.answered_at_the_device(&registered, caller, request, None);
+                }
+                // The action's contract asks them: kept as their asked record, never run.
+                Some(Err(ActionCallError::ConfirmationRequired(facts))) => {
+                    return self.answered_at_the_device(&registered, caller, request, Some(*facts));
                 }
                 Some(Err(refused)) => return Pending::ready(Err(refused)),
                 // A provider that lists no row for the action — a question it raises itself,
                 // which nobody is offered — answers the person's own call, and refuses what it
                 // does not serve.
                 None if !described => {
-                    return self.answered_at_own_device(&registered, caller, request);
+                    return self.answered_at_the_device(&registered, caller, request, None);
                 }
                 None => {}
             }

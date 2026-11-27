@@ -286,10 +286,18 @@ impl AppBrokerState {
                 self.current_framework_authority(caller, None, workspace)?;
             // The call's own confirmation is never read here: an ask is answered only by the
             // person's approve of the asked record the admission keeps, which this call is not.
-            // An action whose contract asks its person every time asks here too, before anything
-            // runs.
+            // An action whose contract asks its person asks here too: the refusal carries what
+            // they are asked, and the dispatch keeps the call as their asked record.
             if !Self::confirmed_as_asked(&policy, &descriptor, argument.as_deref(), None, false) {
-                return Err(ActionCallError::confirmation_required());
+                return Err(ActionCallError::asks(super::invocation::asked_facts(
+                    Some(caller),
+                    &runtime_collab::ExportedAction::from(&descriptor),
+                    &descriptor
+                        .contract
+                        .confirmation_for_argument(argument.as_deref()),
+                    argument.as_deref(),
+                    &[],
+                )));
             }
             self.admit_answer(
                 (&workspace, &policy, now),

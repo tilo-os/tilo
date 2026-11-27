@@ -405,7 +405,19 @@ impl DeviceAsked {
         caller: &Caller,
         route: Route,
         request: InvokeRequest,
+        asks: Option<AskedFacts>,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // A call its contract makes ask is kept here, before anything runs.
+        if let Some(facts) = asks {
+            let waiting = Waiting {
+                at: request.target.provider.clone(),
+                run,
+                caller: caller.clone(),
+                route,
+                read: None,
+            };
+            return Pending::ready(self.keep(waiting, &request, facts));
+        }
         let (provider, acting) = route.clone();
         self.invocations.record(
             caller,

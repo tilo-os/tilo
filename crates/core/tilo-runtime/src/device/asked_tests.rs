@@ -256,7 +256,7 @@ impl Device {
     /// Scout sends `call` through the device's dispatch.
     fn send(&self, call: &InvokeRequest) -> Result<InvocationReceipt, ActionCallError> {
         self.asked
-            .send(run(), &scout(), self.route(), call.clone())
+            .send(run(), &scout(), self.route(), call.clone(), None)
             .wait_timeout(WAIT)
             .ok()
             .flatten()
@@ -445,7 +445,7 @@ fn an_approve_after_the_turn_that_asked_ended_runs_the_call() {
     let provider: Arc<dyn ActionProvider + Send + Sync> = device.workspace.clone();
     let receipt = device
         .asked
-        .send(run(), &turn, (provider, turn.clone()), call.clone())
+        .send(run(), &turn, (provider, turn.clone()), call.clone(), None)
         .wait_timeout(WAIT)
         .ok()
         .flatten()
@@ -690,7 +690,7 @@ fn a_secret_is_answered_only_where_it_was_asked_and_never_kept() {
     };
     device
         .asked
-        .send(run, &ada_here, route, call.clone())
+        .send(run, &ada_here, route, call.clone(), None)
         .wait_timeout(WAIT)
         .ok()
         .flatten()
@@ -809,7 +809,7 @@ fn press_in(
     };
     device
         .asked
-        .send(run, &ada(), route, call.clone())
+        .send(run, &ada(), route, call.clone(), None)
         .wait_timeout(WAIT)
         .ok()
         .flatten()

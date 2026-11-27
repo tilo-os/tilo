@@ -692,6 +692,7 @@ mod tests {
                     &scout,
                     (Arc::clone(&dispatch), scout.clone()),
                     call.clone(),
+                    None,
                 )
                 .wait_timeout(wait)
                 .ok()
