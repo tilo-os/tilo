@@ -19,7 +19,7 @@ mod frames;
 #[cfg(feature = "agents")]
 mod host_address;
 mod invitation_read;
-#[cfg(feature = "apps")]
+#[cfg(all(feature = "apps", feature = "test-support"))]
 mod keys_outside_the_lock;
 pub(crate) mod large_document;
 mod link_windows;
