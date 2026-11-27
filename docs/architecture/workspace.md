@@ -623,14 +623,18 @@ What one device decided for itself stays on that device: which strip and group
 are focused, widths, maximized groups, outputs, local file paths. That is the
 device's desktop, never a second copy of the workspace.
 
-**Continuing on another device.** Beside its windows, a device notes in its
-part of the layout how each window it runs resumes (the app's small,
-path-free resume state and the document it shows) and which window it is on.
-Only the window's maker writes its note, and only a device's person its
-focus. The person's other devices hold the layout already, so they offer to
-continue there and open the window where it was left, with no channel of
-their own. The note never holds a surface id, local path, file contents or
-credentials.
+**Continuing on another device.** Each device offers what it has in front —
+the app, the document it shows and the view it shows it through — in the
+record of the person's devices, the same record their notifications, their
+session and their wakes travel on; a device the person takes the offer on,
+or puts it away on, answers it there
+(`tilo_workspace_service::workspaces::person_workspace::devices`). Only the
+device whose window it is writes its offer, and only a device's person its
+front. The person's other devices hold the record already, so they offer to
+continue there and open what it named, with no channel of their own. What a
+window resumes beyond that (an app's own small, path-free resume state) is
+the app's, and the offer never holds a surface id, local path, file contents
+or credentials.
 
 **Sharing a window.** A window of an outside program (a terminal, any Wayland
 or X client) keeps its state in its process, so its device streams that window
