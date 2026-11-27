@@ -251,6 +251,20 @@ fn descends_from(pid: u32, ancestor: u32) -> bool {
     false
 }
 
+/// What a connection of the person's account that came by no known path acts as on the
+/// computer's daemon: what the device answers anyone. The device's own accounts and the session
+/// a founding link admitted keep theirs, and so does another person's key: their sign-in hands
+/// their session no link to come by.
+const fn withheld(admitted: Admitted) -> Admitted {
+    match admitted {
+        Admitted::Person(_) => Admitted::Stranger,
+        kept @ (Admitted::Device
+        | Admitted::Key { .. }
+        | Admitted::Founding { .. }
+        | Admitted::Stranger) => kept,
+    }
+}
+
 /// What finds the app and workspace the daemon started process `pid` as: the daemon's launch
 /// records, walked up the process's parents where a sandbox put it below its launcher.
 pub(crate) type AppOf = Arc<dyn Fn(u32) -> Option<(String, String)> + Send + Sync>;
@@ -284,7 +298,12 @@ pub(crate) struct Seat {
     /// The process at the connection's other end, as the kernel names it: what a shell link is
     /// tied to, so only the same session reaches the person's workspaces again.
     pub(crate) pid: Option<u32>,
+    /// What the connection acts as.
     pub(crate) admitted: Admitted,
+    /// What the connection's account is admitted as, whichever path the connection came by: what
+    /// a request that establishes a known path (a shell's link, a shell runtime's line) is judged
+    /// by. On the computer's daemon a person's account acts as them only on such a path.
+    pub(crate) account: Admitted,
     /// The app the process was started as, when it is one the daemon started.
     pub(crate) app: Option<AppAt>,
     /// Whether this process is the session the daemon answered a founding link: it asks this
@@ -616,12 +635,14 @@ impl Seats {
                     uid: u32::MAX,
                     pid: None,
                     admitted: Admitted::Stranger,
+                    account: Admitted::Stranger,
                     app: None,
                     founding: false,
                 };
             }
         };
-        let mut admitted = self.admission.admit(peer.uid);
+        let account = self.admission.admit(peer.uid);
+        let mut admitted = account;
         // A process the daemon started, or one descending from it, is the app it runs, with that
         // app's grants and no more: never the account it runs as. Any other process of the
         // account is that account alone.
@@ -647,8 +668,10 @@ impl Seats {
         // or another program's of the account: it reaches the device's actions about the person
         // it made or joined, and once it is that person, theirs.
         let mut founding = false;
+        let mut linked = false;
         if let Some(pid) = peer.pid.filter(|_| app.is_none()) {
             let link = self.links.lock_recover().get(&(peer.uid, pid)).copied();
+            linked = link.is_some();
             match link {
                 Some(SeatLink::Founding) => {
                     founding = true;
@@ -684,10 +707,21 @@ impl Seats {
                 None => {}
             }
         }
+        // On the computer's daemon, which runs as an account of its own and sees none of the
+        // person's processes, a person's account acts as them only on a path the daemon knows:
+        // the session's shell link, an app's launch the session vouches for by its ticket (on the
+        // broker's socket), or a shell runtime's endpoint (a line the runtime asks for here). Any
+        // other process of the account, one that dials this socket itself, is answered only what
+        // the device answers anyone. A daemon that runs as the person judges its processes by
+        // their ancestry instead.
+        if self.admission.system() && app.is_none() && !linked {
+            admitted = withheld(admitted);
+        }
         Seat {
             uid: peer.uid,
             pid: peer.pid,
             admitted,
+            account,
             app,
             founding,
         }
@@ -805,7 +839,8 @@ impl Seats {
                 app.app
             ));
         }
-        let persons = match seat.admitted {
+        // A shell runtime's endpoint is a known path: the runtime is judged by its account.
+        let persons = match seat.account {
             Admitted::Device => !self.admission.system(),
             Admitted::Person(person) => self.device.person() == Some(person),
             Admitted::Key { .. } | Admitted::Founding { .. } | Admitted::Stranger => false,
@@ -907,7 +942,9 @@ impl Seats {
             .and_then(|token| hex::decode(token).ok())
             .and_then(|token| <[u8; 32]>::try_from(token).ok());
         let seats = self.clone();
-        let (uid, pid, admitted) = (seat.uid, seat.pid, seat.admitted);
+        // A link is a known path itself: the token, or the record of the seat, is what admits it,
+        // so it is judged by the account the connection is from.
+        let (uid, pid, admitted) = (seat.uid, seat.pid, seat.account);
         let is_app = seat.app.is_some();
         Answer::InOrder(Box::pin(async move {
             let refusal = |why: String| Ok(Some(json!({"error": why})));

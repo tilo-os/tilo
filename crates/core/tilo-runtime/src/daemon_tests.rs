@@ -1147,14 +1147,23 @@ fn founding_peer(_: &std::os::unix::net::UnixStream) -> io::Result<crate::seats:
 /// The account a test's next native connection comes from, as the daemon reads it.
 static PEER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// The process the next connection [`test_peer`] names is from, when it is not this test's own
+/// (which stands in for the person's session): `0` for this test's.
+static PEER_PROCESS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 #[expect(
     clippy::unnecessary_wraps,
     reason = "it stands in for the kernel's answer, which can fail"
 )]
 fn test_peer(_: &std::os::unix::net::UnixStream) -> io::Result<crate::seats::Peer> {
+    let process = PEER_PROCESS.load(std::sync::atomic::Ordering::SeqCst);
     Ok(crate::seats::Peer {
         uid: PEER.load(std::sync::atomic::Ordering::SeqCst),
-        pid: Some(std::process::id()),
+        pid: Some(if process == 0 {
+            std::process::id()
+        } else {
+            process
+        }),
     })
 }
 
@@ -1475,12 +1484,25 @@ fn the_system_daemon_answers_each_account_as_who_signed_in() {
     );
     assert!(started["error"].is_string(), "{started}");
 
-    // Ada is her person now, and served; Bob still a stranger; root the device, no person.
+    // Ada is her person now, and served, on the path her session came by; Bob still a stranger;
+    // root the device, no person.
     assert_eq!(who(ADA)["person"], hex::encode(person));
     assert_eq!(
         status(ADA)["workspace"],
         "home",
         "a signed-in account is served"
+    );
+    // A program of her account that dials the daemon's socket itself (no session holding her
+    // link, no launch the session vouched for, no shell's endpoint) is answered what the device
+    // answers anyone: no person, and nothing of hers served. Unsetting the variable that names a
+    // shell's endpoint reaches no more than that.
+    PEER_PROCESS.store(std::process::id().wrapping_add(1), Ordering::SeqCst);
+    let (raw, raw_status) = (who(ADA), status(ADA));
+    PEER_PROCESS.store(0, Ordering::SeqCst);
+    assert_eq!(raw["person"], Value::Null, "{raw}");
+    assert_eq!(
+        raw_status["workspace"], "",
+        "a raw connection of her account is not served"
     );
     assert_eq!(who(BOB)["person"], Value::Null);
     assert_eq!(status(BOB)["workspace"], "");
@@ -1645,7 +1667,9 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
             .take(stream, slot, Some(seated))
         },
     ));
-    native.seats.serve(std::sync::Arc::new(Linked::default()));
+    let shells = std::sync::Arc::new(Linked::default());
+    shells.person(ada.verifying_key().to_bytes());
+    native.seats.serve(std::sync::Arc::clone(&shells) as _);
     let socket = dir.path().join("native.sock");
     let listener = tilo_files::native::private::bind_socket(&socket).unwrap();
     {
@@ -1710,8 +1734,16 @@ fn a_second_person_on_the_computer_acts_as_their_own_certified_key() {
         key
     };
 
-    // Ada signs in as the device's person, as before.
-    sign_in(&ada, ADA);
+    // Ada signs in as the device's person, as before, and her session redeems the answer's token
+    // for her link: the path her account acts as her on.
+    let said = sign_in(&ada, ADA);
+    let token = serde_json::from_str::<Value>(said.strip_prefix("ok\n").unwrap_or(&said)).unwrap()
+        ["token"]
+        .as_str()
+        .expect("her sign-in answers her session a token")
+        .to_owned();
+    let linked = ask(ADA, json!({"native": "shells#link", "token": token}));
+    assert!(linked["error"].is_null(), "{linked}");
     assert_eq!(who(ADA)["person"], person(&ada));
     assert_eq!(status(ADA)["workspace"], "home");
 
