@@ -195,6 +195,26 @@ impl Widget for Stack {
         self.rect
     }
 
+    /// A child that offers the scroll around this stack detents (a window's edge) offers them
+    /// from the stack's own leading edge, so the view settles a whole window at a time wherever
+    /// the stack is panned to.
+    fn snap_points(&self, axis: tilo_ui_base::widget::ScrollAxis, out: &mut Vec<f32>) {
+        let along = |rect: vello::kurbo::Rect| match axis {
+            tilo_ui_base::widget::ScrollAxis::Vertical => rect.y0,
+            tilo_ui_base::widget::ScrollAxis::Horizontal
+            | tilo_ui_base::widget::ScrollAxis::Both => rect.x0,
+        };
+        let lead = along(self.rect);
+        for child in &self.children {
+            let start = out.len();
+            child.snap_points(axis, out);
+            let at = tilo_ui_base::num::f32_of_f64(along(child.get_rect()) - lead);
+            for point in &mut out[start..] {
+                *point += at;
+            }
+        }
+    }
+
     fn name(&self) -> &'static str {
         "Stack"
     }

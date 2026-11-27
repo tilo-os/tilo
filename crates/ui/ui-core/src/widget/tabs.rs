@@ -3193,7 +3193,7 @@ impl TabBar {
         };
         self.drag_lifted_at
             .is_some()
-            .then(|| (*tab, self.last_cursor))
+            .then_some((*tab, self.last_cursor))
     }
     pub fn bar_rect(&self) -> Rect {
         self.rect

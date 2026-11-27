@@ -602,7 +602,7 @@ impl TabStrip {
     }
 
     /// Let the carried tab go at `point`: the drop the frame there takes.
-    fn land(&mut self, resource: &str, point: vello::kurbo::Point) {
+    fn land(&self, resource: &str, point: vello::kurbo::Point) {
         crate::widget::drag_bus::end(Some(crate::widget::drag_bus::Landed {
             source: self.tabs.events.source.clone(),
             payload: tilo_ui_base::dnd::DragPayload::Custom {
