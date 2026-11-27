@@ -1997,7 +1997,57 @@ impl ActionPalette {
             for resource in snapshot.resources().iter().cloned().filter_map(|resource| {
                 crate::bound_dispatch::filter_resource(&snapshot.binding, resource)
             }) {
+                // What the component publishes is what its app holds: each of its resources
+                // stands as a row of its own, found by the title its view gives it, as a
+                // native app's document does beside its actions.
+                let opens = resource.open_action().cloned();
+                let known_locally = flat.iter().any(|fa| fa.resource_id == resource.id);
+                if !known_locally
+                    && let Some(open) = &opens
+                    && resource.listed_for_people()
+                {
+                    let target = crate::bound_dispatch::BoundActionTarget {
+                        input: tilo_ui_base::widget::input_provenance::Input::Discrete,
+                        binding: snapshot.binding.clone(),
+                        address: crate::bound_dispatch::BoundActionAddress {
+                            instance_id: snapshot.binding.instance_id,
+                            address: tilo_actions::ActionAddress::new(
+                                resource.id.as_str(),
+                                &open.id,
+                            ),
+                        },
+                    };
+                    let key = target.key();
+                    askable
+                        .entry(key.clone())
+                        .or_insert_with(|| RowResolution::Bound(target.clone()));
+                    if listed.insert(key.clone()) {
+                        let mut hit = SearchResult::new("Resources", resource.label.clone(), key);
+                        hit = hit.with_icon(
+                            open.icon
+                                .as_deref()
+                                .and_then(tilo_ui_base::icons::Icon::from_name)
+                                .unwrap_or(tilo_ui_base::icons::Icon::Layers),
+                        );
+                        if let Some(detail) = resource
+                            .presentation
+                            .as_ref()
+                            .and_then(|presentation| presentation.detail.clone())
+                        {
+                            hit = hit.with_subtitle(detail);
+                        }
+                        candidates.push((
+                            hit,
+                            Some(resource.label.clone()),
+                            RowResolution::Bound(target),
+                        ));
+                    }
+                }
                 for fa in flatten(&[resource]) {
+                    if opens.as_ref().is_some_and(|open| open.id == fa.action.id) {
+                        // The resource's own open is its row above, never an action beside it.
+                        continue;
+                    }
                     if !fa.offered_to_a_person() {
                         continue;
                     }

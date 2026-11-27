@@ -3267,3 +3267,25 @@ fn a_step_heard_elsewhere_reaches_the_window_through_its_bound_component() {
         Some(step.invocation)
     );
 }
+
+/// What a component publishes is a row of the window's palette by its own title, as the
+/// document of a native app is: a person finds the app's resources, not only the actions on
+/// them.
+#[test]
+fn a_components_resources_are_palette_rows_found_by_their_titles() {
+    let mut fixture = ActionFixture::new();
+    fixture.app.refresh_semantic_tree();
+    fixture.app.open_action_palette();
+    let palette = fixture.app.actions.action_palette.as_deref_mut().unwrap();
+    palette.set_query("Probe");
+    let mut ticks = 0;
+    while palette.advance_search_page().pending {
+        ticks += 1;
+        assert!(ticks < 20, "the palette's search finished");
+    }
+    let labels = fixture.app.action_palette().unwrap().result_labels();
+    assert!(
+        labels.iter().any(|label| label == "Probe"),
+        "the component's resource stands as its own row: {labels:?}"
+    );
+}
