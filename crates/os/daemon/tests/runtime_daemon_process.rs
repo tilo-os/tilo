@@ -1240,6 +1240,69 @@ fn sigterm_ends_a_daemon_started_before_its_person() -> Result<()> {
     Ok(())
 }
 
+/// An installed server that came up with no install plan has no person and was handed no ticket.
+/// It says how to join it on its own error stream, which its unit sends to the console, and goes
+/// on answering its own actions while it waits: the words a person at a serial console reads.
+#[test]
+fn an_unclaimed_server_says_how_to_join_it_on_the_console() -> Result<()> {
+    let profile = DaemonProfile::unstarted()?;
+    let path = profile.path().to_owned();
+    for dir in ["identity", "state"] {
+        std::fs::create_dir(path.join(dir))?;
+    }
+    // What makes the daemon a server: the server image's unit names this file.
+    let config = path.join("server.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "identity_root = {:?}\nstate_root = {:?}\n",
+            path.join("identity"),
+            path.join("state"),
+        ),
+    )?;
+    let mut daemon = host(&path)
+        .env("TILO_SERVER_CONFIG", &config)
+        .env_remove("CREDENTIALS_DIRECTORY")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(std::fs::File::create(path.join("daemon.log"))?)
+        .spawn_locked()?;
+    let prompt = "no identity on this volume: make a ticket with `tilo device add` and pass it \
+                  as TILO_TICKET";
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let said = profile.log();
+        if said.lines().any(|line| line == prompt) {
+            break;
+        }
+        if let Some(status) = daemon.try_wait()? {
+            bail!("the daemon ended ({status}) before it said how to join it\n{said}");
+        }
+        if Instant::now() >= deadline {
+            let _ = daemon.kill();
+            let _ = daemon.wait();
+            bail!("the daemon never said how to join it\n{said}");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    // It served its own actions while it waited, and a stop ends it: a machine with no person is
+    // still a device that answers.
+    let pid = i32::try_from(daemon.id()).context("the daemon's pid")?;
+    // SAFETY: `kill(2)` with SIGTERM on the daemon this test started, the signal a stop sends.
+    ensure!(
+        unsafe { libc::kill(pid, libc::SIGTERM) } == 0,
+        "SIGTERM did not reach the daemon: {}",
+        std::io::Error::last_os_error()
+    );
+    let ended = ended(&mut daemon, &profile)?;
+    ensure!(
+        ended.success(),
+        "the daemon ended as {ended}, not of its own stop\n{}",
+        profile.log()
+    );
+    Ok(())
+}
+
 /// The native endpoint of the daemon serving `profile`: a profile named apart keeps its sockets
 /// in this account's runtime directory, under its own path's name.
 fn served_socket(profile: &Path) -> Result<PathBuf> {

@@ -43,6 +43,11 @@ use super::ticket::{
 /// The credential a ticket is handed to the daemon as, in `$CREDENTIALS_DIRECTORY`: what a
 /// machine that is set up for a person without anyone at it (a VM, a server) logs in with.
 pub const TICKET_CREDENTIAL: &str = "tilo.ticket";
+/// What a server with no person and no ticket handed to it says on its error stream, which its
+/// unit sends to the console: how this machine joins one of a person's devices. A server image
+/// installs without a person, so the first boot may be the first time anyone reads it.
+pub const NO_IDENTITY: &str = "no identity on this volume: make a ticket with `tilo device add` \
+                                and pass it as TILO_TICKET";
 /// What the agent this computer's login names is, for a login made from a handed ticket.
 const HANDED_AGENT: &str = "tilo";
 /// How often the daemon looks whether a person's certificate now names its key, when nothing of
@@ -477,7 +482,10 @@ impl ThisDevice {
 impl ThisDevice {
     /// Spend the ticket this daemon was handed at its start, when it was handed one: a ticket that
     /// does not add this computer is said in the log, and the device goes on as it was.
-    pub(crate) fn spend_handed_ticket(&self) {
+    ///
+    /// Answers whether a ticket was handed over at all, so a server can say how to join it when
+    /// none was.
+    pub(crate) fn spend_handed_ticket(&self) -> bool {
         let credentials = std::env::var_os("CREDENTIALS_DIRECTORY").map(PathBuf::from);
         let taken = tilo_rt::app().handle().block_on(take_handed_ticket(
             &self.place,
@@ -487,7 +495,7 @@ impl ThisDevice {
             credentials.as_deref(),
         ));
         match taken {
-            None => {}
+            None => false,
             Some(Ok(device)) => {
                 tracing::info!(
                     person = %device.user(),
@@ -495,12 +503,16 @@ impl ThisDevice {
                     "this computer is one of the person's devices now, with the ticket it was handed"
                 );
                 *self.entered.lock_recover() = Some(device);
+                true
             }
-            Some(Err(error)) => tracing::error!(
-                "the ticket this computer was handed did not add it: {error:#}. It may be used \
-                 already or have run out: make a new one with `tilo device add` on one of the \
-                 person's devices."
-            ),
+            Some(Err(error)) => {
+                tracing::error!(
+                    "the ticket this computer was handed did not add it: {error:#}. It may be used \
+                     already or have run out: make a new one with `tilo device add` on one of the \
+                     person's devices."
+                );
+                true
+            }
         }
     }
 

@@ -852,7 +852,14 @@ fn serve_device(
     // this computer one its person's services start as, founding the workspaces it keeps.
     crate::device::services::adopt_owner_root(profile)?;
     if !device.claimed() {
-        device.spend_handed_ticket();
+        let handed = device.spend_handed_ticket();
+        // A server image installs without a person, so one that came up with no plan has nobody
+        // to ask and no ticket to spend. Its unit sends this stream to the console, so the
+        // machine says how it joins a person's devices to whoever is at the console. Every other
+        // device has a person's own ways to found or join one and keeps the console quiet.
+        if !handed && crate::device::keep::config().is_some() && !device.claimed() {
+            eprintln!("{}", crate::device::unclaimed::NO_IDENTITY);
+        }
         if !device.until_ready(stop) {
             return Ok(());
         }

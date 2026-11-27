@@ -187,6 +187,9 @@ done
 grep -qx 'Environment=TILO_SERVER_CONFIG=/etc/tilo/server.toml' \
   "$root/usr/lib/systemd/system/tilo-runtime.service.d/50-server.conf" \
   || die 'the daemon is not a server through its own configuration'
+grep -qx 'StandardError=journal+console' \
+  "$root/usr/lib/systemd/system/tilo-runtime.service.d/50-server.conf" \
+  || die 'a server that has no person yet says nothing on its console'
 grep -q '^state_root = "/var/lib/tilo/state"$' "$root/etc/tilo/server.toml" \
   || die "the server's state is not the device daemon's root"
 grep -qx 'd /var/lib/tilo/device-private   0700 tilo tilo         -' \
