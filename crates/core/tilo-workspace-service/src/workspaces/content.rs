@@ -112,7 +112,28 @@ pub trait ContentKeeper: Send + Sync {
         workspace: &str,
         from: [u8; 32],
         message: NeighbourMsg,
-    ) -> Result<(), Box<NeighbourMsg>>;
+    ) -> Result<(), Box<NeighbourMsg>> {
+        let _ = (workspace, from);
+        Err(Box::new(message))
+    }
+
+    /// Take `message` when it answers a want this keeper made: what this device asked a member
+    /// for, by the content's route and hash. Every keeper is asked this before any is handed a
+    /// push ([`Self::take`]): an answer and a push are the same message, and only the keeper
+    /// that made the want knows it is one.
+    ///
+    /// # Errors
+    ///
+    /// `message`, handed back, when it answers none of this keeper's wants.
+    fn answer(
+        &self,
+        workspace: &str,
+        from: [u8; 32],
+        message: NeighbourMsg,
+    ) -> Result<(), Box<NeighbourMsg>> {
+        let _ = (workspace, from);
+        Err(Box::new(message))
+    }
 
     /// What `workspace` keeps here that its members pushed: how many contents
     /// a member holds (`held`), and how many are on their way (`going`).
@@ -494,19 +515,6 @@ impl Workspaces {
         }
     }
 
-    /// [`Self::keep_content`] ahead of the keepers already kept: the record content of what this
-    /// device wants is asked before what it keeps of what members push. An answer to a want this
-    /// device made and a push to it are the same message, and the keeper that knows the wants
-    /// has to see it first.
-    pub(crate) fn keep_content_first(&self, keeper: &Arc<dyn ContentKeeper>) {
-        let mut keepers = self.inner.content.keepers.write_recover();
-        keepers.retain(|kept| kept.strong_count() > 0);
-        let keeper = Arc::downgrade(keeper);
-        if !keepers.iter().any(|kept| Weak::ptr_eq(kept, &keeper)) {
-            keepers.insert(0, keeper);
-        }
-    }
-
     /// `frame`, a piece of content the member device `from` sent this host
     /// in `workspace`: to the keeper that asked for it, or, when it is a
     /// surface the host asked for, into the content store the host decides
@@ -667,7 +675,14 @@ impl Workspaces {
         if !surfaces.expects_in(&device, &message) && !surfaces.awaits_in(&device, &message) {
             drop(surfaces);
             let mut message = message;
-            for keeper in self.inner.content.keepers() {
+            let keepers = self.inner.content.keepers();
+            for keeper in &keepers {
+                match keeper.answer(workspace, from, message) {
+                    Ok(()) => return,
+                    Err(back) => message = *back,
+                }
+            }
+            for keeper in &keepers {
                 match keeper.take(workspace, from, message) {
                     Ok(()) => return,
                     Err(back) => message = *back,
