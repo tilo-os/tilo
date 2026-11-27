@@ -1,11 +1,13 @@
 //! A device of a workspace a third device hosts is reached, as an answer to an ask reaches it,
 //! with its link to the host up or not; where nothing reaches it, the refusal names it.
 
+use std::time::{Duration, Instant};
+
 use tilo_actions::ActionAddress;
 use tilo_actions::remote::asked::RESOLVE;
 use tilo_actions::remote::{ActionCallError, ActionProvider, Caller, InvokeRequest};
 use tilo_actions::remote::{RemoteActionTarget, WORKSPACE_INVOCATIONS_PROVIDER as INVOCATIONS};
-use tilo_peer_state::actions::ACTIONS_ALPN;
+use tilo_peer_state::actions::{ACTIONS_ALPN, offline};
 use tilo_remote_actions::asked::NOTHING_ASKED;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
@@ -14,8 +16,9 @@ use crate::device::record_actions_tests::copy_of;
 use crate::device::ticket_tests::{enrol, login_to, studio};
 use crate::device::workspaces::ServiceWorkspaces;
 
-/// Why `phone` refused the laptop's answer to an unasked record, sent through the laptop's hosts.
-async fn answered(laptop: &ServiceWorkspaces, workspace: &str, phone: [u8; 32]) -> String {
+/// Why `phone` refused the laptop's answer to an unasked record, sent through the laptop's hosts:
+/// answered in under two seconds, whatever reaches it.
+async fn answered(laptop: &ServiceWorkspaces, workspace: &str, phone: [u8; 32]) -> ActionCallError {
     let cert = laptop.device_cert();
     let caller = Caller::authenticated(cert.user_public_key, cert.device_public_key)
         .in_workspace(workspace.to_owned());
@@ -24,17 +27,16 @@ async fn answered(laptop: &ServiceWorkspaces, workspace: &str, phone: [u8; 32]) 
         provider: INVOCATIONS.to_owned(),
         address: ActionAddress::new("unasked", RESOLVE),
     };
-    let phone = laptop.copies().providers().device(workspace, phone);
-    let resolve = ActionProvider::invoke(
-        &phone.unwrap(),
-        &caller,
-        InvokeRequest::plain(target, answer),
-    );
-    match tilo_test_env::within("the laptop's answer", resolve).await {
-        Some(Err(
-            ActionCallError::Refused { reason } | ActionCallError::Unavailable { reason },
-        )) => reason,
-        other => panic!("the answer is refused with a reason: {other:?}"),
+    let providers = laptop.copies().providers();
+    let phone = providers.device(workspace, phone).unwrap();
+    let (request, asked) = (InvokeRequest::plain(target, answer), Instant::now());
+    let resolve = ActionProvider::invoke(&phone, &caller, request);
+    let answered = tilo_test_env::within("the laptop's answer", resolve).await;
+    let took = asked.elapsed();
+    assert!(took < Duration::from_secs(2), "{took:?}");
+    match answered {
+        Some(Err(error)) => error,
+        other => panic!("the answer is refused: {other:?}"),
     }
 }
 
@@ -63,20 +65,17 @@ async fn a_device_reaches_another_of_a_workspace_a_third_device_hosts_with_or_wi
 
     // The phone answers itself, keeping nothing under the record: its link to the host up, and
     // once the host let it go.
+    let nothing_asked = ActionCallError::Refused {
+        reason: NOTHING_ASKED.into(),
+    };
     assert!(host.reached().contains(&device), "the phone's link is up");
-    assert_eq!(answered(&laptop, &s.workspace, device).await, NOTHING_ASKED);
+    assert_eq!(answered(&laptop, &s.workspace, device).await, nothing_asked);
     host.forget_device(device, &host.reach(device).unwrap());
-    let asked = std::time::Instant::now();
-    assert_eq!(answered(&laptop, &s.workspace, device).await, NOTHING_ASKED);
-    assert!(
-        asked.elapsed() < std::time::Duration::from_secs(2),
-        "{:?}",
-        asked.elapsed()
-    );
+    assert_eq!(answered(&laptop, &s.workspace, device).await, nothing_asked);
 
-    // Offline, nothing reaches it, and the refusal names it.
+    // Offline, with no link to the host and no address in use, it is said so at once.
     answering.shutdown().await.unwrap();
     phone.shutdown().await;
-    let refused = answered(&laptop, &s.workspace, device).await;
-    assert!(refused.contains(&hex::encode(&device[..8])), "{refused}");
+    let offline_now = answered(&laptop, &s.workspace, device).await;
+    assert_eq!(offline_now, offline(device));
 }

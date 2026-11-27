@@ -2272,9 +2272,10 @@ impl Device {
             .map_err(|error| tilo_actions::remote::ActionCallError::unavailable(error.to_string()))
     }
 
-    /// `bytes`, the request `asked`, sent to this device's own address and through `host`, the
-    /// latter only once the former fails where this endpoint uses that address now: the first
-    /// answer, the host's refusal to pass it on being none. Where neither answers, both reasons.
+    /// `bytes`, the request `asked`, sent to this device's own address and through `host` at once:
+    /// the first answer, the host's refusal to pass it on being none. Where the host holds no link
+    /// to it and this endpoint uses no address of it, it is [`offline`]; where neither answers,
+    /// both reasons.
     async fn either(
         &self,
         host: &Self,
@@ -2284,11 +2285,6 @@ impl Device {
         let Way::Dial { endpoint, addr } = &self.way else {
             return self.exchange(bytes).await;
         };
-        let lately = endpoint.remote_info(addr.id).await.is_some_and(|known| {
-            known
-                .addrs()
-                .any(|addr| matches!(addr.usage(), iroh::endpoint::TransportAddrUsage::Active))
-        });
         let own = async {
             self.exchange(bytes)
                 .await
@@ -2314,15 +2310,22 @@ impl Device {
         tokio::pin!(own, through);
         let (mut own_failed, mut through_failed) = (None, None);
         loop {
-            let ask_host = through_failed.is_none() && (!lately || own_failed.is_some());
             tokio::select! {
                 answer = &mut own, if own_failed.is_none() => match answer {
                     Ok(answer) => return Ok(answer),
                     Err(why) => own_failed = Some(why),
                 },
-                answer = &mut through, if ask_host => match answer {
+                answer = &mut through, if through_failed.is_none() => match answer {
                     Ok(answer) => return Ok(answer),
-                    Err(why) => through_failed = Some(why),
+                    Err(why) if why != unpassed(self.target, NO_LINK) => {
+                        through_failed = Some(why);
+                    }
+                    Err(why) => match endpoint.remote_info(addr.id).await {
+                        Some(known) if known.addrs().any(|addr| {
+                            matches!(addr.usage(), iroh::endpoint::TransportAddrUsage::Active)
+                        }) => through_failed = Some(why),
+                        _ => return Err(offline(self.target)),
+                    },
                 },
             }
             if let (Some(own), Some(through)) = (&own_failed, &through_failed) {
@@ -2374,6 +2377,12 @@ const ONLY_ITS_OWN: &str = "takes only this device's own requests over the link 
 /// The refusal of a request for `target` a device passes on to no one, for `why`.
 fn unpassed(target: [u8; 32], why: &str) -> String {
     format!("device {} {why}", hex::encode(&target[..8]))
+}
+
+/// A call to `device`, which neither its workspace's host nor this device has a link to.
+#[must_use]
+pub fn offline(device: [u8; 32]) -> tilo_actions::remote::ActionCallError {
+    unavailable(&unpassed(device, "is offline"))
 }
 
 /// What a peer did not answer, as the caller reads it.

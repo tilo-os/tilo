@@ -159,6 +159,11 @@ the relay's TCP stream carries the pause to the server as backpressure.
 When the queue is gone (the endpoint is closing), the actor shuts the relay
 connection down like any other.
 
+## A closed connection's paths are no longer in use (`src/socket/remote_map/remote_state.rs`)
+
+`RemoteInfo` called an address `Active` after the last connection over it closed;
+closing a connection now abandons its paths as an abandoned path does.
+
 ## Upstream
 
 Prepared for an upstream issue/PR against `n0-computer/iroh` (not opened):

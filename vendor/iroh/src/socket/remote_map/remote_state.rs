@@ -482,6 +482,13 @@ impl RemoteStateActor {
         if let Some(conn_state) = self.connections.remove(&conn_id) {
             self.state.metrics.num_conns_closed.inc();
             conn_state.path_state.close(closed);
+            // TILO PATCH: a closed connection's addresses stay in use only where another uses them.
+            for remote in conn_state.paths.values().map(|path| path.remote()) {
+                let mut others = self.connections.values().flat_map(|c| c.paths.values());
+                if !others.any(|p| p.remote() == remote) {
+                    self.state.paths.abandoned_path(&remote);
+                }
+            }
         }
         if self.connections.is_empty() {
             trace!("last connection closed - clearing selected_path");
