@@ -14,8 +14,8 @@ path = "src/lib.rs"
 tilo-member-types.workspace = true
 tilolang-tilo = { version = "0.1.0", path = "../tilolang-tilo" }
 # The service whose records these are: its store, its policy, its lifecycle, and the route a
-# record read is addressed at.
-tilo-workspace-service = { path = "../../core/tilo-workspace-service" }
+# record read is addressed at. A record is the port its store reads and writes through (`apps`).
+tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps"] }
 # The module a device installed, which search reads an app's record through.
 runtime-portal = { package = "tilo-runtime-portal", path = "../../core/runtime-portal" }
 # The member, resource or message a record's rich text names.
