@@ -346,6 +346,14 @@ impl SetupApp {
         }
     }
 
+    /// The Desktop flow a test makes answer at once, so a walk through the
+    /// desktop page is the same on every host. A running probe's answer is
+    /// dropped with the flow it belonged to.
+    #[cfg(test)]
+    pub(crate) fn desktop_flow_mut(&mut self) -> &mut DesktopFlow {
+        &mut self.desktop_flow
+    }
+
     fn reviewed(&self) -> Experience {
         self.experience.unwrap_or(Experience::Desktop)
     }

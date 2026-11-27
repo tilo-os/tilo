@@ -21,6 +21,8 @@ mod machine_tests;
 mod migrate;
 mod model;
 #[cfg(test)]
+mod parity_tests;
+#[cfg(test)]
 mod password_validation_tests;
 mod plan_view;
 mod storage;
