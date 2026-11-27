@@ -5,8 +5,8 @@
     reason = "one scenario in order, on a fixture that is not sent between tasks"
 )]
 //! A person has one list of workspaces: the computer their device serves lists it, and a key of
-//! theirs for all their workspaces reads the same list through `/v1`. Making a workspace is the
-//! computer's own change, and a command whose grants ask the person first waits for them.
+//! theirs for all their workspaces reads the same list through `/v1`. That key makes a workspace
+//! as its person, and a key for one workspace makes no other.
 
 use serde_json::{Value, json};
 
@@ -30,8 +30,8 @@ fn ids(listed: &Value) -> Vec<String> {
 }
 
 /// The computer's own list and the key's are one list, and the other computer of the person's
-/// reads the key's workspaces through the device link; making a workspace is the computer's own
-/// change, which no key makes through the API.
+/// reads the key's workspaces through the device link; the key, whose grant reaches all of its
+/// person's workspaces, makes one as they would, and both list it.
 #[test]
 fn a_computer_and_a_key_share_the_persons_workspace_list() {
     host::run(|host| async move {
@@ -59,22 +59,23 @@ fn a_computer_and_a_key_share_the_persons_workspace_list() {
             "the tower reads the workspace the list names: {read:?}"
         );
 
-        // A key makes no workspace: making one is the computer's own change, and the computer
-        // answers for it in Tilo itself.
-        let (status, refused) = key
+        // The person signed the key's grant for all their workspaces, and that signature is
+        // their yes to making one: the key makes it here, and the one list names it for both.
+        let (status, made) = key
             .post(CREATE, &json!({"name": "Made by the backend"}))
             .await;
-        assert_eq!(status, 403, "{refused}");
-        assert!(
-            refused.to_string().contains("Tilo"),
-            "the key is told where a workspace is made: {refused}"
-        );
+        assert_eq!(status, 200, "{made}");
+        let id = made["result"]["workspace"]["id"]
+            .as_str()
+            .expect("the made workspace");
         let (_, listed) = key.post(LIST, &json!({})).await;
-        assert_eq!(
-            ids(&listed["result"]),
-            computer,
-            "nothing was made: {listed}"
-        );
+        let now =
+            tilo_api::session::Here::workspaces(daemon.as_ref(), daemon.workspaces().device_cert())
+                .into_iter()
+                .map(|workspace| workspace.id)
+                .collect::<Vec<_>>();
+        assert_eq!(ids(&listed["result"]), now, "{listed}");
+        assert!(now.iter().any(|listed| listed == id), "{listed}");
     });
 }
 
@@ -95,26 +96,28 @@ fn importing_a_desktops_workspaces_reaches_the_device_that_takes_them_in() {
     });
 }
 
-/// A command on a computer that does not keep the person's root, whose grants ask the person
-/// first, answers that it waits for their approval; once they allow it where they keep the
-/// root, what it asked is done.
+/// A key the person made for one workspace makes no other: it is told it works in one, and
+/// nothing is made.
 #[test]
-fn a_computer_without_the_root_says_it_waits_for_the_persons_approval() {
+fn a_one_workspace_key_makes_no_other_workspace() {
     host::run(|host| async move {
-        let workspace = host.workspace().to_owned();
-        // The computer's agent asks the person to make a workspace; the question reaches them
-        // on a device that keeps their root.
-        let agent = host.agent();
-        let asked = agent
-            .tool_structured(
-                "tilo_do",
-                &json!({"workspace": workspace, "path": "account/workspaces#create",
-                        "args": {"name": "Made while Ada was away"}}),
-            )
+        let key = host.key_reaching(host.workspace(), "Visa backend, one workspace");
+        let (_, before) = host.key("Lister").post(LIST, &json!({})).await;
+        let (status, refused) = key
+            .post(CREATE, &json!({"name": "Made while Ada was away"}))
             .await;
+        assert_eq!(status, 403, "{refused}");
+        assert!(
+            refused
+                .to_string()
+                .contains("this key only works in one workspace"),
+            "the key is told why: {refused}"
+        );
+        let (_, after) = host.key("Lister").post(LIST, &json!({})).await;
         assert_eq!(
-            asked["structuredContent"]["status"], "pending",
-            "the command waits for the person's approval: {asked}"
+            ids(&after["result"]),
+            ids(&before["result"]),
+            "nothing was made"
         );
     });
 }
