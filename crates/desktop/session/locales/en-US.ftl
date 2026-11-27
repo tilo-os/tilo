@@ -341,6 +341,12 @@ identity-clock-wait-expired = Your Tilo identity is safe. Its certificate ran un
 session-not-started-title = Tilo didn't start
 session-not-started-body = Nothing you do here would be kept. Log out, then log in again. If Tilo still doesn't start, restart and choose Tilo Repair Mode from the boot menu.
 
+## The shell waits for this computer's Tilo to answer who this account is to it,
+## which a start that waits out the network answers after a while: the person
+## is taken up, and the desktop opens, as soon as it does.
+session-starting-title = Tilo is starting…
+session-starting-body = The desktop opens by itself as soon as this computer's Tilo answers.
+
 ## what the readout calls the keyboard, whose backlight it just changed.
 osd-keyboard-name = Keyboard
 

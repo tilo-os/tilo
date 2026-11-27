@@ -155,10 +155,16 @@ fn main() -> std::process::ExitCode {
     if let Err(error) = launcher::app_cgroup::claim_session_weight() {
         eprintln!("tilo-session: keeping the shell's CPU weight: {error}");
     }
-    let identity = tilo_session::startup::identity();
+    // A sign-in's founding link is this session's to redeem for the person's link, and that link
+    // is answered once the person's services run: the person is made here and now, before it is
+    // asked. Any other session takes its person up in front of the desktop, which shows the wait
+    // for this computer's daemon rather than a blank screen while it starts.
+    let founding = matches!(launch_link, tilo_session::shell_start::Launch::Founding);
+    let identity = tilo_session::startup::identity(founding);
     tilo_startup_metrics::mark("identity-verified");
     match &identity {
         tilo_session::startup::Identity::Shell
+        | tilo_session::startup::Identity::Starting { .. }
         | tilo_session::startup::Identity::WaitForClock { .. }
         | tilo_session::startup::Identity::NotStarted(_) => {}
         tilo_session::startup::Identity::Recovery(problem) => {
@@ -757,10 +763,14 @@ fn start(
         wake,
         // A session in a workspace's VM is not a first use of a computer: its identity is the
         // one the server handed it, so nothing is left to set up and nothing stands over the window
-        // it was started for.
-        setup: (!serves_an_environment)
-            .then(|| tilo_session::startup::before_shell(identity, host_desktop))
-            .flatten(),
+        // it was started for. With no layer to show a wait on, the person the wait takes up is
+        // settled here, before its shell opens.
+        setup: if serves_an_environment {
+            drop(tilo_session::startup::settle_before_the_shell(identity));
+            None
+        } else {
+            tilo_session::startup::before_shell(identity, host_desktop)
+        },
         captures: Some(captures),
         asks: desktop.as_ref().map(|desktop| desktop.asks().clone()),
         apps: Some(std::rc::Rc::clone(&launch) as std::rc::Rc<dyn tilo_session::AppActions>),

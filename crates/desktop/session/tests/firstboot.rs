@@ -135,7 +135,7 @@ fn machine() -> Machine {
 #[test]
 fn a_verified_identity_opens_the_shell() {
     let _machine = machine();
-    assert_eq!(startup::identity(), Identity::Shell);
+    assert_eq!(startup::identity(true), Identity::Shell);
 }
 
 /// Date this device's certificate `ahead` from now, signed by the person's own root as the
@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
         let issued_at_ns = certificate_dated_ahead(&machine, Duration::from_secs(3));
         assert!(tilo_clock::unix_now_ns() < issued_at_ns);
 
-        let identity = startup::identity();
+        let identity = startup::identity(true);
         let Identity::WaitForClock { refusal, .. } = &identity else {
             panic!("startup does not wait for the clock: {identity:?}");
         };
@@ -197,7 +197,7 @@ tilo_test_env::scenario! {
         let damaged = machine.certificate();
 
         assert_eq!(
-            startup::identity(),
+            startup::identity(true),
             Identity::Recovery(IdentityProblem::ChainInvalid)
         );
         assert!(
@@ -232,7 +232,7 @@ tilo_test_env::scenario! {
         std::fs::write(&resource_path, &damaged).expect("the damaged record");
 
         assert_eq!(
-            startup::identity(),
+            startup::identity(true),
             Identity::Shell,
             "setup validates what is there and asks its person, and is not what starts a session"
         );
@@ -251,7 +251,7 @@ fn the_wait_for_the_clock_shows_until_the_shell_can_open() {
     let machine = machine();
     // Far enough ahead that the session is up and drawn before it passes.
     let issued_at_ns = certificate_dated_ahead(&machine, Duration::from_secs(3));
-    let identity = startup::identity();
+    let identity = startup::identity(true);
     assert!(matches!(identity, Identity::WaitForClock { .. }));
     let before =
         persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate");
@@ -349,7 +349,7 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
     std::fs::remove_dir_all(&personal).expect("the node holds no record of its person yet");
 
     assert_eq!(
-        startup::identity(),
+        startup::identity(true),
         Identity::Shell,
         "a login that holds its person's enrollment opens that person's shell"
     );
@@ -378,7 +378,7 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
         "the session resolves the record it took up on the next login"
     );
     assert_eq!(
-        startup::identity(),
+        startup::identity(true),
         Identity::Shell,
         "and it still verifies"
     );

@@ -32,6 +32,7 @@ use crate::clock_wait::{ClockWait, ClockWaitStep};
 use crate::controls::SessionCommand;
 use crate::i18n::t;
 use crate::power_menu::Effect;
+use crate::starting::{StartingStep, StartingWait};
 
 /// What this session lends setup. One per process, as setup reads it through a process-wide hook;
 /// each session started points it at itself.
@@ -81,6 +82,11 @@ pub enum BeforeShell {
     /// The wait for the clock to admit this device's certificate. It goes away by itself, and what
     /// a verified identity opens takes its place.
     WaitForClock(ClockWait),
+    /// The wait for this computer's daemon to answer who this account is to it, on an account
+    /// that signed in with no identity of its own. The person is taken up once it answers, and
+    /// what the device still needs, or the shell, takes the wait's place; a daemon that answers a
+    /// failure shows it as a login it did not start does.
+    Starting(StartingWait),
     /// A login on a computer whose system daemon starts every person's shell, which it did not
     /// start: nothing done here would be kept, so the person logs out and in again, or restarts
     /// into Repair Mode. It stays until they do, showing `why` as the cause when the daemon said
@@ -96,6 +102,12 @@ enum Surface {
     WaitForClock {
         widgets: WidgetSurface,
         wait: ClockWait,
+    },
+    /// The wait for this computer's daemon to answer who this account is, which has no actions of
+    /// its own either.
+    Starting {
+        widgets: WidgetSurface,
+        wait: StartingWait,
     },
     /// The login the daemon did not start, which has no actions beyond its two buttons.
     NotStarted { widgets: WidgetSurface },
@@ -396,6 +408,14 @@ impl Setup {
                     wait,
                 }
             }
+            BeforeShell::Starting(wait) => {
+                let wait = wait.listening(waiter.clone());
+                let screen = StartingWait::screen();
+                Surface::Starting {
+                    widgets: covering(Box::new(screen), placement),
+                    wait,
+                }
+            }
             BeforeShell::NotStarted { why } => Surface::NotStarted {
                 widgets: covering(Box::new(not_started(commands, why.as_deref())), placement),
             },
@@ -434,13 +454,14 @@ impl Setup {
         match &self.surface {
             Surface::Ceremony(drawn) => !drawn.ceremony.finished(),
             Surface::WaitForClock { wait, .. } => !wait.done(),
+            Surface::Starting { wait, .. } => !wait.done(),
             Surface::NotStarted { .. } => true,
         }
     }
 
     /// Advance what the layer shows: the wait for the clock finishes itself once the identity
-    /// verifies, and gives the layer to the setup the device still needs, or back to the session;
-    /// setup takes what was asked of it.
+    /// verifies, the wait for the daemon once it answered, and each gives the layer to the setup
+    /// the device still needs, or back to the session; setup takes what was asked of it.
     pub(crate) fn step(&mut self) {
         match &mut self.surface {
             Surface::Ceremony(drawn) => drawn.pass(),
@@ -451,9 +472,30 @@ impl Setup {
                     self.hand_over(ceremony);
                 }
             },
+            Surface::Starting { wait, .. } => match wait.pump() {
+                StartingStep::Waiting => {}
+                StartingStep::Settled(None) => wait.finish(),
+                StartingStep::Settled(Some(ceremony)) => self.hand_over(*ceremony),
+                StartingStep::Failed(why) => self.daemon_failed(&why),
+            },
             Surface::NotStarted { .. } => {}
         }
         self.give_up_if_broken();
+    }
+
+    /// Show what a login the daemon did not start shows, with the daemon's own words for why, in
+    /// place of the layer's screen.
+    fn daemon_failed(&mut self, why: &str) {
+        let placement = Placement {
+            origin: (0, 0),
+            size: (1, 1),
+            scale: self.scale,
+        };
+        let mut widgets = covering(Box::new(not_started(&self.commands, Some(why))), placement);
+        if !self.outputs.is_empty() {
+            widgets.outputs_changed(&self.outputs);
+        }
+        self.surface = Surface::NotStarted { widgets };
     }
 
     /// Show `ceremony` in place of what the layer shows now, over the same outputs.
@@ -470,14 +512,18 @@ impl Setup {
     fn front(&self) -> &dyn ShellSurface {
         match &self.surface {
             Surface::Ceremony(drawn) => drawn.front(),
-            Surface::WaitForClock { widgets, .. } | Surface::NotStarted { widgets } => widgets,
+            Surface::WaitForClock { widgets, .. }
+            | Surface::Starting { widgets, .. }
+            | Surface::NotStarted { widgets } => widgets,
         }
     }
 
     fn front_mut(&mut self) -> &mut dyn ShellSurface {
         match &mut self.surface {
             Surface::Ceremony(drawn) => drawn.front_mut(),
-            Surface::WaitForClock { widgets, .. } | Surface::NotStarted { widgets } => widgets,
+            Surface::WaitForClock { widgets, .. }
+            | Surface::Starting { widgets, .. }
+            | Surface::NotStarted { widgets } => widgets,
         }
     }
 
@@ -487,7 +533,9 @@ impl Setup {
                 drawn.pass();
                 drawn.published_mut()
             }
-            Surface::WaitForClock { widgets, .. } | Surface::NotStarted { widgets } => widgets,
+            Surface::WaitForClock { widgets, .. }
+            | Surface::Starting { widgets, .. }
+            | Surface::NotStarted { widgets } => widgets,
         }
     }
 }
@@ -551,9 +599,10 @@ impl Published for Setup {
     fn resources(&mut self) -> Vec<ResourceSpec> {
         match &self.surface {
             Surface::Ceremony(_) if self.up() => vec![ceremony::resource()],
-            Surface::Ceremony(_) | Surface::WaitForClock { .. } | Surface::NotStarted { .. } => {
-                Vec::new()
-            }
+            Surface::Ceremony(_)
+            | Surface::WaitForClock { .. }
+            | Surface::Starting { .. }
+            | Surface::NotStarted { .. } => Vec::new(),
         }
     }
 
@@ -652,9 +701,9 @@ impl ShellSurface for Setup {
                 }
                 layers
             }
-            Surface::WaitForClock { widgets, .. } | Surface::NotStarted { widgets } => {
-                widgets.layers()
-            }
+            Surface::WaitForClock { widgets, .. }
+            | Surface::Starting { widgets, .. }
+            | Surface::NotStarted { widgets } => widgets.layers(),
         }
     }
 
@@ -720,9 +769,9 @@ impl ShellSurface for Setup {
                     .is_some_and(ShellSurface::prepare_frame)
                     || drew
             }
-            Surface::WaitForClock { widgets, .. } | Surface::NotStarted { widgets } => {
-                widgets.prepare_frame()
-            }
+            Surface::WaitForClock { widgets, .. }
+            | Surface::Starting { widgets, .. }
+            | Surface::NotStarted { widgets } => widgets.prepare_frame(),
         }
     }
 
@@ -740,9 +789,9 @@ impl ShellSurface for Setup {
             .into_iter()
             .flatten()
             .min(),
-            Surface::WaitForClock { widgets, .. } | Surface::NotStarted { widgets } => {
-                widgets.next_deadline()
-            }
+            Surface::WaitForClock { widgets, .. }
+            | Surface::Starting { widgets, .. }
+            | Surface::NotStarted { widgets } => widgets.next_deadline(),
         }
     }
 
@@ -754,7 +803,9 @@ impl ShellSurface for Setup {
                     picker.set_frame_interval(interval);
                 }
             }
-            Surface::WaitForClock { widgets, .. } | Surface::NotStarted { widgets } => {
+            Surface::WaitForClock { widgets, .. }
+            | Surface::Starting { widgets, .. }
+            | Surface::NotStarted { widgets } => {
                 widgets.set_frame_interval(interval);
             }
         }
@@ -767,16 +818,18 @@ impl ShellSurface for Setup {
     fn backdrops(&self) -> Vec<tilo_session_core::surface::BackdropRequest> {
         match &self.surface {
             Surface::Ceremony(drawn) => drawn.part.backdrops(),
-            Surface::WaitForClock { widgets, .. } | Surface::NotStarted { widgets } => {
-                widgets.backdrops()
-            }
+            Surface::WaitForClock { widgets, .. }
+            | Surface::Starting { widgets, .. }
+            | Surface::NotStarted { widgets } => widgets.backdrops(),
         }
     }
 
     fn set_backdrops(&mut self, images: Vec<Option<tilo_session_core::surface::BackdropImage>>) {
         match &mut self.surface {
             Surface::Ceremony(drawn) => drawn.part.set_backdrops(images),
-            Surface::WaitForClock { widgets, .. } | Surface::NotStarted { widgets } => {
+            Surface::WaitForClock { widgets, .. }
+            | Surface::Starting { widgets, .. }
+            | Surface::NotStarted { widgets } => {
                 widgets.set_backdrops(images);
             }
         }
@@ -786,7 +839,9 @@ impl ShellSurface for Setup {
         self.outputs = outputs.to_vec();
         match &mut self.surface {
             Surface::Ceremony(drawn) => drawn.outputs_changed(outputs),
-            Surface::WaitForClock { widgets, .. } | Surface::NotStarted { widgets } => {
+            Surface::WaitForClock { widgets, .. }
+            | Surface::Starting { widgets, .. }
+            | Surface::NotStarted { widgets } => {
                 widgets.outputs_changed(outputs);
             }
         }

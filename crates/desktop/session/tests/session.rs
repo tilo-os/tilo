@@ -1989,6 +1989,159 @@ fn a_login_the_daemon_did_not_start_shows_the_daemons_words() {
     assert!(session.setup_up(), "nothing takes it down but the person");
 }
 
+/// This computer's daemon answers who this account is to it late — a start that waits out what
+/// the network answers answers `account#who` after tens of seconds — and the session waits for it
+/// in front of the desktop, saying that Tilo is starting, rather than giving up on the person and
+/// opening a shell that holds nothing of theirs. The person is taken up as soon as the daemon
+/// answers, later than the wait a fixed one would have given it.
+#[test]
+fn a_slow_daemon_shows_that_tilo_is_starting_and_the_person_is_taken_up() {
+    use std::io::{BufRead as _, Write as _};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Instant;
+
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    // This computer enrolled the person — its device certificate names them — and the account's
+    // own identity is not made yet, as a sign-in's is not on the computer it first comes to.
+    crate::common::device_in(&mut home);
+    let identity_dir =
+        tilo_identity::store::account_identity_dir(&home.config().join("tilo/identity"));
+    let person = tilo_device_identity::persist::read_device_cert(
+        &tilo_identity::provisioning::collaboration_identity_paths().device_cert,
+    )
+    .expect("this device's certificate")
+    .user_public_key;
+    std::fs::remove_dir_all(&identity_dir).expect("the account's identity is not made yet");
+    // The daemon at a profile this test names, answering who the account is longer after it was
+    // asked than the ten seconds a session used to give its answer.
+    let profile = home.root().join("profile");
+    std::fs::create_dir_all(&profile).expect("the daemon's profile");
+    home.env().set(tilo_machine::DAEMON_PROFILE_VAR, &profile);
+    let place = tilo_api::daemon::this_computer().expect("the daemon's place");
+    let socket = place.native();
+    if let Some(directory) = socket.parent() {
+        std::fs::create_dir_all(directory).expect("the daemon's socket directory");
+    }
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("the daemon's socket");
+    listener.set_nonblocking(true).expect("a socket looked at");
+    let answer = serde_json::json!({
+        "device": hex::encode(
+            tilo_device_identity::persist::read_device_cert(
+                &tilo_identity::provisioning::collaboration_identity_paths().device_cert,
+            )
+            .expect("this device's certificate")
+            .device_public_key,
+        ),
+        "person": hex::encode(person),
+        "claimed": true,
+    })
+    .to_string();
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let answered = std::sync::Arc::new(AtomicBool::new(false));
+    let answering = {
+        let stop = std::sync::Arc::clone(&stop);
+        let answered = std::sync::Arc::clone(&answered);
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = String::new();
+                        let _ =
+                            std::io::BufReader::new(stream.try_clone().expect("its reading half"))
+                                .read_line(&mut request);
+                        // The daemon holds its answer until this test says it may give it: a
+                        // start that waits out the network answers long after it was asked.
+                        while !answered.load(Ordering::SeqCst) {
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        let _ = writeln!(stream, "{answer}");
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("the daemon's endpoint failed: {error}"),
+                }
+            }
+        })
+    };
+    let identity = tilo_session::startup::Identity::Starting {
+        identity_dir: identity_dir.clone(),
+    };
+    let setup = tilo_session::startup::before_shell(&identity, false)
+        .expect("the wait for the daemon stands before the shell");
+    assert!(matches!(&setup, tilo_session::BeforeShell::Starting(_)));
+    let mut session = crate::common::headless(Options {
+        setup: Some(setup),
+        collab: false,
+        ..Options::default()
+    });
+    session.step(Duration::from_millis(1)).expect("a frame");
+    assert!(
+        session.setup_up(),
+        "the shell stays off while the daemon starts"
+    );
+    let waiting = session.accessible_labels();
+    assert!(
+        waiting
+            .iter()
+            .any(|label| label.contains("Tilo is starting")),
+        "it says that Tilo is starting: {waiting:?}"
+    );
+    // The wait the session used to give this answer, and a moment past it: the screen says that
+    // Tilo is starting for all of it, rather than reading the end of a fixed wait as the daemon
+    // having no person for this account.
+    let holds_until = Instant::now() + Duration::from_secs(11);
+    while Instant::now() < holds_until {
+        session.step(Duration::from_millis(100)).expect("a frame");
+        let waiting = session.accessible_labels();
+        assert!(
+            waiting
+                .iter()
+                .any(|label| label.contains("Tilo is starting")),
+            "the wait ended before the daemon answered: {waiting:?}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        session.setup_up(),
+        "the shell stays off until the daemon answered"
+    );
+    answered.store(true, Ordering::SeqCst);
+    // The daemon answers, and the person is taken up.
+    let deadline = tilo_test_env::hang_deadline();
+    let mut taken = None;
+    while taken.is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "the person the daemon answered was never taken up; the layer says: {:?}",
+            session.accessible_labels()
+        );
+        session.step(Duration::from_millis(20)).expect("a frame");
+        taken = tilo_identity::store::resolve_active_identity(&identity_dir)
+            .and_then(|path| tilo_identity::store::load_metadata_from_path(&path).ok())
+            .filter(|identity| identity.group_public_key == person);
+        if taken.is_none() {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    let taken = taken.expect("the person this account acts as");
+    assert_eq!(
+        taken.group_public_key, person,
+        "the account acts as the person this computer's device certificate names"
+    );
+    session.step(Duration::from_millis(20)).expect("a frame");
+    let opened = session.accessible_labels();
+    assert!(
+        !opened
+            .iter()
+            .any(|label| label.contains("Tilo is starting")),
+        "the wait is over once the person was taken up: {opened:?}"
+    );
+    stop.store(true, Ordering::SeqCst);
+    answering.join().expect("the daemon's endpoint");
+}
+
 tilo_test_env::scenario! {
     fn a_sheet_is_driven_through_its_published_actions;
 

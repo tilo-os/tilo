@@ -3533,6 +3533,32 @@ fn founded_daemon() -> Founded {
     }
 }
 
+/// The person's part has not started — its start waits out what the network answers, a relay's net
+/// report among it — and `account#who` is answered while it has not: the seats answer who a
+/// connection is, never behind the person's part. A session asking who the account is to this
+/// computer has its answer in a moment, rather than reading the end of a fixed wait as "this
+/// account's identity was not made on this computer".
+#[test]
+fn who_answers_while_the_persons_part_has_not_started() {
+    use serde_json::json;
+    use std::sync::atomic::Ordering;
+
+    let founded = founded_daemon();
+    FOUNDING_PEER.store(founded.uid, Ordering::SeqCst);
+    let asked = std::time::Instant::now();
+    let who = founding_ask(
+        founded.uid,
+        &founded.socket,
+        &json!({"native": "account#who"}),
+    );
+    let waited = asked.elapsed();
+    assert_eq!(who["person"], json!(hex::encode(founded.person)), "{who}");
+    assert!(
+        waited < Duration::from_secs(5),
+        "the daemon answered who only once the person's part was waited for: {waited:?}"
+    );
+}
+
 /// A link is asked while the person's services start, as a sign-in as the computer boots asks
 /// one: the daemon holds that one request, without refusing it or holding anything else, and
 /// answers it once they run, in the person's seat.

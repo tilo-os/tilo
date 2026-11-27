@@ -346,6 +346,13 @@ identity-clock-wait-expired = Deine Tilo-Identität ist sicher. Dein Zertifikat 
 session-not-started-title = Tilo ist nicht gestartet
 session-not-started-body = Nichts, was du hier tust, würde gespeichert. Melde dich ab und wieder an. Startet Tilo dann immer noch nicht, starte neu und wähle im Startmenü „Tilo Repair Mode“.
 
+## Die Shell wartet darauf, dass Tilos Dienst auf diesem Computer antwortet, wer
+## dieses Konto für ihn ist. Ein Start, der das Netz abwartet, antwortet erst
+## nach einer Weile: Sobald er antwortet, wird die Person übernommen und der
+## Schreibtisch öffnet sich.
+session-starting-title = Tilo startet…
+session-starting-body = Der Schreibtisch öffnet sich von selbst, sobald Tilos Dienst auf diesem Computer antwortet.
+
 ## wie die Einblendung die Tastatur nennt, deren Beleuchtung sie gerade ändert.
 osd-keyboard-name = Tastatur
 

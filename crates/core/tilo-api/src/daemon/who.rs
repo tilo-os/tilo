@@ -15,8 +15,6 @@ use tilo_device_identity::login::{Device, ServerAddress};
 /// What the native endpoint is asked for who the asking account is.
 pub const WHO: &str = "account#who";
 
-/// How long a question at the native endpoint may take to be answered.
-const ASKING: Duration = Duration::from_secs(10);
 /// The longest answer read.
 const ANSWER_MAX: u64 = 1 << 20;
 /// How long a login with a ticket is waited for, the person approving it on another device
@@ -161,7 +159,7 @@ fn logging_in(args: &Value) -> Result<Who, String> {
     let place = super::this_computer()?;
     let started = std::time::Instant::now();
     let before = who()?.home;
-    let mut stream = connect(&place, LOGGING_IN)?;
+    let mut stream = connect(&place, Some(LOGGING_IN))?;
     let mut lines = BufReader::new(
         stream
             .try_clone()
@@ -363,8 +361,14 @@ fn ask(request: &Value) -> Result<Value, String> {
 }
 
 /// Ask `request` at the native endpoint `socket`, one line each way.
+///
+/// No read bound: the daemon answers `account#who` from its device's own state, and a start that
+/// is still bringing its person's part up answers it all the same. A question that gave up after
+/// a fixed wait read the socket's timeout as the device's answer — "this account's identity was
+/// not made on this computer" when the daemon was merely starting — and left the person with no
+/// session. The wait is the daemon's to give, as it is for the shell's link.
 fn ask_at(socket: &std::path::Path, request: &Value) -> Result<Value, String> {
-    let mut stream = connect_to(socket, ASKING)?;
+    let mut stream = connect_to(socket, None)?;
     writeln!(stream, "{request}").map_err(|error| error.to_string())?;
     let mut line = String::new();
     BufReader::new(stream.take(ANSWER_MAX))
@@ -373,18 +377,20 @@ fn ask_at(socket: &std::path::Path, request: &Value) -> Result<Value, String> {
     serde_json::from_str(&line).map_err(|error| format!("this computer's daemon answered: {error}"))
 }
 
-/// A connection to the native endpoint of the daemon at `place`, answering within `within`.
+/// A connection to the native endpoint of the daemon at `place`, answering within `within` when
+/// the caller bounds the wait.
 fn connect(
     place: &super::DaemonPlace,
-    within: Duration,
+    within: Option<Duration>,
 ) -> Result<tilo_files::native::socket::Stream, String> {
     connect_to(&place.native(), within)
 }
 
-/// A connection to the native endpoint `socket`, answering within `within`.
+/// A connection to the native endpoint `socket`, answering within `within` when the caller bounds
+/// the wait, and with no read bound otherwise.
 fn connect_to(
     socket: &std::path::Path,
-    within: Duration,
+    within: Option<Duration>,
 ) -> Result<tilo_files::native::socket::Stream, String> {
     let stream = tilo_files::native::socket::connect(socket).map_err(|error| {
         format!(
@@ -392,8 +398,10 @@ fn connect_to(
             socket.display(),
         )
     })?;
-    stream
-        .set_read_timeout(Some(within))
-        .map_err(|error| error.to_string())?;
+    if let Some(within) = within {
+        stream
+            .set_read_timeout(Some(within))
+            .map_err(|error| error.to_string())?;
+    }
     Ok(stream)
 }

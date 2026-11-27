@@ -41,6 +41,14 @@ pub enum Identity {
     /// The shell opens: the identity the device holds verifies, or it holds none yet and setup asks
     /// its person for one before the shell is used.
     Shell,
+    /// The account signed in with no identity of its own, and this computer's daemon has yet to
+    /// answer who it is to the account: what opens is the wait for it
+    /// ([`BeforeShell::Starting`]), which takes the account's person up once it answers and then
+    /// opens the shell, or says why it could not.
+    Starting {
+        /// The directory the person is taken up into.
+        identity_dir: PathBuf,
+    },
     /// The record is intact but the certificate it carries is outside its validity at the clock's
     /// reading. The shell waits for the clock: what opens is the wait [`BeforeShell::WaitForClock`],
     /// and the shell takes its place once the clock admits the certificate.
@@ -185,8 +193,14 @@ fn provision(
 /// Trusted recovery and a certificate the clock refuses both leave the
 /// process running: what opens in place of the shell is the session's own,
 /// once this returns.
+///
+/// `after_a_link` is a session that holds a sign-in's founding link and asks its person's link
+/// next: the person must be made before that ask, which waits for their services, so the account
+/// settles here and now. Any other session takes the person up in front of the desktop instead
+/// ([`Identity::Starting`]), where a daemon that starts slowly is waited for with a screen rather
+/// than a blank display.
 #[must_use]
-pub fn identity() -> Identity {
+pub fn identity(after_a_link: bool) -> Identity {
     // A device enrolled without the person's root (a node's session, certified when its node was
     // installed) takes up the identity it holds before the store below is asked what is here, so
     // this login reads the person's record rather than the absence setup would take as a first use.
@@ -215,14 +229,25 @@ pub fn identity() -> Identity {
         // An account signed in on this computer with no identity of its own makes one here, the
         // one way a person is made: the daemon founds them and keeps their root, and this
         // account takes up their public record. It then certifies the key the daemon made it,
-        // as a person whose identity another device of theirs holds does.
-        if let Some(identity_dir) = identity_path.parent()
-            && let Err(why) = found_here(identity_dir)
-            && tilo_api::daemon::this_computer().is_ok_and(|place| place.system())
-        {
-            return Identity::NotStarted(why);
+        // as a person whose identity another device of theirs holds does. A daemon that answers
+        // nothing has none to wait for, and the setup the device still needs opens.
+        let Some(identity_dir) = identity_path.parent() else {
+            return Identity::Shell;
+        };
+        if after_a_link {
+            if let Err(why) = found_here(identity_dir)
+                && stands_in_place_of_the_shell()
+            {
+                return Identity::NotStarted(why);
+            }
+            return Identity::Shell;
         }
-        return Identity::Shell;
+        if tilo_api::daemon::this_computer().is_err() {
+            return Identity::Shell;
+        }
+        return Identity::Starting {
+            identity_dir: identity_dir.to_path_buf(),
+        };
     }
     let Some(identity_dir) = identity_path.parent() else {
         return Identity::Refused("primary identity has no parent directory".to_owned());
@@ -261,8 +286,37 @@ pub fn identity() -> Identity {
     }
 }
 
+/// Settle what [`Identity::Starting`] waits for, here and now: a session that shows no layer to
+/// wait on — one in a workspace's VM, started for its window — takes the person up before its
+/// shell opens, as every session did before the wait had a screen. What is not a wait is returned
+/// as it is.
+#[must_use]
+pub fn settle_before_the_shell(identity: &Identity) -> Identity {
+    let Identity::Starting { identity_dir } = identity else {
+        return identity.clone();
+    };
+    match found_here(identity_dir) {
+        Ok(()) => Identity::Shell,
+        Err(why) if stands_in_place_of_the_shell() => Identity::NotStarted(why),
+        // `found_here` said what failed; this session shows no layer to say it in, so it goes on
+        // with the setup the device still needs, as it did before the wait had a screen.
+        Err(why) => {
+            tracing::warn!(%why, "this account's person is not taken up here");
+            Identity::Shell
+        }
+    }
+}
+
+/// Whether a failure to take this account's person up stands in place of the shell: the system
+/// unit starts every login's shell, so a login it did not start keeps nothing and says why. A
+/// daemon of the account's own leaves the session with the setup the device still needs instead.
+pub(crate) fn stands_in_place_of_the_shell() -> bool {
+    tilo_api::daemon::this_computer().is_ok_and(|place| place.system())
+}
+
 /// What this session shows before its shell is used, given what `identity` settled: the wait for the
-/// clock, the setup this device still needs, or nothing and the shell opens.
+/// clock or for the daemon to answer who this account is, the setup this device still needs, or
+/// nothing and the shell opens.
 #[must_use]
 pub fn before_shell(identity: &Identity, host_desktop: bool) -> Option<BeforeShell> {
     match identity {
@@ -274,6 +328,9 @@ pub fn before_shell(identity: &Identity, host_desktop: bool) -> Option<BeforeShe
             host_desktop,
             refusal.clone(),
         ))),
+        Identity::Starting { identity_dir } => Some(BeforeShell::Starting(
+            crate::starting::StartingWait::new(identity_dir.clone(), host_desktop),
+        )),
         Identity::NotStarted(why) => Some(BeforeShell::NotStarted {
             why: Some(why.clone()),
         }),
@@ -404,7 +461,7 @@ fn certify_this_computers_key(identity_path: &Path) {
 /// The session after a login that made no identity reads and writes nothing of a person's, so
 /// that is logged as the error it is (a session logs errors alone unless asked for more), and
 /// answered as the words the screen in front of it shows.
-fn found_here(identity_dir: &Path) -> Result<(), String> {
+pub(crate) fn found_here(identity_dir: &Path) -> Result<(), String> {
     let failed = match found_and_certify(identity_dir) {
         Ok(true) => {
             tracing::info!("this account made its Tilo identity on this computer");

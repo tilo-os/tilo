@@ -1772,9 +1772,10 @@ impl Native {
         }
     }
 
-    /// Serve `stream`, which came while the person's services start: at once when it follows a
-    /// call, asks the device key, or asks the device's own package cache, and otherwise once the
-    /// person's part takes it, within [`WAITED_WITHIN`], or with why it is not served.
+    /// Serve `stream`, which came while the person's services start: at once when it asks the
+    /// seats, follows a call, asks the device key, or asks the device's own package cache, and
+    /// otherwise once the person's part takes it, within [`WAITED_WITHIN`], or with why it is not
+    /// served.
     fn wait_for_the_person(self: &Arc<Self>, stream: Stream, slot: ConnectionSlot, seated: Seated) {
         // A caller following a call this device already took reads its stage
         // where the device keeps it: answered here, not once the person's part
@@ -1787,6 +1788,15 @@ impl Native {
         // device's, and waits for no workspace of the person's. A system daemon serves every
         // account's person, and admits those changes only as the person they are.
         let personal = !tilo_api::daemon::system_daemon();
+        // A connection that asks the seats is answered by them, never held behind the person's
+        // part: `account#who` is the device's own answer, and the link is the one request the
+        // seats hold themselves until their services run. The part's start waits out what the
+        // network answers — a relay's net report among it — so a `who` that waited for it was
+        // answered far later than the session asking it could wait.
+        if asks_the_seats(&stream) {
+            serve_a_seat(&stream, &seated);
+            return;
+        }
         if follows_a_call(&stream)
             || asks_the_device_key(&stream)
             || (personal && asks_the_devices_own_actions(&stream))
@@ -1837,14 +1847,7 @@ impl Native {
             // for the person's services themselves: its shell starts once they
             // run, rather than the start being refused a few seconds in.
             if serde_json::from_slice::<Value>(line).is_ok_and(|request| Seats::asks(&request)) {
-                seated.receives(descriptors);
-                let Ok(follow) = stream.try_clone() else {
-                    return;
-                };
-                let input = io::Cursor::new(first).chain(io::Cursor::new(rest).chain(follow));
-                if let Err(error) = serve_seat(&stream, input, &seated) {
-                    tracing::debug!(%error, "native seat client disconnected");
-                }
+                serve_the_read_seat(&stream, &seated, first, rest, descriptors);
                 return;
             }
             crate::device::serve::refuse(
@@ -2871,6 +2874,54 @@ fn first_message(
     #[cfg(windows)]
     {
         Ok((read_some(stream)?, Vec::new()))
+    }
+}
+
+/// Whether `stream`'s first line asks the seats ([`Seats::asks`]): who the connection is, a shell
+/// started or waited for, or the link a shell is admitted by. Looked at without being read, so
+/// whoever serves the connection reads it, descriptors and all, as it always has.
+fn asks_the_seats(stream: &Stream) -> bool {
+    /// How long a request has to say itself on the connection it opens.
+    const SAYS_WITHIN: Duration = Duration::from_secs(1);
+    let mut line = vec![0_u8; 64 * 1024];
+    let read = tilo_socket::peek(stream, &mut line, SAYS_WITHIN).unwrap_or(0);
+    let Some(line) = line
+        .get(..read)
+        .and_then(|read| read.split(|byte| *byte == b'\n').next())
+    else {
+        return false;
+    };
+    serde_json::from_slice::<Value>(line).is_ok_and(|request| Seats::asks(&request))
+}
+
+/// Answer `stream` as a client of the seats, reading the first line it sent.
+fn serve_a_seat(stream: &Stream, seated: &Seated) {
+    let (first, rest, descriptors) = match first_line(stream, Vec::new()) {
+        Ok(read) => read,
+        Err(error) => {
+            tracing::debug!(%error, "a native connection was not read");
+            return;
+        }
+    };
+    serve_the_read_seat(stream, seated, first, rest, descriptors);
+}
+
+/// [`serve_a_seat`] for a first line already read, with what followed it and the descriptors it
+/// carried.
+fn serve_the_read_seat(
+    stream: &Stream,
+    seated: &Seated,
+    first: Vec<u8>,
+    rest: Vec<u8>,
+    descriptors: Vec<runtime_portal::process_link::Descriptor>,
+) {
+    seated.receives(descriptors);
+    let Ok(follow) = stream.try_clone() else {
+        return;
+    };
+    let input = io::Cursor::new(first).chain(io::Cursor::new(rest).chain(follow));
+    if let Err(error) = serve_seat(stream, input, seated) {
+        tracing::debug!(%error, "native seat client disconnected");
     }
 }
 
