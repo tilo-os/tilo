@@ -463,6 +463,9 @@ impl Host {
         .unwrap();
         drop(taken);
         let daemon = Arc::new(Daemon::start_reporting(profile, &mut |_| {}).unwrap());
+        // The origin connectors the apps here start reach this daemon's one dispatch, as the
+        // daemon serving a person's part hands it to them.
+        daemon.hand_actions_to_connectors();
         let root = tilo_identity::store::load_from_path(
             tilo_runtime::device::services::device_root_record().expect("the person founded here"),
         )

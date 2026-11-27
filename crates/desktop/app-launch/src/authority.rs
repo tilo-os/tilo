@@ -159,14 +159,20 @@ impl Authority {
 /// that can decide one of its actions; `None` when the launch names no workspace or the session
 /// holds no policy for it.
 fn projection(workspace: &Workspace, app: &str) -> Option<AppActionAuthorityProjection> {
+    policy(workspace)
+        .map(|policy| AppActionAuthorityProjection::project(policy, app, &workspace.person, false))
+}
+
+/// The policy that decides what the person at this device may do in a workspace's app; `None`
+/// when the launch names no workspace or the session holds no policy for it.
+fn policy(workspace: &Workspace) -> Option<&tilo_action_policy::WorkspacePolicy> {
     let policy = workspace
         .policy
         .as_ref()
         .filter(|_| workspace.is_workspace())?;
     // A policy of another workspace decides nothing for this one: the app is admitted as the
     // launcher would admit it alone.
-    (policy.workspace == workspace.id)
-        .then(|| AppActionAuthorityProjection::project(policy, app, &workspace.person, false))
+    (policy.workspace == workspace.id).then_some(policy)
 }
 
 /// The person's access in `workspace` as `app` sees it, the projection a launched app reads,
@@ -174,7 +180,8 @@ fn projection(workspace: &Workspace, app: &str) -> Option<AppActionAuthorityProj
 /// where no projection would be published.
 #[must_use]
 pub fn access(workspace: &Workspace, app: &str) -> Option<tilo_action_policy::MemberAccess> {
-    projection(workspace, app).map(|projection| projection.access())
+    policy(workspace)
+        .map(|policy| AppActionAuthorityProjection::access_for(policy, app, &workspace.person))
 }
 
 /// Where an app's projection of `workspace` is published.

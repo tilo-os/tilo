@@ -226,6 +226,10 @@ impl LaunchGrantsSource for Granted {
     fn serves(&self, workspace: &str) -> bool {
         workspace == WORKSPACE
     }
+
+    fn app_access(&self, _: &str, _: &str) -> Option<tilo_action_policy::MemberAccess> {
+        None
+    }
 }
 
 tilo_test_env::scenario! {

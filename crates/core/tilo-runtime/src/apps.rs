@@ -178,6 +178,11 @@ pub(crate) trait LaunchGrantsSource: Send + Sync {
 
     /// Whether this device holds `workspace`, so an app may be launched into it here.
     fn serves(&self, workspace: &str) -> bool;
+
+    /// What `app` may do in `workspace` for this device's person: the workspace's policy,
+    /// narrowed to the app, that the daemon admits an app's process by when it starts one with
+    /// no session. `None` where this device does not hold the workspace's policy.
+    fn app_access(&self, workspace: &str, app: &str) -> Option<tilo_action_policy::MemberAccess>;
 }
 
 impl Apps {
@@ -1502,7 +1507,7 @@ impl LauncherServices for Apps {
             let origin = self.origin_connection(app, workspace)?;
             return self
                 .instances
-                .start_with_no_view(app, workspace, origin)
+                .start_with_no_view(app, workspace, origin, self.access_for(workspace, app))
                 .map(Some);
         }
         // The process that runs on that record already takes the call: nothing starts. One on
@@ -1587,6 +1592,63 @@ impl LauncherServices for Apps {
 }
 
 impl Apps {
+    /// The access `app`'s process is admitted with in `workspace`, from the workspace's policy as
+    /// this device holds it now: what a session's push hands an app's windows, for a process
+    /// started with no session open.
+    fn access_for(&self, workspace: &str, app: &str) -> Option<tilo_action_policy::MemberAccess> {
+        self.grants
+            .get()
+            .and_then(|source| source.app_access(workspace, app))
+    }
+
+    /// Tell every process of `workspace` what this device's person may now do in its app, read
+    /// from the workspace's policy as the service holds it now: a role given or taken back
+    /// reaches the windows and connections a process already runs.
+    pub(crate) fn access_changed(&self, workspace: &str) {
+        let Ok(processes) = self.processes() else {
+            return;
+        };
+        let apps: Vec<runtime_portal::process_link::AppAccess> = processes
+            .instances()
+            .into_iter()
+            .filter(|running| running.workspace == workspace)
+            .filter_map(|running| {
+                self.access_for(workspace, &running.app).map(|access| {
+                    runtime_portal::process_link::AppAccess {
+                        app: running.app,
+                        access: Some(access),
+                    }
+                })
+            })
+            .collect();
+        if !apps.is_empty() {
+            processes.policy_changed(workspace, &apps);
+        }
+    }
+
+    /// [`Self::access_changed`] for every workspace a process of this device runs.
+    pub(crate) fn access_changed_everywhere(&self) {
+        let Ok(processes) = self.processes() else {
+            return;
+        };
+        let workspaces: std::collections::BTreeSet<String> = processes
+            .instances()
+            .into_iter()
+            .map(|running| running.workspace)
+            .collect();
+        for workspace in workspaces {
+            self.access_changed(&workspace);
+        }
+    }
+
+    /// How many copies of `app` in `workspace` this device runs with no view now: what a test
+    /// of the app's own code, or of a connection it keeps, observes.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub fn no_view_processes(&self, app: &str, workspace: &str) -> usize {
+        self.instances.no_view_running(app, workspace)
+    }
+
     /// How many runs of `app` in `workspace` with no window on `record` this device keeps now,
     /// whatever language the app is written in: a Rust app's own process, or a tilolang app's
     /// instance in its app's process, which opens the app's own record (`record` is `None`).

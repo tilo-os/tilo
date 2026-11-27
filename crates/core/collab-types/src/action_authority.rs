@@ -158,6 +158,18 @@ impl AppActionAuthorityProjection {
         }
     }
 
+    /// [`Self::access`] of the projection of `person`'s authority in `policy` for `app`: what a
+    /// window or a process of the app is admitted by, whether a session hands it over or the
+    /// daemon that starts its process.
+    #[must_use]
+    pub fn access_for(
+        policy: &WorkspacePolicy,
+        app: &str,
+        person: &str,
+    ) -> tilo_action_policy::MemberAccess {
+        Self::project(policy, app, person, false).access()
+    }
+
     /// The person's authority, capped on a foreign device.
     #[must_use]
     pub fn authority(&self) -> Authority<'_> {

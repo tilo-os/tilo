@@ -72,7 +72,7 @@ impl HostConnections for Apps {
                 let origin = self.origin_connection(app, workspace)?;
                 return self
                     .instances
-                    .start_with_no_view(app, workspace, origin)
+                    .start_with_no_view(app, workspace, origin, self.access_for(workspace, app))
                     .map(drop);
             }
             if self.launched.no_window_running(app, workspace, None) {

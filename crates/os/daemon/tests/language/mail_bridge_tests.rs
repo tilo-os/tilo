@@ -330,6 +330,33 @@ async fn mail_holds_its_connection(
     );
 }
 
+/// A device that serves a workspace's pages runs Mail's connection with no session open: the
+/// daemon hands the app's process the device's access, so the connection's first read of Mail's
+/// sealed records is admitted and the process runs on.
+#[test]
+fn a_connection_runs_with_no_session_and_reads_the_apps_sealed_records() {
+    super::host::run_with(&["mail"], |host| async move {
+        let (daemon, workspace) = (host.daemon(), host.workspace().to_owned());
+        tilo_test_env::within("Mail's connection runs with no session open", async {
+            // A process that admission refuses is forgotten at once: the connection counts as
+            // running only while it stays.
+            let mut running_since = None;
+            loop {
+                if daemon.apps().no_view_processes(MAIL, &workspace) == 1 {
+                    let since = running_since.get_or_insert_with(std::time::Instant::now);
+                    if since.elapsed() >= Duration::from_secs(5) {
+                        return;
+                    }
+                } else {
+                    running_since = None;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+    });
+}
+
 /// Mail's connector signs in to the account Settings kept, over the connection to the device's
 /// dispatch it holds as Mail: the account's servers and sign-in name come from the workspace's
 /// accounts, and its password from the vault entry the account names, released to that

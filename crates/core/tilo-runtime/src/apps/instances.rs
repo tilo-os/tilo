@@ -427,6 +427,7 @@ impl Instances {
         app: &str,
         workspace: &str,
         origin: Option<Descriptor>,
+        access: Option<tilo_action_policy::MemberAccess>,
     ) -> Result<WindowlessStart, String> {
         let instance = self.start(
             (app, workspace, origin),
@@ -434,6 +435,7 @@ impl Instances {
             Shows::Nothing,
             None,
             (None, None),
+            access,
         )?;
         self.no_view
             .lock_recover()
@@ -443,7 +445,7 @@ impl Instances {
         Ok(start)
     }
 
-    /// How many instances of `app` in `workspace` that show nothing ([`Self::start_with_no_view`])
+    /// How many copies of `app` in `workspace` that show nothing ([`Self::start_with_no_view`])
     /// their process runs now: one that ended is forgotten.
     pub(crate) fn no_view_running(&self, app: &str, workspace: &str) -> usize {
         let Some(processes) = self.processes.get() else {
@@ -479,6 +481,7 @@ impl Instances {
             Shows::Window,
             None,
             (None, None),
+            None,
         )
         .map(drop)
     }
@@ -520,6 +523,7 @@ impl Instances {
             Shows::View(Box::new(caller.clone())),
             Some(patch),
             (record, reveal),
+            None,
         )?;
         Ok(OpenedView {
             patch: view,
@@ -551,6 +555,7 @@ impl Instances {
             Shows::Window,
             Some(patch),
             (None, None),
+            None,
         )?;
         Ok(HostedWindow {
             instance,
@@ -595,6 +600,7 @@ impl Instances {
         shows: Shows,
         patch: Option<Descriptor>,
         (document, reveal): (Option<String>, Option<String>),
+        access: Option<tilo_action_policy::MemberAccess>,
     ) -> Result<u64, String> {
         if !crate::device::package_runs::runs_in_process(app) {
             return Err(format!("{app} is no tilolang app installed here"));
@@ -624,7 +630,7 @@ impl Instances {
                 document,
                 reveal,
                 open: None,
-                access: None,
+                access,
                 locale: runtime_portal::process_link::Locale::default(),
                 link_home: self.link_home(workspace),
             })

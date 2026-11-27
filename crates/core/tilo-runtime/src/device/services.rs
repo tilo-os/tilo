@@ -226,8 +226,10 @@ impl Daemon {
 
     /// Hand each origin connector this device starts the connection to this device's one
     /// dispatch, admitted as the app the launch record says it runs: what a program that signs in
-    /// calls the published actions over, decided under that app's grants.
-    pub(crate) fn hand_actions_to_connectors(self: &Arc<Self>) {
+    /// calls the published actions over, decided under that app's grants. A daemon that serves
+    /// its person's part calls this once the part is wrapped; an embedder that starts one
+    /// ([`crate::RuntimeServices::start_reporting`]) calls it itself.
+    pub fn hand_actions_to_connectors(self: &Arc<Self>) {
         let weak = Arc::downgrade(self);
         self.apps
             .hand_actions(Box::new(move |connector, app, workspace, pid| {
@@ -2497,6 +2499,10 @@ impl Daemon {
         apps.keep_launch_grants(Arc::clone(&workspaces) as Arc<dyn apps::LaunchGrantsSource>);
         // The member an app's code that shows nothing runs as, here: the device's own.
         apps.keep_person(&actor);
+        // A workspace's role records decide what this device's person may do in its apps: every
+        // process running one is told, as a session's push tells it, though a device that serves
+        // pages runs no session.
+        follow_app_access(&apps, workspaces.copies());
         workspaces.follow_admitted_writes(Arc::clone(&brokers), Arc::clone(&fanout));
         // The files of the workspaces whose work this device takes, once the broker that carries
         // their records runs: where a member taking a workspace's work runs it.
@@ -4101,6 +4107,32 @@ impl super::processes::ContentOf for DeviceContent {
             serde_json::to_string(&reading).ok()
         })
     }
+}
+
+/// Tell each of this device's tilolang processes what its app's person may now do, as a
+/// workspace's role records change: a device that serves the workspace's pages runs no session
+/// to tell them, so its own service reads the policy as the session's push reads it.
+fn follow_app_access(
+    apps: &Arc<apps::Apps>,
+    workspaces: &tilo_workspace_service::workspaces::Workspaces,
+) {
+    let mut governance = workspaces.governance_changes();
+    let apps = Arc::downgrade(apps);
+    tilo_rt::app().handle().spawn(async move {
+        loop {
+            let change = governance.recv().await;
+            let Some(apps) = apps.upgrade() else {
+                return;
+            };
+            match change {
+                Ok(workspace) => apps.access_changed(&workspace),
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    apps.access_changed_everywhere();
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    });
 }
 
 /// Tell each process running a workspace's windows when its content moves: a refusal a host

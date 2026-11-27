@@ -1106,6 +1106,19 @@ impl crate::apps::LaunchGrantsSource for ServiceWorkspaces {
             .and_then(|id| self.peer(id))
             .is_some_and(|peer| peer.is_member(&person))
     }
+
+    /// What `app` may do in `workspace` for this device's person: the workspace's policy, as
+    /// this device holds it now, narrowed to the app as a session's push narrows it.
+    fn app_access(&self, workspace: &str, app: &str) -> Option<tilo_action_policy::MemberAccess> {
+        let id = WorkspaceId::parse(workspace)?;
+        let policy = self.policy_of(id)()?;
+        let person = hex::encode(self.device_cert().user_public_key);
+        Some(
+            collab_types::action_authority::AppActionAuthorityProjection::access_for(
+                &policy, app, &person,
+            ),
+        )
+    }
 }
 
 /// The workspace replicas the runtime's own services read: the profile's own
