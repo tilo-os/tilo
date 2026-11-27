@@ -109,3 +109,53 @@ fn a_view_reads_each_step_of_a_records_writes_reaching_another_device() {
         texts(view.tree())
     );
 }
+
+/// A store that counts the queries of the outside effects it is asked.
+struct CountingEffects {
+    store: LocalPort,
+    asked: std::cell::Cell<usize>,
+}
+
+impl Port for CountingEffects {
+    fn command(&self, command: Command) -> Result<Reply, String> {
+        if matches!(&command, Command::Query(query) if query.kind == tilolang_tilo::resources::EFFECT)
+        {
+            self.asked.set(self.asked.get().saturating_add(1));
+        }
+        self.store.command(command)
+    }
+}
+
+/// What effects wait to go out is asked of the store once, and again only once a record moved:
+/// a loop that asks it on every turn sends nothing while nothing changed.
+#[test]
+fn the_effects_waiting_are_asked_again_only_once_a_record_moved() {
+    use tilolang_runtime::store::Store as _;
+    let port = Rc::new(CountingEffects {
+        store: LocalPort::in_memory(),
+        asked: std::cell::Cell::new(0),
+    });
+    let store = ResourceStore::new(Rc::clone(&port) as Rc<dyn Port>);
+    for _ in 0..3 {
+        assert!(store.pending_effects().is_empty());
+        let _ = store.next_held_effect();
+        let _ = store.effect_states();
+    }
+    let asked = port.asked.get();
+    assert!(asked > 0, "the first look asks the store");
+    for _ in 0..3 {
+        let _ = store.pending_effects();
+        let _ = store.effect_states();
+    }
+    assert_eq!(
+        port.asked.get(),
+        asked,
+        "nothing moved: nothing is asked again"
+    );
+    store.moved_docs(&BTreeSet::from(["n1".to_owned()]));
+    let _ = store.pending_effects();
+    assert!(
+        port.asked.get() > asked,
+        "a record moved: what waits is asked again"
+    );
+}

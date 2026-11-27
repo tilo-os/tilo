@@ -321,6 +321,10 @@ struct Inner {
     held_all: StdCell<bool>,
     /// The listings read, by query, with the pages they are read from.
     listings: RefCell<HashMap<String, Read>>,
+    /// What whole queries listed, every page of each, by the query: asked of the store once and
+    /// again only after a write or a moved record, so a loop that asks what effects wait or what
+    /// notices there are costs nothing while nothing changed.
+    queried: RefCell<HashMap<String, Rows>>,
     subs: RefCell<Vec<Subscription>>,
     next_sub: StdCell<u64>,
     journals: RefCell<HashMap<String, Journal>>,
@@ -554,6 +558,9 @@ impl History {
     }
 }
 
+/// What a query lists across all its pages: each resource's id and what the index holds of it.
+type Rows = Vec<(String, Indexed)>;
+
 /// The runtime's store over the device's resource store. Clones share one store.
 #[derive(Clone)]
 pub struct ResourceStore {
@@ -665,6 +672,7 @@ impl ResourceStore {
                 heard: RefCell::default(),
                 held_all: StdCell::new(false),
                 listings: RefCell::default(),
+                queried: RefCell::default(),
                 subs: RefCell::default(),
                 next_sub: StdCell::new(1),
                 journals: RefCell::default(),
@@ -1418,6 +1426,7 @@ impl ResourceStore {
         self.inner.absent.borrow_mut().clear();
         self.inner.listings.borrow_mut().clear();
         self.inner.versions.borrow_mut().clear();
+        self.inner.queried.borrow_mut().clear();
     }
 
     /// The records `docs` moved on, written by another device: what was read of those records is
@@ -1458,6 +1467,8 @@ impl ResourceStore {
             .listings
             .borrow_mut()
             .retain(|_, (_, pages)| !docs.contains(&pages.doc));
+        // A query lists across the records, so any record moving may have moved what it lists.
+        self.inner.queried.borrow_mut().clear();
     }
 
     /// Forget the versions read of what `command` writes: each resource it writes, what holds
@@ -2268,6 +2279,7 @@ impl ResourceStore {
             self.inner.absent.borrow_mut().clear();
             // What this write adds is pending until another device takes it in.
             self.inner.reach.borrow_mut().clear();
+            self.inner.queried.borrow_mut().clear();
         }
         self.inner.port.command(command).map_err(backend)
     }
@@ -3653,20 +3665,36 @@ impl ResourceStore {
     fn effect_rows(&self, filters: Vec<Filter>) -> Vec<(String, BTreeMap<String, Cell>)> {
         let mut query = Query::of(EFFECT, PAGE);
         query.filters = filters;
+        self.query_rows(query)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, indexed)| (id, indexed.fields))
+            .collect()
+    }
+
+    /// Everything `query` lists, all pages: asked of the store once, then answered from what
+    /// was read until a write or a moved record forgets it.
+    fn query_rows(&self, query: Query) -> Result<Rows, StoreError> {
+        let key = serde_json::to_string(&query).map_err(|error| backend(error.to_string()))?;
+        if let Some(rows) = self.inner.queried.borrow().get(&key) {
+            return Ok(rows.clone());
+        }
         let mut rows = Vec::new();
-        while let Ok(Reply::Page(page)) = self.command(Command::Query(query.clone())) {
-            let done = page.resources.is_empty();
-            rows.extend(
-                page.resources
-                    .into_iter()
-                    .map(|(id, indexed)| (id, indexed.fields)),
-            );
+        let mut query = query;
+        loop {
+            let page = match self.command(Command::Query(query.clone()))? {
+                Reply::Page(page) => page,
+                other => return Err(backend(format!("a query answered {other:?}"))),
+            };
+            let shown = !page.resources.is_empty();
+            rows.extend(page.resources);
             match page.next {
-                Some(next) if !done => query.after = Some(next),
+                Some(next) if shown => query.after = Some(next),
                 _ => break,
             }
         }
-        rows
+        self.inner.queried.borrow_mut().insert(key, rows.clone());
+        Ok(rows)
     }
 
     /// Note that the commit of `txn` changed what the document `doc` has waiting to go out:
@@ -4752,31 +4780,17 @@ impl ResourceStore {
     /// Every resource of `kind` the store lists for `query`, all pages.
     fn query_all(&self, query: Query) -> Result<Vec<String>, StoreError> {
         let kind = query.kind.clone();
-        let mut ids = Vec::new();
-        let mut query = query;
-        loop {
-            let page = match self.command(Command::Query(query.clone()))? {
-                Reply::Page(page) => page,
-                other => return Err(backend(format!("a query answered {other:?}"))),
-            };
-            let shown = !page.resources.is_empty();
-            {
-                let mut cache = self.inner.cache.borrow_mut();
-                for (id, indexed) in page.resources {
-                    ids.push(id.clone());
-                    cache
-                        .entry(id)
-                        .or_insert_with(|| Some(Held::of(&kind, indexed)));
-                }
-            }
-            match page.next {
-                Some(next) if shown => {
-                    query.after = Some(next);
-                }
-                _ => break,
-            }
-        }
-        Ok(ids)
+        let rows = self.query_rows(query)?;
+        let mut cache = self.inner.cache.borrow_mut();
+        Ok(rows
+            .into_iter()
+            .map(|(id, indexed)| {
+                cache
+                    .entry(id.clone())
+                    .or_insert_with(|| Some(Held::of(&kind, indexed)));
+                id
+            })
+            .collect())
     }
 
     /// The instant the first resource of `kind` names in the field `field` after `clock`: the
