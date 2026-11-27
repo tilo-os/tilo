@@ -244,7 +244,7 @@ const NOISE_BYTE_COUNT: usize = NOISE_PIXEL_COUNT * 4;
 /// against the light and dark grounds the ramp runs between, enough to break its steps, never
 /// enough to be made out one by one.
 const NOISE_SPECK_DARK: u8 = 2;
-const NOISE_SPECK_LIGHT: u8 = 9;
+const NOISE_SPECK_LIGHT: u8 = 2;
 
 /// Fixed so every session renders the same grain, keeping the ground identical between runs.
 const NOISE_SEED: u64 = 0x9E37_79B9_7F4A_7C15;
