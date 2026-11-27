@@ -39,6 +39,7 @@ sources = [
     "crates/core/action-policy/src/person.rs",
     "crates/core/tilo-app-id/src/lib.rs",
     "crates/core/actions/src/step.rs",
+    "crates/platform/action-types/src/lib.rs",
     "crates/core/actions/src/outcome.rs",
     "crates/platform/tilo-presence/src/hue.rs",
 ]
@@ -698,6 +699,7 @@ ActionRequest = "accesskit::ActionRequest: one assistive action a client takes o
 "WindowToolbar.actions" = "Vec<ToolbarAction> optional"
 "WindowToolbar.leading" = "Vec<ToolbarAction> optional"
 "WindowToolbar.location" = "Option<ToolbarLocation> optional"
+"WindowToolbar.modified" = "bool optional"
 "WindowToolbar.navigation" = "Option<ToolbarNavigation> optional"
 "WindowToolbar.notice" = "Option<ToolbarNotice> optional"
 "WindowToolbar.reactions" = "Option<ToolbarReactions> optional"
