@@ -209,6 +209,10 @@ impl Watch {
     }
 }
 
+/// The records that moved since a value was last read, each by its app and its route: what a
+/// value read again from what it was ([`Reading::start_moving`]) reads again, and nothing else.
+pub type MovedRecords = std::collections::BTreeSet<(String, String)>;
+
 /// A value read of the workspaces' records, kept current by the change stream: read when it is
 /// started, and again whenever what it follows moves — on a worker of its own where this host has
 /// threads, so a read never holds up a frame (the first one included: until it lands the value is
@@ -237,6 +241,19 @@ impl<T: Default + Send + Sync + 'static> Reading<T> {
         read: impl Fn() -> T + Send + Sync + 'static,
         moved: impl Fn() + Send + Sync + 'static,
     ) -> Self {
+        Self::start_moving(name, changes, watch, move |_| read(), moved)
+    }
+
+    /// [`Self::start`] for a value read again from what it was: `read` is handed the value as it
+    /// last read and the records that moved since, or `None` for its first read, so a change of
+    /// one record reads that record again rather than every record the value reads.
+    pub fn start_moving(
+        name: &str,
+        changes: Changes,
+        watch: Watch,
+        read: impl Fn(Option<(&T, &MovedRecords)>) -> T + Send + Sync + 'static,
+        moved: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
         let held = Arc::new(Mutex::new((0, Arc::new(T::default()))));
         let landed = Arc::new(AtomicU64::new(0));
         let reader = changes.reader();
@@ -244,22 +261,25 @@ impl<T: Default + Send + Sync + 'static> Reading<T> {
         let worker = std::thread::Builder::new()
             .name(name.to_owned())
             .spawn(move || {
-                let land = |at: u64| {
-                    let fresh = Arc::new((read)());
+                let land = |at: u64, since: Option<&MovedRecords>| {
+                    let prior =
+                        Arc::clone(&shared.lock().unwrap_or_else(PoisonError::into_inner).1);
+                    let fresh = Arc::new((read)(since.map(|moved| (prior.as_ref(), moved))));
                     *shared.lock().unwrap_or_else(PoisonError::into_inner) = (at, fresh);
                     counted.fetch_add(1, Ordering::AcqRel);
                     moved();
                 };
-                land(watch.moved(&changes));
+                land(watch.moved(&changes), None);
                 // Ends when the stream does: the session is gone.
                 while let Ok(changed) = reader.recv() {
                     // A burst of changes is read once.
-                    let mut mine = watch.follows(&changed.workspace);
-                    while let Ok(other) = reader.try_recv() {
-                        mine |= watch.follows(&other.workspace);
-                    }
-                    if mine {
-                        land(watch.moved(&changes));
+                    let moved: MovedRecords = std::iter::once(changed)
+                        .chain(reader.try_iter())
+                        .filter(|changed| watch.follows(&changed.workspace))
+                        .map(|changed| (changed.app, changed.record))
+                        .collect();
+                    if !moved.is_empty() {
+                        land(watch.moved(&changes), Some(&moved));
                     }
                 }
             });

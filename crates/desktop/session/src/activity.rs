@@ -284,8 +284,7 @@ struct Inner {
     undos: run_undo::Undos,
     /// The records each workspace holds, read on a worker of its own, told by the change stream
     /// when one of them moved.
-    records:
-        RefCell<HashMap<String, Rc<crate::platform::records::Reading<Vec<DetachedRecordHistory>>>>>,
+    records: RefCell<HashMap<String, Rc<crate::platform::records::Reading<HeldRecords>>>>,
     /// The records the session's services keep themselves, rather than an app's process or the
     /// store: the workspace record a service publishes holds a root per package it runs.
     services: RefCell<Option<Rc<RefCell<tilo_service::Services>>>>,
@@ -771,7 +770,7 @@ impl Activity {
     /// The records `workspace_id` holds: read when the change stream says one of them moved, on a
     /// worker where this host has threads, so a workspace's records never hold up a frame.
     fn resources_of(&self, workspace_id: WorkspaceId) -> Vec<DetachedRecordHistory> {
-        self.records_held(workspace_id).as_ref().clone()
+        self.records_held(workspace_id).records.clone()
     }
 
     /// The services this session runs, once it has started them.
@@ -784,7 +783,7 @@ impl Activity {
     }
 
     /// The records `workspace_id` holds as last read, shared rather than copied.
-    fn records_held(&self, workspace_id: WorkspaceId) -> Arc<Vec<DetachedRecordHistory>> {
+    fn records_held(&self, workspace_id: WorkspaceId) -> Arc<HeldRecords> {
         let Some(held) = self.0.held.borrow().clone() else {
             return Arc::default();
         };
@@ -799,9 +798,11 @@ impl Activity {
             let noted = self.0.writers.noted.clone();
             move |actor| noted(actor)
         });
-        let read = move || read_workspace_records(held.as_ref(), &by_workspace, &noted);
+        let read = move |since: Option<(&HeldRecords, &crate::platform::records::MovedRecords)>| {
+            read_workspace_records(held.as_ref(), &by_workspace, &noted, since)
+        };
         #[cfg(target_os = "linux")]
-        let known = Rc::new(crate::platform::records::Reading::start(
+        let known = Rc::new(crate::platform::records::Reading::start_moving(
             "tilo-activity-records",
             self.0.changes.clone(),
             crate::platform::records::Watch::Workspace(key.clone()),
@@ -816,7 +817,7 @@ impl Activity {
         let known = Rc::new(crate::platform::records::Reading::read(
             &self.0.changes,
             &watch,
-            read,
+            move || read(None),
         ));
         let value = known.get();
         self.0.records.borrow_mut().insert(key, Rc::clone(&known));
@@ -951,51 +952,127 @@ impl HistorySource for Activity {
     }
 }
 
-/// Every record a workspace holds, with the document its app last wrote.
-fn read_workspace_records(
+/// The records a workspace holds as the activity last read them, each beside what it was read
+/// from (its app and its route): a change of one record reads that one again, not all of them.
+#[derive(Default)]
+pub(crate) struct HeldRecords {
+    records: Vec<DetachedRecordHistory>,
+    routes: Vec<(String, String)>,
+}
+
+impl HeldRecords {
+    fn push(&mut self, app: &str, route: &str, record: DetachedRecordHistory) {
+        self.routes.push((app.to_owned(), route.to_owned()));
+        self.records.push(record);
+    }
+
+    /// The record of `app` at `route` as it was read, when it was.
+    fn read_at(&self, app: &str, route: &str) -> Option<&DetachedRecordHistory> {
+        let at = self
+            .routes
+            .iter()
+            .position(|(read, at)| read == app && at == route)?;
+        self.records.get(at)
+    }
+}
+
+/// The workspace's folder, its tree with its chunks, into `read`, and the records it reads into
+/// `seen`: kept as it was read `since` a change of none of the folder's records.
+fn read_tree(
     held: &dyn Reads,
     workspace: &str,
     noted: &crate::platform::authors::Noted,
-) -> Vec<DetachedRecordHistory> {
-    let mut read = Vec::new();
-    let mut seen = BTreeSet::new();
+    since: Option<(&HeldRecords, &crate::platform::records::MovedRecords)>,
+    read: &mut HeldRecords,
+    seen: &mut BTreeSet<(String, String)>,
+) {
     // The workspace's folder is a record of its own, and its changes belong in
     // the history beside the apps': a page holds it without listing it among
     // the packages it opened, and a computer's folder writes are its versions.
     let tree_id = collab_types::person_document_id(fs_protocol::tree::TREE_KIND);
-    if let Some(document_id) = DocumentId::parse(&tree_id)
-        && let Some(document) =
-            held.document(fs_protocol::tree::FILES_APP, workspace, document_id.route())
-    {
-        noted(document.get_actor());
-        seen.insert((
-            fs_protocol::tree::FILES_APP.to_owned(),
-            document_id.route().to_owned(),
-        ));
-        // The chunks the tree lists, each read on its own: the folder's rows are read from
-        // them beside it. A chunk this device holds nothing of comes with a later read.
-        let tree_chunks = fs_protocol::tree::listed_chunks(&document)
-            .into_iter()
-            .filter_map(|chunk| {
-                let chunk_id = fs_protocol::tree::chunk_document_id(chunk);
-                seen.insert((fs_protocol::tree::FILES_APP.to_owned(), chunk_id.clone()));
-                held.document(fs_protocol::tree::FILES_APP, workspace, &chunk_id)
-                    .map(|doc| (chunk, doc))
-            })
-            .collect();
-        read.push(DetachedRecordHistory {
-            app: fs_protocol::tree::FILES_APP.to_owned(),
-            kind: ResourceType::new(fs_protocol::tree::TREE_KIND),
-            id: document_id.as_str().to_owned(),
-            tree_chunks,
-            document: Some(document),
+    if let Some(document_id) = DocumentId::parse(&tree_id) {
+        let route = document_id.route();
+        // The tree is read with its chunks: any of the folder's records moving reads it again.
+        let folder_moved = since.is_none_or(|(_, moved)| {
+            moved
+                .iter()
+                .any(|(app, _)| app == fs_protocol::tree::FILES_APP)
         });
+        let kept = if folder_moved {
+            None
+        } else {
+            since
+                .and_then(|(prior, _)| prior.read_at(fs_protocol::tree::FILES_APP, route))
+                .cloned()
+        };
+        if let Some(tree) = kept {
+            seen.insert((fs_protocol::tree::FILES_APP.to_owned(), route.to_owned()));
+            for (chunk, _) in &tree.tree_chunks {
+                seen.insert((
+                    fs_protocol::tree::FILES_APP.to_owned(),
+                    fs_protocol::tree::chunk_document_id(*chunk),
+                ));
+            }
+            read.push(fs_protocol::tree::FILES_APP, route, tree);
+        } else if let Some(document) = held.document(fs_protocol::tree::FILES_APP, workspace, route)
+        {
+            noted(document.get_actor());
+            seen.insert((fs_protocol::tree::FILES_APP.to_owned(), route.to_owned()));
+            // The chunks the tree lists, each read on its own: the folder's rows are read from
+            // them beside it. A chunk this device holds nothing of comes with a later read.
+            let tree_chunks = fs_protocol::tree::listed_chunks(&document)
+                .into_iter()
+                .filter_map(|chunk| {
+                    let chunk_id = fs_protocol::tree::chunk_document_id(chunk);
+                    seen.insert((fs_protocol::tree::FILES_APP.to_owned(), chunk_id.clone()));
+                    held.document(fs_protocol::tree::FILES_APP, workspace, &chunk_id)
+                        .map(|doc| (chunk, doc))
+                })
+                .collect();
+            read.push(
+                fs_protocol::tree::FILES_APP,
+                route,
+                DetachedRecordHistory {
+                    app: fs_protocol::tree::FILES_APP.to_owned(),
+                    kind: ResourceType::new(fs_protocol::tree::TREE_KIND),
+                    id: document_id.as_str().to_owned(),
+                    tree_chunks,
+                    document: Some(document),
+                },
+            );
+        }
     }
+}
+
+/// Every record a workspace holds, with the document its app last wrote. Read again `since` a
+/// change, what did not move is kept as it was read: only the records that moved, and the ones
+/// the workspace lists that were not read before, are read.
+fn read_workspace_records(
+    held: &dyn Reads,
+    workspace: &str,
+    noted: &crate::platform::authors::Noted,
+    since: Option<(&HeldRecords, &crate::platform::records::MovedRecords)>,
+) -> HeldRecords {
+    // The record of `app` at `route` as it was read, where it did not move since.
+    let unmoved = |app: &str, route: &str| {
+        let (prior, moved) = since?;
+        if moved.contains(&(app.to_owned(), route.to_owned())) {
+            return None;
+        }
+        prior.read_at(app, route)
+    };
+    let mut read = HeldRecords::default();
+    let mut seen = BTreeSet::new();
+    read_tree(held, workspace, noted, since, &mut read, &mut seen);
     // Every resource the workspace holds, as the workspace lists them: an app keeps them whether
     // or not its own document indexes them.
     for listed in held.held(workspace) {
         let (package, route) = (listed.address.app, listed.address.record);
         if !seen.insert((package.clone(), route.clone())) {
+            continue;
+        }
+        if let Some(record) = unmoved(&package, &route) {
+            read.push(&package, &route, record.clone());
             continue;
         }
         let Some(document) = held.document(&package, workspace, &route) else {
@@ -1006,7 +1083,7 @@ fn read_workspace_records(
         // no one's work. Only the changes' messages are read.
         let named = if let Some(kind) = listed.kind {
             // A record the workspace's store keeps is named as the store names it.
-            Some((ResourceType::new(kind), route))
+            Some((ResourceType::new(kind), route.clone()))
         } else if route.is_empty() {
             let acted = document
                 .committed_document()
@@ -1037,13 +1114,17 @@ fn read_workspace_records(
             continue;
         };
         noted(document.get_actor());
-        read.push(DetachedRecordHistory {
-            app: package,
-            kind,
-            id,
-            tree_chunks: Vec::new(),
-            document: Some(document),
-        });
+        read.push(
+            &package,
+            &route,
+            DetachedRecordHistory {
+                app: package.clone(),
+                kind,
+                id,
+                tree_chunks: Vec::new(),
+                document: Some(document),
+            },
+        );
     }
     read
 }
@@ -1275,12 +1356,78 @@ mod tests {
         kept.keep(app, workspace, id.route(), &mut document);
 
         let noted: crate::platform::authors::Noted = Arc::new(|_| {});
-        let read = read_workspace_records(&kept, workspace, &noted);
+        let read = read_workspace_records(&kept, workspace, &noted, None);
         let budget = read
+            .records
             .iter()
             .find(|record| record.id == id.as_str())
             .expect("the workspace holds the record");
         assert!(budget.document.is_some(), "and its document is read");
+    }
+
+    /// Records that count the documents read of them, as a daemon answers each read.
+    struct Counted {
+        held: InStore,
+        reads: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl Reads for Counted {
+        fn take_changed(&self) -> Vec<crate::platform::records::Changed> {
+            self.held.take_changed()
+        }
+
+        fn document(&self, app: &str, workspace: &str, route: &str) -> Option<AutoCommit> {
+            self.reads.borrow_mut().push(route.to_owned());
+            self.held.document(app, workspace, route)
+        }
+
+        fn held(&self, workspace: &str) -> Vec<tilo_actions::remote::ListedResource> {
+            self.held.held(workspace)
+        }
+    }
+
+    /// A change of one record reads that record again and keeps the rest as they were read: a
+    /// workspace of many records is not read whole for each write.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_change_of_one_record_reads_that_record_again_and_no_other() {
+        let kept = InStore::over(crate::platform::records::Changes::default());
+        let workspace = "7c307c8d-bfa5-46fa-ae08-fa2fe4790bd4";
+        let app = "so.tilo.word-processor";
+        let kind = ResourceType::new("word-processor.document");
+        let ids: Vec<DocumentId> = ["a", "b", "c"]
+            .into_iter()
+            .map(|name| DocumentId::for_file(&format!("/run/tilo/chosen/records/0/{name}.txt")))
+            .collect();
+        for id in &ids {
+            let mut document = ui::automerge::AutoCommit::new();
+            ui::resource::init(&mut document, id, &kind, workspace);
+            kept.keep(app, workspace, id.route(), &mut document);
+        }
+        let counted = Counted {
+            held: kept,
+            reads: std::cell::RefCell::default(),
+        };
+        let noted: crate::platform::authors::Noted = Arc::new(|_| {});
+        let first = read_workspace_records(&counted, workspace, &noted, None);
+        assert_eq!(first.records.len(), 3);
+        counted.reads.borrow_mut().clear();
+
+        let moved = std::collections::BTreeSet::from([(app.to_owned(), ids[1].route().to_owned())]);
+        let again = read_workspace_records(&counted, workspace, &noted, Some((&first, &moved)));
+        assert_eq!(
+            *counted.reads.borrow(),
+            vec![ids[1].route().to_owned()],
+            "only the record that moved is read again"
+        );
+        let listed: Vec<&str> = again
+            .records
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect();
+        for id in &ids {
+            assert!(listed.contains(&id.as_str()), "{id:?} is still listed");
+        }
     }
 
     /// A record a Rust app keeps in the workspace's store is in the workspace's history, as the
@@ -1313,8 +1460,8 @@ mod tests {
         let held = crate::platform::records::Held::over(daemon.reads(), daemon.changes());
         let noted: crate::platform::authors::Noted = Arc::new(|_| {});
         let read = tilo_test_env::wait_for("the workspace's history reads the note", || {
-            let read = read_workspace_records(&held, KITCHEN, &noted);
-            read.into_iter().find(|record| {
+            let read = read_workspace_records(&held, KITCHEN, &noted, None);
+            read.records.into_iter().find(|record| {
                 record.app == NOTES && record.kind.as_str() == note.kind && record.id == note.record
             })
         });
