@@ -492,15 +492,32 @@ fn instant(ms: u64) -> String {
     let days = i64::try_from(seconds / 86_400).unwrap_or(i64::MAX);
     let of_day = seconds % 86_400;
     // Howard Hinnant's days-to-civil: the proleptic Gregorian date of a day count.
-    let z = days + 719_468;
+    let z = days.wrapping_add(719_468);
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
+    let yoe = doe
+        .wrapping_sub(doe / 1460)
+        .wrapping_add(doe / 36_524)
+        .wrapping_sub(doe / 146_096)
+        / 365;
+    let doy = doe.wrapping_sub(
+        365i64
+            .wrapping_mul(yoe)
+            .wrapping_add(yoe / 4)
+            .wrapping_sub(yoe / 100),
+    );
+    let mp = 5i64.wrapping_mul(doy).wrapping_add(2) / 153;
+    let day = doy
+        .wrapping_sub(153i64.wrapping_mul(mp).wrapping_add(2) / 5)
+        .wrapping_add(1);
+    let month = if mp < 10 {
+        mp.wrapping_add(3)
+    } else {
+        mp.wrapping_sub(9)
+    };
+    let year = yoe
+        .wrapping_add(era.wrapping_mul(400))
+        .wrapping_add(i64::from(month <= 2));
     format!(
         "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
         of_day / 3600,
