@@ -339,7 +339,7 @@ tilo_test_env::scenario! {
         );
 
         assert!(
-            Manifest::from_toml_str(&with_package_keys("platforms = [\"windows\"]")).is_err(),
+            Manifest::from_toml_str(&with_package_keys("platforms = [\"haiku\"]")).is_err(),
             "unknown platforms fail to decode"
         );
     }

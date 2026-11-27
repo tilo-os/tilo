@@ -148,19 +148,32 @@ tilo_test_env::scenario! {
     // words live in `search/*.ftl`, joined at pack time, and never in the
     // manifest; every app is named and described in both languages.
     {
-        for (app, german) in [
-            ("settings", "Einstellungen"),
-            ("calendar", "Kalender"),
-        ] {
-            let view = ManifestView::from_toml_str(
-                &std::fs::read_to_string(manifest_path(&repo_root().join("apps").join(app)))
-                    .unwrap_or_else(|e| panic!("{app}: {e}")),
+        // A tilolang package's manifest is written when the package is built;
+        // the catalogue entry it commits (`fleet.json`) is what the Store and
+        // the palette read its words from, in every language it ships.
+        for (app, german) in [("settings", "Einstellungen"), ("calendar", "Kalender")] {
+            let path = repo_root()
+                .join("apps/tl")
+                .join(app)
+                .join("fleet.json");
+            let entry: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(&path)
+                    .unwrap_or_else(|e| panic!("{}: {e}", path.display())),
             )
-            .unwrap_or_else(|e| panic!("{app}: {e}"));
-            assert_eq!(
-                view.localized_names.get("de").map(String::as_str),
-                Some(german),
-                "{app}"
+            .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert!(
+                entry
+                    .get("names")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|names| names.iter().any(|name| name.as_str() == Some(german))),
+                "{app} is not named {german:?} in the catalogue people read"
+            );
+            assert!(
+                entry
+                    .get("tagline")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|tagline| !tagline.is_empty()),
+                "{app} carries no tagline"
             );
         }
 
@@ -215,13 +228,12 @@ tilo_test_env::scenario! {
     // no build knows is refused, never taken for a view. Browser is the one shipped app whose
     // window's page lives in its engine, so its device-bound windows and no other app's.
     {
-        let activity = repo_root().join("apps/backups");
+        let app = repo_root().join("apps/discord");
         assert!(
-            !load(&activity).window_runs_on_its_device(),
-            "a Backups window is a view of a record"
+            !load(&app).window_runs_on_its_device(),
+            "a Discord window is a view of a record"
         );
-        let src =
-            std::fs::read_to_string(manifest_path(&activity)).expect("Backups' manifest");
+        let src = std::fs::read_to_string(manifest_path(&app)).expect("Discord's manifest");
         let said = src.replacen("[entrypoint]", "[entrypoint]\nwindow = \"device\"", 1);
         assert_ne!(said, src, "the manifest has an entrypoint to say it in");
         let manifest = Manifest::from_toml_str(&said).expect("the manifest decodes");
@@ -311,8 +323,9 @@ tilo_test_env::scenario! {
     }
 
     phase shipped_manifests_declare_consistent_sandbox_policy;
+    // The fleet's service packages are tilolang packages now: their manifests
+    // are written when they are built, so this suite checks the native fleet.
     {
-        let mut services = 0usize;
         for (dir, m) in fleet() {
             let ep = m
                 .entrypoint
@@ -384,13 +397,8 @@ tilo_test_env::scenario! {
                     dir.display(),
                     ep.r#type,
                 );
-                services += 1;
             }
         }
-        assert!(
-            services >= 1,
-            "no service package found to check — this test cannot observe its subject",
-        );
     }
 }
 
@@ -420,9 +428,11 @@ fn an_app_that_publishes_actions_declares_the_service_it_publishes_them_over() {
             unreachable.push(dir.display().to_string());
         }
     }
+    // The fleet's other acting apps are tilolang packages, whose surfaces
+    // `tilolang build` writes and `tilolang check` compares.
     assert!(
-        checked >= 20,
-        "expected the fleet's acting apps, found {checked}"
+        checked >= 1,
+        "expected the fleet's acting app, found {checked}"
     );
     assert!(
         unreachable.is_empty(),
