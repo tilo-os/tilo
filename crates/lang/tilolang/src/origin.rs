@@ -8,8 +8,11 @@
 //!
 //! A kind's fields are written by the service alone, except those people change (a message's
 //! `unread`, `flagged` and `mailbox`): a change of one applies at once and becomes final when the
-//! service accepts it. Code writing any other field of the kind is refused (E113), except in a
-//! scenario, whose seed data stands in for the service.
+//! service accepts it. The service sets it back as readily: undo writes the field as it stood and
+//! the service is told that too, so such a change is undoable, an agent's goes by its grants and a
+//! press of it acts at once. Putting a kept record into a collection or taking one out is told to
+//! the service for good, and reaches outside. Code writing any other field of the kind is refused
+//! (E113), except in a scenario, whose seed data stands in for the service.
 //!
 //! Some kinds are the origin's to derive: the time, the shell, who is here, the workspaces on the
 //! device. The origin writes them again from what it holds at every start, so nothing of an app's

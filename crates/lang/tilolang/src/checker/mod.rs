@@ -994,21 +994,27 @@ impl Checker<'_> {
         }
     }
 
-    /// An action's write of `field` of a record of `key`: one that reaches the outside service
-    /// its type is kept by makes the action reach outside ([`Self::reaches_origin`]).
-    fn writes_field(&mut self, key: &TypeKey, field: &crate::resolve::FieldInfo) {
-        if self.reaches_origin(key, field) {
+    /// An action's write of `field`: one the outside service its records
+    /// are kept by cannot take back makes the action reach outside ([`Self::leaves_for_origin`]).
+    fn writes_field(&mut self, field: &crate::resolve::FieldInfo) {
+        if self.leaves_for_origin(field) {
             self.st.facts.outside = true;
         }
     }
 
-    /// Whether writing `field` of a record of `key` changes what an outside service keeps: a
-    /// field of the type's origin kind that people change, which the service is told, or a
-    /// collection of records an origin keeps, whose insert or removal the service is told too.
-    /// Such a change is an outside effect whoever makes it: an agent's asks its person, as any
-    /// call reaching outside does. A kind its origin derives (the session's layout) stays on the
-    /// device, and a scenario's records stand in for the service.
-    fn reaches_origin(&self, key: &TypeKey, field: &crate::resolve::FieldInfo) -> bool {
+    /// Whether writing `field` changes what an outside service keeps in a
+    /// way it cannot take back: putting a record an origin keeps into a collection, or taking one
+    /// out, which the service is told as a new entry (an invitation goes out) or a deletion.
+    /// Such a change confirms at every press and asks an agent's person, as any call reaching
+    /// outside does.
+    ///
+    /// A field of the type's origin kind that people change (a message's `unread`, `flagged`,
+    /// `mailbox`, an entry's `title`) is told to the service too, but it is the service's to set
+    /// back: undo writes the field as it stood, and the origin tells the service that as well.
+    /// So it is an undoable change like one that stays here: a press acts at once and an agent
+    /// goes by its grants. A kind its origin derives (the session's layout) stays on the device,
+    /// and a scenario's records stand in for the service.
+    fn leaves_for_origin(&self, field: &crate::resolve::FieldInfo) -> bool {
         if self.st.written == Written::Scenario {
             return false;
         }
@@ -1019,12 +1025,6 @@ impl Checker<'_> {
                 .and_then(crate::origin::kind)
                 .filter(|kind| !kind.derived)
         };
-        if kept(key)
-            .and_then(|kind| kind.field(&field.name))
-            .is_some_and(|of| of.people)
-        {
-            return true;
-        }
         match &field.ty {
             Ty::Collection(item) | Ty::List(item) => match item.as_ref() {
                 Ty::Record(item) => kept(item).is_some(),
@@ -2187,7 +2187,7 @@ impl Checker<'_> {
             return;
         }
         self.st.facts.mutates = true;
-        self.writes_field(&key, &f);
+        self.writes_field(&f);
         if f.merge == MergeKind::Structural {
             self.err("E033", span, format!("`{}` is a {} field and cannot be assigned; change it with its methods (`.insert`, `.remove`, `.move`, `.add`, `.put`)", f.name, f.ty.display(&self.env.app)));
             let _ = self.expr(value, None);

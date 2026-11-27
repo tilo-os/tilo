@@ -109,11 +109,13 @@ tilo_test_env::scenario! {
 }
 
 tilo_test_env::scenario! {
-    /// What an entry's server keeps is changed there: an action that changes it reaches outside,
-    /// whoever calls it, and one that changes what stays in the workspace does not.
-    fn a_change_that_reaches_the_server_is_an_outside_effect;
+    /// What an entry's server keeps is changed there. Making an entry, inviting a guest or
+    /// deleting one is told to the server for good, so it reaches outside whoever calls it; a
+    /// field people change (the title, the categories) is set back by undo, at the server too,
+    /// so it is an undoable change like one that stays in the workspace.
+    fn only_what_the_server_cannot_take_back_is_an_outside_effect;
 
-    phase each_write_is_classed_by_where_it_lands;
+    phase each_write_is_classed_by_whether_undo_takes_it_back;
     {
         let src = "type Calendar (origin: caldav.calendar) {\n    name: Text\n    writable: Bool\n}\n\
             type Attendee (origin: caldav.attendee) {\n    name: Text\n    email: Text\n    status: Text\n    role: Text\n}\n\
@@ -143,11 +145,11 @@ tilo_test_env::scenario! {
                 .unwrap_or_else(|| panic!("the action {name}"))
                 .class
         };
-        for reaching in ["retitle", "file", "invite", "make", "drop", "rename", "both"] {
-            assert_eq!(class(reaching), EffectClass::Outside, "{reaching} changes what the server keeps");
+        for leaving in ["invite", "make", "drop"] {
+            assert_eq!(class(leaving), EffectClass::Outside, "{leaving} tells the server what it cannot take back");
         }
-        for staying in ["keep_mine", "note"] {
-            assert_eq!(class(staying), EffectClass::Undoable, "{staying} changes what stays here");
+        for undoable in ["retitle", "file", "rename", "both", "keep_mine", "note"] {
+            assert_eq!(class(undoable), EffectClass::Undoable, "{undoable} is set back by undo");
         }
         assert_eq!(class("read"), EffectClass::Read);
     }

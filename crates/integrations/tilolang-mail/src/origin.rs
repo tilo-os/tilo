@@ -29,7 +29,7 @@ use tilolang_tilo::host::Host;
 use tilolang_tilo::origin::{Origin, OriginCx, OriginType, Polled, origin_types};
 use tilolang_tilo::runtime::RuntimeError;
 use tilolang_tilo::runtime::origin::{OriginChange, OriginWrite, Unwritten};
-use tilolang_tilo::runtime::store::{FieldKey, Store as _};
+use tilolang_tilo::runtime::store::{ANY_FIELD, FieldKey, Store as _};
 use tilolang_tilo::runtime::{Delivery, ResourceRef, Value};
 
 use super::connector::{
@@ -1048,11 +1048,22 @@ impl ImapOrigin {
         if self.state.is_none() {
             return false;
         }
-        let keys: Vec<FieldKey> = std::mem::take(&mut *self.changed.borrow_mut());
+        let mut keys: Vec<FieldKey> = std::mem::take(&mut *self.changed.borrow_mut());
         let touched = {
             let Some(state) = self.state.as_mut() else {
                 return false;
             };
+            // A step through history named no message: each is read for what it says now.
+            if keys.iter().any(|key| key.resource.is_empty()) {
+                keys = state
+                    .by_record
+                    .keys()
+                    .map(|resource| FieldKey {
+                        resource: resource.clone(),
+                        field: ANY_FIELD.to_owned(),
+                    })
+                    .collect();
+            }
             let t = &state.types;
             let people: BTreeSet<&str> = ["unread", "flagged", "mailbox"]
                 .iter()
@@ -1916,9 +1927,20 @@ impl Origin for ImapOrigin {
                 store.subscribe(
                     &root.doc,
                     Box::new(move |summary| {
-                        if !polling.get() {
-                            changed.borrow_mut().extend(summary.fields.iter().cloned());
+                        if polling.get() {
+                            return;
                         }
+                        let mut changed = changed.borrow_mut();
+                        // A person's step through history (an undo, a redo, a restore) names
+                        // no fields: any message's may have moved back, and the server is told
+                        // what it now says, as of any change of theirs.
+                        if summary.fields.is_empty() && summary.by.is_some() {
+                            changed.push(FieldKey {
+                                resource: String::new(),
+                                field: ANY_FIELD.to_owned(),
+                            });
+                        }
+                        changed.extend(summary.fields.iter().cloned());
                     }),
                 );
                 self.subscribed = true;

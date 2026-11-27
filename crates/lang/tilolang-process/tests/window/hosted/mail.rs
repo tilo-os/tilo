@@ -1106,6 +1106,132 @@ fn opening_a_conversation_reads_it_here_and_on_the_server() {
     });
 }
 
+/// Whether the conversation's messages all read as read on the server.
+fn read_on_the_server(servers: &Servers) -> bool {
+    servers
+        .imap
+        .messages("INBOX")
+        .iter()
+        .all(|m| m.flags.iter().any(|f| f == "\\Seen"))
+}
+
+// USER REQUIREMENT: what the mail server sets back acts at once, the person's press and an
+// agent's call alike: opening a conversation and Mark as read confirm nothing, an agent's
+// Mark as read goes by its grants, and undo of it marks it unread on the server again. Deleting
+// for good is what the server cannot take back, and that press confirms.
+#[test]
+fn what_the_server_sets_back_acts_at_once_and_a_deletion_for_good_confirms() {
+    let servers = servers();
+    let (_connector, mut session) = window_of(account(&servers));
+    synced(&mut session);
+    let plan = session.thread("Launch plan");
+    let waiting = |session: &Session| {
+        session
+            .asks
+            .iter()
+            .filter(|kept| kept.delivered.is_none() && !kept.declined)
+            .count()
+    };
+
+    // Opening it reads it, and nobody is asked.
+    session.open_conversation(&plan);
+    assert!(!session.flag(&plan, "unread"), "opening reads it at once");
+    assert_eq!(
+        waiting(&session),
+        0,
+        "opening a conversation confirms nothing"
+    );
+    session.until("the server to hold it read", |_| {
+        read_on_the_server(&servers)
+    });
+
+    // Mark as unread, then Mark as read, at the conversation's header: each acts at once.
+    for (label, unread) in [("Mark as unread", true), ("Mark as read", false)] {
+        let view = session
+            .instance_host()
+            .open_resource(&plan, None)
+            .expect("the conversation opens");
+        let button = labelled(view.tree(), label)
+            .first()
+            .unwrap_or_else(|| panic!("the conversation offers {label}"))
+            .key
+            .clone();
+        let outcome = view.fire(&button, "press").expect("the press runs");
+        assert!(
+            matches!(outcome, tilolang_tilo::runtime::InvokeOutcome::Done(_)),
+            "{label} acts at once: {outcome:?}"
+        );
+        session.settle();
+        assert_eq!(session.flag(&plan, "unread"), unread, "{label} took");
+        assert_eq!(waiting(&session), 0, "{label} confirms nothing");
+    }
+    session.until("the server to hold it read again", |_| {
+        read_on_the_server(&servers)
+    });
+
+    // Undo of Mark as read marks it unread, on the server too.
+    let record = tilolang_tilo::naming::package_resource_id(APP);
+    let mut one = serde_json::Map::new();
+    one.insert("steps".to_owned(), 1.into());
+    session
+        .invoke(None, None, &record, "undo", &one)
+        .expect("the person undoes it");
+    session.settle();
+    assert!(session.flag(&plan, "unread"), "undo marks it unread");
+    session.until("the server to hold it unread again", |_| {
+        !read_on_the_server(&servers)
+    });
+
+    // An agent's Mark as read goes by its grants: it runs, and nobody is asked.
+    let resource = tilolang_tilo::naming::resource_id(APP, &plan.id_string());
+    let (agent, ambient) = super::agent_session();
+    session
+        .invoke(
+            Some(agent),
+            Some(&ambient),
+            &resource,
+            "mark_read",
+            &serde_json::Map::new(),
+        )
+        .expect("an agent marks it read without an ask");
+    assert!(
+        !session.flag(&plan, "unread"),
+        "the agent's Mark as read took"
+    );
+    assert_eq!(waiting(&session), 0, "the agent's Mark as read asks nobody");
+    session.until("the server to hold it read", |_| {
+        read_on_the_server(&servers)
+    });
+
+    // Deleting it for good from the server confirms first, and nothing leaves before the yes.
+    session.call("delete", &plan, &json!({}));
+    session.until("the server to put it in the trash", |_| {
+        servers.imap.messages("[Gmail]/Trash").len() == 2
+    });
+    let mut view = session
+        .instance_host()
+        .open_resource(&plan, None)
+        .expect("the conversation opens");
+    let offer = find_kind(view.tree(), "ui.Banner", "action", "Delete permanently")
+        .expect("the trashed conversation offers to delete it for good")
+        .key
+        .clone();
+    view.fire(&offer, "act")
+        .expect("the offer asks what it would do");
+    view.poll_patches().expect("the offer says it");
+    let outcome = view.fire(&offer, "act").expect("the press runs");
+    assert!(
+        matches!(outcome, tilolang_tilo::runtime::InvokeOutcome::Asked(_)),
+        "deleting for good confirms: {outcome:?}"
+    );
+    session.settle();
+    assert_eq!(
+        servers.imap.messages("[Gmail]/Trash").len(),
+        2,
+        "nothing is deleted from the server before the yes"
+    );
+}
+
 /// What Calendar can hand Mail for a guest it invites: a message with the event's invitation,
 /// which goes out with its calendar part once the person sends it.
 #[test]

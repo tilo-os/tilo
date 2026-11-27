@@ -957,7 +957,7 @@ impl ResourceStore {
             invocation: invocation.to_owned(),
             stamp,
         })?;
-        self.moved();
+        self.moved_by(invoker);
         Ok(own)
     }
 
@@ -1033,7 +1033,7 @@ impl ResourceStore {
         };
         let count = u32::try_from(invocations.len()).unwrap_or(u32::MAX);
         self.command(Command::UndoMany { invocations, stamp })?;
-        self.moved();
+        self.moved_by(invoker);
         Ok(count)
     }
 
@@ -1105,7 +1105,7 @@ impl ResourceStore {
         })?;
         // The person's own step: their next undo, read from the record's history, takes it back.
         *self.inner.last_write.borrow_mut() = Some(own.clone());
-        self.moved();
+        self.moved_by(invoker);
         Ok(own)
     }
 
@@ -1407,6 +1407,14 @@ impl ResourceStore {
     /// The workspace's resources moved on: forget what was read, and tell every view to read
     /// what it shows again.
     pub fn moved(&self) {
+        self.moved_by(None);
+    }
+
+    /// [`Self::moved`] by `by`'s step through history (an undo, a redo, a restore): what it
+    /// changed it does not name, so whoever watches is told every field may have moved, by them.
+    /// An origin reads the fields people change again from it, and tells its service what they
+    /// say now: undo of marking a message read marks it unread on its server too.
+    fn moved_by(&self, by: Option<&Actor>) {
         self.forget_reads();
         self.tell_watches(None);
         let docs: BTreeSet<DocId> = self
@@ -1417,7 +1425,10 @@ impl ResourceStore {
             .map(|sub| sub.doc.clone())
             .collect();
         for doc in docs {
-            self.notify(&ChangeSummary::whole(doc));
+            self.notify(&ChangeSummary {
+                by: by.cloned(),
+                ..ChangeSummary::whole(doc)
+            });
         }
     }
 
