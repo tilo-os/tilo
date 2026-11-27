@@ -72,7 +72,8 @@
         {
           "must": {
             "see": [
-              "topbar_workspace_pill"
+              "Top bar",
+              "Workspace"
             ],
             "within": 10
           }
