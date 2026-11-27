@@ -445,7 +445,7 @@ impl Machine {
         let path = self.part(name).join(format!(
             "usr/lib/extension-release.d/extension-release.{name}"
         ));
-        tilo_extension::parse_os_release(&fs::read_to_string(path).unwrap())
+        tilo_extension::parse_os_release(&fs::read_to_string(path).unwrap()).unwrap()
     }
 
     pub fn rpm_requests(&self) -> Vec<String> {

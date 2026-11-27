@@ -1,102 +1,7 @@
 //! Read-only Linux host discovery, and the exact Desktop release it finds.
 
 use super::desktop_catalog::{DesktopRelease, PackageFormat};
-use std::collections::HashMap;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OsRelease {
-    pub id: String,
-    /// Missing is distinct from a version; only exact ID=arch means rolling.
-    pub version_id: Option<String>,
-    pub name: Option<String>,
-}
-
-pub fn parse_os_release(input: &str) -> Result<OsRelease, String> {
-    let mut fields = HashMap::new();
-    for line in input.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let (key, raw) = line
-            .split_once('=')
-            .ok_or("Malformed os-release assignment.")?;
-        if key.is_empty()
-            || !key
-                .bytes()
-                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
-            || key.as_bytes().first().is_some_and(u8::is_ascii_digit)
-        {
-            return Err("Invalid os-release key.".into());
-        }
-        let value = parse_value(raw)?;
-        if fields.insert(key, value).is_some() {
-            return Err("Duplicate os-release key.".into());
-        }
-    }
-    let id = fields.remove("ID").ok_or("Missing os-release ID.")?;
-    if id.is_empty()
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b))
-    {
-        return Err("Invalid os-release ID.".into());
-    }
-    let version_id = fields.remove("VERSION_ID");
-    if version_id
-        .as_ref()
-        .is_some_and(|v| v.is_empty() || v.trim() != v || v.chars().any(char::is_control))
-    {
-        return Err("Invalid os-release VERSION_ID.".into());
-    }
-    // Only a display name: never used to choose a release.
-    let name = fields
-        .remove("NAME")
-        .filter(|name| !name.trim().is_empty() && !name.chars().any(char::is_control));
-    Ok(OsRelease {
-        id,
-        version_id,
-        name,
-    })
-}
-
-fn parse_value(raw: &str) -> Result<String, String> {
-    let mut chars = raw.chars();
-    let first = chars.next();
-    let quote = first.filter(|c| matches!(c, '\'' | '"'));
-    if let Some(quote) = quote {
-        let mut result = String::new();
-        while let Some(c) = chars.next() {
-            if c == quote {
-                return if chars.next().is_none() {
-                    Ok(result)
-                } else {
-                    Err("Trailing os-release data.".into())
-                };
-            }
-            if c.is_control() {
-                return Err("Control character in os-release.".into());
-            }
-            if c == '\\' && quote == '"' {
-                let escaped = chars.next().ok_or("Unterminated os-release escape.")?;
-                if !matches!(escaped, '$' | '`' | '"' | '\\') {
-                    result.push('\\');
-                }
-                result.push(escaped);
-            } else {
-                result.push(c);
-            }
-        }
-        Err("Unterminated os-release quote.".into())
-    } else if raw
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b"._-/".contains(&b))
-    {
-        Ok(raw.into())
-    } else {
-        Err("Malformed unquoted os-release value.".into())
-    }
-}
+pub use tilo_os_release::OsRelease;
 
 pub fn catalog_architecture(rust_architecture: &str) -> Option<&'static str> {
     match rust_architecture {
@@ -411,9 +316,10 @@ fn sandbox_environment_marker_present(mut present: impl FnMut(&str) -> bool) -> 
 )]
 mod native {
     use super::{
-        DesktopHost, HashMap, InstalledPackage, OsRelease, PackageManager, SessionSupport, adapter,
-        catalog_architecture, parse_os_release, parse_package_status,
+        DesktopHost, InstalledPackage, OsRelease, PackageManager, SessionSupport, adapter,
+        catalog_architecture, parse_package_status,
     };
+    use std::collections::HashMap;
     use std::fs::{self, OpenOptions};
     use std::io::Read;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -779,7 +685,7 @@ mod native {
             } else {
                 "/usr/lib/os-release"
             };
-            parse_os_release(&read_text(Path::new(path))?)
+            OsRelease::parse(&read_text(Path::new(path))?)
         })();
         let architecture = (|| {
             let native = successful("/usr/bin/uname", &["-m"])?;
@@ -825,6 +731,7 @@ mod native {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     #[allow(
@@ -1089,7 +996,7 @@ mod tests {
                 ] {
                     let mut wrong = host.clone();
                     wrong.os_release =
-                        parse_os_release(&format!("ID={id}\nVERSION_ID={version}\nID_LIKE=fedora"));
+                        OsRelease::parse(&format!("ID={id}\nVERSION_ID={version}\nID_LIKE=fedora"));
                     wrong.architecture = Ok(arch.into());
                     blocked(&wrong, &[good.clone()]);
                 }
@@ -1108,7 +1015,7 @@ mod tests {
                         5 => host.package_manager = Err("missing".into()),
                         6 => host.installed_package = Err("query failed".into()),
                         7 => host.operating_system = "windows".into(),
-                        8 => host.os_release = parse_os_release("ID=fedora"),
+                        8 => host.os_release = OsRelease::parse("ID=fedora"),
                         9 => host.package_manager = Ok(PackageManager::Apt),
                         _ => host.architecture = Err("unknown".into()),
                     }
@@ -1133,7 +1040,7 @@ mod tests {
                     ("arch", None, PackageManager::Pacman, PackageFormat::Arch),
                 ] {
                     let mut host = fedora();
-                    host.os_release = parse_os_release(&format!(
+                    host.os_release = OsRelease::parse(&format!(
                         "ID={id}\n{}",
                         version.map_or(String::new(), |v| format!("VERSION_ID={v}"))
                     ));
@@ -1149,7 +1056,7 @@ mod tests {
                 }
                 for id in ["nixos", "unknown", "fedora-derivative"] {
                     let mut host = fedora();
-                    host.os_release = parse_os_release(&format!("ID={id}\nVERSION_ID=44"));
+                    host.os_release = OsRelease::parse(&format!("ID={id}\nVERSION_ID=44"));
                     let mut release = release();
                     release.distro_id = id.into();
                     blocked(&host, &[release]);
@@ -1157,51 +1064,24 @@ mod tests {
             }
 
             {
-                let host = parse_os_release("ID=example\nID_LIKE=fedora\nVERSION_ID=44\n").unwrap();
+                let host = OsRelease::parse("ID=example\nID_LIKE=fedora\nVERSION_ID=44\n").unwrap();
                 assert_eq!(host.id, "example");
             }
         }
 
-        phase os_release_parses_literally_and_rejects_ambiguity;
+        phase catalog_architecture_names_only_the_supported_architectures;
         {
-            {
-                let host = parse_os_release("# Fedora fixture\nNAME=\"Fedora Linux\"\nID='fedora'\nVERSION_ID=\"44\"\nPRETTY_NAME=\"Fedora \\\"44\\\" \\$HOME\"\n").unwrap();
-                assert_eq!(host.id, "fedora");
-                assert_eq!(host.version_id.as_deref(), Some("44"));
-            }
-
-            {
-                for value in [
-                    "",
-                    "ID=fedora\nID=fedora\n",
-                    "ID=fedora\nVERSION_ID=44\nVERSION_ID=45\n",
-                    "ID=\"fedora",
-                    "ID=fedora extra",
-                    "export ID=fedora",
-                    "ID=$(whoami)",
-                    "ID=fedora;true",
-                    "ID=fedora\nBROKEN",
-                    "ID=Fedora",
-                    "ID=fedora\nVERSION_ID=\"44\"junk",
-                ] {
-                    assert!(parse_os_release(value).is_err(), "accepted {value:?}");
-                }
-            }
-
-            {
-                assert_eq!(parse_os_release("ID=fedora\n").unwrap().version_id, None);
-                assert_eq!(catalog_architecture("aarch64"), Some("aarch64"));
-                assert_eq!(catalog_architecture("x86_64"), Some("x86_64"));
-                assert_eq!(catalog_architecture("arm64"), None);
-                assert_eq!(catalog_architecture("x86"), None);
-            }
+            assert_eq!(catalog_architecture("aarch64"), Some("aarch64"));
+            assert_eq!(catalog_architecture("x86_64"), Some("x86_64"));
+            assert_eq!(catalog_architecture("arm64"), None);
+            assert_eq!(catalog_architecture("x86"), None);
         }
     }
 
     fn fedora() -> DesktopHost {
         DesktopHost {
             operating_system: "linux".into(),
-            os_release: parse_os_release(
+            os_release: OsRelease::parse(
                 "NAME=\"Fedora Linux\"\nVERSION=\"44 (Workstation Edition)\"\nID=fedora\nVERSION_ID=44\nPLATFORM_ID=\"platform:f44\"\n",
             ),
             architecture: Ok("aarch64".into()),

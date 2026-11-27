@@ -21,6 +21,7 @@ path = "src/bin/tilo-system-extension-manager.rs"
 [dependencies]
 # The BootPack manager's bounded helper runs.
 bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
+tilo-os-release = { version = "0.1.0", path = "../../platform/os-release" }
 ed25519-dalek.workspace = true
 hex.workspace = true
 # The composefs image's fs-verity digest (FS_IOC_MEASURE_VERITY).

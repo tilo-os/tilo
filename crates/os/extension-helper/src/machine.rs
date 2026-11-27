@@ -397,7 +397,8 @@ fn probe_base(host: &dyn Host, layout: &Layout) -> Result<Base> {
     let bytes = fs::read(&path).at(&path)?;
     let text = String::from_utf8(bytes)
         .map_err(|error| Error::Value(format!("'utf-8' codec can't decode: {error}")))?;
-    let release = model::parse_os_release(&text);
+    let release = crate::parse_os_release(&text)
+        .map_err(|error| Error::pack(format!("this system's os-release is malformed: {error}")))?;
     let os_id = release.get("ID").cloned().unwrap_or_default();
     let version_id = release.get("VERSION_ID").cloned().unwrap_or_default();
     let id_ok = model::all_of(&os_id, |c| {

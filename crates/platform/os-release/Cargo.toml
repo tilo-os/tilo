@@ -1,0 +1,22 @@
+[package]
+name = "tilo-os-release"
+version = "0.1.0"
+edition = "2024"
+# Published: the SDK's platform layer (tools/sdk/publish_check.py).
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
+repository.workspace = true
+homepage.workspace = true
+description = "The os-release format, read strictly: the shell-like assignments /etc/os-release and extension-release files are written in."
+
+[lib]
+name = "tilo_os_release"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

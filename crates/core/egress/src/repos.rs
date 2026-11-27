@@ -129,9 +129,11 @@ impl DnfVars {
         ];
         if let Ok(release) = std::fs::read_to_string(root.join("etc/os-release"))
             .or_else(|_| std::fs::read_to_string(root.join("usr/lib/os-release")))
-            && let Some(v) = release.lines().find_map(|l| l.strip_prefix("VERSION_ID="))
+            && let Some(version) = tilo_os_release::parse(&release)
+                .ok()
+                .and_then(|fields| fields.get("VERSION_ID").cloned())
         {
-            vars.push(("releasever".to_owned(), v.trim_matches('"').to_owned()));
+            vars.push(("releasever".to_owned(), version));
         }
         if let Ok(entries) = std::fs::read_dir(root.join("etc/dnf/vars")) {
             for entry in entries.flatten() {

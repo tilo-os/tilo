@@ -52,7 +52,9 @@ pub fn facts_from(
 ) -> HostInfo {
     let pretty_name = std::fs::read_to_string(os_release)
         .ok()
-        .and_then(|contents| parse_os_release_pretty_name(&contents))
+        .and_then(|contents| tilo_os_release::parse(&contents).ok())
+        .and_then(|mut fields| fields.remove("PRETTY_NAME"))
+        .filter(|name| !name.trim().is_empty())
         .unwrap_or_else(unknown);
     let kernel = std::fs::read_to_string(kernel_path)
         .ok()
@@ -97,19 +99,6 @@ pub fn facts_from(
 
 fn unknown() -> String {
     "unknown".to_owned()
-}
-
-fn parse_os_release_pretty_name(contents: &str) -> Option<String> {
-    for line in contents.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("PRETTY_NAME=") {
-            let unquoted = rest.trim_matches('"').trim_matches('\'').to_string();
-            if !unquoted.is_empty() {
-                return Some(unquoted);
-            }
-        }
-    }
-    None
 }
 
 fn parse_cpu_model(contents: &str) -> Option<String> {

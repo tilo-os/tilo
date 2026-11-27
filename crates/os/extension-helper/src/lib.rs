@@ -27,8 +27,10 @@ pub use host::{Header, Host, HttpError, Response, System};
 pub use machine::{Layout, activate, main};
 pub use model::{
     Catalogue, MANIFEST_TYPE, Manifest, VERBS, base_packages_sha256, extension_release,
-    parse_command, parse_os_release,
+    parse_command,
 };
+// The one reader of the os-release format, under the name this tool's callers use.
+pub use tilo_os_release::parse as parse_os_release;
 
 use std::fmt;
 use std::io;

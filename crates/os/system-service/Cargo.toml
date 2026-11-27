@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 bounded-command = { package = "tilo-bounded-command", path = "../../platform/bounded-command" }
+tilo-os-release = { version = "0.1.0", path = "../../platform/os-release" }
 # What the disk holds, by category and owner, and the cache cleaner.
 tilo-storage-scan = { path = "../storage-scan" }
 # The filesystem daemon's storage socket: what this device keeps of each workspace, and the

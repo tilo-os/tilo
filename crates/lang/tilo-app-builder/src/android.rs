@@ -408,13 +408,9 @@ impl PackageManager {
     /// The family `os-release` names in `ID`, else in `ID_LIKE`.
     #[must_use]
     pub fn from_os_release(text: &str) -> Option<Self> {
-        let value = |key: &str| {
-            text.lines()
-                .find_map(|line| line.strip_prefix(key))
-                .map(|value| value.trim().trim_matches(['"', '\'']).to_owned())
-                .unwrap_or_default()
-        };
-        let (id, like) = (value("ID="), value("ID_LIKE="));
+        let fields = tilo_os_release::parse(text).ok()?;
+        let id = fields.get("ID").map_or("", String::as_str);
+        let like = fields.get("ID_LIKE").map_or("", String::as_str);
         id.split_whitespace()
             .chain(like.split_whitespace())
             .find_map(|id| match id {

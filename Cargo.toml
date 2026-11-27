@@ -297,6 +297,7 @@ members = [
     "crates/platform/tilo-clipboard",
     "crates/platform/tilo-platform-caps",
     "crates/platform/tilo-clock",
+    "crates/platform/os-release",
     "crates/lang/tilolang-tilo",
     "crates/lang/tilolang-workspace",
     "crates/lang/tilolang-service",

@@ -194,24 +194,6 @@ impl Base {
     }
 }
 
-pub fn parse_os_release(text: &str) -> BTreeMap<String, String> {
-    let mut values = BTreeMap::new();
-    for line in py::splitlines(text) {
-        let line = py::strip(line);
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        values.insert(
-            py::strip(key).to_owned(),
-            py::strip(value).trim_matches(['"', '\'']).to_owned(),
-        );
-    }
-    values
-}
-
 fn bounded(value: Option<&Value>, field: &str, limit: usize) -> Result<String> {
     match value {
         Some(Value::String(text))

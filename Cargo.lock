@@ -6315,6 +6315,7 @@ dependencies = [
  "tilo-install-helpers",
  "tilo-lock",
  "tilo-net",
+ "tilo-os-release",
  "tilo-paths",
  "tilo-process",
  "tilo-resource",
@@ -15058,6 +15059,7 @@ dependencies = [
  "tilo-headless-schema",
  "tilo-history",
  "tilo-member-types",
+ "tilo-os-release",
  "tilo-paths",
  "tilo-registry-types",
  "tilo-resource-macros",
@@ -17213,6 +17215,7 @@ dependencies = [
  "tilo-clock",
  "tilo-collab-types",
  "tilo-lock",
+ "tilo-os-release",
  "tilo-paths",
  "tilo-test-env",
  "tracing",
@@ -17321,6 +17324,7 @@ dependencies = [
  "tilo-files",
  "tilo-net",
  "tilo-nm",
+ "tilo-os-release",
  "tilo-paths",
  "tilo-process",
  "tilo-pycompat",
@@ -18858,6 +18862,13 @@ dependencies = [
  "tracing",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-os-release"
+version = "0.1.0"
+dependencies = [
+ "workspace-hack",
 ]
 
 [[package]]
@@ -21027,6 +21038,7 @@ dependencies = [
  "tilo-fs-client",
  "tilo-location",
  "tilo-ntfs-mount",
+ "tilo-os-release",
  "tilo-paths",
  "tilo-resource",
  "tilo-service",
