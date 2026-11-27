@@ -260,7 +260,10 @@ tilo_test_env::scenario! {
         // it at once, nobody is asked, the change is in the record's history
         // as the action the button is bound to, and Undo takes it back.
         let steps = app.history().len();
+        // Shift held skips the yes a destructive press undo takes back waits for.
+        app.harness().set_modifiers(&["shift".into()]);
         app.harness().click_named("clear-done").unwrap();
+        app.harness().set_modifiers(&[]);
         app.settle();
         assert_eq!(app.asking(), None);
         assert_eq!(app.state().items.len(), 1);
