@@ -3891,6 +3891,21 @@ fn the_shell_links_own_call_reaches_the_providers_the_device_serves() {
         },
         "an agent's call reaches no provider the shell serves this way: {refused:?}"
     );
+    // Nor is an app acting as the person: its call is the app's, whoever it acts for.
+    let through_app = shell.through_app("so.tilo.example");
+    let refused = crate::device::local::tests::answered(
+        tilo_actions::remote::ActionProvider::invoke(&dispatch, &through_app, call()),
+    );
+    assert!(
+        match &refused {
+            Ok(InvocationReceipt { status, .. }) => {
+                !matches!(status, ReceiptStatus::Completed { .. })
+            }
+            Err(ActionCallError::ConfirmationRequired(_)) => false,
+            Err(_) => true,
+        },
+        "an app acting as the person reaches no provider the shell serves this way: {refused:?}"
+    );
     assert_eq!(
         probe.asked().len(),
         1,

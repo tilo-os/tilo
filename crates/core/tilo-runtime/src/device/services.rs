@@ -7269,13 +7269,20 @@ fn on_this_device(caller: &Caller) -> Caller {
     caller.clone().from_foreign_device(true)
 }
 
-/// Whether `caller` is the plain person and nobody else: no agent acting or named, no app they
-/// launched, no key of theirs, and no device certificate of their own. What a call on the link
+/// Whether `caller` is the plain person and nobody else: no agent acting or named, no app acting
+/// as them or launched by them, no turn or agent session, no key of theirs, and no device certificate of their own. What a call on the link
 /// this device made for their shell is, as a call on their own daemon's connection is.
 fn the_plain_person(caller: &Caller) -> bool {
+    let acting = caller.acting();
     caller.device_public_key().is_none()
         && caller.user_public_key().is_none()
-        && caller.acting().agent_id().is_none()
+        && !caller.is_foreign_device()
+        && caller.turn().is_none()
+        && acting.agent_id().is_none()
+        && acting.app.is_none()
+        && acting.agent_session.is_none()
+        && !acting.handed
+        && acting.acted_for.is_empty()
         && caller.acting_for_person().is_none()
         && caller.agent_called().is_none()
         && caller.launched_app().is_none()
