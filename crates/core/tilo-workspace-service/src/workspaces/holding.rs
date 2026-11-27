@@ -748,10 +748,19 @@ pub(super) async fn dial_holder(
     const FIRST: std::time::Duration = std::time::Duration::from_secs(1);
     const MOST: std::time::Duration = std::time::Duration::from_secs(60);
     let mut backoff = FIRST;
+    // Whether this device's key is the greater of the pair: the one whose own dial ends as soon
+    // as the other device's is up (`PairLinks`).
+    let greater = link.device() > device;
     loop {
-        // A link the other holder dialled carries the pair while it is up, when its key is the
-        // lesser: one this device dialled would end at once.
-        link.pair_carried_by(device).await;
+        // While the link the other device dialled carries the pair, that link serves this copy
+        // too: the pair is reached, and this device waits for it to end before dialling. A dial
+        // this device made that gave way to it says nothing of how the pair stands, and neither
+        // does one refused while it is up.
+        if greater && link.pair_carried(device) {
+            links.set(device, Link::Current);
+            link.pair_carried_by(device).await;
+            continue;
+        }
         links.set(device, Link::Reaching);
         match link.dial(&endpoint, addr.clone(), device).await {
             Ok(dialed) => {
@@ -781,12 +790,18 @@ pub(super) async fn dial_holder(
                         }
                     }
                 }
-                links.set(
-                    device,
-                    Link::Unreachable {
-                        since_ns: tilo_clock::unix_now_ns(),
-                    },
-                );
+                if greater && link.pair_carried(device) {
+                    // The other device's link carries the pair: this copy takes in what that
+                    // link brings, and the pair is reached.
+                    links.set(device, Link::Current);
+                } else {
+                    links.set(
+                        device,
+                        Link::Unreachable {
+                            since_ns: tilo_clock::unix_now_ns(),
+                        },
+                    );
+                }
             }
             Err(refusal) => {
                 tracing::debug!(%name, ?refusal, "a holder is unreachable");
@@ -797,12 +812,16 @@ pub(super) async fn dial_holder(
                 if let Some(inner) = workspaces.upgrade() {
                     (Workspaces { inner }).take_refusal(refusal).await;
                 }
-                links.set(
-                    device,
-                    Link::Unreachable {
-                        since_ns: tilo_clock::unix_now_ns(),
-                    },
-                );
+                if greater && link.pair_carried(device) {
+                    links.set(device, Link::Current);
+                } else {
+                    links.set(
+                        device,
+                        Link::Unreachable {
+                            since_ns: tilo_clock::unix_now_ns(),
+                        },
+                    );
+                }
             }
         }
         tokio::time::sleep(backoff).await;

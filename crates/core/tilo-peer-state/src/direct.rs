@@ -3234,6 +3234,17 @@ impl DirectSync {
         self.0.ended_links.write_recover().remove(&remote);
     }
 
+    /// Whether a link `remote` dialled carries this device's pair with it now: the one a pair is
+    /// served by when this device's key is the greater of the two ([`Self::pair_carried_by`]).
+    #[must_use]
+    pub fn pair_carried(&self, remote: [u8; 32]) -> bool {
+        self.0
+            .pair_links
+            .borrow()
+            .get(&remote)
+            .is_some_and(|pair| pair.accepted > 0)
+    }
+
     /// Wait while a link `remote` dialled carries this device's pair with it, when this device's
     /// key is the greater of the two: a link this device dials then ends as soon as it is up
     /// ([`PairLinks`]), so it dials again only once that one ended.
