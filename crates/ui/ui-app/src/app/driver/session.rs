@@ -489,7 +489,30 @@ impl<'a> Walk<'a> {
         }
     }
 
+    /// Whether the widget at `node` is a canvas: a node that scrolls both ways and stands its
+    /// children at points of its own. What it holds is written at its pixels, down the subtree,
+    /// never tiled into the host's tracks: a canvas that panned to its places on a device must
+    /// stand them at the same points on a page. A list or a field scrolls one way and is laid
+    /// out as it flows.
+    fn places_by_pixel(&self, node: NodeId) -> bool {
+        self.node_widgets.get(&node).is_some_and(|&at| {
+            self.widget_at(at).is_some_and(|(_, widget)| {
+                matches!(
+                    widget.layout_info(),
+                    Some(tilo_ui_base::widget::LayoutInfo::Scroll(
+                        tilo_ui_base::widget::ScrollLayout {
+                            direction: tilo_ui_base::widget::ScrollDirection::Both,
+                        }
+                    ))
+                )
+            })
+        })
+    }
+
     fn flows(&self, node: NodeId, origin: (f64, f64), children: &[Composed]) -> bool {
+        if self.places_by_pixel(node) {
+            return false;
+        }
         let nodes = self.taffy.children(node).unwrap_or_default();
         // A page lays out a flex or grid container's children from its style, with the grid's
         // tracks and each child's place in them, the way the layout did.
@@ -544,7 +567,10 @@ impl<'a> Walk<'a> {
         origin: (f64, f64),
         anonymous: &mut usize,
         parent: &str,
+        pixel: bool,
     ) -> Composed {
+        // What stands in a canvas, or in a canvas's region, is at its pixel: never a host track.
+        let pixel = pixel || self.places_by_pixel(node);
         let layout = self.taffy.layout(node).ok();
         let (x, y) = layout.map_or(origin, |layout| {
             (
@@ -565,11 +591,11 @@ impl<'a> Walk<'a> {
             let mut inner = 0;
             let mut children: Vec<Composed> = children_nodes
                 .into_iter()
-                .map(|child| self.compose(child, (x, y), &mut inner, &path))
+                .map(|child| self.compose(child, (x, y), &mut inner, &path, pixel))
                 .collect();
             let mut composed = Composed::new(path, "", [x, y, size.0, size.1]);
-            composed.flows = self.flows(node, (x, y), &children);
-            let tiled = if composed.flows {
+            composed.flows = !pixel && self.flows(node, (x, y), &children);
+            let tiled = if composed.flows || pixel {
                 None
             } else {
                 tiles(composed.rect, 0.0, &mut children)
@@ -621,7 +647,7 @@ impl<'a> Walk<'a> {
         } else {
             children_nodes
                 .iter()
-                .map(|&child| self.compose(child, base, &mut inner, path))
+                .map(|&child| self.compose(child, base, &mut inner, path, pixel))
                 .collect()
         };
         if at.is_some() {
@@ -632,11 +658,11 @@ impl<'a> Walk<'a> {
             widget.name(),
             [rect.x0, rect.y0, rect.width(), rect.height()],
         );
-        composed.flows = self.flows(node, base, &children);
+        composed.flows = !pixel && self.flows(node, base, &children);
         // A widget that places its children by hand (a shell's columns, a list's rows, a field's
         // button beside its text, a banner's buttons over its body) lays out on a page as the
-        // grid their edges make.
-        let tiled = if composed.flows {
+        // grid their edges make. A canvas and what it holds stand at their pixels instead.
+        let tiled = if composed.flows || pixel {
             None
         } else {
             let scrolled = widget
@@ -712,7 +738,7 @@ impl Driver {
         let (width, height) = self.viewport();
         let mut anonymous = 0;
         let root = if let Some(root_node) = self.app.layout.root_node {
-            walk.compose(root_node, (0.0, 0.0), &mut anonymous, "")
+            walk.compose(root_node, (0.0, 0.0), &mut anonymous, "", false)
         } else {
             Composed::new(
                 String::new(),
@@ -744,7 +770,7 @@ impl Driver {
             .into_iter()
             .map(|node| {
                 let mut anonymous = 0;
-                walk.compose(node, (0.0, 0.0), &mut anonymous, "")
+                walk.compose(node, (0.0, 0.0), &mut anonymous, "", false)
             })
             .collect();
         layers.extend(walk.lifted.take());
