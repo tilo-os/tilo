@@ -367,6 +367,43 @@ impl Admits for LocalFiles {
         &self,
         caller: &Caller,
         request: &InvokeRequest,
+        admitted: &Admitted,
+    ) -> Result<Pending<Outcome>, String> {
+        // The folder answers where the tree's sync runs: a change waits for the workspace's
+        // records, driven by the device's own runtime, so it is made on a thread of its own
+        // rather than parked on a runtime the caller may be inside. A thread that is no
+        // runtime's makes it here.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // The folder's writer is made here, where a runtime is current, so the watch of the
+            // trees deleted meanwhile runs on that runtime; the call itself is made off it.
+            drop(self.folders.puts());
+            let (answered, heard) = std::sync::mpsc::sync_channel(1);
+            let (this, caller, request, admitted) = (
+                self.clone(),
+                caller.clone(),
+                request.clone(),
+                admitted.clone(),
+            );
+            std::thread::Builder::new()
+                .name("tilo-files-call".to_owned())
+                .spawn(move || {
+                    let _ = answered.send(this.start_here(&caller, &request, &admitted));
+                })
+                .map_err(|error| error.to_string())?;
+            return heard
+                .recv()
+                .map_err(|_| "the folder's call ended without an answer".to_owned())?;
+        }
+        self.start_here(caller, request, admitted)
+    }
+}
+
+impl LocalFiles {
+    /// [`Admits::start`] as it is made, on a thread that drives the device's runtime.
+    fn start_here(
+        &self,
+        caller: &Caller,
+        request: &InvokeRequest,
         _admitted: &Admitted,
     ) -> Result<Pending<Outcome>, String> {
         let address = &request.target.address;
