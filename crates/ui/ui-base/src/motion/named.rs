@@ -1417,6 +1417,33 @@ impl ControlChange {
         reduced: Reduced::Fades,
         shortcut: Shortcut::Lands,
     };
+    /// A control or a part of a bar growing from the size it stood at to the one a new scale or
+    /// count gives it, so a bar or dock grows in frames rather than in one jump.
+    pub const GROW: MotionSpec = MotionSpec {
+        enter: Pace::Base,
+        exit: Pace::Base,
+        reduced: Reduced::Lands,
+        shortcut: Shortcut::Lands,
+    };
+    /// A dock item growing under the pointer and settling back as it leaves.
+    pub const MAGNIFY: MotionSpec = MotionSpec {
+        enter: Pace::Fast,
+        exit: Pace::Fast,
+        reduced: Reduced::Lands,
+        shortcut: Shortcut::Lands,
+    };
+
+    /// [`Self::GROW`]'s timing: a setting or a theme change moves it, never a hand.
+    #[must_use]
+    pub fn grow(motion: EffectiveMotion) -> Timing {
+        Self::GROW.timing(Direction::Enter, motion, MotionSource::Pointer)
+    }
+
+    /// [`Self::MAGNIFY`]'s timing: the pointer follows the item out and back.
+    #[must_use]
+    pub fn magnify(motion: EffectiveMotion) -> Timing {
+        Self::MAGNIFY.timing(Direction::Enter, motion, MotionSource::Pointer)
+    }
 }
 
 /// Ask the frame pump for frames until a motion that just started settles.

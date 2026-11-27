@@ -2458,15 +2458,7 @@ impl Widget for Button {
             let ratio = (from.height / self.metrics.height.max(1.0)).clamp(0.4, 2.5);
             let now = tilo_ui_base::motion::frame_now();
             self.resize.snap(ratio);
-            let timing = if theme.motion().still() {
-                tilo_ui_base::motion::Timing::Instant
-            } else {
-                tilo_ui_base::motion::Timing::Spring(
-                    tilo_ui_base::motion::SpringSpec::settling_within(
-                        crate::time::Duration::from_millis(190),
-                    ),
-                )
-            };
+            let timing = tilo_ui_base::motion::ControlChange::grow(theme.motion());
             self.resize.set(1.0, timing, now);
             self.dirty = true;
         }

@@ -13,6 +13,7 @@ use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
 
 use tilo_ui_base::ColorCompat;
+use tilo_ui_base::motion::Follow;
 use tilo_ui_base::paint::PaintCtx;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
@@ -258,11 +259,13 @@ impl ResizeFeedback {
             return 0.0;
         };
         if fade.is_zero() {
+            // A theme that holds still lights the edge the moment the pointer has rested.
             return f32::from(u8::from(now.saturating_duration_since(since) >= DWELL));
         }
-        let rested = now.saturating_duration_since(since + DWELL);
-        let taken = rested.as_secs_f64() / fade.as_secs_f64();
-        taken.clamp(0.0, 1.0) as f32
+        // The light is whole once its fade is behind it; while it comes up, it is as far through
+        // that fade as the follow's own.
+        let left = (since + DWELL + fade).saturating_duration_since(now);
+        Follow::fading(left, fade)
     }
 
     /// The chip's words and ink now: the size being taken while dragging, and for the theme's
@@ -274,11 +277,10 @@ impl ResizeFeedback {
             None => 1.0,
             Some(at) => {
                 if fade.is_zero() {
+                    // A theme that holds still drops the chip the moment it is let go.
                     0.0
                 } else {
-                    let gone =
-                        now.saturating_duration_since(*at).as_secs_f64() / fade.as_secs_f64();
-                    (1.0 - gone).clamp(0.0, 1.0) as f32
+                    Follow::fading((*at + fade).saturating_duration_since(now), fade)
                 }
             }
         };

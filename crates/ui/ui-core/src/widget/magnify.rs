@@ -11,7 +11,7 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
 use tilo_ui_base::component::{Component, Described, PartViews};
-use tilo_ui_base::motion::{MotionValue, SpringSpec, Timing, frame_now, last_pointer};
+use tilo_ui_base::motion::{ControlChange, MotionValue, frame_now, last_pointer};
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::tokens::EffectiveMotion;
 use tilo_ui_base::widget::{DrawChild, Element, Spacer, Widget};
@@ -23,10 +23,6 @@ const DECAY_HEIGHTS: f64 = 2.0;
 
 /// Below this share of the peak an item rests: far enough that its growth is not seen.
 const REST_SHARE: f64 = 0.02;
-
-/// How long the growth takes to settle after the pointer stops: short enough that the item
-/// answers the pointer, long enough to read as motion rather than as a jump.
-const SETTLE_MS: u64 = 150;
 
 /// An item of a dock that magnifies under the pointer.
 #[derive(Component, Default)]
@@ -111,13 +107,7 @@ impl Magnify {
 
     /// Follow the pointer: set the growth's target and lay the child at what that is now.
     fn follow(&mut self, now: crate::time::Instant) {
-        let timing = if self.motion.still() {
-            Timing::Instant
-        } else {
-            Timing::Spring(SpringSpec::settling_within(
-                crate::time::Duration::from_millis(SETTLE_MS),
-            ))
-        };
+        let timing = ControlChange::magnify(self.motion);
         self.extra.set(self.target(), timing, now);
         let scale = self.extra.get(now);
         if (scale - self.applied).abs() > 1e-4 {
