@@ -823,3 +823,51 @@ fn every_bar_gives_every_part_its_own_place_at_every_width() {
         );
     }
 }
+
+// A capture takes its pictures one after another, switching theme and size in the same driver: the
+// window's controls are painted on the row the app's header draws, at the end of the size the
+// frame just laid out, never the one before it.
+#[test]
+fn the_window_controls_follow_the_row_a_capture_changes_size_under() {
+    use crate::testing::TestLeaf;
+    let shell = crate::widget::NavShell::new()
+        .sidebar(TestLeaf::fill("sidebar").boxed().0)
+        .overview(TestLeaf::fill("overview").boxed().0)
+        .content(TestLeaf::fill("content").boxed().0)
+        .sidebar_header("Mailboxes", Vec::new())
+        .overview_header("Inbox", Vec::new())
+        .content_header("Design review", Vec::new());
+    let mut driver = Driver::for_root(
+        crate::State::new(),
+        shell,
+        (1280, 800),
+        tilo_ui_base::theme::Theme::dark().with_reduce_motion(true),
+    );
+    driver.present_in_window_bar();
+    for (theme, theme_name, viewport) in [
+        (
+            tilo_ui_base::theme::Theme::dark(),
+            "dark",
+            (1280u32, 800u32),
+        ),
+        (tilo_ui_base::theme::Theme::dark(), "dark", (420, 800)),
+        (tilo_ui_base::theme::Theme::light(), "light", (1280, 800)),
+        (tilo_ui_base::theme::Theme::light(), "light", (420, 800)),
+    ] {
+        driver.set_theme(theme.with_reduce_motion(true));
+        driver.resize(viewport).expect("layout");
+        driver.settle_for_capture(std::time::Duration::from_millis(250));
+        let g = driver.root::<crate::widget::NavShell>().geometry().clone();
+        let live = crate::widget::window_header::content_bar(driver.root_widget())
+            .expect("the row holds the bar");
+        let painted = driver
+            .bar_held()
+            .expect("the bar holds the furniture it paints");
+        assert_eq!(
+            painted.controls.x1, live.controls.x1,
+            "{theme_name} {viewport:?}: the painted furniture follows the row's live layout \
+             (painted {painted:?}, live {live:?}, geometry {:?})",
+            g.window_controls,
+        );
+    }
+}

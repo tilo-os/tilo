@@ -2783,6 +2783,7 @@ impl AppHandler {
             full_redraw_required |=
                 repaint_why.note("decorations", self.decorations.take_repaint());
         }
+        self.part_bar.rehold(app);
         self.part_bar.draw(app, over, transform);
         full_redraw_required |= repaint_why.note("part-bar", self.part_bar.take_repaint());
         let decorated = over.encoding().draw_tags.len() != before_decorations;

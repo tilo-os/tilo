@@ -560,6 +560,9 @@ impl Driver {
             let redeclared = self.bar.is_some() && crate::window_toolbar::revision() != declared;
             if let Some(bar) = self.bar.as_mut().filter(|_| !self.bar_at_rest) {
                 let transform = vello::kurbo::Affine::scale(self.surface.scale.get());
+                // The app has laid out this frame: read again where its row holds the bar, so
+                // the window's controls follow a width this frame changed.
+                bar.rehold(&self.app);
                 bar.draw(&mut self.app, &mut self.scene, transform);
                 let _ = bar.take_repaint();
                 again |= bar.needs_frame();

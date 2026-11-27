@@ -275,6 +275,21 @@ impl PartBar {
         self.row.shows_window_controls()
     }
 
+    /// Read again the part the app's header row holds the bar in, once this frame's layout has
+    /// placed the row: the bar refreshes before the app lays out (its height is part of the
+    /// app's top inset), so on a frame that changed the window's width the row it read stands at
+    /// the size before. Reading it before the bar is drawn keeps the window's controls and search
+    /// on the row they belong to in the frame a person sees.
+    pub(super) fn rehold(&mut self, app: &App) {
+        self.held = crate::widget::window_header::content_bar(app.root_widget.as_ref());
+    }
+
+    /// The part the app's header row holds the bar in, as the last frame laid it out.
+    #[cfg(test)]
+    pub(super) fn held(&self) -> Option<crate::widget::WindowBarPart> {
+        self.held
+    }
+
     /// The row's parts as assistive technology reaches them: each with the
     /// target [`Self::perform`] runs it by.
     pub(super) fn parts(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {

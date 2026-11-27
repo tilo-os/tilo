@@ -129,6 +129,14 @@ impl Driver {
             .is_some_and(super::super::part_bar::PartBar::shows_window_controls)
     }
 
+    /// The part the app's header row holds the bar in, as the last frame laid it out.
+    #[cfg(test)]
+    pub(crate) fn bar_held(&self) -> Option<crate::widget::WindowBarPart> {
+        self.bar
+            .as_deref()
+            .and_then(super::super::part_bar::PartBar::held)
+    }
+
     /// Whether the window is maximized: its bar's maximize control and a double press on its
     /// ground toggle it.
     #[must_use]
