@@ -578,12 +578,14 @@ fn a_person_picks_a_source_from_the_list_and_brings_it_in() {
         .await
         .expect("the device lists its sources");
         // The device answers the sources as JSON text, which the app decodes.
-        let listed: Value = serde_json::from_str(
-            listed.as_str().expect("the sources are JSON text"),
-        )
-        .expect("the sources are JSON");
+        let listed: Value =
+            serde_json::from_str(listed.as_str().expect("the sources are JSON text"))
+                .expect("the sources are JSON");
         let sources = listed["sources"].as_array().cloned().unwrap_or_default();
-        assert!(!sources.is_empty(), "the device names its sources: {listed:#}");
+        assert!(
+            !sources.is_empty(),
+            "the device names its sources: {listed:#}"
+        );
         for source in &sources {
             let title = source["title"].as_str().unwrap_or_default();
             assert!(!title.is_empty(), "{listed:#}");
