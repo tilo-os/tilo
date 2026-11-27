@@ -1132,6 +1132,13 @@ mod tests {
                 hash: "ab".into(),
             },
         ));
+        all.push((
+            "governance wanted",
+            NeighbourMsg::MlsGovernanceWanted {
+                workspace: "workspace".into(),
+                from_epoch: 2,
+            },
+        ));
         all
     }
 
@@ -1540,7 +1547,7 @@ mod tests {
         message.kind()
     }
 
-    const VARIANT_COUNT: usize = 29;
+    const VARIANT_COUNT: usize = 32;
 
     /// Postcard encodings pinned byte for byte. Peers running older builds
     /// decode these frames, so a change here is a wire break, not a refactor.
@@ -1591,7 +1598,7 @@ mod tests {
         (
             "identity hello",
             concat!(
-                "0947010101010101010101010101010101010101010101010101010101010101010102020202",
+                "0948010101010101010101010101010101010101010101010101010101010101010102020202",
                 "02020202020202020202020202020202020202020202020202020202064c6170746f70010000",
                 "000a004003030303030303030303030303030303030303030303030303030303030303030303",
                 "03030303030303030303030303030303030303030303030303030303030300",
@@ -1710,6 +1717,15 @@ mod tests {
             "record content pieces",
             "1dd6e848ef9baf0509776f726b7370616365010e736f2e74696c6f2e736c69646573026162030003010203",
         ),
+        (
+            "record content kept",
+            "1e03040e736f2e74696c6f2e70686f746f7309776f726b7370616365026162",
+        ),
+        (
+            "record content released",
+            "1f040e736f2e74696c6f2e70686f746f7309776f726b7370616365026162",
+        ),
+        ("governance wanted", "1a09776f726b737061636502"),
     ];
 
     /// A refusal is only kept by a receiver that can check it: the signature
