@@ -295,30 +295,6 @@ impl Server {
         &self.origin
     }
 
-    /// `key`'s session that `device` already holds with the server, in the
-    /// workspace it entered: calls go over it rather than a session of their
-    /// own, which would cut it off.
-    #[must_use]
-    pub fn held(self: &Arc<Self>, key: &GrantKey, device: Device) -> Connection {
-        let entered = device.workspace_id();
-        let mut workspaces = HashMap::new();
-        if entered != WorkspaceId::from_u128(0) {
-            workspaces.insert(
-                entered.to_string(),
-                Arc::new(tokio::sync::OnceCell::new_with(Some(entered))),
-            );
-        }
-        Connection {
-            device,
-            key: key.clone(),
-            server: Arc::clone(self),
-            host: self.name.clone(),
-            entered: Mutex::new(workspaces),
-            let_in: Mutex::default(),
-            endpoint: tokio::sync::OnceCell::new(),
-        }
-    }
-
     /// `key` on the server: its session, not in any workspace yet.
     ///
     /// # Errors

@@ -85,11 +85,6 @@ impl Hosts {
             .collect()
     }
 
-    /// The first configured one.
-    pub(crate) fn first(&self) -> Option<&Arc<Server>> {
-        self.relays.first()
-    }
-
     /// A session with the host that serves `key`'s workspace best right now:
     /// every host that answers and lists a workspace for the key is a
     /// candidate (every one that answers, while none lists any), and the one

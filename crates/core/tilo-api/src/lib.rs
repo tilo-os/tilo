@@ -177,10 +177,6 @@ pub struct Server {
     /// so a second would cut the first off. It ends with the last run that
     /// holds it, or when the grant is revoked.
     connections: Mutex<HashMap<String, Arc<tokio::sync::Mutex<Weak<Connection>>>>>,
-    /// The one session every call goes over, when a program that already
-    /// holds its key's session lends it ([`direct::Direct::over`]): no call
-    /// dials another, which would cut the lender's off.
-    held: std::sync::OnceLock<Arc<Connection>>,
     /// Per signed-in browser, the token its grants page forms carry.
     page_tokens: Mutex<HashMap<String, String>>,
     /// The keys approved for a poller, by the poll secret's digest.
@@ -266,7 +262,6 @@ impl Server {
             pending: Mutex::default(),
             sessions: Mutex::default(),
             connections: Mutex::default(),
-            held: std::sync::OnceLock::new(),
             page_tokens: Mutex::default(),
             approved_keys: Mutex::default(),
             sign_in_served: Mutex::default(),
@@ -1540,9 +1535,6 @@ impl Server {
         grant: &str,
         key: &GrantKey,
     ) -> Result<Arc<Connection>, server::ServerError> {
-        if let Some(held) = self.held.get() {
-            return Ok(Arc::clone(held));
-        }
         let slot = {
             let mut connections = lock(&self.connections);
             // Forget the grants whose session ended with their last run.

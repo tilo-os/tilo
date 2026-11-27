@@ -16,7 +16,7 @@
 //! A Tilo desktop serves the same server for its own person ([`Direct::here`]):
 //! as its own device key, inside the desktop, which answers each workspace
 //! itself. The person's programs on that computer reach it over a socket of
-//! the login's own ([`Direct::serve`]). A computer `tilo login` made a device
+//! the login's own ([`Direct::serve_admitted`]). A computer `tilo login` made a device
 //! of answers in its daemon, which keeps that device's one session, so no
 //! program of its opens a second one.
 
@@ -121,14 +121,6 @@ impl KeyFile {
         }
     }
 
-    /// This file, reaching its host as `info` says (`web-host.json`): where a login
-    /// this computer kept names it, and what a call dials instead of asking its web origin.
-    #[must_use]
-    pub fn reaching_at(mut self, info: crate::server::ServerInfo) -> Self {
-        self.reached_at = Some(info);
-        self
-    }
-
     /// The key `token` carries (`tilo_sk_…`, as an approved key is answered),
     /// reaching where this file's key reaches.
     ///
@@ -183,28 +175,6 @@ impl Direct {
     /// The key or its certificate is not one, or does not hold now.
     pub fn new(file: &KeyFile) -> Result<Self, String> {
         let (server, key) = Self::server_for(file)?;
-        Self::as_key(server, &key, &file.name)
-    }
-
-    /// [`Self::new`], every call going over `device`, the session with the
-    /// key's server its caller already holds as that key: a program holding
-    /// its device's one session (`tilo mcp`) answers the API on it, since a
-    /// second session of the same key would cut the first off. When that
-    /// session ends, calls answer that it is unavailable.
-    ///
-    /// # Errors
-    /// The key or its certificate is not one, or does not hold now.
-    pub fn over(
-        file: &KeyFile,
-        device: tilo_session_client::device::Device,
-    ) -> Result<Self, String> {
-        let (server, key) = Self::server_for(file)?;
-        let held = server
-            .hosts
-            .first()
-            .map(|first| Arc::new(first.held(&key, device)))
-            .ok_or_else(|| "the key names no server".to_owned())?;
-        let _ = server.held.set(held);
         Self::as_key(server, &key, &file.name)
     }
 
@@ -274,30 +244,9 @@ impl Direct {
         })
     }
 
-    /// Serve the API on `listener` until it closes, every request as this key: to programs of
-    /// the account that owns the socket, and nobody else.
-    ///
-    /// The system's account of the connection's peer is the whole of the admission, as a
-    /// session's other sockets take it (`tilo_socket::tokio::peer_is_this_login`): this login's
-    /// own programs, never one a sandbox confined, though it is the same account.
-    pub async fn serve(self, listener: tilo_files::native::socket::tokio::Listener) {
-        let this = Arc::new(self);
-        loop {
-            let Ok((stream, _)) = listener.accept().await else {
-                return;
-            };
-            if !tilo_files::native::socket::tokio::peer_is_this_login(&stream) {
-                tracing::warn!("API: a connection from another account or a sandbox is refused");
-                continue;
-            }
-            let this = Arc::clone(&this);
-            tokio::spawn(async move { this.serve_admitted(stream).await });
-        }
-    }
-
     /// Serve one connection as this key, one whoever took it already admitted: a program of the
-    /// person's that the desktop took at their login's API socket and handed to the device's
-    /// daemon, as [`Self::serve`] admits its own.
+    /// person's that the desktop took at their login's API socket, admitting only this login's
+    /// own unconfined programs, and handed to the device's daemon.
     pub async fn serve_admitted(&self, stream: tilo_files::native::socket::tokio::Stream) {
         let Ok(authorization) = hyper::header::HeaderValue::from_str(&self.authorization) else {
             return;
@@ -439,10 +388,7 @@ impl Direct {
         body: &[u8],
     ) -> Reply {
         let Ok(method) = hyper::Method::from_bytes(method.as_bytes()) else {
-            return crate::json_reply(
-                hyper::StatusCode::BAD_REQUEST,
-                &serde_json::json!({"error": {"code": "invalid_request", "message": "no such method"}}),
-            );
+            return crate::v1::refusal(&crate::v1::errors::ApiError::invalid("no such method"));
         };
         let mut map = hyper::HeaderMap::new();
         for (name, value) in headers {
@@ -464,16 +410,13 @@ impl Direct {
         .await
         {
             Ok(answer) => answer,
-            Err(_) => crate::json_reply(
-                hyper::StatusCode::GATEWAY_TIMEOUT,
-                &serde_json::json!({"error": {
-                    "code": "unanswered",
-                    "message": format!(
-                        "the daemon did not answer {method} {target} within {} s: it is busy or stalled",
-                        ANSWER_WAIT.as_secs()
-                    ),
-                }}),
-            ),
+            Err(_) => crate::v1::refusal(&crate::v1::errors::ApiError::new(
+                "unanswered",
+                format!(
+                    "the daemon did not answer {method} {target} within {} s: it is busy or stalled",
+                    ANSWER_WAIT.as_secs()
+                ),
+            )),
         }
     }
 }
@@ -540,7 +483,7 @@ mod tests {
         }
     }
 
-    /// `Direct::here` serving the desktop's own API socket at a fresh directory: the socket, and
+    /// `Direct::here` serving connections to the desktop's own API socket at a fresh directory: the socket, and
     /// the directory to remove.
     fn served_here(direct: Direct, name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("tilo-api-{name}-{}", std::process::id()));
@@ -551,7 +494,13 @@ mod tests {
             tilo_files::native::socket::bind(&socket).unwrap(),
         )
         .unwrap();
-        tokio::spawn(direct.serve(listener));
+        let direct = std::sync::Arc::new(direct);
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let direct = std::sync::Arc::clone(&direct);
+                tokio::spawn(async move { direct.serve_admitted(stream).await });
+            }
+        });
         (socket, dir)
     }
 
