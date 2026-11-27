@@ -305,7 +305,7 @@ impl PublishedResources for Published {
         match action {
             "refresh" => {
                 self.inner
-                    .start_read(None, limit_of(&arguments, DEFAULT_LIMIT), action, true)
+                    .start_read(None, limit_of(&arguments, DEFAULT_LIMIT), action, true);
             }
             "read-after" => {
                 let cursor = arguments
