@@ -1073,7 +1073,7 @@ impl<R: FloatingRow> FloatingList<R> {
 
     /// The rows' bar thumb and track.
     pub(crate) fn scrollbar_thumb(&self) -> Option<(Rect, Rect)> {
-        self.scroll.test_vertical_thumb(&self.theme)
+        self.scroll.vertical_thumb(&self.theme)
     }
 
     /// The width every row needs, as the next paint will: a host that
