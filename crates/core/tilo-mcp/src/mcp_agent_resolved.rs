@@ -211,25 +211,14 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 "invalid_arguments: name the action: {path}#<action>; tilo_ls {path} lists them"
             )
         })?;
-        if let Some(resolution) = self.device_action(&parsed, &action, arguments.clone()).await? {
+        if let Some(resolution) = self
+            .device_action(&parsed, &action, arguments.clone())
+            .await?
+        {
             return Ok(resolution);
         }
-        // An app that is not running declares its actions in the surface its package
-        // publishes: a name none of them has is no action of it, and nothing starts for it.
-        // Answered here, the caller reads the refusal at once instead of after a launch.
-        if below_app(&parsed).is_empty()
-            && !starts_app(&action)
-            && !self.on_workspace_shell(&parsed, &action)
-            && let Ok(AppRef::Installed { app_id, .. }) = self.tree.app_ref(&app_of(&parsed)).await
-            && self.declares_action(&app_id, &action).await == Some(false)
-        {
-            let name = app_of(&parsed);
-            return Err(Failure {
-                message: format!(
-                    "unknown_action: {name} has no action {action}; tilo_ls {name} lists them"
-                ),
-                host: Some(tilo_actions::remote::ActionCallError::UnknownAction),
-            });
+        if let Some(refusal) = self.undeclared_action(&parsed, &action).await {
+            return Err(refusal);
         }
         // The app is looked up once: resolving the path in it does not ask
         // again which apps run.
@@ -321,6 +310,30 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// What this device and the caller's workspace answer for the app is asked, never the
     /// fleet's compiled copy of that package: the app installed here may be another version,
     /// and refusing an action the fleet's copy lacks would refuse one this app has.
+    /// The refusal for an action no surface of an installed app declares, when the path names one:
+    /// an app that is not running declares its actions in the surface its package publishes, and a
+    /// name none of them has is no action of it, answered before anything starts for it.
+    async fn undeclared_action(&self, parsed: &Address, action: &str) -> Option<Failure> {
+        if !below_app(parsed).is_empty()
+            || starts_app(action)
+            || self.on_workspace_shell(parsed, action)
+        {
+            return None;
+        }
+        let Ok(AppRef::Installed { app_id, .. }) = self.tree.app_ref(&app_of(parsed)).await else {
+            return None;
+        };
+        (self.declares_action(&app_id, action).await == Some(false)).then(|| {
+            let name = app_of(parsed);
+            Failure {
+                message: format!(
+                    "unknown_action: {name} has no action {action}; tilo_ls {name} lists them"
+                ),
+                host: Some(tilo_actions::remote::ActionCallError::UnknownAction),
+            }
+        })
+    }
+
     async fn declares_action(&self, app_id: &str, action: &str) -> Option<bool> {
         let surface = crate::offered::installed_surface(&self.tree, app_id).await?;
         let text = String::from_utf8_lossy(&surface);
