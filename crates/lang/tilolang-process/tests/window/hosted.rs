@@ -525,6 +525,43 @@ struct Asked {
     delivered: Option<u64>,
     /// Whether its answer reached the run that waits on it.
     answered: bool,
+    /// Whether the person declined it: it ended there, and nothing ran.
+    declined: bool,
+}
+
+/// The call `call` delivered to the instance under `id`, admitted as `person`, as the dispatch
+/// delivers a call it runs.
+fn delivery(
+    person: &str,
+    id: u64,
+    call: &ui::tilo_actions::remote::InvokeRequest,
+) -> collaboration::CollabEvent {
+    use ui::tilo_actions::remote::InvokeArgument;
+    let invoker = ui::tilo_actions::ActionInvoker::admitted(&ui::tilo_actions::Acting::person(
+        person.to_owned(),
+    ));
+    let argument = match &call.argument {
+        InvokeArgument::None => None,
+        InvokeArgument::Json(arguments) => Some(format!(
+            "{}{}",
+            ui::tilo_actions::ARGUMENTS_JSON_PREFIX,
+            serde_json::Value::Object(arguments.clone())
+        )),
+        InvokeArgument::Text(text) => {
+            panic!("a call of the app's own action carries JSON or nothing, not {text:?}")
+        }
+    };
+    collaboration::CollabEvent::Invocation {
+        id,
+        invocation: call.invocation,
+        resource: call.target.address.resource.clone(),
+        action: call.target.address.action.clone(),
+        argument,
+        actor: invoker.acting.by.clone(),
+        context: Some(Box::new(
+            ui::tilo_actions::ActionContext::default().with_invoker(invoker),
+        )),
+    }
 }
 
 /// `person`'s instance of the app of `route`, at a desktop that speaks English.
@@ -922,18 +959,20 @@ impl Session {
     }
 
     /// Play the dispatch for the calls of the app's own actions the instance sent it, as the
-    /// session's does: a new one is kept asked, and the caller hears it waits in its asked
-    /// record; one the test allowed and the instance answered is answered to its caller. Whether
-    /// anything was told the instance.
+    /// session's does: a press is admitted as the person who pressed and handed back to the
+    /// instance, which ran it already, so what it called goes on; a new call is kept asked, and
+    /// the caller hears it waits in its asked record; one the test allowed and the instance
+    /// answered is answered to its caller. Whether anything was told the instance.
     fn dispatch(&mut self) -> bool {
         use collaboration::CollabEvent;
         use ui::tilo_actions::remote::{
-            InvocationState, RemoteActionMessage, application_provider,
+            InvocationState, OWN_PROVIDER, RemoteActionMessage, application_provider,
         };
         let Some((inbox, _)) = self.broker.downcast_ref::<(Inbox, Routed)>() else {
             return false;
         };
         let mut told = Vec::new();
+        let mut handed = Vec::new();
         let sent = self.sent.borrow();
         // What the test forgot was read already: the dispatch reads on from what is left.
         let from = if sent.len() < self.dispatched {
@@ -944,6 +983,14 @@ impl Session {
         self.dispatched = sent.len();
         for request in sent.iter().skip(from) {
             match request {
+                CollabRequest::RemoteAction {
+                    message: RemoteActionMessage::Invoke(press),
+                    ..
+                } if press.target.provider == OWN_PROVIDER => {
+                    let id = self.invoked;
+                    self.invoked += 1;
+                    handed.push(delivery(&self.person, id, press));
+                }
                 CollabRequest::RemoteAction {
                     message: RemoteActionMessage::Invoke(call),
                     ..
@@ -971,6 +1018,7 @@ impl Session {
                         request: call.clone(),
                         delivered: None,
                         answered: false,
+                        declined: false,
                     });
                 }
                 CollabRequest::UpdateInvocation { id, update } if update.is_terminal() => {
@@ -992,8 +1040,10 @@ impl Session {
             }
         }
         drop(sent);
-        let moved = !told.is_empty();
-        inbox.borrow_mut().extend(
+        let moved = !told.is_empty() || !handed.is_empty();
+        let mut inbox = inbox.borrow_mut();
+        inbox.extend(handed);
+        inbox.extend(
             told.into_iter()
                 .map(|message| CollabEvent::RemoteAction { message }),
         );
@@ -1005,7 +1055,7 @@ impl Session {
     fn asked(&self) -> Vec<String> {
         self.asks
             .iter()
-            .filter(|kept| kept.delivered.is_none())
+            .filter(|kept| kept.delivered.is_none() && !kept.declined)
             .map(|kept| kept.request.target.address.action.clone())
             .collect()
     }
@@ -1014,40 +1064,53 @@ impl Session {
     /// as the dispatch runs an allowed call, admitted for them, and its answer goes on to what
     /// waits on it. How many there were.
     fn allow_asked(&mut self) -> usize {
-        use collaboration::CollabEvent;
-        let invoker = ui::tilo_actions::ActionInvoker::admitted(&ui::tilo_actions::Acting::person(
-            self.person.clone(),
-        ));
         let mut delivered = Vec::new();
-        for kept in self.asks.iter_mut().filter(|kept| kept.delivered.is_none()) {
+        for kept in self
+            .asks
+            .iter_mut()
+            .filter(|kept| kept.delivered.is_none() && !kept.declined)
+        {
             let id = self.invoked;
             self.invoked += 1;
             kept.delivered = Some(id);
-            let call = &kept.request;
-            let ui::tilo_actions::remote::InvokeArgument::Json(arguments) = &call.argument else {
-                panic!("a call of the app's own action carries its arguments as JSON: {call:?}");
-            };
-            let argument = format!(
-                "{}{}",
-                ui::tilo_actions::ARGUMENTS_JSON_PREFIX,
-                serde_json::Value::Object(arguments.clone())
-            );
-            delivered.push(CollabEvent::Invocation {
-                id,
-                invocation: call.invocation,
-                resource: call.target.address.resource.clone(),
-                action: call.target.address.action.clone(),
-                argument: Some(argument),
-                actor: invoker.acting.by.clone(),
-                context: Some(Box::new(
-                    ui::tilo_actions::ActionContext::default().with_invoker(invoker.clone()),
-                )),
-            });
+            delivered.push(delivery(&self.person, id, &kept.request));
         }
         let allowed = delivered.len();
         self.inbox().borrow_mut().extend(delivered);
         self.settle();
         allowed
+    }
+
+    /// The person declines every call the dispatch keeps asked: nothing of it runs, and its
+    /// caller hears it ended declined, as the dispatch ends a declined asked record. How many
+    /// there were.
+    fn decline_asked(&mut self) -> usize {
+        use collaboration::CollabEvent;
+        use ui::tilo_actions::remote::{InvocationState, RemoteActionMessage};
+        let mut told = Vec::new();
+        for kept in self
+            .asks
+            .iter_mut()
+            .filter(|kept| kept.delivered.is_none() && !kept.declined)
+        {
+            kept.declined = true;
+            let invocation = kept.request.invocation;
+            let ended = ui::tilo_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some(ui::tilo_actions::remote::asked::DECLINED.to_owned()),
+            };
+            told.push(CollabEvent::RemoteAction {
+                message: RemoteActionMessage::Update {
+                    invocation,
+                    state: Some(InvocationState::new(invocation, ended)),
+                    correlation: None,
+                },
+            });
+        }
+        let declined = told.len();
+        self.inbox().borrow_mut().extend(told);
+        self.settle();
+        declined
     }
 
     /// Close the window and let the host end its instance, as the session's loop does when a

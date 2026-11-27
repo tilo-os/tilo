@@ -1008,8 +1008,20 @@ fn sent(session: &mut Session, draft: &ResourceRef) -> bool {
     read(session, draft, "sent") == Some(RtValue::Bool(true))
 }
 
-/// A letter an agent sends is a suggestion the person decides: the agent cannot approve it,
-/// nothing leaves before the person does, and approving it sends it once.
+/// The labels of the actions the published resource `resource` offers.
+fn offered(session: &mut Session, resource: &str) -> Vec<String> {
+    use crate::change_marks::Driven as _;
+    let resources = session.harness().resources();
+    crate::change_marks::flattened(&resources)
+        .into_iter()
+        .find(|published| published.id.as_str() == resource)
+        .map(|published| published.actions.iter().map(|a| a.label.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// A letter an agent sends waits for the person on the system's asking view: no action of the
+/// window lets the agent answer it, nothing leaves before the person does, and approving it
+/// sends it once.
 #[test]
 fn a_person_approves_an_agents_suggested_send_through_the_api_and_it_leaves_once() {
     let mut session = staged(LETTERS, "a mailbox of letters");
@@ -1022,39 +1034,39 @@ fn a_person_approves_an_agents_suggested_send_through_the_api_and_it_leaves_once
         "an agent's send waits for the person: {suggested}"
     );
     let id = suggested["invocation"].as_str().unwrap().to_owned();
-    let host = session.instance_host();
-    let record = host
-        .runtime()
-        .read_invocation(&host.invocation_ref(&id).unwrap())
-        .unwrap();
+    let record = |session: &mut Session| {
+        let host = session.instance_host();
+        host.runtime()
+            .read_invocation(&host.invocation_ref(&id).unwrap())
+            .unwrap()
+    };
     assert_eq!(
-        record.author,
+        record(&mut session).author,
         agent_session().0.acting.by,
         "the suggestion is the agent's"
     );
-    assert!(!sent(&mut session, &draft), "nothing left");
-    let decide = json!({"target": id, "decision": "approve"});
-    let refused = agent_runs(&mut session, "Decide suggestion", &decide).unwrap_err();
-    assert!(
-        refused.contains("only a person"),
-        "agents never decide: {refused}"
+    assert_eq!(
+        session.asked(),
+        ["send"],
+        "the send waits on the system's asking view"
     );
     assert!(!sent(&mut session, &draft), "nothing left");
-    let resolve = action_id(&mut session, HOST, "Decide suggestion");
-    let person = |session: &mut Session| {
-        session.invoke(
-            None,
-            None,
-            HOST,
-            &resolve,
-            decide.as_object().expect("arguments"),
-        )
-    };
-    let decided = person(&mut session).unwrap().value.unwrap_or_default();
-    assert_eq!(decided["state"], "done", "{decided}");
-    assert!(sent(&mut session, &draft), "the letter went");
+    let offered = offered(&mut session, HOST);
     assert!(
-        person(&mut session).is_err(),
+        !offered.iter().any(|label| label.starts_with("Decide")),
+        "agents never decide: only the person answers, where Tilo asks them: {offered:?}"
+    );
+    assert!(!sent(&mut session, &draft), "nothing left");
+    assert_eq!(session.allow_asked(), 1, "the person approves it once");
+    assert_eq!(
+        record(&mut session).state,
+        "done",
+        "the suggestion is decided"
+    );
+    assert!(sent(&mut session, &draft), "the letter went");
+    assert_eq!(
+        session.allow_asked(),
+        0,
         "approving again changes nothing: the suggestion is decided"
     );
     assert!(
@@ -1064,18 +1076,44 @@ fn a_person_approves_an_agents_suggested_send_through_the_api_and_it_leaves_once
     );
 }
 
-/// The person's own Send asks them first, waiting for their answer on the system's asking view,
-/// and goes once they allow it.
-#[test]
-fn approving_a_pressed_send_through_the_asking_view_sends_the_letter_once() {
-    let mut session = staged(LETTERS, "a mailbox of letters");
-    let draft = opened(&mut session).expect("the scenario opens its letter");
-    let draft = items_of(&mut session, LETTERS, "drafts")
+/// The person runs the letter's Send through the action API, as the shell's palette, a search
+/// row or a script of theirs runs it: to the app as their own step, which the dispatch admitted.
+fn run_send(session: &mut Session, draft: &ResourceRef) -> Result<(), String> {
+    let resource = tilolang_tilo::naming::resource_id(LETTERS, &draft.id_string());
+    let ran = session
+        .invoke(None, None, &resource, "send", &Map::new())
+        .map(drop);
+    session.settle();
+    ran
+}
+
+/// Bo at a Letters window of Ada's workspace, made its editor: a rule asks an editor first
+/// before what leaves the workspace, which their own press does not answer.
+fn bo_editing_letters() -> Session {
+    let mut session = Session::bo_editing(LETTERS, super::Window::in_harness);
+    session.stage("a mailbox of letters");
+    session.settle();
+    session
+}
+
+/// The person presses Send in the open letter's menu: the letter it sends.
+fn press_send(session: &mut Session) -> ResourceRef {
+    let draft = opened(session).expect("the scenario opens its letter");
+    let draft = items_of(session, LETTERS, "drafts")
         .into_iter()
         .find(|letter| letter.id_string() == draft)
         .expect("the open letter is on the shell");
-    let send = key_of(&composed(&mut session), "ui.MenuItem", "label", "Send");
-    fire(&mut session, &send, "choose", None);
+    let send = key_of(&composed(session), "ui.MenuItem", "label", "Send");
+    fire(session, &send, "choose", None);
+    draft
+}
+
+/// Bo's own Send, pressed in the letter's menu, asks him first, waiting for his answer on the
+/// system's asking view, and goes once he allows it.
+#[test]
+fn approving_a_pressed_send_through_the_asking_view_sends_the_letter_once() {
+    let mut session = bo_editing_letters();
+    let draft = press_send(&mut session);
     assert_eq!(session.asked(), ["send"], "a send asks the person first");
     assert!(
         !sent(&mut session, &draft),
@@ -1091,33 +1129,13 @@ fn approving_a_pressed_send_through_the_asking_view_sends_the_letter_once() {
     );
 }
 
-/// The person runs the letter's Send through the action API, as the shell's palette, a search
-/// row or a script of theirs runs it: to the app as their own step.
-fn run_send(session: &mut Session, draft: &ResourceRef) -> Result<(), String> {
-    let resource = tilolang_tilo::naming::resource_id(LETTERS, &draft.id_string());
-    let ran = session
-        .invoke(None, None, &resource, "send", &Map::new())
-        .map(drop);
-    session.settle();
-    ran
-}
-
-/// Bo at a Letters window of Ada's workspace, made its editor.
-fn bo_editing_letters() -> Session {
-    let mut session = Session::bo_editing(LETTERS, super::Window::in_harness);
-    session.stage("a mailbox of letters");
-    session.settle();
-    session
-}
-
-/// Bo's own Send asks them first on the system's asking view, as a press of the letter's control
-/// does, and goes once they allow it; run again once it went, it is refused with the letter's own
-/// reason. An ask is never left as a record nobody shows.
+/// Bo's own Send asks him first on the system's asking view and goes once he allows it; run
+/// again once it went, it is refused with the letter's own reason. An ask is never left as a
+/// record nobody shows.
 #[test]
 fn an_editors_send_asks_the_person_and_a_refused_one_says_why() {
     let mut session = bo_editing_letters();
-    let draft = first_draft(&mut session);
-    run_send(&mut session, &draft).expect("the send is taken, to ask first");
+    let draft = press_send(&mut session);
     assert_eq!(session.asked(), ["send"], "the press asks the person first");
     assert!(
         !sent(&mut session, &draft),
@@ -1133,6 +1151,31 @@ fn an_editors_send_asks_the_person_and_a_refused_one_says_why() {
         "the refusal says why: {refused}"
     );
     assert!(session.asked().is_empty(), "a refused press asks nothing");
+}
+
+/// A send the person declines on the asking view is refused: the letter stays a draft, nothing
+/// waits to leave, and the ask is gone.
+#[test]
+fn a_declined_send_leaves_nothing_written() {
+    let mut session = bo_editing_letters();
+    let draft = press_send(&mut session);
+    assert_eq!(session.asked(), ["send"], "the press asks the person first");
+    let before = read(&session, &draft, "subject");
+    assert_eq!(session.decline_asked(), 1, "the person declines it");
+    assert!(session.asked().is_empty(), "the declined ask is gone");
+    assert!(!sent(&mut session, &draft), "the letter stays a draft");
+    assert_eq!(
+        read(&session, &draft, "subject"),
+        before,
+        "the letter is as it was"
+    );
+    assert!(
+        tilolang_tilo::runtime::store::Store::pending_effects(session.instance_host().store())
+            .is_empty(),
+        "nothing waits to leave"
+    );
+    assert_eq!(session.allow_asked(), 0, "nothing is left to allow");
+    assert!(!sent(&mut session, &draft), "nothing left after it either");
 }
 
 // ----- an app's own window ----------------------------------------------------------------
@@ -1188,10 +1231,7 @@ fn an_apps_own_list_window_gets_the_platforms_title_bar_rows_menu_and_swipe() {
         Some(books[0].id_string().as_str()),
         "the first book is the one shown"
     );
-    assert!(
-        selected(&mut session, "Piranesi"),
-        "and its row is the one the shelf shows chosen"
-    );
+    assert!(selected(&mut session, "Piranesi"), "its row stands chosen");
 
     // Each row is the app's own: a book read stands marked, and its menu offers the book's action
     // and the shelf's on it, in the order the app declares them.
