@@ -2700,7 +2700,6 @@ dependencies = [
  "curve25519-dalek-derive",
  "digest 0.10.7",
  "fiat-crypto 0.2.9",
- "rand_core 0.6.4",
  "rustc_version",
  "subtle",
  "zeroize",
@@ -4038,12 +4037,6 @@ dependencies = [
  "rand_core 0.10.0",
  "subtle",
 ]
-
-[[package]]
-name = "ffi-opaque"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec54ac60a7f2ee9a97cad9946f9bf629a3bc6a7ae59e68983dc9318f5a54b81a"
 
 [[package]]
 name = "fiat-crypto"
@@ -7466,16 +7459,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "url",
-]
-
-[[package]]
-name = "leveldb-sys"
-version = "2.0.9"
-dependencies = [
- "cmake",
- "ffi-opaque",
- "libc",
- "num_cpus",
 ]
 
 [[package]]
@@ -12912,15 +12895,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sd-notify"
-version = "0.4.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b943eadf71d8b69e661330cb0e2656e31040acf21ee7708e2c238a0ec6af2bf4"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "sdd"
 version = "3.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14665,7 +14639,6 @@ dependencies = [
  "accesskit",
  "accesskit_ios",
  "accesskit_macos",
- "accesskit_unix",
  "accesskit_windows",
  "raw-window-handle",
  "tilo-winit",
@@ -26911,7 +26884,6 @@ dependencies = [
  "feed-rs",
  "ff 0.13.1",
  "ff 0.14.0",
- "ffi-opaque",
  "filedescriptor",
  "filetime",
  "find-msvc-tools",
@@ -27160,7 +27132,6 @@ dependencies = [
  "leb128",
  "leb128fmt",
  "lettre",
- "leveldb-sys",
  "levenshtein_automata",
  "libbz2-rs-sys",
  "libc",
@@ -27222,7 +27193,6 @@ dependencies = [
  "memmap2",
  "memoffset",
  "mime",
- "mime_guess",
  "minimal-lexical",
  "miniz_oxide",
  "mio",
@@ -27547,7 +27517,6 @@ dependencies = [
  "scrypt 0.11.0",
  "scrypt 0.12.0",
  "sctk-adwaita",
- "sd-notify",
  "sdd",
  "seahash",
  "sec1 0.7.3",
@@ -27696,6 +27665,7 @@ dependencies = [
  "tilo-accesskit-winit",
  "tilo-account-probe",
  "tilo-accounts",
+ "tilo-action-line",
  "tilo-action-policy",
  "tilo-action-services",
  "tilo-action-types",
@@ -28187,7 +28157,6 @@ dependencies = [
  "wasmtime-internal-jit-icache-coherence",
  "wasmtime-internal-unwinder",
  "wasmtime-internal-versioned-export-macros",
- "wasmtime-internal-winch",
  "wast",
  "wat",
  "wayland-backend",
@@ -28219,7 +28188,6 @@ dependencies = [
  "which",
  "whisper-rs-sys",
  "whoami",
- "winch-codegen",
  "windows-vm",
  "winnow 0.7.14",
  "winnow 1.0.3",

@@ -2,7 +2,6 @@
 # Vendored crates stay out: cargo makes a package under this directory a workspace member when a
 # member names it by path, and a member's dev-dependencies then build with every workspace build.
 exclude = [
-    "vendor/leveldb-sys",
     "vendor/hexane",
     "vendor/ndk-context",
     "vendor/buffa-build",
@@ -1646,8 +1645,6 @@ lto = "off"
 # memory cap and the retirement rule every other guest gets. See
 # vendor/typst-library/TILO-PATCH.md.
 typst-library = { path = "vendor/typst-library" }
-# Chromium origin storage reader: bundled engine provenance in vendor/leveldb-sys.
-leveldb-sys = { path = "vendor/leveldb-sys" }
 # A slab split gives back the capacity its left half no longer uses, so a document edited
 # after it loaded holds what it holds, not every buffer its columns were. See
 # vendor/hexane/TILO-PATCH.md.

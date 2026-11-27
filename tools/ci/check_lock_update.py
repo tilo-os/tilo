@@ -378,26 +378,34 @@ def canonical_lock_text(
     """``text`` with every dependency reference in canonical form, and what changed.
 
     A version whose last reference moved up is dropped with it: cargo refuses a
-    lock that holds packages the manifests do not resolve.
+    lock that holds packages the manifests do not resolve. Only ``[[package]]``
+    tables are packages; a table cargo writes after them, such as
+    ``[[patch.unused]]`` for a patch nothing reaches, is carried unchanged and
+    ends its own block rather than being read into the last package's.
     """
     lock = tomllib.loads(text)
     versions = _versions_by_name(lock)
     lines = text.splitlines(keepends=True)
-    starts = [index for index, line in enumerate(lines) if line.strip() == "[[package]]"]
+    starts = [index for index, line in enumerate(lines) if line.startswith("[[")]
     preamble_text = "".join(lines[: starts[0]]) if starts else text
     bounds = list(zip(starts, starts[1:] + [len(lines)]))
     changes: list[str] = []
     blocks = [
         _canonical_block(lines[begin:end], requirements, versions, changes)
+        if lines[begin].strip() == "[[package]]"
+        else lines[begin:end]
         for begin, end in bounds
     ]
-    keys = [_entry_key(block) for block in blocks]
+    keys = [
+        _entry_key(block) if block[0].strip() == "[[package]]" else None
+        for block in blocks
+    ]
     rewritten = preamble_text + "".join(line for block in blocks for line in block)
     entries = _entries(tomllib.loads(rewritten))
     kept = _reached(entries, {key for key in entries if not key[2]})
     output = [preamble_text]
     for key, block in zip(keys, blocks):
-        if key in kept:
+        if key is None or key in kept:
             output.extend(block)
         else:
             changes.append(f"{key[0]} {key[1]}: dropped, nothing references it")

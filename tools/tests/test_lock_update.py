@@ -579,6 +579,26 @@ class CanonicalReferenceTests(unittest.TestCase):
         self.assertTrue(text.endswith("\n"))
         self.assertEqual(checker.reference_problems(tomllib.loads(text), requirements), [])
 
+    def test_a_patch_unused_table_after_the_packages_keeps_the_last_one(self) -> None:
+        # cargo writes `[[patch.unused]]` after every `[[package]]`; a patch nothing
+        # reaches must not be read as part of the block before it, and dropping the
+        # last package would leave it out of the lock the manifests resolve to.
+        text = self.OLD + textwrap.dedent(
+            """\
+            [[patch.unused]]
+            name = "retired"
+            version = "2.0.9"
+
+            """
+        )
+
+        rewritten, changes = checker.canonical_lock_text(text, self.REQUIREMENTS)
+
+        self.assertEqual(changes, ["span 1.0.0: w 1.0.0 -> 2.0.0"])
+        self.assertIn('name = "w"\nversion = "2.0.0"', rewritten)
+        self.assertIn('[[patch.unused]]\nname = "retired"\nversion = "2.0.9"', rewritten)
+        self.assertNotIn("dropped", " ".join(changes))
+
     def test_the_lock_this_repository_commits_is_canonical(self) -> None:
         # What CI's lockfile check runs.
         self.assertEqual(checker.tree_reference_problems(ROOT), [])
