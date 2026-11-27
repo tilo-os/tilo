@@ -2473,7 +2473,7 @@ async fn the_owners_own_device_is_let_in_past_an_invitation_only_entry() {
         .await
         .unwrap();
     workspaces
-        .list_invitation_only(&lounge, &owner, true)
+        .settle_entry(&lounge, &owner, |entry| entry.invitation_only = true)
         .await
         .unwrap();
     let refused = workspaces

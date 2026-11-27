@@ -933,7 +933,7 @@ mod tests {
             .await
             .unwrap();
         workspaces
-            .list_invitation_only(&closed, &owner, true)
+            .settle_entry(&closed, &owner, |entry| entry.invitation_only = true)
             .await
             .unwrap();
         let unlisted = workspaces.create("Team").await.unwrap().workspace;
@@ -1001,7 +1001,7 @@ mod tests {
             .await
             .unwrap();
         workspaces
-            .list_invitation_only(&workspace, &owner, true)
+            .settle_entry(&workspace, &owner, |entry| entry.invitation_only = true)
             .await
             .unwrap();
         let ada = SigningKey::from_bytes(&rand::random());

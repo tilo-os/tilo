@@ -780,11 +780,11 @@ async fn a_views_writes_are_its_callers_and_limited_to_what_they_may_do() {
     }
     // The entry keeps requests: it opens leaving one to any key.
     workspaces
-        .list_invitation_only(&workspace, &cert, true)
+        .settle_entry(&workspace, &cert, |entry| entry.invitation_only = true)
         .await
         .unwrap();
     workspaces
-        .list_wait_list_max(&workspace, &cert, 8)
+        .settle_entry(&workspace, &cert, |entry| entry.wait_list_max = 8)
         .await
         .unwrap();
     let device = context(&workspace, &cert);

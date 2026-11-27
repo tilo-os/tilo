@@ -623,7 +623,7 @@ mod tests {
             .await
             .unwrap();
         workspaces
-            .list_invitation_only(&home, &cert, true)
+            .settle_entry(&home, &cert, |entry| entry.invitation_only = true)
             .await
             .unwrap();
         let elsewhere = workspaces.create("Acme").await.unwrap().workspace;

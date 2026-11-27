@@ -1101,7 +1101,7 @@ async fn invitation_only_host(
         .await
         .unwrap();
     workspaces
-        .list_invitation_only(&workspace, &host.cert, true)
+        .settle_entry(&workspace, &host.cert, |entry| entry.invitation_only = true)
         .await
         .unwrap();
     (server, host, workspace, state)

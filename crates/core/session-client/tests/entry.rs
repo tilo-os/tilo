@@ -114,7 +114,9 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_entry_sa
     // An entry that takes people by invitation says so, in its code: someone without one is told to
     // be invited, not left to read a sentence, and the session stops.
     workspaces
-        .list_invitation_only(&lounge.workspace, &host_device.cert, true)
+        .settle_entry(&lounge.workspace, &host_device.cert, |entry| {
+            entry.invitation_only = true;
+        })
         .await
         .unwrap();
     let carol = new_key();

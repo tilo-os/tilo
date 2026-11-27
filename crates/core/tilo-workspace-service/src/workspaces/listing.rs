@@ -277,7 +277,12 @@ impl Workspaces {
     /// Settle `workspace`'s entry as `change` asks, as `device`: the workspace's
     /// governance must let its person change its settings
     /// ([`governance::SETTINGS`]). Answers the entry the workspace now records.
-    async fn settle_entry(
+    ///
+    /// # Errors
+    ///
+    /// Returns why `device` may not change the workspace's settings, or why the
+    /// entry cannot stand.
+    pub async fn settle_entry(
         &self,
         workspace: &str,
         device: &DeviceCert,
@@ -383,7 +388,7 @@ impl Workspaces {
     /// — one change, which the workspace's governance records. What a deployment
     /// names when its founder makes the workspace; an owner changes it later
     /// through the same setting ([`Self::publish`], [`Self::unpublish`],
-    /// [`Self::list_invitation_only`]).
+    /// [`Self::settle_entry`]).
     ///
     /// # Errors
     ///
@@ -432,47 +437,6 @@ impl Workspaces {
         device: &DeviceCert,
     ) -> Result<(), CollaborationError> {
         self.settle_entry(workspace, device, |entry| entry.listing = None)
-            .await
-            .map(drop)
-    }
-
-    /// Settle whether `workspace`'s entry admits only people invited or
-    /// pre-admitted, as the host's operator asked. Its listing is untouched:
-    /// the workspace stays listed either way. Asked once, it is governance: a
-    /// restart reads the workspace's entry rather than settling it again.
-    ///
-    /// # Errors
-    ///
-    /// Returns why `device` may not change the workspace's settings.
-    pub async fn list_invitation_only(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        invites_only: bool,
-    ) -> Result<(), CollaborationError> {
-        self.settle_entry(workspace, device, |entry| {
-            // The wait list's settings stay on the entry, dormant: only an
-            // entry that takes people by invitation offers or serves one, so
-            // opening the entry and closing it again leaves them in force.
-            entry.invitation_only = invites_only;
-        })
-        .await
-        .map(drop)
-    }
-
-    /// Settle how many requests `workspace`'s entry keeps for whoever may
-    /// invite, as the host's operator asked.
-    ///
-    /// # Errors
-    ///
-    /// Returns why `device` may not change the workspace's settings.
-    pub async fn list_wait_list_max(
-        &self,
-        workspace: &str,
-        device: &DeviceCert,
-        keep: usize,
-    ) -> Result<(), CollaborationError> {
-        self.settle_entry(workspace, device, |entry| entry.wait_list_max = keep)
             .await
             .map(drop)
     }
@@ -1170,7 +1134,7 @@ pub(crate) mod entry_tests {
         .await
         .unwrap();
         workspaces
-            .list_invitation_only(&workspace, &owner, true)
+            .settle_entry(&workspace, &owner, |entry| entry.invitation_only = true)
             .await
             .unwrap();
         let reply = workspaces
@@ -1222,7 +1186,7 @@ pub(crate) mod entry_tests {
                 .unwrap();
             assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
             workspaces
-                .list_invitation_only(&workspace, &owner, true)
+                .settle_entry(&workspace, &owner, |entry| entry.invitation_only = true)
                 .await
                 .unwrap();
             server.shutdown().await;
@@ -1881,7 +1845,7 @@ pub(crate) mod entry_tests {
             .await
             .unwrap();
         workspaces
-            .list_invitation_only(&workspace, &owner, true)
+            .settle_entry(&workspace, &owner, |entry| entry.invitation_only = true)
             .await
             .unwrap();
 
@@ -1993,7 +1957,7 @@ pub(crate) mod entry_tests {
         owner: &DeviceCert,
     ) {
         workspaces
-            .list_invitation_only(workspace, owner, false)
+            .settle_entry(workspace, owner, |entry| entry.invitation_only = false)
             .await
             .unwrap();
         let (open_key, open) = guest_device();
@@ -2063,7 +2027,7 @@ pub(crate) mod entry_tests {
         // A settings change is a different entry: what a guest admission
         // named is the entry it was let in under.
         workspaces
-            .list_wait_list_max(&workspace, &owner, 5)
+            .settle_entry(&workspace, &owner, |entry| entry.wait_list_max = 5)
             .await
             .unwrap();
         let changed = workspaces.entry_policy(&workspace).await.unwrap();
@@ -2072,13 +2036,13 @@ pub(crate) mod entry_tests {
             settled_digest
         );
         workspaces
-            .list_wait_list_max(&workspace, &owner, 4)
+            .settle_entry(&workspace, &owner, |entry| entry.wait_list_max = 4)
             .await
             .unwrap();
 
         // Open: the settings stay, and the entry offers no wait list.
         workspaces
-            .list_invitation_only(&workspace, &owner, false)
+            .settle_entry(&workspace, &owner, |entry| entry.invitation_only = false)
             .await
             .unwrap();
         let open = workspaces.entry_policy(&workspace).await.unwrap();
@@ -2101,7 +2065,7 @@ pub(crate) mod entry_tests {
         // Back to invitation-only: the same settings are in force and the
         // wait list is offered again, as the entry every admission names.
         workspaces
-            .list_invitation_only(&workspace, &owner, true)
+            .settle_entry(&workspace, &owner, |entry| entry.invitation_only = true)
             .await
             .unwrap();
         let again = workspaces.entry_policy(&workspace).await.unwrap();
@@ -2145,7 +2109,7 @@ pub(crate) mod entry_tests {
             .await
             .unwrap();
         workspaces
-            .list_invitation_only(&workspace, &owner, true)
+            .settle_entry(&workspace, &owner, |entry| entry.invitation_only = true)
             .await
             .unwrap();
 
@@ -2399,7 +2363,7 @@ pub(crate) mod entry_tests {
             .await
             .unwrap();
         workspaces
-            .list_invitation_only(&workspace, &owner, true)
+            .settle_entry(&workspace, &owner, |entry| entry.invitation_only = true)
             .await
             .unwrap();
         server.shutdown().await;
