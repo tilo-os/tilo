@@ -1238,6 +1238,36 @@ fn an_imported_historys_nameless_changes_are_the_persons_and_a_later_one_is_refu
     );
 }
 
+/// A stamp naming the placeholder a window runs as before anyone signed in, unrewritten, is
+/// refused where the workspace admits it: no change passes as a person by that name.
+#[test]
+fn a_change_naming_the_signed_out_placeholder_is_refused() {
+    let (mut receiver, _a, _ac, b, _bc, now) = seeded_with(RevocationList::new());
+    // The invoker a window that runs before anyone signed in writes: the platform's reserved
+    // name, which is no person's id.
+    let placeholder = collab_types::Stamp {
+        verb: "set".into(),
+        invoker: format!(
+            "{{\"member\":{{\"person\":\"{}\"}}}}",
+            tilo_actions::PersonId::PLACEHOLDER
+        ),
+        invocation: "i1".into(),
+        ..collab_types::Stamp::default()
+    };
+    let mut envelope = unsigned_commit(&receiver, &b, &placeholder.message(), "kept", now);
+    envelope.seq = 1;
+    let bytes = envelope.signing_bytes().unwrap();
+    envelope.signature =
+        collab_types::Signature(collab_types::signer::sign_now(&b, bytes).unwrap());
+    let refused = take(&mut receiver, document_message(envelope), now)
+        .expect_err("a change naming the placeholder names no invoker");
+    assert!(
+        refused.reason.contains("names no invoker"),
+        "{}",
+        refused.reason
+    );
+}
+
 /// The change of the record's value to `value`, committed with `message` (none when `None`), as
 /// the bytes a device's own writer is handed.
 fn edit_of(copy: &StatePeer, message: Option<&str>, value: &str) -> Vec<u8> {

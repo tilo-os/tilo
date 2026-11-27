@@ -39,6 +39,12 @@ impl std::fmt::Display for PersonIdError {
 impl std::error::Error for PersonIdError {}
 
 impl PersonId {
+    /// The name a window runs as before anyone signed in, when it has no person to act as yet:
+    /// prefixed, so [`Self::parse`] refuses it and every holder refuses a change naming it —
+    /// where a device's sign-in has not yet renamed what such a window wrote, it is refused
+    /// rather than read as a person called by this name.
+    pub const PLACEHOLDER: &'static str = "person:signed-out";
+
     /// `id` as a person's, when it is their bare root key. Empty is nobody:
     /// the action model carries it for software holding no person's authority.
     ///
@@ -56,6 +62,14 @@ impl PersonId {
     #[must_use]
     pub fn from_root(root: [u8; 32]) -> Self {
         Self(hex::encode(root))
+    }
+
+    /// The platform's own reserved name, kept as it is: what a window that runs before anyone
+    /// signed in names itself by ([`Self::PLACEHOLDER`]). It is no person's id, so [`Self::parse`]
+    /// refuses it wherever an id is read from data.
+    #[must_use]
+    pub fn reserved(id: &str) -> Self {
+        Self(id.to_owned())
     }
 
     #[must_use]

@@ -55,6 +55,13 @@ impl MemberId {
         PersonId::parse(id).ok().map(Self::Person)
     }
 
+    /// The platform's own reserved name ([`PersonId::reserved`]), which no id read from data is:
+    /// what a window that runs before anyone signed in names itself by.
+    #[must_use]
+    pub fn reserved_person(id: &str) -> Self {
+        Self::Person(PersonId::reserved(id))
+    }
+
     /// The agent `id` acting for `person`.
     #[track_caller]
     #[must_use]
