@@ -46,7 +46,7 @@ fn put_text(doc: &mut AutoCommit, app: &str, key: &str, value: &str) {
     doc.put(ROOT, key, value).expect("a text puts");
     doc.commit_with(
         automerge::transaction::CommitOptions::default().with_message(
-            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::by_app(app)),
+            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::by_app(app), &*doc),
         ),
     );
 }

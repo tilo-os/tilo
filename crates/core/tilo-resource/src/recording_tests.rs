@@ -184,7 +184,8 @@ tilo_test_env::scenario! {
             ..first.clone()
         };
         doc.put(ROOT, "body", "a").unwrap();
-        commit(&mut doc, 10, typed("\"a\"").change_message());
+        let message = typed("\"a\"").entry_in(&doc);
+        commit(&mut doc, 10, message);
         doc.put(ROOT, "body", "ab").unwrap();
         let continued = typed("\"ab\"").continuation_of(&typed("\"a\"")).unwrap();
         commit(&mut doc, 200, Some(continued));

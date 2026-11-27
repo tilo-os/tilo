@@ -89,7 +89,7 @@ fn change_payload(change: Change, seq: u64) -> Vec<u8> {
         what: Some(named(change)),
         ..ActionContext::for_resource("n1", KIND, "Note")
     };
-    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    doc.commit_with(CommitOptions::default().with_message(context.entry_in(&doc).unwrap()));
     let mutation = DocumentMutation::Incremental(doc.save_after(&[]));
     mutation.encode().unwrap()
 }

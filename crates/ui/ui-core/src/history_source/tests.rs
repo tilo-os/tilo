@@ -405,7 +405,7 @@ tilo_test_env::scenario! {
         doc.commit_with(
             CommitOptions::default()
                 .with_time(T0 + HOUR)
-                .with_message(context.change_message().expect("context encodes")),
+                .with_message(context.entry_in(&doc).expect("context encodes")),
         );
 
         let entries = source().entries(&mut doc);
@@ -758,7 +758,7 @@ tilo_test_env::scenario! {
         // An entry naming its resource but no action names the resource.
         doc.put(ROOT, "title", "shipped").unwrap();
         let report = tilo_actions::ActionContext::for_resource("r", "doc", "Report");
-        doc.commit_with(CommitOptions::default().with_message(report.change_message().unwrap()));
+        doc.commit_with(CommitOptions::default().with_message(report.entry_in(&doc).unwrap()));
         // Moving the record between workspaces is a row of its own.
         doc.put(ROOT, "workspace", "elsewhere").unwrap();
         doc.commit_with(
@@ -802,7 +802,7 @@ tilo_test_env::scenario! {
                 [],
             )),
         );
-        doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+        doc.commit_with(CommitOptions::default().with_message(context.entry_in(&doc).unwrap()));
         let entries = HistorySource::new().entries(&mut doc);
         let last = entries.last().unwrap();
         assert_eq!(
@@ -826,7 +826,7 @@ tilo_test_env::scenario! {
                     [],
                 )))
                 .with_invoker(invoker);
-            doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+            doc.commit_with(CommitOptions::default().with_message(context.entry_in(&*doc).unwrap()));
         };
         step(&mut doc, "mine", ActionInvoker::person("kai"));
         step(&mut doc, "theirs", ActionInvoker::person("ada"));
@@ -897,7 +897,7 @@ tilo_test_env::scenario! {
                 ActionInvoker::agent("scout", "ada")
                     .acting_for("ada"),
             );
-        doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+        doc.commit_with(CommitOptions::default().with_message(context.entry_in(&doc).unwrap()));
         let mut authors = AuthorDirectory::new();
         authors.set_reader(tilo_ui_base::permissions::MemberId::person("kai"));
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
@@ -996,7 +996,7 @@ tilo_test_env::scenario! {
                 "task",
             )
             .with_invoker(ActionInvoker::agent("scout", "ada").acting_for("ada"));
-        doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+        doc.commit_with(CommitOptions::default().with_message(context.entry_in(&doc).unwrap()));
         let mut authors = AuthorDirectory::new();
         authors.set_reader(tilo_ui_base::permissions::MemberId::person("kai"));
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
@@ -1213,7 +1213,7 @@ tilo_test_env::scenario! {
             doc.commit_with(
                 CommitOptions::default()
                     .with_time(secs)
-                    .with_message(typed(row, text).change_message().unwrap()),
+                    .with_message(typed(row, text).entry_in(&*doc).unwrap()),
             );
         };
         for (secs, text) in [(100, "sin"), (101, "sin("), (102, "sin(x"), (103, "sin(x)")] {

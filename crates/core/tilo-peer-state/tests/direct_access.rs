@@ -48,7 +48,7 @@ fn set(record: &mut AutoCommit, field: &str, value: &str, invoker: ActionInvoker
         ..ActionContext::for_resource("fixture", "fixture", "Fixture")
     };
     let mut options = CommitOptions::default();
-    if let Some(message) = context.change_message() {
+    if let Some(message) = context.entry_in(&*record) {
         options.set_message(message);
     }
     record.commit_with(options);

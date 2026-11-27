@@ -232,7 +232,7 @@ impl DeviceLayouts {
                 .map_err(|error| error.to_string())?;
                 ask.commit_with(
                     automerge::transaction::CommitOptions::default().with_message(
-                        tilo_desktop_model::shared_resource::housekeeping_message(person),
+                        tilo_desktop_model::shared_resource::housekeeping_message(person, &ask),
                     ),
                 );
                 return self.write(workspace, &ask.save());
@@ -540,7 +540,7 @@ fn founded_layout(
     let message = tilo_desktop_model::shared_resource::claiming_renames(
         &doc,
         &automerge::transaction::Transactable::base_heads(&doc),
-        tilo_desktop_model::shared_resource::housekeeping_message(person),
+        tilo_desktop_model::shared_resource::housekeeping_message(person, &doc),
     );
     doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
     Ok(doc)

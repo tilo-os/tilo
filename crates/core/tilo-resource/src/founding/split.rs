@@ -122,6 +122,7 @@ pub fn merge_split_containers(
             // who made it.
             .with_message(tilo_actions::ActionContext::whole_edit_by(
                 &tilo_actions::Acting::by_app(app),
+                &merging,
             ))
             .with_time(0),
     );

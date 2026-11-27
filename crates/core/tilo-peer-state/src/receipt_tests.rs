@@ -201,7 +201,7 @@ fn step(doc: &mut AutoCommit, what: Did, item: Option<&str>, person: [u8; 32]) {
     .with_invoker(tilo_actions::ActionInvoker::person(
         tilo_actions::PersonId::from_root(person),
     ));
-    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    doc.commit_with(CommitOptions::default().with_message(context.entry_in(&*doc).unwrap()));
 }
 
 fn edit_value() -> Did {
@@ -314,7 +314,7 @@ fn guest_write_by(
         ..ActionContext::for_resource("tab:1", KIND, "Test")
     }
     .with_invoker(invoker);
-    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    doc.commit_with(CommitOptions::default().with_message(context.entry_in(&doc).unwrap()));
     signed_write(&mut doc, &heads, key)
 }
 

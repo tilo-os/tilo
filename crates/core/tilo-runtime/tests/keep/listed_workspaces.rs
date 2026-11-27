@@ -611,7 +611,7 @@ type = "String"
                 doc.put(ROOT, "smuggled", "from Alice").unwrap();
                 doc.commit_with(
                     automerge::transaction::CommitOptions::default()
-                        .with_message(context.change_message().unwrap()),
+                        .with_message(context.entry_in(&*doc).unwrap()),
                 );
             })
         })
@@ -756,7 +756,7 @@ params = []
     ));
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
-            .with_message(context.change_message().unwrap()),
+            .with_message(context.entry_in(&doc).unwrap()),
     );
     let comment_write = forged(&mut doc, &heads);
     let comment = sealed(&comment_write);

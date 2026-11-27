@@ -1111,10 +1111,8 @@ impl Lounge {
             shared_resource::write(&mut doc, desktop).expect("the page lays its workspace out"),
             "the page's desktop is news to the record"
         );
-        doc.commit_with(
-            automerge::transaction::CommitOptions::default()
-                .with_message(shared_resource::change_message(&person)),
-        );
+        let message = shared_resource::change_message(&person, &*doc);
+        doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
         let mutation = if first {
             DocumentMutation::Snapshot(doc.save())
         } else {

@@ -1071,7 +1071,7 @@ params = []
                 };
                 doc.commit_with(
                     automerge::transaction::CommitOptions::default()
-                        .with_message(context.change_message().expect("entry")),
+                        .with_message(context.entry_in(&doc).expect("entry")),
                 );
                 let mut op = op.clone();
                 op.payload = DocumentMutation::Incremental(doc.save_after(&[]))
@@ -1539,7 +1539,7 @@ params = []
                     .with_invoker(tilo_actions::ActionInvoker::admitted(&owner));
                 doc.commit_with(
                     automerge::transaction::CommitOptions::default()
-                        .with_message(entry.change_message().expect("entry")),
+                        .with_message(entry.entry_in(&doc).expect("entry")),
                 );
                 doc.save_after(&[])
             };

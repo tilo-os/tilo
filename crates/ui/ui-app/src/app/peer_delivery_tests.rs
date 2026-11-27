@@ -783,7 +783,7 @@ tilo_test_env::scenario! {
             ..tilo_actions::ActionContext::default().in_gesture(Some(gesture))
         };
         for (text, message) in [
-            ("a", typed("a").change_message().unwrap()),
+            ("a", typed("a").entry_in(&automerge::AutoCommit::new()).unwrap()),
             ("ab", typed("ab").continuation_of(&typed("a")).unwrap()),
         ] {
             fixture.app.document_routes.sent.clear();

@@ -115,8 +115,8 @@ pub(in crate::workspaces) fn own_acting(cert: &DeviceCert) -> tilo_member_types:
 }
 
 /// The message of `cert`'s own direct edit of a record ([`own_acting`]).
-pub(in crate::workspaces) fn own_edit(cert: &DeviceCert) -> String {
-    tilo_actions::ActionContext::whole_edit_by(&own_acting(cert))
+pub(in crate::workspaces) fn own_edit(cert: &DeviceCert, doc: &impl automerge::ReadDoc) -> String {
+    tilo_actions::ActionContext::whole_edit_by(&own_acting(cert), doc)
 }
 
 /// A record a change of the workspace writes within itself, with the keys it
@@ -232,7 +232,7 @@ impl HeldRecord {
         if automerge::transaction::Transactable::pending_ops(&document) != 0 {
             document.commit_with(
                 automerge::transaction::CommitOptions::default()
-                    .with_message(tilo_actions::ActionContext::whole_edit_by(by)),
+                    .with_message(tilo_actions::ActionContext::whole_edit_by(by, &document)),
             );
         }
         if heads.is_none() && !founds_as_read(&document, (app, name), workspace) {

@@ -663,7 +663,12 @@ impl UndoLog {
 
     /// The entry of a change this window commits: the given one (or none),
     /// attributed to `author` and joined to the open step.
-    fn stamp(&self, message: Option<String>, author: Option<&MemberId>) -> Option<String> {
+    fn stamp(
+        &self,
+        message: Option<String>,
+        author: Option<&MemberId>,
+        doc: &AutoCommit,
+    ) -> Option<String> {
         let mut context = message.as_deref().map_or_else(
             || Some(ActionContext::default()),
             ActionContext::from_change_message,
@@ -682,7 +687,7 @@ impl UndoLog {
         if context.gesture.is_none() {
             context.gesture = Some(self.open);
         }
-        context.change_message()
+        context.entry_in(doc)
     }
 
     /// Record a step already committed into `doc` out of band (an action the
@@ -1142,7 +1147,7 @@ impl UndoLog {
         before: Vec<ChangeHash>,
         attribution: OwnedActionAttribution,
     ) -> OwnedActionReceipt {
-        let message = self.stamp(attribution.message, attribution.author.as_ref());
+        let message = self.stamp(attribution.message, attribution.author.as_ref(), doc);
         let committed = tilo_resource::history::commit_stamped_with_message(doc, message).is_some();
         let after = doc.get_heads();
         if committed {

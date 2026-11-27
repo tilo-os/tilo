@@ -347,7 +347,7 @@ tilo_test_env::scenario! {
             shared_resource::write(doc, &renamed).unwrap();
             doc.commit_with(
                 automerge::transaction::CommitOptions::default()
-                    .with_message(shared_resource::change_message(&person)),
+                    .with_message(shared_resource::change_message(&person, &*doc)),
             );
         });
         let refused = receive(&mut peer, &guest, hides).unwrap_err();

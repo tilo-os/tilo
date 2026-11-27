@@ -220,6 +220,7 @@ impl ChangeTrackedDoc {
             .unwrap_or_else(|| match &self.person {
                 Some(person) => tilo_actions::ActionContext::whole_edit_by(
                     &tilo_actions::Acting::member(person.clone()),
+                    &self.doc,
                 ),
                 None => FrameworkChange::Native.change_message(),
             });

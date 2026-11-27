@@ -369,10 +369,9 @@ mod tests {
         document
             .put(ROOT, "front", front)
             .expect("the layout's front");
-        document.commit_with(
-            CommitOptions::default()
-                .with_message(tilo_desktop_model::shared_resource::change_message(person)),
-        );
+        document.commit_with(CommitOptions::default().with_message(
+            tilo_desktop_model::shared_resource::change_message(person, &document),
+        ));
         (document.save_after(&heads), document.save())
     }
 
@@ -429,10 +428,9 @@ mod tests {
         .expect("a replica of the workspace");
         let mut desktop = AutoCommit::new();
         desktop.put(ROOT, "front", "Main").expect("the front");
-        desktop.commit_with(
-            CommitOptions::default()
-                .with_message(tilo_desktop_model::shared_resource::change_message("ada")),
-        );
+        desktop.commit_with(CommitOptions::default().with_message(
+            tilo_desktop_model::shared_resource::change_message("ada", &desktop),
+        ));
         peer.install_seed(
             SeedState {
                 workspace_changes: seed_workspace(WORKSPACE, &cert, &[cert.clone(), other])

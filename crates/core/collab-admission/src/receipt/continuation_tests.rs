@@ -42,11 +42,8 @@ fn commit(doc: &mut AutoCommit, message: &str, typed: &str) {
 /// A document holding the gesture's first entry, by `invoker`.
 fn begun(invoker: Option<&Acting>) -> AutoCommit {
     let mut doc = AutoCommit::new();
-    commit(
-        &mut doc,
-        &keystroke(invoker, "a").change_message().unwrap(),
-        "a",
-    );
+    let message = keystroke(invoker, "a").entry_in(&doc).unwrap();
+    commit(&mut doc, &message, "a");
     doc
 }
 

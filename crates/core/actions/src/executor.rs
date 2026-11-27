@@ -535,7 +535,7 @@ pub fn entry_message(doc: &Doc, actor: &ActorId, context: &ActionContext) -> Opt
             return continuation;
         }
     }
-    context.change_message()
+    context.entry_in(doc)
 }
 
 /// How deep [`entry_of`] follows its writer's continuations back to the

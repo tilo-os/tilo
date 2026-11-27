@@ -61,7 +61,7 @@ fn commit(document: &mut AutoCommit, field: &str, invoker: ActionInvoker) {
         ..ActionContext::for_resource("fixture", "fixture", "Fixture")
     };
     let mut options = CommitOptions::default();
-    if let Some(message) = context.change_message() {
+    if let Some(message) = context.entry_in(&*document) {
         options.set_message(message);
     }
     document.commit_with(options);

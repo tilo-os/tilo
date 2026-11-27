@@ -1210,7 +1210,7 @@ mod tests {
                 type_id: "sheets.workbook+group".into(),
                 payload: br#"{"at":5,"ops":[{"action":"field-edit","args":{"at":2,"id":"r2","op":"insert-row"}},{"action":"field-edit","args":{"column":"c0","op":"set-cell","row":"r2","value":{"raw":"2"}}}],"path":[{"field":"sheets"},{"item":"s1"},{"field":"cells"}]}"#.to_vec(),
             });
-            let message = entry.change_message().unwrap();
+            let message = entry.entry_in(&automerge::AutoCommit::new()).unwrap();
             assert_eq!(
                 tilo_actions::compact::decode(
                     message
@@ -1251,7 +1251,7 @@ mod tests {
             for what in [None, Some(Did::Verb(tilo_actions::VerbCall::new(verb, [])))] {
                 let first = typed(what.clone(), r#""a""#);
                 let next = typed(what, r#""ab""#).continuation_of(&first).unwrap();
-                assert_eq!(claim(&next), claim(&first.change_message().unwrap()), "{next}");
+                assert_eq!(claim(&next), claim(&first.entry_in(&automerge::AutoCommit::new()).unwrap()), "{next}");
             }
             assert_eq!(claim("tilo.cont/3 g nonsense 0 1 x"), Err(ClaimError::Unnamed));
         }
@@ -1284,7 +1284,9 @@ mod tests {
             ..ActionContext::for_resource("notes/1", "note", "Note")
         };
         assert_eq!(
-            claim(&unspecific.change_message().unwrap()).unwrap().action,
+            claim(&unspecific.entry_in(&automerge::AutoCommit::new()).unwrap())
+                .unwrap()
+                .action,
             ClaimedAction::whole_resource_edit("note".into())
         );
     }

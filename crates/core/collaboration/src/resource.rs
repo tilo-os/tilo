@@ -316,7 +316,7 @@ pub fn content_genesis(
     if made.pending_ops() != 0 {
         made.commit_with(
             automerge::transaction::CommitOptions::default()
-                .with_message(initial_content_by(by))
+                .with_message(initial_content_by(by, &made))
                 .with_time(0),
         );
     }
@@ -329,11 +329,14 @@ pub fn content_genesis(
 /// since a change that names no one is refused, but what the record starts as rather than a step
 /// of theirs, so no undo takes it back and workspace activity leaves it out
 /// ([`tilo_actions::ChangeKind::External`]).
-pub(crate) fn initial_content_by(by: &tilo_member_types::Acting) -> String {
+pub(crate) fn initial_content_by(
+    by: &tilo_member_types::Acting,
+    doc: &impl automerge::ReadDoc,
+) -> String {
     tilo_actions::ActionContext::default()
         .with_invoker(tilo_actions::ActionInvoker::admitted(by))
         .with_change(tilo_actions::ChangeKind::External)
-        .change_message()
+        .entry_in(doc)
         .unwrap_or_default()
 }
 

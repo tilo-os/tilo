@@ -42,12 +42,12 @@ pub const PERSON_VIEW_KIND: &str = "desktop.person-view";
 /// the kind their messages claim: a change claiming the shared layout's kind
 /// ([`crate::shared_resource::change_message`]) is refused as one that writes other than it says.
 #[must_use]
-pub fn change_message(person: &str) -> String {
+pub fn change_message(person: &str, doc: &impl automerge::ReadDoc) -> String {
     tilo_actions::ActionContext::for_resource(resource_of(person), PERSON_VIEW_KIND, "View")
         .with_invoker(tilo_actions::ActionInvoker::person(person))
-        .change_message()
+        .entry_in(doc)
         .unwrap_or_else(|| {
-            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(person))
+            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(person), doc)
         })
 }
 

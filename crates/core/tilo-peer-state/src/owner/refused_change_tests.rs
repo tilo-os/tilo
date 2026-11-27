@@ -200,7 +200,7 @@ pub(super) fn forged_for_caller(base: &[u8], person: [u8; 32], device: [u8; 32])
     };
     chat.commit_with(
         automerge::transaction::CommitOptions::default()
-            .with_message(context.change_message().unwrap()),
+            .with_message(context.entry_in(&chat).unwrap()),
     );
     chat.save_after(&before)
 }

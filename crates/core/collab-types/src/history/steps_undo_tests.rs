@@ -31,7 +31,7 @@ fn step(doc: &mut AutoCommit, actor: &[u8], run: Option<&str>, edit: impl FnOnce
         Some(run) => {
             let message = ActionContext::default()
                 .with_group(run, "Tidy", AGENT_SESSION)
-                .change_message()
+                .entry_in(&*doc)
                 .unwrap();
             doc.commit_with(CommitOptions::default().with_message(message));
         }

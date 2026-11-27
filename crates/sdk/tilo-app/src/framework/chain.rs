@@ -1744,17 +1744,15 @@ impl ChainCore {
         ) -> Result<T, ui_core::automerge::AutomergeError>,
     ) -> Result<T, String> {
         let id = &self.waiting_resource.id;
-        let message = tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::member(
-            self.workspace.me.clone(),
-        ));
+        let acting = tilo_actions::Acting::member(self.workspace.me.clone());
         let edited = self
             .workspace
             .store
             .with_history(id, |doc, history| {
                 let edited = edit(doc).map_err(|error| error.to_string())?;
+                let message = tilo_actions::ActionContext::whole_edit_by(&acting, &*doc);
                 doc.commit_with(
-                    ui_core::automerge::transaction::CommitOptions::default()
-                        .with_message(message.clone()),
+                    ui_core::automerge::transaction::CommitOptions::default().with_message(message),
                 );
                 history.rebase(doc);
                 Ok::<_, String>(edited)

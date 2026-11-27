@@ -100,9 +100,10 @@ pub fn sealed_write(
         .map_or_else(
             || tilo_actions::FrameworkChange::Native.change_message(),
             |cert| {
-                tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(
-                    hex::encode(cert.user_public_key),
-                ))
+                tilo_actions::ActionContext::whole_edit_by(
+                    &tilo_actions::Acting::person(hex::encode(cert.user_public_key)),
+                    &document,
+                )
             },
         );
     document.commit_with(automerge::transaction::CommitOptions::default().with_message(person));

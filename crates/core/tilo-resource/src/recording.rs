@@ -131,7 +131,8 @@ pub fn record(
     writer.write(&[], &start_heads)?;
     let begun = ActionContext::default().with_change(ChangeKind::External);
     let start_time = from_ms.div_euclid(1000);
-    writer.commit(start_time, begun.change_message().as_deref());
+    let message = begun.entry_in(&writer.target);
+    writer.commit(start_time, message.as_deref());
     let mut steps = Vec::new();
     let mut before = start_heads;
     for (at, change) in ordered.iter().enumerate().skip(start) {
@@ -141,7 +142,7 @@ pub fn record(
         let entry = entries.read(&change.actor, change.message.as_deref());
         let message = match change.message.as_deref() {
             Some(text) if ActionContext::continued_gesture(text).is_some() => {
-                entry.and_then(|entry| entry.change_message())
+                entry.and_then(|entry| entry.entry_in(&writer.target))
             }
             text => text.map(str::to_owned),
         };

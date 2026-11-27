@@ -813,7 +813,7 @@ pub fn commit_edit(
     .with_invoker(tilo_actions::ActionInvoker::person(
         tilo_member_types::PersonId::from_root(person),
     ));
-    let message = context.change_message().expect("a field edit names itself");
+    let message = context.entry_in(&*doc).expect("a field edit names itself");
     doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
 }
 

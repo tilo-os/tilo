@@ -145,7 +145,7 @@ impl StoredResource {
         edit: &mut dyn FnMut(&mut AutoCommit) -> Result<(), String>,
     ) -> Result<Result<(), String>, HistoryUnavailable> {
         let author = author.clone();
-        let message = tilo_actions::ActionContext::whole_edit_by(&Acting::member(author.clone()));
+        let acting = Acting::member(author.clone());
         let result = self
             .store
             .with_history_or_why(&self.checkout.id, |doc, history| {
@@ -153,8 +153,9 @@ impl StoredResource {
                 edit(doc)?;
                 // The closure writes the record directly, naming no finer action than an edit of
                 // the whole record: it names the author, whose edit it is.
+                let message = tilo_actions::ActionContext::whole_edit_by(&acting, &*doc);
                 doc.commit_with(
-                    automerge::transaction::CommitOptions::default().with_message(message.clone()),
+                    automerge::transaction::CommitOptions::default().with_message(message),
                 );
                 if undoable {
                     history.record_committed_action_authored(doc, before, None, None, Some(author));

@@ -121,7 +121,7 @@ fn settle(before: &AutoCommit, by: &str) -> collab_types::op::SignedOp {
         },
         by,
     );
-    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    doc.commit_with(CommitOptions::default().with_message(context.entry_in(&doc).unwrap()));
     op(&mut doc, &heads)
 }
 
@@ -144,7 +144,7 @@ fn send(before: &AutoCommit, by: &str) -> collab_types::op::SignedOp {
         },
         by,
     );
-    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    doc.commit_with(CommitOptions::default().with_message(context.entry_in(&doc).unwrap()));
     op(&mut doc, &heads)
 }
 

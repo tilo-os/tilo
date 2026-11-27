@@ -1531,9 +1531,13 @@ mod tests {
             };
             let commit = |doc: &mut ui::automerge::AutoCommit, housekeeping: bool| {
                 let message = if housekeeping {
-                    shared_resource::housekeeping_message("ada")
+                    shared_resource::housekeeping_message("ada", &*doc)
                 } else {
-                    shared_resource::step_message("ada")
+                    shared_resource::step_message(
+                        &shared_resource::step_context("ada"),
+                        "ada",
+                        &*doc,
+                    )
                 };
                 doc.commit_with(
                     automerge::transaction::CommitOptions::default()
@@ -1796,7 +1800,7 @@ mod tests {
                 .unwrap();
             notebook.commit_with(
                 ui::automerge::transaction::CommitOptions::default()
-                    .with_message(wrote.change_message().expect("a message"))
+                    .with_message(wrote.entry_in(&*notebook).expect("a message"))
                     .with_time(*time),
             );
         }

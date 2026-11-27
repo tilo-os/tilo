@@ -60,8 +60,9 @@ async fn found_front(workspaces: &Workspaces, workspace: &str, want: &str) {
     automerge::transaction::Transactable::put(&mut document, automerge::ROOT, "front", want)
         .unwrap();
     document.commit_with(
-        automerge::transaction::CommitOptions::default()
-            .with_message(tilo_actions::ActionContext::whole_edit_by(&person)),
+        automerge::transaction::CommitOptions::default().with_message(
+            tilo_actions::ActionContext::whole_edit_by(&person, &document),
+        ),
     );
     ServiceWrites::of(workspaces.clone())
         .write(

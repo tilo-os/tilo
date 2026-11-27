@@ -3682,7 +3682,9 @@ mod store {
         let anyone = |_: &Proposal<'_>| true;
         // The step the fork's writer commits, read back as the store reads a change.
         let step = collab_types::document::identity::branch_step("c1", "Comment", "Comment");
-        let message = step.change_message().expect("an entry");
+        let message = step
+            .entry_in(&automerge::AutoCommit::new())
+            .expect("an entry");
         let entered = Stamp::of_message(&message).expect("the branch's step");
         assert_eq!(entered.verb, BRANCH_VERB);
         let empty = || Resource {
@@ -3996,12 +3998,9 @@ mod store {
         };
         let mut rewritten = held.fork();
         rewritten.put(automerge::ROOT, "text", "Ada").unwrap();
-        let rewrite_change = made(
-            &mut rewritten,
-            automerge::transaction::CommitOptions::default()
-                .with_message(rewrite.change_message().unwrap())
-                .with_time(0),
-        );
+        let options = automerge::transaction::CommitOptions::default().with_time(0);
+        let options = options.with_message(rewrite.entry_in(&rewritten).unwrap());
+        let rewrite_change = made(&mut rewritten, options);
         assert_eq!(
             deliver(&[content(rewrite_change.clone())], &mut there, &nobody),
             [Refusal::NotPermitted]

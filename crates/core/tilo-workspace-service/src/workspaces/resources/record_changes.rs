@@ -758,7 +758,7 @@ impl Workspaces {
         .await;
         let mut hosted = std::sync::Arc::clone(&state).lock_owned().await;
         let (doc, heads) = self.record_copy(&mut hosted, kind, record)?;
-        let message = crate::workspaces::authored::own_edit(&self.signing_device().cert);
+        let acting = crate::workspaces::authored::own_acting(&self.signing_device().cert);
         let keeps = format!("{workspace}/{app}/{record}");
         let applied = super::super::record_workers::run(
             &keeps,
@@ -766,6 +766,7 @@ impl Workspaces {
                 let mut doc = doc;
                 let result = change(&mut doc)?;
                 if automerge::transaction::Transactable::pending_ops(&doc) != 0 {
+                    let message = tilo_actions::ActionContext::whole_edit_by(&acting, &doc);
                     doc.commit_with(
                         automerge::transaction::CommitOptions::default().with_message(message),
                     );
@@ -840,7 +841,7 @@ impl Workspaces {
         if automerge::transaction::Transactable::pending_ops(doc) != 0 {
             doc.commit_with(
                 automerge::transaction::CommitOptions::default().with_message(
-                    crate::workspaces::authored::own_edit(&self.signing_device().cert),
+                    crate::workspaces::authored::own_edit(&self.signing_device().cert, &*doc),
                 ),
             );
         }

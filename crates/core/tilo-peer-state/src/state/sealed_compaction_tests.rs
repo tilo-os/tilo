@@ -299,9 +299,10 @@ impl Author {
     /// Commit what is pending as a direct edit of the record, naming the person whose device it
     /// is.
     pub(super) fn commit(&mut self) {
-        let message = tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(
-            hex::encode(self.1),
-        ));
+        let message = tilo_actions::ActionContext::whole_edit_by(
+            &tilo_actions::Acting::person(hex::encode(self.1)),
+            &self.0,
+        );
         self.0
             .commit_with(automerge::transaction::CommitOptions::default().with_message(message));
     }

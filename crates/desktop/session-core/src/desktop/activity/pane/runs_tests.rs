@@ -101,7 +101,7 @@ fn ask(
     doc.commit_with(
         CommitOptions::default()
             .with_time(at)
-            .with_message(context.change_message().unwrap()),
+            .with_message(context.entry_in(&*doc).unwrap()),
     );
 }
 
@@ -536,7 +536,7 @@ tilo_test_env::scenario! {
         doc.commit_with(
             CommitOptions::default()
                 .with_time(10)
-                .with_message(context.change_message().unwrap()),
+                .with_message(context.entry_in(&doc).unwrap()),
         );
         let channel = doc.put_object(ROOT, "channel", ObjType::Text).unwrap();
         doc.splice_text(&channel, 0, 0, "Morning").unwrap();
@@ -545,7 +545,7 @@ tilo_test_env::scenario! {
         doc.commit_with(
             CommitOptions::default()
                 .with_time(20)
-                .with_message(other.change_message().unwrap()),
+                .with_message(other.entry_in(&doc).unwrap()),
         );
 
         let mut tree = tree;
@@ -775,7 +775,7 @@ impl Connection {
             doc.commit_with(
                 CommitOptions::default()
                     .with_time(at)
-                    .with_message(context.change_message().unwrap()),
+                    .with_message(context.entry_in(&doc).unwrap()),
             );
         }
         (NOTES_APP.to_owned(), checkout, doc)

@@ -150,7 +150,10 @@ fn layout(person: &str) -> automerge::AutoCommit {
         .unwrap();
     layout.commit_with(
         automerge::transaction::CommitOptions::default().with_message(
-            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(person)),
+            tilo_actions::ActionContext::whole_edit_by(
+                &tilo_actions::Acting::person(person),
+                &layout,
+            ),
         ),
     );
     layout

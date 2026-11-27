@@ -141,14 +141,16 @@ fn strip_of(
 
 /// Write `strips` as the layout of the workspace into `doc`, as another device does.
 fn lay_out(doc: &mut automerge::AutoCommit, strips: Vec<tilo_desktop_model::Strip>) {
-    laid_out_as(doc, strips, shared_resource::change_message("ada"));
+    laid_out_as(doc, strips, |doc| {
+        shared_resource::change_message("ada", doc)
+    });
 }
 
-/// [`lay_out`], committed with `message`.
+/// [`lay_out`], committed with the message `message` writes for the layout as written.
 fn laid_out_as(
     doc: &mut automerge::AutoCommit,
     strips: Vec<tilo_desktop_model::Strip>,
-    message: String,
+    message: impl FnOnce(&automerge::AutoCommit) -> String,
 ) {
     let mut workspace = Workspace::new(workspace_id(), "Layout");
     workspace.strips = strips;
@@ -161,6 +163,7 @@ fn laid_out_as(
         ..tilo_desktop_model::ownership::SharedDesktop::default()
     };
     shared_resource::write(doc, &desktop).expect("the layout is written");
+    let message = message(doc);
     doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
 }
 
@@ -190,27 +193,21 @@ fn an_undo_never_takes_another_persons_window_from_the_strip() {
     let mut adas = tilo_desktop_model::IdMinter::new(7);
     let main = tilo_desktop_model::Strip::new(tilo_desktop_model::StripId(adas.mint()), "Main");
     let mut doc = automerge::AutoCommit::new().with_actor(as_person("ada", 1));
-    laid_out_as(
-        &mut doc,
-        vec![main.clone()],
-        shared_resource::housekeeping_message("ada"),
-    );
+    laid_out_as(&mut doc, vec![main.clone()], |doc| {
+        shared_resource::housekeeping_message("ada", doc)
+    });
     let (made, hers) = strip_of(&mut adas, "Made");
-    laid_out_as(
-        &mut doc,
-        vec![main.clone(), made.clone()],
-        shared_resource::step_message("ada"),
-    );
+    laid_out_as(&mut doc, vec![main.clone(), made.clone()], |doc| {
+        shared_resource::step_message(&shared_resource::step_context("ada"), "ada", doc)
+    });
 
     let mut bobs = doc.fork().with_actor(as_person("bob", 2));
     let (his_strip, his) = strip_of(&mut tilo_desktop_model::IdMinter::new(9), "His");
     let mut shared = made;
     shared.window_groups.extend(his_strip.window_groups);
-    laid_out_as(
-        &mut bobs,
-        vec![main, shared],
-        shared_resource::step_message("bob"),
-    );
+    laid_out_as(&mut bobs, vec![main, shared], |doc| {
+        shared_resource::step_message(&shared_resource::step_context("bob"), "bob", doc)
+    });
     tilo_desktop_model::merge::merge_into(&mut doc, &bobs).expect("Bob's change merges");
     assert_eq!(
         strips_in(&doc),
@@ -691,7 +688,7 @@ fn what_a_session_ends_before_it_can_write_is_kept_for_the_next_one() {
         held.pending_steps.push(
             LayoutStep {
                 workspace: shown.workspaces[0].clone(),
-                step: shared_resource::step_message(&person),
+                step: shared_resource::step_context(&person),
             },
             None,
         );
@@ -848,7 +845,7 @@ fn a_whole_shell_a_session_founds_is_shown_by_the_next_one() {
         held.pending_steps.push(
             LayoutStep {
                 workspace: shown.workspaces[0].clone(),
-                step: shared_resource::step_message(&person),
+                step: shared_resource::step_context(&person),
             },
             None,
         );
@@ -947,7 +944,7 @@ fn a_step_kept_for_the_workspace_leaves_a_window_that_came_since_as_it_shows() {
         held.pending_steps.push(
             LayoutStep {
                 workspace: shown.workspaces[0].clone(),
-                step: shared_resource::step_message(&person),
+                step: shared_resource::step_context(&person),
             },
             None,
         );

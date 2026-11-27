@@ -253,7 +253,7 @@ mod desktop_workspace_activity {
                 resource.commit_with(
                     CommitOptions::default()
                         .with_time(at)
-                        .with_message(context.change_message().unwrap()),
+                        .with_message(context.entry_in(&*resource).unwrap()),
                 );
             };
             let ada = ActorId::random();
@@ -366,7 +366,7 @@ mod desktop_workspace_activity {
                     note.commit_with(
                         CommitOptions::default()
                             .with_time(1_800_000_000)
-                            .with_message(step(verb).change_message().unwrap()),
+                            .with_message(step(verb).entry_in(&note).unwrap()),
                     );
                 }
                 let mut pane = WorkspaceActivityPane::new();
@@ -423,7 +423,7 @@ mod desktop_workspace_activity {
                 doc.commit_with(
                     CommitOptions::default()
                         .with_time(1_800_000_000)
-                        .with_message(context.change_message().unwrap()),
+                        .with_message(context.entry_in(&doc).unwrap()),
                 );
                 doc
             };
@@ -686,7 +686,7 @@ mod desktop_workspace_activity {
                 document.commit_with(
                     CommitOptions::default()
                         .with_time(1_800_000_000 + i64::from(tab))
-                        .with_message(context.change_message().unwrap()),
+                        .with_message(context.entry_in(&document).unwrap()),
                 );
                 records.push(DetachedRecordHistory {
                     app: context.app.as_ref().unwrap().id.clone(),
@@ -782,7 +782,7 @@ mod desktop_workspace_activity {
                     resource.commit_with(
                         CommitOptions::default()
                             .with_time(at)
-                            .with_message(context.change_message().unwrap()),
+                            .with_message(context.entry_in(&resource).unwrap()),
                     );
                 }
                 resource

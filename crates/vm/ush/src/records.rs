@@ -409,9 +409,10 @@ impl Records {
         Environment::initialize(&mut doc).map_err(|e| model(&e))?;
         doc.commit_with(
             automerge::transaction::CommitOptions::default().with_message(
-                tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(
-                    self.person()?,
-                )),
+                tilo_actions::ActionContext::whole_edit_by(
+                    &tilo_actions::Acting::person(self.person()?),
+                    &doc,
+                ),
             ),
         );
         Ok(doc)

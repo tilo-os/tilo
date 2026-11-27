@@ -4172,11 +4172,16 @@ impl ActionFrame {
         if doc.pending_ops() == 0 {
             return doc.get_heads();
         }
-        tilo_resource::history::commit_stamped_with_message(doc, self.step_message());
+        let message = self
+            .step_context()
+            .and_then(|context| context.entry_in(&*doc));
+        tilo_resource::history::commit_stamped_with_message(doc, message);
         doc.get_heads()
     }
 
-    fn step_message(&self) -> Option<String> {
+    /// The context the open step's change is written with, in its step: the operation's, the
+    /// pending action's or the mutation's.
+    fn step_context(&self) -> Option<tilo_actions::ActionContext> {
         let context = if let Some(operation) = self
             .operations
             .last()
@@ -4194,7 +4199,9 @@ impl ActionFrame {
                 (None, pending) => pending.map(|pending| pending.context.clone()),
             }
         };
-        context.and_then(|context| context.in_step().change_message())
+        context
+            .map(tilo_actions::ActionContext::in_step)
+            .filter(|context| *context != tilo_actions::ActionContext::default())
     }
 
     /// Write as `actor` from here on. What is pending was written as the
@@ -4819,7 +4826,7 @@ impl CallbackBinding {
             return Ok(false);
         }
         self.with_document(outer, |doc, _| {
-            let named = self.with_active_frame(doc, |frame| frame.step_message().is_some())?;
+            let named = self.with_active_frame(doc, |frame| frame.step_context().is_some())?;
             if named {
                 self.finish_action_boundary(doc)?;
             }

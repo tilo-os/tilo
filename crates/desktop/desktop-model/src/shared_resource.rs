@@ -1202,26 +1202,27 @@ fn update(
 /// The message a change of the record is committed with: an edit of the
 /// shared desktop by `person`, who made it. It names its action, as every
 /// change a device signs must, and who made it, as the desktop's history
-/// tells it ([`change_author`]).
+/// tells it ([`change_author`]). Written for `doc`, the record as the change leaves it
+/// ([`tilo_actions::ActionContext::entry_in`]).
 #[must_use]
-pub fn change_message(person: &str) -> String {
+pub fn change_message(person: &str, doc: &impl automerge::ReadDoc) -> String {
     tilo_actions::ActionContext::for_resource(
         crate::ownership::DESKTOP_DOCUMENT,
         crate::ownership::DESKTOP_KIND,
         "Desktop",
     )
     .with_invoker(tilo_actions::ActionInvoker::person(person))
-    .change_message()
+    .entry_in(doc)
     .unwrap_or_else(|| {
-        tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(person))
+        tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(person), doc)
     })
 }
 
-/// `person`'s change of the record as one step of theirs: [`change_message`],
-/// with the gesture it is, which also orders it among their steps of other
-/// records.
+/// `person`'s change of the record as one step of theirs: [`change_message`]'s, with the gesture
+/// it is, which also orders it among their steps of other records. A step made while the record
+/// could not be written keeps this until it is, and writes [`step_message`] then.
 #[must_use]
-pub fn step_message(person: &str) -> String {
+pub fn step_context(person: &str) -> tilo_actions::ActionContext {
     tilo_actions::ActionContext {
         gesture: Some(tilo_actions::ActionId::new()),
         ..tilo_actions::ActionContext::for_resource(
@@ -1231,21 +1232,30 @@ pub fn step_message(person: &str) -> String {
         )
         .with_invoker(tilo_actions::ActionInvoker::person(person))
     }
-    .change_message()
-    .unwrap_or_else(|| {
-        tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(person))
+}
+
+/// The message of `step` ([`step_context`]) by `person`, a change of `doc`, the record as the
+/// change leaves it.
+#[must_use]
+pub fn step_message(
+    step: &tilo_actions::ActionContext,
+    person: &str,
+    doc: &impl automerge::ReadDoc,
+) -> String {
+    step.entry_in(doc).unwrap_or_else(|| {
+        tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(person), doc)
     })
 }
 
 /// `person`'s change of the record that is nobody's step: what it shows, or the layout it was
 /// founded on.
 #[must_use]
-pub fn housekeeping_message(person: &str) -> String {
+pub fn housekeeping_message(person: &str, doc: &impl automerge::ReadDoc) -> String {
     tilo_actions::ActionContext::default()
         .with_invoker(tilo_actions::ActionInvoker::person(person))
         .with_change(tilo_actions::ChangeKind::Housekeeping)
-        .change_message()
-        .unwrap_or_else(|| change_message(person))
+        .entry_in(doc)
+        .unwrap_or_else(|| change_message(person, doc))
 }
 
 /// The person who made a change of the record, as its message ([`change_message`])
@@ -1270,8 +1280,8 @@ pub fn commit_change(
     action: Option<&tilo_actions::ActionContext>,
 ) {
     let message = action
-        .and_then(tilo_actions::ActionContext::change_message)
-        .unwrap_or_else(|| change_message(author));
+        .and_then(|action| action.entry_in(&*doc))
+        .unwrap_or_else(|| change_message(author, &*doc));
     let message = claiming_renames(doc, &doc.base_heads(), message);
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
@@ -1346,7 +1356,7 @@ pub fn claiming_renames(doc: &AutoCommit, before: &[ChangeHash], message: String
         })
     }));
     context.what = Some(tilo_actions::Did::group(members));
-    context.change_message().unwrap_or(message)
+    context.entry_in(doc).unwrap_or(message)
 }
 
 pub mod device;

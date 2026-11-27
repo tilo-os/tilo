@@ -295,7 +295,7 @@ mod tests {
         // no one is refused.
         document.commit_with(
             automerge::transaction::CommitOptions::default().with_message(
-                crate::workspaces::authored::own_edit(&workspaces.signing_device().cert),
+                crate::workspaces::authored::own_edit(&workspaces.signing_device().cert, &document),
             ),
         );
         workspaces

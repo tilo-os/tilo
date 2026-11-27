@@ -552,3 +552,60 @@ fn floating(desktop: &mut SharedDesktop, floats: &[(u64, FloatPlace)]) {
         .floats
         .extend(floats.iter().copied());
 }
+
+/// An arranging action an agent asked for under its own signature, its argument naming the strip
+/// it arranges and a note only its person reads: the layout's change keeps of the argument only
+/// the strip's name, which the layout holds, with the proof that it is the signed argument's,
+/// and no byte of the note.
+#[test]
+fn a_layout_change_keeps_of_its_calls_argument_only_what_the_layout_holds() {
+    use tilo_actions::remote::signed_invocation::InvocationStatement;
+    use tilo_actions::remote::{InvokeRequest, SignedCall, SignedInvocation};
+    let mut request: InvokeRequest = serde_json::from_value(serde_json::json!({
+        "invocation": tilo_actions::InvocationId::new(),
+        "target": {"provider": "desktop", "address": {"resource": "desktop", "action": "arrange"}},
+        "argument": {"Json": {"strip": "Lounge", "note": "Ada's diagnosis PRIVATE-9c1"}},
+    }))
+    .unwrap();
+    let statement = InvocationStatement::of("workspace", &request, 9, [5; 32]);
+    let salt = [3; 32];
+    let over_parts = statement.clone().over_parts(&request.argument, &salt);
+    request.signed = Some(Box::new(SignedInvocation::new(
+        statement,
+        [6; 64],
+        vec![1; 64],
+    )));
+    request.context = Some(tilo_actions::ActionContext {
+        signed: Some(Box::new(SignedCall::signed_over_parts(
+            SignedInvocation::new(over_parts.clone(), [7; 64], vec![1; 64]),
+            &salt,
+        ))),
+        ..tilo_actions::ActionContext::default()
+    });
+    let call = SignedCall::of(&request).unwrap();
+    assert!(call.in_flight());
+    let asked = tilo_actions::ActionContext {
+        signed: Some(Box::new(call)),
+        ..tilo_actions::ActionContext::for_resource(
+            crate::ownership::DESKTOP_DOCUMENT,
+            crate::ownership::DESKTOP_KIND,
+            "Desktop",
+        )
+        .with_invoker(tilo_actions::ActionInvoker::person("ada"))
+    };
+
+    let mut doc = AutoCommit::new();
+    write(&mut doc, &desktop(&[(1, 1, "ada")])).unwrap();
+    commit_change(&mut doc, "ada", 1, Some(&asked));
+    let change = doc.get_last_local_change().unwrap();
+    let message = change.message().unwrap();
+    assert!(!message.contains("PRIVATE-9c1"), "{message}");
+    let entry = tilo_actions::ActionContext::from_change_message(message).unwrap();
+    let parts = entry.parts.expect("the parts the layout holds");
+    let paths: Vec<&str> = parts.parts.iter().map(|part| part.path.as_str()).collect();
+    assert_eq!(paths, ["/strip"]);
+    assert_eq!(parts.parts[0].value, serde_json::json!("Lounge"));
+    let kept = entry.signed.expect("the call");
+    assert!(kept.argument.is_none());
+    assert!(parts.proves(&over_parts.arguments));
+}

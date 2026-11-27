@@ -691,7 +691,7 @@ mod tests {
                 doc.commit_with(
                     CommitOptions::default()
                         .with_time(time)
-                        .with_message(context.change_message().unwrap()),
+                        .with_message(context.entry_in(&*doc).unwrap()),
                 );
             }
             let change = ui::latest_invocation_by(doc, &agent_hex).expect("agent change");
@@ -1076,7 +1076,7 @@ mod tests {
                 doc.commit_with(
                     CommitOptions::default()
                         .with_time(24)
-                        .with_message(context.change_message().unwrap()),
+                        .with_message(context.entry_in(&*doc).unwrap()),
                 );
             });
             pane.refresh(&mut tree);
@@ -1247,7 +1247,7 @@ mod tests {
                     format!("Result {n}"),
                 );
                 doc.commit_with(
-                    CommitOptions::default().with_message(context.change_message().unwrap()),
+                    CommitOptions::default().with_message(context.entry_in(&*doc).unwrap()),
                 );
             });
             tree.desktop
@@ -2736,7 +2736,7 @@ mod morning_source_tests {
         tree.doc.commit_with(
             CommitOptions::default()
                 .with_time(1_800_000_000)
-                .with_message(context.change_message().unwrap()),
+                .with_message(context.entry_in(&tree.doc).unwrap()),
         );
         let mut pane = WorkspaceActivityPane::new();
         pane.set_host(Rc::new(VisitorHost));
@@ -2788,7 +2788,7 @@ mod morning_source_tests {
         tree.doc.commit_with(
             CommitOptions::default()
                 .with_time(1_800_000_000)
-                .with_message(context.change_message().unwrap()),
+                .with_message(context.entry_in(&tree.doc).unwrap()),
         );
         let mut pane = WorkspaceActivityPane::new();
         pane.set_host(Rc::new(
@@ -2902,7 +2902,7 @@ mod morning_source_tests {
                 tree.doc.commit_with(
                     CommitOptions::default()
                         .with_time(1_800_000_010 + i64::try_from(index).unwrap())
-                        .with_message(context.change_message().unwrap()),
+                        .with_message(context.entry_in(&tree.doc).unwrap()),
                 );
             }
             pane.refresh(&mut tree);
@@ -2945,7 +2945,7 @@ mod morning_source_tests {
                 tree.doc.commit_with(
                     CommitOptions::default()
                         .with_time(1_800_001_000 + index)
-                        .with_message(context.change_message().unwrap()),
+                        .with_message(context.entry_in(&tree.doc).unwrap()),
                 );
                 pane.refresh(&mut tree);
                 let selected = pane

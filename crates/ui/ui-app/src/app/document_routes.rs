@@ -652,7 +652,7 @@ mod tests {
             ..tilo_actions::ActionContext::for_resource("tasks", "tasks", field)
         };
         let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_000);
-        options.set_message(context.change_message().unwrap());
+        options.set_message(context.entry_in(&doc).unwrap());
         doc.commit_with(options).unwrap();
         collab_types::DocumentMutation::Incremental(doc.save_after(&[]))
     }
@@ -782,7 +782,7 @@ mod tests {
                     })
                     .unwrap();
             };
-            write("a", typed("a").change_message().unwrap());
+            write("a", typed("a").entry_in(&automerge::AutoCommit::new()).unwrap());
             fixture.app.publish_owned_documents();
             write("ab", typed("ab").continuation_of(&typed("a")).unwrap());
             fixture.app.publish_owned_documents();

@@ -248,7 +248,7 @@ tilo_test_env::scenario! {
         let hash = doc
             .commit_with(
                 automerge::transaction::CommitOptions::default()
-                    .with_message(context.change_message().unwrap()),
+                    .with_message(context.entry_in(&doc).unwrap()),
             )
             .unwrap();
         let before = doc.get_heads();

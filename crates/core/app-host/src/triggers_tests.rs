@@ -41,7 +41,7 @@ tilo_test_env::scenario! {
             ));
         doc.put(automerge::ROOT, "text", "hi").unwrap();
         let hash = doc
-            .commit_with(CommitOptions::default().with_message(context.change_message().unwrap()))
+            .commit_with(CommitOptions::default().with_message(context.entry_in(&doc).unwrap()))
             .unwrap();
         let record = ("workspace-1", "rec-1", "chat.workspace");
         let events = record_events(record, &doc, Some(&before), 0);

@@ -482,7 +482,7 @@ impl InstanceViewStore {
         let acting = tilo_member_types::Acting::person(person);
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::ActionContext::whole_edit_by(&acting)),
+                .with_message(tilo_actions::ActionContext::whole_edit_by(&acting, &*doc)),
         );
     }
 

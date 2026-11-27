@@ -642,7 +642,7 @@ pub(super) fn caller_change(
     };
     author.0.commit_with(
         automerge::transaction::CommitOptions::default()
-            .with_message(context.change_message().unwrap()),
+            .with_message(context.entry_in(&author.0).unwrap()),
     );
     DocumentMutation::Incremental(author.0.save_after(&heads))
 }

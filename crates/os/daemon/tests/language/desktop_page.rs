@@ -420,7 +420,7 @@ impl Computer {
         );
         layout.commit_with(
             automerge::transaction::CommitOptions::default().with_message(
-                tilo_desktop_model::shared_resource::housekeeping_message(person),
+                tilo_desktop_model::shared_resource::housekeeping_message(person, &layout),
             ),
         );
         let change = tilo_desktop_model::place::place_view(

@@ -1230,7 +1230,7 @@ impl ResourceReservation {
         if doc.pending_ops() != 0 {
             doc.commit_with(
                 automerge::transaction::CommitOptions::default()
-                    .with_message(super::initial_content_by(by)),
+                    .with_message(super::initial_content_by(by, &doc)),
             );
         }
         let mut set = self.store.set_mut();

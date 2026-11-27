@@ -232,7 +232,7 @@ tilo_test_env::scenario! {
         doc.put(ROOT, "counter", 12_i64).unwrap();
         doc.put(ROOT, "elsewhere", true).unwrap();
         let hash = doc
-            .commit_with(CommitOptions::default().with_message(context.change_message().unwrap()))
+            .commit_with(CommitOptions::default().with_message(context.entry_in(&doc).unwrap()))
             .unwrap();
         assert!(verify_change(&mut doc, hash, &registry()).is_err());
     }

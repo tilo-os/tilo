@@ -893,7 +893,7 @@ mod tests {
                 actor: Some(b"legacy-person-device-writer".to_vec()),
                 context: Some(context.clone()),
             };
-            let old_message = context.change_message().unwrap();
+            let old_message = context.message().unwrap();
             let wire = serde_json::to_vec(&envelope).unwrap();
             let decoded: ActionEnvelope = serde_json::from_slice(&wire).unwrap();
             assert_eq!(serde_json::to_vec(&decoded).unwrap(), wire);

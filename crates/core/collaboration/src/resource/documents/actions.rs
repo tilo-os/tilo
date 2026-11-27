@@ -74,9 +74,10 @@ impl ResourceActions {
             // unchanged heads and write only the earlier snapshot.
             doc.commit_with(
                 automerge::transaction::CommitOptions::default().with_message(
-                    tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::by_app(
-                        app.clone(),
-                    )),
+                    tilo_actions::ActionContext::whole_edit_by(
+                        &tilo_actions::Acting::by_app(app.clone()),
+                        &*doc,
+                    ),
                 ),
             );
         }

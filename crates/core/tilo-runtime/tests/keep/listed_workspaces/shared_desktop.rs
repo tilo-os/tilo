@@ -350,7 +350,7 @@ async fn members_close_and_move_any_window_and_only_a_moderator_renames_the_stri
     shared_resource::write(&mut doc, &renamed).unwrap();
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
-            .with_message(shared_resource::change_message(&a)),
+            .with_message(shared_resource::change_message(&a, &doc)),
     );
     let claims =
         collab_types::claim::claims_of(&doc.get_changes(&heads), collab_types::claim::record_unit)

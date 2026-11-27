@@ -172,7 +172,10 @@ fn change(key: &str, value: &str) -> Vec<u8> {
         .expect("the record takes the key");
     document.commit_with(
         automerge::transaction::CommitOptions::default().with_message(
-            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::by_app(APP)),
+            tilo_actions::ActionContext::whole_edit_by(
+                &tilo_actions::Acting::by_app(APP),
+                &document,
+            ),
         ),
     );
     document.save_after(&[])

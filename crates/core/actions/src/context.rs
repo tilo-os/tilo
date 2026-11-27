@@ -456,10 +456,10 @@ impl ActionContext {
     /// every change a device signs must. Every receiver decides it as `acting`'s, never as its
     /// signer's alone.
     #[must_use]
-    pub fn whole_edit_by(acting: &Acting) -> String {
+    pub fn whole_edit_by(acting: &Acting, doc: &impl automerge::ReadDoc) -> String {
         Self::default()
             .with_invoker(ActionInvoker::admitted(acting))
-            .change_message()
+            .entry_in(doc)
             .unwrap_or_default()
     }
 
@@ -486,14 +486,13 @@ impl ActionContext {
     /// written; `None` for an empty context, which leaves an app's own history path alone.
     #[must_use]
     pub fn entry_in(&self, doc: &impl automerge::ReadDoc) -> Option<String> {
-        self.holding(doc).change_message()
+        self.holding(doc).message()
     }
 
-    /// Encode into the Automerge change message. Returning `None` keeps an
-    /// empty/default context from displacing an app's ordinary history path. A call on its way
-    /// to its changes is kept without its argument and none of its parts: a writer that has the
-    /// changed document writes its entry with [`Self::entry_in`].
-    pub fn change_message(&self) -> Option<String> {
+    /// This context encoded as a change message, as it is: what [`Self::entry_in`] writes once
+    /// the context is as its document keeps it. Returning `None` keeps an empty/default context
+    /// from displacing an app's ordinary history path.
+    pub(crate) fn message(&self) -> Option<String> {
         if self == &Self::default() {
             return None;
         }
@@ -1810,7 +1809,7 @@ mod tests {
             let invoker = ActionInvoker::agent("alpha", "ada")
                 .with_presence(PresenceId::new("task-7").unwrap());
             let context = ActionContext::for_resource("r", "k", "l").with_invoker(invoker.clone());
-            let message = context.change_message().unwrap();
+            let message = context.message().unwrap();
             assert_eq!(
                 ActionContext::from_change_message(&message),
                 Some(context.clone())
@@ -1919,7 +1918,7 @@ mod tests {
                     .acting_for("ada")
                     .with_appearance(Some(appearance.clone())),
             );
-            let read = ActionContext::from_change_message(&entry.change_message().unwrap()).unwrap();
+            let read = ActionContext::from_change_message(&entry.message().unwrap()).unwrap();
             assert_eq!(read, entry);
             assert_eq!(read.invoker.unwrap().appearance, Some(appearance));
             let plain = ActionContext::default().with_invoker(ActionInvoker::person("ada"));
@@ -1934,7 +1933,7 @@ mod tests {
                     .acting_for("ada")
                     .from_device(Some(laptop())),
             );
-            let read = ActionContext::from_change_message(&entry.change_message().unwrap()).unwrap();
+            let read = ActionContext::from_change_message(&entry.message().unwrap()).unwrap();
             assert_eq!(read, entry);
             assert_eq!(read.invoker.unwrap().device, Some(laptop()));
             // An actor on the host's own device says nothing of a device.
@@ -1950,12 +1949,12 @@ mod tests {
                 event: "ab".repeat(32),
                 depth: 3,
             }));
-            let message = context.change_message().unwrap();
+            let message = context.message().unwrap();
             let read = ActionContext::from_change_message(&message).unwrap();
             assert_eq!(read.caused_by, context.caused_by);
             // A context without a cause writes no key for it.
             let plain = ActionContext::for_app("so.tilo.chat", "Chat")
-                .change_message()
+                .message()
                 .unwrap();
             assert!(
                 ActionContext::from_change_message(&plain)
@@ -1975,7 +1974,7 @@ mod tests {
                     ActionInvoker::agent("claude", "ada").acting_for("ada"),
                 )
                 .with_source_invocation(Some(InvocationId(uuid::Uuid::from_u128(42))));
-            let message = entry.change_message().unwrap();
+            let message = entry.message().unwrap();
             let read = ActionContext::from_change_message(&message).unwrap();
             assert_eq!(read, entry);
             assert!(read.acting().unwrap().is_agent());
@@ -1989,7 +1988,7 @@ mod tests {
                 ActionKey::new("snippets", "snippets.library", "new-snippet"),
                 [("title".to_string(), Scalar::from("Deploy"))],
             )));
-            let read = ActionContext::from_change_message(&verb.change_message().unwrap()).unwrap();
+            let read = ActionContext::from_change_message(&verb.message().unwrap()).unwrap();
             assert_eq!(read, verb);
         }
 
@@ -2015,7 +2014,7 @@ mod tests {
                 ..ActionContext::for_resource("doc:1", "word-processor.document", "Plan")
                     .with_app("org.tilo.WordProcessor", "Word Processor")
             };
-            let message = entry.change_message().unwrap();
+            let message = entry.message().unwrap();
             // An undoable kind and a path that is just the field are left out;
             // the payload is inline JSON.
             for derived in ["undoable", "path", "[123,"] {
@@ -2025,13 +2024,13 @@ mod tests {
             let read = ActionContext::from_change_message(&message).unwrap();
             assert_eq!(read, entry);
             assert_eq!(
-                read.change_message().unwrap(),
+                read.message().unwrap(),
                 message,
                 "written again the same"
             );
             // No app at all stays no app.
             let bare = ActionContext { app: None, ..entry };
-            let read = ActionContext::from_change_message(&bare.change_message().unwrap()).unwrap();
+            let read = ActionContext::from_change_message(&bare.message().unwrap()).unwrap();
             assert_eq!(read, bare);
         }
 
@@ -2056,7 +2055,7 @@ mod tests {
             let mut entry =
                 ActionContext::for_resource("sheets.workbook", "sheets.workbook", "Workbook");
             entry.what = Some(Did::group([edit(EditOp::InsertRow), edit(EditOp::SetCell)]));
-            let message = entry.change_message().unwrap();
+            let message = entry.message().unwrap();
             assert!(!message.contains("distinct"), "{message}");
             assert_eq!(
                 written(&message).matches("\"cells\"").count(),
@@ -2066,7 +2065,7 @@ mod tests {
             let read = ActionContext::from_change_message(&message).unwrap();
             assert_eq!(read, entry);
             assert_eq!(
-                read.change_message().unwrap(),
+                read.message().unwrap(),
                 message,
                 "written again the same"
             );
@@ -2094,7 +2093,7 @@ mod tests {
                 payload: br#"{"op":{"action":"field-edit","args":{"op":"rich","path":[{"field":"pages"},{"item":"p1"},{"field":"body"}]}},"at":0}"#.to_vec(),
             });
             entry.kind = Some(ActionKind::Undoable);
-            let message = entry.change_message().unwrap();
+            let message = entry.message().unwrap();
             assert_eq!(
                 written(&message).matches("\"pages\"").count(),
                 1,
@@ -2107,7 +2106,7 @@ mod tests {
             let read = ActionContext::from_change_message(&message).unwrap();
             assert_eq!(read, entry);
             assert_eq!(
-                read.change_message().unwrap(),
+                read.message().unwrap(),
                 message,
                 "written again the same"
             );
@@ -2121,12 +2120,12 @@ mod tests {
                 id: "p1".into(),
                 label: "Plans".into(),
             });
-            let message = entry.change_message().unwrap();
+            let message = entry.message().unwrap();
             assert_eq!(message.matches("p1").count(), 1, "the id once: {message}");
             let read = ActionContext::from_change_message(&message).unwrap();
             assert_eq!(read, entry);
             assert_eq!(
-                read.change_message().unwrap(),
+                read.message().unwrap(),
                 message,
                 "written again the same"
             );
@@ -2135,7 +2134,7 @@ mod tests {
                 id: "p2".into(),
                 label: "Other".into(),
             });
-            let read = ActionContext::from_change_message(&entry.change_message().unwrap()).unwrap();
+            let read = ActionContext::from_change_message(&entry.message().unwrap()).unwrap();
             assert_eq!(read, entry);
         }
 
@@ -2143,7 +2142,7 @@ mod tests {
         {
             let context = ActionContext::for_resource("r", "k", "l");
             let mut json: serde_json::Value =
-                serde_json::from_str(&written(&context.change_message().unwrap())).unwrap();
+                serde_json::from_str(&written(&context.message().unwrap())).unwrap();
             json["by"] = serde_json::json!({ "actor": "ada" });
             let message = format!("{CHANGE_MESSAGE_PREFIX}{}", crate::compact::encode(&json));
             assert_eq!(ActionContext::from_change_message(&message), Some(context));
@@ -2152,7 +2151,7 @@ mod tests {
         phase defaults_are_not_written;
         {
             let context = ActionContext::for_resource("r", "k", "l");
-            let message = context.change_message().unwrap();
+            let message = context.message().unwrap();
             let json: serde_json::Value = serde_json::from_str(&written(&message)).unwrap();
             let written: Vec<&str> = json
                 .as_object()
@@ -2165,7 +2164,7 @@ mod tests {
             let outside = ActionContext::default().with_change(ChangeKind::External);
             let mut outside = outside;
             outside.kind = Some(ActionKind::Outside);
-            let read = ActionContext::from_change_message(&outside.change_message().unwrap()).unwrap();
+            let read = ActionContext::from_change_message(&outside.message().unwrap()).unwrap();
             assert_eq!(read.kind, Some(ActionKind::Outside));
             assert!(
                 !read.is_activity(),
@@ -2177,17 +2176,17 @@ mod tests {
         {
             let content = ActionContext::for_resource("r", "k", "l");
             let marker = content.clone().with_change(ChangeKind::Housekeeping);
-            let message = marker.change_message().unwrap();
+            let message = marker.message().unwrap();
             let read = ActionContext::from_change_message(&message).unwrap();
             assert!(read.is_housekeeping());
             assert_eq!(read, marker);
             let bare = ActionContext::default().with_change(ChangeKind::Housekeeping);
             assert!(
-                bare.change_message().is_some(),
+                bare.message().is_some(),
                 "housekeeping alone is still written"
             );
             assert!(
-                !ActionContext::from_change_message(&content.change_message().unwrap())
+                !ActionContext::from_change_message(&content.message().unwrap())
                     .unwrap()
                     .is_housekeeping()
             );
@@ -2197,7 +2196,7 @@ mod tests {
         {
             assert!(ActionContext::from_change_message("saved draft").is_none());
             assert!(ActionContext::from_change_message("tilo.entry/1 {").is_none());
-            assert!(ActionContext::default().change_message().is_none());
+            assert!(ActionContext::default().message().is_none());
         }
     }
 

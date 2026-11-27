@@ -723,7 +723,7 @@ mod tests {
             ..ActionContext::for_resource("tasks", "tasks", field)
         };
         let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_000);
-        options.set_message(context.change_message().unwrap());
+        options.set_message(context.entry_in(&*doc).unwrap());
         doc.commit_with(options).unwrap()
     }
 
@@ -846,7 +846,7 @@ mod tests {
                 ..ActionContext::for_resource("tasks", "tasks", "a")
             };
             let mut options = automerge::transaction::CommitOptions::default();
-            options.set_message(context.change_message().unwrap());
+            options.set_message(context.entry_in(&doc).unwrap());
             // The executor stamps a change with the envelope's time (seconds).
             options.set_time(1_700_000_000);
             let hash = doc.commit_with(options).unwrap();
@@ -916,7 +916,7 @@ mod tests {
             };
             let mut doc = automerge::AutoCommit::new();
             for (text, message) in [
-                ("a", typed("a").change_message().unwrap()),
+                ("a", typed("a").entry_in(&doc).unwrap()),
                 ("ab", typed("ab").continuation_of(&typed("a")).unwrap()),
             ] {
                 doc.put(automerge::ROOT, "body", text).unwrap();
@@ -990,7 +990,7 @@ mod tests {
                 ..ActionContext::for_resource("tasks", "tasks", "note:1")
             };
             let mut options = automerge::transaction::CommitOptions::default().with_time(1_700_000_000);
-            options.set_message(context.change_message().unwrap());
+            options.set_message(context.entry_in(&doc).unwrap());
             doc.commit_with(options).unwrap();
             let mutation = DocumentMutation::Incremental(doc.save_after(&[]));
             let commit =

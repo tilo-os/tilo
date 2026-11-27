@@ -83,9 +83,10 @@ fn sealed(
     document.put(automerge::ROOT, "value", text).unwrap();
     document.commit_with(
         automerge::transaction::CommitOptions::default().with_message(
-            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(hex::encode(
-                cert.user_public_key,
-            ))),
+            tilo_actions::ActionContext::whole_edit_by(
+                &tilo_actions::Acting::person(hex::encode(cert.user_public_key)),
+                &document,
+            ),
         ),
     );
     let changes = document.save_after(&heads);

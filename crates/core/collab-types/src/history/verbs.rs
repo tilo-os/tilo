@@ -2290,7 +2290,7 @@ mod tests {
         let gesture = tilo_actions::ActionId::new();
         let message = tilo_actions::ActionContext::default()
             .in_gesture(Some(gesture))
-            .change_message()
+            .entry_in(&*doc)
             .unwrap();
         let hash = doc
             .commit_with(CommitOptions::default().with_message(message))

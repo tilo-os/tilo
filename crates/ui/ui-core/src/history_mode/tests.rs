@@ -258,7 +258,7 @@ tilo_test_env::scenario! {
         let receipt = doc
             .commit_with(
                 CommitOptions::default()
-                    .with_message(context.change_message().expect("effect context encodes")),
+                    .with_message(context.entry_in(&doc).expect("effect context encodes")),
             )
             .unwrap();
         history.observe(&doc);
@@ -290,7 +290,7 @@ tilo_test_env::scenario! {
         let receipt = doc
             .commit_with(
                 CommitOptions::default()
-                    .with_message(context.change_message().expect("effect context encodes")),
+                    .with_message(context.entry_in(&doc).expect("effect context encodes")),
             )
             .unwrap();
 

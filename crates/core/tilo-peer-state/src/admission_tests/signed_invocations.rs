@@ -196,7 +196,7 @@ fn agents_written(
     context: &ActionContext,
     now: SystemTime,
 ) -> NeighbourMsg {
-    let message = context.change_message().unwrap();
+    let message = context.entry_in(&automerge::AutoCommit::new()).unwrap();
     let (app, record) = agents();
     let mut envelope = unsigned_commit_at(copy, (app, &record), signer, &message, "made", now);
     collab_types::sign_op(&mut envelope, signer).unwrap();
@@ -211,7 +211,9 @@ fn agents_stamped(
     context: &ActionContext,
     now: SystemTime,
 ) -> NeighbourMsg {
-    let stamp = collab_types::Stamp::of_message(&context.change_message().unwrap()).unwrap();
+    let stamp =
+        collab_types::Stamp::of_message(&context.entry_in(&automerge::AutoCommit::new()).unwrap())
+            .unwrap();
     let (app, record) = agents();
     let mut envelope = unsigned_commit_at(
         copy,
@@ -275,7 +277,13 @@ fn written(
     value: &str,
     now: SystemTime,
 ) -> NeighbourMsg {
-    committed(copy, signer, &context.change_message().unwrap(), value, now)
+    committed(
+        copy,
+        signer,
+        &context.entry_in(&automerge::AutoCommit::new()).unwrap(),
+        value,
+        now,
+    )
 }
 
 /// The write of the change `message` by `signer`'s device, as a peer sends it.
@@ -657,7 +665,7 @@ tilo_test_env::scenario! {
         // the first, and the others name it by digest.
         let making = agents_step(&cert, &key, "create-agent", now);
         let mut keeping =
-            collab_types::Stamp::of_message(&making.change_message().unwrap()).unwrap();
+            collab_types::Stamp::of_message(&making.entry_in(&automerge::AutoCommit::new()).unwrap()).unwrap();
         if let Some(context) = keeping.context.as_mut() {
             context.signed = None;
         }
@@ -885,7 +893,7 @@ tilo_test_env::scenario! {
         let (message, _) = sealed(
             &receiver,
             &b,
-            &context.change_message().unwrap(),
+            &context.entry_in(&automerge::AutoCommit::new()).unwrap(),
             "asked for",
             now,
         );
@@ -909,7 +917,7 @@ tilo_test_env::scenario! {
         let (message, _) = sealed(
             &receiver,
             &b,
-            &context.change_message().unwrap(),
+            &context.entry_in(&automerge::AutoCommit::new()).unwrap(),
             "not the caller",
             now,
         );
@@ -926,7 +934,7 @@ tilo_test_env::scenario! {
         let (message, _) = sealed(
             &receiver,
             &b,
-            &context.change_message().unwrap(),
+            &context.entry_in(&automerge::AutoCommit::new()).unwrap(),
             "unproven",
             now,
         );
@@ -949,7 +957,7 @@ tilo_test_env::scenario! {
         let (envelope, mutation) = sealed_commit(
             &server,
             &b,
-            &context.change_message().unwrap(),
+            &context.entry_in(&automerge::AutoCommit::new()).unwrap(),
             "placed",
             now,
         );
@@ -1001,7 +1009,10 @@ fn a_change_naming_nothing_is_refused_and_a_native_edit_names_its_maker() {
     assert_eq!(value(&receiver), "\"seed\"", "never applied");
 
     // The same edit naming who made it is theirs.
-    let named = ActionContext::whole_edit_by(&Acting::person(hex::encode(bc.user_public_key)));
+    let named = ActionContext::whole_edit_by(
+        &Acting::person(hex::encode(bc.user_public_key)),
+        &automerge::AutoCommit::new(),
+    );
     let message = committed_unclaimed(&receiver, &b, &named, "named", now);
     take(&mut receiver, message, now).expect("an edit naming its maker is theirs");
     assert_eq!(value(&receiver), "\"named\"");
@@ -1026,7 +1037,7 @@ fn a_records_derived_version_step_names_no_one_and_is_taken_in() {
     let message = committed_unclaimed(
         &receiver,
         &b,
-        &step.change_message().unwrap(),
+        &step.entry_in(&automerge::AutoCommit::new()).unwrap(),
         "stepped",
         now,
     );
@@ -1105,7 +1116,10 @@ fn a_genesis_is_taken_only_as_a_records_first_change() {
     );
     assert_eq!(value_at(&receiver, "tab:2"), "\"first\"", "never applied");
 
-    let native = ActionContext::whole_edit_by(&Acting::person(hex::encode(bc.user_public_key)));
+    let native = ActionContext::whole_edit_by(
+        &Acting::person(hex::encode(bc.user_public_key)),
+        &automerge::AutoCommit::new(),
+    );
     let mut edited = unsigned_commit_at(&receiver, (APP, "tab:2"), &b, &native, "edited", now);
     edited.seq = 2;
     collab_types::sign_op(&mut edited, &b).unwrap();
@@ -1308,7 +1322,10 @@ fn a_servers_upkeep_is_its_persons_and_signed_by_its_device() {
         "{refused:?}"
     );
 
-    let native = ActionContext::whole_edit_by(&Acting::person(hex::encode(person)));
+    let native = ActionContext::whole_edit_by(
+        &Acting::person(hex::encode(person)),
+        &automerge::AutoCommit::new(),
+    );
     let kept = upkeep(
         &receiver,
         &server_key,
@@ -1334,7 +1351,7 @@ fn a_servers_upkeep_is_its_persons_and_signed_by_its_device() {
         &server_cert,
         &edit_of(
             &receiver,
-            Some(&as_device.change_message().unwrap()),
+            Some(&as_device.entry_in(&automerge::AutoCommit::new()).unwrap()),
             "as the device",
         ),
         now,
@@ -1491,7 +1508,7 @@ fn tree_written(
         copy,
         (FILES, FILES_RECORD),
         signer,
-        &context.change_message().unwrap(),
+        &context.entry_in(&automerge::AutoCommit::new()).unwrap(),
         value,
         now,
     );

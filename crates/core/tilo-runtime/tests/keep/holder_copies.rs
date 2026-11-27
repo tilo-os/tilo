@@ -216,9 +216,10 @@ async fn a_holder_away_during_writes_catches_up_and_the_shortfall_clears() {
         .unwrap();
     document.commit_with(
         automerge::transaction::CommitOptions::default().with_message(
-            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(
-                on_laptop.person(),
-            )),
+            tilo_actions::ActionContext::whole_edit_by(
+                &tilo_actions::Acting::person(on_laptop.person()),
+                &document,
+            ),
         ),
     );
     let written = [write_sealed(

@@ -1715,7 +1715,7 @@ async fn a_member_copies_layout_write_is_read_back_and_survives_a_restart() {
     // one is refused.
     layout.commit_with(
         automerge::transaction::CommitOptions::default().with_message(
-            crate::workspaces::authored::own_edit(&copies.signing_device().cert),
+            crate::workspaces::authored::own_edit(&copies.signing_device().cert, &layout),
         ),
     );
     copies
@@ -1893,9 +1893,10 @@ async fn write_as_the_devices_roles(owners: &super::super::Workspaces, workspace
     for (chunk, kind) in [(1, Some(kind)), (2, None)] {
         fs_protocol::tree::list_chunk(&mut tree, chunk).unwrap();
         tree.commit_with(CommitOptions::default().with_message(
-            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::member(
-                member.clone(),
-            )),
+            tilo_actions::ActionContext::whole_edit_by(
+                &tilo_actions::Acting::member(member.clone()),
+                &tree,
+            ),
         ));
         owners
             .own_record_write(workspace, (app, kind, &record), &tree.save_after(&[]))
@@ -1914,7 +1915,7 @@ async fn write_as_the_devices_roles(owners: &super::super::Workspaces, workspace
         };
         tilo_desktop_model::asked::ask(&mut layout, &format!("{person}:{asked}:"), &view).unwrap();
         layout.commit_with(CommitOptions::default().with_message(
-            tilo_desktop_model::shared_resource::housekeeping_message(&person),
+            tilo_desktop_model::shared_resource::housekeeping_message(&person, &layout),
         ));
         owners
             .own_record_write(

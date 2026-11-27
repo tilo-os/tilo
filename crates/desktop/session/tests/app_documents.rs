@@ -431,7 +431,10 @@ fn a_record_the_service_answers_late_opens_without_waiting(
                 .expect("a text puts");
             doc.commit_with(
                 automerge::transaction::CommitOptions::default().with_message(
-                    tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::by_app(app)),
+                    tilo_actions::ActionContext::whole_edit_by(
+                        &tilo_actions::Acting::by_app(app),
+                        &*doc,
+                    ),
                 ),
             );
         });
@@ -580,9 +583,10 @@ fn an_apps_records_are_kept_by_the_workspace_service_over_its_connection() {
                 .expect("a text puts");
                 doc.commit_with(
                     automerge::transaction::CommitOptions::default().with_message(
-                        tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::by_app(
-                            APP,
-                        )),
+                        tilo_actions::ActionContext::whole_edit_by(
+                            &tilo_actions::Acting::by_app(APP),
+                            &*doc,
+                        ),
                     ),
                 );
             });

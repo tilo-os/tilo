@@ -110,7 +110,10 @@ async fn write_front(workspaces: &Workspaces, person: &str, what: &str, want: &s
     // whose device made it.
     document.commit_with(
         automerge::transaction::CommitOptions::default().with_message(
-            tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(person)),
+            tilo_actions::ActionContext::whole_edit_by(
+                &tilo_actions::Acting::person(person),
+                &document,
+            ),
         ),
     );
     let changes = if founding {
@@ -416,7 +419,10 @@ async fn write_note(workspaces: &Workspaces, person: &str, note: &str, title: &s
         // person whose device made it.
         document.commit_with(
             automerge::transaction::CommitOptions::default().with_message(
-                tilo_actions::ActionContext::whole_edit_by(&tilo_actions::Acting::person(person)),
+                tilo_actions::ActionContext::whole_edit_by(
+                    &tilo_actions::Acting::person(person),
+                    &document,
+                ),
             ),
         );
         let changes = if founding {

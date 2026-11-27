@@ -267,7 +267,7 @@ tilo_test_env::scenario! {
                     new: None,
                     args: std::collections::BTreeMap::new(),
                 }))
-                .change_message()
+                .entry_in(&doc)
                 .unwrap(),
             ),
         );
@@ -278,7 +278,7 @@ tilo_test_env::scenario! {
                     ActionKey::new(APP, KIND, "add-comment"),
                     [],
                 )))
-                .change_message()
+                .entry_in(&doc)
                 .unwrap(),
             ),
         );
@@ -330,7 +330,7 @@ tilo_test_env::scenario! {
                 ))),
                 ..ActionContext::for_resource("channels", kind, "Channels")
             };
-            doc.commit_with(CommitOptions::default().with_message(entry.change_message().unwrap()));
+            doc.commit_with(CommitOptions::default().with_message(entry.entry_in(&doc).unwrap()));
         }
         let payload = collab_types::op::DocumentMutation::Incremental(doc.save_after(&[]))
             .encode()
@@ -360,7 +360,7 @@ tilo_test_env::scenario! {
             ))),
             ..ActionContext::for_resource("channels", "chat.category", "Category")
         };
-        doc.commit_with(CommitOptions::default().with_message(entry.change_message().unwrap()));
+        doc.commit_with(CommitOptions::default().with_message(entry.entry_in(&doc).unwrap()));
         let sealed_claims =
             claims_of(&parse_changes(&doc.save()).unwrap(), |_| vec![Vec::new()]).unwrap();
         let surface_for = |kind: Option<&str>| Channels.surface(&document(), kind, None);
@@ -375,7 +375,7 @@ fn change_by(invoker: tilo_actions::ActionInvoker) -> Vec<automerge::Change> {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "v", 1).unwrap();
     let context = ActionContext::default().with_invoker(invoker);
-    doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
+    doc.commit_with(CommitOptions::default().with_message(context.entry_in(&doc).unwrap()));
     parse_changes(&doc.save()).unwrap()
 }
 

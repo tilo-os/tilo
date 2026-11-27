@@ -97,7 +97,7 @@ fn write_by(invoker: Option<&Acting>) -> collab_types::op::SignedOp {
     if let Some(invoker) = invoker {
         entry = entry.with_invoker(ActionInvoker::admitted(invoker));
     }
-    doc.commit_with(CommitOptions::default().with_message(entry.change_message().unwrap()));
+    doc.commit_with(CommitOptions::default().with_message(entry.entry_in(&doc).unwrap()));
     let payload = collab_types::op::DocumentMutation::Incremental(doc.save_after(&[]))
         .encode()
         .unwrap();
@@ -421,7 +421,7 @@ fn a_native_edit_naming_no_one_is_refused_and_one_naming_its_maker_is_admitted()
     assert_eq!(decide(&unnamed_sealed), Err(ReceiptRefusal::NoInvoker));
 
     // The same edit naming who made it is decided as them.
-    let named = native(ActionContext::whole_edit_by(&agent));
+    let named = native(ActionContext::whole_edit_by(&agent, &AutoCommit::new()));
     assert_eq!(decide(&named), Ok(Receipt::Admit));
     let (named_sealed, _) = sealed(&named);
     assert_eq!(decide(&named_sealed), Ok(Receipt::Admit));

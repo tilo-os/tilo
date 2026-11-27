@@ -87,9 +87,10 @@ impl Route {
         if self.document == DESKTOP_DOCUMENT {
             shared_resource::commit_change(doc, person, now, None);
         } else {
+            let message = person_view::change_message(person, &*doc);
             doc.commit_with(
                 automerge::transaction::CommitOptions::default()
-                    .with_message(person_view::change_message(person))
+                    .with_message(message)
                     .with_time(now),
             );
         }
@@ -191,7 +192,7 @@ struct Candidate {
 /// and the windows it placed show the records they name.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Acted {
-    message: String,
+    context: tilo_actions::ActionContext,
     shows: Vec<(tilo_desktop_model::TabId, String)>,
     /// The person's view of the workspace before the action, where it changed their view: the
     /// step takes the view back to it.
@@ -203,7 +204,7 @@ struct Acted {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct LayoutStep {
     workspace: Workspace,
-    step: String,
+    step: tilo_actions::ActionContext,
 }
 
 /// A change this device made while what it changes could not be written, and the arranging action
@@ -563,7 +564,7 @@ fn write_changes(
         for (tab, shown) in pending.acted.iter().flat_map(|acted| &acted.shows) {
             windows.shown.insert(*tab, shown.clone());
         }
-        let acted = pending.acted.as_ref().map(|acted| acted.message.as_str());
+        let acted = pending.acted.as_ref().map(|acted| &acted.context);
         wrote |= write_change(
             candidate,
             workspace_id,
@@ -575,7 +576,7 @@ fn write_changes(
             steps,
         )?;
     }
-    let step = shared_resource::step_message(writing.person);
+    let step = shared_resource::step_context(writing.person);
     wrote |= write_change(
         candidate,
         workspace_id,
@@ -597,8 +598,8 @@ fn write_change(
     workspace_id: WorkspaceId,
     workspace: &Workspace,
     writing: &Writing<'_>,
-    acted: Option<&str>,
-    step: &str,
+    acted: Option<&tilo_actions::ActionContext>,
+    step: &tilo_actions::ActionContext,
     windows: &WindowNotes,
     steps: &mut Vec<(Vec<ChangeHash>, Vec<ChangeHash>)>,
 ) -> Result<bool, automerge::AutomergeError> {
@@ -631,9 +632,11 @@ fn write_change(
     }
     let theirs = acted.is_some() || arranged(candidate, workspace_id) != was;
     let message = match (acted, theirs) {
-        (Some(acted), _) => acted.to_owned(),
-        (None, true) => step.to_owned(),
-        (None, false) => shared_resource::housekeeping_message(person),
+        (Some(acted), _) => acted
+            .entry_in(&*candidate)
+            .unwrap_or_else(|| shared_resource::change_message(person, &*candidate)),
+        (None, true) => shared_resource::step_message(step, person, &*candidate),
+        (None, false) => shared_resource::housekeeping_message(person, &*candidate),
     };
     // A strip renamed is moderation, which the change says so whoever holds it decides it.
     let message = shared_resource::claiming_renames(candidate, &from, message);
@@ -1792,7 +1795,7 @@ impl Layouts {
                 held.pending_steps.push(
                     LayoutStep {
                         workspace: workspace.clone(),
-                        step: shared_resource::step_message(person),
+                        step: shared_resource::step_context(person),
                     },
                     acted,
                 );
@@ -2247,9 +2250,7 @@ impl Layouts {
         {
             self.remember(&(id, Route::layout()), earlier, None, &person);
         }
-        let message = tilo_session_core::layout::step_context(asked, action, &person)
-            .change_message()
-            .unwrap_or_else(|| shared_resource::change_message(&person));
+        let context = tilo_session_core::layout::step_context(asked, action, &person);
         // What the action did to the person's own view of the workspace (a width, a window made
         // as large as its display) is a step of theirs in that view, written in its turn.
         if let Some(workspace) = tree.active_workspace()
@@ -2264,7 +2265,7 @@ impl Layouts {
                     held.pending_view.push(
                         changed,
                         Some(Acted {
-                            message: message.clone(),
+                            context: context.clone(),
                             shows: Vec::new(),
                             was: Some(was),
                         }),
@@ -2278,7 +2279,7 @@ impl Layouts {
             tree,
             tree.active,
             Some(Acted {
-                message,
+                context,
                 shows: shows.to_vec(),
                 was: None,
             }),
@@ -2593,10 +2594,10 @@ impl Layouts {
                 shared_resource::claiming_renames(
                     &candidate,
                     &candidate.base_heads(),
-                    shared_resource::change_message(&author),
+                    shared_resource::change_message(&author, &candidate),
                 )
             } else {
-                person_view::change_message(&author)
+                person_view::change_message(&author, &candidate)
             };
             candidate.commit_with(
                 automerge::transaction::CommitOptions::default().with_message(message),
@@ -2941,7 +2942,7 @@ fn found(
     let message = shared_resource::claiming_renames(
         doc,
         &before,
-        shared_resource::housekeeping_message(writer.person.unwrap_or_default()),
+        shared_resource::housekeeping_message(writer.person.unwrap_or_default(), &*doc),
     );
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
@@ -3207,7 +3208,7 @@ fn view_step(
     {
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
-                .with_message(person_view::change_message(person)),
+                .with_message(person_view::change_message(person, &*doc)),
         );
     }
     // An arranging action's step is the person's, on whichever of their devices made it.
@@ -3218,10 +3219,11 @@ fn view_step(
     if !step.changed.write(doc)? {
         return Ok(false);
     }
-    let message = step.acted.as_ref().map_or_else(
-        || person_view::change_message(person),
-        |acted| acted.message.clone(),
-    );
+    let message = step
+        .acted
+        .as_ref()
+        .and_then(|acted| acted.context.entry_in(&*doc))
+        .unwrap_or_else(|| person_view::change_message(person, &*doc));
     doc.commit_with(
         automerge::transaction::CommitOptions::default()
             .with_message(message)

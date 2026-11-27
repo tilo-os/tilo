@@ -87,7 +87,7 @@ fn commit_as(doc: &mut AutoCommit, acting: &tilo_actions::Acting) {
         invoker: Some(tilo_actions::ActionInvoker::admitted(acting)),
         ..tilo_actions::ActionContext::default()
     }
-    .change_message()
+    .entry_in(&*doc)
     .expect("the action's change has a message");
     doc.commit_with(automerge::transaction::CommitOptions::default().with_message(message));
 }

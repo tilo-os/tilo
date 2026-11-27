@@ -2074,10 +2074,8 @@ mod tests {
         let tampered = |edit: &dyn Fn(&mut tilo_actions::remote::argument_parts::KeptParts)| {
             let mut entry = read.clone();
             edit(entry.parts.as_mut().unwrap());
-            check(
-                &tilo_actions::ActionContext::from_change_message(&entry.change_message().unwrap())
-                    .unwrap(),
-            )
+            let message = entry.entry_in(&automerge::AutoCommit::new()).unwrap();
+            check(&tilo_actions::ActionContext::from_change_message(&message).unwrap())
         };
         assert_eq!(
             tampered(&|parts| parts.parts[0].value = serde_json::json!("Other plan")),
@@ -2144,7 +2142,7 @@ mod tests {
         );
         let entry = parted_stamp(&asked, &cert)
             .action_context()
-            .change_message()
+            .entry_in(&automerge::AutoCommit::new())
             .unwrap();
         let entry = tilo_actions::ActionContext::from_change_message(&entry).unwrap();
         assert!(

@@ -1310,7 +1310,7 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
             .unwrap();
         layout.commit_with(
             automerge::transaction::CommitOptions::default()
-                .with_message(tilo_actions::ActionContext::whole_edit_by(&person)),
+                .with_message(tilo_actions::ActionContext::whole_edit_by(&person, &layout)),
         );
         tilo_test_env::within("the daemon takes the shell's write", async {
             loop {
