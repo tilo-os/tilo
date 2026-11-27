@@ -48,6 +48,10 @@ use super::HostedWorkspace;
 #[cfg(test)]
 mod acting_tests;
 
+/// The name this device's work keeps the calls other devices bring its providers under, while
+/// they wait in their asked records for their person's yes.
+pub(crate) const DEVICE_CALLS_DISPATCH: &str = "device-calls";
+
 /// The workspaces a host serves, by workspace: what [`Workspaces`](super::Workspaces)
 /// keeps and this action service reads.
 pub(crate) type WorkspacesMap = AsyncMutex<BTreeMap<String, Arc<AsyncMutex<HostedWorkspace>>>>;
@@ -89,6 +93,10 @@ pub(crate) struct DeviceWork {
     /// The workspaces a turn is claimed in, once they are open.
     turns: std::sync::OnceLock<super::WeakWorkspaces>,
     log: std::sync::Mutex<InvocationLog<InvocationState>>,
+    /// Who asked each call that waits here for its person's yes, as the transport admitted them:
+    /// what their approve runs it as, with every part a kept caller leaves out (the device that
+    /// brought it among them).
+    asking: std::sync::Mutex<std::collections::HashMap<InvocationId, Caller>>,
     /// The workspaces' governance, once they open: what a member device asks of it here.
     governance: std::sync::OnceLock<std::sync::Weak<super::actions::Shared>>,
     /// The providers registered on this device: what another device's call naming one reaches.
@@ -97,6 +105,8 @@ pub(crate) struct DeviceWork {
     /// that their own devices, and the agents their keys certified, reach them here.
     person: [u8; 32],
     runtime: tokio::runtime::Handle,
+    /// This work itself, which a call its person approved runs on again.
+    this: std::sync::Weak<Self>,
 }
 
 impl DeviceWork {
@@ -302,7 +312,7 @@ impl DeviceWork {
         surfaces: Arc<collab_types::app_surface::Surfaces>,
         person: [u8; 32],
     ) -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new_cyclic(|this| Self {
             content: std::sync::RwLock::default(),
             answers: std::sync::OnceLock::default(),
             dispatched: std::sync::Mutex::default(),
@@ -315,11 +325,99 @@ impl DeviceWork {
             surfaces,
             turns: std::sync::OnceLock::new(),
             log: std::sync::Mutex::default(),
+            asking: std::sync::Mutex::default(),
             governance: std::sync::OnceLock::new(),
             providers: super::providers::Providers::default(),
             person,
             runtime: tokio::runtime::Handle::current(),
+            this: this.clone(),
         })
+    }
+
+    /// The workspaces this device holds, as its calls are decided by.
+    pub(super) fn workspaces(&self) -> &WorkspacesMap {
+        &self.workspaces
+    }
+
+    /// The app surfaces this device knows.
+    pub(super) fn surfaces(&self) -> &collab_types::app_surface::Surfaces {
+        &self.surfaces
+    }
+
+    /// The runtime this work answers on.
+    pub(super) fn runtime(&self) -> &tokio::runtime::Handle {
+        &self.runtime
+    }
+
+    /// Wake whoever follows a call this work keeps: it changed.
+    fn moved(&self) {
+        self.moved
+            .send_modify(|moves| *moves = moves.wrapping_add(1));
+    }
+
+    /// Keep `request`, a call another device brought `caller` here that the workspace's grants
+    /// leave to its person, as its asked record showing them `facts`: the caller follows it
+    /// there under its id, and their approve runs it here ([`Self::readmit`]). Where no store
+    /// here keeps asked records, the caller is told the call needs its person's yes.
+    pub(super) async fn keep_asked(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        facts: tilo_actions::remote::asked::AskedFacts,
+    ) -> Result<InvocationReceipt, ActionCallError> {
+        let invocation = request.invocation;
+        let workspaces = self.turns.get().and_then(super::WeakWorkspaces::upgrade);
+        let Some((workspaces, records)) = workspaces.and_then(|workspaces| {
+            let records = workspaces.device_call_records()?;
+            Some((workspaces, records))
+        }) else {
+            return Err(ActionCallError::asks(facts));
+        };
+        let workspace_id = caller.workspace().and_then(WorkspaceId::parse);
+        let Some(workspace) = workspaces.asked_workspace(workspace_id, caller).await else {
+            return Err(waits_unkept(super::asking::NO_WORKSPACE_KEEPS_IT));
+        };
+        let reserved = self.log.lock_recover().reserve(caller, &request)?;
+        if reserved == Reservation::Admitted {
+            // Asked again: it answers how it stands.
+            return self
+                .log
+                .lock_recover()
+                .get(caller, &invocation)
+                .map(InvocationState::receipt)
+                .ok_or(ActionCallError::UnknownInvocation);
+        }
+        self.asking
+            .lock_recover()
+            .insert(invocation, caller.clone());
+        let kept = records.write_asked(&workspace, caller, &request, &facts);
+        let mut log = self.log.lock_recover();
+        let record = match kept {
+            Ok(record) => record,
+            Err(why) => {
+                log.abandon(&invocation);
+                self.asking.lock_recover().remove(&invocation);
+                return Err(waits_unkept(&why));
+            }
+        };
+        // The record is readable by whoever answers it before the call is noted as waiting, so
+        // an approve can come first: the call it admitted again keeps the state it wrote.
+        if log.admitted(caller, &invocation) == Some(None) {
+            log.complete(
+                &invocation,
+                InvocationState::new(invocation, record.waiting(invocation)),
+            );
+        }
+        let receipt = log.get(caller, &invocation).map_or(
+            InvocationReceipt {
+                invocation,
+                status: tilo_actions::remote::ReceiptStatus::Accepted,
+            },
+            InvocationState::receipt,
+        );
+        drop(log);
+        self.moved();
+        Ok(receipt)
     }
 
     /// The person this device belongs to: whose providers registered here answer.
@@ -595,6 +693,127 @@ impl DeviceWork {
         }
         self.linux_running.lock_recover().remove(&invocation);
         claim.release().await;
+    }
+}
+
+/// A call that waits for its person's yes and could not be kept for them to answer.
+fn waits_unkept(why: &str) -> ActionCallError {
+    ActionCallError::Refused {
+        reason: format!(
+            "it waits for its person's yes, and could not be kept for them to answer: {why}"
+        ),
+    }
+}
+
+/// A call its person answered that no longer waits here.
+fn not_waiting() -> ActionCallError {
+    ActionCallError::Refused {
+        reason: tilo_remote_actions::asked::NOTHING_ASKED.into(),
+    }
+}
+
+/// Whether `state` is a call that waits in its asked record for its person's yes.
+fn waits_asked(state: &InvocationState) -> bool {
+    tilo_actions::remote::asked::RecordRef::waited_in(&state.update).is_some()
+}
+
+/// The calls other devices brought this device's providers that wait for their person's yes,
+/// as the store of asked records hands their answers back.
+impl tilo_actions::remote::asked::AskedDispatch for DeviceWork {
+    fn context(&self, _: InvocationId) -> serde_json::Value {
+        serde_json::Value::Null
+    }
+
+    fn readmit(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+        _: &serde_json::Value,
+    ) -> Result<(), ActionCallError> {
+        let this = self.this.upgrade().ok_or_else(not_waiting)?;
+        let invocation = request.invocation;
+        // It runs as whoever asked it, as they asked it; one kept from before this device started
+        // again, as its record keeps them.
+        let asked = self.asking.lock_recover().get(&invocation).cloned();
+        let caller = &asked.unwrap_or_else(|| caller.clone());
+        {
+            let mut log = self.log.lock_recover();
+            // One kept from before this device started again is admitted as a call of its own
+            // under its id, which the record's approve admits once.
+            if !log.readmit(caller, &request, |state| state.is_none_or(waits_asked))
+                && !matches!(log.reserve(caller, &request), Ok(Reservation::Reserved))
+            {
+                return Err(not_waiting());
+            }
+            log.complete(
+                &invocation,
+                InvocationState::new(invocation, InvocationUpdate::Accepted { invocation }),
+            );
+        }
+        self.moved();
+        self.asking.lock_recover().remove(&invocation);
+        let caller = caller.clone();
+        let ran = self.providers.device_call(&caller, request, &this);
+        let runtime = self.runtime.clone();
+        runtime.spawn(async move {
+            let ended = match ran {
+                Some(ran) => ran.await.unwrap_or(Err(ActionCallError::Unanswered)),
+                None => Err(ActionCallError::Unavailable {
+                    reason: "nothing here answers it any more".into(),
+                }),
+            };
+            let update = match ended {
+                Ok(receipt) => match receipt.status {
+                    tilo_actions::remote::ReceiptStatus::Rejected { error } => {
+                        failed_update(invocation, &error)
+                    }
+                    status => settled_update(invocation, status),
+                },
+                Err(error) => failed_update(invocation, &error),
+            };
+            this.note(&caller, InvocationState::new(invocation, update));
+        });
+        Ok(())
+    }
+
+    fn declined(&self, caller: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
+        self.withdrawn(caller, invocation, tilo_actions::remote::asked::DECLINED);
+        Ok(())
+    }
+
+    fn withdrawn(&self, caller: &Caller, invocation: InvocationId, message: &str) {
+        let asked = self.asking.lock_recover().remove(&invocation);
+        let caller = &asked.unwrap_or_else(|| caller.clone());
+        let waits = self
+            .log
+            .lock_recover()
+            .get(caller, &invocation)
+            .is_some_and(waits_asked);
+        if waits {
+            self.note(
+                caller,
+                InvocationState::new(
+                    invocation,
+                    InvocationUpdate::Cancelled {
+                        invocation,
+                        message: Some(message.to_owned()),
+                    },
+                ),
+            );
+        }
+    }
+}
+
+/// The update of a call that `error` ended before it ran.
+fn failed_update(invocation: InvocationId, error: &ActionCallError) -> InvocationUpdate {
+    InvocationUpdate::Failed {
+        invocation,
+        error: tilo_actions::ActionFailure {
+            code: "refused".into(),
+            message: error.to_string(),
+            details: None,
+            retryable: false,
+        },
     }
 }
 
@@ -1026,10 +1245,12 @@ impl ActionProvider for Answers {
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        if let Some(answers) = self.work.providers.observe(caller, id) {
-            return answers;
-        }
         let logged = self.work.log.lock_recover().get(caller, id).cloned();
+        if let Some(answers) = self.work.providers.observe(caller, id) {
+            // A call its person's approve ran here is the provider's to say of while it says
+            // anything, and this work's once it ended.
+            return answers.or(logged);
+        }
         if logged.is_some() {
             return logged;
         }
@@ -1086,6 +1307,20 @@ impl ActionProvider for Answers {
                 Pending::ready(Err(ActionCallError::NotCancellable {
                     reason: "the turn already finished here".into(),
                 }))
+            }
+            Some(state) if waits_asked(state) => {
+                // Withdrawn from its person: its record asks them no more, and it ends so.
+                let at = tilo_actions::remote::asked::RecordRef::waited_in(&state.update);
+                let store = self
+                    .work
+                    .turns
+                    .get()
+                    .and_then(super::WeakWorkspaces::upgrade)
+                    .and_then(|workspaces| workspaces.asked_store());
+                if let (Some(at), Some(store)) = (at, store) {
+                    store.withdraw(&at, "Stopped by whoever asked");
+                }
+                Pending::ready(Ok(()))
             }
             Some(_) => {
                 // Stop the action this device dispatched for the turn.
@@ -1491,12 +1726,7 @@ impl Answers {
             return self
                 .work
                 .providers
-                .device_call(
-                    caller,
-                    request,
-                    (&self.work.workspaces, &self.work.surfaces),
-                    &self.work.runtime,
-                )
+                .device_call(caller, request, &self.work)
                 .expect("a provider that serves the call takes it");
         }
         // An address a provider registered on this device publishes is that provider's, whichever
@@ -1511,12 +1741,7 @@ impl Answers {
             return self
                 .work
                 .providers
-                .device_call(
-                    caller,
-                    request,
-                    (&self.work.workspaces, &self.work.surfaces),
-                    &self.work.runtime,
-                )
+                .device_call(caller, request, &self.work)
                 .expect("a provider that publishes the call takes it");
         }
         if let Some(served) = self.apps() {

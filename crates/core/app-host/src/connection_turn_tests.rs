@@ -597,6 +597,8 @@ impl BridgeProcess {
 
 /// The bridge's channel, as its process publishes it.
 const CHANNEL: &str = "channel";
+/// The channel's other action reaching outside, which its person never allowed the agent.
+const POST: &str = "post";
 
 impl ActionProvider for BridgeProcess {
     fn published(&self) -> Vec<tilo_actions::ResourceSpec> {
@@ -609,7 +611,20 @@ impl ActionProvider for BridgeProcess {
         ) else {
             unreachable!("the bridge's send declares its operation")
         };
-        vec![tilo_actions::ResourceSpec::new(CHANNEL, CHANNEL_KIND, "Channel").with_action(send)]
+        let Ok(post) = tilo_actions::ActionSpec::operation(
+            POST,
+            "Post",
+            tilo_actions::OperationKind::Effect,
+            "test.bridge-post",
+            &(),
+        ) else {
+            unreachable!("the bridge's post declares its operation")
+        };
+        vec![
+            tilo_actions::ResourceSpec::new(CHANNEL, CHANNEL_KIND, "Channel")
+                .with_action(send)
+                .with_action(post),
+        ]
     }
 
     fn query(
@@ -625,28 +640,34 @@ impl ActionProvider for BridgeProcess {
         address: &tilo_actions::ActionAddress,
         _: Option<&str>,
     ) -> Option<tilo_actions::ActionDescriptor> {
-        (address.resource == CHANNEL && address.action == "send").then(|| {
-            tilo_actions::ActionDescriptor {
-                did: None,
-                state: tilo_actions::ActionState::default(),
-                semantic_identity: None,
-                address: address.clone(),
-                resource_kind: CHANNEL_KIND.into(),
-                resource_label: "Channel".into(),
-                action_label: "Send".into(),
-                keywords: Vec::new(),
-                icon: None,
-                description: None,
-                locus: tilo_actions::ExecutionLocus::default(),
-                kind: tilo_actions::OperationKind::Effect,
-                contract: tilo_actions::ActionContract::for_operation(
-                    tilo_actions::OperationKind::Effect,
-                ),
-                input: tilo_actions::InputSpec::None,
-                params: Vec::new(),
-                view: None,
-            }
-        })
+        (address.resource == CHANNEL && ["send", POST].contains(&address.action.as_str())).then(
+            || {
+                tilo_actions::ActionDescriptor {
+                    did: None,
+                    state: tilo_actions::ActionState::default(),
+                    semantic_identity: None,
+                    address: address.clone(),
+                    resource_kind: CHANNEL_KIND.into(),
+                    resource_label: "Channel".into(),
+                    action_label: address.action.clone(),
+                    keywords: Vec::new(),
+                    icon: None,
+                    description: None,
+                    locus: tilo_actions::ExecutionLocus::default(),
+                    kind: tilo_actions::OperationKind::Effect,
+                    // Both reach outside the workspace, as a bridge's sends do.
+                    contract: tilo_actions::ActionContract {
+                        kind: tilo_action_policy::ActionKind::Outside,
+                        ..tilo_actions::ActionContract::for_operation(
+                            tilo_actions::OperationKind::Effect,
+                        )
+                    },
+                    input: tilo_actions::InputSpec::None,
+                    params: Vec::new(),
+                    view: None,
+                }
+            },
+        )
     }
 
     fn invoke(
@@ -746,7 +767,7 @@ fn app_calls(
 
 /// A call of the bridge's channel's `send` in `workspace`, signed by `signer` when given.
 fn send(workspace: &str, signer: Option<(&DeviceCert, &SigningKey)>) -> InvokeRequest {
-    let mut request = InvokeRequest {
+    let request = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: tilo_actions::remote::RemoteActionTarget {
             provider: tilo_actions::remote::application_provider_token(workspace, BRIDGE),
@@ -761,46 +782,70 @@ fn send(workspace: &str, signer: Option<(&DeviceCert, &SigningKey)>) -> InvokeRe
         appearance: None,
         signed: None,
     };
-    if let Some((cert, key)) = signer {
-        let Ok(attached) = tilo_server_protocol::invocation::sign_invocation_now(
-            workspace,
-            &request,
-            cert,
-            key,
-            tilo_clock::unix_now_ns(),
-        ) else {
-            unreachable!("a fixture's invocation signs")
-        };
-        request.signed = Some(Box::new(attached));
+    match signer {
+        Some(signer) => signed(workspace, request, signer),
+        None => request,
     }
+}
+
+/// `request` in `workspace`, signed by `signer`.
+fn signed(
+    workspace: &str,
+    mut request: InvokeRequest,
+    (cert, key): (&DeviceCert, &SigningKey),
+) -> InvokeRequest {
+    let Ok(attached) = tilo_server_protocol::invocation::sign_invocation_now(
+        workspace,
+        &request,
+        cert,
+        key,
+        tilo_clock::unix_now_ns(),
+    ) else {
+        unreachable!("a fixture's invocation signs")
+    };
+    request.signed = Some(Box::new(attached));
     request
 }
 
 /// The person's answer for the bridge's channel `send` in `workspace`, which reaches outside the
 /// workspace: an agent does such an action unasked only where its person allowed that one, as
 /// "Always allow this" does. The answer is the workspace's own, as the settings write it, so
-/// every device of the workspace decides the agent's call alike.
+/// every device of the workspace decides the agent's call alike. Its `post` they want to be asked
+/// about each time.
 async fn allow_the_bridge_send(workspaces: &Workspaces, workspace: &str) {
-    let person = hex::encode(persons_root().verifying_key().to_bytes());
     tilo_workspace_service::workspaces::fixtures::record_grants(
         workspaces,
         workspace,
-        &[tilo_action_policy::agent_answers::grant(
-            workspace,
-            ("scribe", person.as_str()),
-            (
-                &tilo_action_policy::agent_answers::AnswerScope::Action {
-                    app: BRIDGE.into(),
-                    kind: CHANNEL_KIND.into(),
-                    action: "send".into(),
-                },
-                tilo_action_policy::ActionKind::Outside,
-            ),
-            tilo_action_policy::Answer::Allow,
-            tilo_action_policy::Grantee::person(person.as_str()),
-        )],
+        &[
+            the_bridge_send_allowed(workspace),
+            bridge_answer(workspace, POST, tilo_action_policy::Answer::Ask),
+        ],
     )
     .await;
+}
+
+/// The person's answer for the bridge's send [`allow_the_bridge_send`] records.
+fn the_bridge_send_allowed(workspace: &str) -> Grant {
+    bridge_answer(workspace, "send", tilo_action_policy::Answer::Allow)
+}
+
+/// The person's `answer` for the agent's `action` on the bridge's channel in `workspace`.
+fn bridge_answer(workspace: &str, action: &str, answer: tilo_action_policy::Answer) -> Grant {
+    let person = hex::encode(persons_root().verifying_key().to_bytes());
+    tilo_action_policy::agent_answers::grant(
+        workspace,
+        ("scribe", person.as_str()),
+        (
+            &tilo_action_policy::agent_answers::AnswerScope::Action {
+                app: BRIDGE.into(),
+                kind: CHANNEL_KIND.into(),
+                action: action.into(),
+            },
+            tilo_action_policy::ActionKind::Outside,
+        ),
+        answer,
+        tilo_action_policy::Grantee::person(person.as_str()),
+    )
 }
 
 /// How `request` ends when `provider` is asked it as `caller`: its receipt once settled.
@@ -979,26 +1024,23 @@ async fn the_agents_call_runs_on_the_laptops_bridge(
     (desktop_bridge, laptop_bridge): (&Arc<BridgeProcess>, &Arc<BridgeProcess>),
     (agent, (scribe, scribe_key)): (&Caller, (&DeviceCert, &SigningKey)),
 ) {
-    let ran = tilo_test_env::within(
-        "the agent's call runs once its grant reached the laptop",
-        async {
-            loop {
-                let call = send(pair.workspace, Some((scribe, scribe_key)));
-                match ends(&AppCallsOf(Arc::clone(on_desktop_calls)), agent, call).await {
-                    Ok(ReceiptStatus::Completed { .. }) => break,
-                    Err(ActionCallError::NotPermitted) => {
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                    }
-                    other => unreachable!("the agent's call runs on the laptop: {other:?}"),
-                }
-            }
-            let Some(ran) = locked(&laptop_bridge.ran).pop() else {
-                unreachable!("the laptop's bridge ran the agent's call")
-            };
-            ran
-        },
+    // Its person allowed the agent the bridge's send, and asks to be asked for its post.
+    a_call_its_person_must_allow_waits_for_their_answer(
+        pair,
+        laptop_bridge,
+        agent,
+        (scribe, scribe_key),
     )
     .await;
+    let call = send(pair.workspace, Some((scribe, scribe_key)));
+    let ended = ends(&AppCallsOf(Arc::clone(on_desktop_calls)), agent, call).await;
+    assert!(
+        matches!(ended, Ok(ReceiptStatus::Completed { .. })),
+        "the agent's call runs on the laptop: {ended:?}"
+    );
+    let Some(ran) = locked(&laptop_bridge.ran).pop() else {
+        unreachable!("the laptop's bridge ran the agent's call")
+    };
     assert!(
         locked(&desktop_bridge.ran).is_empty(),
         "never where the lease is not"
@@ -1018,6 +1060,220 @@ async fn the_agents_call_runs_on_the_laptops_bridge(
         request.signed.is_some(),
         "the agent's signature travelled with it"
     );
+}
+
+/// The agent's call the workspace leaves to its person, asked of the laptop that holds the
+/// connection, waits there in its asked record: nothing runs until the person answers
+/// there, nobody else's answer counts, their approve runs it once, and their decline of another
+/// runs nothing and tells the agent so.
+async fn a_call_its_person_must_allow_waits_for_their_answer(
+    pair: &Pair<'_>,
+    laptop_bridge: &Arc<BridgeProcess>,
+    agent: &Caller,
+    (scribe, scribe_key): (&DeviceCert, &SigningKey),
+) {
+    let laptop = pair.laptop.workspaces();
+    let calls = laptop.device_actions();
+    // As the laptop's action service admits the call the desktop brings it.
+    let agent = &agent.clone().forwarded_by(pair.desktop_device);
+    let person = Caller::authenticated(
+        persons_root().verifying_key().to_bytes(),
+        pair.laptop_device,
+    )
+    .in_workspace(pair.workspace.to_owned());
+
+    let post = || {
+        let mut request = send(pair.workspace, None);
+        request.target.address = tilo_actions::ActionAddress::new(CHANNEL, POST);
+        signed(pair.workspace, request, (scribe, scribe_key))
+    };
+    let approved = post();
+    let record = waits_in_its_record(&*calls, agent, approved.clone()).await;
+    assert!(locked(&laptop_bridge.ran).is_empty(), "nothing ran unasked");
+
+    nobody_else_answers(laptop, (agent, &person), &record, pair.workspace).await;
+    let still = calls.observe(agent, &approved.invocation);
+    assert!(
+        still.as_ref().is_some_and(|state| {
+            tilo_actions::remote::asked::RecordRef::waited_in(&state.update).as_ref()
+                == Some(&record)
+        }),
+        "it still waits for the person: {still:?}"
+    );
+    assert!(
+        locked(&laptop_bridge.ran).is_empty(),
+        "nothing ran on their word"
+    );
+
+    // The person's approve runs it, once.
+    let answered = answer(
+        laptop,
+        &person,
+        &record,
+        tilo_actions::remote::asked::Offer::Approve,
+    )
+    .await;
+    assert!(answered.is_ok(), "the person approves it: {answered:?}");
+    let ended = followed(&*calls, agent, approved.invocation).await;
+    assert!(
+        matches!(ended, ReceiptStatus::Completed { .. }),
+        "the approved call ran: {ended:?}"
+    );
+    let ran = std::mem::take(&mut *locked(&laptop_bridge.ran));
+    assert_eq!(
+        ran.iter()
+            .map(|(_, request)| request.invocation)
+            .collect::<Vec<_>>(),
+        vec![approved.invocation],
+        "it ran once"
+    );
+    let again = answer(
+        laptop,
+        &person,
+        &record,
+        tilo_actions::remote::asked::Offer::Approve,
+    )
+    .await;
+    assert!(
+        again.is_err(),
+        "an answered question admits nothing again: {again:?}"
+    );
+    assert!(locked(&laptop_bridge.ran).is_empty(), "still once");
+
+    // Their decline of another runs nothing, and the agent reads that they declined.
+    let declined = post();
+    let record = waits_in_its_record(&*calls, agent, declined.clone()).await;
+    let answered = answer(
+        laptop,
+        &person,
+        &record,
+        tilo_actions::remote::asked::Offer::Decline,
+    )
+    .await;
+    assert!(answered.is_ok(), "the person declines it: {answered:?}");
+    let ended = followed(&*calls, agent, declined.invocation).await;
+    assert!(
+        matches!(&ended, ReceiptStatus::Cancelled { message: Some(message) }
+            if message == tilo_actions::remote::asked::DECLINED),
+        "the agent reads that its person declined: {ended:?}"
+    );
+    assert!(locked(&laptop_bridge.ran).is_empty(), "nothing ran on a no");
+}
+
+/// Neither another person, nor the agent `agent` itself, nor a Shortcut's unattended run acting
+/// as `person` (nobody is at a screen to answer) approves `record`, which asks `person`.
+async fn nobody_else_answers(
+    laptop: &Workspaces,
+    (agent, person): (&Caller, &Caller),
+    record: &tilo_actions::remote::asked::RecordRef,
+    workspace: &str,
+) {
+    let (other_root, other_device) = (
+        SigningKey::from_bytes(&[91; 32]),
+        SigningKey::from_bytes(&[92; 32]),
+    );
+    let other_person = Caller::authenticated(
+        other_root.verifying_key().to_bytes(),
+        other_device.verifying_key().to_bytes(),
+    )
+    .in_workspace(workspace.to_owned());
+    let unattended = person.clone().running_shortcut("nightly");
+    for (who, stranger) in [
+        ("another person", &other_person),
+        ("the agent", agent),
+        ("the person's unattended Shortcut", &unattended),
+    ] {
+        let answer = answer(
+            laptop,
+            stranger,
+            record,
+            tilo_actions::remote::asked::Offer::Approve,
+        )
+        .await;
+        assert!(answer.is_err(), "{who} approves nothing: {answer:?}");
+    }
+}
+
+/// `request`, asked of `calls` as `caller`, waiting for its person's yes: the record it waits in,
+/// as the caller reads it.
+async fn waits_in_its_record(
+    calls: &(impl ActionProvider + Sync + ?Sized),
+    caller: &Caller,
+    request: InvokeRequest,
+) -> tilo_actions::remote::asked::RecordRef {
+    let invocation = request.invocation;
+    let receipt = calls
+        .invoke(caller, request)
+        .await
+        .unwrap_or(Err(ActionCallError::Unanswered));
+    assert!(
+        matches!(&receipt, Ok(receipt) if receipt.status == ReceiptStatus::Accepted),
+        "the call waits, never refused: {receipt:?}"
+    );
+    tilo_test_env::within("the caller reads where its call waits", async {
+        loop {
+            if let Some(record) = calls
+                .observe(caller, &invocation)
+                .and_then(|state| tilo_actions::remote::asked::RecordRef::waited_in(&state.update))
+            {
+                return record;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+}
+
+/// How `invocation`, which `caller` asked of `calls`, ends, as they follow it.
+async fn followed(
+    calls: &(impl ActionProvider + Sync + ?Sized),
+    caller: &Caller,
+    invocation: tilo_actions::InvocationId,
+) -> ReceiptStatus {
+    tilo_test_env::within("the call ends", async {
+        loop {
+            if let Some(state) = calls.observe(caller, &invocation)
+                && state.update.is_terminal()
+            {
+                return state.receipt().status;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+}
+
+/// `answering`'s `resolution` of the asked `record`, as `workspaces` takes it.
+async fn answer(
+    workspaces: &Workspaces,
+    answering: &Caller,
+    record: &tilo_actions::remote::asked::RecordRef,
+    resolution: tilo_actions::remote::asked::Offer,
+) -> Result<InvocationReceipt, ActionCallError> {
+    let Ok(serde_json::Value::Object(arguments)) =
+        serde_json::to_value(tilo_actions::remote::asked::Resolve {
+            resolution,
+            ..tilo_actions::remote::asked::Resolve::default()
+        })
+    else {
+        unreachable!("an answer is an object")
+    };
+    let request = InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: tilo_actions::remote::WORKSPACE_INVOCATIONS_PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new(
+                &record.record,
+                tilo_actions::remote::asked::RESOLVE,
+            ),
+        },
+        argument: tilo_actions::remote::InvokeArgument::Json(arguments),
+        ..send(&record.workspace, None)
+    };
+    workspaces
+        .resolve_asked(answering, &request)
+        .await
+        .unwrap_or(Err(ActionCallError::Unanswered))
 }
 
 /// Its call without its signature never leaves the desktop, nor runs on the laptop when the

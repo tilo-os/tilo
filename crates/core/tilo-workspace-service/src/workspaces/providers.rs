@@ -954,17 +954,15 @@ impl Providers {
 
     /// Hand `request`, another device's call, to the provider it names, or the one that published
     /// the address it calls, once the workspace `caller` asks in admits that device to the action
-    /// by its grants, read from this device's copy in `workspaces`. `None` when no provider
-    /// reaching devices answers it.
+    /// by its grants, read from this device's copy of the workspaces `work` holds. A call the
+    /// grants leave to its person waits for their yes in its asked record, which `work` keeps
+    /// and runs it from once they approve; their approve on it is the yes it waited for. `None`
+    /// when no provider reaching devices answers it.
     pub(super) fn device_call(
         &self,
         caller: &Caller,
         request: InvokeRequest,
-        (workspaces, surfaces): (
-            &Arc<super::device_actions::WorkspacesMap>,
-            &Arc<collab_types::app_surface::Surfaces>,
-        ),
-        runtime: &tokio::runtime::Handle,
+        work: &Arc<super::device_actions::DeviceWork>,
     ) -> Option<Pending<Result<InvocationReceipt, ActionCallError>>> {
         let registered = self
             .for_devices(&request.target.provider)
@@ -978,8 +976,7 @@ impl Providers {
         // A record's actions are decided as its own app's ([`resources`]).
         let app = Arc::clone(&registered.app);
         let providers = self.clone();
-        let workspaces = Arc::clone(workspaces);
-        let surfaces = Arc::clone(surfaces);
+        let work = Arc::clone(work);
         let caller = caller.clone();
         let (completer, answer) = tilo_actions::remote::pending();
         // A device a host placed has no grants of its own: it reaches the provider registered for
@@ -1026,11 +1023,12 @@ impl Providers {
                     })
             })
             .flatten();
+        let runtime = work.runtime().clone();
         runtime.spawn(async move {
             let address = &request.target.address;
             if judged {
-                let permitted = permits(
-                    (&workspaces, &surfaces),
+                let permitted = match permits(
+                    (work.workspaces(), work.surfaces()),
                     declared.as_ref(),
                     resource_kind.as_deref(),
                     device,
@@ -1038,7 +1036,17 @@ impl Providers {
                     &app,
                     (&address.resource, &address.action),
                 )
-                .await;
+                .await
+                {
+                    Err(Asks::Person) if request.approval().is_some() => Ok(()),
+                    Err(Asks::Person) => {
+                        let facts = asked_facts(&caller, address);
+                        completer.complete(work.keep_asked(&caller, request, facts).await);
+                        return;
+                    }
+                    Err(Asks::Refused(refused)) => Err(refused),
+                    Ok(()) => Ok(()),
+                };
                 // A grant decides who may call; what the action's contract asks of its person
                 // it asks of whoever calls, on the device they called from.
                 let asked = declared.as_ref().is_none_or(|declared| {
@@ -1284,9 +1292,8 @@ fn record_of(served: &BTreeMap<Arc<str>, Registered>, provider: &str) -> Option<
 /// ([`tilo_peer_state::StatePeer::app_action_answer`]): a commenter's verb under the `comments`
 /// is theirs, though the same kind on the record is not, and an answer its person gave for the
 /// action reaches the call at the kind its app publishes it on. The refusal its caller reads when
-/// they do not; the answer that waits for its person is the one the caller asks again, since it
-/// may not have reached this device yet. An action declared nowhere is refused: nothing says what
-/// it is able to do.
+/// they do not; one the grants leave to the caller's person asks them ([`Asks::Person`]). An
+/// action declared nowhere is refused: nothing says what it is able to do.
 async fn permits(
     (workspaces, surfaces): (
         &super::device_actions::WorkspacesMap,
@@ -1298,12 +1305,12 @@ async fn permits(
     workspace: &str,
     app: &str,
     (resource, action): (&str, &str),
-) -> Result<(), ActionCallError> {
+) -> Result<(), Asks> {
     let kept = workspaces.lock().await.get(workspace).cloned();
     let Some(kept) = kept else {
-        return Err(ActionCallError::Refused {
+        return Err(Asks::Refused(ActionCallError::Refused {
             reason: "this device does not keep that workspace".into(),
-        });
+        }));
     };
     let mut kept = kept.lock().await;
     let declared_kind = declared.map(|declared| declared.contract.kind);
@@ -1316,9 +1323,9 @@ async fn permits(
         }),
         kept.call_need(surfaces, app, action),
     ) else {
-        return Err(ActionCallError::Refused {
+        return Err(Asks::Refused(ActionCallError::Refused {
             reason: format!("{app} declares no action {resource}#{action}"),
-        });
+        }));
     };
     let answered = kept.peer().app_action_answer(
         device,
@@ -1330,19 +1337,37 @@ async fn permits(
     drop(kept);
     match answered {
         Ok(tilo_action_policy::Answer::Allow) => Ok(()),
-        // The person's answer for this action has not reached this device, or they answered it
-        // nowhere here: the call is not run, and whoever asked asks again once the workspace's
-        // answer is here.
-        Ok(tilo_action_policy::Answer::Ask) => Err(ActionCallError::NotPermitted),
-        Ok(tilo_action_policy::Answer::Deny) => Err(ActionCallError::Refused {
+        Ok(tilo_action_policy::Answer::Ask) => Err(Asks::Person),
+        Ok(tilo_action_policy::Answer::Deny) => Err(Asks::Refused(ActionCallError::Refused {
             reason: format!(
                 "your grants in this workspace do not let this device run {resource}#{action} of \
                  {app}"
             ),
-        }),
-        Err(error) => Err(ActionCallError::Refused {
+        })),
+        Err(error) => Err(Asks::Refused(ActionCallError::Refused {
             reason: format!("this device is not admitted to the workspace: {error}"),
-        }),
+        })),
+    }
+}
+
+/// Why a device's call does not go ahead on its grants alone.
+enum Asks {
+    /// Its person decides it: it waits for their yes.
+    Person,
+    /// Refused, as its caller reads.
+    Refused(ActionCallError),
+}
+
+/// What `caller`'s call of `address` shows its person while it waits for their yes: who asks,
+/// the record it acts on and its verb.
+fn asked_facts(
+    caller: &Caller,
+    address: &tilo_actions::ActionAddress,
+) -> tilo_actions::remote::asked::AskedFacts {
+    tilo_actions::remote::asked::AskedFacts {
+        on: Some(address.resource.clone()),
+        verb: address.action.clone(),
+        ..tilo_actions::remote::asked::AskedFacts::by(super::asking::asked_by(caller))
     }
 }
 

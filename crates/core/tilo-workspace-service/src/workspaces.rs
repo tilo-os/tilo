@@ -1167,6 +1167,9 @@ struct WorkspacesInner {
     /// Where calls that wait for a person's yes are kept as their asked records
     /// ([`Workspaces::asked_store`]).
     asked_records: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedRecords>>,
+    /// Where calls other devices bring this one's providers wait for a person's yes, kept in
+    /// the same store ([`Workspaces::device_call_records`]).
+    asked_device_calls: std::sync::OnceLock<Arc<dyn tilo_actions::remote::asked::AskedRecords>>,
     /// What the records this host's dispatch writes its asked calls through are wrapped in, once
     /// a crate built on these workspaces says ([`Workspaces::wrap_asked_records`]).
     asked_wrap: std::sync::OnceLock<asking::AskedWrap>,
@@ -1696,6 +1699,7 @@ impl Workspaces {
                 branches: tokio::sync::broadcast::channel(64).0,
                 branch_content: std::sync::RwLock::default(),
                 asked_records: std::sync::OnceLock::new(),
+                asked_device_calls: std::sync::OnceLock::new(),
                 asked_wrap: std::sync::OnceLock::new(),
                 asked_store: std::sync::OnceLock::new(),
                 asked_dispatch: std::sync::OnceLock::new(),

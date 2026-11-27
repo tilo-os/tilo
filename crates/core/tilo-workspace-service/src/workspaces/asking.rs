@@ -53,7 +53,10 @@ pub fn asked_by(caller: &Caller) -> AskedBy {
 
 pub use tilo_actions::remote::asked::approved_or_asks;
 
-/// What wraps the records a host's dispatch writes its asked calls through
+/// Why a call that waits for its person's yes could not be kept for them.
+pub(crate) const NO_WORKSPACE_KEEPS_IT: &str = "no workspace here keeps it for its person";
+
+/// What wraps the records each of a host's dispatches writes its asked calls through
 /// ([`Workspaces::wrap_asked_records`]).
 pub type AskedWrap = Arc<dyn Fn(Arc<dyn AskedRecords>) -> Arc<dyn AskedRecords> + Send + Sync>;
 
@@ -179,16 +182,18 @@ impl Workspaces {
         self.link_asked();
     }
 
-    /// Wrap the records this host's dispatch writes its asked calls through in `wrap` from now
-    /// on: what tells each one to the person it waits for. `wrap` is handed them once the host
-    /// names its store and its dispatch, with the store kept by then ([`Self::asked_store`]).
+    /// Wrap the records this host's dispatches write their asked calls through in `wrap` from
+    /// now on: what tells each one to the person it waits for. `wrap` is handed each dispatch's
+    /// records once the host names its store and that dispatch, with the store kept by then
+    /// ([`Self::asked_store`]).
     ///
     /// # Panics
     /// A wrap was named already, or the records were linked before it: an asked call would be
     /// written through records nothing wraps.
     pub fn wrap_asked_records(&self, wrap: AskedWrap) {
         assert!(
-            self.inner.asked_records.get().is_none(),
+            self.inner.asked_records.get().is_none()
+                && self.inner.asked_device_calls.get().is_none(),
             "the asked records are wrapped before the host links them"
         );
         assert!(
@@ -198,21 +203,39 @@ impl Workspaces {
         self.link_asked();
     }
 
-    /// The records this host's dispatch writes through, once both the store and the dispatch
-    /// are named.
+    /// The records each dispatch here writes through, once the store is named: the calls other
+    /// devices bring this one's providers from then on ([`Self::device_call_records`]), and this
+    /// host's own once its dispatch is named too.
     fn link_asked(&self) {
-        if let (Some(store), Some(dispatch)) = (
-            self.inner.asked_store.get(),
-            self.inner.asked_dispatch.get(),
-        ) {
-            let records =
-                store.for_dispatch(super::actions::HOST_DISPATCH, Arc::downgrade(dispatch));
-            let records = match self.inner.asked_wrap.get() {
-                Some(wrap) => wrap(records),
-                None => records,
-            };
+        let Some(store) = self.inner.asked_store.get() else {
+            return;
+        };
+        let wrapped = |records| match self.inner.asked_wrap.get() {
+            Some(wrap) => wrap(records),
+            None => records,
+        };
+        if self.inner.asked_device_calls.get().is_none() {
+            let work = Arc::downgrade(&self.inner.jobs);
+            let work: std::sync::Weak<dyn AskedDispatch> = work;
+            let _ = self.inner.asked_device_calls.set(wrapped(
+                store.for_dispatch(super::device_actions::DEVICE_CALLS_DISPATCH, work),
+            ));
+        }
+        if let Some(dispatch) = self.inner.asked_dispatch.get()
+            && self.inner.asked_records.get().is_none()
+        {
+            let records = wrapped(
+                store.for_dispatch(super::actions::HOST_DISPATCH, Arc::downgrade(dispatch)),
+            );
             let _ = self.inner.asked_records.set(records);
         }
+    }
+
+    /// Where a call another device brings a provider here waits for its person's yes, once the
+    /// host named its store: an approve of one is handed back to this device's work, which runs
+    /// the call then.
+    pub(crate) fn device_call_records(&self) -> Option<Arc<dyn AskedRecords>> {
+        self.inner.asked_device_calls.get().cloned()
     }
 
     /// The store asked records are kept in here, once the host named it.
@@ -284,16 +307,26 @@ impl Workspaces {
         facts: &AskedFacts,
     ) -> Option<Result<RecordRef, String>> {
         let records = self.asked_records()?;
-        let workspace = match workspace_id {
+        Some(match self.asked_workspace(workspace_id, caller).await {
+            Some(workspace) => records.write_asked(&workspace, caller, request, facts),
+            None => Err(NO_WORKSPACE_KEEPS_IT.to_owned()),
+        })
+    }
+
+    /// The workspace a call `caller` made in `workspace_id` is kept in while it waits for its
+    /// person, by the identity every reading of its invocations is addressed by: the workspace
+    /// it acts in, else the person's own workspace here.
+    pub(crate) async fn asked_workspace(
+        &self,
+        workspace_id: Option<collab_types::WorkspaceId>,
+        caller: &Caller,
+    ) -> Option<String> {
+        match workspace_id {
             Some(id) => self.workspace_identity(id).await,
             None => caller
                 .user_public_key()
                 .and_then(|person| self.own_workspace_of(person)),
-        };
-        Some(match workspace {
-            Some(workspace) => records.write_asked(&workspace, caller, request, facts),
-            None => Err("no workspace here keeps it for its person".to_owned()),
-        })
+        }
     }
 
     /// Whether a grant in `workspace`'s policy lets `agent` take `node`, an action that

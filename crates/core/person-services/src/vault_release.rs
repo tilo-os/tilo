@@ -1014,8 +1014,12 @@ impl crate::PersonServices {
         Some((store, records))
     }
 
-    /// Write an app's asks into `store`, answered through [`VaultAsks`].
+    /// Write an app's asks into `store`, answered through [`VaultAsks`]: once, however many of
+    /// the host's dispatches the store hands its records.
     pub(super) fn keep_vault_asks_in(&self, store: &Arc<tilo_remote_actions::asked::AskedStore>) {
+        if self.inner.vault_asks.get().is_some() {
+            return;
+        }
         let dispatch: Arc<dyn AskedDispatch> = Arc::new(VaultAsks(self.downgrade()));
         let records = self.told(store.for_dispatch(VAULT_ASKS, Arc::downgrade(&dispatch)));
         let _ = self.inner.vault_asks.set((dispatch, records));
