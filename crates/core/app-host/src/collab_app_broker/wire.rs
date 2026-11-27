@@ -726,9 +726,12 @@ impl JoinedChannel {
             }
             // An application reaching for another app's action it holds no grant for waits for the
             // person using it, or is refused. A step the action of an invocation delivered to it
-            // declares is not asked again: the yes that invocation was given covers it.
+            // declares is not asked again: the yes that invocation was given covers it. A call the
+            // person's own press made is the person's, the app only the means, and it is admitted
+            // on their grants as their own call is.
             if let (Some(app_id), tilo_actions::remote::RemoteActionMessage::Invoke(invoke)) =
                 (caller.acting().app(), &request.message)
+                && matches!(caller.acting().by, tilo_actions::Actor::App(_))
                 && serving.is_none()
                 && let Err(refused) = state.app_action_consent(&person, app_id, invoke)
             {
@@ -775,9 +778,14 @@ impl JoinedChannel {
             };
             // A call the person's own press made is the person's: it runs as them, never as the
             // app they pressed in, so the record it changes is a step of theirs, with their undo.
-            // The press is the one the compositor issued to this window and proved here, so an
-            // app carries no standing of theirs without it.
-            let caller = if pressed { person.clone() } else { caller };
+            // The app stays the means the press went through, so history reads "you, in it". The
+            // press is the one the compositor issued to this window and proved here, so an app
+            // carries no standing of theirs without it.
+            let caller = if pressed {
+                person.clone().through_app(app_id.clone())
+            } else {
+                caller
+            };
             let provider = action_provider::ConnectionActionProvider {
                 state: Arc::clone(&state),
                 own_peer: peer_id,

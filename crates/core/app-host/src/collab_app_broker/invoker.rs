@@ -70,7 +70,9 @@ fn invoked_with(
 
     // A person acting for themselves needs no context to say so; anyone else is named with
     // their kind and the person they act for, so what they write is theirs, not that person's.
-    if context.is_none() && presence.is_none() && admitted.direct() {
+    // A person whose press went through an app is named all the same, so history reads "you, in
+    // it": the person acts, the app is the means.
+    if context.is_none() && presence.is_none() && admitted.direct() && admitted.app().is_none() {
         // A caller whose change another device decides keeps the invocation it signed, even
         // when it keeps nothing else.
         return Ok(signed_by_request(None, request));

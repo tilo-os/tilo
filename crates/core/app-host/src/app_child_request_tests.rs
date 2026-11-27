@@ -337,6 +337,25 @@ async fn a_call_continuing_the_persons_press_is_theirs_and_an_app_cannot_make_on
                 ))),
                 "the press's call is the person's, not the app's"
             );
+            // The app the press went through stays the means: history reads "you, in it".
+            let context: tilo_actions::ActionContext = serde_json::from_str(&pressed.context_json)
+                .expect("the host sets the call's context");
+            let invoker = context
+                .invoker
+                .as_ref()
+                .expect("the host names the call's invoker");
+            assert_eq!(
+                invoker.acting.member_id(),
+                Some(&tilo_actions::MemberId::person(person_id_for_root(
+                    env.cert.user_public_key
+                ))),
+                "the person acts"
+            );
+            assert_eq!(
+                invoker.acting.app().map(ToString::to_string).as_deref(),
+                Some(env.route.app_id.as_str()),
+                "the app is the means the press went through"
+            );
             let child = new_note(Some(press));
             let made = app_asks(&app, child.clone()).await;
             assert!(admitted(&made), "{made:?}");
