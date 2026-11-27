@@ -68,10 +68,9 @@ mod unix {
     use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
     use cap_primitives::fs::FollowSymlinks;
     use cap_std::fs::{Dir, OpenOptions, OpenOptionsExt};
-    use sha2::{Digest, Sha256};
     use std::{
         fs::{self, File},
-        io::{Read, Seek, SeekFrom},
+        io::{Seek, SeekFrom},
         os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt as StdOpenOptionsExt},
         sync::atomic::AtomicU64,
         time::Duration,
@@ -119,23 +118,20 @@ mod unix {
             );
         }
         file.seek(SeekFrom::Start(0)).map_err(io_error)?;
-        let mut digest = Sha256::new();
-        let mut remaining = release.byte_size;
-        let mut buffer = [0_u8; 64 * 1024];
-        while remaining > 0 {
-            cancelled(cancel)?;
-            let limit =
-                usize::try_from(remaining.min(buffer.len() as u64)).map_err(|e| e.to_string())?;
-            let count = file.read(&mut buffer[..limit]).map_err(io_error)?;
-            if count == 0 {
-                return Err("The cached Desktop package is truncated.".into());
+        let digest = imager_backend::write::hash_source_exact(
+            &mut *file,
+            release.byte_size,
+            &|| cancel.load(Ordering::Acquire),
+            |_| {},
+        )
+        .map_err(|error| {
+            if cancel.load(Ordering::Acquire) {
+                "Desktop package download cancelled.".into()
+            } else {
+                io_error(error)
             }
-            digest.update(&buffer[..count]);
-            remaining -= count as u64;
-        }
-        if file.read(&mut buffer[..1]).map_err(io_error)? != 0
-            || hex::encode(digest.finalize()) != release.sha256
-        {
+        })?;
+        if digest != release.sha256 {
             return Err("The Desktop package failed SHA-256 verification.".into());
         }
         cancelled(cancel)

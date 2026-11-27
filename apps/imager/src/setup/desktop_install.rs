@@ -56,10 +56,8 @@ mod transaction_core {
     use super::{
         DesktopInstallEvent, DesktopInstallRequest, InstalledDesktop, REQUEST_LIMIT, request_digest,
     };
-    use sha2::{Digest, Sha256};
     use std::{
         fs::{File, OpenOptions},
-        io::{Read, Write},
         os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
         path::{Path, PathBuf},
     };
@@ -282,29 +280,15 @@ mod transaction_core {
             .mode(0o600)
             .open(&path)
             .map_err(|_| "Cannot create private package.")?;
-        let mut hash = Sha256::new();
-        let mut count = 0u64;
-        let mut buffer = [0u8; 8192];
-        loop {
-            let n = pinned
-                .read(&mut buffer)
-                .map_err(|_| "Cannot read pinned package.")?;
-            if n == 0 {
-                break;
-            }
-            count = count
-                .checked_add(n as u64)
-                .ok_or("Package size overflow.")?;
-            if count > release.byte_size {
-                return Err("Package exceeds authenticated size.".into());
-            }
-            let chunk = buffer.get(..n).ok_or("Invalid package read size.")?;
-            hash.update(chunk);
-            output
-                .write_all(chunk)
-                .map_err(|_| "Cannot write private package.")?;
-        }
-        if count != release.byte_size || hex::encode(hash.finalize()) != release.sha256 {
+        let digest = imager_backend::write::copy_source_exact(
+            &mut pinned,
+            &mut output,
+            release.byte_size,
+            &|| false,
+            |_| {},
+        )
+        .map_err(|_| "Cannot stage the pinned package.".to_string())?;
+        if digest != release.sha256 {
             return Err(
                 "Desktop package digest or size does not match the authenticated release.".into(),
             );
@@ -320,24 +304,14 @@ mod transaction_core {
     }
 
     fn verify_bytes(mut input: File, release: &DesktopRelease) -> Result<(), String> {
-        struct HashWriter<'a>(&'a mut Sha256);
-        impl std::io::Write for HashWriter<'_> {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0.update(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-
-        let mut hash = Sha256::new();
-        let size = std::io::copy(
-            &mut Read::by_ref(&mut input).take(release.byte_size + 1),
-            &mut HashWriter(&mut hash),
+        let digest = imager_backend::write::hash_source_exact(
+            &mut input,
+            release.byte_size,
+            &|| false,
+            |_| {},
         )
         .map_err(|_| "Cannot verify private package.")?;
-        if size != release.byte_size || hex::encode(hash.finalize()) != release.sha256 {
+        if digest != release.sha256 {
             return Err("Private package failed final authentication.".into());
         }
         Ok(())

@@ -103,7 +103,7 @@ pub fn stream_copy_bound(
         ));
     }
     if let Some(expected) = expected_sha256 {
-        let actual = hash_source_exact(&mut *reader, expected_size, should_cancel)?;
+        let actual = hash_source_exact(&mut *reader, expected_size, should_cancel, |_| {})?;
         if !actual.eq_ignore_ascii_case(expected) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -181,40 +181,49 @@ pub fn stream_copy_bound(
     Ok(written)
 }
 
-/// Runs before a catalog-backed write opens its destination, so a corrupt cached image cannot
-/// cause destructive I/O.
-pub fn hash_source_exact(
+/// Copies exactly `expected_size` bytes from `reader` to `writer` in [`CHUNK`] blocks, hashing
+/// what it writes, so a digest always covers the bytes that arrived at the destination.
+/// `on_progress` gets the cumulative bytes copied after each block.
+///
+/// # Errors
+///
+/// Fails on cancellation, a short or overlong source, and any read or write failure.
+pub fn copy_source_exact(
     reader: &mut impl Read,
+    writer: &mut impl Write,
     expected_size: u64,
     should_cancel: &impl Fn() -> bool,
+    mut on_progress: impl FnMut(u64),
 ) -> io::Result<String> {
     let mut hash = Sha256::new();
     let mut buffer = vec![0_u8; CHUNK];
-    let mut read_total = 0_u64;
-    while read_total < expected_size {
+    let mut copied = 0_u64;
+    while copied < expected_size {
         if should_cancel() {
             return Err(cancelled_error());
         }
         let want = usize::try_from(
             expected_size
-                .checked_sub(read_total)
-                .ok_or_else(|| io::Error::other("Source hash exceeds reviewed length"))?
+                .checked_sub(copied)
+                .ok_or_else(|| io::Error::other("Source copy exceeds reviewed length"))?
                 .min(CHUNK as u64),
         )
-        .map_err(|_| io::Error::other("source hash chunk size is out of range"))?;
+        .map_err(|_| io::Error::other("source chunk size is out of range"))?;
         let chunk = buffer
             .get_mut(..want)
-            .ok_or_else(|| io::Error::other("source hash chunk size exceeds buffer"))?;
+            .ok_or_else(|| io::Error::other("source chunk size exceeds buffer"))?;
         read_exact_fill(reader, chunk).map_err(|error| {
             io::Error::new(
                 error.kind(),
                 format!("source image became shorter after review: {error}"),
             )
         })?;
+        writer.write_all(chunk)?;
         hash.update(chunk);
-        read_total = read_total
+        copied = copied
             .checked_add(u64::try_from(want).map_err(io::Error::other)?)
-            .ok_or_else(|| io::Error::other("Source hash length overflows"))?;
+            .ok_or_else(|| io::Error::other("Source copy length overflows"))?;
+        on_progress(copied);
     }
     let mut extra = [0_u8; 1];
     if reader.read(&mut extra)? != 0 {
@@ -224,6 +233,23 @@ pub fn hash_source_exact(
         ));
     }
     Ok(hex::encode(hash.finalize()))
+}
+
+/// Runs before a catalog-backed write opens its destination, so a corrupt cached image cannot
+/// cause destructive I/O. `on_progress` gets the cumulative bytes hashed after each block.
+pub fn hash_source_exact(
+    reader: &mut impl Read,
+    expected_size: u64,
+    should_cancel: &impl Fn() -> bool,
+    on_progress: impl FnMut(u64),
+) -> io::Result<String> {
+    copy_source_exact(
+        reader,
+        &mut io::sink(),
+        expected_size,
+        should_cancel,
+        on_progress,
+    )
 }
 
 /// Re-opens `dst` and compares the first `len` bytes against `src` [`CHUNK`] at a time: `Ok(None)`

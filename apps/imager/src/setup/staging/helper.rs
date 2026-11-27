@@ -951,36 +951,30 @@ impl Engine<'_> {
     fn verify_sources(&mut self) -> Result<(), Refusal> {
         for which in [Which::Esp, Which::Root] {
             let (size, sha) = self.component(which);
-            let mut hash = Sha256::new();
-            let mut buf = vec![0_u8; CHUNK];
             let file = match which {
                 Which::Esp => self.esp_file.as_mut(),
                 Which::Root => self.root_file.as_mut(),
             }
             .expect("component opened");
             file.seek(SeekFrom::Start(0)).map_err(io_refusal)?;
-            let mut done = 0;
-            while done < size {
-                let n = (size - done).min(CHUNK as u64) as usize;
-                file.read_exact(&mut buf[..n]).map_err(|_| {
-                    Refusal::new(codes::DIGEST_MISMATCH, "a component file is truncated")
+            let digest =
+                imager_backend::write::hash_source_exact(&mut *file, size, &|| false, |done| {
+                    (self.progress)(&Progress {
+                        step: Step::Verify,
+                        done_bytes: done,
+                        total_bytes: size,
+                    });
+                })
+                .map_err(|error| match error.kind() {
+                    std::io::ErrorKind::UnexpectedEof => {
+                        Refusal::new(codes::DIGEST_MISMATCH, "a component file is truncated")
+                    }
+                    std::io::ErrorKind::InvalidData => {
+                        Refusal::new(codes::DIGEST_MISMATCH, "a component file is too long")
+                    }
+                    _ => io_refusal(error),
                 })?;
-                hash.update(&buf[..n]);
-                done += n as u64;
-                (self.progress)(&Progress {
-                    step: Step::Verify,
-                    done_bytes: done,
-                    total_bytes: size,
-                });
-            }
-            let file = self.file(which);
-            if file.read(&mut buf[..1]).map_err(io_refusal)? != 0 {
-                return Err(Refusal::new(
-                    codes::DIGEST_MISMATCH,
-                    "a component file is too long",
-                ));
-            }
-            if hex::encode(hash.finalize()) != sha {
+            if digest != sha {
                 return Err(Refusal::new(
                     codes::DIGEST_MISMATCH,
                     "a component does not match the manifest digest",

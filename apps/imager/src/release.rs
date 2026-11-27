@@ -535,27 +535,20 @@ fn cache_root() -> PathBuf {
         .join("tilo-imager")
 }
 
-fn sha256_controlled(path: &Path, control: &DownloadControl) -> Result<String, String> {
+fn sha256_controlled(
+    path: &Path,
+    expected_size: u64,
+    control: &DownloadControl,
+) -> Result<String, String> {
     let mut file =
         File::open(path).map_err(|error| format!("Could not open downloaded data: {error}"))?;
-    let mut hash = Sha256::new();
-    let mut buffer = vec![0_u8; 1024 * 1024].into_boxed_slice();
-    loop {
-        if control.is_cancelled() {
-            return Err("Tilo installer download cancelled.".into());
-        }
-        let read = file
-            .read(&mut buffer)
-            .map_err(|error| format!("Could not verify downloaded data: {error}"))?;
-        if read == 0 {
-            break;
-        }
-        let chunk = buffer
-            .get(..read)
-            .ok_or_else(|| "Could not bound downloaded data while verifying it.".to_string())?;
-        hash.update(chunk);
-    }
-    Ok(hex::encode(hash.finalize()))
+    imager_backend::write::hash_source_exact(
+        &mut file,
+        expected_size,
+        &|| control.is_cancelled(),
+        |_| {},
+    )
+    .map_err(|error| format!("Could not verify downloaded data: {error}"))
 }
 
 fn download_archive(
@@ -651,8 +644,13 @@ pub fn verified_image_observed(
     let image = root.join("tilo-installer.img");
     if image.is_file() {
         notify(DownloadEvent::Verifying);
-        if sha256_controlled(&image, control)? == release.image_sha256 {
+        if sha256_controlled(&image, release.size, control)
+            .is_ok_and(|digest| digest == release.image_sha256)
+        {
             return source_for(release, &image);
+        }
+        if control.is_cancelled() {
+            return Err("Tilo installer download cancelled.".into());
         }
         fs::remove_file(&image)
             .map_err(|error| format!("Could not replace an invalid cached installer: {error}"))?;
@@ -725,9 +723,15 @@ pub fn verified_image_observed(
         .flush()
         .map_err(|error| format!("Could not save the expanded installer: {error}"))?;
     notify(DownloadEvent::Verifying);
+    let verified = sha256_controlled(&image_part, release.size, control)
+        .is_ok_and(|digest| digest == release.image_sha256);
+    if control.is_cancelled() {
+        let _ = fs::remove_file(&image_part);
+        return Err("Tilo installer download cancelled.".into());
+    }
     if expanded_size != release.size
         || expanded.metadata().map_or(0, |meta| meta.len()) != release.size
-        || sha256_controlled(&image_part, control)? != release.image_sha256
+        || !verified
     {
         let _ = fs::remove_file(&image_part);
         return Err("The expanded Tilo installer did not match its signed catalog.".into());

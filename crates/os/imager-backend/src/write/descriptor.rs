@@ -50,7 +50,7 @@ pub fn open_reviewed_source(
         }
     }
     if let Some(expected) = expected_sha256 {
-        let actual = match hash_source_exact(&mut source, size, should_cancel) {
+        let actual = match hash_source_exact(&mut source, size, should_cancel, |_| {}) {
             Ok(digest) => digest,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {
                 return Err(JobResult::Cancelled);
