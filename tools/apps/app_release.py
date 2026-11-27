@@ -154,6 +154,20 @@ def tilolang_std_digest(root: Path = ROOT) -> str:
     return hashlib.sha256((std / "app.tl").read_bytes() + (std / "app.ids").read_bytes()).hexdigest()[:16]
 
 
+# Where an app runs when nothing narrows it (`tilo_app_package::DEFAULT_PLATFORMS`).
+DEFAULT_PLATFORMS = ("linux", "macos", "web")
+
+
+def runtime_platforms(root: Path = ROOT) -> list[str]:
+    """Where the tilolang runtime runs, and so where every package without a catalogue entry of
+    its own runs: its manifest's `package.platforms`."""
+    manifest = root / "crates/lang/tilolang-process/tilo-runtime.toml"
+    if not manifest.is_file():
+        return list(DEFAULT_PLATFORMS)
+    package = tomllib.loads(manifest.read_text())["package"]
+    return list(package.get("platforms", DEFAULT_PLATFORMS))
+
+
 def tilolang_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
     """The tilolang packages of `apps/tl`, under the name `tl-<directory>`.
 
@@ -177,10 +191,20 @@ def tilolang_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
         name = f"tl-{source.parent.name}"
         manifest = source.parent / "app.toml"
         optional_runtimes = []
+        entrypoint_runtime = ""
         if manifest.is_file():
-            optional_runtimes = (
-                tomllib.loads(manifest.read_text())["package"].get("optional-runtimes", [])
-            )
+            declared_manifest = tomllib.loads(manifest.read_text())
+            optional_runtimes = declared_manifest["package"].get("optional-runtimes", [])
+            entrypoint_runtime = declared_manifest.get("entrypoint", {}).get("runtime", "")
+        # Where the app runs and whether a person is offered it, as its committed catalogue entry
+        # (`fleet.json`, written by `tilolang describe --fleet`) says. A tree without one runs the
+        # package where its runtime runs.
+        platforms, listed = runtime_platforms(root), True
+        catalogue = source.parent / "fleet.json"
+        if catalogue.is_file():
+            committed = json.loads(catalogue.read_text())
+            platforms = committed.get("platforms") or platforms
+            listed = committed.get("listed", True)
         result[name] = {
             "name": name,
             "kind": "tilolang",
@@ -192,6 +216,9 @@ def tilolang_catalog(root: Path = ROOT) -> dict[str, dict[str, str]]:
             "runtime": "tilo-runtime/2026.07",
             "tilolang_runtime": runtime,
             "optional_runtimes": optional_runtimes,
+            "entrypoint_runtime": entrypoint_runtime,
+            "platforms": platforms,
+            "listed": listed,
             "manifest": str(source.relative_to(root)),
             "dir": str(source.parent.relative_to(root)),
             "uses": uses,

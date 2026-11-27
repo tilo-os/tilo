@@ -150,7 +150,6 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/local-affected.sh": "tools/tests/test_local_affected.py",
     "tools/ci/test-changed.sh": "tools/tests/test_local_affected.py",
     "tools/ci/lint-affected.sh": "tools/tests/test_local_affected.py",
-    "tools/ci/macos_apps.py": "tools/tests/test_dev_macos_workflows.py",
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_test_time.json": "tools/tests/test_ci_select.py",
     "tools/ci/recorded_build_bytes.json": "tools/tests/test_ci_select.py",

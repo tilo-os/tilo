@@ -84,6 +84,51 @@ def check_stage(out, plan, stage):
     return record
 
 
+def tapp_short_name(entry):
+    """The name `tilolang build` gives a package's tapp: its id's last segment."""
+    return entry['id'].rsplit('.', 1)[-1] + '.tapp'
+
+
+def build_tilolang(args, entry, work, environment):
+    """Build and sign one tilolang package the way the release does (tools/apps/tilolang_packages.sh).
+
+    Its payload is its compiled module, so one tapp serves every architecture; it runs on the
+    tilolang runtime bundle the Mac's daemon installed, and a person installs it through the same
+    installer the Store uses.
+    """
+    staging = None
+    if environment is None:
+        source = ROOT / 'target/tilolang' / entry['tapp']
+        if not source.is_file():
+            raise ValueError(f'missing app: {source}; build it with `tilolang build` first')
+    else:
+        if not args.tilolang or not args.tilolang.is_file():
+            raise ValueError('building a tilolang package needs --tilolang: an existing tilolang command')
+        staging = work / 'tilolang' / entry['name']
+        staging.mkdir(parents=True)
+        command = [str(args.tilolang.resolve()), 'build', str(ROOT / entry['dir']),
+                   '--search', str(ROOT / 'apps/tl'), '--out', str(staging),
+                   '--version', entry['version'], '--tilo-runtime', entry['runtime'], '--locked']
+        if args.publisher_identity:
+            if not args.publisher_identity.is_file():
+                raise ValueError(f'--publisher-identity must name an existing key file: {args.publisher_identity}')
+            command += ['--identity', str(args.publisher_identity.resolve())]
+        bounded_build(command, environment)
+        source = staging / tapp_short_name(entry)
+        if not source.is_file():
+            raise ValueError(f'{entry["dir"]} built no {tapp_short_name(entry)}')
+    try:
+        (work / 'tapps').mkdir(exist_ok=True)
+        tapp = work / 'tapps' / entry['tapp']
+        shutil.copy2(source, tapp)
+    finally:
+        if staging is not None:
+            # Its used packages' tapps too: a package the collection carries is built and signed
+            # under its own entry, never twice under this one.
+            shutil.rmtree(staging, ignore_errors=True)
+    return {'app': entry['name'], 'tapp': entry['tapp'], 'sha256': digest(tapp), 'bytes': tapp.stat().st_size}
+
+
 def build(args, plan, work):
     environment = None if args.reuse_bundles else build_environment(args, work)
     if environment and run(['git', 'status', '--porcelain', '--', 'apps', 'crates', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'], cwd=ROOT).strip():
@@ -93,6 +138,9 @@ def build(args, plan, work):
     (work / 'apps').mkdir()
     (work / 'entitlements').mkdir()
     for entry in plan['apps']:
+        if entry.get('kind') == 'tilolang':
+            facts.append(build_tilolang(args, entry, work, environment))
+            continue
         if environment:
             bounded_build([str(args.tilolang.resolve()), 'build', str(ROOT / 'apps' / entry['name']),
                            '--target', 'macos', '--release'], environment)
@@ -111,17 +159,22 @@ def build(args, plan, work):
     shim = work / 'cargo-locked'
     if shim.exists():
         shim.unlink()
-    return {'apps': facts, 'origin': 'existing SDK outputs' if args.reuse_bundles else 'SDK build',
+    return {'apps': facts, 'origin': 'existing tapps and SDK outputs' if args.reuse_bundles else 'SDK build',
             'host_dependency_strip': 'none' if environment else None,
             'notarized': False}
 
 
 def sign(args, plan, work, identity):
     source = args.out / 'built'
-    check_stage(args.out, plan, 'built')
+    built = check_stage(args.out, plan, 'built')
     shutil.copytree(source / 'apps', work / 'apps', symlinks=True)
     shutil.copytree(source / 'entitlements', work / 'entitlements')
+    if any(entry.get('kind') == 'tilolang' for entry in plan['apps']):
+        shutil.copytree(source / 'tapps', work / 'tapps')
+        verify_tapps(work, plan, built)
     for entry in plan['apps']:
+        if entry.get('kind') == 'tilolang':
+            continue
         app = work / 'apps' / entry['bundle']
         inspect_bundle(app, entry, args.arch)
         sign_bundle(app, work / 'entitlements' / Path(entry['bundle']).with_suffix('.entitlements'), identity, args.offline)
@@ -132,9 +185,27 @@ def sign(args, plan, work, identity):
 
 def verify_apps(directory, plan, identity):
     for entry in plan['apps']:
+        if entry.get('kind') == 'tilolang':
+            continue
         app = directory / 'apps' / entry['bundle']
         inspect_bundle(app, entry, plan['architecture'])
         verify_signatures(app, identity, plan['mode'], plan['architecture'])
+
+
+def verify_tapps(directory, plan, record):
+    """Each tapp is the one the build signed, byte for byte, wherever it was copied to.
+
+    The SDK signs a package when it builds it; the Keychain identity never signs a tapp, so a
+    copy is checked against the built receipt's digest and the installer verifies the signature.
+    """
+    signed = {fact['app']: fact for fact in record['facts']['apps'] if 'tapp' in fact}
+    for entry in plan['apps']:
+        if entry.get('kind') != 'tilolang':
+            continue
+        fact = signed.get(entry['name'])
+        path = directory / 'tapps' / entry['tapp']
+        if fact is None or fact['tapp'] != entry['tapp'] or not path.is_file() or digest(path) != fact['sha256']:
+            raise ValueError(f'{entry["name"]}: the tapp copied is not the one built')
 
 
 def verify_image(path, identity):
@@ -143,6 +214,20 @@ def verify_image(path, identity):
     if identity['sha1'] != '-':
         command += ['-R', f'=anchor apple generic and certificate leaf = H"{identity["sha1"]}"']
     run(command + [path])
+
+
+def read_me(bundles, tapps):
+    lines = []
+    if bundles:
+        lines.append('Copy the apps you want to Applications.')
+    if tapps:
+        lines.append('The tapp packages are Tilo\'s own signed apps: open one in the Store, or run '
+                     '`tilo app install <file>`, the installer every Tilo app comes from. Each runs on '
+                     'the tilo-runtime build its manifest names, which installing an app from the Store '
+                     'brings.')
+    lines.append('No apps are installed automatically.')
+    lines.append('This image is signed but has not been notarized. See the external receipt.')
+    return '\n'.join(lines) + '\n'
 
 
 def package(args, plan, work):
@@ -156,13 +241,19 @@ def package(args, plan, work):
     for name, entries in sets:
         stage = work / 'payload'
         stage.mkdir()
-        for entry in entries:
+        bundles = [entry for entry in entries if entry.get('kind') != 'tilolang']
+        tapps = [entry for entry in entries if entry.get('kind') == 'tilolang']
+        for entry in bundles:
             shutil.copytree(source / 'apps' / entry['bundle'], stage / entry['bundle'], symlinks=True)
-        (stage / 'Applications').symlink_to('/Applications')
+        if bundles:
+            (stage / 'Applications').symlink_to('/Applications')
+        if tapps:
+            (stage / 'tapp').mkdir()
+            for entry in tapps:
+                shutil.copy2(source / 'tapps' / entry['tapp'], stage / 'tapp' / entry['tapp'])
         (stage / 'collection.json').write_text(json.dumps({'plan': plan, 'included': [e['name'] for e in entries],
                                                           'notarized': False}, indent=2) + '\n')
-        (stage / 'Read Me.txt').write_text('Copy the apps you want to Applications. No apps are installed automatically.\n'
-                                           'This image is signed but has not been notarized. See the external receipt.\n')
+        (stage / 'Read Me.txt').write_text(read_me(bundles, tapps))
         path = work / f'{name}-{args.arch}.dmg'
         run(['/usr/bin/hdiutil', 'create', '-srcfolder', stage, '-volname', 'Tilo Apps', '-format', 'UDZO', path], timeout=600)
         stamp = '--timestamp=none' if args.offline or identity['sha1'] == '-' else '--timestamp'
@@ -243,8 +334,11 @@ def execute(args, plan):
     args.out = args.out.absolute()
     disk_floor(ROOT)
     if args.stage == 'verify':
+        built = check_stage(args.out, plan, 'built')
         signed = check_stage(args.out, plan, 'signed')
         verify_apps(args.out / 'signed', plan, signed['facts']['identity'])
+        if any(entry.get('kind') == 'tilolang' for entry in plan['apps']):
+            verify_tapps(args.out / 'signed', plan, built)
         images = check_stage(args.out, plan, 'images')
         if images['facts']['signed_receipt_sha256'] != digest(args.out / 'signed/receipt.json'):
             raise ValueError('image inputs changed')

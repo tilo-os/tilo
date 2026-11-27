@@ -27,11 +27,41 @@ SPECIAL = {
     'browser': 'Requires scripts/browser/package.py: CEF engine, helpers and per-process JIT entitlement qualification; generic SDK bundle is incomplete.',
 }
 
+# The runtimes a Mac's Tilo.app carries. The tilolang runtime every package runs on is installed
+# by the daemon from `Tilo.app/Contents/Resources/runtimes` on its first start; another language
+# runtime is a Linux package (tools/apps/runtime_packages.sh packs bun and CPython for
+# linux-<arch>), which a Mac cannot execute. An app whose entrypoint runs on one of those runs
+# elsewhere.
+MACOS_RUNTIMES = frozenset({'', 'tilolang'})
+
 
 def safe_name(value):
     if not value or value in {'.', '..'} or any(c in value for c in '/\\\n\r\0'):
         raise ValueError(f'unsafe bundle or app name: {value!r}')
     return value
+
+
+def exclusion(entry, manifest):
+    """Why the catalogue's `entry` is not carried by a Mac's collection, or `None` when it is.
+
+    A native app is decided by its manifest's `package.platforms`; a tilolang package by its
+    committed catalogue entry (`fleet.json`), which says where its runtime runs and whether a
+    person is offered it, and by the language runtime its entrypoint executes.
+    """
+    if entry.get('kind', 'native') == 'tilolang':
+        if 'macos' not in entry['platforms']:
+            return f"Its catalogue entry lists no macOS ({', '.join(entry['platforms']) or 'none'})."
+        if not entry['listed']:
+            return 'Its catalogue entry offers it to no Store or search: it is a service, not an app a person opens.'
+        runtime = entry['entrypoint_runtime']
+        if runtime.split('/', 1)[0] not in MACOS_RUNTIMES:
+            return (f"Its entrypoint runs on the {runtime.split('/', 1)[0]} runtime, and a Mac "
+                    'carries no package of it (the runtime packages are Linux binaries).')
+        return None
+    package = manifest['package']
+    if 'macos' not in package.get('platforms', ['linux', 'macos', 'web']):
+        return package.get('platform-reason', 'Manifest does not support macOS')
+    return SPECIAL.get(entry['name'])
 
 
 def make_plan(root, selection, arch, mode):
@@ -41,17 +71,9 @@ def make_plan(root, selection, arch, mode):
         raise ValueError('unknown app: ' + ', '.join(sorted(requested - catalog.keys())))
     apps, excluded, names, ids = [], [], set(), set()
     for name, entry in catalog.items():
-        # A macOS bundle is built from a Cargo app's manifest; a tilolang package is not one.
-        if entry.get('kind') != 'native':
-            continue
-        manifest = root / entry['manifest']
-        data = tomllib.loads(manifest.read_text())
-        package = data['package']
-        reason = None
-        if 'macos' not in package.get('platforms', ['linux', 'macos', 'web']):
-            reason = package.get('platform-reason', 'Manifest does not support macOS')
-        elif name in SPECIAL:
-            reason = SPECIAL[name]
+        native = entry.get('kind', 'native') == 'native'
+        manifest = tomllib.loads((root / entry['manifest']).read_text()) if native else None
+        reason = exclusion(entry, manifest)
         if reason:
             excluded.append({'name': name, 'id': entry['id'], 'reason': reason})
             if selection and name in requested:
@@ -59,20 +81,27 @@ def make_plan(root, selection, arch, mode):
             continue
         if name not in requested:
             continue
-        display = safe_name(package.get('name', entry['package']))
         safe_name(name)
-        bundle = display + '.app'
-        if bundle.casefold() in names or entry['id'] in ids:
-            raise ValueError(f'case-insensitive bundle name or identifier collision: {bundle}')
-        names.add(bundle.casefold())
+        # Native apps are copied to Applications; a tilolang package is installed as a tapp.
+        # Both are named by what a person reads, once, so two apps never share one name.
+        display = entry['title'] if not native else manifest['package'].get('name', entry['package'])
+        display = safe_name(display)
+        if display.casefold() in names or entry['id'] in ids:
+            raise ValueError(f'app name or identifier collision: {display}')
+        names.add(display.casefold())
         ids.add(entry['id'])
-        icon = manifest.parent / 'assets/AppIcon.icns'
-        apps.append({**entry, 'bundle': bundle, 'manifest_sha256': digest(manifest),
+        if not native:
+            apps.append({**entry, 'tapp': f"{display}-{entry['version']}.tapp",
+                         'manifest_sha256': digest(root / entry['manifest'])})
+            continue
+        bundle = display + '.app'
+        icon = (root / entry['manifest']).parent / 'assets/AppIcon.icns'
+        apps.append({**entry, 'bundle': bundle, 'manifest_sha256': digest(root / entry['manifest']),
                      'icon_sha256': digest(icon) if icon.is_file() else None})
     if not apps:
-        raise ValueError('no eligible macOS SDK apps selected')
+        raise ValueError('no eligible macOS apps selected')
     source = subprocess.run(['git', '-C', str(root), 'rev-parse', 'HEAD'], capture_output=True, text=True, check=True).stdout.strip()
-    return {'format': 1, 'source': source, 'architecture': arch, 'mode': mode,
+    return {'format': 2, 'source': source, 'architecture': arch, 'mode': mode,
             'apps': apps, 'excluded': excluded, 'notarized': False}
 
 
@@ -140,14 +169,15 @@ def transaction(out, stage, resume, plan):
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('stage', nargs='?', default='plan', choices=['plan', 'audit-runtime', 'build', 'sign', 'package', 'verify', 'notarize'])
-    p.add_argument('--apps', default='', help='comma-separated catalog names; default all eligible SDK apps')
+    p.add_argument('--apps', default='', help='comma-separated catalog names; default all apps that run on macOS')
     p.add_argument('--arch', choices=['arm64', 'x86_64', 'universal'], default={'aarch64': 'arm64'}.get(platform.machine(), platform.machine()))
     p.add_argument('--mode', choices=['development', 'distribution'], default='development')
     p.add_argument('--out', type=Path, default=ROOT / 'target/macos-collection')
     p.add_argument('--dry-run', action='store_true')
     p.add_argument('--resume', action='store_true')
-    p.add_argument('--reuse-bundles', action='store_true', help='import existing SDK outputs; never compile')
+    p.add_argument('--reuse-bundles', action='store_true', help='import existing SDK outputs and tapps; never compile')
     p.add_argument('--tilolang', type=Path, help='existing tilolang executable; never installed automatically')
+    p.add_argument('--publisher-identity', type=Path, help='existing publisher key a tilolang package is signed with; never created')
     p.add_argument('--compiler-guard', type=Path, help='existing shared rustc-budget.py wrapper')
     p.add_argument('--identity', help='exact Keychain SHA-1 or full identity name; development also accepts ad-hoc')
     p.add_argument('--offline', action='store_true', help='development signatures without secure timestamp; builds are always offline')

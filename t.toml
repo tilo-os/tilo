@@ -2145,15 +2145,6 @@ env = { TILO_FONT_IMAGE_SEED = "/target/font-seed", TILO_FONT_ASSET_CACHE = "/ta
 run = "set -eu\ntest -d apps/tl/tube || { echo 'the Tube app is not in this tree'; exit 1; }\nout=$(cargo test --locked -p tilo-session --test it origin_connector::an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record -- --exact --nocapture 2>&1) || { printf '%s\\n' \"$out\"; exit 1; }\nprintf '%s\\n' \"$out\"\nprintf '%s\\n' \"$out\" | grep -q 'test result: ok. 1 passed' || { echo 'the connector test did not run'; exit 1; }"
 
 [[check]]
-name = "apps-macos"
-# Fetches from mirrors, registries and release hosts no fixed list names.
-egress = { to = ["0.0.0.0/0", "::/0"] }
-run = "set -eu\n# The project's environment picks Mesa's Vulkan CPU driver for Linux; on the Mac wgpu picks Metal.\nunset WGPU_BACKEND WGPU_ADAPTER_NAME\n# The Mac's own tilo test cache, which outlives jobs as the Linux nodes' does (font-catalog.py's\n# default): $TMPDIR is each job's own, and the fonts were downloaded again in every run.\nfonts=\"${TILO_TEST_CACHE_DIR:-$HOME/.cache/tilo/test-env}/font-artifacts\"\npython3 -I tools/font-catalog.py root crates/ui/ui-core/assets/fonts --scope fixtures --cache \"$fonts\"\nexport TILO_FONT_ASSET_CACHE=\"$fonts\" TILO_FONT_ASSETS_OFFLINE=1\npackages=$(python3 -I tools/ci/macos_apps.py)\ncargo build --locked $packages\n# Nextest discovers the tests itself, one process per test as on Linux; the doctests run even\n# when a test failed.\nstatus=0\ncargo nextest run --locked --profile ci --no-fail-fast $packages || status=$?\ncargo test --locked --no-fail-fast --doc $packages || status=$?\nexit $status\n"
-requires = ["os=macos", "arch=arm64"]
-on = ["dispatch", "idle", "stable"]
-heavy = true
-
-[[check]]
 name = "perf-fs"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }

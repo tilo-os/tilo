@@ -1,6 +1,7 @@
 # Tilo for macOS
 
-For a catalog-driven collection of standalone native SDK apps, see
+For a catalog-driven collection of the apps a Mac runs — tilolang packages as
+signed `.tapp`s, and any native SDK app as its `.app` bundle — see
 [the collection script](collection.md). It plans by default and separates build,
 sign, package, verify and explicitly authorized notarization stages.
 

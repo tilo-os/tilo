@@ -14,10 +14,38 @@ class CommandTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(SCRIPT), 'plan'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         plan = json.loads(result.stdout)
-        self.assertTrue(plan['apps'], 'the collection holds the native apps that run on macOS')
-        self.assertTrue(plan['excluded'], 'an app that cannot run on macOS is reported, not dropped')
-        self.assertTrue(all(a['reason'] for a in plan['excluded']))
+        apps = {app['name']: app for app in plan['apps']}
+        # A Mac's collection carries the tilolang packages its catalogue entry says run there: the
+        # apps every person gets, by the names they read.
+        for name, title in [('tl-files', 'Files'), ('tl-word-processor', 'Writer'),
+                            ('tl-settings', 'Settings'), ('tl-notes', 'Notes')]:
+            self.assertIn(name, apps)
+            self.assertEqual(apps[name]['kind'], 'tilolang')
+            self.assertTrue(apps[name]['tapp'].startswith(title + '-'))
+            self.assertTrue(apps[name]['tapp'].endswith('.tapp'))
+        for app in plan['apps']:
+            self.assertIn('macos', app['platforms'], app['name'])
+            self.assertTrue(app['manifest_sha256'])
+        # An app that runs elsewhere is reported with its reason, never dropped.
+        excluded = {entry['name']: entry['reason'] for entry in plan['excluded']}
+        self.assertIn('discord', excluded)
+        self.assertIn('tl-discord', excluded)
+        self.assertIn('bun', excluded['tl-discord'])
+        self.assertTrue(all(excluded.values()))
         self.assertEqual(plan['notarized'], False)
+
+    def test_every_app_the_catalogue_runs_on_macos_is_carried(self):
+        result = subprocess.run([sys.executable, str(SCRIPT), 'plan'], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        carried = {app['name'] for app in json.loads(result.stdout)['apps']}
+        catalog = c.app_catalog(ROOT)
+        self.assertTrue(any(app.get('kind') == 'tilolang' for app in catalog.values()))
+        for name, app in catalog.items():
+            if app.get('kind') != 'tilolang' or 'macos' not in app['platforms'] or not app['listed']:
+                continue
+            if app['entrypoint_runtime'].split('/', 1)[0] not in ('', 'tilolang'):
+                continue
+            self.assertIn(name, carried)
 
     def test_unknown_app_fails(self):
         result = subprocess.run([sys.executable, str(SCRIPT), 'plan', '--apps', 'no-such-app'], capture_output=True, text=True)
@@ -117,6 +145,52 @@ class StageTests(unittest.TestCase):
                 env = build_environment(args, work)
             self.assertEqual(env['CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_STRIP'], 'none')
             self.assertEqual(env['CARGO_PROFILE_RELEASE_STRIP'], 'symbols')
+
+    def test_a_tilolang_package_is_built_with_the_release_recipe(self):
+        from collection_stages import build_tilolang
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            tool, key = root / 'tilolang', root / 'publisher.json'
+            for path in (tool, key):
+                path.write_text('fixture')
+                path.chmod(0o755)
+            work = root / 'work'
+            (work / 'tilolang').mkdir(parents=True)
+            args = c.parser().parse_args(['build', '--tilolang', str(tool), '--publisher-identity', str(key),
+                                          '--out', str(root / 'out')])
+            entry = {'name': 'tl-notes', 'kind': 'tilolang', 'dir': 'apps/tl/notes', 'id': 'so.tilo.notes',
+                     'version': '0.1.0', 'runtime': 'tilo-runtime/2026.07', 'tapp': 'Notes-0.1.0.tapp'}
+            commands = []
+
+            def built(command, environment, **kwargs):
+                out = Path(command[command.index('--out') + 1])
+                (out / 'notes.tapp').write_bytes(b'a signed tapp')
+                commands.append(command)
+
+            with patch('collection_stages.bounded_build', side_effect=built):
+                facts = build_tilolang(args, entry, work, {'CARGO': 'fixture'})
+            tapp = work / 'tapps' / 'Notes-0.1.0.tapp'
+            self.assertTrue(tapp.is_file())
+            self.assertEqual(facts['tapp'], 'Notes-0.1.0.tapp')
+            self.assertEqual(facts['sha256'], c.digest(tapp))
+            self.assertEqual(list((work / 'tilolang').iterdir()), [])
+            command = commands[0]
+            self.assertIn(str(ROOT / 'apps/tl/notes'), command)
+            self.assertIn(str(ROOT / 'apps/tl'), command)  # --search: the packages it uses
+            self.assertIn(str(key.resolve()), command)
+            for option in ('--version', '--tilo-runtime', '--locked'):
+                self.assertIn(option, command)
+
+    def test_tapp_that_is_not_the_one_built_is_rejected(self):
+        from collection_stages import verify_tapps
+        with tempfile.TemporaryDirectory() as temp:
+            directory = Path(temp)
+            (directory / 'tapps').mkdir()
+            (directory / 'tapps' / 'Notes-0.1.0.tapp').write_bytes(b'tampered')
+            plan = {'apps': [{'name': 'tl-notes', 'kind': 'tilolang', 'tapp': 'Notes-0.1.0.tapp'}]}
+            record = {'facts': {'apps': [{'app': 'tl-notes', 'tapp': 'Notes-0.1.0.tapp', 'sha256': '0' * 64}]}}
+            with self.assertRaisesRegex(ValueError, 'not the one built'):
+                verify_tapps(directory, plan, record)
 
     def test_sign_inside_out_and_no_deep_sign(self):
         from collection_native import sign_bundle

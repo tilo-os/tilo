@@ -1,25 +1,43 @@
-# macOS SDK app collection
+# macOS app collection
 
 `python3 dist/macos/collection.py` prints a read-only JSON plan. It uses
-`tools/apps/app_release.py::app_catalog` and `apps/*/tilo-app.toml`, including
-manifest platform defaults and exclusion reasons. The default output is one
-`tilo-apps-ARCH.dmg` containing the eligible native SDK `.app` bundles and an
-Applications shortcut. `package --per-app` additionally creates one DMG per app.
-Nothing installs apps, mounts a completed image, opens Finder, or launches code.
+`tools/apps/app_release.py::app_catalog`, which reads native apps'
+`apps/*/tilo-app.toml` and the tilolang packages of `apps/tl`, including each
+one's committed catalogue entry (`fleet.json`). An app is carried when it runs on
+macOS: a native app whose `package.platforms` lists it, or a tilolang package
+whose catalogue entry lists it and whose entrypoint runs on the tilolang runtime
+the Mac's `Tilo.app` carries. The default output is one `tilo-apps-ARCH.dmg`
+holding the eligible `.app` bundles, a `tapp/` directory of the tilolang
+packages, and an Applications shortcut when there are bundles. `package
+--per-app` additionally creates one DMG per app. Nothing installs apps, mounts a
+completed image, opens Finder, or launches code.
+
+A tilolang package is the package format every Tilo app comes in: a person
+installs it through the same installer the Store uses (`tilo app install
+FILE.tapp`, or the file opened in the Store), and it runs on the tilolang
+runtime bundle `Tilo.app` installs on its first start. The collection builds it
+with `tilolang build` and signs it with the publisher key exactly as
+`tools/apps/tilolang_packages.sh` does; it invents no second format. Its payload
+is a compiled module, so one tapp serves every architecture, and the Keychain
+identity signs the image, never the tapp. A package's manifest also names the
+Tilo runtime build it needs (`tilo-runtime/<release>`, stamped from the
+catalogue); installing an app from the Store fetches and installs the runtime
+this device lacks, while installing a bare file does not, so a Mac whose runtime
+predates the package's needs the Store to bring it first.
 
 For receipt-backed private macOS 27 bundles with the reviewed media/runtime overlay,
 use the separate [staged runtime signer](collection-staged-sign.md). Its signed
 layout remains outside this generic SDK adapter's two-executable policy.
 
-At the initial implementation's source revision, the plan contains 45 SDK apps.
-Seven manifests exclude macOS: containers, disks, print-centre, settings, store,
-vpn, windows. Browser supports macOS but is separately excluded
-here: its CEF engine and helpers require its specialized packager. This is a
-**packager coverage gap**, not a claim that it cannot run on a Mac. See
-`scripts/browser/package.py`. This tool does not fabricate a generic replacement.
-The installer is not an app; `apps/imager/packaging/package-host.sh` builds it. The Store/runtime `Tilo.app` remains `dist/macos/build-app.sh`;
-File Provider integration is not included. A future app is selected from its
-manifest, but SDK capability checks and actual builds can still refuse it.
+The plan names every app it leaves out and why, never dropping one silently. A
+native connector such as `discord` runs on a workspace's Linux host; the
+tilolang `tl-discord` bridge runs on the bun runtime, whose package is a Linux
+binary, so a Mac carries no copy of it. A package the catalogue does not list is
+a service rather than an app a person opens. Browser's CEF engine remains a
+native **packager coverage gap**, not a claim that it cannot run on a Mac: the
+tilolang Browser is carried as its tapp. The installer is not an app;
+`apps/imager/packaging/package-host.sh` builds it. The Store/runtime `Tilo.app`
+remains `dist/macos/build-app.sh`; File Provider integration is not included.
 
 ## Prerequisites and commands
 
@@ -32,32 +50,38 @@ checked 20 GiB disk floor and a 30 minute limit per app. Interrupted builds reta
 ordinary Cargo caches for retry. No shared target directory is allowed.
 
 Start with a single app. Use the same `--apps`, `--arch`, `--mode`, source checkout
-and `--out` on every stage. Omit `--apps calculator` for the eligible collection;
-that explicit build can be large. Replace the two tool paths with existing tools:
+and `--out` on every stage. Omit `--apps tl-notes` for the eligible collection.
+Replace the tool paths with existing tools:
 
 ```sh
-python3 dist/macos/collection.py plan --apps calculator --arch arm64 --mode distribution
-python3 dist/macos/collection.py build --apps calculator --arch arm64 --mode distribution \
-  --tilolang /path/to/existing/tilolang --compiler-guard /path/to/existing/rustc-budget.py \
-  --out target/calculator-distribution
+python3 dist/macos/collection.py plan --apps tl-notes --arch arm64 --mode distribution
+python3 dist/macos/collection.py build --apps tl-notes --arch arm64 --mode distribution \
+  --tilolang /path/to/existing/tilolang --publisher-identity /path/to/existing/publisher.json \
+  --compiler-guard /path/to/existing/rustc-budget.py --out target/notes-distribution
 security find-identity -v -p codesigning
-python3 dist/macos/collection.py sign --apps calculator --arch arm64 --mode distribution \
-  --identity 'EXACT_PUBLIC_KEYCHAIN_SHA1_OR_FULL_NAME' --out target/calculator-distribution
-python3 dist/macos/collection.py package --apps calculator --arch arm64 --mode distribution \
-  --out target/calculator-distribution
-python3 dist/macos/collection.py verify --apps calculator --arch arm64 --mode distribution \
-  --out target/calculator-distribution
+python3 dist/macos/collection.py sign --apps tl-notes --arch arm64 --mode distribution \
+  --identity 'EXACT_PUBLIC_KEYCHAIN_SHA1_OR_FULL_NAME' --out target/notes-distribution
+python3 dist/macos/collection.py package --apps tl-notes --arch arm64 --mode distribution \
+  --out target/notes-distribution
+python3 dist/macos/collection.py verify --apps tl-notes --arch arm64 --mode distribution \
+  --out target/notes-distribution
 ```
 
-`build --reuse-bundles` imports the existing SDK output layout under
-`target/tilo-app/macos/PACKAGE/NAME.app`, including its adjacent `NAME.entitlements`.
-It validates bundle bytes and manifest identity, but does not establish that an
-imported executable was compiled from the current commit. Its receipt says
-`existing SDK outputs`. Ordinary `build` delegates to `tilolang build --target
-macos --release`; it does not use the SDK's package command, which can trigger
-notarization from environment variables. Compilation requires committed app/build
-inputs. The SDK owns plist generation, manifest resources, icons and capability
-entitlements. Optional Linux collection feature flags are not forced onto macOS.
+`--publisher-identity` names an existing publisher key, as `tilolang build
+--identity` takes it; without it the tool uses the publisher key it finds on the
+machine, and `--locked` refuses a package whose ids lock is not committed. A
+native app is built with `tilolang build --target macos --release`, which owns
+plist generation, manifest resources, icons and capability entitlements; the
+SDK's package command is not used, since it can trigger notarization from
+environment variables. Compilation requires committed app/build inputs. Optional
+Linux collection feature flags are not forced onto macOS.
+
+`build --reuse-bundles` imports existing outputs instead of compiling: the SDK
+layout under `target/tilo-app/macos/PACKAGE/NAME.app` with its adjacent
+`NAME.entitlements`, and `target/tilolang/NAME-VERSION.tapp` beside it. It
+validates the bytes and the manifest identity, but does not establish that an
+imported artifact was built from the current commit. Its receipt says
+`existing tapps and SDK outputs`.
 
 Native builds produce the host architecture. `--arch arm64`, `x86_64` and
 `universal` validate *every* Mach-O's exact slice set. Universal packaging requires
