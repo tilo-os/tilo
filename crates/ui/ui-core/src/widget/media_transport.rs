@@ -145,9 +145,10 @@ pub enum TransportEvent {
 /// visibility a test outside the crate can name.
 pub(crate) mod metrics_local {
     use super::{
-        ButtonFace, CHILDREN, ControlSize, MediaSize, Rect, TextRole, Theme, TransportControl,
-        TransportFace, TransportState, layout,
+        ButtonFace, ControlSize, MediaSize, TextRole, Theme, TransportControl, TransportFace,
     };
+    #[cfg(any(test, feature = "test-support"))]
+    use super::{CHILDREN, Rect, TransportState, layout};
 
     /// How wide a band is, which picks the controls it shows.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
