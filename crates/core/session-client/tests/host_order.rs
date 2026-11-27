@@ -1,7 +1,7 @@
 //! A browser peer over HTTPS and a native peer over iroh commit concurrently
-//! to one workspace: the host keeps every commit of both at a position of its
-//! own, and a third observer peer holds every change. One authority orders
-//! both carriers.
+//! to one workspace: the host keeps every commit of both, answering each at
+//! the sequence its author signed it with, and a third observer peer holds
+//! every change.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -18,7 +18,7 @@ use crate::support::{enrol, holds, person_of, ready, route, say, start_host, sta
 const EACH: usize = 12;
 
 /// Wait until everything `peer` published is durable, and answer the host's acknowledgement of
-/// its writes to the note: how many it kept, and its order of the last.
+/// its writes to the note: how many it kept, and the sequence of the last.
 async fn durable(peer: &Link) -> (u64, u64) {
     crate::support::durable(peer).await;
     let note = peer
@@ -35,7 +35,7 @@ async fn durable(peer: &Link) -> (u64, u64) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn https_and_iroh_commits_share_one_host_order() {
+async fn https_and_iroh_commits_are_all_kept() {
     let (root, _) = UserIdentity::generate("Ada", 1);
     let host_device = enrol(&root, "home-server", DeviceCapabilities::member());
     let browser = enrol(&root, "browser", DeviceCapabilities::member());
@@ -98,10 +98,9 @@ async fn https_and_iroh_commits_share_one_host_order() {
     let (browser_kept, browser_last) = durable(&browser_peer).await;
     let (laptop_kept, laptop_last) = durable(&laptop_peer).await;
     assert_eq!((browser_kept, laptop_kept), (EACH as u64, EACH as u64));
-    assert_ne!(
-        browser_last, laptop_last,
-        "every commit has its own host position"
-    );
+    // Each author numbers its own writes: the host answers the last of each at its author's
+    // own sequence, never a position of its own across both.
+    assert_eq!((browser_last, laptop_last), (EACH as u64, EACH as u64));
 
     // The observer holds every change of both.
     let mut both = over_https.fork();
