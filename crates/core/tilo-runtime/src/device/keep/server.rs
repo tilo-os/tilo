@@ -495,13 +495,8 @@ impl Server {
                 "a device that takes no work serves no workspace".into(),
             ));
         }
-        // The host's one content store per workspace: the app action server's
-        // when it brings one (its uploads and app workers keep there), so
-        // everything this host keeps for a workspace is in one place.
-        let content = app_serving
-            .as_ref()
-            .and_then(|server| server.content())
-            .unwrap_or_else(|| crate::device::keep::content::stores(&cfg.state_root));
+        let content =
+            crate::device::keep::content::of_device(&cfg.state_root, app_serving.as_ref());
         // App serving needs an app action server an embedding process supplies, and the operator's
         // consent to answer its workspaces' apps on this machine.
         let app_serving = app_serving.filter(|_| cfg.app_serving);
@@ -604,30 +599,12 @@ impl Server {
         {
             hosted.name_holder(&label).await;
         }
-        // Members read what this host keeps for their workspace from its
-        // content, and the files of the workspaces it holds are kept there
-        // so a member that comes up after the one that wrote them left reads
-        // the same bytes from this host alone. What no member holds any more
-        // is let go of, so replaced files do not pile up.
-        hosted.serve_content(Arc::new(crate::device::keep::content::StoresContent(
-            Arc::clone(&content),
-        )));
-        // A branch of a workspace takes the content its records name.
-        hosted.branch_content(Arc::new(
-            crate::device::keep::content::branch::StoresBranches(Arc::clone(&content)),
-        ));
-        let kept = crate::device::keep::kept_content::KeptContent::new(
-            hosted.clone(),
-            Arc::clone(&content),
-        );
-        push_background_task(&background_tasks, tokio::spawn(kept.keep_content()));
-        // A workspace its owner deleted takes its content and its app
-        // workers with it.
+        // What every host keeps for its workspaces' members.
         push_background_task(
             &background_tasks,
-            tokio::spawn(crate::device::keep::content::forget_deleted(
-                hosted.clone(),
-                Arc::clone(&content),
+            tokio::spawn(crate::device::keep::content::keep_for_members(
+                &hosted,
+                &content,
                 app_serving,
             )),
         );

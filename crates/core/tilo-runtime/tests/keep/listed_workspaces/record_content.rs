@@ -397,3 +397,111 @@ async fn a_picture_two_members_push_stays_until_neither_holds_it() {
     drop(carol_link);
     server.shutdown().await;
 }
+
+/// A person's own computer that hosts a workspace keeps what its members push, as a server
+/// does: the same keeper, on the computer's own workspace service, says it keeps the picture to
+/// the device that pushed it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_computer_hosting_a_workspace_keeps_what_its_members_push() {
+    // Alice's root is the one the workspace fixtures sign her pre-admissions with.
+    let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+    let alice = TestUser {
+        user_pk: root.verifying_key().to_bytes(),
+        user_sk: root,
+        keys: std::sync::Arc::default(),
+    };
+    let bob = TestUser::fresh("Bob");
+    let laptop = alice.enrol("alice-laptop", DeviceCapabilities::primary());
+    let phone = bob.enrol("bob-phone", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let endpoint = device_endpoint(&laptop).await;
+    let (computer, _keys) =
+        crate::keep::common::laptop_service_at(state.path(), &laptop, endpoint.clone()).await;
+    let router = computer
+        .protocols()
+        .into_iter()
+        .fold(
+            iroh::protocol::Router::builder(endpoint),
+            |router, (alpn, handler)| router.accept(alpn, handler),
+        )
+        .spawn();
+    let workspaces = computer.workspaces();
+    let content = tilo_runtime::device::keep::content::stores(state.path());
+    let keeping = tokio::spawn(tilo_runtime::device::keep::content::keep_for_members(
+        workspaces, &content, None,
+    ));
+    let workspace = workspaces.create("Photos").await.unwrap().workspace;
+    // Alice's laptop lists itself as her device, signing its own row, as it does for every
+    // workspace she makes on it.
+    workspaces
+        .enter(&workspace, (&laptop.cert, &laptop.sk))
+        .await
+        .unwrap();
+    tilo_workspace_service::workspaces::fixtures::entry_join(
+        workspaces,
+        &laptop.cert,
+        &workspace,
+        (&phone.sk, &phone.cert),
+        7,
+    )
+    .await;
+    let mut bob_link = Linked::open_on(
+        workspaces,
+        computer.node_addr(),
+        &phone,
+        WorkspaceId::parse(&workspace).unwrap(),
+        None,
+    )
+    .await
+    .expect("the computer admits Bob's phone");
+    let workspace_id = WorkspaceId::parse(&workspace).unwrap();
+    tilo_test_env::within("Bob's phone subscribes to the workspace", async {
+        while !computer
+            .sessions()
+            .is_subscribed(workspace_id, &phone.device_pubkey())
+            .await
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+
+    let picture = b"a picture Bob took on his phone".repeat(64);
+    let address = blake3::hash(&picture).to_hex().to_string();
+    let computer_device = laptop.device_pubkey();
+    // Bob's phone keeps its push going until the computer says it keeps the picture, as a
+    // device that wrote content does.
+    tilo_test_env::within(
+        "the computer says it keeps what Bob's phone pushed",
+        async {
+            loop {
+                push(
+                    &bob_link,
+                    &phone,
+                    &computer_device,
+                    &workspace,
+                    &address,
+                    &picture,
+                );
+                let said = tokio::time::timeout(
+                    std::time::Duration::from_secs(1),
+                    kept(&mut bob_link, &phone, &computer_device, &address),
+                );
+                if said.await.is_ok() {
+                    return;
+                }
+            }
+        },
+    )
+    .await;
+    assert!(
+        content
+            .get(&workspace)
+            .is_ok_and(|store| store.has(&address)),
+        "the computer keeps the picture once it says so"
+    );
+
+    keeping.abort();
+    router.shutdown().await.unwrap();
+    computer.shutdown().await;
+}

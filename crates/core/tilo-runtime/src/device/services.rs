@@ -2565,7 +2565,20 @@ impl Daemon {
                     browsers,
                 })?)
             }
-            _ => None,
+            // A computer that hosts the workspaces its person made on it keeps for their members
+            // what a server does.
+            _ => {
+                let content = crate::device::keep::content::of_device(
+                    &identity.place.dir().join(OWN),
+                    app_serving.as_ref(),
+                );
+                tilo_rt::app().spawn(crate::device::keep::content::keep_for_members(
+                    workspaces.copies(),
+                    &content,
+                    app_serving,
+                ));
+                None
+            }
         };
         let (kept, kept_protocols) = kept.map_or((None, Vec::new()), |(kept, protocols)| {
             (Some(kept), protocols)

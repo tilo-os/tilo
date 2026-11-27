@@ -22,6 +22,8 @@ use tilo_content::{ContentLimits, WorkspaceStores};
 
 use tilo_workspace_service::workspaces::WorkspaceContent;
 
+use crate::device::keep::kept_content::KeptContent;
+
 /// The directory, under a host's state root, its workspaces' content is
 /// kept in, one directory per workspace.
 pub const DIRECTORY: &str = "content";
@@ -45,6 +47,38 @@ pub fn stores(state_root: &Path) -> Arc<WorkspaceStores> {
         state_root.join(DIRECTORY),
         WORKSPACE_LIMITS,
     ))
+}
+
+/// The one content store of a device that hosts workspaces: the app action server's when it
+/// brings one (its uploads and app workers keep there), else the stores under `state_root`, so
+/// everything the device keeps for a workspace is in one place.
+#[must_use]
+pub fn of_device(
+    state_root: &Path,
+    apps: Option<&Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
+) -> Arc<WorkspaceStores> {
+    apps.and_then(|server| server.content())
+        .unwrap_or_else(|| stores(state_root))
+}
+
+/// What every device that hosts workspaces keeps for their members, a server and a person's own
+/// computer alike: members read what it keeps for their workspace from `content`, the content a
+/// member pushes is kept there ([`KeptContent`]) so a member that comes up after the writer left
+/// reads the same bytes from this device alone, a branch takes the content its records name, and
+/// a workspace its owner deleted takes its content and its app workers (`apps`) with it. What
+/// runs it is the future answered, which lasts as long as the device hosts.
+pub fn keep_for_members(
+    hosted: &tilo_workspace_service::workspaces::Workspaces,
+    content: &Arc<WorkspaceStores>,
+    apps: Option<Arc<dyn tilo_workspace_service::app_serving::AppActionServer>>,
+) -> impl std::future::Future<Output = ()> + Send + 'static {
+    hosted.serve_content(Arc::new(StoresContent(Arc::clone(content))));
+    hosted.branch_content(Arc::new(branch::StoresBranches(Arc::clone(content))));
+    let kept = KeptContent::new(hosted.clone(), Arc::clone(content));
+    let forgetting = forget_deleted(hosted.clone(), Arc::clone(content), apps);
+    async move {
+        futures::join!(kept.keep_content(), forgetting);
+    }
 }
 
 /// The workspaces' stores, as the host answers its members from them.

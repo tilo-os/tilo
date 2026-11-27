@@ -852,27 +852,8 @@ impl Linked {
         device: &TestDevice,
         workspace: WorkspaceId,
     ) -> Result<Self, Refusal> {
-        let endpoint = device_endpoint(device).await;
-        let dialer = Arc::new(Dialer::from_endpoint(
-            tilo_server_client::ServerAddress::at(server.node_addr()),
-            endpoint.clone(),
-        ));
         let workspaces = server.workspaces().expect("the server holds workspaces");
-        let asking = tilo_peer_state::actions::ActionService::new(
-            device.sk.clone(),
-            Arc::new(tilo_peer_state::actions::NoActions),
-        )
-        .remote(&endpoint, &server.node_addr(), &workspace.to_string());
-        Self::joined(
-            workspaces,
-            device,
-            workspace,
-            dialer,
-            asking,
-            Some(endpoint),
-            None,
-        )
-        .await
+        Self::open_on(workspaces, server.node_addr(), device, workspace, None).await
     }
 
     /// [`Self::open`], starting this device's copy from `seed`: what a device holds of the
@@ -887,17 +868,40 @@ impl Linked {
         workspace: WorkspaceId,
         seed: tilo_peer_state::StatePeer,
     ) -> Result<Self, Refusal> {
+        let workspaces = server.workspaces().expect("the server holds workspaces");
+        Self::open_on(
+            workspaces,
+            server.node_addr(),
+            device,
+            workspace,
+            Some(seed),
+        )
+        .await
+    }
+
+    /// A device of `workspace` hosted by the device whose `workspaces` are reached at `host`,
+    /// a server or a person's own computer alike.
+    ///
+    /// # Errors
+    ///
+    /// The host refused the device, or the link did not open.
+    pub async fn open_on(
+        workspaces: &Workspaces,
+        host: iroh::EndpointAddr,
+        device: &TestDevice,
+        workspace: WorkspaceId,
+        seed: Option<tilo_peer_state::StatePeer>,
+    ) -> Result<Self, Refusal> {
         let endpoint = device_endpoint(device).await;
         let dialer = Arc::new(Dialer::from_endpoint(
-            tilo_server_client::ServerAddress::at(server.node_addr()),
+            tilo_server_client::ServerAddress::at(host.clone()),
             endpoint.clone(),
         ));
-        let workspaces = server.workspaces().expect("the server holds workspaces");
         let asking = tilo_peer_state::actions::ActionService::new(
             device.sk.clone(),
             Arc::new(tilo_peer_state::actions::NoActions),
         )
-        .remote(&endpoint, &server.node_addr(), &workspace.to_string());
+        .remote(&endpoint, &host, &workspace.to_string());
         Self::joined(
             workspaces,
             device,
@@ -905,7 +909,7 @@ impl Linked {
             dialer,
             asking,
             Some(endpoint),
-            Some(seed),
+            seed,
         )
         .await
     }
