@@ -28,7 +28,7 @@ default = ["native", "broker-transport"]
 # history and undo, presence, search and the resource-backed views. Without
 # it the crate is a UI toolkit that knows nothing about Tilo. `tilo-app` turns
 # it on.
-model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-resource", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "settings-model/model", "tilo-process-services/models", "tilo-actions/document-read", "tilo-ui-base/model"]
+model = ["dep:runtime-collab", "dep:collaboration", "dep:settings-store", "dep:collab-types", "dep:tilo-automerge", "tilo-doc/model", "dep:tilo-desktop-model", "dep:fs-protocol", "dep:tilo-reference", "settings-model/model", "tilo-process-services/models", "tilo-actions/document-read", "tilo-ui-base/model"]
 # The native runner and its services: the winit event loop with its
 # AccessKit adapter, the Wayland clipboard, the OS URI handler, startup
 # warmup, the system appearance a standalone app follows, and the
@@ -329,7 +329,7 @@ fs-protocol = { package = "tilo-fs-protocol", version = "0.1.0", path = "../../c
 # history row's summary from its structural snapshot diff.
 tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc", default-features = false }
 # Version history, stamped commits and replay of any document.
-tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource", optional = true }
+tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["local"] }
 # Every catalogue and text index is a tantivy index through the shared
 # search layer.
